@@ -3,6 +3,7 @@ import { Node, SourceFile } from 'typescript';
 
 import { createId } from '@paralleldrive/cuid2';
 import { FunctionDeclaration } from 'typescript';
+import { join } from 'path';
 
 const instrumentationCallNode = (factory: ts.NodeFactory, id: string) => {
     return factory.createCallExpression(
@@ -18,8 +19,8 @@ const createImportStatement = (factory: ts.NodeFactory, module: string, ...thing
     for (const { name, alias } of things) {
         imports.push(
             factory.createImportSpecifier(false,
-                alias ? factory.createIdentifier(alias) : undefined,
-                factory.createIdentifier(name)
+                factory.createIdentifier(name),
+                factory.createIdentifier(alias ?? name),
             )
         );
     }
@@ -50,7 +51,7 @@ const hasEarlyReturn = (node: ts.Statement | ts.Block): boolean => {
 }
 
 //  TODO: instrument every line because every line could throw an exception and thus be a branch
-export const instrumentModule = (introspectionContext: IntrospectionContext) => {
+export const instrumentModule = (introspectionContext: IntrospectionContext, shatterproofModuleOverride?:string) => {
 
     return (ctx: ts.TransformationContext) => (sourceFile: SourceFile): SourceFile => {
         const factory = ctx.factory;
@@ -199,10 +200,12 @@ export const instrumentModule = (introspectionContext: IntrospectionContext) => 
             [executionArguments]
         ));
         
+        const moduleName = "shatterproof"
+        const shatterproofModulePath = shatterproofModuleOverride ?? moduleName;
         const resourcedFile = {
             ...sourceFile,
             statements: [
-                createImportStatement(factory, "shatterproof", { name: "record", alias: recordAlias }, { name: "execute", alias: executeAlias }),
+                createImportStatement(factory, shatterproofModulePath, { name: "record", alias: recordAlias }, { name: "execute", alias: executeAlias }),
                 //  retain other top level statements in the module because they may be necessary for setup and initialization
                 ...sourceFile.statements,
                 invokeExecutionCall,

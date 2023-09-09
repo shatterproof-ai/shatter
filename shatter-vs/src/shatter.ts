@@ -3,7 +3,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import * as ts from 'typescript';
 import { ExecutionContext } from './recorder';
-import { IntrospectionContext, instrumentModule } from './transform';
+import { IntrospectionContext, instrumentModule as createInstrumenter } from './transform';
 import { Generator } from './generator';
 import { RunResult, Supervisor } from './supervisor';
 
@@ -42,17 +42,37 @@ export type TestArgument = {
 //  operate on the source file instead of editor objects for generality and also to avoid having to duplicate imports
 //  TODO: make sure the source file is saved before running
 export async function shatterAutotest(modulePaths: string[],
-    functionNode: ts.FunctionDeclaration,
-    onUpdate: (clusters: ResultCluster[]) => void) {
+    inputFile: string,
+    functionName: string,
+    onUpdate: (clusters: ResultCluster[]) => void,
+    shatterproofModuleOverride?: string
+) {
     // parse whole file into abstract syntax tree
-    const [program, ast] = parse(functionNode);
+    const [program, sourceFile] = parse(inputFile);
+    const functionDeclarationNode = findFunctionNode(functionName, sourceFile);
+    if (!functionDeclarationNode) {
+        throw new Error(`Could not find function ${functionName}`);
+    }
     // rewrite code of given function (or everything if lazy) to add instrumentation
-    const [instrumented, executorScriptJs, introspectionContext] = writeInstrumented(functionNode);
+    const [instrumented, executorScriptJs, introspectionContext] = writeInstrumented(sourceFile, shatterproofModuleOverride);
     // instrospect function and generate a set of candidate inputs
 
-    console.log(`created ${instrumented} compiled to ${executorScriptJs}`)
+    console.log(`created ${instrumented} compiled to ${executorScriptJs}`);
 
-    const generator = new Generator(program.getTypeChecker(), functionNode.parameters);
+    let body = null;
+    for (let i = 0; i < functionDeclarationNode.getChildCount(); i++) {
+        const child = functionDeclarationNode.getChildAt(i);
+        if (ts.isBlock(child)) {
+            body = child;
+            break;
+        }
+    }
+
+    if (!body) {
+        throw new Error(`Could not find function body`);
+    }
+
+    const generator = new Generator(program.getTypeChecker(), functionDeclarationNode.parameters);
 
     const parameterLists = generator.generateRandom(10);
 
@@ -64,7 +84,7 @@ export async function shatterAutotest(modulePaths: string[],
 
     const allExecutedBranches = new Set<string>();
 
-    const clusters:ResultCluster[] = [];
+    const clusters: ResultCluster[] = [];
     const onCompletion = (execution: RunResult) => {
         console.log(`Received result ${JSON.stringify(execution)}`);
         // find the appropriate cluster or create it
@@ -75,10 +95,14 @@ export async function shatterAutotest(modulePaths: string[],
     };
 
     const supervisor = new Supervisor(modulePaths, executorScriptJs, onCompletion, 15);
+    console.log(`tryna allExecutedBranches.size = ${allExecutedBranches.size
+        }, introspectionContext.knownBranches.size = ${introspectionContext.knownBranches.size
+        }, parameterLists.length = ${parameterLists.length}`);
     while (allExecutedBranches.size < introspectionContext.knownBranches.size
         && parameterLists.length > 0
         && count < maxIterations
         && Date.now() - startTime < maxTime) {
+
 
         const parameterList = parameterLists.pop();
         if (!parameterList) {
@@ -88,22 +112,21 @@ export async function shatterAutotest(modulePaths: string[],
         }
 
         // execute those inputs in worker threads
-        const worker = await supervisor.launchWorker(functionNode.name?.getText() ?? '', parameterList.parameters);
+        const worker = await supervisor.launchWorker(functionDeclarationNode.name?.getText() ?? '', parameterList.parameters);
 
         // TODO: save the test cases, results, and clusters to some directory
         // TODO: if the function under test is a react component
-            //  launch a headless browser
-            //  capture a screenshot for each represented test case
-            //  save it screenshot
+        //  launch a headless browser
+        //  capture a screenshot for each represented test case
+        //  save it screenshot
         count++;
     }
 }
 
-export function parse(functionNode: ts.FunctionDeclaration): [ts.Program, ts.SourceFile] {
+export function parse(sourceFilePath: string): [ts.Program, ts.SourceFile] {
 
-    const sourceFilePath = functionNode.getSourceFile()?.fileName;
     if (!sourceFilePath) {
-        throw new Error(`Could not find source file for function ${JSON.stringify(functionNode)}`);
+        throw new Error(`Could not find source file for function $${sourceFilePath}`);
     }
     const program = ts.createProgram([sourceFilePath], {});
 
@@ -117,7 +140,24 @@ export function parse(functionNode: ts.FunctionDeclaration): [ts.Program, ts.Sou
     return [program, source];
 }
 
-export function writeInstrumented(functionDeclarationNode: ts.FunctionDeclaration): [string, string, IntrospectionContext] {
+function findFunctionNode(functionName: string, source: ts.SourceFile): ts.FunctionDeclaration | null {
+    let functionNode: ts.FunctionDeclaration | null = null;
+    const visitor = (node: ts.Node) => {
+        if (ts.isFunctionDeclaration(node)) {
+            functionNode = node;
+            return node;
+        }
+        ts.forEachChild(node, visitor);
+    };
+
+    ts.forEachChild(source, visitor);
+
+    return functionNode;
+}
+
+export function writeInstrumented(sourceFile: ts.SourceFile,
+    shatterproofModuleOverride?: string
+): [string, string, IntrospectionContext] {
 
     const introspectionContext: IntrospectionContext = {
         functions: new Map(),
@@ -125,15 +165,14 @@ export function writeInstrumented(functionDeclarationNode: ts.FunctionDeclaratio
         knownBranches: new Map(),
     };
 
-    const codeTransformer = instrumentModule(introspectionContext);
+    const codeTransformer = createInstrumenter(introspectionContext, shatterproofModuleOverride);
     //  TODO: pass in project's compiler options
-    const transformed = ts.transform(functionDeclarationNode.getSourceFile(), [codeTransformer]);
+    const transformed = ts.transform(sourceFile, [codeTransformer]);
 
     const tempdir = mkdtempSync(join(tmpdir(), "shatterproof-"));
     const printer = ts.createPrinter({ newLine: ts.NewLineKind.LineFeed });
 
     const modifiedSourcefilePath = join(tempdir, 'temp.ts');
-    const executorScriptJS = join(tempdir, 'temp.js');
 
     const transformedSource = printer.printNode(ts.EmitHint.Unspecified, transformed.transformed[0], transformed.transformed[0]);
 
@@ -151,19 +190,6 @@ export function writeInstrumented(functionDeclarationNode: ts.FunctionDeclaratio
 
     //  write a new version of the function with instrumentation
     //  replace it in the AST
-
-    let body = null;
-    for (let i = 0; i < functionDeclarationNode.getChildCount(); i++) {
-        const child = functionDeclarationNode.getChildAt(i);
-        if (ts.isBlock(child)) {
-            body = child;
-            break;
-        }
-    }
-
-    if (!body) {
-        throw new Error(`Could not find function body`);
-    }
 
 
     return [modifiedSourcefilePath, executorScriptJs, introspectionContext];
