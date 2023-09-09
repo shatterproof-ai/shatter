@@ -100,7 +100,6 @@ function getFunctionNodeAtCursor(cursorPosition: vscode.Position, document: vsco
 
 export function deactivate() { }
 
-
 // Define a data structure to represent AST nodes.
 interface ASTNode {
 	label: string;
@@ -109,7 +108,6 @@ interface ASTNode {
 	children?: ASTNode[];
 }
 
-let i = 0
 // Define a custom TreeDataProvider for the AST.
 class ASTTreeDataProvider implements vscode.TreeDataProvider<ASTNode> {
 	private _onDidChangeTreeData: vscode.EventEmitter<ASTNode | undefined | void> = new vscode.EventEmitter<ASTNode | undefined>();
@@ -157,33 +155,6 @@ class ASTTreeDataProvider implements vscode.TreeDataProvider<ASTNode> {
 		treeItem.tooltip = `Line ${element.line}`;
 		return treeItem;
 	}
-}
-
-export function aactivate(context: vscode.ExtensionContext) {
-	const astDataProvider = new ASTTreeDataProvider();
-	vscode.window.registerTreeDataProvider('astViewer', astDataProvider);
-
-	// Register the "Show AST" command.
-	context.subscriptions.push(
-		vscode.commands.registerCommand('extension.showAST', () => {
-			// Get the currently active text editor.
-			const editor = vscode.window.activeTextEditor;
-
-			if (editor && editor.document.languageId === 'typescript') {
-				// Get the TypeScript source code from the editor.
-				const sourceCode = editor.document.getText();
-
-				// Parse the TypeScript source code to create an abstract syntax tree (AST).
-				// const ast = parseAST(sourceCode);
-
-				// Refresh the AST tree view with the new AST.
-				// astDataProvider.refresh(ast);
-			} else {
-				// If the active editor is not a TypeScript file, display an error message.
-				vscode.window.showErrorMessage('Please open a TypeScript file to view the AST.');
-			}
-		})
-	);
 }
 
 function createASTNode(node: ts.Node): ASTNode {
