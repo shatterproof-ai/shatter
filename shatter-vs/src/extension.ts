@@ -1,32 +1,59 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import * as vscode from 'vscode';
 import * as ts from 'typescript';
+import { shatterAutotest } from './shatter';
 
 export function activate(context: vscode.ExtensionContext) {
-	console.log(`activationing`)
+	console.log(`activationing`);
 	const astDataProvider = new ASTTreeDataProvider();
 	vscode.window.registerTreeDataProvider('shatterResultsView', astDataProvider);
 
 	const disposable = vscode.commands.registerCommand('extension.shatterAutotest', () => {
 		const editor = vscode.window.activeTextEditor;
+		ts.ScriptSnapshot.fromString('');
+		//	TODOTODO: initialize empty results sidebar
 
-		console.log(`languageId = ${editor?.document.languageId}`)
+		console.log(`languageId = ${editor?.document.languageId}`);
 
 		if (editor && editor.document.languageId === 'typescript') {
 			const selection = editor.selection;
 			const cursorPosition = selection.active;
 			const document = editor.document;
 
-			console.log(`cursorPosition = ${cursorPosition.line} ${cursorPosition.character}`)
+			console.log(`cursorPosition = ${cursorPosition.line} ${cursorPosition.character}`);
 			if (isCursorInFunctionName(cursorPosition, document, editor)) {
 				const functionNode = getFunctionNodeAtCursor(cursorPosition, document);
 
 				if (functionNode && ts.isFunctionDeclaration(functionNode)) {
 
+					const allTsConfigs:string[] = [];
+					const allPackageJsons:string[] = [];
+					const allNodeModules:string[] = [];
+					const allWorkspaceFolders:string[] = [];
+
+					vscode.workspace.workspaceFolders?.forEach((folder) => {
+						const found = findFilesInHierarchy(editor.document.fileName, vscode.workspace.rootPath || '', {
+							tsconfig: (filename, stat) => filename.endsWith('tsconfig.json') && stat.isFile(),
+							packageJson: (filename, stat) => filename.endsWith('package.json') && stat.isFile(),
+							nodeModules: (filename, stat) => filename.endsWith('node_modules') && stat.isDirectory(),
+						});
+
+						allTsConfigs.push(...(found.tsconfig || []));
+						allPackageJsons.push(...(found.packageJson || []));
+						allNodeModules.push(...(found.nodeModules || []));
+						allWorkspaceFolders.push(folder.uri.fsPath);
+					});
+
+					const modulePaths = [...allWorkspaceFolders, ...allNodeModules];
+
+					shatterAutotest(modulePaths, functionNode);
+
 					const astNode = createASTNode(functionNode);
-					console.log(`refreshing function node to display = ${functionNode.name?.text}`)
+					console.log(`refreshing function node to display = ${functionNode.name?.text}`);
 					astDataProvider.refresh(astNode);
 				} else {
-					console.log(`function node not found`)
+					console.log(`function node not found`);
 				}
 			} else {
 				vscode.window.showErrorMessage('Select a function or place the cursor inside a function.');
@@ -37,7 +64,7 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(disposable);
 
 	const disposableContextMenu = vscode.commands.registerCommand('extension.shatterAutotestContext', () => {
-		console.log(`extension.shatterAutotestContext command registered`)
+		console.log(`extension.shatterAutotestContext command registered`);
 		vscode.commands.executeCommand('extension.shatterAutotest');
 	});
 
@@ -45,7 +72,7 @@ export function activate(context: vscode.ExtensionContext) {
 		{ scheme: 'file', language: 'typescript' },
 		{
 			provideCodeActions: (document, range) => {
-				console.log(`provideCodeActions called`)
+				console.log(`provideCodeActions called`);
 				return [
 					{
 						command: 'extension.shatterAutotestContext',
@@ -73,7 +100,7 @@ function getFunctionNodeAtCursor(cursorPosition: vscode.Position, document: vsco
 	const sourceCode = document.getText();
 	const sourceFile = ts.createSourceFile(document.fileName, sourceCode, ts.ScriptTarget.Latest, true);
 
-	console.log(`sourceFile = ${sourceFile}`)
+	console.log(`sourceFile = ${sourceFile}`);
 
 	function findFunction(node: ts.Node): ts.Node | undefined {
 		if (node.kind === ts.SyntaxKind.FunctionDeclaration || node.kind === ts.SyntaxKind.MethodDeclaration) {
@@ -124,7 +151,7 @@ class ASTTreeDataProvider implements vscode.TreeDataProvider<ASTNode> {
 	refresh(ast: ASTNode | undefined) {
 		this.ast = ast;
 
-		console.log(`firing onchange with ${JSON.stringify(ast)}}`)
+		console.log(`firing onchange with ${JSON.stringify(ast)}}`);
 
 		this._onDidChangeTreeData.fire();
 	}
@@ -132,24 +159,24 @@ class ASTTreeDataProvider implements vscode.TreeDataProvider<ASTNode> {
 	// Get the children of a tree node.
 	getChildren(element?: ASTNode): Thenable<ASTNode[]> {
 		if (!element) {
-			console.log(`element is undefined; returning root, which has ${this.ast?.children?.length} children`)
+			console.log(`element is undefined; returning root, which has ${this.ast?.children?.length} children`);
 			// Return the root node if element is undefined.
 			return Promise.resolve(this.ast ? [this.ast] : []);
 		}
-		const children = element.children || []
-		console.log(`returning children of ${element.label} = ${children.length}`)
+		const children = element.children || [];
+		console.log(`returning children of ${element.label} = ${children.length}`);
 		return Promise.resolve(children);
 	}
 
 	// Get the parent of a tree node.
 	getParent(element: ASTNode): ASTNode | null {
-		console.log(`getParent called for ${element.label}`)
+		console.log(`getParent called for ${element.label}`);
 		return null; // We're not using parent-child relationships.
 	}
 
 	// Get the tree item for a node.
 	getTreeItem(element: ASTNode): vscode.TreeItem {
-		console.log(`getTreeItem called for ${element.label}`)
+		console.log(`getTreeItem called for ${element.label}`);
 		const treeItem = new vscode.TreeItem(element.label);
 		treeItem.collapsibleState = element.children ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None;
 		treeItem.tooltip = `Line ${element.line}`;
@@ -158,13 +185,12 @@ class ASTTreeDataProvider implements vscode.TreeDataProvider<ASTNode> {
 }
 
 function createASTNode(node: ts.Node): ASTNode {
+	const start = ts.getLineAndCharacterOfPosition(node.getSourceFile(), node.getStart());
+	const end = ts.getLineAndCharacterOfPosition(node.getSourceFile(), node.getEnd());
 
-	const start = ts.getLineAndCharacterOfPosition(node.getSourceFile(), node.getStart())
-	const end = ts.getLineAndCharacterOfPosition(node.getSourceFile(), node.getEnd())
+	const text = node?.getChildren()?.length == 0 ? `: ${node.getText()}` : '';
 
-	const text = node?.getChildren()?.length == 0 ? `: ${node.getText()}` : ''
-
-	const label = `${ts.SyntaxKind[node.kind]}:${start.line + 1}:${start.character} - ${end.line + 1}-${end.character}${text}`
+	const label = `${ts.SyntaxKind[node.kind]}:${start.line + 1}:${start.character} - ${end.line + 1}-${end.character}${text}`;
 
 	return {
 		label,
@@ -172,4 +198,41 @@ function createASTNode(node: ts.Node): ASTNode {
 		line: start.line + 1,
 		children: node.getChildren().map(createASTNode),
 	};
+}
+
+function findFilesInHierarchy<K extends string>(
+	filename: string,
+	rootDirectory: string,
+	matchers: Record<K, (filename: string, stat: fs.Stats) => boolean>,
+): Partial<Record<K, string[]>> {
+	const foundFiles: Partial<Record<K, string[]>> = {};
+
+	let currentDir = path.dirname(filename);
+	while (currentDir !== rootDirectory) {
+		fs.readdirSync(currentDir).forEach((file) => {
+			const fullPath = path.join(currentDir, file);
+			const stat = fs.statSync(fullPath);
+			for (const key of Object.keys(matchers)) {
+				const k: keyof typeof foundFiles = key as any;
+				const matcher = matchers[k];
+
+				const matches = matcher(fullPath, stat);
+				if (matches) {
+					if (!(key in foundFiles)) {
+						foundFiles[k] = [];
+					}
+					foundFiles[k]?.push(fullPath);
+				}
+			}
+		});
+
+		const parentDir = path.dirname(currentDir);
+		if (parentDir === currentDir) {
+			break;
+		}
+
+		currentDir = parentDir;
+	}
+
+	return foundFiles;
 }
