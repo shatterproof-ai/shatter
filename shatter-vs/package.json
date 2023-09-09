@@ -17,7 +17,16 @@
         "command": "extension.shatterAutotestContext",
         "title": "Shatter autotest"
       }
-    ]
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "extension.shatterAutotestContext",
+          "group": "test-analyze"
+        }
+      ]
+    }
+
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
