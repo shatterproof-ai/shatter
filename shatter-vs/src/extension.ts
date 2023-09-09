@@ -3,6 +3,9 @@ import * as ts from 'typescript';
 
 export function activate(context: vscode.ExtensionContext) {
 	console.log(`activationing`)
+	const astDataProvider = new ASTTreeDataProvider();
+	vscode.window.registerTreeDataProvider('shatterResultsView', astDataProvider);
+
 	const disposable = vscode.commands.registerCommand('extension.shatterAutotest', () => {
 		const editor = vscode.window.activeTextEditor;
 
@@ -13,22 +16,17 @@ export function activate(context: vscode.ExtensionContext) {
 			const cursorPosition = selection.active;
 			const document = editor.document;
 
-			console.log(`cursorPosition = ${cursorPosition}`)
+			console.log(`cursorPosition = ${cursorPosition.line} ${cursorPosition.character}`)
 			if (isCursorInFunctionName(cursorPosition, document, editor)) {
-				console.log(`cursorPosition is in function name = ${cursorPosition}`)
 				const functionNode = getFunctionNodeAtCursor(cursorPosition, document);
-				
-				if (functionNode) {
-					console.log(`function node to display = ${cursorPosition}`)
-					const panel = vscode.window.createWebviewPanel(
-						'shatterAutotest',
-						'Shatter Autotest',
-						vscode.ViewColumn.Two,
-						{}
-					);
 
-					const astTreeView = new ASTTreeView(panel, functionNode);
-					astTreeView.render();
+				if (functionNode && ts.isFunctionDeclaration(functionNode)) {
+
+					const astNode = createASTNode(functionNode);
+					console.log(`refreshing function node to display = ${functionNode.name?.text}`)
+					astDataProvider.refresh(astNode);
+				} else {
+					console.log(`function node not found`)
 				}
 			} else {
 				vscode.window.showErrorMessage('Select a function or place the cursor inside a function.');
@@ -100,72 +98,107 @@ function getFunctionNodeAtCursor(cursorPosition: vscode.Position, document: vsco
 	return findFunction(sourceFile);
 }
 
-class ASTTreeView {
-	private panel: vscode.WebviewPanel;
-	private functionNode: ts.Node;
+export function deactivate() { }
 
-	constructor(panel: vscode.WebviewPanel, functionNode: ts.Node) {
-		this.panel = panel;
-		this.functionNode = functionNode;
+
+// Define a data structure to represent AST nodes.
+interface ASTNode {
+	label: string;
+	kind: ts.SyntaxKind;
+	line: number;
+	children?: ASTNode[];
+}
+
+let i = 0
+// Define a custom TreeDataProvider for the AST.
+class ASTTreeDataProvider implements vscode.TreeDataProvider<ASTNode> {
+	private _onDidChangeTreeData: vscode.EventEmitter<ASTNode | undefined | void> = new vscode.EventEmitter<ASTNode | undefined>();
+	readonly onDidChangeTreeData: vscode.Event<ASTNode | undefined | void> = this._onDidChangeTreeData.event;
+
+	private ast: ASTNode | undefined;
+
+	// Initialize with an empty AST.
+	constructor() {
+		this.ast = undefined;
 	}
 
-	render() {
-		console.log(`rendering AST tree view`)
-		const htmlContent = this.generateHTML();
-		this.panel.webview.html = htmlContent;
+	// Refresh the AST and notify the tree view.
+	refresh(ast: ASTNode | undefined) {
+		this.ast = ast;
+
+		console.log(`firing onchange with ${JSON.stringify(ast)}}`)
+
+		this._onDidChangeTreeData.fire();
 	}
 
-	private generateHTML(): string {
-		const rootNode = this.createNode(this.functionNode);
-		return `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <title>AST Tree View</title>
-        <style>
-          ul {
-            list-style-type: none;
-            padding-left: 20px;
-          }
-        </style>
-      </head>
-      <body>
-        <h2>AST Tree View</h2>
-        <ul>${rootNode}</ul>
-      </body>
-      </html>`;
-	}
-
-	private createNode(node: ts.Node): string {
-		const nodeType = ts.SyntaxKind[node.kind];
-		const nodeText = node.getText();
-
-		// Get the line and character positions of the start and end positions.
-		const start = ts.getLineAndCharacterOfPosition(node.getSourceFile(), node.getStart());
-		const startLine = start.line + 1;
-		const startChar = start.character + 1;
-
-		const endLineAndChar = ts.getLineAndCharacterOfPosition(node.getSourceFile(), node.getEnd());
-		const endLine = endLineAndChar.line + 1;
-		const endChar = endLineAndChar.character + 1;
-
-		const lineInfo = (startLine === endLine)
-			? `${startLine}: ${startChar}-${endChar}`
-			: `${startLine}: ${startChar} - ${endLine}: ${endChar}`;
-
-		let result = `<li>${nodeType}: ${nodeText} (${lineInfo})`;
-
-		if (node.getChildCount() > 0) {
-			result += '<ul>';
-			node.forEachChild((child) => {
-				result += this.createNode(child);
-			});
-			result += '</ul>';
+	// Get the children of a tree node.
+	getChildren(element?: ASTNode): Thenable<ASTNode[]> {
+		if (!element) {
+			console.log(`element is undefined; returning root, which has ${this.ast?.children?.length} children`)
+			// Return the root node if element is undefined.
+			return Promise.resolve(this.ast ? [this.ast] : []);
 		}
+		const children = element.children || []
+		console.log(`returning children of ${element.label} = ${children.length}`)
+		return Promise.resolve(children);
+	}
 
-		result += '</li>';
-		return result;
+	// Get the parent of a tree node.
+	getParent(element: ASTNode): ASTNode | null {
+		console.log(`getParent called for ${element.label}`)
+		return null; // We're not using parent-child relationships.
+	}
+
+	// Get the tree item for a node.
+	getTreeItem(element: ASTNode): vscode.TreeItem {
+		console.log(`getTreeItem called for ${element.label}`)
+		const treeItem = new vscode.TreeItem(element.label);
+		treeItem.collapsibleState = element.children ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None;
+		treeItem.tooltip = `Line ${element.line}`;
+		return treeItem;
 	}
 }
 
-export function deactivate() { }
+export function aactivate(context: vscode.ExtensionContext) {
+	const astDataProvider = new ASTTreeDataProvider();
+	vscode.window.registerTreeDataProvider('astViewer', astDataProvider);
+
+	// Register the "Show AST" command.
+	context.subscriptions.push(
+		vscode.commands.registerCommand('extension.showAST', () => {
+			// Get the currently active text editor.
+			const editor = vscode.window.activeTextEditor;
+
+			if (editor && editor.document.languageId === 'typescript') {
+				// Get the TypeScript source code from the editor.
+				const sourceCode = editor.document.getText();
+
+				// Parse the TypeScript source code to create an abstract syntax tree (AST).
+				// const ast = parseAST(sourceCode);
+
+				// Refresh the AST tree view with the new AST.
+				// astDataProvider.refresh(ast);
+			} else {
+				// If the active editor is not a TypeScript file, display an error message.
+				vscode.window.showErrorMessage('Please open a TypeScript file to view the AST.');
+			}
+		})
+	);
+}
+
+function createASTNode(node: ts.Node): ASTNode {
+
+	const start = ts.getLineAndCharacterOfPosition(node.getSourceFile(), node.getStart())
+	const end = ts.getLineAndCharacterOfPosition(node.getSourceFile(), node.getEnd())
+
+	const text = node?.getChildren()?.length == 0 ? `: ${node.getText()}` : ''
+
+	const label = `${ts.SyntaxKind[node.kind]}:${start.line + 1}:${start.character} - ${end.line + 1}-${end.character}${text}`
+
+	return {
+		label,
+		kind: node.kind,
+		line: start.line + 1,
+		children: node.getChildren().map(createASTNode),
+	};
+}
