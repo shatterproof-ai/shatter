@@ -5,7 +5,13 @@ import * as ts from 'typescript';
 import { ExecutionContext } from './recorder';
 import { IntrospectionContext, instrumentModule } from './transform';
 import { Generator } from './generator';
-import { Supervisor } from './supervisor';
+import { RunResult, Supervisor } from './supervisor';
+
+export interface ResultCluster {
+    key: string
+    branches: Set<string>
+    results: RunResult[]
+}
 
 // TODO: iterables and generators, regular expressions, promises, tagged templates, and more
 export type TestArgument = {
@@ -33,58 +39,72 @@ export type TestArgument = {
     value: any
 });
 
-export interface Execution {
-    args: any[],
-    result: any,
-    error: any
-    duration?: number
-}
-
 //  operate on the source file instead of editor objects for generality and also to avoid having to duplicate imports
 //  TODO: make sure the source file is saved before running
-export function shatterAutotest(modulePaths:string[], functionNode: ts.FunctionDeclaration) {
+export async function shatterAutotest(modulePaths: string[],
+    functionNode: ts.FunctionDeclaration,
+    onUpdate: (clusters: ResultCluster[]) => void) {
     // parse whole file into abstract syntax tree
     const [program, ast] = parse(functionNode);
     // rewrite code of given function (or everything if lazy) to add instrumentation
     const [instrumented, executorScriptJs, introspectionContext] = writeInstrumented(functionNode);
     // instrospect function and generate a set of candidate inputs
 
+    console.log(`created ${instrumented} compiled to ${executorScriptJs}`)
+
     const generator = new Generator(program.getTypeChecker(), functionNode.parameters);
 
     const parameterLists = generator.generateRandom(10);
-    
+
     let allCovered = false;
     let count = 0;
     const maxIterations = 100;
     const maxTime = 10000;
     const startTime = Date.now();
 
-    const executionContext:ExecutionContext = {
-        executedBranches: new Set(),
+    const allExecutedBranches = new Set<string>();
+
+    const clusters:ResultCluster[] = [];
+    const onCompletion = (execution: RunResult) => {
+        console.log(`Received result ${JSON.stringify(execution)}`);
+        // find the appropriate cluster or create it
+
+        onUpdate(clusters);
+
+        // if still need to run, generate and breed more test cases and repeat
     };
 
-    const supervisor = new Supervisor(modulePaths, introspectionContext, executorScriptJs, 15)
+    const supervisor = new Supervisor(modulePaths, executorScriptJs, onCompletion, 15);
+    while (allExecutedBranches.size < introspectionContext.knownBranches.size
+        && parameterLists.length > 0
+        && count < maxIterations
+        && Date.now() - startTime < maxTime) {
 
-    while (executionContext.executedBranches.size < introspectionContext.knownBranches.size
-         && parameterLists.length > 0
-         && count < maxIterations
-         && Date.now() - startTime < maxTime) {
+        const parameterList = parameterLists.pop();
+        if (!parameterList) {
+            console.error("parameterList is unexpectedly undefined");
+            continue;
 
+        }
 
         // execute those inputs in worker threads
-        // as each thread finishes, find the appropriate cluster or create it
-        // after creating a new cluster or adding a qualified test case to a cluster, update the tree, showing up to N (~20) clusters with up to M (~10) test cases each, prioritizing the edge cases
-        // if still need to run, generate and breed more test cases and repeat
-        // if the function under test is a react component, launch a headless browser and capture a screenshot for each represented test case
-        // save the test cases, results, clusters, and screenshots to some directory
+        const worker = await supervisor.launchWorker(functionNode.name?.getText() ?? '', parameterList.parameters);
 
+        // TODO: save the test cases, results, and clusters to some directory
+        // TODO: if the function under test is a react component
+            //  launch a headless browser
+            //  capture a screenshot for each represented test case
+            //  save it screenshot
         count++;
     }
 }
 
 export function parse(functionNode: ts.FunctionDeclaration): [ts.Program, ts.SourceFile] {
 
-    const sourceFilePath = functionNode.getSourceFile().fileName;
+    const sourceFilePath = functionNode.getSourceFile()?.fileName;
+    if (!sourceFilePath) {
+        throw new Error(`Could not find source file for function ${JSON.stringify(functionNode)}`);
+    }
     const program = ts.createProgram([sourceFilePath], {});
 
     const checker = program.getTypeChecker();
@@ -97,9 +117,9 @@ export function parse(functionNode: ts.FunctionDeclaration): [ts.Program, ts.Sou
     return [program, source];
 }
 
-export function writeInstrumented(functionNode: ts.FunctionDeclaration):[string, string, IntrospectionContext] {
+export function writeInstrumented(functionDeclarationNode: ts.FunctionDeclaration): [string, string, IntrospectionContext] {
 
-    const introspectionContext:IntrospectionContext = {
+    const introspectionContext: IntrospectionContext = {
         functions: new Map(),
         exported: new Set(),
         knownBranches: new Map(),
@@ -107,8 +127,8 @@ export function writeInstrumented(functionNode: ts.FunctionDeclaration):[string,
 
     const codeTransformer = instrumentModule(introspectionContext);
     //  TODO: pass in project's compiler options
-    const transformed = ts.transform(functionNode.getSourceFile(), [codeTransformer]);
-    
+    const transformed = ts.transform(functionDeclarationNode.getSourceFile(), [codeTransformer]);
+
     const tempdir = mkdtempSync(join(tmpdir(), "shatterproof-"));
     const printer = ts.createPrinter({ newLine: ts.NewLineKind.LineFeed });
 
@@ -118,7 +138,7 @@ export function writeInstrumented(functionNode: ts.FunctionDeclaration):[string,
     const transformedSource = printer.printNode(ts.EmitHint.Unspecified, transformed.transformed[0], transformed.transformed[0]);
 
     writeFileSync(modifiedSourcefilePath, transformedSource);
-    
+
     const modifiedProgram = ts.createProgram([modifiedSourcefilePath], {});
     const modifiedSource = modifiedProgram.getSourceFile(modifiedSourcefilePath);
     if (!modifiedSource) {
@@ -132,13 +152,9 @@ export function writeInstrumented(functionNode: ts.FunctionDeclaration):[string,
     //  write a new version of the function with instrumentation
     //  replace it in the AST
 
-    if (functionNode.getChildCount() !== 1) {
-        throw new Error(`Expected function node to have exactly one child, but found ${functionNode.getChildCount()}`);
-    }
-
     let body = null;
-    for (let i = 0; i < functionNode.getChildCount(); i++) {
-        const child = functionNode.getChildAt(i);
+    for (let i = 0; i < functionDeclarationNode.getChildCount(); i++) {
+        const child = functionDeclarationNode.getChildAt(i);
         if (ts.isBlock(child)) {
             body = child;
             break;

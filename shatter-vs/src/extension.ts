@@ -9,7 +9,7 @@ export function activate(context: vscode.ExtensionContext) {
 	const astDataProvider = new ASTTreeDataProvider();
 	vscode.window.registerTreeDataProvider('shatterResultsView', astDataProvider);
 
-	const disposable = vscode.commands.registerCommand('extension.shatterAutotest', () => {
+	const disposable = vscode.commands.registerCommand('extension.shatterAutotest', async () => {
 		const editor = vscode.window.activeTextEditor;
 		ts.ScriptSnapshot.fromString('');
 		//	TODOTODO: initialize empty results sidebar
@@ -27,10 +27,10 @@ export function activate(context: vscode.ExtensionContext) {
 
 				if (functionNode && ts.isFunctionDeclaration(functionNode)) {
 
-					const allTsConfigs:string[] = [];
-					const allPackageJsons:string[] = [];
-					const allNodeModules:string[] = [];
-					const allWorkspaceFolders:string[] = [];
+					const allTsConfigs: string[] = [];
+					const allPackageJsons: string[] = [];
+					const allNodeModules: string[] = [];
+					const allWorkspaceFolders: string[] = [];
 
 					vscode.workspace.workspaceFolders?.forEach((folder) => {
 						const found = findFilesInHierarchy(editor.document.fileName, vscode.workspace.rootPath || '', {
@@ -47,11 +47,15 @@ export function activate(context: vscode.ExtensionContext) {
 
 					const modulePaths = [...allWorkspaceFolders, ...allNodeModules];
 
-					shatterAutotest(modulePaths, functionNode);
+					await shatterAutotest(modulePaths, functionNode, (clusters) => {
+						//  update the display, showing up to N (~20) clusters with up to M (~10) test cases each,
+						//  prioritizing the edge cases
 
-					const astNode = createASTNode(functionNode);
-					console.log(`refreshing function node to display = ${functionNode.name?.text}`);
-					astDataProvider.refresh(astNode);
+						const astNode = createASTNode(functionNode);
+						console.log(`refreshing function node to display = ${functionNode.name?.text}`);
+						astDataProvider.refresh(astNode);
+					});
+
 				} else {
 					console.log(`function node not found`);
 				}

@@ -18,15 +18,13 @@ export class Supervisor {
     private count = 0;
 
     private resultByParameters = new Map<string, RunResult>();
-    private allResults: RunResult[] = [];
     private attemptedParameters = new Set<string>();
-    private allExecutedBranches = new Set<string>();
 
     private timeLimit = 1_000;
     constructor(
         private nodePath: string[],
-        private introspectionContext: IntrospectionContext,
         private executorScriptJS: string,
+        private onCompletion: (result: RunResult) => void,
         private maxActiveWorkers: number) {
     }
 
@@ -61,7 +59,6 @@ export class Supervisor {
             return;
         }
 
-
         const launched = Date.now();
         const timeoutId = setTimeout(() => {
             const timedOut = Date.now();
@@ -73,12 +70,14 @@ export class Supervisor {
             // console.log(`Timeout after ${elapsed} ms of ${currentWorkerNumber} with workerData = ${JSON.stringify(workerData)}`)
             worker.terminate();
             this.activeWorkers.delete(worker);
+            //  don't overwrite a previous run
+            //  TODO: do overwrite if the previous run timed out, but limit the number of times
             if (!this.resultByParameters.has(strung)) {
                 const result = {
                     parameters, output: undefined, completed: false, duration: -1, executedBranches: []
                 };
                 this.resultByParameters.set(strung, result);
-                this.allResults.push(result);
+                this.onCompletion(result);
             }
         }, this.timeLimit);
 
@@ -100,34 +99,26 @@ export class Supervisor {
             // console.log(`${currentWorkerNumber}  ${functionName} (${JSON.stringify(parameters)}) => ${error ?? JSON.stringify(output)} in ${duration}ms`)
 
             // console.log(`And executed branches = `)
-            this.introspectionContext.knownBranches.forEach((statement, id) => {
-                if (!statement) {
-                    console.log(`statement is null for id ${id}`);
-                    return;
-                }
-
-                executedBranches.forEach((id) => this.allExecutedBranches.add(id));
-            });
-
             const strungError = error ? '' + error : undefined;
             const result: RunResult = {
                 parameters, output, error: strungError, completed: true, duration, executedBranches
             };
 
-            this.allResults.push(result);
             this.resultByParameters.set(strung, result);
 
+            this.onCompletion(result);
             //  TODO: compare against existing results; generate new inputs if we haven't isolated a split
 
         });
+        return worker;
     }
 
-    drain(timeout=10_000) {
+    async drain(timeout=10_000) {
         const start = Date.now();
         while (this.activeWorkers.size > 0) {
             //  sort of busy waiting
             // console.log(`Waiting with ${activeWorkers.size} active workers`)
-            setTimeout(() => { }, 100);
+            await new Promise((resolve) => setTimeout(resolve, 100));
             if (Date.now() - start > timeout) {
                 console.error(`Timed out waiting for workers to finish`);
                 return;
