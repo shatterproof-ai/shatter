@@ -45,19 +45,21 @@ export class Supervisor {
             filePath: this.executorScriptJS, functionName, parameters, currentWorkerNumber
         };
 
-        console.log(`attempting ${currentWorkerNumber}:${this.executorScriptJS} with workerData = ${JSON.stringify(workerData)}`);
-        const worker = new Worker(this.executorScriptJS, {
-            workerData,
-            env: {
-                // eslint-disable-next-line @typescript-eslint/naming-convention
-                NODE_PATH: this.nodePath.join(':')
-            }
-        });
-
         const strung = JSON.stringify(parameters);
         if (this.attemptedParameters.has(strung)) {
             return;
         }
+
+        const NODE_PATH = this.nodePath.join(':');
+        console.log(`attempting ${currentWorkerNumber}:${this.executorScriptJS} with NODE_PATH ${NODE_PATH} and workerData = ${JSON.stringify(workerData)}`);
+        const worker = new Worker(this.executorScriptJS, {
+            workerData,
+            env: {
+                // eslint-disable-next-line @typescript-eslint/naming-convention
+                NODE_PATH,
+            }
+        });
+        this.activeWorkers.add(worker);
 
         const launched = Date.now();
         const timeoutId = setTimeout(() => {
@@ -83,20 +85,20 @@ export class Supervisor {
 
         worker.on('error', (err) => {
             clearTimeout(timeoutId);
-            // console.log(`Worker ${currentWorkerNumber} for ${functionName} errored ${err}...`);
+            console.log(`Worker ${currentWorkerNumber} for ${functionName} errored ${err}...`);
             worker.terminate();
             this.activeWorkers.delete(worker);
             throw err;
         });
         worker.on('exit', () => {
             clearTimeout(timeoutId);
-            // console.log(`Worker ${currentWorkerNumber} for ${functionName} exiting of ${activeWorkers.size} running...`);
+            console.log(`Worker ${currentWorkerNumber} for ${functionName} exiting of ${this.activeWorkers.size} running...`);
             this.activeWorkers.delete(worker);
             // console.log(`after deleting ${activeWorkers.size}`);
         });
         worker.on('message', (msg) => {
             const { output, error, duration, executedBranches }: { output: any, error: any, duration: number, executedBranches: string[] } = msg;
-            // console.log(`${currentWorkerNumber}  ${functionName} (${JSON.stringify(parameters)}) => ${error ?? JSON.stringify(output)} in ${duration}ms`)
+            console.log(`${currentWorkerNumber}  ${functionName} (${JSON.stringify(parameters)}) => ${error ?? JSON.stringify(output)} in ${duration}ms`)
 
             // console.log(`And executed branches = `)
             const strungError = error ? '' + error : undefined;
@@ -113,8 +115,9 @@ export class Supervisor {
         return worker;
     }
 
-    async drain(timeout=10_000) {
+    async drain(timeout = 10_000) {
         const start = Date.now();
+        console.log("finishied draining")
         while (this.activeWorkers.size > 0) {
             //  sort of busy waiting
             // console.log(`Waiting with ${activeWorkers.size} active workers`)
@@ -124,6 +127,7 @@ export class Supervisor {
                 return;
             }
         }
+        console.log("finishied draining")
     }
 
 }

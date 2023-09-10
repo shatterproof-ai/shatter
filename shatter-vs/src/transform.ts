@@ -5,9 +5,9 @@ import { createId } from '@paralleldrive/cuid2';
 import { FunctionDeclaration } from 'typescript';
 import { join } from 'path';
 
-const instrumentationCallNode = (factory: ts.NodeFactory, id: string) => {
+const instrumentationCallNode = (factory: ts.NodeFactory, id: string, recordFunctionName: string) => {
     return factory.createCallExpression(
-        factory.createIdentifier("record"),
+        factory.createIdentifier(recordFunctionName),
         undefined,
         [factory.createStringLiteral(id)]
     );
@@ -55,6 +55,8 @@ export const instrumentModule = (introspectionContext: IntrospectionContext, sha
 
     return (ctx: ts.TransformationContext) => (sourceFile: SourceFile): SourceFile => {
         const factory = ctx.factory;
+        const recordAlias = factory.createUniqueName("shatterproof_record").text;
+        const executeAlias = factory.createUniqueName("shatterproof_execute").text;
 
         const findExportedFunctionsVisitor = (node: Node): Node => {
             //  declared functions only to start
@@ -88,7 +90,7 @@ export const instrumentModule = (introspectionContext: IntrospectionContext, sha
                 const id = createId();
                 instrumentationContext.knownBranches.set(id, node);
 
-                const instrumentation = instrumentationCallNode(factory, id);
+                const instrumentation = instrumentationCallNode(factory, id, recordAlias);
 
                 const modded = {
                     ...block,
@@ -160,7 +162,7 @@ export const instrumentModule = (introspectionContext: IntrospectionContext, sha
                 }
 
                 const id = createId();
-                const instrumentation = instrumentationCallNode(factory, id);
+                const instrumentation = instrumentationCallNode(factory, id, recordAlias);
                 newStatements.push(instrumentation);
                 referenceStatementIdForInstrumentation = id;
             });
@@ -192,8 +194,6 @@ export const instrumentModule = (introspectionContext: IntrospectionContext, sha
             true
         );
 
-        const recordAlias = factory.createUniqueName("shatterproof_record").text;
-        const executeAlias = factory.createUniqueName("shatterproof_execute").text;
         const invokeExecutionCall = factory.createExpressionStatement(factory.createCallExpression(
             factory.createIdentifier(executeAlias),
             undefined,

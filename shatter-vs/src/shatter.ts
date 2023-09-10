@@ -1,18 +1,28 @@
+import { createHash } from 'crypto';
 import { mkdtempSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import * as ts from 'typescript';
-import { ExecutionContext } from './recorder';
-import { IntrospectionContext, instrumentModule as createInstrumenter } from './transform';
 import { Generator } from './generator';
 import { RunResult, Supervisor } from './supervisor';
+import { IntrospectionContext, instrumentModule as createInstrumenter } from './transform';
 
 export interface ResultCluster {
     key: string
-    branches: Set<string>
+    branches: string[]
     results: RunResult[]
 }
 
+function canonicalClusterKey(result: RunResult) {
+    const branches = new Set(result.executedBranches);
+    const smashed = Array.from(branches).sort().join(".");
+    const shasum = createHash('sha1');
+    shasum.update(smashed);
+    //  distinguish by return condition as well as branches taken
+    shasum.update(result.completed ? 'completed' : 'not completed');
+    shasum.update(result.error ? 'error' : 'no error');
+    return shasum.digest('hex');
+}
 // TODO: iterables and generators, regular expressions, promises, tagged templates, and more
 export type TestArgument = {
     name: string,
@@ -76,7 +86,6 @@ export async function shatterAutotest(modulePaths: string[],
 
     const parameterLists = generator.generateRandom(10);
 
-    let allCovered = false;
     let count = 0;
     const maxIterations = 100;
     const maxTime = 10000;
@@ -85,10 +94,25 @@ export async function shatterAutotest(modulePaths: string[],
     const allExecutedBranches = new Set<string>();
 
     const clusters: ResultCluster[] = [];
-    const onCompletion = (execution: RunResult) => {
-        console.log(`Received result ${JSON.stringify(execution)}`);
+    const clusterMap = new Map<string, ResultCluster>();
+    const onCompletion = (runResult: RunResult) => {
+        console.log(`Received result ${JSON.stringify(runResult)}`);
         // find the appropriate cluster or create it
 
+        const clusterKey = canonicalClusterKey(runResult);
+        if (!clusterMap.has(clusterKey)) {
+            const cluster: ResultCluster = {
+                key: clusterKey,
+                branches: Array.from(new Set(runResult.executedBranches)),
+                results: []
+            };
+            clusters.push(cluster);
+            clusterMap.set(clusterKey, cluster);
+        }
+
+        clusterMap.get(clusterKey)?.results.push(runResult);
+
+        //  TODO: don't do this on every change
         onUpdate(clusters);
 
         // if still need to run, generate and breed more test cases and repeat
@@ -108,7 +132,6 @@ export async function shatterAutotest(modulePaths: string[],
         if (!parameterList) {
             console.error("parameterList is unexpectedly undefined");
             continue;
-
         }
 
         // execute those inputs in worker threads
@@ -121,6 +144,8 @@ export async function shatterAutotest(modulePaths: string[],
         //  save it screenshot
         count++;
     }
+
+    await supervisor.drain();
 }
 
 export function parse(sourceFilePath: string): [ts.Program, ts.SourceFile] {

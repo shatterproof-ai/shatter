@@ -9,18 +9,25 @@ describe('extension', () => {
     it('should pass', async () => {
         const sourceCode = `
         function hello(n:number, msg:string) {
-            if (n == 0) {
+            if (n <= 0) {
                 throw new Error("n must be at least 1");
             }
-            
+        
+            if (n % 1 != 0) {
+                throw new Error("n must be an integer");
+            }
+        
             const pieces:string[] = []
             
             for (let i = 0; i < n; i++) {
+                if (i > 50) {
+                    break;
+                }
                 pieces.push(msg)
             }
-
-            if (i % 2 == 0) {
-                return ", ".join(pieces)
+        
+            if (n % 2 == 0) {
+                return pieces.join(", ")
             }
             return pieces.join("; ")
         }

@@ -1,4 +1,4 @@
-import * as fs from 'fs';
+import * as fs from 'fs';	//TODO: use VSCode fs
 import * as path from 'path';
 import * as vscode from 'vscode';
 import * as ts from 'typescript';
@@ -32,6 +32,12 @@ export function activate(context: vscode.ExtensionContext) {
 					const allNodeModules: string[] = [];
 					const allWorkspaceFolders: string[] = [];
 
+					console.log(`env = ${JSON.stringify(Object.keys(vscode.env))}`)
+					console.log(`vscode.workspace.workspaceFile = ${JSON.stringify(vscode.workspace.workspaceFile)}`)
+					console.log(`vscode.workspace.textDocuments = ${JSON.stringify(vscode.workspace.textDocuments)}`)
+					console.log(`vscode.workspace.rootPath = ${JSON.stringify(vscode.workspace.rootPath)}`)
+					editor.document.fileName;
+
 					vscode.workspace.workspaceFolders?.forEach((folder) => {
 						const found = findFilesInHierarchy(editor.document.fileName, vscode.workspace.rootPath || '', {
 							tsconfig: (filename, stat) => filename.endsWith('tsconfig.json') && stat.isFile(),
@@ -45,9 +51,12 @@ export function activate(context: vscode.ExtensionContext) {
 						allWorkspaceFolders.push(folder.uri.fsPath);
 					});
 
+					throw new Error("Need to figure out how to find module 'shatterproof'")
 					const modulePaths = [...allWorkspaceFolders, ...allNodeModules];
 
-					await shatterAutotest(modulePaths, functionNode, (clusters) => {
+					await shatterAutotest(modulePaths,
+								functionNode.getSourceFile().fileName,
+								functionNode.getText(), (clusters) => {
 						//  update the display, showing up to N (~20) clusters with up to M (~10) test cases each,
 						//  prioritizing the edge cases
 
