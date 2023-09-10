@@ -123,10 +123,6 @@ export function activate(context: vscode.ExtensionContext) {
 					const allNodeModules: string[] = [];
 					const allWorkspaceFolders: string[] = [];
 
-					['shatter', 'shatter-vs', 'shatterproof', 'shatterproof-vs', context.extension.id].forEach((confkey) => {
-						console.log(`configuration ${confkey} = ${JSON.stringify(vscode.workspace.getConfiguration(confkey))}`)
-					})
-
 					vscode.workspace.workspaceFolders?.forEach((folder) => {
 						const found = findFilesInHierarchy(editor.document.fileName, vscode.workspace.rootPath || '', {
 							tsconfig: (filename, stat) => filename.endsWith('tsconfig.json') && stat.isFile(),
