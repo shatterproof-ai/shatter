@@ -11,6 +11,8 @@ export interface RunResult {
     output?: any
     error?: any
     duration: number
+    stdout?: string
+    stderr?: string
 }
 
 const maxWaitForWorkerTime = 10_000;
@@ -56,11 +58,26 @@ export class Supervisor {
         console.log(`attempting ${currentWorkerNumber}:${this.executorScriptJS} with NODE_PATH ${NODE_PATH} and workerData = ${JSON.stringify(workerData)}`);
         const worker = new Worker(this.executorScriptJS, {
             workerData,
+            stdout: true,
+            stderr: true,
             env: {
                 // eslint-disable-next-line @typescript-eslint/naming-convention
                 NODE_PATH,
             }
         });
+
+        worker.stderr.on('data', (data) => {
+            //  TODO: do nothing for now
+        });
+
+        worker.stderr.on('error', () => {
+            //  TODO: maybe this will be useful at some point?
+        });
+
+        worker.stdout.on('data', (data) => {
+            //  TODO: maybe this will be useful at some point?
+        });
+
         this.activeWorkers.add(worker);
 
         const launched = Date.now();
