@@ -5,6 +5,7 @@ import * as vscode from 'vscode';
 import { ResultCluster, shatterAutotest } from './shatter';
 import { RunResult } from './supervisor';
 import { Cluster } from 'cluster';
+import { join } from 'path';
 
 interface ClusterNode {
 	label: string;
@@ -98,6 +99,11 @@ export function activate(context: vscode.ExtensionContext) {
 	const astDataProvider = new ASTTreeDataProvider();
 	vscode.window.registerTreeDataProvider('shatterResultsView', astDataProvider);
 
+	//	TODO: fix the ugly hard-coding of 'src'; that can't be right for a standalone extension
+	//	TODO: just make people import shatterproof module in their projects; don't try to be magical about it
+	//	shatterproof needs an existence outside VSCode anyway
+	const extensionSource = join(context.extensionPath, 'src');
+
 	const disposable = vscode.commands.registerCommand('extension.shatterAutotest', async () => {
 		const editor = vscode.window.activeTextEditor;
 		ts.ScriptSnapshot.fromString('');
@@ -144,7 +150,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 							console.log(`refreshing function node to display = ${functionNode.name?.text}`);
 							astDataProvider.refresh(treeNodes);
-						});
+						}, extensionSource);
 
 				} else {
 					console.log(`function node not found`);
