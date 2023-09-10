@@ -11,27 +11,81 @@ interface ClusterNode {
 	children?: ClusterNode[];
 }
 
-function runResultToClusterNode(result: RunResult): ClusterNode {
+function runResultToClusterNode(prefix: string, result: RunResult): ClusterNode {
 	const strung = JSON.stringify(result.parameters)
+	const maxlength = 35;
 	return {
 		//	TODO: convert the parameter list into nodes
-		label: `${strung.substring(0, 35)}`,
+		label: `${prefix} (${result.duration}ms), input = ${strung.substring(0, maxlength)}${strung.length > maxlength ? '...' : ''}`,
+		children: clusterValues(result.parameters),
 	}
 }
 
+function visit(k: string | number, o: any, depth=0): ClusterNode {
+	if (depth == 0) {
+		return {
+			label: "...",
+		}
+	}
+
+	const key = typeof k == 'number' ? `[${k}]` : `"${k}"`
+	if (o === null) {
+		return {
+			label: `${key}: null`,
+		}
+	}
+	if (o === undefined) {
+		return {
+			label: `${key}: undefined`,
+		}
+	}
+	if (typeof o === 'object') {
+		if (Array.isArray(o)) {
+			return {
+				label: key,
+				children: o.map((v, i) => visit(i, v, depth - 1)),
+			}
+		}
+		const keys = Object.keys(o)
+		const children = keys.map((k) => visit(k, o[k], depth - 1))
+		return {
+			label: key,
+			children,
+		}
+	}
+	return {
+		label: `${key}: ${o}`,
+	}
+}
+
+function clusterValues(params: any[]): ClusterNode[] {
+	const nodes: ClusterNode[] = params.map((p, i) => visit(i, p, 3))
+	return nodes
+}
+
 function createClusterNodes(clusters: ResultCluster[]): ClusterNode[] {
+	const nf = Intl.NumberFormat("en-US", {
+		style: 'decimal',
+		maximumSignificantDigits: 3,
+	})
+
 	const clusterNodes: ClusterNode[] = clusters.map((cluster) => {
 		const children: ClusterNode[] = [
-			runResultToClusterNode(cluster.results[0])
+			{
+				label: `${cluster.results.length} attempts, average ${nf.format(cluster.totalTime / cluster.results.length)}ms`,
+			},
 		]
 
-		//	TODO: add more children not just low and high
-		if (cluster.results.length > 1) {
-			children.push(runResultToClusterNode(cluster.results[cluster.results.length - 1]))
+		const step = Math.max(1, Math.floor(cluster.results.length / 10))
+		//	get a node at the start then approximately each decile (if at least 10) but definitely not the last one
+		for (let i = 0; i < cluster.results.length - 2; i += step) {
+			children.push(runResultToClusterNode(`p${Math.round(100 * i / cluster.results.length)}`, cluster.results[i]))
 		}
+		children.push(runResultToClusterNode(`p100`, cluster.results[cluster.results.length - 1]))
 
+		const label = `${cluster.key.substring(0, 6)}: ${cluster.outcome} (${cluster.results.length} trials)`
 		const clusterNode: ClusterNode = {
-			label: cluster.key,
+			label,
 			children,
 		};
 
@@ -63,11 +117,9 @@ export function activate(context: vscode.ExtensionContext) {
 					const allNodeModules: string[] = [];
 					const allWorkspaceFolders: string[] = [];
 
-					console.log(`configuration = ${JSON.stringify(vscode.workspace.getConfiguration('shatter'))}`)
-					console.log(`configuration = ${JSON.stringify(vscode.workspace.getConfiguration('shatter-vs'))}`)
-					console.log(`configuration = ${JSON.stringify(vscode.workspace.getConfiguration('shatterproof'))}`)
-					console.log(`configuration = ${JSON.stringify(vscode.workspace.getConfiguration('shatterproof-vs'))}`)
-					console.log(`configuration = ${JSON.stringify(vscode.workspace.getConfiguration(context.extension.id))}`)
+					['shatter', 'shatter-vs', 'shatterproof', 'shatterproof-vs', context.extension.id].forEach((confkey) => {
+						console.log(`configuration ${confkey} = ${JSON.stringify(vscode.workspace.getConfiguration(confkey))}`)
+					})
 
 					vscode.workspace.workspaceFolders?.forEach((folder) => {
 						const found = findFilesInHierarchy(editor.document.fileName, vscode.workspace.rootPath || '', {
@@ -191,24 +243,20 @@ class ASTTreeDataProvider implements vscode.TreeDataProvider<ClusterNode> {
 	// Get the children of a tree node.
 	getChildren(element?: ClusterNode): Thenable<ClusterNode[]> {
 		if (!element) {
-			console.log(`element is undefined; returning roots, which has ${this.roots?.length} children`);
-			// Return the root node if element is undefined.
+			// Return the root nodes if element is undefined as that indicates the beginning of traversal
 			return Promise.resolve(this.roots ? this.roots : []);
 		}
 		const children = element.children || [];
-		console.log(`returning children of ${element.label} = ${children.length}`);
 		return Promise.resolve(children);
 	}
 
 	// Get the parent of a tree node.
 	getParent(element: ClusterNode): ClusterNode | null {
-		console.log(`getParent called for ${element.label}`);
 		return null; // We're not using parent-child relationships.
 	}
 
 	// Get the tree item for a node.
 	getTreeItem(element: ClusterNode): vscode.TreeItem {
-		console.log(`getTreeItem called for ${element.label}`);
 		const treeItem = new vscode.TreeItem(element.label);
 		treeItem.collapsibleState = element.children ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None;
 		//	TODO: tooltip should be expanded (but still bounded) parameter list

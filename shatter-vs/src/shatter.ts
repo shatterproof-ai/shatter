@@ -12,6 +12,7 @@ export interface ResultCluster {
     branches: string[]
     results: RunResult[]
     outcome: Outcome
+    totalTime: number
 }
 
 function canonicalClusterKey(result: RunResult) {
@@ -101,7 +102,8 @@ export async function shatterAutotest(modulePaths: string[],
         // find the appropriate cluster or create it
 
         const clusterKey = canonicalClusterKey(runResult);
-        if (!clusterMap.has(clusterKey)) {
+        let cluster = clusterMap.get(clusterKey);
+        if (!cluster) {
             const outcome = ((): Outcome => {
                 if (runResult.completed) {
                     if (runResult.error) {
@@ -112,17 +114,19 @@ export async function shatterAutotest(modulePaths: string[],
                 return 'timeout'
             })()
 
-            const cluster: ResultCluster = {
+            cluster = {
                 key: clusterKey,
                 branches: Array.from(new Set(runResult.executedBranches)),
                 outcome,
-                results: []
+                results: [],
+                totalTime: 0,
             };
             clusters.push(cluster);
             clusterMap.set(clusterKey, cluster);
         }
 
-        clusterMap.get(clusterKey)?.results.push(runResult);
+        cluster.results.push(runResult);
+        cluster.totalTime += runResult.duration;
 
         //  TODO: don't do this on every change
 

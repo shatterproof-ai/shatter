@@ -70,7 +70,7 @@ export class Supervisor {
                 //  in case timeout hasn't been cleared for some reason
                 return;
             }
-            const elapsed = timedOut - launched;
+            const duration = timedOut - launched;
             // console.log(`Timeout after ${elapsed} ms of ${currentWorkerNumber} with workerData = ${JSON.stringify(workerData)}`)
             worker.terminate();
             this.activeWorkers.delete(worker);
@@ -78,7 +78,7 @@ export class Supervisor {
             //  TODO: do overwrite if the previous run timed out, but limit the number of times
             if (!this.resultByParameters.has(strung)) {
                 const result:RunResult = {
-                    parameters, output: undefined, completed: false, duration: -1, executedBranches: [], outcome: 'timeout',
+                    parameters, output: undefined, completed: false, duration, executedBranches: [], outcome: 'timeout',
                 };
                 this.resultByParameters.set(strung, result);
                 this.onCompletion(result);
