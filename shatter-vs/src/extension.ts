@@ -1,11 +1,46 @@
-import * as fs from 'fs';	//TODO: use VSCode fs
+import * as fs from 'fs'; //TODO: use VSCode fs
 import * as path from 'path';
-import * as vscode from 'vscode';
 import * as ts from 'typescript';
-import { shatterAutotest } from './shatter';
+import * as vscode from 'vscode';
+import { ResultCluster, shatterAutotest } from './shatter';
+import { RunResult } from './supervisor';
+import { Cluster } from 'cluster';
+
+interface ClusterNode {
+	label: string;
+	children?: ClusterNode[];
+}
+
+function runResultToClusterNode(result: RunResult): ClusterNode {
+	const strung = JSON.stringify(result.parameters)
+	return {
+		//	TODO: convert the parameter list into nodes
+		label: `${strung.substring(0, 35)}`,
+	}
+}
+
+function createClusterNodes(clusters: ResultCluster[]): ClusterNode[] {
+	const clusterNodes: ClusterNode[] = clusters.map((cluster) => {
+		const children: ClusterNode[] = [
+			runResultToClusterNode(cluster.results[0])
+		]
+
+		//	TODO: add more children not just low and high
+		if (cluster.results.length > 1) {
+			children.push(runResultToClusterNode(cluster.results[cluster.results.length - 1]))
+		}
+
+		const clusterNode: ClusterNode = {
+			label: cluster.key,
+			children,
+		};
+
+		return clusterNode;
+	})
+	return clusterNodes
+}
 
 export function activate(context: vscode.ExtensionContext) {
-	console.log(`activationing`);
 	const astDataProvider = new ASTTreeDataProvider();
 	vscode.window.registerTreeDataProvider('shatterResultsView', astDataProvider);
 
@@ -14,29 +49,25 @@ export function activate(context: vscode.ExtensionContext) {
 		ts.ScriptSnapshot.fromString('');
 		//	TODOTODO: initialize empty results sidebar
 
-		console.log(`languageId = ${editor?.document.languageId}`);
-
 		if (editor && editor.document.languageId === 'typescript') {
 			const selection = editor.selection;
 			const cursorPosition = selection.active;
 			const document = editor.document;
 
-			console.log(`cursorPosition = ${cursorPosition.line} ${cursorPosition.character}`);
 			if (isCursorInFunctionName(cursorPosition, document, editor)) {
 				const functionNode = getFunctionNodeAtCursor(cursorPosition, document);
 
 				if (functionNode && ts.isFunctionDeclaration(functionNode)) {
-
 					const allTsConfigs: string[] = [];
 					const allPackageJsons: string[] = [];
 					const allNodeModules: string[] = [];
 					const allWorkspaceFolders: string[] = [];
 
-					console.log(`env = ${JSON.stringify(Object.keys(vscode.env))}`)
-					console.log(`vscode.workspace.workspaceFile = ${JSON.stringify(vscode.workspace.workspaceFile)}`)
-					console.log(`vscode.workspace.textDocuments = ${JSON.stringify(vscode.workspace.textDocuments)}`)
-					console.log(`vscode.workspace.rootPath = ${JSON.stringify(vscode.workspace.rootPath)}`)
-					editor.document.fileName;
+					console.log(`configuration = ${JSON.stringify(vscode.workspace.getConfiguration('shatter'))}`)
+					console.log(`configuration = ${JSON.stringify(vscode.workspace.getConfiguration('shatter-vs'))}`)
+					console.log(`configuration = ${JSON.stringify(vscode.workspace.getConfiguration('shatterproof'))}`)
+					console.log(`configuration = ${JSON.stringify(vscode.workspace.getConfiguration('shatterproof-vs'))}`)
+					console.log(`configuration = ${JSON.stringify(vscode.workspace.getConfiguration(context.extension.id))}`)
 
 					vscode.workspace.workspaceFolders?.forEach((folder) => {
 						const found = findFilesInHierarchy(editor.document.fileName, vscode.workspace.rootPath || '', {
@@ -51,19 +82,17 @@ export function activate(context: vscode.ExtensionContext) {
 						allWorkspaceFolders.push(folder.uri.fsPath);
 					});
 
-					throw new Error("Need to figure out how to find module 'shatterproof'")
+					// throw new Error("Need to figure out how to find module 'shatterproof'")
 					const modulePaths = [...allWorkspaceFolders, ...allNodeModules];
 
 					await shatterAutotest(modulePaths,
-								functionNode.getSourceFile().fileName,
-								functionNode.getText(), (clusters) => {
-						//  update the display, showing up to N (~20) clusters with up to M (~10) test cases each,
-						//  prioritizing the edge cases
+						functionNode.getSourceFile().fileName,
+						functionNode.getText(), (clusters) => {
+							const treeNodes = createClusterNodes(clusters)
 
-						const astNode = createASTNode(functionNode);
-						console.log(`refreshing function node to display = ${functionNode.name?.text}`);
-						astDataProvider.refresh(astNode);
-					});
+							console.log(`refreshing function node to display = ${functionNode.name?.text}`);
+							astDataProvider.refresh(treeNodes);
+						});
 
 				} else {
 					console.log(`function node not found`);
@@ -77,7 +106,6 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(disposable);
 
 	const disposableContextMenu = vscode.commands.registerCommand('extension.shatterAutotestContext', () => {
-		console.log(`extension.shatterAutotestContext command registered`);
 		vscode.commands.executeCommand('extension.shatterAutotest');
 	});
 
@@ -113,8 +141,6 @@ function getFunctionNodeAtCursor(cursorPosition: vscode.Position, document: vsco
 	const sourceCode = document.getText();
 	const sourceFile = ts.createSourceFile(document.fileName, sourceCode, ts.ScriptTarget.Latest, true);
 
-	console.log(`sourceFile = ${sourceFile}`);
-
 	function findFunction(node: ts.Node): ts.Node | undefined {
 		if (node.kind === ts.SyntaxKind.FunctionDeclaration || node.kind === ts.SyntaxKind.MethodDeclaration) {
 			const functionNode = node as ts.FunctionDeclaration | ts.MethodDeclaration;
@@ -140,41 +166,34 @@ function getFunctionNodeAtCursor(cursorPosition: vscode.Position, document: vsco
 
 export function deactivate() { }
 
-// Define a data structure to represent AST nodes.
-interface ASTNode {
-	label: string;
-	kind: ts.SyntaxKind;
-	line: number;
-	children?: ASTNode[];
-}
 
 // Define a custom TreeDataProvider for the AST.
-class ASTTreeDataProvider implements vscode.TreeDataProvider<ASTNode> {
-	private _onDidChangeTreeData: vscode.EventEmitter<ASTNode | undefined | void> = new vscode.EventEmitter<ASTNode | undefined>();
-	readonly onDidChangeTreeData: vscode.Event<ASTNode | undefined | void> = this._onDidChangeTreeData.event;
+class ASTTreeDataProvider implements vscode.TreeDataProvider<ClusterNode> {
+	private _onDidChangeTreeData: vscode.EventEmitter<ClusterNode | undefined | void> = new vscode.EventEmitter<ClusterNode | undefined>();
+	readonly onDidChangeTreeData: vscode.Event<ClusterNode | undefined | void> = this._onDidChangeTreeData.event;
 
-	private ast: ASTNode | undefined;
+	private roots: ClusterNode[] | undefined;
 
-	// Initialize with an empty AST.
+	// Initialize empty
 	constructor() {
-		this.ast = undefined;
+		this.roots = undefined;
 	}
 
 	// Refresh the AST and notify the tree view.
-	refresh(ast: ASTNode | undefined) {
-		this.ast = ast;
+	refresh(roots: ClusterNode[] | undefined) {
+		this.roots = roots;
 
-		console.log(`firing onchange with ${JSON.stringify(ast)}}`);
+		console.log(`firing onchange with ${JSON.stringify(roots)}}`);
 
 		this._onDidChangeTreeData.fire();
 	}
 
 	// Get the children of a tree node.
-	getChildren(element?: ASTNode): Thenable<ASTNode[]> {
+	getChildren(element?: ClusterNode): Thenable<ClusterNode[]> {
 		if (!element) {
-			console.log(`element is undefined; returning root, which has ${this.ast?.children?.length} children`);
+			console.log(`element is undefined; returning roots, which has ${this.roots?.length} children`);
 			// Return the root node if element is undefined.
-			return Promise.resolve(this.ast ? [this.ast] : []);
+			return Promise.resolve(this.roots ? this.roots : []);
 		}
 		const children = element.children || [];
 		console.log(`returning children of ${element.label} = ${children.length}`);
@@ -182,35 +201,20 @@ class ASTTreeDataProvider implements vscode.TreeDataProvider<ASTNode> {
 	}
 
 	// Get the parent of a tree node.
-	getParent(element: ASTNode): ASTNode | null {
+	getParent(element: ClusterNode): ClusterNode | null {
 		console.log(`getParent called for ${element.label}`);
 		return null; // We're not using parent-child relationships.
 	}
 
 	// Get the tree item for a node.
-	getTreeItem(element: ASTNode): vscode.TreeItem {
+	getTreeItem(element: ClusterNode): vscode.TreeItem {
 		console.log(`getTreeItem called for ${element.label}`);
 		const treeItem = new vscode.TreeItem(element.label);
 		treeItem.collapsibleState = element.children ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None;
-		treeItem.tooltip = `Line ${element.line}`;
+		//	TODO: tooltip should be expanded (but still bounded) parameter list
+		treeItem.tooltip = element.label;
 		return treeItem;
 	}
-}
-
-function createASTNode(node: ts.Node): ASTNode {
-	const start = ts.getLineAndCharacterOfPosition(node.getSourceFile(), node.getStart());
-	const end = ts.getLineAndCharacterOfPosition(node.getSourceFile(), node.getEnd());
-
-	const text = node?.getChildren()?.length == 0 ? `: ${node.getText()}` : '';
-
-	const label = `${ts.SyntaxKind[node.kind]}:${start.line + 1}:${start.character} - ${end.line + 1}-${end.character}${text}`;
-
-	return {
-		label,
-		kind: node.kind,
-		line: start.line + 1,
-		children: node.getChildren().map(createASTNode),
-	};
 }
 
 function findFilesInHierarchy<K extends string>(

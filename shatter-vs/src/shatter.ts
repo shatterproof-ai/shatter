@@ -4,13 +4,14 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import * as ts from 'typescript';
 import { Generator } from './generator';
-import { RunResult, Supervisor } from './supervisor';
+import { Outcome, RunResult, Supervisor } from './supervisor';
 import { IntrospectionContext, instrumentModule as createInstrumenter } from './transform';
 
 export interface ResultCluster {
     key: string
     branches: string[]
     results: RunResult[]
+    outcome: Outcome
 }
 
 function canonicalClusterKey(result: RunResult) {
@@ -101,9 +102,20 @@ export async function shatterAutotest(modulePaths: string[],
 
         const clusterKey = canonicalClusterKey(runResult);
         if (!clusterMap.has(clusterKey)) {
+            const outcome = ((): Outcome => {
+                if (runResult.completed) {
+                    if (runResult.error) {
+                        return 'error'
+                    }
+                    return 'completed'
+                }
+                return 'timeout'
+            })()
+
             const cluster: ResultCluster = {
                 key: clusterKey,
                 branches: Array.from(new Set(runResult.executedBranches)),
+                outcome,
                 results: []
             };
             clusters.push(cluster);
@@ -113,6 +125,27 @@ export async function shatterAutotest(modulePaths: string[],
         clusterMap.get(clusterKey)?.results.push(runResult);
 
         //  TODO: don't do this on every change
+
+        const preferredOutcomeOrder: Outcome[] = ['failed', 'error', 'timeout', 'completed']
+        clusters.sort((a, b) => {
+            if (a.outcome == b.outcome) {
+                if (a.branches.length == b.branches.length) {
+                    if (a.results.length == b.results.length) {
+                        return a.key.localeCompare(b.key)
+                    }
+                    return a.results.length - b.results.length
+                }
+                return a.branches.length - b.branches.length
+            }
+            return preferredOutcomeOrder.findIndex((s) => s == a.outcome) - preferredOutcomeOrder.findIndex((s) => s == b.outcome)
+        })
+
+        clusters.forEach(cluster => {
+            cluster.results.sort((a, b) =>
+                JSON.stringify(a.parameters).localeCompare(JSON.stringify(b.parameters))
+            )
+        })
+
         onUpdate(clusters);
 
         // if still need to run, generate and breed more test cases and repeat
@@ -126,7 +159,6 @@ export async function shatterAutotest(modulePaths: string[],
         && parameterLists.length > 0
         && count < maxIterations
         && Date.now() - startTime < maxTime) {
-
 
         const parameterList = parameterLists.pop();
         if (!parameterList) {

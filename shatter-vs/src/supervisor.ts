@@ -1,11 +1,13 @@
 import { Worker } from 'worker_threads';
-import { IntrospectionContext } from './transform';
 
+export const Outcomes = ['completed', 'error', 'timeout', 'failed'] as const
+export type Outcome = typeof Outcomes[number]
 
 export interface RunResult {
     parameters: any[]
     executedBranches: string[]
     completed: boolean
+    outcome: Outcome
     output?: any
     error?: any
     duration: number
@@ -75,20 +77,32 @@ export class Supervisor {
             //  don't overwrite a previous run
             //  TODO: do overwrite if the previous run timed out, but limit the number of times
             if (!this.resultByParameters.has(strung)) {
-                const result = {
-                    parameters, output: undefined, completed: false, duration: -1, executedBranches: []
+                const result:RunResult = {
+                    parameters, output: undefined, completed: false, duration: -1, executedBranches: [], outcome: 'timeout',
                 };
                 this.resultByParameters.set(strung, result);
                 this.onCompletion(result);
             }
         }, this.timeLimit);
 
-        worker.on('error', (err) => {
+        worker.on('error', (error) => {
             clearTimeout(timeoutId);
-            console.log(`Worker ${currentWorkerNumber} for ${functionName} errored ${err}...`);
+            console.log(`Worker ${currentWorkerNumber} for ${functionName} errored ${error}...`);
             worker.terminate();
             this.activeWorkers.delete(worker);
-            throw err;
+
+            const duration = Date.now() - launched;
+            //  TODO: 
+            const strungError = error ? '' + error : undefined;
+            const result: RunResult = {
+                parameters, error: strungError, completed: false, duration, executedBranches: [], outcome: 'failed',
+            };
+
+            this.resultByParameters.set(strung, result);
+
+            this.onCompletion(result);
+ 
+            throw error;
         });
         worker.on('exit', () => {
             clearTimeout(timeoutId);
@@ -103,7 +117,7 @@ export class Supervisor {
             // console.log(`And executed branches = `)
             const strungError = error ? '' + error : undefined;
             const result: RunResult = {
-                parameters, output, error: strungError, completed: true, duration, executedBranches
+                parameters, output, error: strungError, completed: true, duration, executedBranches, outcome: error ? 'error' : 'completed',
             };
 
             this.resultByParameters.set(strung, result);

@@ -22,10 +22,16 @@ export async function execute(functions: Record<string, Function>) {
         let output: any = undefined;
         let error: any = undefined;
         try {
-
             output = f.call(null, ...parameters);
             console.log(`${currentWorkerNumber} ${functionName} (${JSON.stringify(parameters)}) => ${JSON.stringify(output)}`);
         } catch (e) {
+            /* 
+            TODO: how to differentiate between types of error
+            * well-functioning code, e.g. validation
+            * likely bug, e.g. attempting to dereference undefined
+            * serious error, e.g. stack overflow
+            * crash the VM, e.g. out of memory error
+            */
             error = e;
             console.log(`${currentWorkerNumber} ${functionName} (${JSON.stringify(parameters)}) threw ${e}`);
         } finally {

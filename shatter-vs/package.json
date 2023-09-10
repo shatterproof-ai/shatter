@@ -26,6 +26,18 @@
         }
       ]
     },
+    "configuration": [
+      {
+        "title": "Shatterproof",
+        "properties": {
+          "shatterproof.moduleDirectory": {
+            "type": "string",
+            "default": "",
+            "description": "The directory where shatter modules are stored."
+          }
+        }
+      }
+    ],
     "views": {
       "explorer": [
         {
