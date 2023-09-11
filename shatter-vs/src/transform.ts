@@ -70,11 +70,13 @@ export const instrumentModule = (introspectionContext: IntrospectionContext, sha
             return ts.visitEachChild(node, findExportedFunctionsVisitor, ctx);
         };
 
+        //  TODO: generify this so that the type that comes in is the type that goes out to avoid casting
         const instrumentingVisitor = (node: Node): Node => {
             //  TODO: instrument throws statements as those are sneaking branches (call throws exception vs. not)
             //  TODO: instrument catch blocks and finally blocks for the same reason
             //  TODO: instrument return statements as well
-            const instrumentConditionalClause = (factory: ts.NodeFactory, instrumentationContext: IntrospectionContext, node: Node) => {
+            //  TODO: generify this so that the type that comes in is the type that goes out to avoid casting
+            const instrumentClause = (factory: ts.NodeFactory, instrumentationContext: IntrospectionContext, node: Node) => {
                 if (!ts.isBlock(node) && !ts.isStatement(node)) {
                     const nodeKind = ts.SyntaxKind[node.kind];
                     console.log(`unexpectedly a ${nodeKind}; doing nothing`);
@@ -104,10 +106,33 @@ export const instrumentModule = (introspectionContext: IntrospectionContext, sha
                 return modded;
             };
 
+            //  export all functions - TODO: this may create conflicts.  A cheat would be to add an exported magic function that just does dispatch
+            //  Currently DOES NOT WORK, but is it even necessary?  seems unnecessary in the extension.test.ts
+            if (ts.isFunctionDeclaration(node)) {
+                const exportModifier = node.modifiers?.find(modifier => modifier.kind === ts.SyntaxKind.ExportKeyword);
+                if (!exportModifier) {
+                    if (node.parent === node.getSourceFile()) { //  this means it's a top level function
+                        const modifiers = [...node.modifiers ?? []];
+                        const newExportModifier = factory.createModifier(ts.SyntaxKind.ExportKeyword);
+                        modifiers.push(newExportModifier);
+                        factory.updateFunctionDeclaration(
+                            node,
+                            modifiers,
+                            node.asteriskToken,
+                            node.name,
+                            node.typeParameters,
+                            node.parameters,
+                            node.type,
+                            node.body
+                        );
+                    }
+                }
+            }
+
             if (ts.isIfStatement(node)) {
-                const thenStatement = instrumentConditionalClause(factory, introspectionContext, node.thenStatement);
+                const thenStatement = instrumentClause(factory, introspectionContext, node.thenStatement);
                 const elseStatement = node.elseStatement
-                    ? instrumentConditionalClause(factory, introspectionContext, node.elseStatement)
+                    ? instrumentClause(factory, introspectionContext, node.elseStatement)
                     : undefined;
 
                 const newIfNode = {
@@ -117,6 +142,47 @@ export const instrumentModule = (introspectionContext: IntrospectionContext, sha
                 };
 
                 return newIfNode;
+            }
+
+            if (ts.isIterationStatement(node, false)) {
+                // const newStatement:ts.Statement = instrumentingVisitor(node.statement) as ts.Statement;
+                const newStatement: ts.Statement = instrumentClause(factory, introspectionContext, node.statement) as ts.Statement;
+                const newIterationNode: ts.IterationStatement = {
+                    ...node,
+                    statement: newStatement,
+                };
+                return newIterationNode;
+            }
+
+            if (ts.isSwitchStatement(node)) {
+                const newClauses =
+                    node.caseBlock.clauses.map(clause => {
+                        const newStatements = (():(ts.Statement|ts.Node)[] => {
+                            if (clause.statements.length === 0) {
+                                //  create block with just instrumentation in it
+                                return [instrumentClause(factory, introspectionContext, factory.createBlock([]))];
+                            }
+                            return clause.statements
+                            .map(statement => instrumentClause(factory, introspectionContext, statement));
+                        })() as ts.Statement[]; //  TODO: the cast is no bueno
+
+                        const newClause: ts.CaseOrDefaultClause = {
+                            ...clause,
+                            statements: factory.createNodeArray(newStatements),
+                        };
+                        return newClause;
+                    });
+
+                //  TODO: in some places the node is replaced, in others it's updated.
+                //  Make that either consistent or describe why each case should go one way or the other
+                const newSwitch: ts.SwitchStatement = {
+                    ...node,
+                    caseBlock: {
+                        ...node.caseBlock,
+                        clauses: factory.createNodeArray(newClauses),
+                    },
+                };
+                return newSwitch;
             }
 
             const visiteded = ts.visitEachChild(node, instrumentingVisitor, ctx);
