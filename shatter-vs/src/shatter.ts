@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { mkdtempSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import * as ts from 'typescript';
@@ -13,6 +13,16 @@ export interface ResultCluster {
     results: RunResult[]
     outcome: Outcome
     totalTime: number
+}
+
+function sha1(value: string, options?: { salt?: string, maxLength?: number }): string {
+    const shasum = createHash('sha1');
+    shasum.update(value);
+    if (options?.salt) {
+        shasum.update(options.salt);
+    }
+    const hexed = shasum.digest('hex');
+    return hexed.substring(0, options?.maxLength ?? 40);
 }
 
 function canonicalClusterKey(result: RunResult) {
@@ -55,6 +65,7 @@ export type TestArgument = {
 //  TODO: make sure the source file is saved before running
 export async function shatterAutotest(modulePaths: string[],
     inputFile: string,
+    storageBaseDirectory: string | undefined,
     functionName: string,
     onUpdate: (clusters: ResultCluster[]) => void,
     shatterproofModuleOverride?: string
@@ -69,7 +80,7 @@ export async function shatterAutotest(modulePaths: string[],
     const [instrumented, executorScriptJs, introspectionContext] = writeInstrumented(sourceFile, shatterproofModuleOverride);
     // instrospect function and generate a set of candidate inputs
 
-    console.log(`created ${instrumented} compiled to ${executorScriptJs}`);
+    console.log(`created ${instrumented} compiled to ${executorScriptJs} with storageBaseDirectory = ${storageBaseDirectory}`);
 
     let body = null;
     for (let i = 0; i < functionDeclarationNode.getChildCount(); i++) {
@@ -97,65 +108,54 @@ export async function shatterAutotest(modulePaths: string[],
 
     const clusters: ResultCluster[] = [];
     const clusterMap = new Map<string, ResultCluster>();
-    const onCompletion = (runResult: RunResult) => {
+
+    const onResult = (runResult: RunResult) => {
         console.log(`Received result ${JSON.stringify(runResult)}`);
         // find the appropriate cluster or create it
 
-        const clusterKey = canonicalClusterKey(runResult);
-        let cluster = clusterMap.get(clusterKey);
-        if (!cluster) {
-            const outcome = ((): Outcome => {
-                if (runResult.completed) {
-                    if (runResult.error) {
-                        return 'error';
-                    }
-                    return 'completed';
-                }
-                return 'timeout';
-            })();
-
-            cluster = {
-                key: clusterKey,
-                branches: Array.from(new Set(runResult.executedBranches)),
-                outcome,
-                results: [],
-                totalTime: 0,
-            };
-            clusters.push(cluster);
-            clusterMap.set(clusterKey, cluster);
-        }
-
-        cluster.results.push(runResult);
-        cluster.totalTime += runResult.duration;
-
-        //  TODO: don't do this on every change
-
-        const preferredOutcomeOrder: Outcome[] = ['failed', 'error', 'timeout', 'completed'];
-        clusters.sort((a, b) => {
-            if (a.outcome === b.outcome) {
-                if (a.branches.length === b.branches.length) {
-                    if (a.results.length === b.results.length) {
-                        return a.key.localeCompare(b.key);
-                    }
-                    return a.results.length - b.results.length;
-                }
-                return a.branches.length - b.branches.length;
-            }
-            return preferredOutcomeOrder.findIndex((s) => s === a.outcome) - preferredOutcomeOrder.findIndex((s) => s === b.outcome);
-        });
-
-        clusters.forEach(cluster => {
-            cluster.results.sort((a, b) =>
-                JSON.stringify(a.parameters).localeCompare(JSON.stringify(b.parameters))
-            );
-        });
+        updateClusters(runResult, clusterMap, clusters);
 
         onUpdate(clusters);
 
+        type Branch = { key: string, node: ts.Node }
         // if still need to run, generate and breed more test cases and repeat
+        if (allExecutedBranches.size < introspectionContext.knownBranches.size) {
+            const unreachedInOrder: Branch[] = [];
+            for (const entry of introspectionContext.knownBranches.entries()) {
+                if (!allExecutedBranches.has(entry[0])) {
+                    unreachedInOrder.push({
+                        key: entry[0],
+                        node: entry[1],
+                    });
+                }
+            }
+
+
+            unreachedInOrder.sort((a, b) => a.node.pos - b.node.pos);
+            const firstUnreached = unreachedInOrder[0];
+
+            let lastExecutedBranch: Branch | null = null;
+            if (firstUnreached.node.parent) {
+                for (let i = 0; i < firstUnreached.node.parent.getChildCount(); i++) {
+                    const currentChild = unreachedInOrder[0].node.parent.getChildAt(i);
+                    if (currentChild === firstUnreached.node) {
+                        break;
+                    }
+                    // lastExecutedBranch = currentChild;
+                }
+            } else {
+                console.log(`firstUnreached.node.parent is null: ${firstUnreached.node.pos} - ${firstUnreached.node.end}`);
+            }
+
+            clusters.forEach(cluster => {
+                // cluster.branches.includes(firstUnreached.getText())
+            })
+        }
+
+
     };
 
-    const supervisor = new Supervisor(modulePaths, executorScriptJs, onCompletion, 15);
+    const supervisor = new Supervisor(modulePaths, executorScriptJs, onResult, 15);
     console.log(`tryna allExecutedBranches.size = ${allExecutedBranches.size
         }, introspectionContext.knownBranches.size = ${introspectionContext.knownBranches.size
         }, parameterLists.length = ${parameterLists.length}`);
@@ -173,7 +173,6 @@ export async function shatterAutotest(modulePaths: string[],
         // execute those inputs in worker threads
         const worker = await supervisor.launchWorker(functionDeclarationNode.name?.getText() ?? '', parameterList.parameters);
 
-        // TODO: save the test cases, results, and clusters to some directory
         // TODO: if the function under test is a react component
         //  launch a headless browser
         //  capture a screenshot for each represented test case
@@ -182,6 +181,87 @@ export async function shatterAutotest(modulePaths: string[],
     }
 
     await supervisor.drain();
+
+    if (storageBaseDirectory) {
+        saveClusters(inputFile, storageBaseDirectory, functionName, clusters);
+    }
+}
+
+function updateClusters(runResult: RunResult, clusterMap: Map<string, ResultCluster>, clusters: ResultCluster[]) {
+    const clusterKey = canonicalClusterKey(runResult);
+    let cluster = clusterMap.get(clusterKey);
+    if (!cluster) {
+        const outcome = ((): Outcome => {
+            if (runResult.completed) {
+                if (runResult.error) {
+                    return 'error';
+                }
+                return 'completed';
+            }
+            return 'timeout';
+        })();
+
+        cluster = {
+            key: clusterKey,
+            branches: Array.from(new Set(runResult.executedBranches)),
+            outcome,
+            results: [],
+            totalTime: 0,
+        };
+        clusters.push(cluster);
+        clusterMap.set(clusterKey, cluster);
+    }
+
+    cluster.results.push(runResult);
+    cluster.totalTime += runResult.duration;
+
+    //  TODO: don't do this on every change
+    sortClusters(clusters);
+}
+
+function sortClusters(clusters: ResultCluster[]) {
+    const preferredOutcomeOrder: Outcome[] = ['failed', 'error', 'timeout', 'completed'];
+    clusters.sort((a, b) => {
+        if (a.outcome === b.outcome) {
+            if (a.branches.length === b.branches.length) {
+                if (a.results.length === b.results.length) {
+                    return a.key.localeCompare(b.key);
+                }
+                return a.results.length - b.results.length;
+            }
+            return a.branches.length - b.branches.length;
+        }
+        return preferredOutcomeOrder.findIndex((s) => s === a.outcome) - preferredOutcomeOrder.findIndex((s) => s === b.outcome);
+    });
+
+    clusters.forEach(cluster => {
+        cluster.results.sort((a, b) =>
+            JSON.stringify(a.parameters).localeCompare(JSON.stringify(b.parameters))
+        );
+    });
+}
+
+function saveClusters(inputFile: string, storageBaseDirectory: string, functionName: string, clusters: ResultCluster[]) {
+    const inputFileHash = sha1(inputFile);
+    const clusterStorageDirectory = join(storageBaseDirectory, 'clusters', inputFileHash, functionName);
+
+    mkdirSync(clusterStorageDirectory, { recursive: true });
+
+    //  save every cluster
+    for (const cluster of clusters) {
+        const clusterStorageFile = join(clusterStorageDirectory, `${cluster.key}.json`);
+
+        //  TODO: actually filter in some meaningful way
+        const notableResults = cluster.results;
+        const clusterToWrite = {
+            ...cluster,
+            results: notableResults,
+        };
+
+        //  TODO: merge with what exists
+        //  TODO: avoid filling the drive
+        writeFileSync(clusterStorageFile, JSON.stringify(cluster, null, 2));
+    }
 }
 
 export function parse(sourceFilePath: string): [ts.Program, ts.SourceFile] {

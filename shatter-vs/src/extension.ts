@@ -174,6 +174,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 					await shatterAutotest(modulePaths,
 						functionNode.getSourceFile().fileName,
+						context.storageUri?.fsPath,
 						functionNode.getText(), (clusters) => {
 							const treeNodes = createClusterNodes(clusters);
 

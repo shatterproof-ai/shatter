@@ -29,7 +29,7 @@ export class Supervisor {
     constructor(
         private nodePath: string[],
         private executorScriptJS: string,
-        private onCompletion: (result: RunResult) => void,
+        private onResult: (result: RunResult) => void,
         private maxActiveWorkers: number) {
     }
 
@@ -99,7 +99,7 @@ export class Supervisor {
                     parameters, output: undefined, completed: false, duration, executedBranches: [], outcome: 'timeout',
                 };
                 this.resultByParameters.set(strung, result);
-                this.onCompletion(result);
+                this.onResult(result);
             }
         }, this.timeLimit);
 
@@ -118,7 +118,7 @@ export class Supervisor {
 
             this.resultByParameters.set(strung, result);
 
-            this.onCompletion(result);
+            this.onResult(result);
  
             throw error;
         });
@@ -140,7 +140,7 @@ export class Supervisor {
 
             this.resultByParameters.set(strung, result);
 
-            this.onCompletion(result);
+            this.onResult(result);
             //  TODO: compare against existing results; generate new inputs if we haven't isolated a split
 
         });
