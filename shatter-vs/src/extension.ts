@@ -13,16 +13,35 @@ interface ClusterNode {
 }
 
 function runResultToClusterNode(prefix: string, result: RunResult): ClusterNode {
-	const strung = JSON.stringify(result.parameters)
-	const maxlength = 35;
+	const resultChildren: ClusterNode[] = [];
+	if (result.output) {
+		resultChildren.push(
+			visit("output", result.output, 3));
+	}
+	if (result.error) {
+
+		resultChildren.push(
+			visit("error", result.error, 3));
+	}
+
 	return {
-		//	TODO: convert the parameter list into nodes
-		label: `${prefix} (${result.duration}ms), input = ${strung.substring(0, maxlength)}${strung.length > maxlength ? '...' : ''}`,
-		children: clusterValues(result.parameters),
+		label: prefix,
+		children: [{
+			label: "Duration",
+			children: [{
+				label: `${result.duration}ms`
+			}]
+		}, {
+			label: "Parameters",
+			children: clusterValues(result.parameters)
+		}, {
+			label: "Result",
+			children: resultChildren
+		}],
 	}
 }
 
-function visit(k: string | number, o: any, depth=0): ClusterNode {
+function visit(k: string | number, o: any, depth = 0): ClusterNode {
 	if (depth == 0) {
 		return {
 			label: "...",
@@ -54,8 +73,9 @@ function visit(k: string | number, o: any, depth=0): ClusterNode {
 			children,
 		}
 	}
+
 	return {
-		label: `${key}: ${o}`,
+		label: `${key}: ${JSON.stringify(o)}`,
 	}
 }
 
@@ -71,23 +91,36 @@ function createClusterNodes(clusters: ResultCluster[]): ClusterNode[] {
 	})
 
 	const clusterNodes: ClusterNode[] = clusters.map((cluster) => {
-		const children: ClusterNode[] = [
+		const resultChildren: ClusterNode[] = [
 			{
 				label: `${cluster.results.length} attempts, average ${nf.format(cluster.totalTime / cluster.results.length)}ms`,
 			},
 		]
 
-		const step = Math.max(1, Math.floor(cluster.results.length / 10))
-		//	get a node at the start then approximately each decile (if at least 10) but definitely not the last one
-		for (let i = 0; i < cluster.results.length - 2; i += step) {
-			children.push(runResultToClusterNode(`p${Math.round(100 * i / cluster.results.length)}`, cluster.results[i]))
+		const examplesPerCluster = 5
+		if (examplesPerCluster > 1) {
+			//	if there are more results than examples, pick a subset evenly spaced through the set
+			const step = examplesPerCluster > cluster.results.length
+				? Math.round(cluster.results.length / (examplesPerCluster - 1))
+				: 1;
+
+			for (let i = 0; i < cluster.results.length - 2; i += step) {
+				resultChildren.push(runResultToClusterNode(`[${i}]`, cluster.results[i]))
+			}
 		}
-		children.push(runResultToClusterNode(`p100`, cluster.results[cluster.results.length - 1]))
+		const lastIndex = cluster.results.length - 1;
+		resultChildren.push(runResultToClusterNode(`[${lastIndex}]`, cluster.results[lastIndex]))
 
 		const label = `${cluster.key.substring(0, 6)}: ${cluster.outcome} (${cluster.results.length} trials)`
 		const clusterNode: ClusterNode = {
 			label,
-			children,
+			children: [{
+				label: "Execution path (TODO)",
+				children: []
+			}, {
+				label: "Results",
+				children: resultChildren
+			}],
 		};
 
 		return clusterNode;
@@ -260,7 +293,7 @@ class ASTTreeDataProvider implements vscode.TreeDataProvider<ClusterNode> {
 	// Get the tree item for a node.
 	getTreeItem(element: ClusterNode): vscode.TreeItem {
 		const treeItem = new vscode.TreeItem(element.label);
-		treeItem.collapsibleState = element.children ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None;
+		treeItem.collapsibleState = element.children ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.None;
 		//	TODO: tooltip should be expanded (but still bounded) parameter list
 		treeItem.tooltip = element.label;
 		return treeItem;
