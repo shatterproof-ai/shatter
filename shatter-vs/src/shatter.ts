@@ -5,8 +5,10 @@ import { join } from 'path';
 import * as ts from 'typescript';
 import { Generator } from './generator';
 import { Outcome, RunResult, Supervisor } from './supervisor';
-import { IntrospectionContext, instrumentModule as createInstrumenter } from './transform';
+import { Branch, IntrospectionContext, instrumentModule as createInstrumenter } from './transform';
 
+//  TODO: for error cases add the file and line of where it was thrown and also
+//  the file and line of the first line in the instrumented code
 export interface ResultCluster {
     key: string
     branches: string[]
@@ -67,7 +69,7 @@ export async function shatterAutotest(modulePaths: string[],
     inputFile: string,
     storageBaseDirectory: string | undefined,
     functionName: string,
-    onUpdate: (clusters: ResultCluster[]) => void,
+    onUpdate: (clusters: ResultCluster[], nodes: Map<string, Branch>) => void,
     shatterproofModuleOverride?: string
 ) {
     // parse whole file into abstract syntax tree
@@ -115,18 +117,14 @@ export async function shatterAutotest(modulePaths: string[],
 
         updateClusters(runResult, clusterMap, clusters);
 
-        onUpdate(clusters);
+        onUpdate(clusters, introspectionContext.knownBranches);
 
-        type Branch = { key: string, node: ts.Node };
         // if still need to run, generate and breed more test cases and repeat
         if (allExecutedBranches.size < introspectionContext.knownBranches.size) {
             const unreachedInOrder: Branch[] = [];
             for (const entry of introspectionContext.knownBranches.entries()) {
                 if (!allExecutedBranches.has(entry[0])) {
-                    unreachedInOrder.push({
-                        key: entry[0],
-                        node: entry[1],
-                    });
+                    unreachedInOrder.push(entry[1]);
                 }
             }
 

@@ -3,8 +3,59 @@ import { Node, SourceFile } from 'typescript';
 
 import { createId } from '@paralleldrive/cuid2';
 import { FunctionDeclaration } from 'typescript';
+import { vi } from '@faker-js/faker';
 
-const instrumentationCallNode = (factory: ts.NodeFactory, id: string, recordFunctionName: string) => {
+const instrumentationCallNodeStacked = (factory: ts.NodeFactory, id: string, recordFunctionName: string,
+    stopRecordingFunctionName: string, next: ts.NodeArray<ts.Statement>, meta: { line?: number, character?: number, filename?: string }) => {
+
+    const metaObject = factory.createObjectLiteralExpression(
+        [
+            factory.createPropertyAssignment(
+                factory.createIdentifier("line"),
+                factory.createNumericLiteral(meta.line ?? -1)
+            ),
+            factory.createPropertyAssignment(
+                factory.createIdentifier("character"),
+                factory.createNumericLiteral(meta.character ?? -1)
+            ),
+            factory.createPropertyAssignment(
+                factory.createIdentifier("filename"),
+                factory.createStringLiteral(meta.filename ?? "")
+            )
+        ],
+        true
+    )
+
+
+    const startBlock = factory.createBlock(
+        [factory.createExpressionStatement(factory.createCallExpression(
+            factory.createIdentifier(recordFunctionName),
+            undefined,
+            [factory.createStringLiteral(id), metaObject]
+        )), ...next],
+        true
+
+    );
+    const stopBlock = factory.createBlock(
+        [factory.createExpressionStatement(factory.createCallExpression(
+            factory.createIdentifier(stopRecordingFunctionName),
+            undefined,
+            [factory.createStringLiteral(id)]
+        ))],
+        true
+    );
+
+    return factory.createBlock(
+        [factory.createTryStatement(
+            startBlock,
+            undefined,
+            stopBlock
+        )],
+        true
+    );
+};
+
+const _instrumentationCallNode = (factory: ts.NodeFactory, id: string, recordFunctionName: string) => {
     return factory.createCallExpression(
         factory.createIdentifier(recordFunctionName),
         undefined,
@@ -36,17 +87,48 @@ const createImportStatement = (factory: ts.NodeFactory, module: string, ...thing
     );
 };
 
+export interface Branch {
+    id: string;
+    node: ts.Node;
+    line: number;
+}
+
 export type IntrospectionContext = {
     exported: Set<string>,
     functions: Map<string, FunctionDeclaration>,
-    knownBranches: Map<string, Node>,
+    knownBranches: Map<string, Branch>,
 };
 
-const hasEarlyReturn = (node: ts.Statement | ts.Block): boolean => {
+const thenCanReturn = (node: ts.Statement | ts.Block): boolean => {
     if (ts.isBlock(node)) {
-        !!node.statements.find(hasEarlyReturn);
+        return !!node.statements.find(thenCanReturn);
     }
     return ts.isReturnStatement(node) || ts.isThrowStatement(node);
+};
+
+const ifHasImplicitElseBranch = (ifStatement: ts.IfStatement): boolean => {
+    if (ifStatement.elseStatement) {
+        //  explicit else
+        return false;
+    }
+    if (!ts.isBlock(ifStatement.thenStatement)) {
+        /*
+          is some kind of non-returning statement, e.g.
+          if (x) x++;
+        */
+        return false;
+    }
+    if (!thenCanReturn(ifStatement.thenStatement)) {
+        //  if the then doesn't return, then every it always executes after the if
+        //TODO: why be fancy about it?  Just record after every loop or if statement
+        return false;
+    }
+    if (ts.isReturnStatement(ifStatement.thenStatement) || ts.isThrowStatement(ifStatement.thenStatement)) {
+        return false;
+    }
+
+    return true;
+
 };
 
 //  TODO: instrument every line because every line could throw an exception and thus be a branch
@@ -54,7 +136,8 @@ export const instrumentModule = (introspectionContext: IntrospectionContext, sha
 
     return (ctx: ts.TransformationContext) => (sourceFile: SourceFile): SourceFile => {
         const factory = ctx.factory;
-        const recordAlias = factory.createUniqueName("shatterproof_record").text;
+        const startRecordingAlias = factory.createUniqueName("shatterproof_startRecording").text;
+        const stopRecordingAlias = factory.createUniqueName("shatterproof_stopRecording").text;
         const executeAlias = factory.createUniqueName("shatterproof_execute").text;
 
         const findExportedFunctionsVisitor = (node: Node): Node => {
@@ -75,7 +158,7 @@ export const instrumentModule = (introspectionContext: IntrospectionContext, sha
             //  TODO: instrument catch blocks and finally blocks for the same reason
             //  TODO: instrument return statements as well
             //  TODO: generify this so that the type that comes in is the type that goes out to avoid casting
-            const instrumentClause = (factory: ts.NodeFactory, instrumentationContext: IntrospectionContext, node: Node) => {
+            const instrumentBlockOrStatement = (factory: ts.NodeFactory, instrumentationContext: IntrospectionContext, node: Node) => {
                 if (!ts.isBlock(node) && !ts.isStatement(node)) {
                     const nodeKind = ts.SyntaxKind[node.kind];
                     console.log(`unexpectedly a ${nodeKind}; doing nothing`);
@@ -88,18 +171,18 @@ export const instrumentModule = (introspectionContext: IntrospectionContext, sha
 
                 const block = ts.visitEachChild(preblock, instrumentingVisitor, ctx);
 
-                const id = createId();
-                instrumentationContext.knownBranches.set(id, node);
+                const branch = createBranch(sourceFile, node, instrumentationContext);
 
-                const instrumentation = instrumentationCallNode(factory, id, recordAlias);
+                const meta = extractMetadata(node);
+                const newStatements = instrumentationCallNodeStacked(factory, branch.id, startRecordingAlias, stopRecordingAlias, block.statements, meta);
+                // const newStatements = [
+                //     instrumentationCallNode(factory, id, recordAlias),
+                //     ...block.statements,
+                // ];
 
                 const modded = {
                     ...block,
-                    statements:
-                        [
-                            instrumentation,
-                            ...block.statements,
-                        ]
+                    statements: [newStatements],
                 };
 
                 return modded;
@@ -128,10 +211,46 @@ export const instrumentModule = (introspectionContext: IntrospectionContext, sha
                 }
             }
 
+            if (ts.isBlock(node)) {
+                const convertToBlockWithExplicitElses = (statements: ts.NodeArray<ts.Statement>): ts.Block => {
+
+                    //  copy all statements until reaching an if without an else
+                    //  then wrap all the rest of the block in an explicit else
+                    const newStatements: ts.Statement[] = [];
+                    for (let i = 0; (i < statements.length); i++) {
+                        const s = statements[i];
+                        //  TODO: switches and loops
+                        if (!ts.isIfStatement(s) || s.elseStatement) {
+                            newStatements.push(s);
+                        } else {
+                            //  if there are more statements
+                            //  wrap them all in a single block
+                            if (i + 1 < statements.length) {
+                                newStatements.push(s);
+                                const slice: ts.Statement[] = [];
+                                for (let j = i + 1; j < statements.length; j++) {
+                                    slice.push(statements[j]);
+                                }
+                                const converted = convertToBlockWithExplicitElses(factory.createNodeArray(slice));
+                                const elseBlock = factory.createBlock([converted]);
+
+                                const newIf = factory.createIfStatement(s.expression, s.thenStatement, elseBlock);
+                                newStatements.push(newIf);
+                                break;
+                            }
+                        }
+                    }
+                    return factory.createBlock(newStatements);
+                };
+
+                const converted = convertToBlockWithExplicitElses(node.statements);
+                return instrumentBlockOrStatement(factory, introspectionContext, converted);
+            }
+
             if (ts.isIfStatement(node)) {
-                const thenStatement = instrumentClause(factory, introspectionContext, node.thenStatement);
+                const thenStatement = instrumentBlockOrStatement(factory, introspectionContext, node.thenStatement);
                 const elseStatement = node.elseStatement
-                    ? instrumentClause(factory, introspectionContext, node.elseStatement)
+                    ? instrumentBlockOrStatement(factory, introspectionContext, node.elseStatement)
                     : undefined;
 
                 const newIfNode = {
@@ -145,7 +264,7 @@ export const instrumentModule = (introspectionContext: IntrospectionContext, sha
 
             if (ts.isIterationStatement(node, false)) {
                 // const newStatement:ts.Statement = instrumentingVisitor(node.statement) as ts.Statement;
-                const newStatement: ts.Statement = instrumentClause(factory, introspectionContext, node.statement) as ts.Statement;
+                const newStatement: ts.Statement = instrumentBlockOrStatement(factory, introspectionContext, node.statement) as ts.Statement;
                 const newIterationNode: ts.IterationStatement = {
                     ...node,
                     statement: newStatement,
@@ -159,10 +278,10 @@ export const instrumentModule = (introspectionContext: IntrospectionContext, sha
                         const newStatements = ((): (ts.Statement | ts.Node)[] => {
                             if (clause.statements.length === 0) {
                                 //  create block with just instrumentation in it
-                                return [instrumentClause(factory, introspectionContext, factory.createBlock([]))];
+                                return [instrumentBlockOrStatement(factory, introspectionContext, factory.createBlock([]))];
                             }
                             return clause.statements
-                                .map(statement => instrumentClause(factory, introspectionContext, statement));
+                                .map(statement => instrumentBlockOrStatement(factory, introspectionContext, statement));
                         })() as ts.Statement[]; //  TODO: the cast is no bueno
 
                         const newClause: ts.CaseOrDefaultClause = {
@@ -185,59 +304,7 @@ export const instrumentModule = (introspectionContext: IntrospectionContext, sha
             }
 
             const visiteded = ts.visitEachChild(node, instrumentingVisitor, ctx);
-
-            if (!ts.isBlock(visiteded)) {
-                return visiteded;
-            }
-
-            //  special case to find and instrument implicit else clauses
-            //  this does not match the logic that explicitly instruments then or else clauses
-            //  nor is the instrumentation at the top of the block sufficient
-            const newStatements: (ts.Statement | ts.CallExpression)[] = [];
-            let referenceStatementIdForInstrumentation: string | null = null;
-            //  look for if statements without else clauses
-            //  if there's a return or throw in the then clause, instrument the next statement after the if
-            visiteded.statements.forEach((statement, index) => {
-                //  always duplicate the current statement
-                newStatements.push(statement);
-
-                if (referenceStatementIdForInstrumentation) {
-                    introspectionContext.knownBranches.set(referenceStatementIdForInstrumentation, statement); //  the statement before the implicit else; actually want the statement AFTER
-                    referenceStatementIdForInstrumentation = null;
-                }
-                if (!ts.isIfStatement(statement)) {
-                    return;
-                }
-                if (statement.elseStatement) {
-                    return;
-                }
-                if (!hasEarlyReturn(statement.thenStatement)) {
-                    return;
-                }
-                if (ts.isReturnStatement(statement.thenStatement) || ts.isThrowStatement(statement.thenStatement)) {
-                    return;
-                }
-                if (!ts.isBlock(statement.thenStatement)) {
-                    return;
-                }
-
-                const isExitingStatement = statement.thenStatement.statements.find((thenBlockStatement, index) => ts.isReturnStatement(thenBlockStatement) || ts.isThrowStatement(thenBlockStatement));
-                if (!isExitingStatement) {
-                    return;
-                }
-
-                const id = createId();
-                const instrumentation = instrumentationCallNode(factory, id, recordAlias);
-                newStatements.push(instrumentation);
-                referenceStatementIdForInstrumentation = id;
-            });
-
-            const modded = {
-                ...visiteded,
-                statements: newStatements
-            };
-
-            return modded;
+            return visiteded;
         };
 
         //  discover functions and add them to the context
@@ -270,7 +337,11 @@ export const instrumentModule = (introspectionContext: IntrospectionContext, sha
         const resourcedFile = {
             ...sourceFile,
             statements: [
-                createImportStatement(factory, shatterproofModulePath, { name: "record", alias: recordAlias }, { name: "execute", alias: executeAlias }),
+                createImportStatement(factory, shatterproofModulePath,
+                    { name: "startRecording", alias: startRecordingAlias },
+                    { name: "stopRecording", alias: stopRecordingAlias },
+                    { name: "execute", alias: executeAlias },
+                ),
                 //  retain other top level statements in the module because they may be necessary for setup and initialization
                 ...sourceFile.statements,
                 invokeExecutionCall,
@@ -285,3 +356,30 @@ export const instrumentModule = (introspectionContext: IntrospectionContext, sha
         return visited.getSourceFile();
     };
 };
+
+function extractMetadata(node: ts.Node) {
+    const meta = {
+        line: -1,
+        character: -1,
+        filename: "",
+    };
+    if (node.pos && node.pos > 0 && node.getSourceFile()) {
+        const { line, character } = ts.getLineAndCharacterOfPosition(node.getSourceFile(), node.pos);
+        meta.line = line;
+        meta.character = character;
+    }
+    const filename = node.getSourceFile()?.fileName;
+    if (filename) {
+        meta.filename = filename;
+    }
+    return meta;
+}
+
+//  TODO: make IntrospectionContext a class and this a method on it
+function createBranch(sourceFile: ts.SourceFile, node: ts.Statement, instrumentationContext: IntrospectionContext) {
+    const meta = extractMetadata(node);
+    const id = createId();
+    const branch: Branch = { id, node, line:meta.line };
+    instrumentationContext.knownBranches.set(id, branch);
+    return branch;
+}

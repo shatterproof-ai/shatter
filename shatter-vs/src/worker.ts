@@ -13,7 +13,8 @@ export async function execute(functions: Record<string, Function>) {
     const executedBranches = new Set<string>();
 
     const ic: ExecutionContext = {
-        executedBranches
+        executedBranches,
+        branchStack: [],
     };
 
     const f = functions[functionName];

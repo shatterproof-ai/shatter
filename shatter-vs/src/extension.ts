@@ -5,6 +5,7 @@ import * as ts from 'typescript';
 import * as vscode from 'vscode';
 import { ResultCluster, shatterAutotest } from './shatter';
 import { RunResult } from './supervisor';
+import { Branch } from './transform';
 
 interface ClusterNode {
 	label: string;
@@ -83,13 +84,29 @@ function clusterValues(params: any[]): ClusterNode[] {
 	return nodes;
 }
 
-function createClusterNodes(clusters: ResultCluster[]): ClusterNode[] {
+function createClusterNodes(clusters: ResultCluster[], knownBranches: Map<string, Branch>): ClusterNode[] {
 	const nf = Intl.NumberFormat("en-US", {
 		style: 'decimal',
 		maximumSignificantDigits: 3,
 	});
 
 	const clusterNodes: ClusterNode[] = clusters.map((cluster) => {
+		const pathNodes: ClusterNode[] = [];
+		cluster.branches.forEach((branchName) => {
+			const branch = knownBranches.get(branchName);
+			if (!branch) {
+				throw new Error(`Could not find branch ${branchName}`);
+			}
+			
+			pathNodes.push({
+				label: branchName,
+				children: [{
+					label: `line ${branch.line}`,
+				}]
+			});
+		});
+
+
 		const resultChildren: ClusterNode[] = [
 			{
 				label: `${cluster.results.length} attempts, average ${nf.format(cluster.totalTime / cluster.results.length)}ms`,
@@ -115,7 +132,7 @@ function createClusterNodes(clusters: ResultCluster[]): ClusterNode[] {
 			label,
 			children: [{
 				label: "Execution path (TODO)",
-				children: []
+				children: pathNodes,
 			}, {
 				label: "Results",
 				children: resultChildren
@@ -170,14 +187,23 @@ export function activate(context: vscode.ExtensionContext) {
 
 					const modulePaths = [...allWorkspaceFolders, ...allNodeModules];
 
+					const functionName = functionNode.name?.text;
+					if (! functionName) {
+						throw new Error(`Top level anonymous functions are not supported`);
+					}
 					await shatterAutotest(modulePaths,
 						functionNode.getSourceFile().fileName,
 						context.storageUri?.fsPath,
-						functionNode.getText(), (clusters) => {
-							const treeNodes = createClusterNodes(clusters);
+						functionName, (clusters, knownBranches) => {
+							const treeNodes = createClusterNodes(clusters, knownBranches);
+
+							const allFunctionsNodes: ClusterNode[] = [{
+								label: functionName,
+								children: treeNodes
+							}];
 
 							console.log(`refreshing function node to display = ${functionNode.name?.text}`);
-							astDataProvider.refresh(treeNodes);
+							astDataProvider.refresh(allFunctionsNodes);
 						}, extensionSource);
 
 				} else {
