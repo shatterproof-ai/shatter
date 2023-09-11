@@ -129,7 +129,7 @@ function createClusterNodes(clusters: ResultCluster[]): ClusterNode[] {
 }
 
 export function activate(context: vscode.ExtensionContext) {
-	const astDataProvider = new ASTTreeDataProvider();
+	const astDataProvider = new ClusterNodeTreeDataProvider();
 	vscode.window.registerTreeDataProvider('shatterResultsView', astDataProvider);
 
 	//	TODO: fix the ugly hard-coding of 'src'; that can't be right for a standalone extension
@@ -254,8 +254,8 @@ function getFunctionNodeAtCursor(cursorPosition: vscode.Position, document: vsco
 export function deactivate() { }
 
 
-// Define a custom TreeDataProvider for the AST.
-class ASTTreeDataProvider implements vscode.TreeDataProvider<ClusterNode> {
+// Define a custom TreeDataProvider for the result clusters
+class ClusterNodeTreeDataProvider implements vscode.TreeDataProvider<ClusterNode> {
 	private _onDidChangeTreeData: vscode.EventEmitter<ClusterNode | undefined | void> = new vscode.EventEmitter<ClusterNode | undefined>();
 	readonly onDidChangeTreeData: vscode.Event<ClusterNode | undefined | void> = this._onDidChangeTreeData.event;
 
@@ -266,7 +266,7 @@ class ASTTreeDataProvider implements vscode.TreeDataProvider<ClusterNode> {
 		this.roots = undefined;
 	}
 
-	// Refresh the AST and notify the tree view.
+	// update notify the tree view.
 	refresh(roots: ClusterNode[] | undefined) {
 		this.roots = roots;
 
