@@ -19,6 +19,30 @@ describe('extension', () => {
         
             const pieces:string[] = []
             
+            switch (n) {
+                case 3: {
+                    console.log("n is 3");
+                    break;
+                }
+                case 6: {
+                    console.log("n is 6");
+                    break;
+                }
+                case 10: {
+                    console.log("n is 10");
+                    break;
+                }
+                case 15: {
+                    console.log("n is 15");
+                    break;
+                }
+                case 40:
+                case 41: {
+                    console.log("n is 40 or 41");
+                    break;
+                }
+            }
+
             for (let i = 0; i < n; i++) {
                 if (i > 50) {
                     break;
