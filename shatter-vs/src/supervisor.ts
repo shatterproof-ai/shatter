@@ -1,7 +1,8 @@
 import { Worker } from 'worker_threads';
 
-export const Outcomes = ['completed', 'error', 'timeout', 'failed'] as const
-export type Outcome = typeof Outcomes[number]
+// eslint-disable-next-line @typescript-eslint/naming-convention
+export const Outcomes = ['completed', 'error', 'timeout', 'failed'] as const;
+export type Outcome = typeof Outcomes[number];
 
 export interface RunResult {
     parameters: any[]
@@ -129,7 +130,7 @@ export class Supervisor {
         });
         worker.on('message', (msg) => {
             const { output, error, duration, executedBranches }: { output: any, error: any, duration: number, executedBranches: string[] } = msg;
-            console.log(`${currentWorkerNumber}  ${functionName} (${JSON.stringify(parameters)}) => ${error ?? JSON.stringify(output)} in ${duration}ms`)
+            console.log(`${currentWorkerNumber}  ${functionName} (${JSON.stringify(parameters)}) => ${error ?? JSON.stringify(output)} in ${duration}ms`);
 
             // console.log(`And executed branches = `)
             const strungError = error ? '' + error : undefined;
@@ -148,7 +149,7 @@ export class Supervisor {
 
     async drain(timeout = 10_000) {
         const start = Date.now();
-        console.log("finishied draining")
+        console.log("finishied draining");
         while (this.activeWorkers.size > 0) {
             //  sort of busy waiting
             // console.log(`Waiting with ${activeWorkers.size} active workers`)
@@ -158,7 +159,7 @@ export class Supervisor {
                 return;
             }
         }
-        console.log("finishied draining")
+        console.log("finishied draining");
     }
 
 }

@@ -38,66 +38,66 @@ function runResultToClusterNode(prefix: string, result: RunResult): ClusterNode 
 			label: "Result",
 			children: resultChildren
 		}],
-	}
+	};
 }
 
 function visit(k: string | number, o: any, depth = 0): ClusterNode {
-	if (depth == 0) {
+	if (depth === 0) {
 		return {
 			label: "...",
-		}
+		};
 	}
 
-	const key = typeof k == 'number' ? `[${k}]` : `"${k}"`
+	const key = typeof k === 'number' ? `[${k}]` : `"${k}"`;
 	if (o === null) {
 		return {
 			label: `${key}: null`,
-		}
+		};
 	}
 	if (o === undefined) {
 		return {
 			label: `${key}: undefined`,
-		}
+		};
 	}
 	if (typeof o === 'object') {
 		if (Array.isArray(o)) {
 			return {
 				label: key,
 				children: o.map((v, i) => visit(i, v, depth - 1)),
-			}
+			};
 		}
-		const keys = Object.keys(o)
-		const children = keys.map((k) => visit(k, o[k], depth - 1))
+		const keys = Object.keys(o);
+		const children = keys.map((k) => visit(k, o[k], depth - 1));
 		return {
 			label: key,
 			children,
-		}
+		};
 	}
 
 	return {
 		label: `${key}: ${JSON.stringify(o)}`,
-	}
+	};
 }
 
 function clusterValues(params: any[]): ClusterNode[] {
-	const nodes: ClusterNode[] = params.map((p, i) => visit(i, p, 3))
-	return nodes
+	const nodes: ClusterNode[] = params.map((p, i) => visit(i, p, 3));
+	return nodes;
 }
 
 function createClusterNodes(clusters: ResultCluster[]): ClusterNode[] {
 	const nf = Intl.NumberFormat("en-US", {
 		style: 'decimal',
 		maximumSignificantDigits: 3,
-	})
+	});
 
 	const clusterNodes: ClusterNode[] = clusters.map((cluster) => {
 		const resultChildren: ClusterNode[] = [
 			{
 				label: `${cluster.results.length} attempts, average ${nf.format(cluster.totalTime / cluster.results.length)}ms`,
 			},
-		]
+		];
 
-		const examplesPerCluster = 5
+		const examplesPerCluster = 5;
 		if (examplesPerCluster > 1) {
 			//	if there are more results than examples, pick a subset evenly spaced through the set
 			const step = examplesPerCluster > cluster.results.length
@@ -105,13 +105,13 @@ function createClusterNodes(clusters: ResultCluster[]): ClusterNode[] {
 				: 1;
 
 			for (let i = 0; i < cluster.results.length - 2; i += step) {
-				resultChildren.push(runResultToClusterNode(`[${i}]`, cluster.results[i]))
+				resultChildren.push(runResultToClusterNode(`[${i}]`, cluster.results[i]));
 			}
 		}
 		const lastIndex = cluster.results.length - 1;
-		resultChildren.push(runResultToClusterNode(`[${lastIndex}]`, cluster.results[lastIndex]))
+		resultChildren.push(runResultToClusterNode(`[${lastIndex}]`, cluster.results[lastIndex]));
 
-		const label = `${cluster.key.substring(0, 6)}: ${cluster.outcome} (${cluster.results.length} trials)`
+		const label = `${cluster.key.substring(0, 6)}: ${cluster.outcome} (${cluster.results.length} trials)`;
 		const clusterNode: ClusterNode = {
 			label,
 			children: [{
@@ -124,8 +124,8 @@ function createClusterNodes(clusters: ResultCluster[]): ClusterNode[] {
 		};
 
 		return clusterNode;
-	})
-	return clusterNodes
+	});
+	return clusterNodes;
 }
 
 export function activate(context: vscode.ExtensionContext) {
@@ -175,7 +175,7 @@ export function activate(context: vscode.ExtensionContext) {
 					await shatterAutotest(modulePaths,
 						functionNode.getSourceFile().fileName,
 						functionNode.getText(), (clusters) => {
-							const treeNodes = createClusterNodes(clusters)
+							const treeNodes = createClusterNodes(clusters);
 
 							console.log(`refreshing function node to display = ${functionNode.name?.text}`);
 							astDataProvider.refresh(treeNodes);

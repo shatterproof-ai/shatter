@@ -107,12 +107,12 @@ export async function shatterAutotest(modulePaths: string[],
             const outcome = ((): Outcome => {
                 if (runResult.completed) {
                     if (runResult.error) {
-                        return 'error'
+                        return 'error';
                     }
-                    return 'completed'
+                    return 'completed';
                 }
-                return 'timeout'
-            })()
+                return 'timeout';
+            })();
 
             cluster = {
                 key: clusterKey,
@@ -130,25 +130,25 @@ export async function shatterAutotest(modulePaths: string[],
 
         //  TODO: don't do this on every change
 
-        const preferredOutcomeOrder: Outcome[] = ['failed', 'error', 'timeout', 'completed']
+        const preferredOutcomeOrder: Outcome[] = ['failed', 'error', 'timeout', 'completed'];
         clusters.sort((a, b) => {
-            if (a.outcome == b.outcome) {
-                if (a.branches.length == b.branches.length) {
-                    if (a.results.length == b.results.length) {
-                        return a.key.localeCompare(b.key)
+            if (a.outcome === b.outcome) {
+                if (a.branches.length === b.branches.length) {
+                    if (a.results.length === b.results.length) {
+                        return a.key.localeCompare(b.key);
                     }
-                    return a.results.length - b.results.length
+                    return a.results.length - b.results.length;
                 }
-                return a.branches.length - b.branches.length
+                return a.branches.length - b.branches.length;
             }
-            return preferredOutcomeOrder.findIndex((s) => s == a.outcome) - preferredOutcomeOrder.findIndex((s) => s == b.outcome)
-        })
+            return preferredOutcomeOrder.findIndex((s) => s === a.outcome) - preferredOutcomeOrder.findIndex((s) => s === b.outcome);
+        });
 
         clusters.forEach(cluster => {
             cluster.results.sort((a, b) =>
                 JSON.stringify(a.parameters).localeCompare(JSON.stringify(b.parameters))
-            )
-        })
+            );
+        });
 
         onUpdate(clusters);
 

@@ -48,7 +48,7 @@ const hasEarlyReturn = (node: ts.Statement | ts.Block): boolean => {
         !!node.statements.find(hasEarlyReturn);
     }
     return ts.isReturnStatement(node) || ts.isThrowStatement(node);
-}
+};
 
 //  TODO: instrument every line because every line could throw an exception and thus be a branch
 export const instrumentModule = (introspectionContext: IntrospectionContext, shatterproofModuleOverride?:string) => {
@@ -61,7 +61,7 @@ export const instrumentModule = (introspectionContext: IntrospectionContext, sha
         const findExportedFunctionsVisitor = (node: Node): Node => {
             //  declared functions only to start
             if (ts.isFunctionDeclaration(node) && node.name) {
-                if (node.modifiers && node.modifiers.find(modifier => modifier.kind == ts.SyntaxKind.ExportKeyword)) {
+                if (node.modifiers && node.modifiers.find(modifier => modifier.kind === ts.SyntaxKind.ExportKeyword)) {
                     introspectionContext.exported.add(node.name.text);
                 }
                 introspectionContext.functions.set(node.name.text, node);
@@ -200,7 +200,7 @@ export const instrumentModule = (introspectionContext: IntrospectionContext, sha
             [executionArguments]
         ));
         
-        const moduleName = "shatterproof"
+        const moduleName = "shatterproof";
         const shatterproofModulePath = shatterproofModuleOverride ?? moduleName;
         const resourcedFile = {
             ...sourceFile,
