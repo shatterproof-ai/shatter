@@ -3,7 +3,6 @@ import { Node, SourceFile } from 'typescript';
 
 import { createId } from '@paralleldrive/cuid2';
 import { FunctionDeclaration } from 'typescript';
-import { join } from 'path';
 
 const instrumentationCallNode = (factory: ts.NodeFactory, id: string, recordFunctionName: string) => {
     return factory.createCallExpression(
@@ -51,7 +50,7 @@ const hasEarlyReturn = (node: ts.Statement | ts.Block): boolean => {
 };
 
 //  TODO: instrument every line because every line could throw an exception and thus be a branch
-export const instrumentModule = (introspectionContext: IntrospectionContext, shatterproofModuleOverride?:string) => {
+export const instrumentModule = (introspectionContext: IntrospectionContext, shatterproofModuleOverride?: string) => {
 
     return (ctx: ts.TransformationContext) => (sourceFile: SourceFile): SourceFile => {
         const factory = ctx.factory;
@@ -157,13 +156,13 @@ export const instrumentModule = (introspectionContext: IntrospectionContext, sha
             if (ts.isSwitchStatement(node)) {
                 const newClauses =
                     node.caseBlock.clauses.map(clause => {
-                        const newStatements = (():(ts.Statement|ts.Node)[] => {
+                        const newStatements = ((): (ts.Statement | ts.Node)[] => {
                             if (clause.statements.length === 0) {
                                 //  create block with just instrumentation in it
                                 return [instrumentClause(factory, introspectionContext, factory.createBlock([]))];
                             }
                             return clause.statements
-                            .map(statement => instrumentClause(factory, introspectionContext, statement));
+                                .map(statement => instrumentClause(factory, introspectionContext, statement));
                         })() as ts.Statement[]; //  TODO: the cast is no bueno
 
                         const newClause: ts.CaseOrDefaultClause = {
@@ -265,7 +264,7 @@ export const instrumentModule = (introspectionContext: IntrospectionContext, sha
             undefined,
             [executionArguments]
         ));
-        
+
         const moduleName = "shatterproof";
         const shatterproofModulePath = shatterproofModuleOverride ?? moduleName;
         const resourcedFile = {
@@ -278,7 +277,7 @@ export const instrumentModule = (introspectionContext: IntrospectionContext, sha
             ]
         };
         //  END worker execution startup code
-        
+
         //  BEGIN instrumenting code -- TODO: why is this after the worker execution code?
         const visited = ts.visitNode(resourcedFile, instrumentingVisitor);
         //  END instrumenting code

@@ -1,10 +1,8 @@
-
 import * as ts from 'typescript';
 
 import { createId } from "@paralleldrive/cuid2";
 
 import { faker } from '@faker-js/faker';
-
 
 const edgyNumbers = () => {
     const numbers = new Set<number>();
@@ -74,7 +72,6 @@ Object.entries(stringFakerses).forEach(([domain, generators]) => {
 
 faker.seed(10481);
 
-
 export function seedStrings(count = 1) {
     const seen = new Set<string>();
     const seeds: string[] = [];
@@ -108,77 +105,7 @@ export interface GeneratedParameter {
     value: any
 }
 
-class NumberExplorer {
-
-    private types: any[];
-    private soFar: any[][];
-    constructor(types: any[]) {
-        this.types = types;
-        this.soFar = [];
-    }
-
-    rand() {
-        const generated: any[] = [];
-        for (const t of this.types) {
-            const gp = ((): GeneratedParameter => {
-
-                if (Math.random() < 0.01) {
-                    return {
-                        id: '',
-                        generator: 'nuller',
-                        value: null,
-                    };
-                }
-                if (Math.random() < 0.02) {
-                    return {
-                        id: '',
-                        generator: 'undefiner',
-                        value: undefined,
-                    };
-                }
-                switch (t) {
-                    case 'number': {
-
-                        const d = dataDomains.number;
-                    }
-                        break;
-                    case 'string':
-                    case 'boolean':
-                }
-
-                // eslint-disable-next-line @typescript-eslint/ban-types
-                const d: Record<string, Function[]> = {};    //  just to make it compile
-                const domains = Object.keys(d);
-                const generator = domains[Math.random() * domains.length];
-                const functions = d[generator as keyof typeof d];
-                const f = functions[Math.random() * functions.length];
-
-                const value = f();
-                return {
-                    id: '',
-                    generator,
-                    value,
-                };
-            });
-
-            generated.push(gp);
-
-        }
-    }
-
-    mutate(parameters: any[], count = 1) {
-        //  given a parameter set, generate the specified number of mutations
-    }
-
-    split(p1: any[], p2: any[], count = 1) {
-        //  given two parameter sets, generate up to the specified number of parameter sets that split the difference
-    }
-
-}
-
 export function seedIntegers() {
-    // return [0, 2, 32767, 32768, 65534, 65535, 65536]
-
     //  create an array with all prime numbers less than 100
     const numbers = new Set<number>([13, 17, 23, 37, 53, 67, 79, 89, 97]);
 
@@ -210,10 +137,8 @@ export function seedFloats() {
             numbers.add(-i * s);
         }
     }
-
     return Array.from(numbers).sort();
 }
-
 
 export interface GeneratedParameterList {
     id: string,
@@ -234,7 +159,7 @@ export type PrimitivePossibility = {
 
 export type ArrayPossibility = {
     type: 'array'
-    range: Possibility|null
+    range: Possibility | null
 };
 
 export type ObjectPossibility = {
@@ -252,7 +177,7 @@ export type Possibility = (EmptyPossibility | PrimitivePossibility | ArrayPossib
     // generator: string,
 };
 
-const possibilitiesForType = function (checker: ts.TypeChecker, currentType: ts.Type, allowedDepth = 1): Possibility|null {
+const possibilitiesForType = function (checker: ts.TypeChecker, currentType: ts.Type, allowedDepth = 1): Possibility | null {
 
     if (checker.isArrayType(currentType)) {
         const typeargs = checker.getTypeArguments(currentType as ts.TypeReference);
@@ -322,8 +247,8 @@ const constructValueForTypeNode = (checker: ts.TypeChecker, typeNode: ts.TypeNod
 };
 
 //  TODO: sometimes throw in a null or undefined
-const constructValue = (possibility: Possibility|null):any => {
-    if (possibility == null) {
+const constructValue = (possibility: Possibility | null): any => {
+    if (possibility === null) {
         return null;
     }
     switch (possibility.type) {
@@ -331,7 +256,7 @@ const constructValue = (possibility: Possibility|null):any => {
         case 'unknown':
             return possibility.range[Math.floor(Math.random() * possibility.range.length)];
         case 'array':
-            if (possibility.range == null) {
+            if (possibility.range === null) {
                 return [];
             }
 
@@ -362,7 +287,7 @@ export class Generator {
 
     //  map from the JSON path to a particular part of the argument list to a list of candidate values
     //  use up all the seed values before trying anything different
-    private possibilities: (Possibility|null)[] = [];
+    private possibilities: (Possibility | null)[] = [];
 
     //  TODO: how to fingerprint a particular parameter list so it doesn't get used again?
     //  stringifying the JSON won't work because of canonicalization, self reference, and non-serializable objects
@@ -382,7 +307,7 @@ export class Generator {
             if (param.type) {
                 if (ts.isTypeReferenceNode(param.type) || ts.isTypeNode(param.type)) {
                     const value = constructValueForTypeNode(checker, param.type);
-                    if (value == null) {
+                    if (value === null) {
                         this.possibilities.push(null);
                     }
                     this.possibilities.push(value);
@@ -392,16 +317,14 @@ export class Generator {
             } else {
                 throw new Error(`Unexpected type for ${paramName}: ${param.type}`);
             }
-
         }
-
     }
 
     generateRandom(desired = 1): GeneratedParameterList[] {
         const gplists: GeneratedParameterList[] = [];
         for (let i = 0; i < desired; i++) {
 
-            const parameters:any[] = this.possibilities.map(constructValue);
+            const parameters: any[] = this.possibilities.map(constructValue);
 
             const id = createId();
             const gplist: GeneratedParameterList = {
@@ -409,7 +332,7 @@ export class Generator {
                 sequence: this.counter++,
                 parameters,
             };
-    
+
             gplists.push(gplist);
             this.history.set(id, gplist);
         }

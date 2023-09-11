@@ -1,5 +1,4 @@
 import { AsyncLocalStorage } from "async_hooks";
-import { FunctionDeclaration, Node } from 'typescript';
 
 export interface ExecutionContext {
   executedBranches: Set<string>

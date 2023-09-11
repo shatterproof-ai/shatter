@@ -95,7 +95,7 @@ export class Supervisor {
             //  don't overwrite a previous run
             //  TODO: do overwrite if the previous run timed out, but limit the number of times
             if (!this.resultByParameters.has(strung)) {
-                const result:RunResult = {
+                const result: RunResult = {
                     parameters, output: undefined, completed: false, duration, executedBranches: [], outcome: 'timeout',
                 };
                 this.resultByParameters.set(strung, result);
@@ -119,7 +119,7 @@ export class Supervisor {
             this.resultByParameters.set(strung, result);
 
             this.onResult(result);
- 
+
             throw error;
         });
         worker.on('exit', () => {
@@ -141,8 +141,6 @@ export class Supervisor {
             this.resultByParameters.set(strung, result);
 
             this.onResult(result);
-            //  TODO: compare against existing results; generate new inputs if we haven't isolated a split
-
         });
         return worker;
     }
@@ -161,5 +159,4 @@ export class Supervisor {
         }
         console.log("finishied draining");
     }
-
 }

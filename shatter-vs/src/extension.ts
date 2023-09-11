@@ -1,11 +1,10 @@
 import * as fs from 'fs'; //TODO: use VSCode fs
 import * as path from 'path';
+import { join } from 'path';
 import * as ts from 'typescript';
 import * as vscode from 'vscode';
 import { ResultCluster, shatterAutotest } from './shatter';
 import { RunResult } from './supervisor';
-import { Cluster } from 'cluster';
-import { join } from 'path';
 
 interface ClusterNode {
 	label: string;
@@ -169,7 +168,6 @@ export function activate(context: vscode.ExtensionContext) {
 						allWorkspaceFolders.push(folder.uri.fsPath);
 					});
 
-					// throw new Error("Need to figure out how to find module 'shatterproof'")
 					const modulePaths = [...allWorkspaceFolders, ...allNodeModules];
 
 					await shatterAutotest(modulePaths,
@@ -245,15 +243,12 @@ function getFunctionNodeAtCursor(cursorPosition: vscode.Position, document: vsco
 				}
 			}
 		}
-
 		return ts.forEachChild(node, findFunction);
 	}
-
 	return findFunction(sourceFile);
 }
 
 export function deactivate() { }
-
 
 // Define a custom TreeDataProvider for the result clusters
 class ClusterNodeTreeDataProvider implements vscode.TreeDataProvider<ClusterNode> {

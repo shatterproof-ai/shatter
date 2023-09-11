@@ -117,7 +117,7 @@ export async function shatterAutotest(modulePaths: string[],
 
         onUpdate(clusters);
 
-        type Branch = { key: string, node: ts.Node }
+        type Branch = { key: string, node: ts.Node };
         // if still need to run, generate and breed more test cases and repeat
         if (allExecutedBranches.size < introspectionContext.knownBranches.size) {
             const unreachedInOrder: Branch[] = [];
@@ -129,7 +129,6 @@ export async function shatterAutotest(modulePaths: string[],
                     });
                 }
             }
-
 
             unreachedInOrder.sort((a, b) => a.node.pos - b.node.pos);
             const firstUnreached = unreachedInOrder[0];
@@ -149,10 +148,8 @@ export async function shatterAutotest(modulePaths: string[],
 
             clusters.forEach(cluster => {
                 // cluster.branches.includes(firstUnreached.getText())
-            })
+            });
         }
-
-
     };
 
     const supervisor = new Supervisor(modulePaths, executorScriptJs, onResult, 15);
@@ -331,10 +328,7 @@ export function writeInstrumented(sourceFile: ts.SourceFile,
 
     //  write a new version of the function with instrumentation
     //  replace it in the AST
-
-
     return [modifiedSourcefilePath, executorScriptJs, introspectionContext];
-
 }
 
 export function generateArgumentList(seed: number) {
