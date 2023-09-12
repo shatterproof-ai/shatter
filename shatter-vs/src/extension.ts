@@ -266,6 +266,8 @@ export function activate(context: vscode.ExtensionContext) {
 	);
 
 	context.subscriptions.push(retestContextMenu);
+
+	//	TODO: add test cases command (Autotest is from scratch at present)
 }
 
 function isCursorInFunctionName(
