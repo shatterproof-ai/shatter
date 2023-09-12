@@ -7,6 +7,11 @@ import { Generator } from './generator';
 import { Outcome, RunResult, Supervisor } from './supervisor';
 import { Branch, IntrospectionContext, instrumentModule as createInstrumenter } from './transform';
 
+export interface AutotestResults {
+    clusters: ResultCluster[];
+    branches: Map<string, Branch>;
+}
+
 //  TODO: for error cases add the file and line of where it was thrown and also
 //  the file and line of the first line in the instrumented code
 export interface ResultCluster {
@@ -69,7 +74,7 @@ export async function shatterAutotest(modulePaths: string[],
     inputFile: string,
     storageBaseDirectory: string | undefined,
     functionName: string,
-    onUpdate: (clusters: ResultCluster[], nodes: Map<string, Branch>) => void,
+    onUpdate: (results: AutotestResults) => void,
     shatterproofModuleOverride?: string
 ) {
     // parse whole file into abstract syntax tree
@@ -117,7 +122,7 @@ export async function shatterAutotest(modulePaths: string[],
 
         updateClusters(runResult, clusterMap, clusters);
 
-        onUpdate(clusters, introspectionContext.knownBranches);
+        onUpdate({ clusters, branches: introspectionContext.knownBranches });
 
         // if still need to run, generate and breed more test cases and repeat
         if (allExecutedBranches.size < introspectionContext.knownBranches.size) {

@@ -140,6 +140,29 @@ const ifHasImplicitElseBranch = (ifStatement: ts.IfStatement): boolean => {
 
 };
 
+export const findFunctions = (sourceFileName: string): FunctionDeclaration[] => {
+    const functions: FunctionDeclaration[] = [];
+    const exportedFunctions = new Set<string>();
+
+    const findFunctionsVisitor = (node: Node): Node => {
+        //  declared functions only to start
+        if (ts.isFunctionDeclaration(node) && node.name) {
+            if (node.modifiers && node.modifiers.find(modifier => modifier.kind === ts.SyntaxKind.ExportKeyword)) {
+                exportedFunctions.add(node.name.text);
+            }
+            functions.push(node);
+
+            //  do not recurse into functions; we only care about top level
+        }
+        return node;
+    };
+
+    const program = ts.createProgram([sourceFileName], {});
+    const sourceFile = program.getSourceFile(sourceFileName);
+    ts.visitNode(sourceFile, findFunctionsVisitor);
+    return functions;
+};
+
 //  TODO: replace all of this with something off the shelf e.g. Istanbul or Babel
 //  https://github.com/istanbuljs/istanbuljs/tree/master/packages/istanbul-lib-instrument
 //  TODO: instrument every line because every line could throw an exception and thus be a branch
@@ -329,6 +352,8 @@ export const instrumentModule = (introspectionContext: IntrospectionContext, sha
         introspectionContext.functions.forEach((_, name) => {
             assignments.push(
                 factory.createShorthandPropertyAssignment(
+                    //  TODO: make the identifier deterministic and stable across runs
+                    //  starting with line number and maybe becoming some AST path
                     factory.createIdentifier(name),
                     undefined
                 ));

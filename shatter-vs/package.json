@@ -56,11 +56,32 @@
         }
       }
     ],
-    "views": {
-      "explorer": [
+    "viewsContainers": {
+      "activitybar": [
         {
-          "id": "shatterResultsView",
-          "name": "Shatter Results"
+          "id": "shatter-detail-view",
+          "title": "Shatter Details",
+          "icon": "hammer-308841.svg"
+        }
+      ]
+    },
+    "views": {
+      "shatter-detail-view": [
+        {
+          "id": "shatter-functions-list",
+          "name": "Functions"
+        },
+        {
+          "id": "shatter-execution-paths",
+          "name": "Execution Paths"
+        },
+        {
+          "id": "shatter-coverage",
+          "name": "Coverage"
+        },
+        {
+          "id": "shatter-test-cases",
+          "name": "Test Cases"
         }
       ]
     }

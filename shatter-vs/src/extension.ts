@@ -3,13 +3,14 @@ import * as path from 'path';
 import { join } from 'path';
 import * as ts from 'typescript';
 import * as vscode from 'vscode';
-import { ResultCluster, shatterAutotest } from './shatter';
+import { AutotestResults, shatterAutotest } from './shatter';
 import { RunResult } from './supervisor';
-import { Branch } from './transform';
+import { findFunctions } from './transform';
 
 interface ClusterNode {
 	label: string;
 	children?: ClusterNode[];
+	key: string,
 }
 
 function runResultToClusterNode(prefix: string, result: RunResult): ClusterNode {
@@ -79,74 +80,322 @@ function visit(k: string | number, o: any, depth = 0): ClusterNode {
 	};
 }
 
-function clusterValues(params: any[]): ClusterNode[] {
-	const nodes: ClusterNode[] = params.map((p, i) => visit(i, p, 3));
-	return nodes;
+type FunctionState = {
+	results: AutotestResults;
 }
 
-function createClusterNodes(clusters: ResultCluster[], knownBranches: Map<string, Branch>): ClusterNode[] {
-	const nf = Intl.NumberFormat("en-US", {
-		style: 'decimal',
-		maximumSignificantDigits: 3,
+type FileState = {
+	functions?: ts.FunctionDeclaration[];
+	functionStates?: Map<string, FunctionState>;
+};
+
+type ExtensionState = {
+	fileStates: Map<string, FileState>
+	activeFile?: string;
+	activeFunction?: string;
+	activeClusterKey?: string;
+};
+
+//	TODO: surely there's a more idiomatic way to do this
+const extensionEvents = ["onSelectFile", "onSelectFunction", "onSelectCluster", "onAutotest", "onRetest"] as const;
+type ExtensionEventType = typeof extensionEvents[number];
+type ExtensionEvent = {
+	type: ExtensionEventType;
+	value: string;
+};
+
+class Eventing {
+	private subscribers: Record<ExtensionEventType, ((e: ExtensionEvent) => void)[]> =
+		Object.fromEntries(extensionEvents.map((event) => [event, []])) as any;
+
+	subscribe(event: ExtensionEventType, callback: (e: ExtensionEvent) => void) {
+		this.subscribers[event].push(callback);
+	}
+
+	publish(event: ExtensionEvent) {
+		this.subscribers[event.type].forEach((callback) => callback(event));
+	}
+}
+
+/*
+	on test run => IF function is selected refresh branches; if branch is selected, refresh test cases
+	on editor change => refresh functions list, clear results
+	on editor contents change => refresh functions list
+
+	on function selection => refresh clusters list
+	on cluster selection => refresh branches, refresh test cases
+*/
+
+export function activate(context: vscode.ExtensionContext) {
+
+	const extensionState: ExtensionState = {
+		fileStates: new Map(),
+	};
+	const eventer = new Eventing();
+
+	//	TODO: Refresh functions list view contents on change of editor
+	const functionsListProvider = new ClusterNodeTreeDataProvider({
+		command: 'extension.shatterSelectFunction',
+		title: 'Functions',
 	});
 
-	const clusterNodes: ClusterNode[] = clusters.map((cluster) => {
-		const pathNodes: ClusterNode[] = [];
-		cluster.branches.forEach((branchName) => {
-			const branch = knownBranches.get(branchName);
+	const clustersListProvider = new ClusterNodeTreeDataProvider({
+		command: 'extension.shatterSelectCluster',
+		title: 'Functions',
+	});
+
+	const coverageProvider = new ClusterNodeTreeDataProvider();
+
+	const testCasesProvider = new ClusterNodeTreeDataProvider();
+
+	const onSelectFile = (e: ExtensionEvent) => {
+		const filename = vscode.window.activeTextEditor?.document.fileName;
+		if (!filename) {
+			//	TODO: clear functions list
+			return;
+		}
+		extensionState.activeFile = filename;
+	};
+
+	//	call after switching files, changing contents of the editor, or running tests
+	const onSelectFunction = (e: ExtensionEvent) => {
+		if (!extensionState.activeFile) {
+			//	TODO: shouldn't happen
+			return;
+		}
+		const filename = extensionState.activeFile;
+		const functions = findFunctions(filename);
+		extensionState.fileStates.set(filename, {
+			functions,
+			functionStates: new Map(),
+		});
+
+		const functionName = e.value;
+		const selectedFunction = functions.find((f) => f.name?.text === functionName);
+		if (selectedFunction?.name?.text) {
+			extensionState.activeFunction = functionName;
+			eventer.publish({
+				type: "onSelectFunction",
+				value: selectedFunction.name.text,
+			});
+		} else {
+			extensionState.activeClusterKey = undefined;
+			extensionState.activeFunction = undefined;
+		}
+	};
+
+	const refreshFunctionsList = () => {
+		const filename = extensionState.activeFile;
+		if (!filename) {
+			//	TODO: clear functions list, clusters list, branches list, test cases list
+			return;
+		}
+		if (!extensionState.activeFunction) {
+			//	TODO: clear clusters list, branches list, test cases list
+			return;
+		}
+
+		const fileState = extensionState.fileStates.get(filename);
+		if (!fileState?.functions) {
+			//	TODO: clear what needs clearing
+			return;
+		}
+
+		const nodes: ClusterNode[] = fileState?.functions?.map((f) => ({
+			label: f.name?.text || "",
+			children: [],
+			key: f.name?.text || "",
+		}));
+
+		functionsListProvider.refresh(nodes);
+	};
+	eventer.subscribe("onSelectFile", refreshFunctionsList);
+
+	const refreshClusters = () => {
+		//	TODO: reduce duplication
+		const filename = extensionState.activeFile;
+		if (!filename) {
+			//	TODO: clear functions list, clusters list, branches list, test cases list
+			return;
+		}
+		if (!extensionState.activeFunction) {
+			//	TODO: clear clusters list, branches list, test cases list
+			return;
+		}
+
+		const fileState = extensionState.fileStates.get(filename);
+		if (!fileState?.functions) {
+			//	TODO: clear what needs clearing
+			return;
+		}
+
+		if (!extensionState.activeFunction) {
+			return;
+		}
+
+		const func = fileState.functions?.find((f) => f.name?.text === extensionState.activeFunction);
+		if (!func) {
+			return;
+		}
+
+		const results = fileState.functionStates?.get(extensionState.activeFunction)?.results;
+		if (!results) {
+			return;
+		}
+
+		const clusterNodes: ClusterNode[] = results.clusters.map((cluster) => {
+			const key = cluster.key.substring(0, 6);
+			return {
+				label: `${key}: ${cluster.outcome} (${cluster.results.length} trials)`,
+				children: [],
+				key: cluster.key,
+			};
+		});
+		clustersListProvider.refresh(clusterNodes);
+
+		const selectedCluster = results.clusters.find((cluster) => cluster.key === extensionState.activeClusterKey);
+		if (selectedCluster) {
+			eventer.publish({
+				type: "onSelectCluster",
+				value: selectedCluster.key,
+			});
+		} else {
+			extensionState.activeClusterKey = undefined;
+		}
+		updateDecorations(vscode.window.activeTextEditor);
+	};
+
+	const uuppdateDecorations = () => {
+	};
+
+	eventer.subscribe("onSelectFunction", refreshClusters);
+
+	//	called by the command handler for the function selector
+	//	needs to be registered as a command because TreeView needs a command to dispatch to
+	const selectFunctionCommand = vscode.commands.registerCommand('extension.shatterSelectFunction', onSelectFunction);
+	context.subscriptions.push(selectFunctionCommand);
+
+	const onSelectCluster = () => {
+		if (!extensionState.activeFile) {
+			//	TODO: should not happen
+			return;
+		}
+
+		const fileState = extensionState.fileStates.get(extensionState.activeFile);
+		if (!fileState) {
+			//	TODO: should not happen
+			return;
+		}
+
+		const func = fileState.functions?.find((f) => f.name?.text === extensionState.activeFunction);
+		if (!func) {
+			//	TODO: should not happen
+			return;
+		}
+
+		const cluster = fileState.results?.clusters.find((cluster) => cluster.key === activeCluster);
+		if (!cluster) {
+			return;
+		}
+
+		const coverageNodes: ClusterNode[] = cluster.branches.map((branchName) => {
+			const branch = fileState.results?.branches.get(branchName);
 			if (!branch) {
 				throw new Error(`Could not find branch ${branchName}`);
 			}
-			
-			pathNodes.push({
-				label: branchName,
-				children: [{
-					label: `line ${branch.line}`,
-				}]
-			});
+
+			return {
+				label: `${branchName}: line ${branch.line}`,
+				children: [],
+				key: branch.id,
+			};
 		});
+		coverageProvider.refresh(coverageNodes);
 
+		const testCasesNodes: ClusterNode[] = cluster.results.map((result, i) => {
+			return runResultToClusterNode(`[${i}]`, result);
+		});
+		testCasesProvider.refresh(testCasesNodes);
+	};
+	//	needs to be registered as a command because TreeView needs a command to dispatch to
+	const selectClusterCommand = vscode.commands.registerCommand('extension.shatterSelectCluster', onSelectCluster);
+	context.subscriptions.push(selectClusterCommand);
 
-		const resultChildren: ClusterNode[] = [
-			{
-				label: `${cluster.results.length} attempts, average ${nf.format(cluster.totalTime / cluster.results.length)}ms`,
-			},
-		];
+	//	Refresh execution paths contents on change of selected function or test run
+	//	Refresh coverage contents on change of execution path
+	//	Refresh test cases contents on change of execution path
 
-		const examplesPerCluster = 5;
-		if (examplesPerCluster > 1) {
-			//	if there are more results than examples, pick a subset evenly spaced through the set
-			const step = examplesPerCluster > cluster.results.length
-				? Math.round(cluster.results.length / (examplesPerCluster - 1))
-				: 1;
+	//	driven by file selection
+	context.subscriptions.push(
+		vscode.window.registerTreeDataProvider("shatter-functions-list", functionsListProvider));
+	//	driven by function selection
+	context.subscriptions.push(
+		vscode.window.registerTreeDataProvider("shatter-execution-paths", clustersListProvider));
+	//	driven by execution path selection
+	context.subscriptions.push(
+		vscode.window.registerTreeDataProvider("shatter-coverage", coverageProvider));
+	//	driven by execution path selection
+	context.subscriptions.push(
+		vscode.window.registerTreeDataProvider("shatter-test-cases", testCasesProvider));
 
-			for (let i = 0; i < cluster.results.length - 2; i += step) {
-				resultChildren.push(runResultToClusterNode(`[${i}]`, cluster.results[i]));
-			}
-		}
-		const lastIndex = cluster.results.length - 1;
-		resultChildren.push(runResultToClusterNode(`[${lastIndex}]`, cluster.results[lastIndex]));
-
-		const label = `${cluster.key.substring(0, 6)}: ${cluster.outcome} (${cluster.results.length} trials)`;
-		const clusterNode: ClusterNode = {
-			label,
-			children: [{
-				label: "Execution path (TODO)",
-				children: pathNodes,
-			}, {
-				label: "Results",
-				children: resultChildren
-			}],
-		};
-
-		return clusterNode;
+	let decorationType = vscode.window.createTextEditorDecorationType({
+		gutterIconPath: context.asAbsolutePath('media/triangle.svg'),
+		backgroundColor: 'lightgray'
 	});
-	return clusterNodes;
-}
 
-export function activate(context: vscode.ExtensionContext) {
-	const astDataProvider = new ClusterNodeTreeDataProvider();
-	vscode.window.registerTreeDataProvider('shatterResultsView', astDataProvider);
+	function updateDecorations(editor: vscode.TextEditor, fileState?: FileState) {
+		const text = editor.document.getText();
+		const decorationsArray: vscode.DecorationOptions[] = [];
+
+		const activeCluster = fileState?.results?.clusters?.find((cluster) => cluster?.key === extensionState.activeClusterKey);
+
+		console.log(`updateDecorations for active cluster = ${activeCluster?.key}`);
+
+		if (activeCluster) {
+			const linesToHighlight: number[] = [];
+			activeCluster.branches.forEach((branchName) => {
+				const branch = fileState?.results?.branches.get(branchName);
+				if (branch) {
+					linesToHighlight.push(branch.line);
+				} else {
+					//	well this is pretty weird
+				}
+			});
+
+			linesToHighlight.forEach(lineNumber => {
+				const line = editor.document.lineAt(lineNumber - 1);
+				const decoration = { range: line.range, hoverMessage: `Line ${lineNumber}: ${line.text}` };
+				decorationsArray.push(decoration);
+			});
+
+			editor.setDecorations(decorationType, decorationsArray);
+		} else {
+			//	TODO: logic for removing decorations
+			editor.setDecorations(decorationType, []);
+		}
+	}
+
+	context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(editor => {
+		if (editor) {
+			const results = extensionState.fileStates.get(editor.document.fileName);
+			updateDecorations(editor, results);
+		}
+		refreshFunctionsList();
+	}, null, context.subscriptions));
+
+	context.subscriptions.push(vscode.workspace.onDidChangeTextDocument(event => {
+		console.log(`onDidChangeTextDocument called for ${event.document.fileName}`)
+		if (vscode.window.activeTextEditor && event.document === vscode.window.activeTextEditor.document) {
+			updateDecorations(vscode.window.activeTextEditor);
+		}
+		refreshFunctionsList();
+	}, null, context.subscriptions));
+
+	const updateDecorationsCommand = vscode.commands.registerCommand('extension.shatterUpdateDecorations', () => {
+		if (vscode.window.activeTextEditor) {
+			updateDecorations(vscode.window.activeTextEditor);
+		}
+	});
 
 	//	TODO: fix the ugly hard-coding of 'src'; that can't be right for a standalone extension
 	//	TODO: just make people import shatterproof module in their projects; don't try to be magical about it
@@ -188,23 +437,22 @@ export function activate(context: vscode.ExtensionContext) {
 					const modulePaths = [...allWorkspaceFolders, ...allNodeModules];
 
 					const functionName = functionNode.name?.text;
-					if (! functionName) {
+					if (!functionName) {
 						throw new Error(`Top level anonymous functions are not supported`);
 					}
 					await shatterAutotest(modulePaths,
 						functionNode.getSourceFile().fileName,
 						context.storageUri?.fsPath,
-						functionName, (clusters, knownBranches) => {
-							const treeNodes = createClusterNodes(clusters, knownBranches);
-
-							const allFunctionsNodes: ClusterNode[] = [{
-								label: functionName,
-								children: treeNodes
-							}];
+						functionName, (results: AutotestResults) => {
+							extensionState.fileStates.set(editor.document.fileName, {
+								...extensionState.fileStates.get(editor.document.fileName),
+								results,
+							});
+							//	TODO: clear the panel
 
 							console.log(`refreshing function node to display = ${functionNode.name?.text}`);
-							astDataProvider.refresh(allFunctionsNodes);
 						}, extensionSource);
+					updateDecorations(editor);
 
 				} else {
 					console.log(`function node not found`);
@@ -314,11 +562,13 @@ class ClusterNodeTreeDataProvider implements vscode.TreeDataProvider<ClusterNode
 	private roots: ClusterNode[] | undefined;
 
 	// Initialize empty
-	constructor() {
+	constructor(private command?: Pick<vscode.Command, 'command' | 'title'>) {
 		this.roots = undefined;
 	}
 
 	// update notify the tree view.
+	//	TODO: if the tree provider is going to know about AutotestResults
+	//	then it should do the conversion also
 	refresh(roots: ClusterNode[] | undefined) {
 		this.roots = roots;
 
@@ -348,6 +598,12 @@ class ClusterNodeTreeDataProvider implements vscode.TreeDataProvider<ClusterNode
 		treeItem.collapsibleState = element.children ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.None;
 		//	TODO: tooltip should be expanded (but still bounded) parameter list
 		treeItem.tooltip = element.label;
+		if (this.command) {
+			treeItem.command = {
+				...this.command,
+				arguments: [element],
+			};
+		}
 		return treeItem;
 	}
 }
@@ -387,4 +643,91 @@ function findFilesInHierarchy<K extends string>(
 	}
 
 	return foundFiles;
+}
+
+interface FunctionsListNode {
+	label: string;
+	function: ts.FunctionDeclaration;
+}
+
+class ShatterFunctionsListProvider implements vscode.TreeDataProvider<FunctionsListNode> {
+	private _onDidChangeTreeData: vscode.EventEmitter<FunctionsListNode | undefined | void> = new vscode.EventEmitter<FunctionsListNode | undefined>();
+	readonly onDidChangeTreeData: vscode.Event<FunctionsListNode | undefined | void> = this._onDidChangeTreeData.event;
+	private functions: ts.FunctionDeclaration[] = [];
+
+	constructor() { }
+
+	getTreeItem(element: FunctionsListNode): vscode.TreeItem | Thenable<vscode.TreeItem> {
+		const treeItem = new vscode.TreeItem(element.label);
+		treeItem.collapsibleState = vscode.TreeItemCollapsibleState.Expanded;
+		treeItem.tooltip = element.label;
+		treeItem.command = {
+			command: 'extension.shatterAutotest',
+			title: 'Shatter Autotest',
+			arguments: [element.function],
+		};
+		//	TODO: add a context menu item for running tests
+		return treeItem;
+	}
+
+	getChildren(element?: FunctionsListNode | undefined): vscode.ProviderResult<FunctionsListNode[]> {
+		if (element) {
+			return [];
+		}
+		return this.functions.map((f) => ({
+			label: f.name?.text || "",
+			function: f,
+		}));
+	}
+
+	refresh(functions: ts.FunctionDeclaration[]) {
+		this.functions = functions;
+		this._onDidChangeTreeData.fire();
+	}
+}
+
+//	under each execution path show number of branches and number of runs
+interface ExecutionPathNode {
+	label: string;
+	children?: ExecutionPathNode[];
+}
+
+class ShatterExecutionPathsProvider implements vscode.TreeDataProvider<ExecutionPathNode> {
+	private _onDidChangeTreeData: vscode.EventEmitter<ExecutionPathNode | undefined | void> = new vscode.EventEmitter<ExecutionPathNode | undefined>();
+	onDidChangeTreeData?: vscode.Event<void | ExecutionPathNode | ExecutionPathNode[] | null | undefined> | undefined;
+	getTreeItem(element: ExecutionPathNode): vscode.TreeItem | Thenable<vscode.TreeItem> {
+		throw new Error('Method not implemented.');
+	}
+	getChildren(element?: ExecutionPathNode | undefined): vscode.ProviderResult<ExecutionPathNode[]> {
+		throw new Error('Method not implemented.');
+	}
+}
+
+
+class FunctionListTreeDataProvider implements vscode.TreeDataProvider<ClusterNode> {
+	private _onDidChangeTreeData: vscode.EventEmitter<ClusterNode | undefined | void> = new vscode.EventEmitter<ClusterNode | undefined | void>();
+	readonly onDidChangeTreeData: vscode.Event<ClusterNode | undefined | void> = this._onDidChangeTreeData.event;
+
+	private roots: ClusterNode[] | undefined;
+
+	constructor() {
+		this.roots = undefined;
+	}
+
+	refresh(roots: ClusterNode[] | undefined, results: AutotestResults | undefined) {
+		this.roots = roots;
+	}
+
+	getTreeItem(element: ClusterNode): vscode.TreeItem | Thenable<vscode.TreeItem> {
+		const treeItem = new vscode.TreeItem(element.label);
+		treeItem.collapsibleState = element.children ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.None;
+		return treeItem;
+	}
+
+	getChildren(element?: ClusterNode | undefined): vscode.ProviderResult<ClusterNode[]> {
+		if (element) {
+			return [];
+		}
+		return this.roots ? this.roots : [];
+	}
 }
