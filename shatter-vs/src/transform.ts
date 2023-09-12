@@ -4,11 +4,21 @@ import { Node, SourceFile } from 'typescript';
 import { createId } from '@paralleldrive/cuid2';
 import { FunctionDeclaration } from 'typescript';
 import { vi } from '@faker-js/faker';
+import { start } from 'repl';
+
+const SP_FAKE_KEY = "__sp_fake";
+const SP_ORIGINAL_KEY = "__sp_original";
+
+const c = <N extends ts.Node>(n: N, original: ts.Node | null): N => {
+    (n as any)[SP_FAKE_KEY] = 1;
+    (n as any)[SP_ORIGINAL_KEY] = original;
+    return n;
+};
 
 const instrumentationCallNodeStacked = (factory: ts.NodeFactory, id: string, recordFunctionName: string,
     stopRecordingFunctionName: string, next: ts.NodeArray<ts.Statement>, meta: { line?: number, character?: number, filename?: string }) => {
 
-    const metaObject = factory.createObjectLiteralExpression(
+    const metaObject = c(factory.createObjectLiteralExpression(
         [
             factory.createPropertyAssignment(
                 factory.createIdentifier("line"),
@@ -24,35 +34,34 @@ const instrumentationCallNodeStacked = (factory: ts.NodeFactory, id: string, rec
             )
         ],
         true
-    )
+    ), null);
 
-
-    const startBlock = factory.createBlock(
+    const startBlock = c(factory.createBlock(
         [factory.createExpressionStatement(factory.createCallExpression(
             factory.createIdentifier(recordFunctionName),
             undefined,
             [factory.createStringLiteral(id), metaObject]
         )), ...next],
         true
+    ), null);
 
-    );
-    const stopBlock = factory.createBlock(
+    const stopBlock = c(factory.createBlock(
         [factory.createExpressionStatement(factory.createCallExpression(
             factory.createIdentifier(stopRecordingFunctionName),
             undefined,
             [factory.createStringLiteral(id)]
         ))],
         true
-    );
+    ), null);
 
-    return factory.createBlock(
+    return c(factory.createBlock(
         [factory.createTryStatement(
             startBlock,
             undefined,
             stopBlock
         )],
         true
-    );
+    ), null);
 };
 
 const _instrumentationCallNode = (factory: ts.NodeFactory, id: string, recordFunctionName: string) => {
@@ -89,7 +98,7 @@ const createImportStatement = (factory: ts.NodeFactory, module: string, ...thing
 
 export interface Branch {
     id: string;
-    node: ts.Node;
+    originalNode: ts.Node;
     line: number;
 }
 
@@ -133,9 +142,9 @@ const ifHasImplicitElseBranch = (ifStatement: ts.IfStatement): boolean => {
 
 //  TODO: instrument every line because every line could throw an exception and thus be a branch
 export const instrumentModule = (introspectionContext: IntrospectionContext, shatterproofModuleOverride?: string) => {
-
     return (ctx: ts.TransformationContext) => (sourceFile: SourceFile): SourceFile => {
         const factory = ctx.factory;
+
         const startRecordingAlias = factory.createUniqueName("shatterproof_startRecording").text;
         const stopRecordingAlias = factory.createUniqueName("shatterproof_stopRecording").text;
         const executeAlias = factory.createUniqueName("shatterproof_execute").text;
@@ -232,15 +241,16 @@ export const instrumentModule = (introspectionContext: IntrospectionContext, sha
                                     slice.push(statements[j]);
                                 }
                                 const converted = convertToBlockWithExplicitElses(factory.createNodeArray(slice));
-                                const elseBlock = factory.createBlock([converted]);
+                                const elseBlock = c(factory.createBlock([converted]), slice[0]);
 
-                                const newIf = factory.createIfStatement(s.expression, s.thenStatement, elseBlock);
+                                const newIf = c(factory.createIfStatement(s.expression, s.thenStatement, elseBlock), s);
                                 newStatements.push(newIf);
                                 break;
                             }
                         }
                     }
-                    return factory.createBlock(newStatements);
+                    const newBlock = c(factory.createBlock(newStatements), node);
+                    return newBlock;
                 };
 
                 const converted = convertToBlockWithExplicitElses(node.statements);
@@ -278,7 +288,8 @@ export const instrumentModule = (introspectionContext: IntrospectionContext, sha
                         const newStatements = ((): (ts.Statement | ts.Node)[] => {
                             if (clause.statements.length === 0) {
                                 //  create block with just instrumentation in it
-                                return [instrumentBlockOrStatement(factory, introspectionContext, factory.createBlock([]))];
+                                const emptyBlock = c(factory.createBlock([]), clause);
+                                return [instrumentBlockOrStatement(factory, introspectionContext, emptyBlock)];
                             }
                             return clause.statements
                                 .map(statement => instrumentBlockOrStatement(factory, introspectionContext, statement));
@@ -357,29 +368,33 @@ export const instrumentModule = (introspectionContext: IntrospectionContext, sha
     };
 };
 
-function extractMetadata(node: ts.Node) {
-    const meta = {
-        line: -1,
-        character: -1,
-        filename: "",
-    };
+function extractMetadata(node: ts.Node): { line: number, character: number, filename: string } {
+    if (SP_ORIGINAL_KEY in node) {
+        if (node[SP_ORIGINAL_KEY] === null) {
+            throw new Error(`Unexpected null original node in ${ts.SyntaxKind[node.kind]}`);
+        }
+        return extractMetadata((node as any)[SP_ORIGINAL_KEY]);
+    }
     if (node.pos && node.pos > 0 && node.getSourceFile()) {
         const { line, character } = ts.getLineAndCharacterOfPosition(node.getSourceFile(), node.pos);
-        meta.line = line;
-        meta.character = character;
+        const filename = ts.isSourceFile(node)
+            ? node.fileName
+            : node.getSourceFile()?.fileName;
+        const meta = {
+            line,
+            character,
+            filename,
+        };
+        return meta;
     }
-    const filename = node.getSourceFile()?.fileName;
-    if (filename) {
-        meta.filename = filename;
-    }
-    return meta;
+    throw new Error(`Unable to extract metadata for node ${ts.SyntaxKind[node.kind]}`);
 }
 
 //  TODO: make IntrospectionContext a class and this a method on it
-function createBranch(sourceFile: ts.SourceFile, node: ts.Statement, instrumentationContext: IntrospectionContext) {
-    const meta = extractMetadata(node);
+function createBranch(sourceFile: ts.SourceFile, originalNode: ts.Statement, instrumentationContext: IntrospectionContext) {
+    const meta = extractMetadata(originalNode);
     const id = createId();
-    const branch: Branch = { id, node, line:meta.line };
+    const branch: Branch = { id, originalNode, line: meta.line };
     instrumentationContext.knownBranches.set(id, branch);
     return branch;
 }
