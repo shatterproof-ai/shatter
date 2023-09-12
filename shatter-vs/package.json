@@ -15,17 +15,35 @@
     "commands": [
       {
         "command": "extension.shatterAutotestContext",
-        "title": "Shatter autotest"
+        "title": "Autotest"
+      },
+      {
+        "command": "extension.shatterRetestContext",
+        "title": "Regression test"
       }
     ],
     "menus": {
       "editor/context": [
         {
-          "command": "extension.shatterAutotestContext",
+          "submenu": "shatter.submenu",
           "group": "test-analyze"
+        }
+      ],
+      "shatter.submenu": [
+        {
+          "command": "extension.shatterAutotestContext"
+        },
+        {
+          "command": "extension.shatterRetestContext"
         }
       ]
     },
+    "submenus": [
+      {
+        "id": "shatter.submenu",
+        "label": "Shatter"
+      }
+    ],
     "configuration": [
       {
         "title": "Shatterproof",

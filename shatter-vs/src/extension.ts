@@ -153,7 +153,7 @@ export function activate(context: vscode.ExtensionContext) {
 	//	shatterproof needs an existence outside VSCode anyway
 	const extensionSource = join(context.extensionPath, 'src');
 
-	const disposable = vscode.commands.registerCommand('extension.shatterAutotest', async () => {
+	const autotestCommand = vscode.commands.registerCommand('extension.shatterAutotest', async () => {
 		const editor = vscode.window.activeTextEditor;
 		ts.ScriptSnapshot.fromString('');
 		//	TODOTODO: initialize empty results sidebar
@@ -215,9 +215,9 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	});
 
-	context.subscriptions.push(disposable);
+	context.subscriptions.push(autotestCommand);
 
-	const disposableContextMenu = vscode.commands.registerCommand('extension.shatterAutotestContext', () => {
+	const autotestContextMenu = vscode.commands.registerCommand('extension.shatterAutotestContext', () => {
 		vscode.commands.executeCommand('extension.shatterAutotest');
 	});
 
@@ -237,7 +237,35 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	);
 
-	context.subscriptions.push(disposableContextMenu);
+	context.subscriptions.push(autotestContextMenu);
+
+	const retestCommand = vscode.commands.registerCommand('extension.shatterRetest', async () => {
+		console.log(`there was an attempt`);
+	});
+
+	context.subscriptions.push(retestCommand);
+
+	const retestContextMenu = vscode.commands.registerCommand('extension.shatterRetestContext', () => {
+		vscode.commands.executeCommand('extension.shatterRetest');
+	});
+
+	vscode.languages.registerCodeActionsProvider(
+		{ scheme: 'file', language: 'typescript' },
+		{
+			provideCodeActions: (document, range) => {
+				console.log(`provideCodeActions called`);
+				return [
+					{
+						command: 'extension.shatterRetestContext',
+						title: 'Shatter Retest',
+						tooltip: 'Retest selected function',
+					},
+				];
+			},
+		}
+	);
+
+	context.subscriptions.push(retestContextMenu);
 }
 
 function isCursorInFunctionName(
