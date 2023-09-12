@@ -140,6 +140,8 @@ const ifHasImplicitElseBranch = (ifStatement: ts.IfStatement): boolean => {
 
 };
 
+//  TODO: replace all of this with something off the shelf e.g. Istanbul or Babel
+//  https://github.com/istanbuljs/istanbuljs/tree/master/packages/istanbul-lib-instrument
 //  TODO: instrument every line because every line could throw an exception and thus be a branch
 export const instrumentModule = (introspectionContext: IntrospectionContext, shatterproofModuleOverride?: string) => {
     return (ctx: ts.TransformationContext) => (sourceFile: SourceFile): SourceFile => {

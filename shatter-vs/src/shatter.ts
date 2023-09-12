@@ -128,20 +128,20 @@ export async function shatterAutotest(modulePaths: string[],
                 }
             }
 
-            unreachedInOrder.sort((a, b) => a.node.pos - b.node.pos);
+            unreachedInOrder.sort((a, b) => a.originalNode.pos - b.originalNode.pos);
             const firstUnreached = unreachedInOrder[0];
 
             let lastExecutedBranch: Branch | null = null;
-            if (firstUnreached.node.parent) {
-                for (let i = 0; i < firstUnreached.node.parent.getChildCount(); i++) {
-                    const currentChild = unreachedInOrder[0].node.parent.getChildAt(i);
-                    if (currentChild === firstUnreached.node) {
+            if (firstUnreached.originalNode.parent) {
+                for (let i = 0; i < firstUnreached.originalNode.parent.getChildCount(); i++) {
+                    const currentChild = unreachedInOrder[0].originalNode.parent.getChildAt(i);
+                    if (currentChild === firstUnreached.originalNode) {
                         break;
                     }
                     // lastExecutedBranch = currentChild;
                 }
             } else {
-                console.log(`firstUnreached.node.parent is null: ${firstUnreached.node.pos} - ${firstUnreached.node.end}`);
+                console.log(`firstUnreached.node.parent is null: ${firstUnreached.originalNode.pos} - ${firstUnreached.originalNode.end}`);
             }
 
             clusters.forEach(cluster => {
