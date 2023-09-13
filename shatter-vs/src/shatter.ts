@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import * as ts from 'typescript';
-import { Generator } from './generator';
+import { CCombinatorialTestCaseSource } from './generator';
 import { Outcome, RunResult, Supervisor } from './supervisor';
 import { Branch, IntrospectionContext, instrumentModule as createInstrumenter } from './transform';
 
@@ -102,7 +102,7 @@ export async function shatterAutotest(modulePaths: string[],
         throw new Error(`Could not find function body`);
     }
 
-    const generator = new Generator(program.getTypeChecker(), functionDeclarationNode.parameters);
+    const generator = new CCombinatorialTestCaseSource(program.getTypeChecker(), functionDeclarationNode.parameters);
 
     const parameterLists = generator.generateRandom(10);
 

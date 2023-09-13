@@ -3,6 +3,9 @@ import * as ts from 'typescript';
 import { createId } from "@paralleldrive/cuid2";
 
 import { faker } from '@faker-js/faker';
+import { RunResult } from './supervisor';
+import { ResultCluster } from './shatter';
+import { Branch } from './transform';
 
 const edgyNumbers = () => {
     const numbers = new Set<number>();
@@ -280,9 +283,131 @@ const constructValue = (possibility: Possibility | null): any => {
     }
 };
 
-export class Generator {
+interface TestCaseSource {
+    next(): GeneratedParameterList | undefined;
+    update?(clusterMap: Map<string, ResultCluster>, r: RunResult): void;
+}
 
-    private counter = 1;
+export class RetestCaseSource implements TestCaseSource {
+    private clusterIndex = 0;
+    private resultIndex = 0;
+    private counter = 0;
+    constructor(private clusters: ResultCluster[]) { }
+    next(): GeneratedParameterList | undefined {
+        if (this.clusterIndex >= this.clusters.length) {
+            return undefined;
+        }
+
+        if (this.resultIndex >= this.clusters[this.clusterIndex].results.length) {
+            this.clusterIndex++;
+            this.resultIndex = 0;
+            return this.next();
+        }
+
+        const result = this.clusters[this.clusterIndex].results[this.resultIndex];
+        this.resultIndex++;
+        //  TODO: should this save GeneratedParameterList instead of the bare parameters any[]?
+        return {
+            id: createId(),
+            sequence: this.counter++,
+            parameters: result.parameters,
+        };
+    }
+}
+
+export class CombinatorialTestCaseSource implements TestCaseSource {
+
+    private counter = 0;
+    private history = new Map<string, GeneratedParameterList>();
+
+    //  map from the JSON path to a particular part of the argument list to a list of candidate values
+    //  use up all the seed values before trying anything different
+    private possibilities: (Possibility | null)[] = [];
+
+    private clusterMap = new Map<string, ResultCluster>();
+    private knownBranches = new Map<string, Branch>();
+
+    private buffer: GeneratedParameterList[] = [];
+
+    //  TODO: how to fingerprint a particular parameter list so it doesn't get used again?
+    //  stringifying the JSON won't work because of canonicalization, self reference, and non-serializable objects
+    //  but maybe that's good enough for now
+
+    constructor(
+        private checker: ts.TypeChecker,
+        private f: ts.FunctionDeclaration) {
+
+        for (const [i, param] of f.parameters.entries()) {
+            let paramName = undefined;
+            if (ts.isIdentifier(param.name)) {
+                paramName = param.name.text;
+            }
+
+            if (param.type) {
+                if (ts.isTypeReferenceNode(param.type) || ts.isTypeNode(param.type)) {
+                    const value = constructValueForTypeNode(checker, param.type);
+                    if (value === null) {
+                        this.possibilities.push(null);
+                    }
+                    this.possibilities.push(value);
+                } else {
+                    throw new Error(`Unexpected type for ${paramName}: ${param.type}`);
+                }
+            } else {
+                throw new Error(`Unexpected type for ${paramName}: ${param.type}`);
+            }
+        }
+    }
+
+    next(): GeneratedParameterList | undefined {
+        if (this.buffer.length > 0) {
+            const next = this.buffer.shift()!;
+            // this.history.set(next?.id, next);
+            return next;
+        }
+
+        const minPerPath = 5;
+        const bisectionLimit = 10;
+        const mutationLimit = 10;
+        const newGen = 10;
+
+        //  Do some combination of bisection, mutation, and random generation
+        /*
+        bisection - find two parameter lists that are very similar to each other but lead to different code paths
+            //  for each parameter list in a cluster, find the outermost
+            //  optimization: record which parameter lists are NOT near the edges of their cluster to avoid reexamining
+            //  for each pair of outermosts across all cluster, bisect
+        */
+
+        //  find all code paths that haven't been exercised enough
+
+        //  TODO: how to identify the components of a parameter list that were necessary to get past a particular point?
+        //  TODO (one day): instrument the getters and see which are accessed in the evaluation of a condition
+
+
+        //  random
+        const parameters: any[] = this.possibilities.map(constructValue);
+
+        const id = createId();
+        const gplist: GeneratedParameterList = {
+            id,
+            sequence: this.counter++,
+            parameters,
+        };
+
+        this.buffer.push(gplist);
+
+
+    }
+
+    update(clusterMap: Map<string, ResultCluster>, r: RunResult): void {
+        this.clusterMap = clusterMap;
+    }
+}
+
+export class CCombinatorialTestCaseSource {
+
+    private counter = 0;
     private history = new Map<string, GeneratedParameterList>();
 
     //  map from the JSON path to a particular part of the argument list to a list of candidate values
