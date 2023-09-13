@@ -47,6 +47,7 @@ export type IntrospectionContext = {
     exported: Set<string>,
     functions: Map<string, FunctionDeclaration>,
     knownBranches: Map<string, Branch>,
+    instrumentedLines: Set<number>,
 };
 
 const thenCanReturn = (node: ts.Statement | ts.Block): boolean => {
@@ -87,7 +88,7 @@ export const findFunctions = (sourceFileName: string): FunctionDeclaration[] => 
 //  TODO: replace all of this with something off the shelf e.g. Istanbul or Babel
 //  https://github.com/istanbuljs/istanbuljs/tree/master/packages/istanbul-lib-instrument
 //  TODO: instrument every line because every line could throw an exception and thus be a branch
-export const instrumentModule = (introspectionContext: IntrospectionContext, shatterproofModuleOverride?: string) => {
+export const createInstrumenter = (introspectionContext: IntrospectionContext, shatterproofModuleOverride?: string) => {
     return (ctx: ts.TransformationContext) => (sourceFile: SourceFile): SourceFile => {
         const factory = ctx.factory;
 
@@ -116,6 +117,7 @@ export const instrumentModule = (introspectionContext: IntrospectionContext, sha
                     undefined,
                     [factory.createNumericLiteral(lineNumber)]
                 ));
+                introspectionContext.instrumentedLines.add(lineNumber);
 
                 const visited = instrumentingVisitor(node);
 

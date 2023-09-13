@@ -5,7 +5,7 @@ import { join } from 'path';
 import * as ts from 'typescript';
 import { CCombinatorialTestCaseSource } from './generator';
 import { Outcome, RunResult, Supervisor } from './supervisor';
-import { Branch, IntrospectionContext, instrumentModule as createInstrumenter } from './transform';
+import { Branch, IntrospectionContext, createInstrumenter } from './transform';
 
 export interface AutotestResults {
     clusters: ResultCluster[];
@@ -113,6 +113,7 @@ export async function shatterAutotest(modulePaths: string[],
     const startTime = Date.now();
 
     const allExecutedBranches = new Set<string>();
+    const allExecutedLines = new Set<number>();
 
     const clusters: ResultCluster[] = [];
     const clusterMap = new Map<string, ResultCluster>();
@@ -125,6 +126,7 @@ export async function shatterAutotest(modulePaths: string[],
 
         onUpdate({ clusters, branches: introspectionContext.knownBranches });
 
+        runResult.lines.forEach(line => allExecutedLines.add(line));
         // if still need to run, generate and breed more test cases and repeat
         if (allExecutedBranches.size < introspectionContext.knownBranches.size) {
             const unreachedInOrder: Branch[] = [];
@@ -160,8 +162,8 @@ export async function shatterAutotest(modulePaths: string[],
     console.log(`tryna allExecutedBranches.size = ${allExecutedBranches.size
         }, introspectionContext.knownBranches.size = ${introspectionContext.knownBranches.size
         }, parameterLists.length = ${parameterLists.length}`);
-    while ( /* allExecutedBranches.size < introspectionContext.knownBranches.size
-        && */ parameterLists.length > 0
+    while (allExecutedLines.size < introspectionContext.instrumentedLines.size
+        && parameterLists.length > 0
         && count < maxIterations
         && Date.now() - startTime < maxTime) {
 
@@ -308,6 +310,7 @@ export function writeInstrumented(sourceFile: ts.SourceFile,
         functions: new Map(),
         exported: new Set(),
         knownBranches: new Map(),
+        instrumentedLines: new Set(),
     };
 
     const codeTransformer = createInstrumenter(introspectionContext, shatterproofModuleOverride);
