@@ -131,7 +131,6 @@ export function activate(context: vscode.ExtensionContext) {
 	const doSelectFile = () => {
 		//	_filename and filename should be the same
 		const filename = vscode.window.activeTextEditor?.document.fileName;
-		console.log(`doSelectFile called with ${filename}`);
 		if (!filename) {
 			//	TODO: clear functions list
 			return;
@@ -163,7 +162,6 @@ export function activate(context: vscode.ExtensionContext) {
 	//	call after switching files, changing contents of the editor, or running tests
 	const doSelectFunction = (node: CommonDisplayNode) => {
 		const functionName: string = node.key || "";
-		console.log(`doSelectFunction called with ${functionName} from ${JSON.stringify(node)} and activeFile ${extensionState.activeFile}`);
 		if (!extensionState.activeFile) {
 			//	TODO: shouldn't happen
 			return;
@@ -471,7 +469,7 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(autotestFunctionViewContainerMenu);
 	
 	const retestFunctionViewContainerMenu = vscode.commands.registerCommand('extension.shatterRetestFunctionViewContainer', (item) => {
-		console.log(`retestFunctionViewContainerMenu called with ${JSON.stringify(item)}`);
+		// console.log(`retestFunctionViewContainerMenu called with ${JSON.stringify(item)}`);
 	});
 	context.subscriptions.push(retestFunctionViewContainerMenu);
 
@@ -641,7 +639,7 @@ class CommonTreeDataProvider implements vscode.TreeDataProvider<CommonDisplayNod
 	refresh(roots: CommonDisplayNode[] | undefined) {
 		this.roots = roots;
 
-		console.log(`firing onchange with ${JSON.stringify(roots)}}`);
+		// console.log(`firing onchange with ${JSON.stringify(roots)}}`);
 
 		this._onDidChangeTreeData.fire();
 	}
