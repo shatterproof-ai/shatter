@@ -10,36 +10,7 @@ import { findFunctions } from './transform';
 interface ClusterNode {
 	label: string;
 	children?: ClusterNode[];
-	key: string,
-}
-
-function runResultToClusterNode(prefix: string, result: RunResult): ClusterNode {
-	const resultChildren: ClusterNode[] = [];
-	if (result.output) {
-		resultChildren.push(
-			visit("output", result.output, 3));
-	}
-	if (result.error) {
-
-		resultChildren.push(
-			visit("error", result.error, 3));
-	}
-
-	return {
-		label: prefix,
-		children: [{
-			label: "Duration",
-			children: [{
-				label: `${result.duration}ms`
-			}]
-		}, {
-			label: "Parameters",
-			children: clusterValues(result.parameters)
-		}, {
-			label: "Result",
-			children: resultChildren
-		}],
-	};
+	kkey?: string,
 }
 
 function visit(k: string | number, o: any, depth = 0): ClusterNode {
@@ -80,8 +51,40 @@ function visit(k: string | number, o: any, depth = 0): ClusterNode {
 	};
 }
 
+const clusterValues = (values: any[]) =>
+	values.map((value, i) => visit(i, value, 3));
+
+function runResultToClusterNode(prefix: string, result: RunResult): ClusterNode {
+	const resultChildren: ClusterNode[] = [];
+	if (result.output) {
+		resultChildren.push(
+			visit("output", result.output, 3));
+	}
+
+	if (result.error) {
+		resultChildren.push(
+			visit("error", result.error, 3));
+	}
+
+	return {
+		label: prefix,
+		children: [{
+			label: "Duration",
+			children: [{
+				label: `${result.duration}ms`
+			}]
+		}, {
+			label: "Parameters",
+			children: clusterValues(result.parameters)
+		}, {
+			label: "Result",
+			children: resultChildren
+		}],
+	};
+}
+
 type FunctionState = {
-	results: AutotestResults;
+	autotest: AutotestResults;
 }
 
 type FileState = {
@@ -96,70 +99,44 @@ type ExtensionState = {
 	activeClusterKey?: string;
 };
 
-//	TODO: surely there's a more idiomatic way to do this
-const extensionEvents = ["onSelectFile", "onSelectFunction", "onSelectCluster", "onAutotest", "onRetest"] as const;
-type ExtensionEventType = typeof extensionEvents[number];
-type ExtensionEvent = {
-	type: ExtensionEventType;
-	value: string;
-};
-
-class Eventing {
-	private subscribers: Record<ExtensionEventType, ((e: ExtensionEvent) => void)[]> =
-		Object.fromEntries(extensionEvents.map((event) => [event, []])) as any;
-
-	subscribe(event: ExtensionEventType, callback: (e: ExtensionEvent) => void) {
-		this.subscribers[event].push(callback);
-	}
-
-	publish(event: ExtensionEvent) {
-		this.subscribers[event.type].forEach((callback) => callback(event));
-	}
-}
-
-/*
-	on test run => IF function is selected refresh branches; if branch is selected, refresh test cases
-	on editor change => refresh functions list, clear results
-	on editor contents change => refresh functions list
-
-	on function selection => refresh clusters list
-	on cluster selection => refresh branches, refresh test cases
-*/
-
 export function activate(context: vscode.ExtensionContext) {
 
 	const extensionState: ExtensionState = {
 		fileStates: new Map(),
 	};
-	const eventer = new Eventing();
 
 	//	TODO: Refresh functions list view contents on change of editor
 	const functionsListProvider = new ClusterNodeTreeDataProvider({
 		command: 'extension.shatterSelectFunction',
 		title: 'Functions',
 	});
+	context.subscriptions.push(
+		vscode.window.registerTreeDataProvider("shatter-functions-list", functionsListProvider));
 
 	const clustersListProvider = new ClusterNodeTreeDataProvider({
 		command: 'extension.shatterSelectCluster',
 		title: 'Functions',
 	});
+	context.subscriptions.push(
+		vscode.window.registerTreeDataProvider("shatter-execution-paths", clustersListProvider));
 
 	const coverageProvider = new ClusterNodeTreeDataProvider();
+	context.subscriptions.push(
+		vscode.window.registerTreeDataProvider("shatter-coverage", coverageProvider));
 
 	const testCasesProvider = new ClusterNodeTreeDataProvider();
+	context.subscriptions.push(
+		vscode.window.registerTreeDataProvider("shatter-test-cases", testCasesProvider));
 
-	const doSelectFile = (_filename:string) => {
-		//	_filename and filenaem should be the same
+	const doSelectFile = (_filename: string) => {
+		//	_filename and filename should be the same
 		const filename = vscode.window.activeTextEditor?.document.fileName;
 		if (!filename) {
 			//	TODO: clear functions list
 			return;
 		}
 		extensionState.activeFile = filename;
-		eventer.publish({
-			type: "onSelectFile",
-			value: filename,
-		})
+		refresh();
 	};
 
 	//	call after switching files, changing contents of the editor, or running tests
@@ -178,14 +155,11 @@ export function activate(context: vscode.ExtensionContext) {
 		const selectedFunction = functions.find((f) => f.name?.text === functionName);
 		if (selectedFunction) {
 			extensionState.activeFunction = functionName;
-			eventer.publish({
-				type: "onSelectFunction",
-				value: functionName,
-			});
 		} else {
 			extensionState.activeClusterKey = undefined;
 			extensionState.activeFunction = undefined;
 		}
+		refresh();
 	};
 
 	const doSelectCluster = (clusterKey: string) => {
@@ -195,36 +169,33 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 		const filename = extensionState.activeFile;
 		const filestate = extensionState.fileStates.get(filename);
-		if (! filestate) {
+		if (!filestate) {
 			//	TODO: shouldn't happen
 			return;
 		}
 
-		if (! extensionState.activeFunction) {
+		if (!extensionState.activeFunction) {
 			return;
 		}
 
 		const functions = findFunctions(filename);
 
 		const selectedFunction = functions.find((f) => f.name?.text === extensionState.activeFunction);
-		if (! selectedFunction) {
+		if (!selectedFunction) {
 			//	TODO: shouldn't happen
 			return;
 		}
 
 		const functionState = filestate?.functionStates?.get(extensionState.activeFunction)
 
-		const cluster = functionState?.results.clusters.find((cluster) => cluster.key === clusterKey);
+		const cluster = functionState?.autotest.clusters.find((cluster) => cluster.key === clusterKey);
 		if (cluster) {
 			extensionState.activeClusterKey = clusterKey;
-			eventer.publish({
-				type: "onSelectCluster",
-				value: clusterKey,
-			});
+			refresh();
 		}
- 	}
+	}
 
-	const refreshFunctionsList = () => {
+	const refresh = () => {
 		const filename = extensionState.activeFile;
 		if (!filename) {
 			//	TODO: clear functions list, clusters list, branches list, test cases list
@@ -248,25 +219,6 @@ export function activate(context: vscode.ExtensionContext) {
 		}));
 
 		functionsListProvider.refresh(nodes);
-	};
-
-	const refreshClusters = () => {
-		//	TODO: reduce duplication
-		const filename = extensionState.activeFile;
-		if (!filename) {
-			//	TODO: clear functions list, clusters list, branches list, test cases list
-			return;
-		}
-		if (!extensionState.activeFunction) {
-			//	TODO: clear clusters list, branches list, test cases list
-			return;
-		}
-
-		const fileState = extensionState.fileStates.get(filename);
-		if (!fileState?.functions) {
-			//	TODO: clear what needs clearing
-			return;
-		}
 
 		if (!extensionState.activeFunction) {
 			return;
@@ -277,7 +229,7 @@ export function activate(context: vscode.ExtensionContext) {
 			return;
 		}
 
-		const results = fileState.functionStates?.get(extensionState.activeFunction)?.results;
+		const results = fileState.functionStates?.get(extensionState.activeFunction)?.autotest;
 		if (!results) {
 			return;
 		}
@@ -291,12 +243,18 @@ export function activate(context: vscode.ExtensionContext) {
 			};
 		});
 		clustersListProvider.refresh(clusterNodes);
-	};
 
-	function refreshCoverage() {
-		const selectedCluster = results.clusters.find((cluster) => cluster.key === extensionState.activeClusterKey);
-		if (! selectedCluster) {
+		if (!extensionState.activeClusterKey) {
 			return;
+		}
+
+		const selectedCluster = results.clusters.find((cluster) => cluster.key === extensionState.activeClusterKey);
+		if (!selectedCluster) {
+			return;
+		}
+
+		if (vscode.window.activeTextEditor) {
+			updateDecorations(vscode.window.activeTextEditor, fileState);
 		}
 
 		const coverageNodes: ClusterNode[] = selectedCluster.branches.map((branchName) => {
@@ -313,113 +271,54 @@ export function activate(context: vscode.ExtensionContext) {
 		});
 		coverageProvider.refresh(coverageNodes);
 
-	}
-	
-	function refreshTestCases() {
-		const filename = extensionState.activeFile;
-		if (!filename) {
-			//	TODO: should not happen
-			return;
-		}
-
 		const testCasesNodes: ClusterNode[] = selectedCluster.results.map((result, i) => {
 			return runResultToClusterNode(`[${i}]`, result);
 		});
 		testCasesProvider.refresh(testCasesNodes);
 	}
-	
-	const refreshDecorations = () => {
-		if (vscode.window.activeTextEditor) {
-			updateDecorations(vscode.window.activeTextEditor);
-		}
-	};
-
 
 	//	called by the command handler for the function selector
 	//	needs to be registered as a command because TreeView needs a command to dispatch to
 	const selectFunctionCommand = vscode.commands.registerCommand('extension.shatterSelectFunction', doSelectFunction);
 	context.subscriptions.push(selectFunctionCommand);
 
-	const onSelectCluster = () => {
-		if (!extensionState.activeFile) {
-			//	TODO: should not happen
-			return;
-		}
-
-		const fileState = extensionState.fileStates.get(extensionState.activeFile);
-		if (!fileState) {
-			//	TODO: should not happen
-			return;
-		}
-
-		const func = fileState.functions?.find((f) => f.name?.text === extensionState.activeFunction);
-		if (!func) {
-			//	TODO: should not happen
-			return;
-		}
-
-		const cluster = fileState.results?.clusters.find((cluster) => cluster.key === activeCluster);
-		if (!cluster) {
-			return;
-		}
-
-		const coverageNodes: ClusterNode[] = cluster.branches.map((branchName) => {
-			const branch = fileState.results?.branches.get(branchName);
-			if (!branch) {
-				throw new Error(`Could not find branch ${branchName}`);
-			}
-
-			return {
-				label: `${branchName}: line ${branch.line}`,
-				children: [],
-				key: branch.id,
-			};
-		});
-		coverageProvider.refresh(coverageNodes);
-
-		const testCasesNodes: ClusterNode[] = cluster.results.map((result, i) => {
-			return runResultToClusterNode(`[${i}]`, result);
-		});
-		testCasesProvider.refresh(testCasesNodes);
-	};
 	//	needs to be registered as a command because TreeView needs a command to dispatch to
-	const selectClusterCommand = vscode.commands.registerCommand('extension.shatterSelectCluster', onSelectCluster);
+	const selectClusterCommand = vscode.commands.registerCommand('extension.shatterSelectCluster', doSelectCluster);
 	context.subscriptions.push(selectClusterCommand);
 
 	//	Refresh execution paths contents on change of selected function or test run
 	//	Refresh coverage contents on change of execution path
 	//	Refresh test cases contents on change of execution path
 
-	//	driven by file selection
-	context.subscriptions.push(
-		vscode.window.registerTreeDataProvider("shatter-functions-list", functionsListProvider));
-	//	driven by function selection
-	context.subscriptions.push(
-		vscode.window.registerTreeDataProvider("shatter-execution-paths", clustersListProvider));
-	//	driven by execution path selection
-	context.subscriptions.push(
-		vscode.window.registerTreeDataProvider("shatter-coverage", coverageProvider));
-	//	driven by execution path selection
-	context.subscriptions.push(
-		vscode.window.registerTreeDataProvider("shatter-test-cases", testCasesProvider));
-
 	let decorationType = vscode.window.createTextEditorDecorationType({
 		gutterIconPath: context.asAbsolutePath('media/triangle.svg'),
 		backgroundColor: 'lightgray'
 	});
 
-	function updateDecorations(editor: vscode.TextEditor, fileState?: FileState) {
+	function updateDecorations(editor: vscode.TextEditor, fileState: FileState) {
 		const text = editor.document.getText();
 		const decorationsArray: vscode.DecorationOptions[] = [];
 
-		const activeCluster = fileState?.results?.clusters?.find((cluster) => cluster?.key === extensionState.activeClusterKey);
+		if (!extensionState.activeFunction || !extensionState.activeClusterKey) {
+			//	TODO: logic for removing decorations
+			editor.setDecorations(decorationType, []);
+			return;
+		}
+		const functionState = fileState.functionStates?.get(extensionState.activeFunction)
+
+		const activeCluster = functionState?.autotest.clusters.find((cluster) => cluster?.key === extensionState.activeClusterKey);
+		if (!activeCluster) {
+			//	TODO: logic for removing decorations
+			editor.setDecorations(decorationType, []);
+			return;
+		}
 
 		console.log(`updateDecorations for active cluster = ${activeCluster?.key}`);
 
 		if (activeCluster) {
 			const linesToHighlight: number[] = [];
 			activeCluster.branches.forEach((branchName) => {
-				const branch = fileState?.results?.branches.get(branchName);
+				const branch = functionState?.autotest.branches.get(branchName);
 				if (branch) {
 					linesToHighlight.push(branch.line);
 				} else {
@@ -441,36 +340,18 @@ export function activate(context: vscode.ExtensionContext) {
 	}
 
 	context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(editor => {
-		if (editor) {
-			const results = extensionState.fileStates.get(editor.document.fileName);
-			updateDecorations(editor, results);
+		if (editor?.document.fileName) {
+			doSelectFile(editor.document.fileName);
 		}
-		refreshFunctionsList();
 	}, null, context.subscriptions));
 
+	//	overkill to refresh on every change?  TODO: see if there's a performance hit; at least we want to regenerate the function list
 	context.subscriptions.push(vscode.workspace.onDidChangeTextDocument(event => {
-		console.log(`onDidChangeTextDocument called for ${event.document.fileName}`)
-		if (vscode.window.activeTextEditor && event.document === vscode.window.activeTextEditor.document) {
-			doSelectFile({
-
-			})
-			updateDecorations(vscode.window.activeTextEditor);
+		const editor = vscode.window.activeTextEditor;
+		if (editor?.document.fileName) {
+			doSelectFile(editor.document.fileName);
 		}
-		refreshFunctionsList();
 	}, null, context.subscriptions));
-
-	//	TODO: why not just refresh everything every time?
-	[refreshClusters, refreshCoverage, refreshTestCases, refreshDecorations].forEach((f) => (["onAutotest", "onRetest"] as const).forEach((event) => eventer.subscribe(event, f)));
-	[refreshFunctionsList, refreshClusters, refreshCoverage, refreshTestCases, refreshDecorations].forEach((f) => eventer.subscribe("onSelectFile", f));
-	[refreshClusters, refreshCoverage, refreshTestCases, refreshDecorations].forEach((f) => eventer.subscribe("onSelectFunction", f));
-	[refreshCoverage, refreshTestCases, refreshDecorations].forEach((f) => eventer.subscribe("onSelectCluster", f));
-
-
-	const updateDecorationsCommand = vscode.commands.registerCommand('extension.shatterUpdateDecorations', () => {
-		if (vscode.window.activeTextEditor) {
-			updateDecorations(vscode.window.activeTextEditor);
-		}
-	});
 
 	//	TODO: fix the ugly hard-coding of 'src'; that can't be right for a standalone extension
 	//	TODO: just make people import shatterproof module in their projects; don't try to be magical about it
@@ -519,16 +400,22 @@ export function activate(context: vscode.ExtensionContext) {
 						functionNode.getSourceFile().fileName,
 						context.storageUri?.fsPath,
 						functionName, (results: AutotestResults) => {
-							extensionState.fileStates.set(editor.document.fileName, {
-								...extensionState.fileStates.get(editor.document.fileName),
-								results,
+							let filestate = extensionState.fileStates.get(editor.document.fileName)
+							if (!filestate) {
+								const functions = findFunctions(editor.document.fileName);
+								filestate = {
+									functions,
+									functionStates: new Map(),
+								};
+								extensionState.fileStates.set(editor.document.fileName, filestate);
+							}
+							filestate.functionStates?.set(functionName, {
+								autotest: results,
 							});
-							//	TODO: clear the panel
 
 							console.log(`refreshing function node to display = ${functionNode.name?.text}`);
+							refresh();
 						}, extensionSource);
-					updateDecorations(editor);
-
 				} else {
 					console.log(`function node not found`);
 				}
