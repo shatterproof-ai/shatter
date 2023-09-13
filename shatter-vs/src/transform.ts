@@ -3,8 +3,6 @@ import { Node, SourceFile } from 'typescript';
 
 import { createId } from '@paralleldrive/cuid2';
 import { FunctionDeclaration } from 'typescript';
-import { vi } from '@faker-js/faker';
-import { start } from 'repl';
 
 const SP_FAKE_KEY = "__sp_fake";
 const SP_ORIGINAL_KEY = "__sp_original";
@@ -64,14 +62,6 @@ const instrumentationCallNodeStacked = (factory: ts.NodeFactory, id: string, rec
     ), null);
 };
 
-const _instrumentationCallNode = (factory: ts.NodeFactory, id: string, recordFunctionName: string) => {
-    return factory.createCallExpression(
-        factory.createIdentifier(recordFunctionName),
-        undefined,
-        [factory.createStringLiteral(id)]
-    );
-};
-
 const createImportStatement = (factory: ts.NodeFactory, module: string, ...things: { name: string, alias?: string }[]) => {
     const imports: ts.ImportSpecifier[] = [];
 
@@ -113,31 +103,6 @@ const thenCanReturn = (node: ts.Statement | ts.Block): boolean => {
         return !!node.statements.find(thenCanReturn);
     }
     return ts.isReturnStatement(node) || ts.isThrowStatement(node);
-};
-
-const ifHasImplicitElseBranch = (ifStatement: ts.IfStatement): boolean => {
-    if (ifStatement.elseStatement) {
-        //  explicit else
-        return false;
-    }
-    if (!ts.isBlock(ifStatement.thenStatement)) {
-        /*
-          is some kind of non-returning statement, e.g.
-          if (x) x++;
-        */
-        return false;
-    }
-    if (!thenCanReturn(ifStatement.thenStatement)) {
-        //  if the then doesn't return, then every it always executes after the if
-        //TODO: why be fancy about it?  Just record after every loop or if statement
-        return false;
-    }
-    if (ts.isReturnStatement(ifStatement.thenStatement) || ts.isThrowStatement(ifStatement.thenStatement)) {
-        return false;
-    }
-
-    return true;
-
 };
 
 export const findFunctions = (sourceFileName: string): FunctionDeclaration[] => {

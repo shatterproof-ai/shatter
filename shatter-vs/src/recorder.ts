@@ -27,7 +27,7 @@ export function startRecording(branchName: string) {
   context.branchStack.push(branchName);
 }
 
-export function stopRecording(branchName: string)  {
+export function stopRecording(branchName: string) {
   const context = getContext();
 
   const peek = context.branchStack?.[context.branchStack.length - 1]
@@ -35,6 +35,6 @@ export function stopRecording(branchName: string)  {
     context.branchStack.pop();
     return;
   }
-  
+
   //  TODO: well this is bad
 }
