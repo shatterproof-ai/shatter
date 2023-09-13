@@ -117,7 +117,7 @@ export async function shatterAutotest(modulePaths: string[],
     const clusterMap = new Map<string, ResultCluster>();
 
     const onResult = (runResult: RunResult) => {
-        console.log(`Received result ${JSON.stringify(runResult)}`);
+        // console.log(`Received result ${JSON.stringify(runResult)}`);
         // find the appropriate cluster or create it
 
         updateClusters(runResult, clusterMap, clusters);
