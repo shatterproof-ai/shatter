@@ -88,21 +88,21 @@ type FunctionState = {
 }
 
 type FileState = {
-	functions?: ts.FunctionDeclaration[];
-	functionStates?: Map<string, FunctionState>;
+	functions: ts.FunctionDeclaration[];
+	functionStates: Record<string, FunctionState>;
 };
 
 type ExtensionState = {
-	fileStates: Map<string, FileState>
+	fileStates: Record<string, FileState>
 	activeFile?: string;
 	activeFunction?: string;
 	activeClusterKey?: string;
 };
 
 export function activate(context: vscode.ExtensionContext) {
-
+	//	TODO: if there's an open editor when the extension is activated, select that file
 	const extensionState: ExtensionState = {
-		fileStates: new Map(),
+		fileStates: {},
 	};
 
 	//	TODO: Refresh functions list view contents on change of editor
@@ -147,10 +147,10 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 		const filename = extensionState.activeFile;
 		const functions = findFunctions(filename);
-		extensionState.fileStates.set(filename, {
+		extensionState.fileStates[filename] = {
+			...extensionState.fileStates[filename],
 			functions,
-			functionStates: new Map(),
-		});
+		};
 
 		const selectedFunction = functions.find((f) => f.name?.text === functionName);
 		if (selectedFunction) {
@@ -168,7 +168,7 @@ export function activate(context: vscode.ExtensionContext) {
 			return;
 		}
 		const filename = extensionState.activeFile;
-		const filestate = extensionState.fileStates.get(filename);
+		const filestate = extensionState.fileStates[filename];
 		if (!filestate) {
 			//	TODO: shouldn't happen
 			return;
@@ -186,9 +186,13 @@ export function activate(context: vscode.ExtensionContext) {
 			return;
 		}
 
-		const functionState = filestate?.functionStates?.get(extensionState.activeFunction)
+		const functionState = filestate.functionStates[extensionState.activeFunction];
+		if (! functionState) {
+			//	TODO: shouldn't happen
+			return;
+		}
 
-		const cluster = functionState?.autotest.clusters.find((cluster) => cluster.key === clusterKey);
+		const cluster = functionState.autotest.clusters.find((cluster) => cluster.key === clusterKey);
 		if (cluster) {
 			extensionState.activeClusterKey = clusterKey;
 			refresh();
@@ -206,13 +210,13 @@ export function activate(context: vscode.ExtensionContext) {
 			return;
 		}
 
-		const fileState = extensionState.fileStates.get(filename);
-		if (!fileState?.functions) {
+		const fileState = extensionState.fileStates[filename];
+		if (!fileState || !fileState.functions) {
 			//	TODO: clear what needs clearing
 			return;
 		}
 
-		const nodes: ClusterNode[] = fileState?.functions?.map((f) => ({
+		const nodes: ClusterNode[] = fileState.functions.map((f) => ({
 			label: f.name?.text || "",
 			children: [],
 			key: f.name?.text || "",
@@ -224,13 +228,22 @@ export function activate(context: vscode.ExtensionContext) {
 			return;
 		}
 
-		const func = fileState.functions?.find((f) => f.name?.text === extensionState.activeFunction);
+		const func = fileState.functions.find((f) => f.name?.text === extensionState.activeFunction);
 		if (!func) {
 			return;
 		}
 
-		const results = fileState.functionStates?.get(extensionState.activeFunction)?.autotest;
+		const functionState = fileState.functionStates[extensionState.activeFunction];
+		if (! functionState) {
+			console.log(`nonono results for filename "${filename}" and function "${extensionState.activeFunction}" - ${JSON.stringify(fileState.functionStates)}`)
+			return;
+		};
+
+		const results = functionState?.autotest;
 		if (!results) {
+			console.log(`function state keys ${JSON.stringify(Object.keys(fileState.functionStates))}`)
+			console.log(`function states ${JSON.stringify(fileState.functionStates)}`)
+			console.log(`file states ${JSON.stringify(extensionState.fileStates)}`)
 			return;
 		}
 
@@ -271,9 +284,9 @@ export function activate(context: vscode.ExtensionContext) {
 		});
 		coverageProvider.refresh(coverageNodes);
 
-		const testCasesNodes: ClusterNode[] = selectedCluster.results.map((result, i) => {
-			return runResultToClusterNode(`[${i}]`, result);
-		});
+		const testCasesNodes: ClusterNode[] = selectedCluster.results.map((result, i) =>
+			runResultToClusterNode(`[${i}]`, result)
+		);
 		testCasesProvider.refresh(testCasesNodes);
 	}
 
@@ -300,25 +313,28 @@ export function activate(context: vscode.ExtensionContext) {
 		const decorationsArray: vscode.DecorationOptions[] = [];
 
 		if (!extensionState.activeFunction || !extensionState.activeClusterKey) {
-			//	TODO: logic for removing decorations
 			editor.setDecorations(decorationType, []);
 			return;
 		}
-		const functionState = fileState.functionStates?.get(extensionState.activeFunction)
+		const functionState = fileState.functionStates[extensionState.activeFunction];
+		if (! functionState) {
+			//	TODO: should not happen
+			editor.setDecorations(decorationType, []);
+			return;
+		}
 
-		const activeCluster = functionState?.autotest.clusters.find((cluster) => cluster?.key === extensionState.activeClusterKey);
+		const activeCluster = functionState.autotest.clusters.find((cluster) => cluster.key === extensionState.activeClusterKey);
 		if (!activeCluster) {
-			//	TODO: logic for removing decorations
 			editor.setDecorations(decorationType, []);
 			return;
 		}
 
-		console.log(`updateDecorations for active cluster = ${activeCluster?.key}`);
+		console.log(`updateDecorations for active cluster = ${activeCluster.key}`);
 
 		if (activeCluster) {
 			const linesToHighlight: number[] = [];
 			activeCluster.branches.forEach((branchName) => {
-				const branch = functionState?.autotest.branches.get(branchName);
+				const branch = functionState.autotest.branches.get(branchName);
 				if (branch) {
 					linesToHighlight.push(branch.line);
 				} else {
@@ -396,26 +412,35 @@ export function activate(context: vscode.ExtensionContext) {
 					if (!functionName) {
 						throw new Error(`Top level anonymous functions are not supported`);
 					}
+					console.log("BEGIN THE AUTOTEST")
 					await shatterAutotest(modulePaths,
 						functionNode.getSourceFile().fileName,
 						context.storageUri?.fsPath,
 						functionName, (results: AutotestResults) => {
-							let filestate = extensionState.fileStates.get(editor.document.fileName)
+							const filename = editor.document.fileName;
+							extensionState.activeFile = filename;
+							let filestate:FileState|undefined = extensionState.fileStates[filename];
 							if (!filestate) {
-								const functions = findFunctions(editor.document.fileName);
+								const functions = findFunctions(filename);
 								filestate = {
 									functions,
-									functionStates: new Map(),
+									functionStates: {},
 								};
-								extensionState.fileStates.set(editor.document.fileName, filestate);
+								extensionState.fileStates[filename] = filestate;
 							}
-							filestate.functionStates?.set(functionName, {
+							const functionState:FunctionState = {
 								autotest: results,
-							});
+							};
+							filestate.functionStates[functionName] = functionState;
 
-							console.log(`refreshing function node to display = ${functionNode.name?.text}`);
-							refresh();
+							// console.log(`refreshing function node to display = ${functionName} in ${filename}`);
+							// console.log(`keys ${JSON.stringify(Array.from(Object.keys(filestate.functionStates) ?? []))} => ${JSON.stringify(functionState)}`);
+							// console.log(`new functionStates entries ${JSON.stringify(filestate.functionStates)}`);
+							console.log(`>>>>>>>>>>>>>>>>>>>  ${JSON.stringify(extensionState.fileStates[filename].functionStates)}`);
+							console.log(`===================  ${JSON.stringify(extensionState.fileStates[filename].functionStates[functionName])}`);
+							doSelectFunction(functionName);
 						}, extensionSource);
+					console.log("END THE AUTOTEST")
 				} else {
 					console.log(`function node not found`);
 				}

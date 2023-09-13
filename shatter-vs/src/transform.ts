@@ -145,6 +145,11 @@ export const findFunctions = (sourceFileName: string): FunctionDeclaration[] => 
     const exportedFunctions = new Set<string>();
 
     const findFunctionsVisitor = (node: Node): Node => {
+        if (ts.isSourceFile(node)) {
+            node.statements.forEach(statement => ts.visitNode(statement, findFunctionsVisitor));
+            return node;
+        }
+
         //  declared functions only to start
         if (ts.isFunctionDeclaration(node) && node.name) {
             if (node.modifiers && node.modifiers.find(modifier => modifier.kind === ts.SyntaxKind.ExportKeyword)) {

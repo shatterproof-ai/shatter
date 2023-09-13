@@ -183,8 +183,10 @@ export async function shatterAutotest(modulePaths: string[],
     await supervisor.drain();
 
     if (storageBaseDirectory) {
+        console.log(`Saving clusters to ${storageBaseDirectory}`);
         saveClusters(inputFile, storageBaseDirectory, functionName, clusters);
     }
+    console.log(`Finished after ${count} iterations`);
 }
 
 function updateClusters(runResult: RunResult, clusterMap: Map<string, ResultCluster>, clusters: ResultCluster[]) {
