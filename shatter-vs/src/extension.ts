@@ -266,6 +266,7 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 
 		const clusterNodes: CommonDisplayNode[] = results.clusters.map((cluster) => {
+			//	TODO: list each trial as a child node with duration, completion state, truncated stringified parameter list, and truncated output
 			const key = cluster.key.substring(0, 6);
 			return {
 				label: `${key}: ${cluster.outcome} (${cluster.results.length} trials)`,
@@ -302,6 +303,7 @@ export function activate(context: vscode.ExtensionContext) {
 		coverageProvider.refresh(coverageNodes);
 
 		const testCasesNodes: CommonDisplayNode[] = selectedCluster.results.map((result, i) =>
+			//	TODO: show just inputs and outputs
 			runResultToClusterNode(`[${i}]`, result)
 		);
 		testCasesProvider.refresh(testCasesNodes);
