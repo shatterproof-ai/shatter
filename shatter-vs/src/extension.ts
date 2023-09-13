@@ -148,17 +148,22 @@ export function activate(context: vscode.ExtensionContext) {
 
 	const testCasesProvider = new ClusterNodeTreeDataProvider();
 
-	const onSelectFile = (e: ExtensionEvent) => {
+	const doSelectFile = (_filename:string) => {
+		//	_filename and filenaem should be the same
 		const filename = vscode.window.activeTextEditor?.document.fileName;
 		if (!filename) {
 			//	TODO: clear functions list
 			return;
 		}
 		extensionState.activeFile = filename;
+		eventer.publish({
+			type: "onSelectFile",
+			value: filename,
+		})
 	};
 
 	//	call after switching files, changing contents of the editor, or running tests
-	const onSelectFunction = (e: ExtensionEvent) => {
+	const doSelectFunction = (functionName: string) => {
 		if (!extensionState.activeFile) {
 			//	TODO: shouldn't happen
 			return;
@@ -170,19 +175,54 @@ export function activate(context: vscode.ExtensionContext) {
 			functionStates: new Map(),
 		});
 
-		const functionName = e.value;
 		const selectedFunction = functions.find((f) => f.name?.text === functionName);
-		if (selectedFunction?.name?.text) {
+		if (selectedFunction) {
 			extensionState.activeFunction = functionName;
 			eventer.publish({
 				type: "onSelectFunction",
-				value: selectedFunction.name.text,
+				value: functionName,
 			});
 		} else {
 			extensionState.activeClusterKey = undefined;
 			extensionState.activeFunction = undefined;
 		}
 	};
+
+	const doSelectCluster = (clusterKey: string) => {
+		if (!extensionState.activeFile) {
+			//	TODO: shouldn't happen
+			return;
+		}
+		const filename = extensionState.activeFile;
+		const filestate = extensionState.fileStates.get(filename);
+		if (! filestate) {
+			//	TODO: shouldn't happen
+			return;
+		}
+
+		if (! extensionState.activeFunction) {
+			return;
+		}
+
+		const functions = findFunctions(filename);
+
+		const selectedFunction = functions.find((f) => f.name?.text === extensionState.activeFunction);
+		if (! selectedFunction) {
+			//	TODO: shouldn't happen
+			return;
+		}
+
+		const functionState = filestate?.functionStates?.get(extensionState.activeFunction)
+
+		const cluster = functionState?.results.clusters.find((cluster) => cluster.key === clusterKey);
+		if (cluster) {
+			extensionState.activeClusterKey = clusterKey;
+			eventer.publish({
+				type: "onSelectCluster",
+				value: clusterKey,
+			});
+		}
+ 	}
 
 	const refreshFunctionsList = () => {
 		const filename = extensionState.activeFile;
@@ -209,7 +249,6 @@ export function activate(context: vscode.ExtensionContext) {
 
 		functionsListProvider.refresh(nodes);
 	};
-	eventer.subscribe("onSelectFile", refreshFunctionsList);
 
 	const refreshClusters = () => {
 		//	TODO: reduce duplication
@@ -252,27 +291,53 @@ export function activate(context: vscode.ExtensionContext) {
 			};
 		});
 		clustersListProvider.refresh(clusterNodes);
+	};
 
+	function refreshCoverage() {
 		const selectedCluster = results.clusters.find((cluster) => cluster.key === extensionState.activeClusterKey);
-		if (selectedCluster) {
-			eventer.publish({
-				type: "onSelectCluster",
-				value: selectedCluster.key,
-			});
-		} else {
-			extensionState.activeClusterKey = undefined;
+		if (! selectedCluster) {
+			return;
 		}
-		updateDecorations(vscode.window.activeTextEditor);
+
+		const coverageNodes: ClusterNode[] = selectedCluster.branches.map((branchName) => {
+			const branch = results.branches.get(branchName);
+			if (!branch) {
+				throw new Error(`Could not find branch ${branchName}`);
+			}
+
+			return {
+				label: `${branchName}: line ${branch.line}`,
+				children: [],
+				key: branch.id,
+			};
+		});
+		coverageProvider.refresh(coverageNodes);
+
+	}
+	
+	function refreshTestCases() {
+		const filename = extensionState.activeFile;
+		if (!filename) {
+			//	TODO: should not happen
+			return;
+		}
+
+		const testCasesNodes: ClusterNode[] = selectedCluster.results.map((result, i) => {
+			return runResultToClusterNode(`[${i}]`, result);
+		});
+		testCasesProvider.refresh(testCasesNodes);
+	}
+	
+	const refreshDecorations = () => {
+		if (vscode.window.activeTextEditor) {
+			updateDecorations(vscode.window.activeTextEditor);
+		}
 	};
 
-	const uuppdateDecorations = () => {
-	};
-
-	eventer.subscribe("onSelectFunction", refreshClusters);
 
 	//	called by the command handler for the function selector
 	//	needs to be registered as a command because TreeView needs a command to dispatch to
-	const selectFunctionCommand = vscode.commands.registerCommand('extension.shatterSelectFunction', onSelectFunction);
+	const selectFunctionCommand = vscode.commands.registerCommand('extension.shatterSelectFunction', doSelectFunction);
 	context.subscriptions.push(selectFunctionCommand);
 
 	const onSelectCluster = () => {
@@ -386,10 +451,20 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(vscode.workspace.onDidChangeTextDocument(event => {
 		console.log(`onDidChangeTextDocument called for ${event.document.fileName}`)
 		if (vscode.window.activeTextEditor && event.document === vscode.window.activeTextEditor.document) {
+			doSelectFile({
+
+			})
 			updateDecorations(vscode.window.activeTextEditor);
 		}
 		refreshFunctionsList();
 	}, null, context.subscriptions));
+
+	//	TODO: why not just refresh everything every time?
+	[refreshClusters, refreshCoverage, refreshTestCases, refreshDecorations].forEach((f) => (["onAutotest", "onRetest"] as const).forEach((event) => eventer.subscribe(event, f)));
+	[refreshFunctionsList, refreshClusters, refreshCoverage, refreshTestCases, refreshDecorations].forEach((f) => eventer.subscribe("onSelectFile", f));
+	[refreshClusters, refreshCoverage, refreshTestCases, refreshDecorations].forEach((f) => eventer.subscribe("onSelectFunction", f));
+	[refreshCoverage, refreshTestCases, refreshDecorations].forEach((f) => eventer.subscribe("onSelectCluster", f));
+
 
 	const updateDecorationsCommand = vscode.commands.registerCommand('extension.shatterUpdateDecorations', () => {
 		if (vscode.window.activeTextEditor) {
