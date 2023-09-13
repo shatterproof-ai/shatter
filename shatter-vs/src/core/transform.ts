@@ -345,7 +345,7 @@ export const instrumentModule = (introspectionContext: IntrospectionContext, sha
         const resourcedFile = {
             ...sourceFile,
             statements: [
-                createImportStatement(factory, shatterproofModulePath,
+                createImportStatement(factory, `${shatterproofModulePath}/core`,
                     { name: "startRecording", alias: startRecordingAlias },
                     { name: "stopRecording", alias: stopRecordingAlias },
                     { name: "execute", alias: executeAlias },

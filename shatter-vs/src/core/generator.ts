@@ -3,9 +3,9 @@ import * as ts from 'typescript';
 import { createId } from "@paralleldrive/cuid2";
 
 import { faker } from '@faker-js/faker';
-import { RunResult } from './supervisor';
-import { ResultCluster } from './shatter';
-import { Branch } from './transform';
+import { RunResult } from '../core/supervisor';
+import { ResultCluster } from '../core/shatter';
+import { Branch } from '../core/transform';
 
 const edgyNumbers = () => {
     const numbers = new Set<number>();

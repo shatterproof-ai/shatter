@@ -3,9 +3,9 @@ import * as path from 'path';
 import { join } from 'path';
 import * as ts from 'typescript';
 import * as vscode from 'vscode';
-import { AutotestResults, shatterAutotest } from './shatter';
-import { RunResult } from './supervisor';
-import { findFunctions } from './transform';
+import { AutotestResults, shatterAutotest } from '../core/shatter';
+import { RunResult } from '../core/supervisor';
+import { findFunctions } from '../core/transform';
 
 interface CommonDisplayNode {
 	label: string;

@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { shatterAutotest } from "../shatter";
+import { shatterAutotest } from "../core/shatter";
 
 describe('extension', () => {
     it('should pass', async () => {

@@ -12,7 +12,7 @@
   "activationEvents": [
     "onLanguage:typescript"
   ],
-  "main": "./out/extension.js",
+  "main": "./out/extension/index.js",
   "contributes": {
     "commands": [
       {
