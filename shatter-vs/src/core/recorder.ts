@@ -3,6 +3,7 @@ import { AsyncLocalStorage } from "async_hooks";
 export interface ExecutionContext {
   executedBranches: Set<string>
   branchStack: string[]
+  lines: Set<number>
 }
 
 export const contextStorage = new AsyncLocalStorage<ExecutionContext>();
@@ -30,11 +31,16 @@ export function startRecording(branchName: string) {
 export function stopRecording(branchName: string) {
   const context = getContext();
 
-  const peek = context.branchStack?.[context.branchStack.length - 1]
+  const peek = context.branchStack?.[context.branchStack.length - 1];
   if (peek === branchName) {
     context.branchStack.pop();
     return;
   }
 
   //  TODO: well this is bad
+}
+
+export function recordLine(line: number) {
+  const context = getContext();
+  context.lines.add(line);
 }

@@ -15,6 +15,7 @@ export async function execute(functions: Record<string, Function>) {
     const ic: ExecutionContext = {
         executedBranches,
         branchStack: [],
+        lines: new Set<number>(),
     };
 
     const f = functions[functionName];
@@ -23,6 +24,7 @@ export async function execute(functions: Record<string, Function>) {
         let output: any = undefined;
         let error: any = undefined;
         try {
+            console.log(`${currentWorkerNumber} ${functionName} (${JSON.stringify(parameters)})`);
             output = f.call(null, ...parameters);
             console.log(`${currentWorkerNumber} ${functionName} (${JSON.stringify(parameters)}) => ${JSON.stringify(output)}`);
         } catch (e) {
@@ -39,7 +41,9 @@ export async function execute(functions: Record<string, Function>) {
             const end = Date.now();
             const duration = end - start;
 
-            definitelyNotNullParentPortToMakeTypescriptHappy.postMessage({ output, error, duration, executedBranches: Array.from(executedBranches) });
+            const lines = Array.from(ic.lines).sort();
+            console.log(`${currentWorkerNumber} ${functionName} (${JSON.stringify(parameters)}) took ${duration}ms and executed branches ${Array.from(executedBranches).join(', ')} and lines ${lines.join(', ')}`);
+            definitelyNotNullParentPortToMakeTypescriptHappy.postMessage({ output, error, duration, executedBranches: Array.from(executedBranches), lines });
         }
     });
 }

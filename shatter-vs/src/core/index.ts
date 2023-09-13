@@ -1,2 +1,2 @@
-export { record, startRecording, stopRecording } from './recorder';
+export { record, recordLine, startRecording, stopRecording } from './recorder';
 export { execute } from './worker';

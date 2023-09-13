@@ -7,6 +7,7 @@ export type Outcome = typeof Outcomes[number];
 export interface RunResult {
     parameters: any[]
     executedBranches: string[]
+    lines: number[]
     completed: boolean
     outcome: Outcome
     output?: any
@@ -97,6 +98,7 @@ export class Supervisor {
             if (!this.resultByParameters.has(strung)) {
                 const result: RunResult = {
                     parameters, output: undefined, completed: false, duration, executedBranches: [], outcome: 'timeout',
+                    lines: [],
                 };
                 this.resultByParameters.set(strung, result);
                 this.onResult(result);
@@ -113,7 +115,7 @@ export class Supervisor {
             //  TODO: 
             const strungError = error ? '' + error : undefined;
             const result: RunResult = {
-                parameters, error: strungError, completed: false, duration, executedBranches: [], outcome: 'failed',
+                parameters, error: strungError, completed: false, duration, executedBranches: [], outcome: 'failed', lines: [],
             };
 
             this.resultByParameters.set(strung, result);
@@ -129,13 +131,15 @@ export class Supervisor {
             // console.log(`after deleting ${activeWorkers.size}`);
         });
         worker.on('message', (msg) => {
-            const { output, error, duration, executedBranches }: { output: any, error: any, duration: number, executedBranches: string[] } = msg;
+            const { output, error, duration, executedBranches, lines }: { output: any, error: any, duration: number, executedBranches: string[], lines:number[] } = msg;
+
             console.log(`${currentWorkerNumber}  ${functionName} (${JSON.stringify(parameters)}) => ${error ?? JSON.stringify(output)} in ${duration}ms`);
 
             // console.log(`And executed branches = `)
             const strungError = error ? '' + error : undefined;
             const result: RunResult = {
                 parameters, output, error: strungError, completed: true, duration, executedBranches, outcome: error ? 'error' : 'completed',
+                lines,
             };
 
             this.resultByParameters.set(strung, result);

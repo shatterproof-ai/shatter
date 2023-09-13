@@ -138,20 +138,10 @@ function updateDecorations(editor: vscode.TextEditor, extensionState: ExtensionS
 		return;
 	}
 
-	console.log(`updateDecorations for active cluster = ${activeCluster.key}`);
+	console.log(`updateDecorations for active cluster = ${activeCluster.key} and lines ${JSON.stringify(activeCluster.lines)}}`);
 
 	if (activeCluster) {
-		const linesToHighlight: number[] = [];
-		activeCluster.branches.forEach((branchName) => {
-			const branch = functionState.autotest.branches.get(branchName);
-			if (branch) {
-				linesToHighlight.push(branch.line);
-			} else {
-				//	well this is pretty weird
-			}
-		});
-
-		linesToHighlight.forEach(lineNumber => {
+		activeCluster.lines.forEach(lineNumber => {
 			const line = editor.document.lineAt(lineNumber);
 			const decoration = { range: line.range, hoverMessage: `Line ${lineNumber}: ${line.text}` };
 			decorationsArray.push(decoration);

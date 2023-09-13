@@ -16,6 +16,7 @@ export interface AutotestResults {
 //  the file and line of the first line in the instrumented code
 export interface ResultCluster {
     key: string
+    lines: number[]
     branches: string[]
     results: RunResult[]
     outcome: Outcome
@@ -159,8 +160,8 @@ export async function shatterAutotest(modulePaths: string[],
     console.log(`tryna allExecutedBranches.size = ${allExecutedBranches.size
         }, introspectionContext.knownBranches.size = ${introspectionContext.knownBranches.size
         }, parameterLists.length = ${parameterLists.length}`);
-    while (allExecutedBranches.size < introspectionContext.knownBranches.size
-        && parameterLists.length > 0
+    while ( /* allExecutedBranches.size < introspectionContext.knownBranches.size
+        && */ parameterLists.length > 0
         && count < maxIterations
         && Date.now() - startTime < maxTime) {
 
@@ -206,6 +207,7 @@ function updateClusters(runResult: RunResult, clusterMap: Map<string, ResultClus
         cluster = {
             key: clusterKey,
             branches: Array.from(new Set(runResult.executedBranches)),
+            lines: runResult.lines,
             outcome,
             results: [],
             totalTime: 0,
