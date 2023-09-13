@@ -137,6 +137,26 @@ export function activate(context: vscode.ExtensionContext) {
 			return;
 		}
 		extensionState.activeFile = filename;
+
+		const functions = findFunctions(filename);
+		/*
+		Typescript didn't like this spread
+			extensionState.fileStates[filename] = {
+				functionStates: {},
+				...extensionState.fileStates[filename],
+				functions,
+			};
+
+		 */
+		if (extensionState.fileStates[filename]) {
+			extensionState.fileStates[filename].functions = functions;
+		} else {
+			extensionState.fileStates[filename] = {
+				functionStates: {},
+				functions,
+			};
+		}
+
 		refresh();
 	};
 
@@ -149,13 +169,13 @@ export function activate(context: vscode.ExtensionContext) {
 			return;
 		}
 		const filename = extensionState.activeFile;
-		const functions = findFunctions(filename);
-		extensionState.fileStates[filename] = {
-			...extensionState.fileStates[filename],
-			functions,
-		};
+		const filestate = extensionState.fileStates[filename];
+		if (!filestate) {
+			//	TODO: shouldn't happen; TODO: can regenerate
+			return;
+		}
 
-		const selectedFunction = functions.find((f) => f.name?.text === functionName);
+		const selectedFunction = filestate.functions.find((f) => f.name?.text === functionName);
 		if (selectedFunction) {
 			extensionState.activeFunction = functionName;
 		} else {
@@ -208,10 +228,6 @@ export function activate(context: vscode.ExtensionContext) {
 		const filename = extensionState.activeFile;
 		if (!filename) {
 			//	TODO: clear functions list, clusters list, branches list, test cases list
-			return;
-		}
-		if (!extensionState.activeFunction) {
-			//	TODO: clear clusters list, branches list, test cases list
 			return;
 		}
 
@@ -305,10 +321,38 @@ export function activate(context: vscode.ExtensionContext) {
 	//	Refresh execution paths contents on change of selected function or test run
 	//	Refresh coverage contents on change of execution path
 	//	Refresh test cases contents on change of execution path
+	/**
+	 * 	const smallNumberDecorationType = vscode.window.createTextEditorDecorationType({
+		borderWidth: '1px',
+		borderStyle: 'solid',
+		overviewRulerColor: 'blue',
+		overviewRulerLane: vscode.OverviewRulerLane.Right,
+		light: {
+			// this color will be used in light color themes
+			borderColor: 'darkblue'
+		},
+		dark: {
+			// this color will be used in dark color themes
+			borderColor: 'lightblue'
+		}
+	});
 
+	// create a decorator type that we use to decorate large numbers
+	const largeNumberDecorationType = vscode.window.createTextEditorDecorationType({
+		cursor: 'crosshair',
+		// use a themable color. See package.json for the declaration and default values.
+		backgroundColor: { id: 'myextension.largeNumberBackground' }
+	});
+	 */
 	let decorationType = vscode.window.createTextEditorDecorationType({
 		gutterIconPath: context.asAbsolutePath('media/triangle.svg'),
-		backgroundColor: 'lightgray'
+		//	TODO: get colors from theme and/or IDE https://code.visualstudio.com/api/references/theme-color#text-colors
+		light: {
+			backgroundColor: 'lightgray',
+		},
+		dark: {
+			backgroundColor: 'dimgray',
+		},
 	});
 
 	function updateDecorations(editor: vscode.TextEditor, fileState: FileState) {
@@ -395,62 +439,11 @@ export function activate(context: vscode.ExtensionContext) {
 				const functionNode = getFunctionNodeAtCursor(cursorPosition, document);
 
 				if (functionNode && ts.isFunctionDeclaration(functionNode)) {
-					const allTsConfigs: string[] = [];
-					const allPackageJsons: string[] = [];
-					const allNodeModules: string[] = [];
-					const allWorkspaceFolders: string[] = [];
-
-					vscode.workspace.workspaceFolders?.forEach((folder) => {
-						const found = findFilesInHierarchy(editor.document.fileName, vscode.workspace.rootPath || '', {
-							tsconfig: (filename, stat) => filename.endsWith('tsconfig.json') && stat.isFile(),
-							packageJson: (filename, stat) => filename.endsWith('package.json') && stat.isFile(),
-							nodeModules: (filename, stat) => filename.endsWith('node_modules') && stat.isDirectory(),
-						});
-
-						allTsConfigs.push(...(found.tsconfig || []));
-						allPackageJsons.push(...(found.packageJson || []));
-						allNodeModules.push(...(found.nodeModules || []));
-						allWorkspaceFolders.push(folder.uri.fsPath);
-					});
-
-					const modulePaths = [...allWorkspaceFolders, ...allNodeModules];
-
 					const functionName = functionNode.name?.text;
 					if (!functionName) {
 						throw new Error(`Top level anonymous functions are not supported`);
 					}
-					console.log("BEGIN THE AUTOTEST");
-					await shatterAutotest(modulePaths,
-						functionNode.getSourceFile().fileName,
-						context.storageUri?.fsPath,
-						functionName, (results: AutotestResults) => {
-							const filename = editor.document.fileName;
-							extensionState.activeFile = filename;
-							let filestate: FileState | undefined = extensionState.fileStates[filename];
-							if (!filestate) {
-								const functions = findFunctions(filename);
-								filestate = {
-									functions,
-									functionStates: {},
-								};
-								extensionState.fileStates[filename] = filestate;
-							}
-							const functionState: FunctionState = {
-								autotest: results,
-							};
-							filestate.functionStates[functionName] = functionState;
-
-							// console.log(`refreshing function node to display = ${functionName} in ${filename}`);
-							// console.log(`keys ${JSON.stringify(Array.from(Object.keys(filestate.functionStates) ?? []))} => ${JSON.stringify(functionState)}`);
-							// console.log(`new functionStates entries ${JSON.stringify(filestate.functionStates)}`);
-							// console.log(`>>>>>>>>>>>>>>>>>>>  ${JSON.stringify(extensionState.fileStates[filename].functionStates)}`);
-							// console.log(`===================  ${JSON.stringify(extensionState.fileStates[filename].functionStates[functionName])}`);
-							doSelectFunction({
-								key: functionName,
-								label: ''
-							});
-						}, extensionSource);
-					console.log("END THE AUTOTEST");
+					await autotestFunction(document.fileName, functionName);
 				} else {
 					console.log(`function node not found`);
 				}
@@ -462,9 +455,25 @@ export function activate(context: vscode.ExtensionContext) {
 
 	context.subscriptions.push(autotestCommand);
 
-	const autotestContextMenu = vscode.commands.registerCommand('extension.shatterAutotestContext', () => {
+	const autotestEditorContextMenu = vscode.commands.registerCommand('extension.shatterAutotestContext', () => {
 		vscode.commands.executeCommand('extension.shatterAutotest');
 	});
+	context.subscriptions.push(autotestEditorContextMenu);
+	
+	const autotestFunctionViewContainerMenu = vscode.commands.registerCommand('extension.shatterAutotestFunctionViewContainer', (item) => {
+		const filename = vscode.window.activeTextEditor?.document.fileName;
+		if (!filename) {
+			//	TODO: is this a reasonable situation?
+			return;
+		}
+		autotestFunction(filename, item.key);
+	});
+	context.subscriptions.push(autotestFunctionViewContainerMenu);
+	
+	const retestFunctionViewContainerMenu = vscode.commands.registerCommand('extension.shatterRetestFunctionViewContainer', (item) => {
+		console.log(`retestFunctionViewContainerMenu called with ${JSON.stringify(item)}`);
+	});
+	context.subscriptions.push(retestFunctionViewContainerMenu);
 
 	vscode.languages.registerCodeActionsProvider(
 		{ scheme: 'file', language: 'typescript' },
@@ -481,8 +490,6 @@ export function activate(context: vscode.ExtensionContext) {
 			},
 		}
 	);
-
-	context.subscriptions.push(autotestContextMenu);
 
 	const retestCommand = vscode.commands.registerCommand('extension.shatterRetest', async () => {
 		console.log(`there was an attempt`);
@@ -514,6 +521,69 @@ export function activate(context: vscode.ExtensionContext) {
 
 	if (vscode.window.activeTextEditor) {
 		doSelectFile();
+		console.log("no active text editor");
+	} else {
+		console.log("yes active text editor");
+	}
+
+	async function autotestFunction(filename: string, functionName: string) {
+		const allTsConfigs: string[] = [];
+		const allPackageJsons: string[] = [];
+		const allNodeModules: string[] = [];
+		const allWorkspaceFolders: string[] = [];
+
+		const editor = vscode.window.activeTextEditor;
+		if (!editor) {
+			console.error(`No active editor`);
+			return;
+		}
+		vscode.workspace.workspaceFolders?.forEach((folder) => {
+			const found = findFilesInHierarchy(editor.document.fileName, vscode.workspace.rootPath || '', {
+				tsconfig: (filename, stat) => filename.endsWith('tsconfig.json') && stat.isFile(),
+				packageJson: (filename, stat) => filename.endsWith('package.json') && stat.isFile(),
+				nodeModules: (filename, stat) => filename.endsWith('node_modules') && stat.isDirectory(),
+			});
+
+			allTsConfigs.push(...(found.tsconfig || []));
+			allPackageJsons.push(...(found.packageJson || []));
+			allNodeModules.push(...(found.nodeModules || []));
+			allWorkspaceFolders.push(folder.uri.fsPath);
+		});
+
+		const modulePaths = [...allWorkspaceFolders, ...allNodeModules];
+
+		console.log("BEGIN THE AUTOTEST");
+		await shatterAutotest(modulePaths,
+			filename,
+			context.storageUri?.fsPath,
+			functionName, (results: AutotestResults) => {
+				const filename = editor.document.fileName;
+				extensionState.activeFile = filename;
+				let filestate: FileState | undefined = extensionState.fileStates[filename];
+				if (!filestate) {
+					const functions = findFunctions(filename);
+					filestate = {
+						functions,
+						functionStates: {},
+					};
+					extensionState.fileStates[filename] = filestate;
+				}
+				const functionState: FunctionState = {
+					autotest: results,
+				};
+				filestate.functionStates[functionName] = functionState;
+
+				// console.log(`refreshing function node to display = ${functionName} in ${filename}`);
+				// console.log(`keys ${JSON.stringify(Array.from(Object.keys(filestate.functionStates) ?? []))} => ${JSON.stringify(functionState)}`);
+				// console.log(`new functionStates entries ${JSON.stringify(filestate.functionStates)}`);
+				// console.log(`>>>>>>>>>>>>>>>>>>>  ${JSON.stringify(extensionState.fileStates[filename].functionStates)}`);
+				// console.log(`===================  ${JSON.stringify(extensionState.fileStates[filename].functionStates[functionName])}`);
+				doSelectFunction({
+					key: functionName,
+					label: ''
+				});
+			}, extensionSource);
+		console.log("END THE AUTOTEST");
 	}
 }
 
@@ -642,91 +712,4 @@ function findFilesInHierarchy<K extends string>(
 	}
 
 	return foundFiles;
-}
-
-interface FunctionsListNode {
-	label: string;
-	function: ts.FunctionDeclaration;
-}
-
-class ShatterFunctionsListProvider implements vscode.TreeDataProvider<FunctionsListNode> {
-	private _onDidChangeTreeData: vscode.EventEmitter<FunctionsListNode | undefined | void> = new vscode.EventEmitter<FunctionsListNode | undefined>();
-	readonly onDidChangeTreeData: vscode.Event<FunctionsListNode | undefined | void> = this._onDidChangeTreeData.event;
-	private functions: ts.FunctionDeclaration[] = [];
-
-	constructor() { }
-
-	getTreeItem(element: FunctionsListNode): vscode.TreeItem | Thenable<vscode.TreeItem> {
-		const treeItem = new vscode.TreeItem(element.label);
-		treeItem.collapsibleState = vscode.TreeItemCollapsibleState.Expanded;
-		treeItem.tooltip = element.label;
-		treeItem.command = {
-			command: 'extension.shatterAutotest',
-			title: 'Shatter Autotest',
-			arguments: [element.function],
-		};
-		//	TODO: add a context menu item for running tests
-		return treeItem;
-	}
-
-	getChildren(element?: FunctionsListNode | undefined): vscode.ProviderResult<FunctionsListNode[]> {
-		if (element) {
-			return [];
-		}
-		return this.functions.map((f) => ({
-			label: f.name?.text || "",
-			function: f,
-		}));
-	}
-
-	refresh(functions: ts.FunctionDeclaration[]) {
-		this.functions = functions;
-		this._onDidChangeTreeData.fire();
-	}
-}
-
-//	under each execution path show number of branches and number of runs
-interface ExecutionPathNode {
-	label: string;
-	children?: ExecutionPathNode[];
-}
-
-class ShatterExecutionPathsProvider implements vscode.TreeDataProvider<ExecutionPathNode> {
-	private _onDidChangeTreeData: vscode.EventEmitter<ExecutionPathNode | undefined | void> = new vscode.EventEmitter<ExecutionPathNode | undefined>();
-	onDidChangeTreeData?: vscode.Event<void | ExecutionPathNode | ExecutionPathNode[] | null | undefined> | undefined;
-	getTreeItem(element: ExecutionPathNode): vscode.TreeItem | Thenable<vscode.TreeItem> {
-		throw new Error('Method not implemented.');
-	}
-	getChildren(element?: ExecutionPathNode | undefined): vscode.ProviderResult<ExecutionPathNode[]> {
-		throw new Error('Method not implemented.');
-	}
-}
-
-
-class FunctionListTreeDataProvider implements vscode.TreeDataProvider<CommonDisplayNode> {
-	private _onDidChangeTreeData: vscode.EventEmitter<CommonDisplayNode | undefined | void> = new vscode.EventEmitter<CommonDisplayNode | undefined | void>();
-	readonly onDidChangeTreeData: vscode.Event<CommonDisplayNode | undefined | void> = this._onDidChangeTreeData.event;
-
-	private roots: CommonDisplayNode[] | undefined;
-
-	constructor() {
-		this.roots = undefined;
-	}
-
-	refresh(roots: CommonDisplayNode[] | undefined, results: AutotestResults | undefined) {
-		this.roots = roots;
-	}
-
-	getTreeItem(element: CommonDisplayNode): vscode.TreeItem | Thenable<vscode.TreeItem> {
-		const treeItem = new vscode.TreeItem(element.label);
-		treeItem.collapsibleState = element.children ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.None;
-		return treeItem;
-	}
-
-	getChildren(element?: CommonDisplayNode | undefined): vscode.ProviderResult<CommonDisplayNode[]> {
-		if (element) {
-			return [];
-		}
-		return this.roots ? this.roots : [];
-	}
 }

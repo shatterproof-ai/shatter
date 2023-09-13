@@ -9,7 +9,7 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
+  "activationEvents": ["onLanguage:typescript"],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
@@ -19,6 +19,14 @@
       },
       {
         "command": "extension.shatterRetestContext",
+        "title": "Regression test"
+      },
+      {
+        "command": "extension.shatterAutotestFunctionViewContainer",
+        "title": "Autotest"
+      },
+      {
+        "command": "extension.shatterRetestFunctionViewContainer",
         "title": "Regression test"
       }
     ],
@@ -36,6 +44,16 @@
         {
           "command": "extension.shatterRetestContext"
         }
+      ],
+      "view/item/context": [
+        {
+					"command": "extension.shatterAutotestFunctionViewContainer",
+					"group": "navigation@0"
+				},
+        {
+					"command": "extension.shatterRetestFunctionViewContainer",
+					"group": "navigation@1"
+				}
       ]
     },
     "submenus": [
