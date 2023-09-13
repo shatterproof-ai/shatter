@@ -335,8 +335,3 @@ export function writeInstrumented(sourceFile: ts.SourceFile,
     //  replace it in the AST
     return [modifiedSourcefilePath, executorScriptJs, introspectionContext];
 }
-
-export function generateArgumentList(seed: number) {
-
-}
-
