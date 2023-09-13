@@ -286,7 +286,7 @@ export function parse(sourceFilePath: string): [ts.Program, ts.SourceFile] {
 function findFunctionNode(functionName: string, source: ts.SourceFile): ts.FunctionDeclaration | null {
     let functionNode: ts.FunctionDeclaration | null = null;
     const visitor = (node: ts.Node) => {
-        if (ts.isFunctionDeclaration(node)) {
+        if (ts.isFunctionDeclaration(node) && node.name?.getText() === functionName) {
             functionNode = node;
             return node;
         }
