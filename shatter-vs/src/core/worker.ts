@@ -24,9 +24,9 @@ export async function execute(functions: Record<string, Function>) {
         let output: any = undefined;
         let error: any = undefined;
         try {
-            console.log(`${currentWorkerNumber} ${functionName} (${JSON.stringify(parameters)})`);
+            // console.log(`calling ${currentWorkerNumber} ${functionName} (${JSON.stringify(parameters)})`);
             output = f.call(null, ...parameters);
-            console.log(`${currentWorkerNumber} ${functionName} (${JSON.stringify(parameters)}) => ${JSON.stringify(output)}`);
+            // console.log(`called ${currentWorkerNumber} ${functionName} (${JSON.stringify(parameters)}) => ${JSON.stringify(output)}`);
         } catch (e) {
             /* 
             TODO: how to differentiate between types of error
@@ -41,8 +41,7 @@ export async function execute(functions: Record<string, Function>) {
             const end = Date.now();
             const duration = end - start;
 
-            const lines = Array.from(ic.lines).sort();
-            console.log(`${currentWorkerNumber} ${functionName} (${JSON.stringify(parameters)}) took ${duration}ms and executed branches ${Array.from(executedBranches).join(', ')} and lines ${lines.join(', ')}`);
+            const lines = Array.from(ic.lines).sort((a, b) => a - b);
             definitelyNotNullParentPortToMakeTypescriptHappy.postMessage({ output, error, duration, executedBranches: Array.from(executedBranches), lines });
         }
     });

@@ -190,6 +190,12 @@ export async function shatterAutotest(modulePaths: string[],
         saveClusters(inputFile, storageBaseDirectory, functionName, clusters);
     }
     console.log(`Finished after ${count} iterations`);
+
+    const sortNums = (a:number, b:number) => a-b;
+    return {
+        instrumented: Array.from(introspectionContext.instrumentedLines).sort(sortNums),
+        executed: Array.from(allExecutedLines).sort(sortNums),
+    };
 }
 
 function updateClusters(runResult: RunResult, clusterMap: Map<string, ResultCluster>, clusters: ResultCluster[]) {

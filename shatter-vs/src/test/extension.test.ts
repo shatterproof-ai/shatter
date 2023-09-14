@@ -64,8 +64,10 @@ describe('extension', () => {
 
         const modulePaths = process.env.NODE_ENV?.split(':') ?? [];
 
-        await shatterAutotest(modulePaths, testfile, tempdir, functionName, (clusters) => {
-            console.log(`Received clusters ${JSON.stringify(clusters, null, 2)}`);
+        const { executed, instrumented } = await shatterAutotest(modulePaths, testfile, tempdir, functionName, (clusters) => {
+            // console.log(`Received clusters ${JSON.stringify(clusters, null, 2)}`);
         }, "/home/ketan/project/shatter/shatter-vs/src");
+        console.log(`Executed ${executed}`);
+        console.log(`Instrumented ${instrumented}`);
     });
 });

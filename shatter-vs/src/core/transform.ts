@@ -109,7 +109,6 @@ export const createInstrumenter = (introspectionContext: IntrospectionContext, s
 
         //  TODO: generify this so that the type that comes in is the type that goes out to avoid casting
         const instrumentingVisitor = (node: Node): Node => {
-
             const instrumentStatementAsBlock = (factory: ts.NodeFactory, instrumentationContext: IntrospectionContext, node: ts.Statement) => {
                 const lineNumber = ts.getLineAndCharacterOfPosition(sourceFile, node.pos).line;
                 const instrumentation = factory.createExpressionStatement(factory.createCallExpression(
@@ -128,17 +127,18 @@ export const createInstrumenter = (introspectionContext: IntrospectionContext, s
             //  TODO: instrument catch blocks and finally blocks for the same reason
             //  TODO: instrument return statements as well
             //  TODO: generify this so that the type that comes in is the type that goes out to avoid casting
-            const instrumentBlock = (factory: ts.NodeFactory, block: ts.Block, counterFunctionAlias: string) => {
+            const instrumentBlock = (factory: ts.NodeFactory, block: ts.Block) => {
                 const newStatements: ts.Statement[] = [];
                 block.statements.forEach((statement, i) => {
                     const lineNumber = ts.getLineAndCharacterOfPosition(sourceFile, statement.pos).line;
                     const instrumentation = factory.createExpressionStatement(factory.createCallExpression(
-                        factory.createIdentifier(counterFunctionAlias),
+                        factory.createIdentifier(recordLineAlias),
                         undefined,
                         [factory.createNumericLiteral(lineNumber)]
                     ));
+                    introspectionContext.instrumentedLines.add(lineNumber);
                     newStatements.push(instrumentation);
-                    newStatements.push(statement);
+                    newStatements.push(instrumentStatement(factory, statement));
                 });
                 return {
                     ...block,
@@ -148,9 +148,74 @@ export const createInstrumenter = (introspectionContext: IntrospectionContext, s
 
             const instrumentBlockOrStatement = (factory: ts.NodeFactory, node: ts.Statement | ts.Block) => {
                 if (ts.isBlock(node)) {
-                    return instrumentBlock(factory, node, recordLineAlias);
+                    return instrumentBlock(factory, node);
                 }
                 return instrumentStatementAsBlock(factory, introspectionContext, node);
+            };
+
+            const instrumentStatement = (factory: ts.NodeFactory, statement: ts.Statement): ts.Statement => {
+                if (ts.isIfStatement(statement)) {
+                    const thenStatement = instrumentBlockOrStatement(factory, statement.thenStatement);
+                    const elseStatement = statement.elseStatement
+                        ? instrumentBlockOrStatement(factory, statement.elseStatement)
+                        : undefined;
+
+                    const newIfNode = {
+                        ...statement,
+                        thenStatement,
+                        elseStatement,
+                    };
+
+                    return newIfNode;
+                }
+
+                if (ts.isIterationStatement(statement, false)) {
+                    // const newStatement:ts.Statement = instrumentingVisitor(node.statement) as ts.Statement;
+                    const newStatement: ts.Statement = instrumentBlockOrStatement(factory, statement.statement) as ts.Statement;
+                    const newIterationNode: ts.IterationStatement = {
+                        ...statement,
+                        statement: newStatement,
+                    };
+                    return newIterationNode;
+                }
+
+                if (ts.isSwitchStatement(statement)) {
+                    const newClauses =
+                        statement.caseBlock.clauses.map(clause => {
+                            const newStatements = ((): (ts.Statement | ts.Node)[] => {
+                                if (clause.statements.length === 0) {
+                                    //  create block with just instrumentation in it
+                                    const emptyBlock = c(factory.createBlock([]), clause);
+                                    return [instrumentBlockOrStatement(factory, emptyBlock)];
+                                }
+                                return clause.statements
+                                    .map(statement => instrumentBlockOrStatement(factory, statement));
+                            })() as ts.Statement[]; //  TODO: the cast is no bueno
+
+                            const newClause: ts.CaseOrDefaultClause = {
+                                ...clause,
+                                statements: factory.createNodeArray(newStatements),
+                            };
+                            return newClause;
+                        });
+
+                    //  TODO: in some places the node is replaced, in others it's updated.
+                    //  Make that either consistent or describe why each case should go one way or the other
+                    const newSwitch: ts.SwitchStatement = {
+                        ...statement,
+                        caseBlock: {
+                            ...statement.caseBlock,
+                            clauses: factory.createNodeArray(newClauses),
+                        },
+                    };
+                    return newSwitch;
+                }
+
+                if (ts.isBlock(statement)) {
+                    return instrumentBlock(factory, statement);
+                }
+
+                return statement;
             };
 
             //  export all functions - TODO: this may create conflicts.  A cheat would be to add an exported magic function that just does dispatch
@@ -161,80 +226,29 @@ export const createInstrumenter = (introspectionContext: IntrospectionContext, s
                     if (node.parent === node.getSourceFile()) { //  this means it's a top level function
                         const modifiers = [...node.modifiers ?? []];
                         const newExportModifier = factory.createModifier(ts.SyntaxKind.ExportKeyword);
-                        modifiers.push(newExportModifier);
-                        factory.updateFunctionDeclaration(
-                            node,
-                            modifiers,
-                            node.asteriskToken,
-                            node.name,
-                            node.typeParameters,
-                            node.parameters,
-                            node.type,
-                            node.body
-                        );
+                        // modifiers.push(newExportModifier);
+
+                        if (node.body) {
+                            const modbod = instrumentBlock(factory, node.body);
+                            const newFunction = factory.createFunctionDeclaration(
+                                modifiers,
+                                node.asteriskToken,
+                                node.name,
+                                node.typeParameters,
+                                node.parameters,
+                                node.type,
+                                modbod
+                            );
+                            return newFunction;
+                        } else {
+                            throw new Error(`Function ${node.name?.text} has no body`);
+                        }
                     }
                 }
             }
 
-            if (ts.isIfStatement(node)) {
-                const thenStatement = instrumentBlockOrStatement(factory, node.thenStatement);
-                const elseStatement = node.elseStatement
-                    ? instrumentBlockOrStatement(factory, node.elseStatement)
-                    : undefined;
-
-                const newIfNode = {
-                    ...node,
-                    thenStatement,
-                    elseStatement,
-                };
-
-                return newIfNode;
-            }
-
-            if (ts.isIterationStatement(node, false)) {
-                // const newStatement:ts.Statement = instrumentingVisitor(node.statement) as ts.Statement;
-                const newStatement: ts.Statement = instrumentBlockOrStatement(factory, node.statement) as ts.Statement;
-                const newIterationNode: ts.IterationStatement = {
-                    ...node,
-                    statement: newStatement,
-                };
-                return newIterationNode;
-            }
-
-            if (ts.isSwitchStatement(node)) {
-                const newClauses =
-                    node.caseBlock.clauses.map(clause => {
-                        const newStatements = ((): (ts.Statement | ts.Node)[] => {
-                            if (clause.statements.length === 0) {
-                                //  create block with just instrumentation in it
-                                const emptyBlock = c(factory.createBlock([]), clause);
-                                return [instrumentBlockOrStatement(factory, emptyBlock)];
-                            }
-                            return clause.statements
-                                .map(statement => instrumentBlockOrStatement(factory, statement));
-                        })() as ts.Statement[]; //  TODO: the cast is no bueno
-
-                        const newClause: ts.CaseOrDefaultClause = {
-                            ...clause,
-                            statements: factory.createNodeArray(newStatements),
-                        };
-                        return newClause;
-                    });
-
-                //  TODO: in some places the node is replaced, in others it's updated.
-                //  Make that either consistent or describe why each case should go one way or the other
-                const newSwitch: ts.SwitchStatement = {
-                    ...node,
-                    caseBlock: {
-                        ...node.caseBlock,
-                        clauses: factory.createNodeArray(newClauses),
-                    },
-                };
-                return newSwitch;
-            }
-
-            if (ts.isBlock(node)) {
-                return instrumentBlock(factory, node, recordLineAlias);
+            if (ts.isStatement(node)) {
+                return instrumentStatement(factory, node);
             }
 
             const visiteded = ts.visitEachChild(node, instrumentingVisitor, ctx);
@@ -243,6 +257,10 @@ export const createInstrumenter = (introspectionContext: IntrospectionContext, s
 
         //  discover functions and add them to the context
         ts.visitNode(sourceFile, findExportedFunctionsVisitor);
+
+        //  BEGIN instrumenting code
+        const visited = ts.visitNode(sourceFile, instrumentingVisitor);
+        //  END instrumenting code
 
         //  BEGIN worker execution startup code
         //  create a literal object that maps function names to functions
@@ -270,25 +288,21 @@ export const createInstrumenter = (introspectionContext: IntrospectionContext, s
 
         const moduleName = "shatterproof";
         const shatterproofModulePath = shatterproofModuleOverride ?? moduleName;
-        const resourcedFile = {
+        const resourcedFile: SourceFile = {
             ...sourceFile,
-            statements: [
+            statements: factory.createNodeArray([
                 createImportStatement(factory, `${shatterproofModulePath}/core`,
                     { name: "execute", alias: executeAlias },
                     { name: "recordLine", alias: recordLineAlias },
                 ),
                 //  retain other top level statements in the module because they may be necessary for setup and initialization
-                ...sourceFile.statements,
+                visited as ts.Statement,
                 invokeExecutionCall,
-            ]
+            ])
         };
         //  END worker execution startup code
 
-        //  BEGIN instrumenting code -- TODO: why is this after the worker execution code?
-        const visited = ts.visitNode(resourcedFile, instrumentingVisitor);
-        //  END instrumenting code
-
-        return visited.getSourceFile();
+        return resourcedFile;
     };
 };
 

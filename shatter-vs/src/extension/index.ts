@@ -142,7 +142,7 @@ function updateDecorations(editor: vscode.TextEditor, extensionState: ExtensionS
 
 	if (activeCluster) {
 		activeCluster.lines.forEach(lineNumber => {
-			const line = editor.document.lineAt(lineNumber);
+			const line = editor.document.lineAt(lineNumber + 1);	//	+1 for unclear reasons; 1-indexed? not counting the position of the function declaration?  :shrug:
 			const decoration = { range: line.range, hoverMessage: `Line ${lineNumber}: ${line.text}` };
 			decorationsArray.push(decoration);
 		});
