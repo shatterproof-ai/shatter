@@ -223,16 +223,12 @@ const refresh = (editor: vscode.TextEditor | undefined, extensionState: Extensio
 		updateDecorations(editor, extensionState, fileState);
 	}
 
-	const coverageNodes: CommonDisplayNode[] = selectedCluster.branches.map((branchName) => {
-		const branch = results.branches.get(branchName);
-		if (!branch) {
-			throw new Error(`Could not find branch ${branchName}`);
-		}
+	//	TODO: collapse contiguous line numbers into a range
 
+	const coverageNodes: CommonDisplayNode[] = selectedCluster.lines.map((lineNumber) => {
 		return {
-			label: `${branchName}: line ${branch.line}`,
+			label: `${lineNumber}`,
 			children: [],
-			key: branch.id,
 		};
 	});
 	coverageProvider.refresh(coverageNodes);

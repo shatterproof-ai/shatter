@@ -37,16 +37,9 @@ const createImportStatement = (factory: ts.NodeFactory, module: string, ...thing
     );
 };
 
-export interface Branch {
-    id: string;
-    originalNode: ts.Node;
-    line: number;
-}
-
 export type IntrospectionContext = {
     exported: Set<string>,
     functions: Map<string, FunctionDeclaration>,
-    knownBranches: Map<string, Branch>,
     instrumentedLines: Set<number>,
 };
 
@@ -107,18 +100,29 @@ export const createInstrumenter = (introspectionContext: IntrospectionContext, s
             return ts.visitEachChild(node, findExportedFunctionsVisitor, ctx);
         };
 
+        const minimalText = (node: ts.Node) => {
+            throw new Error(`minimalText not implemented`);
+        };
+
+        const createInstrumentationStatement = (statement: ts.Statement, lineNumber: number) => {
+            const instrumentation = factory.createExpressionStatement(factory.createCallExpression(
+                factory.createIdentifier(recordLineAlias),
+                undefined,
+                [factory.createNumericLiteral(lineNumber),
+                factory.createStringLiteral(minimalText(statement)),
+                ]
+            ));
+            return instrumentation;
+        };
+
         //  TODO: generify this so that the type that comes in is the type that goes out to avoid casting
         const instrumentingVisitor = (node: Node): Node => {
-            const instrumentStatementAsBlock = (factory: ts.NodeFactory, instrumentationContext: IntrospectionContext, node: ts.Statement) => {
-                const lineNumber = ts.getLineAndCharacterOfPosition(sourceFile, node.pos).line;
-                const instrumentation = factory.createExpressionStatement(factory.createCallExpression(
-                    factory.createIdentifier(recordLineAlias),
-                    undefined,
-                    [factory.createNumericLiteral(lineNumber)]
-                ));
+            const instrumentStatementAsBlock = (factory: ts.NodeFactory, statement: ts.Statement) => {
+                const lineNumber = ts.getLineAndCharacterOfPosition(sourceFile, statement.pos).line;
+                const instrumentation = createInstrumentationStatement(statement, lineNumber);
                 introspectionContext.instrumentedLines.add(lineNumber);
 
-                const visited = instrumentingVisitor(node);
+                const visited = instrumentingVisitor(statement);
 
                 return factory.createBlock([visited as ts.Statement, instrumentation]);
             };
@@ -131,12 +135,8 @@ export const createInstrumenter = (introspectionContext: IntrospectionContext, s
                 const newStatements: ts.Statement[] = [];
                 block.statements.forEach((statement, i) => {
                     const lineNumber = ts.getLineAndCharacterOfPosition(sourceFile, statement.pos).line;
-                    const instrumentation = factory.createExpressionStatement(factory.createCallExpression(
-                        factory.createIdentifier(recordLineAlias),
-                        undefined,
-                        [factory.createNumericLiteral(lineNumber)]
-                    ));
                     introspectionContext.instrumentedLines.add(lineNumber);
+                    const instrumentation = createInstrumentationStatement(statement, lineNumber);
                     newStatements.push(instrumentation);
                     newStatements.push(instrumentStatement(factory, statement));
                 });
@@ -150,7 +150,7 @@ export const createInstrumenter = (introspectionContext: IntrospectionContext, s
                 if (ts.isBlock(node)) {
                     return instrumentBlock(factory, node);
                 }
-                return instrumentStatementAsBlock(factory, introspectionContext, node);
+                return instrumentStatementAsBlock(factory, node);
             };
 
             const instrumentStatement = (factory: ts.NodeFactory, statement: ts.Statement): ts.Statement => {
@@ -305,34 +305,3 @@ export const createInstrumenter = (introspectionContext: IntrospectionContext, s
         return resourcedFile;
     };
 };
-
-function extractMetadata(node: ts.Node): { line: number, character: number, filename: string } {
-    if (SP_ORIGINAL_KEY in node) {
-        if (node[SP_ORIGINAL_KEY] === null) {
-            throw new Error(`Unexpected null original node in ${ts.SyntaxKind[node.kind]}`);
-        }
-        return extractMetadata((node as any)[SP_ORIGINAL_KEY]);
-    }
-    if (node.pos && node.pos > 0 && node.getSourceFile()) {
-        const { line, character } = ts.getLineAndCharacterOfPosition(node.getSourceFile(), node.pos);
-        const filename = ts.isSourceFile(node)
-            ? node.fileName
-            : node.getSourceFile()?.fileName;
-        const meta = {
-            line,
-            character,
-            filename,
-        };
-        return meta;
-    }
-    throw new Error(`Unable to extract metadata for node ${ts.SyntaxKind[node.kind]}`);
-}
-
-//  TODO: make IntrospectionContext a class and this a method on it
-function createBranch(sourceFile: ts.SourceFile, originalNode: ts.Statement, instrumentationContext: IntrospectionContext) {
-    const meta = extractMetadata(originalNode);
-    const id = createId();
-    const branch: Branch = { id, originalNode, line: meta.line };
-    instrumentationContext.knownBranches.set(id, branch);
-    return branch;
-}

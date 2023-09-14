@@ -40,7 +40,7 @@ export function stopRecording(branchName: string) {
   //  TODO: well this is bad
 }
 
-export function recordLine(line: number) {
+export function recordLine(line: number, text:string) {
   const context = getContext();
   context.lines.add(line);
 }

@@ -5,7 +5,6 @@ import { createId } from "@paralleldrive/cuid2";
 import { faker } from '@faker-js/faker';
 import { RunResult } from '../core/supervisor';
 import { ResultCluster } from '../core/shatter';
-import { Branch } from '../core/transform';
 
 const edgyNumbers = () => {
     const numbers = new Set<number>();
@@ -325,7 +324,6 @@ export class CombinatorialTestCaseSource implements TestCaseSource {
     private possibilities: (Possibility | null)[] = [];
 
     private clusterMap = new Map<string, ResultCluster>();
-    private knownBranches = new Map<string, Branch>();
 
     private buffer: GeneratedParameterList[] = [];
 

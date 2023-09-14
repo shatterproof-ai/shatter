@@ -5,11 +5,11 @@ import { join } from 'path';
 import * as ts from 'typescript';
 import { CCombinatorialTestCaseSource } from './generator';
 import { Outcome, RunResult, Supervisor } from './supervisor';
-import { Branch, IntrospectionContext, createInstrumenter } from './transform';
+import { IntrospectionContext, createInstrumenter } from './transform';
 
 export interface AutotestResults {
     clusters: ResultCluster[];
-    branches: Map<string, Branch>;
+    instrumentedLines: Set<number>;
 }
 
 //  TODO: for error cases add the file and line of where it was thrown and also
@@ -17,7 +17,6 @@ export interface AutotestResults {
 export interface ResultCluster {
     key: string
     lines: number[]
-    branches: string[]
     results: RunResult[]
     outcome: Outcome
     totalTime: number
@@ -34,14 +33,19 @@ function sha1(value: string, options?: { salt?: string, maxLength?: number }): s
 }
 
 function canonicalClusterKey(result: RunResult) {
-    const branches = new Set(result.executedBranches);
-    const smashed = Array.from(branches).sort().join(".");
+    const smashed = {
+        lines: Array.from(result.lines).sort(),
+        completed: result.completed,
+        error: !!result.error,
+    };
+
     const shasum = createHash('sha1');
-    shasum.update(smashed);
+    shasum.update(JSON.stringify(smashed));
     //  distinguish by return condition as well as branches taken
-    shasum.update(result.completed ? 'completed' : 'not completed');
-    shasum.update(result.error ? 'error' : 'no error');
-    return shasum.digest('hex');
+    const key = shasum.digest('hex');
+    
+    console.log(`key ${key} => ${JSON.stringify(smashed)}`);
+    return key;
 }
 // TODO: iterables and generators, regular expressions, promises, tagged templates, and more
 export type TestArgument = {
@@ -71,6 +75,7 @@ export type TestArgument = {
 
 //  operate on the source file instead of editor objects for generality and also to avoid having to duplicate imports
 //  TODO: make sure the source file is saved before running
+//  TODO: collapse the abstract syntax tree into a tree of conditions and blocks
 export async function shatterAutotest(modulePaths: string[],
     inputFile: string,
     storageBaseDirectory: string | undefined,
@@ -124,33 +129,26 @@ export async function shatterAutotest(modulePaths: string[],
 
         updateClusters(runResult, clusterMap, clusters);
 
-        onUpdate({ clusters, branches: introspectionContext.knownBranches });
+        onUpdate({ clusters, instrumentedLines: introspectionContext.instrumentedLines });
 
         runResult.lines.forEach(line => allExecutedLines.add(line));
         // if still need to run, generate and breed more test cases and repeat
-        if (allExecutedBranches.size < introspectionContext.knownBranches.size) {
-            const unreachedInOrder: Branch[] = [];
-            for (const entry of introspectionContext.knownBranches.entries()) {
-                if (!allExecutedBranches.has(entry[0])) {
-                    unreachedInOrder.push(entry[1]);
+        if (allExecutedLines.size < introspectionContext.instrumentedLines.size) {
+            const unreachedInstrumentedLines: number[] = [];
+            for (const instrumentedLine of introspectionContext.instrumentedLines) {
+                if (!allExecutedLines.has(instrumentedLine)) {
+                    unreachedInstrumentedLines.push(instrumentedLine);
                 }
             }
 
-            unreachedInOrder.sort((a, b) => a.originalNode.pos - b.originalNode.pos);
-            const firstUnreached = unreachedInOrder[0];
-
-            let lastExecutedBranch: Branch | null = null;
-            if (firstUnreached.originalNode.parent) {
-                for (let i = 0; i < firstUnreached.originalNode.parent.getChildCount(); i++) {
-                    const currentChild = unreachedInOrder[0].originalNode.parent.getChildAt(i);
-                    if (currentChild === firstUnreached.originalNode) {
-                        break;
-                    }
-                    // lastExecutedBranch = currentChild;
-                }
-            } else {
-                console.log(`firstUnreached.node.parent is null: ${firstUnreached.originalNode.pos} - ${firstUnreached.originalNode.end}`);
-            }
+            const firstUnreachedLine = unreachedInstrumentedLines[0];
+            //  TODO: smart things
+            /*
+              1) map inputs to lines (have that from RunResult[])
+              2) look at the input that make it to that point and those that don't make it to that point; the former have something necessary
+              3) look at the inputs that make it past that point; those LACK something necessary
+              4) generate mutations of the ones from (2)
+            */
 
             clusters.forEach(cluster => {
                 // cluster.branches.includes(firstUnreached.getText())
@@ -160,7 +158,8 @@ export async function shatterAutotest(modulePaths: string[],
 
     const supervisor = new Supervisor(modulePaths, executorScriptJs, onResult, 15);
     console.log(`tryna allExecutedBranches.size = ${allExecutedBranches.size
-        }, introspectionContext.knownBranches.size = ${introspectionContext.knownBranches.size
+        // }, introspectionContext.knownBranches.size = ${introspectionContext._knownBranches.size
+        }, introspectionContext.instrumentedLines.size = ${introspectionContext.instrumentedLines.size
         }, parameterLists.length = ${parameterLists.length}`);
     while (allExecutedLines.size < introspectionContext.instrumentedLines.size
         && parameterLists.length > 0
@@ -191,7 +190,7 @@ export async function shatterAutotest(modulePaths: string[],
     }
     console.log(`Finished after ${count} iterations`);
 
-    const sortNums = (a:number, b:number) => a-b;
+    const sortNums = (a: number, b: number) => a - b;
     return {
         instrumented: Array.from(introspectionContext.instrumentedLines).sort(sortNums),
         executed: Array.from(allExecutedLines).sort(sortNums),
@@ -214,7 +213,6 @@ function updateClusters(runResult: RunResult, clusterMap: Map<string, ResultClus
 
         cluster = {
             key: clusterKey,
-            branches: Array.from(new Set(runResult.executedBranches)),
             lines: runResult.lines,
             outcome,
             results: [],
@@ -235,13 +233,12 @@ function sortClusters(clusters: ResultCluster[]) {
     const preferredOutcomeOrder: Outcome[] = ['failed', 'error', 'timeout', 'completed'];
     clusters.sort((a, b) => {
         if (a.outcome === b.outcome) {
-            if (a.branches.length === b.branches.length) {
-                if (a.results.length === b.results.length) {
-                    return a.key.localeCompare(b.key);
+            for (let i = 0; i < a.lines.length && i < b.lines.length; i++) {
+                if (a.lines[i] !== b.lines[i]) {
+                    return a.lines[i] - b.lines[i];
                 }
-                return a.results.length - b.results.length;
             }
-            return a.branches.length - b.branches.length;
+            return a.results.length - b.results.length;
         }
         return preferredOutcomeOrder.findIndex((s) => s === a.outcome) - preferredOutcomeOrder.findIndex((s) => s === b.outcome);
     });
@@ -315,7 +312,6 @@ export function writeInstrumented(sourceFile: ts.SourceFile,
     const introspectionContext: IntrospectionContext = {
         functions: new Map(),
         exported: new Set(),
-        knownBranches: new Map(),
         instrumentedLines: new Set(),
     };
 
