@@ -1,6 +1,7 @@
 import { hy } from "@faker-js/faker";
 
-function* hybridize(a: any, b: any) {
+//  TODO: split this into an initial entrypoint and a recursive internal entrypoint
+export function* hybridize(a: any, b: any) {
     const splitIntervals = [0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.99];
 
     if (typeof a !== typeof b) {

@@ -8,6 +8,7 @@ export interface RunResult {
     parameters: any[]
     executedBranches: string[]
     lines: number[]
+    linesInOrder: number[]
     completed: boolean
     outcome: Outcome
     output?: any
@@ -98,7 +99,7 @@ export class Supervisor {
             if (!this.resultByParameters.has(strung)) {
                 const result: RunResult = {
                     parameters, output: undefined, completed: false, duration, executedBranches: [], outcome: 'timeout',
-                    lines: [],
+                    lines: [], linesInOrder: [],
                 };
                 this.resultByParameters.set(strung, result);
                 this.onResult(result);
@@ -115,7 +116,7 @@ export class Supervisor {
             //  TODO: 
             const strungError = error ? '' + error : undefined;
             const result: RunResult = {
-                parameters, error: strungError, completed: false, duration, executedBranches: [], outcome: 'failed', lines: [],
+                parameters, error: strungError, completed: false, duration, executedBranches: [], outcome: 'failed', lines: [], linesInOrder: [],
             };
 
             this.resultByParameters.set(strung, result);
@@ -131,7 +132,7 @@ export class Supervisor {
             // console.log(`after deleting ${activeWorkers.size}`);
         });
         worker.on('message', (msg) => {
-            const { output, error, duration, executedBranches, lines }: { output: any, error: any, duration: number, executedBranches: string[], lines:number[] } = msg;
+            const { output, error, duration, executedBranches, lines, linesInOrder }: { output: any, error: any, duration: number, executedBranches: string[], lines:number[], linesInOrder:number[] } = msg;
 
             console.log(`${currentWorkerNumber}  ${functionName} (${JSON.stringify(parameters)}) => ${error ?? JSON.stringify(output)} in ${duration}ms`);
 
@@ -139,7 +140,7 @@ export class Supervisor {
             const strungError = error ? '' + error : undefined;
             const result: RunResult = {
                 parameters, output, error: strungError, completed: true, duration, executedBranches, outcome: error ? 'error' : 'completed',
-                lines,
+                lines, linesInOrder,
             };
 
             this.resultByParameters.set(strung, result);

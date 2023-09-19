@@ -5,6 +5,7 @@ import { createId } from "@paralleldrive/cuid2";
 import { faker, ne } from '@faker-js/faker';
 import { RunResult } from '../core/supervisor';
 import { ResultCluster } from '../core/shatter';
+import { hybridize } from './hybridize';
 
 function* edgyNumbers2(m = 1) {
     const primes = [13, 17, 23, 37, 53, 67, 79, 89, 97];
@@ -188,7 +189,6 @@ Object.entries(stringFakerses).forEach(([domain, generators]) => {
 
 faker.seed(10481);
 
-
 function* edgyStrings() {
     const seen = new Set<string>();
 
@@ -208,12 +208,15 @@ function* edgyStrings() {
         const pieces: string[] = [];
         while (pieces.length < i) {
             const v = gengen[i].function();
-            pieces.push[]
+            pieces.push();
         }
-
+        const v = pieces.join(' ');
+        if (!seen.has(v)) {
+            yield v;
+            seen.add(v);
+        }
     }
 }
-
 
 export function seedStrings(count = 1) {
     const seen = new Set<string>();
@@ -547,6 +550,68 @@ function* crossProductGenerator(input: Possibility[]): Generator<GeneratedParame
     }
 }
 
+const comparameters = (a: any, b: any): number => {
+    if (typeof a !== typeof b) {
+        //  TODO
+        return 0;
+    }
+
+    if (typeof a === 'string') {
+        return a.localeCompare(b);
+    }
+
+    if (typeof a === 'number') {
+        return a - b;
+    }
+
+    if (typeof a === 'boolean') {
+        if (a === b) {
+            return 0;
+        }
+        return a ? 1 : -1;
+    }
+
+    if (typeof a === 'object') {
+        if (Array.isArray(a)) {
+            for (let i = 0; i < a.length && i < b.length; i++) {
+                const cmp = comparameters(a[i], b[i]);
+                if (cmp !== 0) {
+                    return cmp;
+                }
+            }
+            return a.length - b.length;
+        }
+
+        const akeys = Object.keys(a).sort();
+        const bkeys = Object.keys(b).sort();
+
+        //  looking at common keys first is an arbitrary decision that can/should be questioned
+        //  which method is best at finding differences?
+        const commonKeys = akeys.filter(k => bkeys.includes(k));
+        for (const key of commonKeys) {
+            const cmp = comparameters(a[key], b[key]);
+            if (cmp !== 0) {
+                return cmp;
+            }
+        }
+        for (const key of akeys) {
+            if (!commonKeys.includes(key)) {
+                return -1;
+            }
+        }
+        for (const key of bkeys) {
+            if (!commonKeys.includes(key)) {
+                return 1;
+            }
+        }
+        return 0;
+    }
+
+    throw new Error(`Unexpected type ${typeof a}`);
+};
+
+
+
 export class CombinatorialTestCaseSource implements TestCaseSource {
 
     private counter = 0;
@@ -564,12 +629,14 @@ export class CombinatorialTestCaseSource implements TestCaseSource {
     //  as more parameters are created
     private maxDepth = 3;
 
+    private allExecutedLines = new Set<number>();
     //  TODO: how to fingerprint a particular parameter list so it doesn't get used again?
     //  stringifying the JSON won't work because of canonicalization, self reference, and non-serializable objects
     //  but maybe that's good enough for now
 
     constructor(
         private checker: ts.TypeChecker,
+        private allInstrumentedLines: Set<number>,
         private f: ts.FunctionDeclaration) {
 
         for (const [i, param] of f.parameters.entries()) {
@@ -601,18 +668,95 @@ export class CombinatorialTestCaseSource implements TestCaseSource {
             yield next;
         }
 
+        const newGen = 10;
         const minPerPath = 5;
         const bisectionLimit = 10;
         const mutationLimit = 10;
-        const newGen = 10;
 
-        //  Do some combination of bisection, mutation, and random generation
+        /**
+         * 0) sort all the clusters by their highest numbered line 
+         * 1) Look through all the clusters
+         *  2) for each parameter in the array of parameters
+         *      2a) sort each cluster by the value of that parameter
+         *      2b) foreach pair of clusters (TODO: can be smarter than every pair), bisect
+         */
+        const clusters = Array.from(this.clusterMap.values());
+        const clusterMaxLines = new Map<string, number>();
+        clusters.forEach(c => {
+            const max = c.lines.reduce((a, b) => Math.max(a, b), 0);
+            clusterMaxLines.set(c.key, max);
+        });
+
+        clusters.sort((a, b) => {
+            const aMax = clusterMaxLines.get(a.key)!;
+            const bMax = clusterMaxLines.get(b.key)!;
+            return aMax - bMax;
+        });
+
         /*
         bisection - find two parameter lists that are very similar to each other but lead to different code paths
             //  for each parameter list in a cluster, find the outermost
             //  optimization: record which parameter lists are NOT near the edges of their cluster to avoid reexamining
             //  for each pair of outermosts across all cluster, bisect
         */
+        let bisections = 0;
+        while (bisections < bisectionLimit) {
+            for (let index = 0; index < this.f.parameters.length; index++) {
+                for (let i = 0; i < clusters.length - 1; i++) {
+                    const a = clusters[i];
+                    const b = clusters[i + 1];
+                    a.results.sort(comparameters);
+                    b.results.sort(comparameters);
+
+                    const alast = a.results[a.results.length - 1];
+                    const alastCurrentParam = alast.parameters[index];
+                    const bfirst = b.results[0];
+                    const bfirstCurrentParam = bfirst.parameters[index];
+
+                    for (const hybrid of hybridize(alastCurrentParam, bfirstCurrentParam)) {
+                        yield  {
+                            id: createId(),
+                            sequence: this.counter++,
+                            parameters: (hybrid as any[]),
+                        };
+                    }
+                }
+            };
+
+            bisections++;
+        }
+
+        /**
+         * mutation
+         * 1) find lines that have been instrumented but not executed
+         * 2) identify clusters that have exercised the lines before and/or after
+         * 3) generate parameter lists that are similar to the ones
+         *      used to get to the before and different from the after
+         * 
+         * 
+         */
+
+        Array.from(this.allInstrumentedLines).sort();
+        for (let i = 0; i < mutationLimit; i++) {
+        }
+
+
+
+        for (let i = 0; i < newGen; i++) {
+            const parameters: any[] = this.possibilities.map(constructValue);
+
+            const id = createId();
+            const gplist: GeneratedParameterList = {
+                id,
+                sequence: this.counter++,
+                parameters,
+            };
+
+            this.buffer.push(gplist);
+            yield gplist;
+        }
+
+        //  Do some combination of bisection, mutation, and random generation
 
         //  find all code paths that haven't been exercised enough
 
@@ -640,6 +784,7 @@ export class CombinatorialTestCaseSource implements TestCaseSource {
 
     update(clusterMap: Map<string, ResultCluster>, r: RunResult): void {
         this.clusterMap = clusterMap;
+        r.lines.forEach(l => this.allExecutedLines.add(l));
     }
 }
 

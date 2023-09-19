@@ -17,6 +17,8 @@ export interface AutotestResults {
 export interface ResultCluster {
     key: string
     lines: number[]
+    //  includes potential duplicates if the same line is hit twice
+    linesInOrder: number[]
     results: RunResult[]
     outcome: Outcome
     totalTime: number
@@ -88,7 +90,7 @@ export async function shatterRetest(modulePaths: string[],
         readdirSync(clusterStorageDirectory).forEach(clusterFile => {
             const cluster = JSON.parse(clusterFile);
             clusters.push(cluster);
-        })
+        });
 
         const generator = new RetestCaseSource(clusters);
     
@@ -235,6 +237,7 @@ function updateClusters(runResult: RunResult, clusterMap: Map<string, ResultClus
         cluster = {
             key: clusterKey,
             lines: runResult.lines,
+            linesInOrder: runResult.linesInOrder,
             outcome,
             results: [],
             totalTime: 0,

@@ -43,7 +43,7 @@ export async function execute(functions: Record<string, Function>) {
             const duration = end - start;
 
             const lines = Array.from(ic.lines).sort((a, b) => a - b);
-            definitelyNotNullParentPortToMakeTypescriptHappy.postMessage({ output, error, duration, executedBranches: Array.from(executedBranches), lines });
+            definitelyNotNullParentPortToMakeTypescriptHappy.postMessage({ output, error, duration, executedBranches: Array.from(executedBranches), lines, linesInOrder: ic.linesInOrder });
         }
     });
 }
