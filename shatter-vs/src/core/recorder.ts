@@ -1,9 +1,13 @@
 import { AsyncLocalStorage } from "async_hooks";
 
+const MAX_LINES_IN_ORDER = 10_000_000;
+
 export interface ExecutionContext {
   executedBranches: Set<string>
   branchStack: string[]
   lines: Set<number>
+  linesInOrder: number[]
+  //  TODO: track the values of each variable in scope (except global) at each instrumented line
 }
 
 export const contextStorage = new AsyncLocalStorage<ExecutionContext>();
@@ -43,4 +47,5 @@ export function stopRecording(branchName: string) {
 export function recordLine(line: number, text:string) {
   const context = getContext();
   context.lines.add(line);
+  context.linesInOrder.push(line);
 }

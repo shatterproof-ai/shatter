@@ -2,9 +2,123 @@ import * as ts from 'typescript';
 
 import { createId } from "@paralleldrive/cuid2";
 
-import { faker } from '@faker-js/faker';
+import { faker, ne } from '@faker-js/faker';
 import { RunResult } from '../core/supervisor';
 import { ResultCluster } from '../core/shatter';
+
+function* edgyNumbers2(m = 1) {
+    const primes = [13, 17, 23, 37, 53, 67, 79, 89, 97];
+
+    const neighbors = [-2, -1, 0, 1, 2];
+    function* geneighbor(n: number) {
+        for (const neighbor of neighbors) {
+            const v = n * neighbor;
+            if (!seen.has(v)) {
+                yield v;
+                seen.add(v);
+            }
+        }
+    }
+
+    const bases = [[2, 63], [5, 6], [10, 10]]
+    const mults = [1, -1];
+
+    const seen = new Set<number>();
+    for (let i = -1; i < 50; i++) {
+        const v = m * i;
+        yield v;
+        seen.add(v);
+    }
+
+    //  pure exponents e.g. 625, 4096, 100_000_000
+    for (const mult of mults) {
+        for (const [base, maxponent] of bases) {
+            for (let i = 0; i < maxponent; i++) {
+                const powered = m * mult * (base ** i);
+                for (const n of geneighbor(powered)) {
+                    yield n;
+                }
+            }
+        }
+    }
+
+    //  e.g. -45, 720, 250
+    for (const mult of mults) {
+        for (let pow2 = 1; pow2 < 10; pow2++) {
+            for (let pow3 = 1; pow3 < 4; pow3++) {
+                for (let pow5 = 1; pow5 < 6; pow5++) {
+                    const ppow = m * mult * (2 ** pow2) * (3 ** pow3) * (5 ** pow5);
+                    for (const n of geneighbor(ppow)) {
+                        yield n;
+                    }
+                }
+            }
+        }
+    }
+}
+
+//  progressively get weirder
+function* edgyFloats() {
+    const seeds = [
+        Math.PI,
+        Math.E,
+        Math.SQRT2,
+        Math.LN10,
+        Math.LN2,
+        Math.LOG10E,
+        Math.LOG2E,
+        Math.SQRT1_2,
+    ];
+
+    const bases = [[2, 63], [5, 6], [10, 10]]
+    const mults = [1, -1];
+
+    const seen = new Set<number>();
+
+    for (const powers of [1, 2, 3]) {
+        for (let i = -1; i < 50; i++) {
+            for (const seed of seeds) {
+                const v = i * seed;
+                yield v;
+                seen.add(v);
+            }
+        }
+
+        //  pure exponents e.g. 625, 4096, 100_000_000
+        for (const mult of mults) {
+            for (const [base, maxponent] of bases) {
+                for (let i = 0; i < maxponent; i++) {
+                    for (const seed of seeds) {
+                        const powered = seed * mult * (base ** i);
+                        if (!seen.has(powered)) {
+                            yield powered;
+                            seen.add(powered);
+                        }
+                    }
+                }
+            }
+        }
+
+        //  e.g. likely fractions
+        for (const mult of mults) {
+            for (let pow2 = -3; pow2 < 4; pow2++) {
+                for (let pow3 = -3; pow3 < 3; pow3++) {
+                    for (let pow5 = -3; pow5 < 3; pow5++) {
+                        for (let pow7 = -3; pow5 < 3; pow7++) {
+                            for (const seed of seeds) {
+                                const ppow = seed * mult * (2 ** pow2) * (3 ** pow3) * (5 ** pow5) * (7 ** pow7);
+                                if (!seen.has(ppow)) {
+                                    yield ppow;
+                                    seen.add(ppow);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
 const edgyNumbers = () => {
     const numbers = new Set<number>();
@@ -73,6 +187,33 @@ Object.entries(stringFakerses).forEach(([domain, generators]) => {
 });
 
 faker.seed(10481);
+
+
+function* edgyStrings() {
+    const seen = new Set<string>();
+
+    const gengen: {
+        category: string,
+        generator: string,
+        function: Function,
+    }[] = [];
+    for (const [name, generators] of Object.entries(dataDomains.string)) {
+        for (const generator of generators) {
+            gengen.push({ category: name, generator: generator.name, function: generator })
+        };
+    }
+
+    let pos = 0;
+    for (let i = 1; i < 100_000; i *= 3) {
+        const pieces: string[] = [];
+        while (pieces.length < i) {
+            const v = gengen[i].function();
+            pieces.push[]
+        }
+
+    }
+}
+
 
 export function seedStrings(count = 1) {
     const seen = new Set<string>();
@@ -283,7 +424,7 @@ const constructValue = (possibility: Possibility | null): any => {
 };
 
 interface TestCaseSource {
-    next(): GeneratedParameterList | undefined;
+    next(): Iterator<GeneratedParameterList>;
     update?(clusterMap: Map<string, ResultCluster>, r: RunResult): void;
 }
 
@@ -292,25 +433,117 @@ export class RetestCaseSource implements TestCaseSource {
     private resultIndex = 0;
     private counter = 0;
     constructor(private clusters: ResultCluster[]) { }
-    next(): GeneratedParameterList | undefined {
-        if (this.clusterIndex >= this.clusters.length) {
-            return undefined;
-        }
+    *next(): Iterator<GeneratedParameterList> {
 
-        if (this.resultIndex >= this.clusters[this.clusterIndex].results.length) {
+        if (this.clusterIndex < this.clusters.length
+            && this.resultIndex >= this.clusters[this.clusterIndex].results.length) {
             this.clusterIndex++;
             this.resultIndex = 0;
-            return this.next();
+        }
+
+        if (this.clusterIndex >= this.clusters.length) {
+            return;
         }
 
         const result = this.clusters[this.clusterIndex].results[this.resultIndex];
         this.resultIndex++;
         //  TODO: should this save GeneratedParameterList instead of the bare parameters any[]?
-        return {
+        yield {
             id: createId(),
             sequence: this.counter++,
             parameters: result.parameters,
         };
+    }
+}
+
+function* crossProductGenerator(input: Possibility[]): Generator<GeneratedParameterList, void, void> {
+    if (input.length === 0) {
+        return;
+    }
+
+    let sequence = 0;
+    const [first, ...rest] = input;
+
+    if (first.type === 'empty') {
+        for (const node of crossProductGenerator(rest)) {
+            yield {
+                id: '',
+                sequence: sequence++,
+                parameters: [undefined, node.parameters]
+            };
+        }
+    } else if (first.type === 'any' || first.type === 'unknown') {
+        for (const value of first.range) {
+            for (const node of crossProductGenerator(rest)) {
+                yield {
+                    id: '',
+                    sequence: sequence++,
+                    parameters: [value, ...node.parameters]
+                };
+            }
+        }
+    } else if (first.type === 'number' || first.type === 'string' || first.type === 'boolean') {
+        for (const value of first.range) {
+            yield {
+                id: '',
+                sequence: sequence++,
+                parameters: [value],
+            };
+        }
+    } else if (first.type === 'array') {
+        if (first.range === null) {
+            //  TODO: error
+            return;
+        }
+
+        const lengths = [0, 1, 2, 3, 5, 8, 13];
+        const subCrossProductGenerator = crossProductGenerator([first.range]);
+        const values: any[] = [];
+        const maxNeeded = lengths.reduce((a, b) => a + b, 0);
+        for (const subNode of subCrossProductGenerator) {
+            values.push(subNode);
+            if (values.length >= maxNeeded) {
+                break;
+            }
+        }
+        let vi = 0;
+        for (const length of lengths) {
+            for (let j = 0; j < length; j++) {
+                const generated: GeneratedParameterList = {
+                    id: '',
+                    sequence: sequence++,
+                    parameters: values[vi++].parameters,
+                };
+
+                yield generated;
+                if (vi >= values.length) {
+                    vi = 0;
+                }
+            }
+        }
+    } else if (first.type === 'object') {
+        const keys = Object.keys(first.ranges);
+        const bs = Math.floor(Math.random() * 2 ** (keys.length + 1));    //  +1 because we want the leading digit to have a 50% chance
+        const permutations = 2 * keys.length;   //  arbitrary; can be smarter later
+        for (let i = 0; i < permutations; i++) {
+            const values: Record<string, any> = {};
+            for (let j = 0; j < keys.length; j++) {
+                const key = keys[j];
+                const value = first.ranges[key];
+                if ((bs & (1 << j)) !== 0) {
+                    values[key] = constructValue(value);
+                }
+            }
+            yield {
+                id: '',
+                sequence: sequence++,
+                parameters: [values],
+            };
+        }
+    } else {
+        for (const node of crossProductGenerator(rest)) {
+            yield node;
+        }
     }
 }
 
@@ -326,6 +559,10 @@ export class CombinatorialTestCaseSource implements TestCaseSource {
     private clusterMap = new Map<string, ResultCluster>();
 
     private buffer: GeneratedParameterList[] = [];
+
+    //  how deep to go into nested objects; meant to be increased
+    //  as more parameters are created
+    private maxDepth = 3;
 
     //  TODO: how to fingerprint a particular parameter list so it doesn't get used again?
     //  stringifying the JSON won't work because of canonicalization, self reference, and non-serializable objects
@@ -357,11 +594,11 @@ export class CombinatorialTestCaseSource implements TestCaseSource {
         }
     }
 
-    next(): GeneratedParameterList | undefined {
+    *next(): Iterator<GeneratedParameterList> {
         if (this.buffer.length > 0) {
             const next = this.buffer.shift()!;
             // this.history.set(next?.id, next);
-            return next;
+            yield next;
         }
 
         const minPerPath = 5;
@@ -384,16 +621,19 @@ export class CombinatorialTestCaseSource implements TestCaseSource {
 
 
         //  random
-        const parameters: any[] = this.possibilities.map(constructValue);
+        while (true) {
+            const parameters: any[] = this.possibilities.map(constructValue);
 
-        const id = createId();
-        const gplist: GeneratedParameterList = {
-            id,
-            sequence: this.counter++,
-            parameters,
-        };
+            const id = createId();
+            const gplist: GeneratedParameterList = {
+                id,
+                sequence: this.counter++,
+                parameters,
+            };
 
-        this.buffer.push(gplist);
+            this.buffer.push(gplist);
+            yield gplist;
+        }
 
 
     }

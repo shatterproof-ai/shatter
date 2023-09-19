@@ -16,6 +16,7 @@ export async function execute(functions: Record<string, Function>) {
         executedBranches,
         branchStack: [],
         lines: new Set<number>(),
+        linesInOrder: [],
     };
 
     const f = functions[functionName];

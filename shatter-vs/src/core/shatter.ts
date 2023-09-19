@@ -1,9 +1,9 @@
 import { createHash } from 'crypto';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import * as ts from 'typescript';
-import { CCombinatorialTestCaseSource } from './generator';
+import { CCombinatorialTestCaseSource, RetestCaseSource } from './generator';
 import { Outcome, RunResult, Supervisor } from './supervisor';
 import { IntrospectionContext, createInstrumenter } from './transform';
 
@@ -72,6 +72,27 @@ export type TestArgument = {
     argumentType: string,   //  TODO: how to describe function type?
     value: any
 });
+
+export async function shatterRetest(modulePaths: string[],
+    inputFile: string,
+    storageBaseDirectory: string,
+    functionName: string,
+    onUpdate: (results: AutotestResults) => void,
+    shatterproofModuleOverride?: string) {
+
+        const inputFileHash = sha1(inputFile);
+        const clusterStorageDirectory = join(storageBaseDirectory, 'clusters', inputFileHash, functionName);
+
+        //  list all files
+        const clusters: ResultCluster[] = [];
+        readdirSync(clusterStorageDirectory).forEach(clusterFile => {
+            const cluster = JSON.parse(clusterFile);
+            clusters.push(cluster);
+        })
+
+        const generator = new RetestCaseSource(clusters);
+    
+    }
 
 //  operate on the source file instead of editor objects for generality and also to avoid having to duplicate imports
 //  TODO: make sure the source file is saved before running
