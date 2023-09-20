@@ -301,6 +301,23 @@ function* edgyStrings(): Generator<GeneratedParameter, void, unknown> {
     console.error(`Apparently there are no strings left with i = ${i}; generated = ${generated}`);
 }
 
+export type Generation = {
+    id: string,
+} & ({
+    type: 'seed',
+    generator: string,
+} | {
+    type: 'reduction',
+    parent: Generation,
+} | {
+    type: 'mutation',
+    parent: Generation,
+} | {
+    type: 'hybrid',
+    parents: Generation[],
+} | {
+});
+
 //  TODO: generify value
 export type GeneratedParameter = {
     id: string,
@@ -613,8 +630,10 @@ export class CombinatorialTestCaseSource implements TestCaseSource {
     3) cluster them
     4) foreach value in a cluster, keep minimizing until it's no longer in the cluster 
         (be sure to check to see if the minimized version is already in the cluster)
-    5) identify overlooked lines and try to mutate the minima to cover them (how to avoid just regenerating the non-minimal values or ones that will be similarly ineffective?)
-    6) take the minima and compare them against the other clusters and hybridize for edginess
+    5) identify unexecuted lines and try to mutate the minima to cover them
+        (how to avoid just regenerating the previously attempted non-minimal values
+            or ones that will be similarly ineffective?)
+    6) take the minima, compare them against the other clusters and hybridize for edginess
 
     */
 

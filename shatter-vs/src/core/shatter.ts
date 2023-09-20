@@ -369,3 +369,55 @@ export function writeInstrumented(sourceFile: ts.SourceFile,
     //  replace it in the AST
     return [modifiedSourcefilePath, executorScriptJs, introspectionContext];
 }
+
+
+
+
+
+export function redux() {
+    /*
+        1) SEED
+            10) generate a diverse array of inputs
+            20) use known common edge cases
+            30) analyze the source tree for special numbers or values and use those as seeds (basically all literals)
+            40) use a sample of randomish fake values
+            50) pull from those sets of primitive values to construct the composite objects
+            60) execute
+
+        2) SHRINK
+            10) for each cluster
+                100) for each input parameter
+                    1000) sort the parameter lists by that parameter
+                    2000) pick the top and bottom
+                    3000) shrink them
+                    4000) execute
+                    5000) if the result lands in the same cluster, keep shrinking
+                    6000) if the result lands in a different cluster, sort that cluster
+                        and see if it's an outermost parameter list (possibly replacing a previous one)
+                    7000) repeat (GOTO (1000)) until the tops and bottoms of each cluster cannot be shrunk further and remain valid
+                        OR the maximum attempt number is reached
+
+        3) COVER
+            10) sort clusters by their last line executed
+            20) for each pair of cluster ([i] and [i + 1]), see if there are unexecuted lines in between
+            20) if there are unexecuted lines in between, generate inputs that execute those lines
+                100) identify the features that are common to the before and after
+                200) identify the features that are present in the after but not the before
+                300) generate more
+                    1000) mutate the before in ways different from (2)
+                    2000) hybridize the before and after
+                    3000) generate new inputs using different features from before
+                500) execute
+                600) repeat until there are no unexecuted lines OR the maximum attempt number is reached
+
+        4) EDGE DETECTION
+            10) sort clusters by their last line executed
+            20) for each pair of cluster ([i] and [i + 1]), sort the input lists by each parameter position
+            30) if the top of the before is distance > N from the bottom of the after, hybridize
+            40) execute
+            50) repeat until the maximum attempt number is reached
+                OR all clusters are within the minimum distance of each other 
+                OR diminishing returns on distance reduction
+
+    */
+}
