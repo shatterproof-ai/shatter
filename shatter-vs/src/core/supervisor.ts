@@ -58,7 +58,7 @@ export class Supervisor {
         }
 
         const NODE_PATH = this.nodePath.join(':');
-        console.log(`attempting ${currentWorkerNumber}:${this.executorScriptJS} with NODE_PATH ${NODE_PATH} and workerData = ${JSON.stringify(workerData)}`);
+        // console.log(`attempting ${currentWorkerNumber}:${this.executorScriptJS} with NODE_PATH ${NODE_PATH} and workerData = ${JSON.stringify(workerData)}`);
         const worker = new Worker(this.executorScriptJS, {
             workerData,
             stdout: true,
@@ -134,7 +134,7 @@ export class Supervisor {
         worker.on('message', (msg) => {
             const { output, error, duration, executedBranches, lines, linesInOrder }: { output: any, error: any, duration: number, executedBranches: string[], lines:number[], linesInOrder:number[] } = msg;
 
-            console.log(`${currentWorkerNumber}  ${functionName} (${JSON.stringify(parameters)}) => ${error ?? JSON.stringify(output)} in ${duration}ms`);
+            // console.log(`${currentWorkerNumber}  ${functionName} (${JSON.stringify(parameters)}) => ${error ?? JSON.stringify(output)} in ${duration}ms`);
 
             // console.log(`And executed branches = `)
             const strungError = error ? '' + error : undefined;

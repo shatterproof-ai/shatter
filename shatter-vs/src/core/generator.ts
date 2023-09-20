@@ -2,33 +2,29 @@ import * as ts from 'typescript';
 
 import { createId } from "@paralleldrive/cuid2";
 
-import { faker, ne } from '@faker-js/faker';
+import { faker, hy, ne } from '@faker-js/faker';
 import { RunResult } from '../core/supervisor';
 import { ResultCluster } from '../core/shatter';
 import { hybridize } from './hybridize';
+import path = require('path');
 
-function* edgyNumbers2(m = 1) {
+function* edgyNumbers(m = 1) {
     const primes = [13, 17, 23, 37, 53, 67, 79, 89, 97];
 
     const neighbors = [-2, -1, 0, 1, 2];
     function* geneighbor(n: number) {
         for (const neighbor of neighbors) {
             const v = n * neighbor;
-            if (!seen.has(v)) {
-                yield v;
-                seen.add(v);
-            }
+            yield v;
         }
     }
 
     const bases = [[2, 63], [5, 6], [10, 10]]
     const mults = [1, -1];
 
-    const seen = new Set<number>();
     for (let i = -1; i < 50; i++) {
         const v = m * i;
         yield v;
-        seen.add(v);
     }
 
     //  pure exponents e.g. 625, 4096, 100_000_000
@@ -56,6 +52,12 @@ function* edgyNumbers2(m = 1) {
             }
         }
     }
+
+    for (let i = 11; i < 2 ** 32; i = Math.ceil(1.3 * i) + 13) {
+        //  utterly stupid; just to make sure it doesn't run out of numbers
+        yield i;
+        yield -i;
+    }
 }
 
 //  progressively get weirder
@@ -74,14 +76,12 @@ function* edgyFloats() {
     const bases = [[2, 63], [5, 6], [10, 10]]
     const mults = [1, -1];
 
-    const seen = new Set<number>();
 
     for (const powers of [1, 2, 3]) {
         for (let i = -1; i < 50; i++) {
             for (const seed of seeds) {
                 const v = i * seed;
                 yield v;
-                seen.add(v);
             }
         }
 
@@ -91,10 +91,7 @@ function* edgyFloats() {
                 for (let i = 0; i < maxponent; i++) {
                     for (const seed of seeds) {
                         const powered = seed * mult * (base ** i);
-                        if (!seen.has(powered)) {
-                            yield powered;
-                            seen.add(powered);
-                        }
+                        yield powered;
                     }
                 }
             }
@@ -108,10 +105,7 @@ function* edgyFloats() {
                         for (let pow7 = -3; pow5 < 3; pow7++) {
                             for (const seed of seeds) {
                                 const ppow = seed * mult * (2 ** pow2) * (3 ** pow3) * (5 ** pow5) * (7 ** pow7);
-                                if (!seen.has(ppow)) {
-                                    yield ppow;
-                                    seen.add(ppow);
-                                }
+                                yield ppow;
                             }
                         }
                     }
@@ -119,29 +113,23 @@ function* edgyFloats() {
             }
         }
     }
+
+    //  utterly stupid; just to make sure it doesn't run out of numbers
+    for (let i = 11; i < 2 ** 32; i = Math.ceil(1.3 * i) + 13) {
+        for (const s of seeds) {
+            yield i * s;
+            yield -(i * s);
+        }
+    }
+
 }
 
-const edgyNumbers = () => {
-    const numbers = new Set<number>();
-    for (let i = -1; i < 50; i++) {
-        numbers.add(i);
+function* edgyBooleans() {
+    while (true) {
+        yield true;
+        yield false;
     }
-
-    for (let i = 0; i < 63; i++) {
-        const powered = 2 ** i;
-        numbers.add(powered);
-        numbers.add(-powered);
-    }
-
-    for (let i = 1; i < 10 ** 10; i *= 10) {
-        numbers.add(i);
-        numbers.add(-i);
-    }
-
-    return [...numbers].sort();
-};
-
-const edgyBooleans = [true, false];
+}
 
 const numberFakerses = {
     'location': ['latitude', 'longitude']
@@ -165,11 +153,8 @@ const stringFakerses = {
 };
 
 // eslint-disable-next-line @typescript-eslint/ban-types
-const dataDomains: Record<'string' | 'date' | 'number', Record<string, Function[]>> = {
+const dataDomains: Record<'string' | 'date', Record<string, Function[]>> = {
     string: {},
-    number: {
-        edgy: [edgyNumbers],
-    },
     date: {
         date: [faker.date.past, faker.date.recent, faker.date.soon, faker.date.future]
     }
@@ -189,9 +174,13 @@ Object.entries(stringFakerses).forEach(([domain, generators]) => {
 
 faker.seed(10481);
 
-function* edgyStrings() {
-    const seen = new Set<string>();
+function* edgyAny() {
+    while (true) {
+        yield {};
+    }
+}
 
+function* edgyStrings() {
     const gengen: {
         category: string,
         generator: string,
@@ -204,44 +193,22 @@ function* edgyStrings() {
     }
 
     let pos = 0;
-    for (let i = 1; i < 100_000; i *= 3) {
+    let i = 1;
+    let generated = 0;
+    for (; i < 100_000; i = Math.ceil(i * 1.2)) {
         const pieces: string[] = [];
         while (pieces.length < i) {
-            const v = gengen[i].function();
-            pieces.push();
+            if (pos >= gengen.length) {
+                pos = 0;
+            }
+            const v = gengen[pos++].function();
+            pieces.push(v);
         }
         const v = pieces.join(' ');
-        if (!seen.has(v)) {
-            yield v;
-            seen.add(v);
-        }
+        yield v;
+        generated++;
     }
-}
-
-export function seedStrings(count = 1) {
-    const seen = new Set<string>();
-    const seeds: string[] = [];
-    for (let i = 0; i < count; i++) {
-        Object.entries(dataDomains.string).forEach(([name, generators]) => {
-            if (!['internet-url', 'phone-imei', 'system-cron', 'git-commitSha', 'database-type'].includes(name)) {
-                // return
-            }
-            generators.forEach(generator => {
-                const s: string = generator();
-                if (!s) {
-                    throw new Error(`No seed for ${name}.${generator}`);
-                }
-                if (typeof s !== 'string') {
-                    throw new Error(`Seed for ${name}.${generator} is not a string`);
-                }
-                if (seen.has(s)) {
-                    return;
-                }
-                seeds.push(s);
-            });
-        });
-    }
-    return Array.from(seeds).sort((a, b) => a.localeCompare(b));
+    console.error(`Apparently there are no strings left with i = ${i}; generated = ${generated}`);
 }
 
 //  TODO: generify value
@@ -251,183 +218,15 @@ export interface GeneratedParameter {
     value: any
 }
 
-export function seedIntegers() {
-    //  create an array with all prime numbers less than 100
-    const numbers = new Set<number>([13, 17, 23, 37, 53, 67, 79, 89, 97]);
-
-    for (let i = -1; i < 12; i++) {
-        numbers.add(i);
-    }
-
-    const max = 10 ** 10;
-    //  powers of key numbers, their neighbors, and their negatives
-    [2, 5, 10].forEach(base => {
-        for (let i = base; i < max; i *= base) {
-            for (let j = -2; j < 3; j++) {
-                const v = i + j;
-                numbers.add(v);
-                numbers.add(-v);
-            }
-        }
-    });
-
-    return Array.from(numbers).sort();
-}
-
-export function seedFloats() {
-    const specials = [Math.E, Math.LN10, Math.LN2, Math.LOG10E, Math.LOG2E, Math.PI, Math.SQRT1_2, Math.SQRT2];
-    const numbers = new Set<number>([0]);
-    for (let i = 0.01; i < 1000; i *= 10) {
-        for (const s of specials) {
-            numbers.add(i * s);
-            numbers.add(-i * s);
-        }
-    }
-    return Array.from(numbers).sort();
-}
-
 export interface GeneratedParameterList {
     id: string,
     sequence: number
     parameters: any[]
 }
 
-export type EmptyPossibility = {
-    type: 'empty'
-};
-
-export type PrimitivePossibility = {
-    type: 'number' | 'string' | 'boolean'
-    range: (null | undefined | number)[]
-    | (null | undefined | string)[]
-    | (null | undefined | boolean)[]
-};
-
-export type ArrayPossibility = {
-    type: 'array'
-    range: Possibility | null
-};
-
-export type ObjectPossibility = {
-    type: 'object'
-    ranges: Record<string | number, Possibility>
-};
-
-export type AnyOrUnknownPossibility = {
-    type: 'any' | 'unknown'
-    range: any
-};
-
-export type Possibility = (EmptyPossibility | PrimitivePossibility | ArrayPossibility | ObjectPossibility | AnyOrUnknownPossibility) & {
-    // id: string,
-    // generator: string,
-};
-
-const possibilitiesForType = function (checker: ts.TypeChecker, currentType: ts.Type, allowedDepth = 1): Possibility | null {
-
-    if (checker.isArrayType(currentType)) {
-        const typeargs = checker.getTypeArguments(currentType as ts.TypeReference);
-        const elementttype = typeargs[0];
-
-        const elementPossibility = possibilitiesForType(checker, elementttype, allowedDepth - 1);
-        return {
-            type: 'array',
-            range: elementPossibility
-        };
-    }
-
-    switch (currentType.flags) {
-        case ts.TypeFlags.Any:
-        case ts.TypeFlags.Unknown:
-            return {
-                type: 'any',
-                range: [{}]
-            };
-        case ts.TypeFlags.String: {
-            const strings = seedStrings();
-            return {
-                type: 'string',
-                range: strings,
-            };
-        }
-
-        case ts.TypeFlags.Number: {
-            const numbers = [
-                ...seedIntegers(),
-                ...seedFloats(),
-            ];
-
-            return {
-                type: 'number',
-                range: numbers,
-            };
-        }
-        case ts.TypeFlags.Boolean:
-            return {
-                type: 'boolean',
-                range: [true, false],
-            };
-        case ts.TypeFlags.Object: {
-            if (allowedDepth === 0) {
-                return null;
-            }
-            const o: any = {};
-            currentType.getProperties().forEach((prop) => {
-                if (prop.valueDeclaration) {
-                    const proptype = checker.getTypeOfSymbolAtLocation(prop, prop.valueDeclaration);
-                    //  TODO: if the type doesn't allow null or missing....?
-                    o[prop.name] = possibilitiesForType(checker, proptype, allowedDepth - 1);
-                }
-            });
-
-            return o;
-        }
-    }
-
-    return null;
-};
-
-const constructValueForTypeNode = (checker: ts.TypeChecker, typeNode: ts.TypeNode) => {
-    const currentType = checker.getTypeAtLocation(typeNode);
-    return possibilitiesForType(checker, currentType, 4);
-};
-
-//  TODO: sometimes throw in a null or undefined
-const constructValue = (possibility: Possibility | null): any => {
-    if (possibility === null) {
-        return null;
-    }
-    switch (possibility.type) {
-        case 'any':
-        case 'unknown':
-            return possibility.range[Math.floor(Math.random() * possibility.range.length)];
-        case 'array':
-            if (possibility.range === null) {
-                return [];
-            }
-
-            const arrayLength = Math.floor(Math.random() * 10);
-            const a: any[] = [];
-            for (let i = 0; i < arrayLength; i++) {
-                a.push(constructValue(possibility.range));
-            }
-
-            return a;
-        case 'boolean':
-        case 'number':
-        case 'string':
-            return possibility.range[Math.floor(Math.random() * possibility.range.length)];
-        case 'object':
-            const o: any = {};
-            Object.entries(possibility.ranges).forEach(([key, value]) => {
-                o[key] = constructValue(value);
-            });
-            return o;
-    }
-};
-
 interface TestCaseSource {
-    next(): Iterator<GeneratedParameterList>;
+    start(): Iterator<GeneratedParameterList>;
+    increaseWeirdness?(): void;
     update?(clusterMap: Map<string, ResultCluster>, r: RunResult): void;
 }
 
@@ -436,7 +235,7 @@ export class RetestCaseSource implements TestCaseSource {
     private resultIndex = 0;
     private counter = 0;
     constructor(private clusters: ResultCluster[]) { }
-    *next(): Iterator<GeneratedParameterList> {
+    *start(): Iterator<GeneratedParameterList> {
 
         if (this.clusterIndex < this.clusters.length
             && this.resultIndex >= this.clusters[this.clusterIndex].results.length) {
@@ -459,7 +258,7 @@ export class RetestCaseSource implements TestCaseSource {
     }
 }
 
-function* crossProductGenerator(input: Possibility[]): Generator<GeneratedParameterList, void, void> {
+function* crossProductGenerator(input: any[]): Generator<GeneratedParameterList, void, void> {
     if (input.length === 0) {
         return;
     }
@@ -534,7 +333,7 @@ function* crossProductGenerator(input: Possibility[]): Generator<GeneratedParame
                 const key = keys[j];
                 const value = first.ranges[key];
                 if ((bs & (1 << j)) !== 0) {
-                    values[key] = constructValue(value);
+                    // values[key] = constructValue(value);
                 }
             }
             yield {
@@ -619,11 +418,11 @@ export class CombinatorialTestCaseSource implements TestCaseSource {
 
     //  map from the JSON path to a particular part of the argument list to a list of candidate values
     //  use up all the seed values before trying anything different
-    private possibilities: (Possibility | null)[] = [];
 
     private clusterMap = new Map<string, ResultCluster>();
 
-    private buffer: GeneratedParameterList[] = [];
+    //  TODO: use this
+    private weirdness = 1;
 
     //  how deep to go into nested objects; meant to be increased
     //  as more parameters are created
@@ -638,243 +437,238 @@ export class CombinatorialTestCaseSource implements TestCaseSource {
         private checker: ts.TypeChecker,
         private allInstrumentedLines: Set<number>,
         private f: ts.FunctionDeclaration) {
-
-        for (const [i, param] of f.parameters.entries()) {
-            let paramName = undefined;
-            if (ts.isIdentifier(param.name)) {
-                paramName = param.name.text;
-            }
-
-            if (param.type) {
-                if (ts.isTypeReferenceNode(param.type) || ts.isTypeNode(param.type)) {
-                    const value = constructValueForTypeNode(checker, param.type);
-                    if (value === null) {
-                        this.possibilities.push(null);
-                    }
-                    this.possibilities.push(value);
-                } else {
-                    throw new Error(`Unexpected type for ${paramName}: ${param.type}`);
-                }
-            } else {
-                throw new Error(`Unexpected type for ${paramName}: ${param.type}`);
-            }
-        }
     }
 
-    *next(): Iterator<GeneratedParameterList> {
-        if (this.buffer.length > 0) {
-            const next = this.buffer.shift()!;
-            // this.history.set(next?.id, next);
-            yield next;
-        }
-
+    *start(): Iterator<GeneratedParameterList> {
         const newGen = 10;
         const minPerPath = 5;
         const bisectionLimit = 10;
         const mutationLimit = 10;
 
-        /**
-         * 0) sort all the clusters by their highest numbered line 
-         * 1) Look through all the clusters
-         *  2) for each parameter in the array of parameters
-         *      2a) sort each cluster by the value of that parameter
-         *      2b) foreach pair of clusters (TODO: can be smarter than every pair), bisect
-         */
-        const clusters = Array.from(this.clusterMap.values());
-        const clusterMaxLines = new Map<string, number>();
-        clusters.forEach(c => {
-            const max = c.lines.reduce((a, b) => Math.max(a, b), 0);
-            clusterMaxLines.set(c.key, max);
-        });
+        const anySeeder = edgyAny();
+        const stringSeeder = edgyStrings();
+        const numberSeeder = edgyNumbers();
+        const floatSeeder = edgyFloats();
+        const booleanSeeder = edgyBooleans();
 
-        clusters.sort((a, b) => {
-            const aMax = clusterMaxLines.get(a.key)!;
-            const bMax = clusterMaxLines.get(b.key)!;
-            return aMax - bMax;
-        });
+        const edgies: Partial<Record<ts.TypeFlags, Generator[]>> = {
+            [ts.TypeFlags.Any]: [anySeeder],
+            [ts.TypeFlags.Unknown]: [anySeeder],
+            [ts.TypeFlags.String]: [stringSeeder],
+            [ts.TypeFlags.Number]: [numberSeeder, floatSeeder],
+            [ts.TypeFlags.Boolean]: [booleanSeeder],
+        }
 
-        /*
-        bisection - find two parameter lists that are very similar to each other but lead to different code paths
-            //  for each parameter list in a cluster, find the outermost
-            //  optimization: record which parameter lists are NOT near the edges of their cluster to avoid reexamining
-            //  for each pair of outermosts across all cluster, bisect
-        */
-        let bisections = 0;
-        while (bisections < bisectionLimit) {
-            for (let index = 0; index < this.f.parameters.length; index++) {
-                for (let i = 0; i < clusters.length - 1; i++) {
-                    const a = clusters[i];
-                    const b = clusters[i + 1];
-                    a.results.sort(comparameters);
-                    b.results.sort(comparameters);
+        //  TODO: allow reusing a particular value if it's being used in a different place
 
-                    const alast = a.results[a.results.length - 1];
-                    const alastCurrentParam = alast.parameters[index];
-                    const bfirst = b.results[0];
-                    const bfirstCurrentParam = bfirst.parameters[index];
+        const fqseen = new Set<string>();
+        const seenStrung = new Set<string>();
 
-                    for (const hybrid of hybridize(alastCurrentParam, bfirstCurrentParam)) {
-                        yield  {
-                            id: createId(),
-                            sequence: this.counter++,
-                            parameters: (hybrid as any[]),
-                        };
+        const toKey = (path: string[], value: any) => {
+            return JSON.stringify({ path, value })
+        }
+
+        const valueForType = function (checker: ts.TypeChecker, currentType: ts.Type, allowedDepth: number, pathToHere: string[],): any {
+            if (checker.isArrayType(currentType)) {
+                const typeargs = checker.getTypeArguments(currentType as ts.TypeReference);
+                const elementttype = typeargs[0];
+
+                return valueForType(checker, elementttype, allowedDepth - 1, pathToHere.concat("[]"));
+            }
+
+            if (currentType.flags == ts.TypeFlags.Object) {
+                if (allowedDepth === 0) {
+                    return null;
+                }
+                const o: any = {};
+                currentType.getProperties().forEach((prop) => {
+                    if (prop.valueDeclaration) {
+                        const proptype = checker.getTypeOfSymbolAtLocation(prop, prop.valueDeclaration);
+                        //  TODO: if the type doesn't allow null or missing....?
+                        o[prop.name] = valueForType(checker, proptype, allowedDepth - 1, pathToHere.concat(`["${prop.escapedName}"]`));
+                    }
+                });
+
+                return o;
+            }
+
+            const gengens = edgies[currentType.flags];
+            if (!gengens) {
+                throw new Error(`Dunno how to handle type ${currentType.flags}`)
+            }
+
+            if (gengens.length == 0) {
+                throw new Error("Where mah gengens?");
+            }
+
+            for (let i = 0; i < gengens.length; i++) {
+                let next = gengens[i].next();
+                if (!next.done) {
+                    const key = toKey(pathToHere, next.value);
+                    //  in theory we want to avoid the same value in the same place repeatedly
+                    //  but it's not terrible, and the whole object duplicate avoidance may be adequate
+                    // if (!fqseen.has(key)) {
+                        fqseen.add(key);
+                        return next.value;
+                    // }
+                    // next = gengens[i].next();
+                }
+                console.log(`Unexpectedly done with ${gengens.length} generators`);
+            }
+
+            throw new Error(`Ran out of values for ${currentType.flags} and ${JSON.stringify(pathToHere)}`);
+        };
+
+        const constructValueForTypeNode = (checker: ts.TypeChecker, typeNode: ts.TypeNode) => {
+            const currentType = checker.getTypeAtLocation(typeNode);
+            return valueForType(checker, currentType, 4, []);
+        };
+
+
+        while (true) {
+
+
+            /**
+             * 0) sort all the clusters by their highest numbered line 
+             * 1) Look through all the clusters
+             *  2) for each parameter in the array of parameters
+             *      2a) sort each cluster by the value of that parameter
+             *      2b) foreach pair of clusters (TODO: can be smarter than every pair), bisect
+             */
+            const clusters = Array.from(this.clusterMap.values());
+            const clusterMaxLines = new Map<string, number>();
+            clusters.forEach(c => {
+                const max = c.lines.reduce((a, b) => Math.max(a, b), 0);
+                clusterMaxLines.set(c.key, max);
+            });
+
+            clusters.sort((a, b) => {
+                const aMax = clusterMaxLines.get(a.key)!;
+                const bMax = clusterMaxLines.get(b.key)!;
+                return aMax - bMax;
+            });
+
+            /*
+            bisection - find two parameter lists that are very similar to each other but lead to different code paths
+                //  for each parameter list in a cluster, find the outermost
+                //  optimization: record which parameter lists are NOT near the edges of their cluster to avoid reexamining
+                //  for each pair of outermosts across all cluster, bisect
+            */
+
+            //  KNOWN FLAW: these bisections may be obsolete because the clusters only get analyzed once per loop instead of on each generation
+            let bisections = 0;
+            while (bisections < bisectionLimit) {
+                for (let index = 0; index < this.f.parameters.length; index++) {
+                    for (let i = 0; i < clusters.length - 1; i++) {
+                        const a = clusters[i];
+                        const b = clusters[i + 1];
+                        a.results.sort(comparameters);
+                        b.results.sort(comparameters);
+
+                        const alast = a.results[a.results.length - 1];
+                        const alastCurrentParam = alast.parameters[index];
+                        const bfirst = b.results[0];
+                        const bfirstCurrentParam = bfirst.parameters[index];
+
+                        for (const hybrid of hybridize(alastCurrentParam, bfirstCurrentParam)) {
+                            const strung = JSON.stringify(hybrid);
+                            if (!seenStrung.has(strung)) {
+                                yield {
+                                    id: createId(),
+                                    sequence: this.counter++,
+                                    parameters: (hybrid as any[]),
+                                };
+                                seenStrung.add(strung);
+                            }
+                        }
+                    }
+                };
+
+                bisections++;
+            }
+
+            /**
+             * mutation
+             * 1) find lines that have been instrumented but not executed
+             * 2) identify clusters that have exercised the lines before and/or after
+             * 3) generate parameter lists that are similar to the ones
+             *      used to get to the before and different from the after
+             * 
+             * 
+             */
+
+            const allInstrumentedLines = Array.from(this.allInstrumentedLines).sort();
+            let lastBeforeFirstExecuted: number | undefined = undefined;
+            let firstUnexecuted: number | undefined = undefined;
+            let i = 0;
+            for (; i < allInstrumentedLines.length; i++) {
+                const line = allInstrumentedLines[i];
+                if (!this.allExecutedLines.has(line)) {
+                    firstUnexecuted = line;
+                    break;
+                }
+                lastBeforeFirstExecuted = line;
+            }
+
+            /*
+            //  in theory a tree type structure seems like the way to go here,
+            //  but (I think) simple line numbers do well enough; if we have some
+            //  code that got executed, then some code that didn't, and then optionally
+            //  some more code that, we can be pretty confident that the middle part was
+            //  in conditional or loop body, and that what got executed later is 
+            //  either an explicit else, an implicit else, or just normal unconditional
+            //  execution but either way it didn't satisfy the requirements of the missing
+            //  part, so we can say we want inputs like what got to the first part but unlike what got
+            //  to the third part.
+            */
+            if (firstUnexecuted !== undefined) {
+                let firstExecutedAfter: number | undefined = undefined;
+                for (; i < allInstrumentedLines.length; i++) {
+                    const line = allInstrumentedLines[i];
+                    if (this.allExecutedLines.has(line)) {
+                        firstExecutedAfter = line;
+                        break;
                     }
                 }
-            };
 
-            bisections++;
+                //  if at least one line was executed...
+                if (lastBeforeFirstExecuted !== undefined) {
+                    if (firstExecutedAfter === undefined) {
+                        //  apparently we executed nothing from there to the end
+                        //  find the values that got to lastBeforeFirstExecuted and mutate those
+                    } else {
+                        //  there's a hole in the middle dear liza dear liza
+                        const gotToFirstOnly: ResultCluster[] = [];
+                        const gotToBoth: ResultCluster[] = [];
+
+                        //  find the values that got to lastBeforeFirstExecuted but not firstExecutedAfter and mutate those
+                    }
+                }
+            }
+
+            for (let i = 0; i < newGen; i++) {
+                const parameters: any[] = []
+                for (let j = 0; j < this.f.parameters.length; j++) {
+                    const t = this.f.parameters[j].type;
+                    const p = t ? constructValueForTypeNode(this.checker, t) : 0;
+                    parameters.push(p);
+                }
+
+                yield {
+                    id: createId(),
+                    sequence: this.counter++,
+                    parameters,
+                };
+            }
         }
+    }
 
-        /**
-         * mutation
-         * 1) find lines that have been instrumented but not executed
-         * 2) identify clusters that have exercised the lines before and/or after
-         * 3) generate parameter lists that are similar to the ones
-         *      used to get to the before and different from the after
-         * 
-         * 
-         */
-
-        Array.from(this.allInstrumentedLines).sort();
-        for (let i = 0; i < mutationLimit; i++) {
-        }
-
-
-
-        for (let i = 0; i < newGen; i++) {
-            const parameters: any[] = this.possibilities.map(constructValue);
-
-            const id = createId();
-            const gplist: GeneratedParameterList = {
-                id,
-                sequence: this.counter++,
-                parameters,
-            };
-
-            this.buffer.push(gplist);
-            yield gplist;
-        }
-
-        //  Do some combination of bisection, mutation, and random generation
-
-        //  find all code paths that haven't been exercised enough
-
-        //  TODO: how to identify the components of a parameter list that were necessary to get past a particular point?
-        //  TODO (one day): instrument the getters and see which are accessed in the evaluation of a condition
-
-
-        //  random
-        while (true) {
-            const parameters: any[] = this.possibilities.map(constructValue);
-
-            const id = createId();
-            const gplist: GeneratedParameterList = {
-                id,
-                sequence: this.counter++,
-                parameters,
-            };
-
-            this.buffer.push(gplist);
-            yield gplist;
-        }
-
-
+    increaseWeirdness(): void {
+        this.weirdness++;
     }
 
     update(clusterMap: Map<string, ResultCluster>, r: RunResult): void {
         this.clusterMap = clusterMap;
         r.lines.forEach(l => this.allExecutedLines.add(l));
-    }
-}
-
-export class CCombinatorialTestCaseSource {
-
-    private counter = 0;
-    private history = new Map<string, GeneratedParameterList>();
-
-    //  map from the JSON path to a particular part of the argument list to a list of candidate values
-    //  use up all the seed values before trying anything different
-    private possibilities: (Possibility | null)[] = [];
-
-    //  TODO: how to fingerprint a particular parameter list so it doesn't get used again?
-    //  stringifying the JSON won't work because of canonicalization, self reference, and non-serializable objects
-    //  but maybe that's good enough for now
-
-    constructor(
-        private checker: ts.TypeChecker,
-        private parameterDeclarations: ts.NodeArray<ts.ParameterDeclaration>) {
-
-        const jsonPathBase = '$';
-        for (const [i, param] of this.parameterDeclarations.entries()) {
-            let paramName = undefined;
-            if (ts.isIdentifier(param.name)) {
-                paramName = param.name.text;
-            }
-
-            if (param.type) {
-                if (ts.isTypeReferenceNode(param.type) || ts.isTypeNode(param.type)) {
-                    const value = constructValueForTypeNode(checker, param.type);
-                    if (value === null) {
-                        this.possibilities.push(null);
-                    }
-                    this.possibilities.push(value);
-                } else {
-                    throw new Error(`Unexpected type for ${paramName}: ${param.type}`);
-                }
-            } else {
-                throw new Error(`Unexpected type for ${paramName}: ${param.type}`);
-            }
-        }
-    }
-
-    generateRandom(desired = 1): GeneratedParameterList[] {
-        const gplists: GeneratedParameterList[] = [];
-        for (let i = 0; i < desired; i++) {
-
-            const parameters: any[] = this.possibilities.map(constructValue);
-
-            const id = createId();
-            const gplist: GeneratedParameterList = {
-                id,
-                sequence: this.counter++,
-                parameters,
-            };
-
-            gplists.push(gplist);
-            this.history.set(id, gplist);
-        }
-
-        return gplists;
-    }
-
-    mutate(parameters: GeneratedParameterList, desired = 1): GeneratedParameterList[] {
-        const generated: GeneratedParameterList[] = [];
-        for (let i = 0; i < desired; i++) {
-
-            const id = createId();
-            const gplist: GeneratedParameterList = {
-                id,
-                sequence: this.counter++,
-                parameters: ['yes'],
-            };
-
-            this.history.set(id, gplist);
-            generated.push(gplist);
-        }
-        return generated;
-    }
-
-    //  takes two parameter lists and finds midpoints
-    bisect(a: GeneratedParameterList, b: GeneratedParameterList) {
-        const id = createId();
-        const gplist: GeneratedParameterList = {
-            id,
-            sequence: this.counter++,
-            parameters: ['yes'],
-        };
-
-        this.history.set(id, gplist);
-        return gplist;
     }
 }

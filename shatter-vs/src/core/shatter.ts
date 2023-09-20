@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import * as ts from 'typescript';
-import { CCombinatorialTestCaseSource, RetestCaseSource } from './generator';
+import { CombinatorialTestCaseSource, RetestCaseSource } from './generator';
 import { Outcome, RunResult, Supervisor } from './supervisor';
 import { IntrospectionContext, createInstrumenter } from './transform';
 
@@ -45,7 +45,7 @@ function canonicalClusterKey(result: RunResult) {
     shasum.update(JSON.stringify(smashed));
     //  distinguish by return condition as well as branches taken
     const key = shasum.digest('hex');
-    
+
     console.log(`key ${key} => ${JSON.stringify(smashed)}`);
     return key;
 }
@@ -82,19 +82,19 @@ export async function shatterRetest(modulePaths: string[],
     onUpdate: (results: AutotestResults) => void,
     shatterproofModuleOverride?: string) {
 
-        const inputFileHash = sha1(inputFile);
-        const clusterStorageDirectory = join(storageBaseDirectory, 'clusters', inputFileHash, functionName);
+    const inputFileHash = sha1(inputFile);
+    const clusterStorageDirectory = join(storageBaseDirectory, 'clusters', inputFileHash, functionName);
 
-        //  list all files
-        const clusters: ResultCluster[] = [];
-        readdirSync(clusterStorageDirectory).forEach(clusterFile => {
-            const cluster = JSON.parse(clusterFile);
-            clusters.push(cluster);
-        });
+    //  list all files
+    const clusters: ResultCluster[] = [];
+    readdirSync(clusterStorageDirectory).forEach(clusterFile => {
+        const cluster = JSON.parse(clusterFile);
+        clusters.push(cluster);
+    });
 
-        const generator = new RetestCaseSource(clusters);
-    
-    }
+    const generator = new RetestCaseSource(clusters);
+
+}
 
 //  operate on the source file instead of editor objects for generality and also to avoid having to duplicate imports
 //  TODO: make sure the source file is saved before running
@@ -131,9 +131,9 @@ export async function shatterAutotest(modulePaths: string[],
         throw new Error(`Could not find function body`);
     }
 
-    const generator = new CCombinatorialTestCaseSource(program.getTypeChecker(), functionDeclarationNode.parameters);
-
-    const parameterLists = generator.generateRandom(10);
+    // const generator = new CombinatorialTestCaseSource(program.getTypeChecker(), functionDeclarationNode.parameters);
+    const source = new CombinatorialTestCaseSource(program.getTypeChecker(), introspectionContext.instrumentedLines, functionDeclarationNode);
+    const generator = source.start();
 
     let count = 0;
     const maxIterations = 100;
@@ -183,20 +183,19 @@ export async function shatterAutotest(modulePaths: string[],
     console.log(`tryna allExecutedBranches.size = ${allExecutedBranches.size
         // }, introspectionContext.knownBranches.size = ${introspectionContext._knownBranches.size
         }, introspectionContext.instrumentedLines.size = ${introspectionContext.instrumentedLines.size
-        }, parameterLists.length = ${parameterLists.length}`);
+        }`);
     while (allExecutedLines.size < introspectionContext.instrumentedLines.size
-        && parameterLists.length > 0
         && count < maxIterations
         && Date.now() - startTime < maxTime) {
 
-        const parameterList = parameterLists.pop();
-        if (!parameterList) {
-            console.error("parameterList is unexpectedly undefined");
-            continue;
+        const g = generator.next();
+        if (g.done) {
+            console.error(`generator is unexpectedly done after ${count} iterations`);
+            break;
         }
 
         // execute those inputs in worker threads
-        const worker = await supervisor.launchWorker(functionDeclarationNode.name?.getText() ?? '', parameterList.parameters);
+        const worker = await supervisor.launchWorker(functionDeclarationNode.name?.getText() ?? '', g.value.parameters);
 
         // TODO: if the function under test is a react component
         //  launch a headless browser
@@ -211,7 +210,7 @@ export async function shatterAutotest(modulePaths: string[],
         console.log(`Saving clusters to ${storageBaseDirectory}`);
         saveClusters(inputFile, storageBaseDirectory, functionName, clusters);
     }
-    console.log(`Finished after ${count} iterations`);
+    console.log(`Finished after ${count} iterations and ${Date.now() - startTime}ms with ${allExecutedLines.size}/${introspectionContext.instrumentedLines.size} lines executed`);
 
     const sortNums = (a: number, b: number) => a - b;
     return {
