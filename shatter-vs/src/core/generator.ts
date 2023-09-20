@@ -2,29 +2,48 @@ import * as ts from 'typescript';
 
 import { createId } from "@paralleldrive/cuid2";
 
-import { faker, hy, ne } from '@faker-js/faker';
-import { RunResult } from '../core/supervisor';
+import { faker } from '@faker-js/faker';
+import { distance as levenshtein } from 'fastest-levenshtein';
 import { ResultCluster } from '../core/shatter';
+import { RunResult } from '../core/supervisor';
 import { hybridize } from './hybridize';
 import path = require('path');
 
-function* edgyNumbers(m = 1) {
-    const primes = [13, 17, 23, 37, 53, 67, 79, 89, 97];
+const gpv = (value: number | string | boolean, generator: string, options?: Record<string, any>): GeneratedParameter => ({
+    id: createId(),
+    generator,
+    type: 'value',
+    value,
+    options,
+});
+
+const primeSortModBase = 7;
+const primes = [11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97].sort((a, b) => (a % primeSortModBase) - (b % primeSortModBase));
+function* edgyNumbers(m = 1): Generator<GeneratedParameter, void, unknown> {
+    //  stupid sort to avoid favoring small values but still be deterministic
 
     const neighbors = [-2, -1, 0, 1, 2];
-    function* geneighbor(n: number) {
+
+    function* geneighbor(n: number, generator: string) {
         for (const neighbor of neighbors) {
             const v = n * neighbor;
-            yield v;
+            yield gpv(v, generator);
         }
     }
 
-    const bases = [[2, 63], [5, 6], [10, 10]]
+    const bases = [[2, 63], [5, 6], [10, 10]];
     const mults = [1, -1];
 
-    for (let i = -1; i < 50; i++) {
+    for (let i = -1; i < 11; i++) {
         const v = m * i;
-        yield v;
+        yield gpv(v, 'smallWholes');
+    }
+
+    for (const prime of primes) {
+        const v = m * prime;
+        for (const gp of geneighbor(v, 'primes')) {
+            yield gp;
+        }
     }
 
     //  pure exponents e.g. 625, 4096, 100_000_000
@@ -32,8 +51,8 @@ function* edgyNumbers(m = 1) {
         for (const [base, maxponent] of bases) {
             for (let i = 0; i < maxponent; i++) {
                 const powered = m * mult * (base ** i);
-                for (const n of geneighbor(powered)) {
-                    yield n;
+                for (const gp of geneighbor(powered, 'pureExponents')) {
+                    yield gp;
                 }
             }
         }
@@ -45,8 +64,8 @@ function* edgyNumbers(m = 1) {
             for (let pow3 = 1; pow3 < 4; pow3++) {
                 for (let pow5 = 1; pow5 < 6; pow5++) {
                     const ppow = m * mult * (2 ** pow2) * (3 ** pow3) * (5 ** pow5);
-                    for (const n of geneighbor(ppow)) {
-                        yield n;
+                    for (const gp of geneighbor(ppow, 'exponentProducts')) {
+                        yield gp;
                     }
                 }
             }
@@ -55,13 +74,13 @@ function* edgyNumbers(m = 1) {
 
     for (let i = 11; i < 2 ** 32; i = Math.ceil(1.3 * i) + 13) {
         //  utterly stupid; just to make sure it doesn't run out of numbers
-        yield i;
-        yield -i;
+        yield gpv(i, 'positiveStupid');
+        yield gpv(-i, 'negativeStupid');
     }
 }
 
 //  progressively get weirder
-function* edgyFloats() {
+function* edgyFloats(): Generator<GeneratedParameter, void, unknown> {
     const seeds = [
         Math.PI,
         Math.E,
@@ -73,15 +92,15 @@ function* edgyFloats() {
         Math.SQRT1_2,
     ];
 
-    const bases = [[2, 63], [5, 6], [10, 10]]
+    const bases = [[2, 63], [5, 6], [10, 10]];
     const mults = [1, -1];
-
 
     for (const powers of [1, 2, 3]) {
         for (let i = -1; i < 50; i++) {
             for (const seed of seeds) {
                 const v = i * seed;
-                yield v;
+                const generatorName = i === 1 ? 'basicRationals' : 'basicRationalSimpleMultiples';
+                yield gpv(v, generatorName);
             }
         }
 
@@ -91,7 +110,7 @@ function* edgyFloats() {
                 for (let i = 0; i < maxponent; i++) {
                     for (const seed of seeds) {
                         const powered = seed * mult * (base ** i);
-                        yield powered;
+                        yield gpv(powered, 'basicRationalsComplexMultiples');
                     }
                 }
             }
@@ -105,7 +124,7 @@ function* edgyFloats() {
                         for (let pow7 = -3; pow5 < 3; pow7++) {
                             for (const seed of seeds) {
                                 const ppow = seed * mult * (2 ** pow2) * (3 ** pow3) * (5 ** pow5) * (7 ** pow7);
-                                yield ppow;
+                                yield gpv(ppow, 'basicRationalsExponentialProducts');
                             }
                         }
                     }
@@ -117,22 +136,76 @@ function* edgyFloats() {
     //  utterly stupid; just to make sure it doesn't run out of numbers
     for (let i = 11; i < 2 ** 32; i = Math.ceil(1.3 * i) + 13) {
         for (const s of seeds) {
-            yield i * s;
-            yield -(i * s);
+            yield gpv(i * s, 'basicRationalsPositiveStupid');
+            yield gpv(-(i * s), 'basicRationalsNegativeStupid');
         }
     }
 
 }
 
-function* edgyBooleans() {
+function* edgyBooleans(): Generator<GeneratedParameter, void, unknown> {
     while (true) {
-        yield true;
-        yield false;
+        yield gpv(true, 'edgyBooleans');
+        yield gpv(false, 'edgyBooleans');
     }
 }
 
 const numberFakerses = {
     'location': ['latitude', 'longitude']
+};
+
+const optionVariants: Record<string, Record<string, any>> = {
+    email: {
+        allowSpecialCharacters: [true, false],
+    },
+    mac: {
+        separator: [':', '-', ''],
+    },
+    password: {
+        length: [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 17, 31, 32, 33, 39, 40, 41, 47, 48, 49, 63, 64, 65, 127, 128, 129],
+        memorable: [true, false],
+    },
+    url: {
+        appendSlash: [true, false],
+        protocol: ['http', 'https'],
+    },
+    commitSha: {
+        length: [8, 16, 32, 40, 64],
+    },
+    countryCode: {
+        variant: ['alpha-2', 'alpha-3', 'numeric'],
+    },
+    state: {
+        abbreviated: [true, false],
+    },
+    paragraph: {
+        sentenceCount: [1, 3, 9, 100, 500, 1111, 9999, 100_000],
+    },
+    alpha: {
+        casing: ['upper', 'lower', 'mixed'],
+        length: [1, 3, 7, 15, 32, 33, 99],
+    },
+    alphanumeric: {
+        casing: ['upper', 'lower', 'mixed'],
+        length: [1, 3, 7, 15, 32, 33, 99],
+    },
+    binary: {
+        length: [1, 3, 7, 15, 32, 33, 99],
+    },
+    hexadecimal: {
+        casing: ['upper', 'lower', 'mixed'],
+        length: [1, 3, 7, 15, 32, 33, 99],
+    },
+    numeric: {
+        allowLeadingZeros: [true, false],
+        length: [1, 3, 7, 15, 32, 33, 99],
+    },
+    octal: {
+        length: [1, 3, 7, 15, 32, 33, 99],
+    },
+    networkInterface: {
+        interfaceType: ['en', 'wl', 'ww'],
+    },
 };
 
 const stringFakerses = {
@@ -141,13 +214,13 @@ const stringFakerses = {
     'database': ['type'],
     'finance': ['accountNumber', 'bitcoinAddress', 'creditCardNumber', 'currencyCode', 'currencySymbol', 'iban', 'routingNumber'],
     'git': ['commitSha'],
-    'internet': ['domainName', 'domainSuffix', 'httpMethod', /* 'httpStatusCode', */ 'ipv4', 'ipv6', 'mac', 'password', /* 'port',*/ 'protocol', 'url', 'userAgent'],
+    'internet': ['domainName', 'domainSuffix', 'emoji', 'httpMethod', /* 'httpStatusCode', */ 'ipv4', 'ipv6', 'mac', 'password', /* 'port',*/ 'protocol', 'url', 'userAgent'],
     'location': ['buildingNumber', 'city', 'country', 'countryCode', 'county', 'direction', 'secondaryAddress', 'state', 'street', 'streetAddress', 'timeZone', 'zipCode'],
     'lorem': ['paragraphs'],
     'person': ['gender', 'jobDescriptor', 'prefix', 'sex', 'suffix', 'zodiacSign'],
     'phone': ['imei', 'number'],
     // 'science': ['chemicalElement', 'unit'],  //  these return objects not strings
-    'string': ['uuid'],
+    'string': ['alpha', 'alphanumeric', 'binary', 'hexadecimal', 'numeric', 'octal', 'uuid'],
     'system': ['cron', 'directoryPath', 'mimeType', 'networkInterface', 'semver'],
     'vehicle': ['fuel', 'manufacturer', 'vin'],
 };
@@ -174,13 +247,19 @@ Object.entries(stringFakerses).forEach(([domain, generators]) => {
 
 faker.seed(10481);
 
-function* edgyAny() {
+function* edgyAny(): Generator<GeneratedParameter, void, unknown> {
     while (true) {
-        yield {};
+        yield {
+            id: createId(),
+            generator: 'edgyAny',
+            type: 'object',
+            properties: {},
+        };
     }
 }
 
-function* edgyStrings() {
+//  TODO: apply options
+function* edgyStrings(): Generator<GeneratedParameter, void, unknown> {
     const gengen: {
         category: string,
         generator: string,
@@ -188,13 +267,24 @@ function* edgyStrings() {
     }[] = [];
     for (const [name, generators] of Object.entries(dataDomains.string)) {
         for (const generator of generators) {
-            gengen.push({ category: name, generator: generator.name, function: generator })
+            gengen.push({ category: name, generator: generator.name, function: generator });
         };
     }
 
     let pos = 0;
     let i = 1;
     let generated = 0;
+
+    //  variations on just one thing
+    for (let i = 0; i < 10; i++) {
+        for (const gen of gengen) {
+            const v: string = gen.function();
+            yield gpv(v, 's(tr)ingle');
+            generated++;
+        }
+    }
+
+    //  a mix of things
     for (; i < 100_000; i = Math.ceil(i * 1.2)) {
         const pieces: string[] = [];
         while (pieces.length < i) {
@@ -205,18 +295,27 @@ function* edgyStrings() {
             pieces.push(v);
         }
         const v = pieces.join(' ');
-        yield v;
+        yield gpv(v, 'mingle');
         generated++;
     }
     console.error(`Apparently there are no strings left with i = ${i}; generated = ${generated}`);
 }
 
 //  TODO: generify value
-export interface GeneratedParameter {
+export type GeneratedParameter = {
     id: string,
     generator: string,
-    value: any
-}
+    options?: Record<string, any>,
+} & ({
+    type: 'value',
+    value: any,
+} | {
+    type: 'array',
+    range: GeneratedParameter[],
+} | {
+    type: 'object',
+    properties: Record<string, GeneratedParameter>,
+});
 
 export interface GeneratedParameterList {
     id: string,
@@ -350,6 +449,14 @@ function* crossProductGenerator(input: any[]): Generator<GeneratedParameterList,
 }
 
 const comparameters = (a: any, b: any): number => {
+    //  null and undefined always sort to the end
+    if (a === null || a === undefined) {
+        return 1;
+    }
+    if (b === null || b === undefined) {
+        return -1;
+    }
+
     if (typeof a !== typeof b) {
         //  TODO
         return 0;
@@ -409,7 +516,63 @@ const comparameters = (a: any, b: any): number => {
     throw new Error(`Unexpected type ${typeof a}`);
 };
 
+function* roundRobin(...generators: Generator<any, any, any>[]) {
+    let i = 0;
+    while (true) {
+        const g = generators[i];
+        const next = g.next();
+        if (next.done) {
+            generators[i] = generators[i];
+        } else {
+            yield next.value;
+            i = (i + 1) % generators.length;
+        }
+    }
+}
 
+function computeDistance(a: any, b: any): number {
+    if (a === b || a === null || b === null) {
+        return 0;
+    }
+
+    if (typeof a === 'number') {
+        const smaller = Math.min(a, b);
+        const larger = Math.max(a, b);
+        const difference = larger - smaller;
+        if (difference == 0) {
+            return 0;
+        }
+        if (difference < 2 && Number.isInteger(a) && Number.isInteger(b)) {
+            return 1;
+        }
+        return difference;
+    }
+
+    if (typeof a === 'string') {
+        const dist = levenshtein(a, b);
+        return dist;
+    }
+
+    if (typeof a === 'boolean') {
+        return a === b ? 0 : 1;
+    }
+
+    //  TODO: the array and object versions may go too far down irrelevant rabbit holes
+    if (Array.isArray(a)) {
+        const arrayDistance = a.reduce((acc, val, index) => acc + computeDistance(val, b[index]), 0);
+        return arrayDistance;
+    }
+
+    if (typeof a === 'object') {
+        const akeys = Object.keys(a);
+        const bkeys = Object.keys(b);
+        const commonKeys = akeys.filter(k => bkeys.includes(k));
+        const objectDistance = commonKeys.reduce((acc, key) => acc + computeDistance(a[key], b[key]), 0);
+        return objectDistance;
+    }
+
+    throw new Error(`Unexpected type ${typeof a}`);
+}
 
 export class CombinatorialTestCaseSource implements TestCaseSource {
 
@@ -428,6 +591,10 @@ export class CombinatorialTestCaseSource implements TestCaseSource {
     //  as more parameters are created
     private maxDepth = 3;
 
+    totalHybrids = 0;
+    totalMutations = 0;
+    totalSeeds = 0;
+
     private allExecutedLines = new Set<number>();
     //  TODO: how to fingerprint a particular parameter list so it doesn't get used again?
     //  stringifying the JSON won't work because of canonicalization, self reference, and non-serializable objects
@@ -439,95 +606,123 @@ export class CombinatorialTestCaseSource implements TestCaseSource {
         private f: ts.FunctionDeclaration) {
     }
 
+
+    /*
+    1) generate a varied set of inputs
+    2) run them
+    3) cluster them
+    4) foreach value in a cluster, keep minimizing until it's no longer in the cluster 
+        (be sure to check to see if the minimized version is already in the cluster)
+    5) identify overlooked lines and try to mutate the minima to cover them (how to avoid just regenerating the non-minimal values or ones that will be similarly ineffective?)
+    6) take the minima and compare them against the other clusters and hybridize for edginess
+
+    */
+
     *start(): Iterator<GeneratedParameterList> {
-        const newGen = 10;
+        const newGenPerPass = 10;
         const minPerPath = 5;
-        const bisectionLimit = 10;
-        const mutationLimit = 10;
+        const bisectionLimitPerPass = 10;
+        const mutationLimitPerPass = 10;
 
-        const anySeeder = edgyAny();
-        const stringSeeder = edgyStrings();
-        const numberSeeder = edgyNumbers();
-        const floatSeeder = edgyFloats();
-        const booleanSeeder = edgyBooleans();
-
-        const edgies: Partial<Record<ts.TypeFlags, Generator[]>> = {
-            [ts.TypeFlags.Any]: [anySeeder],
-            [ts.TypeFlags.Unknown]: [anySeeder],
-            [ts.TypeFlags.String]: [stringSeeder],
-            [ts.TypeFlags.Number]: [numberSeeder, floatSeeder],
-            [ts.TypeFlags.Boolean]: [booleanSeeder],
-        }
+        const edgies: Partial<Record<ts.TypeFlags, (() => Generator<GeneratedParameter, any, any>)>> = {
+            [ts.TypeFlags.Any]: edgyAny,
+            [ts.TypeFlags.Unknown]: edgyAny,
+            [ts.TypeFlags.String]: edgyStrings,
+            [ts.TypeFlags.Number]: () => roundRobin(edgyNumbers(), edgyFloats()),
+            [ts.TypeFlags.Boolean]: edgyBooleans,
+        };
 
         //  TODO: allow reusing a particular value if it's being used in a different place
+        const valueGenerators = new Map<string, Generator<GeneratedParameter, any, any>>();
 
         const fqseen = new Set<string>();
         const seenStrung = new Set<string>();
 
-        const toKey = (path: string[], value: any) => {
-            return JSON.stringify({ path, value })
-        }
+        //  TODO: at some point create jq-compatible paths for neatness
+        const toKey = (path: (string | number)[], value: any) => {
+            return JSON.stringify({ path, value });
+        };
 
-        const valueForType = function (checker: ts.TypeChecker, currentType: ts.Type, allowedDepth: number, pathToHere: string[],): any {
+        const valueForType = function (checker: ts.TypeChecker, currentType: ts.Type, allowedDepth: number, pathToHere: (string | number)[],): GeneratedParameter {
             if (checker.isArrayType(currentType)) {
                 const typeargs = checker.getTypeArguments(currentType as ts.TypeReference);
                 const elementttype = typeargs[0];
 
-                return valueForType(checker, elementttype, allowedDepth - 1, pathToHere.concat("[]"));
+                const values: any[] = [];
+
+                const length = Math.floor(Math.random() * 10);
+
+                for (let i = 0; i < length; i++) {
+                    const a = valueForType(checker, elementttype, allowedDepth - 1, pathToHere.concat(".[]"));
+                    values.push(a);
+                }
+
+                return {
+                    id: createId(),
+                    generator: 'array',
+                    type: 'array',
+                    range: values,
+                    options: {
+                        length,
+                    },
+                };
             }
 
-            if (currentType.flags == ts.TypeFlags.Object) {
+            if (currentType.flags === ts.TypeFlags.Object) {
                 if (allowedDepth === 0) {
-                    return null;
+                    return {
+                        id: createId(),
+                        generator: 'object',
+                        type: 'object',
+                        properties: {},
+                    };
                 }
-                const o: any = {};
+                //  TODO: omit some, add some extra
+                const o: Record<string, GeneratedParameter> = {};
                 currentType.getProperties().forEach((prop) => {
                     if (prop.valueDeclaration) {
                         const proptype = checker.getTypeOfSymbolAtLocation(prop, prop.valueDeclaration);
                         //  TODO: if the type doesn't allow null or missing....?
-                        o[prop.name] = valueForType(checker, proptype, allowedDepth - 1, pathToHere.concat(`["${prop.escapedName}"]`));
+                        o[prop.name] = valueForType(checker, proptype, allowedDepth - 1, pathToHere.concat(`.["${prop.escapedName}"]`));
                     }
                 });
 
-                return o;
+                return {
+                    id: createId(),
+                    generator: 'object',
+                    type: 'object',
+                    properties: o,
+                };
             }
 
-            const gengens = edgies[currentType.flags];
-            if (!gengens) {
-                throw new Error(`Dunno how to handle type ${currentType.flags}`)
-            }
-
-            if (gengens.length == 0) {
-                throw new Error("Where mah gengens?");
-            }
-
-            for (let i = 0; i < gengens.length; i++) {
-                let next = gengens[i].next();
-                if (!next.done) {
-                    const key = toKey(pathToHere, next.value);
-                    //  in theory we want to avoid the same value in the same place repeatedly
-                    //  but it's not terrible, and the whole object duplicate avoidance may be adequate
-                    // if (!fqseen.has(key)) {
-                        fqseen.add(key);
-                        return next.value;
-                    // }
-                    // next = gengens[i].next();
+            const strungPath = pathToHere.join('.');
+            let generator = valueGenerators.get(strungPath);
+            if (!generator) {
+                const gengens = edgies[currentType.flags];
+                if (!gengens) {
+                    throw new Error(`Dunno how to handle type ${currentType.flags}`);
                 }
-                console.log(`Unexpectedly done with ${gengens.length} generators`);
+
+                generator = gengens();
+                valueGenerators.set(strungPath, generator);
+            }
+
+            let next = generator.next();
+            if (!next.done) {
+                const key = toKey(pathToHere, next.value);
+                //  in theory we want to avoid the same value in the same place repeatedly
+                //  but it's not terrible, and the whole object duplicate avoidance may be adequate
+                // if (!fqseen.has(key)) {
+                fqseen.add(key);
+                return next.value;
+                // }
+                // next = gengens[i].next();
             }
 
             throw new Error(`Ran out of values for ${currentType.flags} and ${JSON.stringify(pathToHere)}`);
         };
 
-        const constructValueForTypeNode = (checker: ts.TypeChecker, typeNode: ts.TypeNode) => {
-            const currentType = checker.getTypeAtLocation(typeNode);
-            return valueForType(checker, currentType, 4, []);
-        };
-
-
         while (true) {
-
-
             /**
              * 0) sort all the clusters by their highest numbered line 
              * 1) Look through all the clusters
@@ -556,36 +751,72 @@ export class CombinatorialTestCaseSource implements TestCaseSource {
             */
 
             //  KNOWN FLAW: these bisections may be obsolete because the clusters only get analyzed once per loop instead of on each generation
-            let bisections = 0;
-            while (bisections < bisectionLimit) {
-                for (let index = 0; index < this.f.parameters.length; index++) {
-                    for (let i = 0; i < clusters.length - 1; i++) {
-                        const a = clusters[i];
-                        const b = clusters[i + 1];
-                        a.results.sort(comparameters);
-                        b.results.sort(comparameters);
+            if (clusters.length > 0) {
+                let that = this;
+                function* bisector() {
+                    for (let index = 0; index < that.f.parameters.length; index++) {
+                        for (let i = 0; i < clusters.length - 1; i++) {
+                            const a = clusters[i];
+                            const b = clusters[i + 1];
+                            a.results.sort(comparameters);
+                            b.results.sort(comparameters);
 
-                        const alast = a.results[a.results.length - 1];
-                        const alastCurrentParam = alast.parameters[index];
-                        const bfirst = b.results[0];
-                        const bfirstCurrentParam = bfirst.parameters[index];
+                            const alast = a.results[a.results.length - 1];
+                            const bfirst = b.results[0];
 
-                        for (const hybrid of hybridize(alastCurrentParam, bfirstCurrentParam)) {
-                            const strung = JSON.stringify(hybrid);
-                            if (!seenStrung.has(strung)) {
-                                yield {
-                                    id: createId(),
-                                    sequence: this.counter++,
-                                    parameters: (hybrid as any[]),
-                                };
-                                seenStrung.add(strung);
+                            const distance = computeDistance(alast.parameters[index], bfirst.parameters[index]);
+                            if (distance <= 1) {
+                                //  found the edges or close enough
+                                console.log(`found edges ${distance} between ${JSON.stringify(alast.parameters[index])} and ${JSON.stringify(bfirst.parameters[index])}`);
+                                continue;
+                            }
+                            console.log(`distance ${distance} between ${JSON.stringify(alast.parameters[index])} and ${JSON.stringify(bfirst.parameters[index])}`);
+
+                            //  generate a parameter list where every parameter is hybridized between alast and bfirst
+                            const hybridized = hybridize(alast.parameters, bfirst.parameters);
+                            for (const fullHybrid of hybridized) {
+                                //  also generate a parameter list based on alast with just the current parameter hybridized
+                                const abased = [...alast.parameters];
+                                abased[index] = fullHybrid[index];
+
+                                //  also generate a parameter list based on bfirst with just the current parameter hybridized
+                                const bbased = [...bfirst.parameters];
+                                bbased[index] = fullHybrid[index];
+
+                                for (const hybrid of [fullHybrid, abased, bbased]) {
+                                    const strung = JSON.stringify(hybrid);
+                                    if (!seenStrung.has(strung)) {
+                                        console.log(`hybridized ${strung} from ${JSON.stringify(alast.parameters)} and ${JSON.stringify(bfirst.parameters)})}`);
+                                        yield {
+                                            id: createId(),
+                                            sequence: that.counter++,
+                                            parameters: (fullHybrid as any[]),
+                                        };
+                                        seenStrung.add(hybrid);
+                                    }
+                                }
                             }
                         }
-                    }
-                };
+                    };
+                }
 
-                bisections++;
+                let hybrids = 0;
+                for (const bisection of bisector()) {
+                    yield bisection;
+                    hybrids++;
+                    this.totalHybrids++;
+                    if (hybrids >= bisectionLimitPerPass) {
+                        break;
+                    }
+                }
             }
+
+            /**
+             * Reduction
+             * TODO: take parameters that have already been run, trim away some stuff, and run the result
+             * trimming = shortening strings, shortening arrays, and removing object properties
+             * 
+             */
 
             /**
              * mutation
@@ -597,6 +828,7 @@ export class CombinatorialTestCaseSource implements TestCaseSource {
              * 
              */
 
+            let mutations = 0;
             const allInstrumentedLines = Array.from(this.allInstrumentedLines).sort();
             let lastBeforeFirstExecuted: number | undefined = undefined;
             let firstUnexecuted: number | undefined = undefined;
@@ -633,6 +865,14 @@ export class CombinatorialTestCaseSource implements TestCaseSource {
 
                 //  if at least one line was executed...
                 if (lastBeforeFirstExecuted !== undefined) {
+                    //  otherwise Typescript doesn't know that lastBeforeFirstExecuted is defined
+                    const lbfe = lastBeforeFirstExecuted;
+                    //  should be in order from lowest last line to highest last line
+                    //  based on the sorting done before bisection
+                    const ranBefore = clusters.filter(c => c.lines.includes(lbfe));
+                    const ranAfter = clusters.filter(c => firstExecutedAfter && c.lines.includes(firstExecutedAfter));
+                    const ranBeforeOnly = ranBefore.filter(c => !ranAfter.includes(c));
+
                     if (firstExecutedAfter === undefined) {
                         //  apparently we executed nothing from there to the end
                         //  find the values that got to lastBeforeFirstExecuted and mutate those
@@ -642,16 +882,39 @@ export class CombinatorialTestCaseSource implements TestCaseSource {
                         const gotToBoth: ResultCluster[] = [];
 
                         //  find the values that got to lastBeforeFirstExecuted but not firstExecutedAfter and mutate those
+                        //  X = identify what's common about the values that got to firstExecutedAfter
+                        //  Y = identify what's common about ALL the values that got to lastBeforeFirstExecuted
+                        //  mutate the values of X in a way that is not similar to Y
                     }
                 }
             }
 
-            for (let i = 0; i < newGen; i++) {
-                const parameters: any[] = []
+            const toValue = (node: GeneratedParameter): any => {
+                if (node.type === 'value') {
+                    return node.value;
+                }
+                if (node.type === 'array') {
+                    return node.range.map(toValue);
+                }
+                if (node.type === 'object') {
+                    const o: Record<string, any> = {};
+                    Object.entries(node.properties).forEach(([k, v]) => {
+                        o[k] = toValue(v);
+                    });
+                    return o;
+                }
+            };
+
+            for (let i = 0; i < newGenPerPass; i++) {
+                const parameters: any[] = [];
                 for (let j = 0; j < this.f.parameters.length; j++) {
                     const t = this.f.parameters[j].type;
-                    const p = t ? constructValueForTypeNode(this.checker, t) : 0;
-                    parameters.push(p);
+                    const currentType = t
+                        ? this.checker.getTypeAtLocation(t)
+                        : this.checker.getAnyType();
+
+                    const p: GeneratedParameter = valueForType(this.checker, currentType, 4, [j]);
+                    parameters.push(toValue(p));
                 }
 
                 yield {
@@ -659,8 +922,17 @@ export class CombinatorialTestCaseSource implements TestCaseSource {
                     sequence: this.counter++,
                     parameters,
                 };
+                this.totalSeeds++;
             }
         }
+    }
+
+    stats() {
+        return {
+            totalHybrids: this.totalHybrids,
+            totalMutations: this.totalMutations,
+            totalSeeds: this.totalSeeds,
+        };
     }
 
     increaseWeirdness(): void {

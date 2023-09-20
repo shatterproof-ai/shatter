@@ -6,6 +6,7 @@ import * as ts from 'typescript';
 import { CombinatorialTestCaseSource, RetestCaseSource } from './generator';
 import { Outcome, RunResult, Supervisor } from './supervisor';
 import { IntrospectionContext, createInstrumenter } from './transform';
+import cluster from 'cluster';
 
 export interface AutotestResults {
     clusters: ResultCluster[];
@@ -104,7 +105,11 @@ export async function shatterAutotest(modulePaths: string[],
     storageBaseDirectory: string | undefined,
     functionName: string,
     onUpdate: (results: AutotestResults) => void,
-    shatterproofModuleOverride?: string
+    options?: {
+        shatterproofModuleOverride?: string,
+        maxIterations?:number,
+        maxTime?:number,
+    }
 ) {
     // parse whole file into abstract syntax tree
     const [program, sourceFile] = parse(inputFile);
@@ -113,7 +118,7 @@ export async function shatterAutotest(modulePaths: string[],
         throw new Error(`Could not find function ${functionName}`);
     }
     // rewrite code of given function (or everything if lazy) to add instrumentation
-    const [instrumented, executorScriptJs, introspectionContext] = writeInstrumented(sourceFile, shatterproofModuleOverride);
+    const [instrumented, executorScriptJs, introspectionContext] = writeInstrumented(sourceFile, options?.shatterproofModuleOverride);
     // instrospect function and generate a set of candidate inputs
 
     console.log(`created ${instrumented} compiled to ${executorScriptJs} with storageBaseDirectory = ${storageBaseDirectory}`);
@@ -136,8 +141,8 @@ export async function shatterAutotest(modulePaths: string[],
     const generator = source.start();
 
     let count = 0;
-    const maxIterations = 100;
-    const maxTime = 10000;
+    const maxIterations = options?.maxIterations ?? 200;
+    const maxTime = options?.maxTime ?? 15_000;
     const startTime = Date.now();
 
     const allExecutedBranches = new Set<string>();
@@ -149,10 +154,41 @@ export async function shatterAutotest(modulePaths: string[],
     const onResult = (runResult: RunResult) => {
         // console.log(`Received result ${JSON.stringify(runResult)}`);
         // find the appropriate cluster or create it
-
-        updateClusters(runResult, clusterMap, clusters);
-
+        const clusterKey = canonicalClusterKey(runResult);
+        let cluster = clusterMap.get(clusterKey);
+        if (!cluster) {
+            const outcome = ((): Outcome => {
+                if (runResult.completed) {
+                    if (runResult.error) {
+                        return 'error';
+                    }
+                    return 'completed';
+                }
+                return 'timeout';
+            })();
+    
+            cluster = {
+                key: clusterKey,
+                lines: runResult.lines,
+                linesInOrder: runResult.linesInOrder,
+                outcome,
+                results: [],
+                totalTime: 0,
+            };
+            clusters.push(cluster);
+            clusterMap.set(clusterKey, cluster);
+        }
+    
+        cluster.results.push(runResult);
+        cluster.totalTime += runResult.duration;
+    
+        //  TODO: don't do this on every change
+        sortClusters(clusters);
+    
+        //  update the caller
         onUpdate({ clusters, instrumentedLines: introspectionContext.instrumentedLines });
+        //  update the source
+        source.update(clusterMap, runResult);
 
         runResult.lines.forEach(line => allExecutedLines.add(line));
         // if still need to run, generate and breed more test cases and repeat
@@ -210,46 +246,14 @@ export async function shatterAutotest(modulePaths: string[],
         console.log(`Saving clusters to ${storageBaseDirectory}`);
         saveClusters(inputFile, storageBaseDirectory, functionName, clusters);
     }
-    console.log(`Finished after ${count} iterations and ${Date.now() - startTime}ms with ${allExecutedLines.size}/${introspectionContext.instrumentedLines.size} lines executed`);
+
+    console.log(`Finished after ${count} iterations and ${Date.now() - startTime}ms with ${allExecutedLines.size}/${introspectionContext.instrumentedLines.size} lines executed; ${JSON.stringify(source.stats())}`);
 
     const sortNums = (a: number, b: number) => a - b;
     return {
         instrumented: Array.from(introspectionContext.instrumentedLines).sort(sortNums),
         executed: Array.from(allExecutedLines).sort(sortNums),
     };
-}
-
-function updateClusters(runResult: RunResult, clusterMap: Map<string, ResultCluster>, clusters: ResultCluster[]) {
-    const clusterKey = canonicalClusterKey(runResult);
-    let cluster = clusterMap.get(clusterKey);
-    if (!cluster) {
-        const outcome = ((): Outcome => {
-            if (runResult.completed) {
-                if (runResult.error) {
-                    return 'error';
-                }
-                return 'completed';
-            }
-            return 'timeout';
-        })();
-
-        cluster = {
-            key: clusterKey,
-            lines: runResult.lines,
-            linesInOrder: runResult.linesInOrder,
-            outcome,
-            results: [],
-            totalTime: 0,
-        };
-        clusters.push(cluster);
-        clusterMap.set(clusterKey, cluster);
-    }
-
-    cluster.results.push(runResult);
-    cluster.totalTime += runResult.duration;
-
-    //  TODO: don't do this on every change
-    sortClusters(clusters);
 }
 
 function sortClusters(clusters: ResultCluster[]) {

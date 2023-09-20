@@ -100,7 +100,7 @@ export const createInstrumenter = (introspectionContext: IntrospectionContext, s
             return ts.visitEachChild(node, findExportedFunctionsVisitor, ctx);
         };
 
-        const minimalText = (node: ts.Node) => "todo recorder per-line metadata"
+        const minimalText = (node: ts.Node) => "todo recorder per-line metadata";
 
         const createInstrumentationStatement = (statement: ts.Statement, lineNumber: number) => {
             const instrumentation = factory.createExpressionStatement(factory.createCallExpression(

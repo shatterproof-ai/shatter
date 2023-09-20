@@ -64,10 +64,15 @@ describe('extension', () => {
 
         const modulePaths = process.env.NODE_ENV?.split(':') ?? [];
 
+        const shatterproofModuleOverride = "/home/ketan/project/shatter/shatter-vs/src";
+        const maxIterations = 500;
+        const maxTime = 120_000;
         const { executed, instrumented } = await shatterAutotest(modulePaths, testfile, tempdir, functionName, (clusters) => {
             // console.log(`Received clusters ${JSON.stringify(clusters, null, 2)}`);
-        }, "/home/ketan/project/shatter/shatter-vs/src");
-        console.log(`Executed ${executed}`);
+        }, { shatterproofModuleOverride, maxIterations, maxTime });
+        const unexecuted = instrumented.filter((i) => !executed.includes(i));
+        console.log(`Executed     ${executed}`);
         console.log(`Instrumented ${instrumented}`);
+        console.log(`Missed       ${unexecuted}`);
     });
 });

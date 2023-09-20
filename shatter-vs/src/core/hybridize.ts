@@ -1,23 +1,31 @@
-import { hy } from "@faker-js/faker";
 
 //  TODO: split this into an initial entrypoint and a recursive internal entrypoint
 export function* hybridize(a: any, b: any) {
-    const splitIntervals = [0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.99];
+    //  stupid sort so they can be written in order but are executed from the middle out
+    const splitIntervals = [0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.99].sort((a, b) => Math.abs(a - 0.5) - Math.abs(b - 0.5));
+
+    if (a === undefined || a === null || b === undefined || b === null) {
+        yield a;
+        yield b;
+        return;
+    }
 
     if (typeof a !== typeof b) {
-        throw new Error("Inputs should be of the same type");
+        throw new Error(`Differing input types ${typeof a} and ${typeof b}`);
     }
 
     if (typeof a === "number") {
         for (const n of hybridizeNumbers(a, b, splitIntervals)) {
             yield n;
         }
+        return;
     }
 
     if (typeof a === "string") {
         for (const s of hybridizeStrings(a, b, splitIntervals)) {
             yield s;
         }
+        return;
     }
 
     if (typeof a === "boolean") {
@@ -27,21 +35,24 @@ export function* hybridize(a: any, b: any) {
         if (!a || !b) {
             yield false;
         }
+        return;
     }
 
     if (Array.isArray(a) && Array.isArray(b)) {
         for (const arr of hybridizeArrays(a, b, splitIntervals)) {
             yield arr;
         }
+        return;
     }
 
     if (typeof a === "object" && typeof b === "object") {
         for (const o of hybridizeObjects(a, b, splitIntervals)) {
             yield o;
         }
+        return;
     }
 
-    throw new Error("Unhandled input types");
+    throw new Error(`Unhandled input types ${typeof a} and ${typeof b}`);
 }
 
 function* hybridizeNumbers(a: number, b: number, intervals: number[]) {
@@ -75,12 +86,6 @@ function* hybridizeStrings(a: string, b: string, intervals: number[]) {
     const shorter = a.length < b.length ? a : b;
     const longer = a.length < b.length ? b : a;
 
-    const remainders = Array.from(new Set(["", //  none
-        longer.substring(shorter.length, 1),    //  one character
-        longer.substring(shorter.length, shorter.length + (longer.length - shorter.length)),    //  half of the difference
-        longer.substring(shorter.length),   //  all of the difference
-    ]));
-
     const seen = new Set<string>();
     const longerBeginning = longer.substring(0, shorter.length);
     const shorterIsSubset = longer.startsWith(shorter);
@@ -88,30 +93,32 @@ function* hybridizeStrings(a: string, b: string, intervals: number[]) {
         const edits = computeEdits(shorter, longer);
         //  apply some subset of edits for intermediate strings between shorter and longer
         for (const splitInterval of intervals) {
-            const editsToApply = Math.floor(splitInterval * edits.length)
-            if (editsToApply == 0 || editsToApply == edits.length) {
-                continue
+            const editsToApply = Math.floor(splitInterval * edits.length);
+            if (editsToApply === 0 || editsToApply === edits.length) {
+                continue;
             }
 
-            let value: string = shorter
+            let value: string = shorter;
             for (let i = 0; i < editsToApply; i++) {
-                const edit = edits[i]
-                if (edit.type == 'delete') {
-                    value = value.slice(0, edit.index) + value.slice(edits[i].index + 1)
-                } else if (edits[i].type == 'insert') {
-                    value = value.slice(0, edit.index) + edit.value + value.slice(edits[i].index)
+                const edit = edits[i];
+                if (edit.type === 'delete') {
+                    value = value.slice(0, edit.index) + value.slice(edits[i].index + 1);
+                } else if (edits[i].type === 'insert') {
+                    value = value.slice(0, edit.index) + edit.value + value.slice(edits[i].index);
                 } else {
-                    value = value.slice(0, edit.index) + edit.value + value.slice(edits[i].index + 1)
+                    value = value.slice(0, edit.index) + edit.value + value.slice(edits[i].index + 1);
                 }
             }
 
             if (!seen.has(value)) {
-                seen.add(value)
+                seen.add(value);
             }
         }
     }
 
-    for (const remainder of remainders) {
+    for (const interval of intervals) {
+        const toTake = Math.floor(interval * (longer.length - shorter.length));
+        const remainder = longer.substring(shorter.length, shorter.length + toTake);
         const value = shorter + remainder;
         if (!seen.has(value)) {
             seen.add(value);
@@ -127,20 +134,31 @@ function* hybridizeStrings(a: string, b: string, intervals: number[]) {
     }
 }
 
-function* hybridizeArrays(a: any[], b: any[], intervals: number[]) {
-    const minLength = Math.min(a.length, b.length);
-    const maxLength = Math.max(a.length, b.length);
+const pickHybrid = (a: any, b: any, interval: number) => {
+    const hg = hybridize(a, b);
+    const all = Array.from(hg);
+    if (all.length > 0) {
+        return all[Math.floor(all.length * interval)];
+    }
+};
 
+function* hybridizeArrays(a: any[], b: any[], intervals: number[]) {
     const shorter = a.length < b.length ? a : b;
     const longer = a.length < b.length ? b : a;
 
     for (const interval of intervals) {
-        const arr:any[] = [];
-        for (let i = 0; i < minLength; i++) {
-            arr.push(hybridize(shorter[i], longer[i]));  // Taking the first hybrid for simplicity
+        const arr: any[] = [];
+        for (let i = 0; i < shorter.length; i++) {
+            // Taking only median hybrid for simplicity
+            const h = pickHybrid(shorter[i], longer[i], interval);
+            if (h !== undefined) {
+                arr.push(h);
+            }
         }
-        for (let i = minLength; i < minLength * interval * maxLength; i++) {
-            arr.push(hybridize(shorter[i], longer[i]));  // Taking the first hybrid for simplicity
+        //  add a subset of the rest of longer
+        const toTake = Math.floor(interval * (longer.length - shorter.length));
+        for (let i = shorter.length; i < shorter.length + toTake; i++) {
+            arr.push(longer[i]);
         }
         yield arr;
     }
@@ -165,35 +183,99 @@ function* hybridizeObjects(a: any, b: any, intervals: number[]) {
                 break;
             }
         }
-    
-        const bKeysToTake = Math.floor((1-interval) * commonKeys.length);
+
+        const bKeysToTake = Math.floor((1 - interval) * commonKeys.length);
         for (const key of distinctKeysB) {
             base[key] = b[key];
-            if (Object.keys(base).length == aKeysToTake + bKeysToTake) {
+            if (Object.keys(base).length === aKeysToTake + bKeysToTake) {
                 break;
             }
         }
-        
-        const used:Record<string|number, any[]> = {};
-        const hybridizers:Record<string|number, Generator<any, any, any>> = {};    
+
+        const used: Record<string | number, any[]> = {};
+        const hybridizers: Record<string | number, Generator<any, any, any>> = {};
         for (const key of commonKeys) {
-            hybridizers[key] = hybridize(a[key], b[key]);
+            hybridizers[key] = pickHybrid(a[key], b[key], interval);
         }
-        
+
         for (let i = 0; i < numberToGenerate; i++) {
-            const candidate:Record<string|number, any> = {...base};
+            const candidate: Record<string | number, any> = { ...base };
             for (const key of commonKeys) {
                 const hk = hybridizers[key];
                 const n = hk.next();
                 if (n.done) {
-                    hybridizers[key] = hybridize(a[key], b[key]);
+                    hybridizers[key] = pickHybrid(a[key], b[key], interval);
                 }
                 candidate[key] = n.value;
             }
-            yield candidate;    
+            yield candidate;
         }
 
     }
+}
+
+function* shrink(o: any) {
+    if (o === undefined || o === null) {
+        return;
+    }
+
+    if (typeof o === "boolean") {
+        return;
+    }
+
+    if (typeof o === "number") {
+        yield o/2;
+        if (o > 0) {
+            yield Math.floor(o/2);
+        } else {
+            yield Math.ceil(o/2);
+        }
+        return;
+    }
+
+    if (typeof o === "string") {
+        if (o.length > 0) {
+            yield o.substring(0, o.length/2);
+        }
+        return;
+    }
+
+    if (Array.isArray(o)) {
+        if (o.length === 0) {
+            return;
+        }
+
+        //  try with the first element shrunk and the last element removed
+        const duped = [...o];
+        duped[0] = shrink(o[0]);
+        yield duped.slice(0, duped.length - 1);
+        //  try with just the last element removed
+        yield o.slice(0, o.length - 1);
+        //  try with just the first element shrunk
+        yield duped;
+        return;
+    }
+
+    if (typeof o === "object") {
+        const keys = Object.keys(o);
+        if (keys.length === 0) {
+            return;
+        }
+
+        for (let i = 0; i < keys.length; i++) {
+            //  try with the given key shrunk
+            const shrunked = { ...o };
+            shrunked[keys[0]] = shrink(o[keys[0]]);
+            yield shrunked;
+            //  try with the given key removed
+            const trunked = { ...o };
+            delete trunked[keys[keys.length - 1]];
+            yield trunked;
+        }
+        return;
+    }
+
+    throw new Error(`Unhandled input type ${typeof o}`);
 }
 
 type Edit = {
@@ -207,54 +289,54 @@ type Edit = {
     type: 'substitute'
     index: number
     value: string
-}
+};
 
 const computeEdits = (start: string, end: string) => {
-    const distances = []
+    const distances = [];
     for (let i = 0; i <= start.length; ++i) {
-        distances[i] = [i]
+        distances[i] = [i];
     }
 
     for (let i = 0; i <= end.length; ++i) {
-        distances[0][i] = i
+        distances[0][i] = i;
     }
 
-    const edits: Edit[] = []
+    const edits: Edit[] = [];
     for (let indexInEnd = 1; indexInEnd <= end.length; indexInEnd++) {
         for (let indexInStart = 1; indexInStart <= start.length; indexInStart++) {
-            const samesies = start[indexInStart - 1] === end[indexInEnd - 1]
+            const samesies = start[indexInStart - 1] === end[indexInEnd - 1];
             if (samesies) {
-                const previousDifference = distances[indexInStart - 1][indexInEnd - 1]
-                distances[indexInStart][indexInEnd] = previousDifference
+                const previousDifference = distances[indexInStart - 1][indexInEnd - 1];
+                distances[indexInStart][indexInEnd] = previousDifference;
             } else {
-                const deletion = distances[indexInStart - 1][indexInEnd] + 1
-                const insertion = distances[indexInStart][indexInEnd - 1] + 1
-                const substitution = distances[indexInStart - 1][indexInEnd - 1] + 1
+                const deletion = distances[indexInStart - 1][indexInEnd] + 1;
+                const insertion = distances[indexInStart][indexInEnd - 1] + 1;
+                const substitution = distances[indexInStart - 1][indexInEnd - 1] + 1;
 
-                const minned = Math.min(deletion, insertion, substitution)
+                const minned = Math.min(deletion, insertion, substitution);
 
-                if (minned == deletion) {
+                if (minned === deletion) {
                     edits.push({
                         type: 'delete',
                         index: indexInStart - 1
-                    })
-                } else if (minned == insertion) {
+                    });
+                } else if (minned === insertion) {
                     edits.push({
                         type: 'insert',
                         index: indexInStart - 1,
                         value: end[indexInEnd - 1]
-                    })
+                    });
                 } else {
                     edits.push({
                         type: 'substitute',
                         index: indexInStart - 1,
                         value: end[indexInEnd - 1]
-                    })
+                    });
                 }
 
-                distances[indexInStart][indexInEnd] = minned
+                distances[indexInStart][indexInEnd] = minned;
             }
         }
     }
-    return edits
-}
+    return edits;
+};

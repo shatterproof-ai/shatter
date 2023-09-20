@@ -59,6 +59,7 @@ export class Supervisor {
 
         const NODE_PATH = this.nodePath.join(':');
         // console.log(`attempting ${currentWorkerNumber}:${this.executorScriptJS} with NODE_PATH ${NODE_PATH} and workerData = ${JSON.stringify(workerData)}`);
+        console.log(`attempting ${strung}`);
         const worker = new Worker(this.executorScriptJS, {
             workerData,
             stdout: true,
