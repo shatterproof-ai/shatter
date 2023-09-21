@@ -41,6 +41,8 @@ export type IntrospectionContext = {
     exported: Set<string>,
     functions: Map<string, FunctionDeclaration>,
     instrumentedLines: Set<number>,
+    strings: Set<string>,
+    numbers: Set<number>,
 };
 
 const thenCanReturn = (node: ts.Statement | ts.Block): boolean => {
@@ -99,6 +101,18 @@ export const createInstrumenter = (introspectionContext: IntrospectionContext, s
             }
             return ts.visitEachChild(node, findExportedFunctionsVisitor, ctx);
         };
+
+        const findLiteralsVisitor = (node: Node): Node => {
+            if (ts.isStringLiteral(node)) {
+                introspectionContext.strings.add(node.text);
+            }
+            if (ts.isNumericLiteral(node)) {
+                introspectionContext.strings.add(node.text);
+                const asNumber = parseFloat(node.text);
+                introspectionContext.numbers.add(asNumber);
+            }
+            return ts.visitEachChild(node, findLiteralsVisitor, ctx);
+        }
 
         const minimalText = (node: ts.Node) => "todo recorder per-line metadata";
 

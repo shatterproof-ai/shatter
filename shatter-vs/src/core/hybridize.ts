@@ -1,3 +1,4 @@
+import { isEqual } from 'lodash';
 
 //  TODO: split this into an initial entrypoint and a recursive internal entrypoint
 export function* hybridize(a: any, b: any) {
@@ -214,7 +215,7 @@ function* hybridizeObjects(a: any, b: any, intervals: number[]) {
     }
 }
 
-function* shrink(o: any) {
+export function* shrink(o: any) {
     if (o === undefined || o === null) {
         return;
     }
@@ -224,6 +225,9 @@ function* shrink(o: any) {
     }
 
     if (typeof o === "number") {
+        if (o === 0) {
+            return;
+        }
         yield o/2;
         if (o > 0) {
             yield Math.floor(o/2);
@@ -245,14 +249,20 @@ function* shrink(o: any) {
             return;
         }
 
+        //  try with just the last element removed
+        yield o.slice(0, o.length - 1);
         //  try with the first element shrunk and the last element removed
         const duped = [...o];
         duped[0] = shrink(o[0]);
-        yield duped.slice(0, duped.length - 1);
-        //  try with just the last element removed
-        yield o.slice(0, o.length - 1);
-        //  try with just the first element shrunk
-        yield duped;
+
+        //  TODO: verify that this equality test doesn't have false positives
+        //  and has few false negatives
+        if (! isEqual(o[0], duped[0])) {
+            yield duped.slice(0, duped.length - 1);
+            //  try with just the first element shrunk
+            yield duped;
+        }
+
         return;
     }
 
@@ -265,8 +275,12 @@ function* shrink(o: any) {
         for (let i = 0; i < keys.length; i++) {
             //  try with the given key shrunk
             const shrunked = { ...o };
-            shrunked[keys[0]] = shrink(o[keys[0]]);
-            yield shrunked;
+            const preshrunkElement = o[keys[0]];
+            const shrunkElement = shrink(preshrunkElement);
+            if (! isEqual(shrunkElement, preshrunkElement)) {
+                shrunked[keys[0]] = shrunkElement;
+                yield shrunked;
+            }
             //  try with the given key removed
             const trunked = { ...o };
             delete trunked[keys[keys.length - 1]];

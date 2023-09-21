@@ -5,6 +5,7 @@ export const Outcomes = ['completed', 'error', 'timeout', 'failed'] as const;
 export type Outcome = typeof Outcomes[number];
 
 export interface RunResult {
+    specimenId: string
     parameters: any[]
     executedBranches: string[]
     lines: number[]
@@ -35,7 +36,7 @@ export class Supervisor {
         private maxActiveWorkers: number) {
     }
 
-    async launchWorker(functionName: string, parameters: any[]) {
+    async launchWorker(functionName: string, specimenId: string, parameters: any[]) {
 
         const start = Date.now();
         while (this.activeWorkers.size > this.maxActiveWorkers) {
@@ -99,7 +100,7 @@ export class Supervisor {
             //  TODO: do overwrite if the previous run timed out, but limit the number of times
             if (!this.resultByParameters.has(strung)) {
                 const result: RunResult = {
-                    parameters, output: undefined, completed: false, duration, executedBranches: [], outcome: 'timeout',
+                    specimenId, parameters, output: undefined, completed: false, duration, executedBranches: [], outcome: 'timeout',
                     lines: [], linesInOrder: [],
                 };
                 this.resultByParameters.set(strung, result);
@@ -117,7 +118,7 @@ export class Supervisor {
             //  TODO: 
             const strungError = error ? '' + error : undefined;
             const result: RunResult = {
-                parameters, error: strungError, completed: false, duration, executedBranches: [], outcome: 'failed', lines: [], linesInOrder: [],
+                specimenId, parameters, error: strungError, completed: false, duration, executedBranches: [], outcome: 'failed', lines: [], linesInOrder: [],
             };
 
             this.resultByParameters.set(strung, result);
@@ -133,14 +134,14 @@ export class Supervisor {
             // console.log(`after deleting ${activeWorkers.size}`);
         });
         worker.on('message', (msg) => {
-            const { output, error, duration, executedBranches, lines, linesInOrder }: { output: any, error: any, duration: number, executedBranches: string[], lines:number[], linesInOrder:number[] } = msg;
+            const { output, error, duration, executedBranches, lines, linesInOrder }: { output: any, error: any, duration: number, executedBranches: string[], lines: number[], linesInOrder: number[] } = msg;
 
             // console.log(`${currentWorkerNumber}  ${functionName} (${JSON.stringify(parameters)}) => ${error ?? JSON.stringify(output)} in ${duration}ms`);
 
             // console.log(`And executed branches = `)
             const strungError = error ? '' + error : undefined;
             const result: RunResult = {
-                parameters, output, error: strungError, completed: true, duration, executedBranches, outcome: error ? 'error' : 'completed',
+                specimenId, parameters, output, error: strungError, completed: true, duration, executedBranches, outcome: error ? 'error' : 'completed',
                 lines, linesInOrder,
             };
 
@@ -148,7 +149,7 @@ export class Supervisor {
 
             this.onResult(result);
         });
-        return worker;
+        return [currentWorkerNumber, worker];
     }
 
     async drain(timeout = 10_000) {

@@ -19,6 +19,121 @@ const gpv = (value: number | string | boolean, generator: string, options?: Reco
 
 const primeSortModBase = 7;
 const primes = [11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97].sort((a, b) => (a % primeSortModBase) - (b % primeSortModBase));
+
+//  go for absolute most common and extremes
+const mostSpecialNumbers = [0, 1, -1, 2, 4, 8, 16, 25, 32, 40, 64, 100, Math.PI, Math.SQRT2, 128, 250, 256, 500, 512, 1_000, 1_024, 2048, -1_000_000, 1_000_000, -1_000_000_000, 1_000_000_000]
+const moreSpecialNumbers = (() => {
+    const numbers: number[] = []
+    const seen = new Set<number>(mostSpecialNumbers);
+    const add = (n: number) => {
+        if (!seen.has(n)) {
+            numbers.push(n);
+            seen.add(n);
+        }
+    }
+
+    const neighbors = [-2, -1, 0, 1, 2];
+
+    function* geneighbor(n: number, generator: string) {
+        for (const neighbor of neighbors) {
+            const v = n * neighbor;
+            yield v
+        }
+    }
+
+    const bases = [[2, 63], [5, 6], [10, 10]];
+    const mults = [1, -1];
+
+    for (let i = -1; i < 11; i++) {
+        if (!seen.has(i)) {
+            add(i);
+        }
+    }
+
+    for (const prime of primes) {
+        for (const v of geneighbor(prime, 'primes')) {
+            add(v);
+        }
+    }
+
+    //  pure exponents e.g. 625, 4096, 100_000_000
+    for (const mult of mults) {
+        for (const [base, maxponent] of bases) {
+            for (let i = 0; i < maxponent; i++) {
+                const powered = mult * (base ** i);
+                for (const v of geneighbor(powered, 'pureExponents')) {
+                    add(v);
+                }
+            }
+        }
+    }
+
+    //  e.g. -45, 720, 250
+    for (const mult of mults) {
+        for (let pow2 = 1; pow2 < 10; pow2++) {
+            for (let pow3 = 1; pow3 < 4; pow3++) {
+                for (let pow5 = 1; pow5 < 6; pow5++) {
+                    const ppow = mult * (2 ** pow2) * (3 ** pow3) * (5 ** pow5);
+                    for (const v of geneighbor(ppow, 'exponentProducts')) {
+                        add(v);
+                    }
+                }
+            }
+        }
+    }
+
+    const irrationals = [
+        Math.PI,
+        Math.E,
+        Math.SQRT2,
+        Math.LN10,
+        Math.LN2,
+        Math.LOG10E,
+        Math.LOG2E,
+        Math.SQRT1_2,
+    ];
+
+    for (const powers of [1, 2, 3]) {
+        for (let i = -1; i < 50; i++) {
+            for (const seed of irrationals) {
+                const v = i * seed;
+                add(v);
+            }
+        }
+
+        //  pure exponents e.g. 625, 4096, 100_000_000
+        for (const mult of mults) {
+            for (const [base, maxponent] of bases) {
+                for (let i = 0; i < maxponent; i++) {
+                    for (const seed of irrationals) {
+                        const powered = seed * mult * (base ** i);
+                        add(powered);
+                    }
+                }
+            }
+        }
+
+        //  e.g. likely fractions
+        for (const mult of mults) {
+            for (let pow2 = -3; pow2 < 4; pow2++) {
+                for (let pow3 = -3; pow3 < 3; pow3++) {
+                    for (let pow5 = -3; pow5 < 3; pow5++) {
+                        for (let pow7 = -3; pow5 < 3; pow7++) {
+                            for (const seed of irrationals) {
+                                const ppow = seed * mult * (2 ** pow2) * (3 ** pow3) * (5 ** pow5) * (7 ** pow7);
+                                add(ppow);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+})()
+
+const mostSpecialStrings = ["https://www.shatterproof.ai/en-US/support?q=testing#t39192", "zoidberg@example.com", "Babu Chen", "36 Church Street", "+1 802-879-7121"];
+const moreSpecialStrings = [];
+
 function* edgyNumbers(m = 1): Generator<GeneratedParameter, void, unknown> {
     //  stupid sort to avoid favoring small values but still be deterministic
 
@@ -301,22 +416,12 @@ function* edgyStrings(): Generator<GeneratedParameter, void, unknown> {
     console.error(`Apparently there are no strings left with i = ${i}; generated = ${generated}`);
 }
 
-export type Generation = {
-    id: string,
-} & ({
-    type: 'seed',
-    generator: string,
-} | {
-    type: 'reduction',
-    parent: Generation,
-} | {
-    type: 'mutation',
-    parent: Generation,
-} | {
-    type: 'hybrid',
-    parents: Generation[],
-} | {
-});
+export type Mutation = {
+    path: string[],
+    before: any,
+    after: any,
+    type: 'scramble' | 'lengthen' | 'shorten'
+}
 
 //  TODO: generify value
 export type GeneratedParameter = {
@@ -332,6 +437,25 @@ export type GeneratedParameter = {
 } | {
     type: 'object',
     properties: Record<string, GeneratedParameter>,
+});
+
+export type Specimen = {
+    id: string,
+    sequence: number,
+    parameters: GeneratedParameter[],
+} & ({
+    type: 'seed',
+    // generator: string,
+} | {
+    type: 'reduction',
+    parent: Specimen,
+} | {
+    type: 'mutation',
+    parent: Specimen,
+    mutations: Mutation[],
+} | {
+    type: 'hybrid',
+    parents: Specimen[],
 });
 
 export interface GeneratedParameterList {
@@ -354,7 +478,7 @@ export class RetestCaseSource implements TestCaseSource {
     *start(): Iterator<GeneratedParameterList> {
 
         if (this.clusterIndex < this.clusters.length
-            && this.resultIndex >= this.clusters[this.clusterIndex].results.length) {
+            && this.resultIndex >= this.clusters[this.clusterIndex].allResults.length) {
             this.clusterIndex++;
             this.resultIndex = 0;
         }
@@ -363,7 +487,7 @@ export class RetestCaseSource implements TestCaseSource {
             return;
         }
 
-        const result = this.clusters[this.clusterIndex].results[this.resultIndex];
+        const result = this.clusters[this.clusterIndex].allResults[this.resultIndex];
         this.resultIndex++;
         //  TODO: should this save GeneratedParameterList instead of the bare parameters any[]?
         yield {
@@ -465,7 +589,7 @@ function* crossProductGenerator(input: any[]): Generator<GeneratedParameterList,
     }
 }
 
-const comparameters = (a: any, b: any): number => {
+export const comparameters = (a: any, b: any): number => {
     //  null and undefined always sort to the end
     if (a === null || a === undefined) {
         return 1;
@@ -591,10 +715,10 @@ function computeDistance(a: any, b: any): number {
     throw new Error(`Unexpected type ${typeof a}`);
 }
 
-export class CombinatorialTestCaseSource implements TestCaseSource {
+export class CombinatorialTestCaseSource /* implements TestCaseSource */ {
 
     private counter = 0;
-    private history = new Map<string, GeneratedParameterList>();
+    private specimens = new Map<string, Specimen>();
 
     //  map from the JSON path to a particular part of the argument list to a list of candidate values
     //  use up all the seed values before trying anything different
@@ -637,25 +761,45 @@ export class CombinatorialTestCaseSource implements TestCaseSource {
 
     */
 
-    *start(): Iterator<GeneratedParameterList> {
+    valueGenerators = new Map<string, Generator<GeneratedParameter, any, any>>();
+
+    fqseen = new Set<string>();
+    seenStrung = new Set<string>();
+
+    /*
+            1) SEED
+                10) generate a diverse array of inputs
+                    100) use known common edge cases
+                    200) analyze the source tree for special numbers or values and use those as seeds (basically all literals)
+                    300) use a sample of randomish fake values
+                    400) pull from those sets of primitive values to construct the composite objects
+                    500) execute
+    */
+
+    *seed(): Iterator<Specimen> {
         const newGenPerPass = 10;
         const minPerPath = 5;
         const bisectionLimitPerPass = 10;
         const mutationLimitPerPass = 10;
+        const that = this;
 
         const edgies: Partial<Record<ts.TypeFlags, (() => Generator<GeneratedParameter, any, any>)>> = {
             [ts.TypeFlags.Any]: edgyAny,
             [ts.TypeFlags.Unknown]: edgyAny,
-            [ts.TypeFlags.String]: edgyStrings,
-            [ts.TypeFlags.Number]: () => roundRobin(edgyNumbers(), edgyFloats()),
+            [ts.TypeFlags.String]: function* () {
+                for (const s of mostSpecialStrings) {
+                    yield gpv(s, 'mostSpecialStrings');
+                }
+            },
+            [ts.TypeFlags.Number]: function* () {
+                for (const n of mostSpecialNumbers) {
+                    yield gpv(n, 'mostSpecialNumbers');
+                }
+            },
             [ts.TypeFlags.Boolean]: edgyBooleans,
         };
 
         //  TODO: allow reusing a particular value if it's being used in a different place
-        const valueGenerators = new Map<string, Generator<GeneratedParameter, any, any>>();
-
-        const fqseen = new Set<string>();
-        const seenStrung = new Set<string>();
 
         //  TODO: at some point create jq-compatible paths for neatness
         const toKey = (path: (string | number)[], value: any) => {
@@ -715,7 +859,7 @@ export class CombinatorialTestCaseSource implements TestCaseSource {
             }
 
             const strungPath = pathToHere.join('.');
-            let generator = valueGenerators.get(strungPath);
+            let generator = that.valueGenerators.get(strungPath);
             if (!generator) {
                 const gengens = edgies[currentType.flags];
                 if (!gengens) {
@@ -723,7 +867,7 @@ export class CombinatorialTestCaseSource implements TestCaseSource {
                 }
 
                 generator = gengens();
-                valueGenerators.set(strungPath, generator);
+                that.valueGenerators.set(strungPath, generator);
             }
 
             let next = generator.next();
@@ -732,7 +876,7 @@ export class CombinatorialTestCaseSource implements TestCaseSource {
                 //  in theory we want to avoid the same value in the same place repeatedly
                 //  but it's not terrible, and the whole object duplicate avoidance may be adequate
                 // if (!fqseen.has(key)) {
-                fqseen.add(key);
+                that.fqseen.add(key);
                 return next.value;
                 // }
                 // next = gengens[i].next();
@@ -741,225 +885,243 @@ export class CombinatorialTestCaseSource implements TestCaseSource {
             throw new Error(`Ran out of values for ${currentType.flags} and ${JSON.stringify(pathToHere)}`);
         };
 
-        while (true) {
-            /**
-             * 0) sort all the clusters by their highest numbered line 
-             * 1) Look through all the clusters
-             *  2) for each parameter in the array of parameters
-             *      2a) sort each cluster by the value of that parameter
-             *      2b) foreach pair of clusters (TODO: can be smarter than every pair), bisect
-             */
-            const clusters = Array.from(this.clusterMap.values());
-            const clusterMaxLines = new Map<string, number>();
-            clusters.forEach(c => {
-                const max = c.lines.reduce((a, b) => Math.max(a, b), 0);
-                clusterMaxLines.set(c.key, max);
-            });
+        const toValue = (node: GeneratedParameter): any => {
+            if (node.type === 'value') {
+                return node.value;
+            }
+            if (node.type === 'array') {
+                return node.range.map(toValue);
+            }
+            if (node.type === 'object') {
+                const o: Record<string, any> = {};
+                Object.entries(node.properties).forEach(([k, v]) => {
+                    o[k] = toValue(v);
+                });
+                return o;
+            }
+        };
 
-            clusters.sort((a, b) => {
-                const aMax = clusterMaxLines.get(a.key)!;
-                const bMax = clusterMaxLines.get(b.key)!;
-                return aMax - bMax;
-            });
+        for (let i = 0; i < newGenPerPass; i++) {
+            const parameters: any[] = [];
+            for (let j = 0; j < this.f.parameters.length; j++) {
+                const t = this.f.parameters[j].type;
+                const currentType = t
+                    ? this.checker.getTypeAtLocation(t)
+                    : this.checker.getAnyType();
 
-            /*
-            bisection - find two parameter lists that are very similar to each other but lead to different code paths
-                //  for each parameter list in a cluster, find the outermost
-                //  optimization: record which parameter lists are NOT near the edges of their cluster to avoid reexamining
-                //  for each pair of outermosts across all cluster, bisect
-            */
-
-            //  KNOWN FLAW: these bisections may be obsolete because the clusters only get analyzed once per loop instead of on each generation
-            if (clusters.length > 0) {
-                let that = this;
-                function* bisector() {
-                    for (let index = 0; index < that.f.parameters.length; index++) {
-                        for (let i = 0; i < clusters.length - 1; i++) {
-                            const a = clusters[i];
-                            const b = clusters[i + 1];
-                            a.results.sort(comparameters);
-                            b.results.sort(comparameters);
-
-                            const alast = a.results[a.results.length - 1];
-                            const bfirst = b.results[0];
-
-                            const distance = computeDistance(alast.parameters[index], bfirst.parameters[index]);
-                            if (distance <= 1) {
-                                //  found the edges or close enough
-                                console.log(`found edges ${distance} between ${JSON.stringify(alast.parameters[index])} and ${JSON.stringify(bfirst.parameters[index])}`);
-                                continue;
-                            }
-                            console.log(`distance ${distance} between ${JSON.stringify(alast.parameters[index])} and ${JSON.stringify(bfirst.parameters[index])}`);
-
-                            //  generate a parameter list where every parameter is hybridized between alast and bfirst
-                            const hybridized = hybridize(alast.parameters, bfirst.parameters);
-                            for (const fullHybrid of hybridized) {
-                                //  also generate a parameter list based on alast with just the current parameter hybridized
-                                const abased = [...alast.parameters];
-                                abased[index] = fullHybrid[index];
-
-                                //  also generate a parameter list based on bfirst with just the current parameter hybridized
-                                const bbased = [...bfirst.parameters];
-                                bbased[index] = fullHybrid[index];
-
-                                for (const hybrid of [fullHybrid, abased, bbased]) {
-                                    const strung = JSON.stringify(hybrid);
-                                    if (!seenStrung.has(strung)) {
-                                        console.log(`hybridized ${strung} from ${JSON.stringify(alast.parameters)} and ${JSON.stringify(bfirst.parameters)})}`);
-                                        yield {
-                                            id: createId(),
-                                            sequence: that.counter++,
-                                            parameters: (fullHybrid as any[]),
-                                        };
-                                        seenStrung.add(hybrid);
-                                    }
-                                }
-                            }
-                        }
-                    };
-                }
-
-                let hybrids = 0;
-                for (const bisection of bisector()) {
-                    yield bisection;
-                    hybrids++;
-                    this.totalHybrids++;
-                    if (hybrids >= bisectionLimitPerPass) {
-                        break;
-                    }
-                }
+                const p: GeneratedParameter = valueForType(this.checker, currentType, 4, [j]);
+                parameters.push(toValue(p));
             }
 
-            /**
-             * Reduction
-             * TODO: take parameters that have already been run, trim away some stuff, and run the result
-             * trimming = shortening strings, shortening arrays, and removing object properties
-             * 
-             */
-
-            /**
-             * mutation
-             * 1) find lines that have been instrumented but not executed
-             * 2) identify clusters that have exercised the lines before and/or after
-             * 3) generate parameter lists that are similar to the ones
-             *      used to get to the before and different from the after
-             * 
-             * 
-             */
-
-            let mutations = 0;
-            const allInstrumentedLines = Array.from(this.allInstrumentedLines).sort();
-            let lastBeforeFirstExecuted: number | undefined = undefined;
-            let firstUnexecuted: number | undefined = undefined;
-            let i = 0;
-            for (; i < allInstrumentedLines.length; i++) {
-                const line = allInstrumentedLines[i];
-                if (!this.allExecutedLines.has(line)) {
-                    firstUnexecuted = line;
-                    break;
-                }
-                lastBeforeFirstExecuted = line;
-            }
-
-            /*
-            //  in theory a tree type structure seems like the way to go here,
-            //  but (I think) simple line numbers do well enough; if we have some
-            //  code that got executed, then some code that didn't, and then optionally
-            //  some more code that, we can be pretty confident that the middle part was
-            //  in conditional or loop body, and that what got executed later is 
-            //  either an explicit else, an implicit else, or just normal unconditional
-            //  execution but either way it didn't satisfy the requirements of the missing
-            //  part, so we can say we want inputs like what got to the first part but unlike what got
-            //  to the third part.
-            */
-            if (firstUnexecuted !== undefined) {
-                let firstExecutedAfter: number | undefined = undefined;
-                for (; i < allInstrumentedLines.length; i++) {
-                    const line = allInstrumentedLines[i];
-                    if (this.allExecutedLines.has(line)) {
-                        firstExecutedAfter = line;
-                        break;
-                    }
-                }
-
-                //  if at least one line was executed...
-                if (lastBeforeFirstExecuted !== undefined) {
-                    //  otherwise Typescript doesn't know that lastBeforeFirstExecuted is defined
-                    const lbfe = lastBeforeFirstExecuted;
-                    //  should be in order from lowest last line to highest last line
-                    //  based on the sorting done before bisection
-                    const ranBefore = clusters.filter(c => c.lines.includes(lbfe));
-                    const ranAfter = clusters.filter(c => firstExecutedAfter && c.lines.includes(firstExecutedAfter));
-                    const ranBeforeOnly = ranBefore.filter(c => !ranAfter.includes(c));
-
-                    if (firstExecutedAfter === undefined) {
-                        //  apparently we executed nothing from there to the end
-                        //  find the values that got to lastBeforeFirstExecuted and mutate those
-                    } else {
-                        //  there's a hole in the middle dear liza dear liza
-                        const gotToFirstOnly: ResultCluster[] = [];
-                        const gotToBoth: ResultCluster[] = [];
-
-                        //  find the values that got to lastBeforeFirstExecuted but not firstExecutedAfter and mutate those
-                        //  X = identify what's common about the values that got to firstExecutedAfter
-                        //  Y = identify what's common about ALL the values that got to lastBeforeFirstExecuted
-                        //  mutate the values of X in a way that is not similar to Y
-                    }
-                }
-            }
-
-            const toValue = (node: GeneratedParameter): any => {
-                if (node.type === 'value') {
-                    return node.value;
-                }
-                if (node.type === 'array') {
-                    return node.range.map(toValue);
-                }
-                if (node.type === 'object') {
-                    const o: Record<string, any> = {};
-                    Object.entries(node.properties).forEach(([k, v]) => {
-                        o[k] = toValue(v);
-                    });
-                    return o;
-                }
+            yield {
+                id: createId(),
+                sequence: this.counter++,
+                parameters,
+                type: 'seed',
             };
-
-            for (let i = 0; i < newGenPerPass; i++) {
-                const parameters: any[] = [];
-                for (let j = 0; j < this.f.parameters.length; j++) {
-                    const t = this.f.parameters[j].type;
-                    const currentType = t
-                        ? this.checker.getTypeAtLocation(t)
-                        : this.checker.getAnyType();
-
-                    const p: GeneratedParameter = valueForType(this.checker, currentType, 4, [j]);
-                    parameters.push(toValue(p));
-                }
-
-                yield {
-                    id: createId(),
-                    sequence: this.counter++,
-                    parameters,
-                };
-                this.totalSeeds++;
-            }
+            this.totalSeeds++;
         }
     }
 
-    stats() {
-        return {
-            totalHybrids: this.totalHybrids,
-            totalMutations: this.totalMutations,
-            totalSeeds: this.totalSeeds,
-        };
+    /*
+        2) SHRINK
+            10) for each cluster
+                100) for each input parameter
+                    1000) sort the parameter lists by that parameter
+                    2000) pick the top and bottom
+                    3000) shrink them
+                    4000) execute
+                    5000) if the result lands in the same cluster, keep shrinking
+                    6000) if the result lands in a different cluster, sort that cluster
+                        and see if it's an outermost parameter list (possibly replacing a previous one)
+                    7000) repeat (GOTO (1000)) until the tops and bottoms of each cluster cannot be shrunk further and remain valid
+                        OR the maximum attempt number is reached
+    */
+
+    /*
+    3) COVER
+        10) sort clusters by their last line executed
+        20) for each pair of cluster ([i] and [i + 1]), see if there are unexecuted lines in between
+        20) if there are unexecuted lines in between, generate inputs that execute those lines
+            100) identify the features that are common to the before and after
+            200) identify the features that are present in the after but not the before
+            300) generate more
+                1000) mutate the before in ways different from (2)
+                2000) hybridize the before and after
+                3000) generate new inputs using different features from before
+            500) execute
+            600) repeat until there are no unexecuted lines OR the maximum attempt number is reached
+
+    */
+
+    cover() {
+        //  guess wildly?
     }
 
-    increaseWeirdness(): void {
-        this.weirdness++;
-    }
+    bisect() {
 
-    update(clusterMap: Map<string, ResultCluster>, r: RunResult): void {
-        this.clusterMap = clusterMap;
-        r.lines.forEach(l => this.allExecutedLines.add(l));
+        /*
+        bisection - find two parameter lists that are very similar to each other but lead to different code paths
+            //  for each parameter list in a cluster, find the outermost
+            //  optimization: record which parameter lists are NOT near the edges of their cluster to avoid reexamining
+            //  for each pair of outermosts across all cluster, bisect
+        */
+
+        //  KNOWN FLAW: these bisections may be obsolete because the clusters only get analyzed once per loop instead of on each generation
+        if (clusters.length > 0) {
+            function* bisector() {
+                for (let index = 0; index < that.f.parameters.length; index++) {
+                    for (let i = 0; i < clusters.length - 1; i++) {
+                        const a = clusters[i];
+                        const b = clusters[i + 1];
+                        a.results.sort(comparameters);
+                        b.results.sort(comparameters);
+
+                        const alast = a.results[a.results.length - 1];
+                        const bfirst = b.results[0];
+
+                        const distance = computeDistance(alast.parameters[index], bfirst.parameters[index]);
+                        if (distance <= 1) {
+                            //  found the edges or close enough
+                            console.log(`found edges ${distance} between ${JSON.stringify(alast.parameters[index])} and ${JSON.stringify(bfirst.parameters[index])}`);
+                            continue;
+                        }
+                        console.log(`distance ${distance} between ${JSON.stringify(alast.parameters[index])} and ${JSON.stringify(bfirst.parameters[index])}`);
+
+                        //  generate a parameter list where every parameter is hybridized between alast and bfirst
+                        const hybridized = hybridize(alast.parameters, bfirst.parameters);
+                        for (const fullHybrid of hybridized) {
+                            //  also generate a parameter list based on alast with just the current parameter hybridized
+                            const abased = [...alast.parameters];
+                            abased[index] = fullHybrid[index];
+
+                            //  also generate a parameter list based on bfirst with just the current parameter hybridized
+                            const bbased = [...bfirst.parameters];
+                            bbased[index] = fullHybrid[index];
+
+                            for (const hybrid of [fullHybrid, abased, bbased]) {
+                                const strung = JSON.stringify(hybrid);
+                                if (!seenStrung.has(strung)) {
+                                    console.log(`hybridized ${strung} from ${JSON.stringify(alast.parameters)} and ${JSON.stringify(bfirst.parameters)})}`);
+                                    yield {
+                                        id: createId(),
+                                        sequence: that.counter++,
+                                        parameters: (fullHybrid as any[]),
+                                    };
+                                    seenStrung.add(hybrid);
+                                }
+                            }
+                        }
+                    }
+                };
+            }
+
+            let hybrids = 0;
+            for (const bisection of bisector()) {
+                yield bisection;
+                hybrids++;
+                this.totalHybrids++;
+                if (hybrids >= bisectionLimitPerPass) {
+                    break;
+                }
+            }
+        }
+
+        /**
+         * Reduction
+         * TODO: take parameters that have already been run, trim away some stuff, and run the result
+         * trimming = shortening strings, shortening arrays, and removing object properties
+         * 
+         */
+
+        /**
+         * mutation
+         * 1) find lines that have been instrumented but not executed
+         * 2) identify clusters that have exercised the lines before and/or after
+         * 3) generate parameter lists that are similar to the ones
+         *      used to get to the before and different from the after
+         * 
+         * 
+         */
+
+        let mutations = 0;
+        const allInstrumentedLines = Array.from(this.allInstrumentedLines).sort();
+        let lastBeforeFirstExecuted: number | undefined = undefined;
+        let firstUnexecuted: number | undefined = undefined;
+        let i = 0;
+        for (; i < allInstrumentedLines.length; i++) {
+            const line = allInstrumentedLines[i];
+            if (!this.allExecutedLines.has(line)) {
+                firstUnexecuted = line;
+                break;
+            }
+            lastBeforeFirstExecuted = line;
+        }
+
+        /*
+        //  in theory a tree type structure seems like the way to go here,
+        //  but (I think) simple line numbers do well enough; if we have some
+        //  code that got executed, then some code that didn't, and then optionally
+        //  some more code that, we can be pretty confident that the middle part was
+        //  in conditional or loop body, and that what got executed later is 
+        //  either an explicit else, an implicit else, or just normal unconditional
+        //  execution but either way it didn't satisfy the requirements of the missing
+        //  part, so we can say we want inputs like what got to the first part but unlike what got
+        //  to the third part.
+        */
+        if (firstUnexecuted !== undefined) {
+            let firstExecutedAfter: number | undefined = undefined;
+            for (; i < allInstrumentedLines.length; i++) {
+                const line = allInstrumentedLines[i];
+                if (this.allExecutedLines.has(line)) {
+                    firstExecutedAfter = line;
+                    break;
+                }
+            }
+
+            //  if at least one line was executed...
+            if (lastBeforeFirstExecuted !== undefined) {
+                //  otherwise Typescript doesn't know that lastBeforeFirstExecuted is defined
+                const lbfe = lastBeforeFirstExecuted;
+                //  should be in order from lowest last line to highest last line
+                //  based on the sorting done before bisection
+                const ranBefore = clusters.filter(c => c.lines.includes(lbfe));
+                const ranAfter = clusters.filter(c => firstExecutedAfter && c.lines.includes(firstExecutedAfter));
+                const ranBeforeOnly = ranBefore.filter(c => !ranAfter.includes(c));
+
+                if (firstExecutedAfter === undefined) {
+                    //  apparently we executed nothing from there to the end
+                    //  find the values that got to lastBeforeFirstExecuted and mutate those
+                } else {
+                    //  there's a hole in the middle dear liza dear liza
+                    const gotToFirstOnly: ResultCluster[] = [];
+                    const gotToBoth: ResultCluster[] = [];
+
+                    //  find the values that got to lastBeforeFirstExecuted but not firstExecutedAfter and mutate those
+                    //  X = identify what's common about the values that got to firstExecutedAfter
+                    //  Y = identify what's common about ALL the values that got to lastBeforeFirstExecuted
+                    //  mutate the values of X in a way that is not similar to Y
+                }
+            }
+        }
+
     }
+}
+
+stats() {
+    return {
+        totalHybrids: this.totalHybrids,
+        totalMutations: this.totalMutations,
+        totalSeeds: this.totalSeeds,
+    };
+}
+
+increaseWeirdness(): void {
+    this.weirdness++;
+}
+
+update(clusterMap: Map<string, ResultCluster>, r: RunResult): void {
+    this.clusterMap = clusterMap;
+    r.lines.forEach(l => this.allExecutedLines.add(l));
+}
 }

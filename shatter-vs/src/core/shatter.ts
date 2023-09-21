@@ -3,10 +3,13 @@ import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import * as ts from 'typescript';
-import { CombinatorialTestCaseSource, RetestCaseSource } from './generator';
+import { CombinatorialTestCaseSource, RetestCaseSource, Specimen, comparameters } from './generator';
 import { Outcome, RunResult, Supervisor } from './supervisor';
 import { IntrospectionContext, createInstrumenter } from './transform';
 import cluster from 'cluster';
+import serialize from 'canonicalize'
+import { shrink } from './hybridize';
+import { createId } from '@paralleldrive/cuid2';
 
 export interface AutotestResults {
     clusters: ResultCluster[];
@@ -20,7 +23,8 @@ export interface ResultCluster {
     lines: number[]
     //  includes potential duplicates if the same line is hit twice
     linesInOrder: number[]
-    results: RunResult[]
+    allResults: RunResult[]
+    edgiest: RunResult[]
     outcome: Outcome
     totalTime: number
 }
@@ -107,8 +111,8 @@ export async function shatterAutotest(modulePaths: string[],
     onUpdate: (results: AutotestResults) => void,
     options?: {
         shatterproofModuleOverride?: string,
-        maxIterations?:number,
-        maxTime?:number,
+        maxIterations?: number,
+        maxTime?: number,
     }
 ) {
     // parse whole file into abstract syntax tree
@@ -136,10 +140,6 @@ export async function shatterAutotest(modulePaths: string[],
         throw new Error(`Could not find function body`);
     }
 
-    // const generator = new CombinatorialTestCaseSource(program.getTypeChecker(), functionDeclarationNode.parameters);
-    const source = new CombinatorialTestCaseSource(program.getTypeChecker(), introspectionContext.instrumentedLines, functionDeclarationNode);
-    const generator = source.start();
-
     let count = 0;
     const maxIterations = options?.maxIterations ?? 200;
     const maxTime = options?.maxTime ?? 15_000;
@@ -149,13 +149,19 @@ export async function shatterAutotest(modulePaths: string[],
     const allExecutedLines = new Set<number>();
 
     const clusters: ResultCluster[] = [];
-    const clusterMap = new Map<string, ResultCluster>();
+    const clustersByKey = new Map<string, ResultCluster>();
+    const clustersBySpecimenId = new Map<string, ResultCluster>();
+    const specimenResults = new Map<string, RunResult>();
+    const specimensById = new Map<string, Specimen>();
+    //  a set of canonicalized JSON serializations
+    const parameterListsAttempted = new Set<string>();
 
     const onResult = (runResult: RunResult) => {
         // console.log(`Received result ${JSON.stringify(runResult)}`);
         // find the appropriate cluster or create it
+        specimenResults.set(runResult.specimenId, runResult);
         const clusterKey = canonicalClusterKey(runResult);
-        let cluster = clusterMap.get(clusterKey);
+        let cluster = clustersByKey.get(clusterKey);
         if (!cluster) {
             const outcome = ((): Outcome => {
                 if (runResult.completed) {
@@ -166,53 +172,33 @@ export async function shatterAutotest(modulePaths: string[],
                 }
                 return 'timeout';
             })();
-    
+
             cluster = {
                 key: clusterKey,
                 lines: runResult.lines,
                 linesInOrder: runResult.linesInOrder,
                 outcome,
-                results: [],
+                allResults: [],
+                edgiest: [],
                 totalTime: 0,
             };
             clusters.push(cluster);
-            clusterMap.set(clusterKey, cluster);
+            clustersByKey.set(clusterKey, cluster);
         }
-    
-        cluster.results.push(runResult);
+
+        clustersBySpecimenId.set(runResult.specimenId, cluster);
+
+        cluster.allResults.push(runResult);
         cluster.totalTime += runResult.duration;
-    
+
         //  TODO: don't do this on every change
         sortClusters(clusters);
-    
+
         //  update the caller
         onUpdate({ clusters, instrumentedLines: introspectionContext.instrumentedLines });
         //  update the source
-        source.update(clusterMap, runResult);
 
         runResult.lines.forEach(line => allExecutedLines.add(line));
-        // if still need to run, generate and breed more test cases and repeat
-        if (allExecutedLines.size < introspectionContext.instrumentedLines.size) {
-            const unreachedInstrumentedLines: number[] = [];
-            for (const instrumentedLine of introspectionContext.instrumentedLines) {
-                if (!allExecutedLines.has(instrumentedLine)) {
-                    unreachedInstrumentedLines.push(instrumentedLine);
-                }
-            }
-
-            const firstUnreachedLine = unreachedInstrumentedLines[0];
-            //  TODO: smart things
-            /*
-              1) map inputs to lines (have that from RunResult[])
-              2) look at the input that make it to that point and those that don't make it to that point; the former have something necessary
-              3) look at the inputs that make it past that point; those LACK something necessary
-              4) generate mutations of the ones from (2)
-            */
-
-            clusters.forEach(cluster => {
-                // cluster.branches.includes(firstUnreached.getText())
-            });
-        }
     };
 
     const supervisor = new Supervisor(modulePaths, executorScriptJs, onResult, 15);
@@ -220,27 +206,140 @@ export async function shatterAutotest(modulePaths: string[],
         // }, introspectionContext.knownBranches.size = ${introspectionContext._knownBranches.size
         }, introspectionContext.instrumentedLines.size = ${introspectionContext.instrumentedLines.size
         }`);
-    while (allExecutedLines.size < introspectionContext.instrumentedLines.size
-        && count < maxIterations
-        && Date.now() - startTime < maxTime) {
 
+
+
+    // const generator = new CombinatorialTestCaseSource(program.getTypeChecker(), functionDeclarationNode.parameters);
+    const source = new CombinatorialTestCaseSource(program.getTypeChecker(), introspectionContext.instrumentedLines, functionDeclarationNode);
+    const generator = source.seed();
+
+    //  SEED
+    while (true) {
         const g = generator.next();
         if (g.done) {
-            console.error(`generator is unexpectedly done after ${count} iterations`);
             break;
         }
 
-        // execute those inputs in worker threads
-        const worker = await supervisor.launchWorker(functionDeclarationNode.name?.getText() ?? '', g.value.parameters);
+        const specimen = g.value;
+        const serialized = serialize(specimen.parameters);
+        if (serialized && !parameterListsAttempted.has(serialized)) {
+            parameterListsAttempted.add(serialized);
 
-        // TODO: if the function under test is a react component
-        //  launch a headless browser
-        //  capture a screenshot for each represented test case
-        //  save it screenshot
-        count++;
+            // execute those inputs in worker threads
+            const worker = await supervisor.launchWorker(functionName, specimen.id, g.value.parameters);
+
+            // TODO: if the function under test is a react component
+            //  launch a headless browser
+            //  capture a screenshot for each represented test case
+            //  save it screenshot
+            count++;
+        }
     }
 
     await supervisor.drain();
+
+    /*
+        2) SHRINK /WEED
+            10) for each cluster
+                100) for each input parameter
+                    1000) sort the parameter lists by that parameter
+                    2000) pick the top and bottom
+                    3000) shrink them
+                    4000) execute
+                    5000) if the result lands in the same cluster, keep shrinking
+                    6000) if the result lands in a different cluster, sort that cluster
+                        and see if it's an outermost parameter list (possibly replacing a previous one)
+                    7000) repeat (GOTO (1000)) until the tops and bottoms of each cluster cannot be shrunk further and remain valid
+                        OR the maximum attempt number is reached
+    */
+
+    const initiatedShrinkings = new Map<string, Specimen[]>();
+    const enshrinken = async (baseParameters: any[], toShrinkParameterIndex:number, baseSpecimenId: string) => {
+        initiatedShrinkings.set(baseSpecimenId, []);
+        for (const shrunk of shrink(baseParameters[toShrinkParameterIndex])) {
+            const parameters = [...baseParameters];
+            parameters[toShrinkParameterIndex] = shrunk;
+
+            const serialized = serialize(parameters);
+            if (serialized && !parameterListsAttempted.has(serialized)) {
+                parameterListsAttempted.add(serialized);
+                initiatedShrinkings.get(baseSpecimenId)?.push(shrunk);
+
+                const specimenId = createId();
+                const parent = specimensById.get(baseSpecimenId)!;
+                const newSpecimen: Specimen = {
+                    id: specimenId,
+                    type: 'reduction',
+                    parameters,
+                    parent,
+                    sequence: count++,
+                }
+                specimensById.set(specimenId, newSpecimen);
+                await supervisor.launchWorker(functionName, shrunk.id, parameters);
+            }
+        }
+    }
+
+    while (true) {
+        const pendingShrinkings = new Set<string>();
+        const completedShrinkings = new Map<string, RunResult>();
+        for (const cluster of clustersByKey.values()) {
+            for (let i = 0; i < functionDeclarationNode.parameters.length; i++) {
+                cluster.allResults.sort((a, b) => {
+                    const avalue = a.parameters[i];
+                    const bvalue = b.parameters[i];
+                    return comparameters(avalue, bvalue);
+                });    
+
+                const top = cluster.allResults[0];
+                const toShrink = [top];
+
+                if (cluster.allResults.length > 1) {
+                    const bottom = cluster.allResults[cluster.allResults.length - 1];
+                    toShrink.push(bottom);
+                }    
+
+                for (const ttt of toShrink) {
+                    await enshrinken(ttt.parameters, i, ttt.specimenId);
+                }
+            }
+        }
+        await supervisor.drain();
+        [...pendingShrinkings].forEach(specimenId => {
+            const result = specimenResults.get(specimenId);
+            if (!result) {
+                throw new Error(`Unable to find result for specimen ${specimenId}`)
+                return;
+            }
+
+            //  identify the cluster
+            const clusterKey = canonicalClusterKey(result);
+            const cluster = clustersByKey.get(clusterKey);
+
+            const specimen = specimensById.get(specimenId);
+            if (!specimen) {
+                throw new Error(`Unable to find specimen ${specimenId}`)
+            }
+            if (specimen.type != 'reduction') {
+                throw new Error("Impossible!");
+
+            }
+            const parent = specimensById.get(specimen.parent.id);
+            if (!parent) {
+                throw new Error("Inpossible");
+            }
+
+            const parentClusterKey = canonicalClusterKey(result);
+            if (parentClusterKey !== clusterKey) {
+                //  if it's different, stop shrinking this lineage
+                //  no room for further shrinking
+                return;
+            }
+
+            for (let i = 0; i < functionDeclarationNode.parameters.length; i++) {
+            }
+        });
+    }
 
     if (storageBaseDirectory) {
         console.log(`Saving clusters to ${storageBaseDirectory}`);
@@ -265,13 +364,13 @@ function sortClusters(clusters: ResultCluster[]) {
                     return a.lines[i] - b.lines[i];
                 }
             }
-            return a.results.length - b.results.length;
+            return a.allResults.length - b.allResults.length;
         }
         return preferredOutcomeOrder.findIndex((s) => s === a.outcome) - preferredOutcomeOrder.findIndex((s) => s === b.outcome);
     });
 
     clusters.forEach(cluster => {
-        cluster.results.sort((a, b) =>
+        cluster.allResults.sort((a, b) =>
             JSON.stringify(a.parameters).localeCompare(JSON.stringify(b.parameters))
         );
     });
@@ -288,7 +387,7 @@ function saveClusters(inputFile: string, storageBaseDirectory: string, functionN
         const clusterStorageFile = join(clusterStorageDirectory, `${cluster.key}.json`);
 
         //  TODO: actually filter in some meaningful way
-        const notableResults = cluster.results;
+        const notableResults = cluster.allResults;
         const clusterToWrite = {
             ...cluster,
             results: notableResults,
@@ -370,54 +469,87 @@ export function writeInstrumented(sourceFile: ts.SourceFile,
     return [modifiedSourcefilePath, executorScriptJs, introspectionContext];
 }
 
-
-
-
-
 export function redux() {
+
+
     /*
         1) SEED
             10) generate a diverse array of inputs
-            20) use known common edge cases
-            30) analyze the source tree for special numbers or values and use those as seeds (basically all literals)
-            40) use a sample of randomish fake values
-            50) pull from those sets of primitive values to construct the composite objects
-            60) execute
-
-        2) SHRINK
-            10) for each cluster
-                100) for each input parameter
-                    1000) sort the parameter lists by that parameter
-                    2000) pick the top and bottom
-                    3000) shrink them
-                    4000) execute
-                    5000) if the result lands in the same cluster, keep shrinking
-                    6000) if the result lands in a different cluster, sort that cluster
-                        and see if it's an outermost parameter list (possibly replacing a previous one)
-                    7000) repeat (GOTO (1000)) until the tops and bottoms of each cluster cannot be shrunk further and remain valid
-                        OR the maximum attempt number is reached
-
-        3) COVER
-            10) sort clusters by their last line executed
-            20) for each pair of cluster ([i] and [i + 1]), see if there are unexecuted lines in between
-            20) if there are unexecuted lines in between, generate inputs that execute those lines
-                100) identify the features that are common to the before and after
-                200) identify the features that are present in the after but not the before
-                300) generate more
-                    1000) mutate the before in ways different from (2)
-                    2000) hybridize the before and after
-                    3000) generate new inputs using different features from before
+                100) use known common edge cases
+                200) analyze the source tree for special numbers or values and use those as seeds (basically all literals)
+                300) use a sample of randomish fake values
+                400) pull from those sets of primitive values to construct the composite objects
                 500) execute
-                600) repeat until there are no unexecuted lines OR the maximum attempt number is reached
 
-        4) EDGE DETECTION
-            10) sort clusters by their last line executed
-            20) for each pair of cluster ([i] and [i + 1]), sort the input lists by each parameter position
-            30) if the top of the before is distance > N from the bottom of the after, hybridize
-            40) execute
-            50) repeat until the maximum attempt number is reached
-                OR all clusters are within the minimum distance of each other 
-                OR diminishing returns on distance reduction
+            */
 
-    */
+
+    const checker: ts.TypeChecker = null as any;;
+    const f: ts.FunctionDeclaration = null as any;
+
+    const startValues: any[][] = [];
+    const parameters: any[] = [];
+    for (let i = 0; i < 20; i++) {
+        for (let j = 0; j < f.parameters.length; j++) {
+            const t = f.parameters[j].type;
+            const currentType = t
+                ? checker.getTypeAtLocation(t)
+                : checker.getAnyType();
+
+        }
+    }
+
+
+
+    const clusterMap = new Map<string, ResultCluster>();
+
+
+    /*
+
+2) SHRINK/WEED
+10) for each cluster
+    100) for each input parameter
+        1000) sort the parameter lists by that parameter
+        2000) pick the top and bottom
+        3000) shrink them
+        4000) execute
+        5000) if the result lands in the same cluster, keep shrinking
+        6000) if the result lands in a different cluster, sort that cluster
+            and see if it's an outermost parameter list (possibly replacing a previous one)
+        7000) repeat (GOTO (1000)) until the tops and bottoms of each cluster cannot be shrunk further and remain valid
+            OR the maximum attempt number is reached
+
+*/
+
+
+
+
+
+    /*
+ 3) COVER/BREED
+     10) sort clusters by their last line executed
+     20) for each pair of cluster ([i] and [i + 1]), see if there are unexecuted lines in between
+     20) if there are unexecuted lines in between, generate inputs that execute those lines
+         100) identify the features that are common to the before and after
+         200) identify the features that are present in the after but not the before
+         300) generate more
+             1000) mutate the before in ways different from (2)
+             2000) hybridize the before and after
+             3000) generate new inputs using different features from before
+         500) execute
+         600) repeat until there are no unexecuted lines OR the maximum attempt number is reached
+
+     */
+    /*
+
+4) EDGE DETECTION/KNEAD
+    10) sort clusters by their last line executed
+    20) for each pair of cluster ([i] and [i + 1]), sort the input lists by each parameter position
+    30) if the top of the before is distance > N from the bottom of the after, hybridize
+    40) execute
+    50) repeat until the maximum attempt number is reached
+        OR all clusters are within the minimum distance of each other 
+        OR diminishing returns on distance reduction
+
+*/
 }
