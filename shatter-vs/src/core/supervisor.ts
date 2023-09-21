@@ -60,7 +60,7 @@ export class Supervisor {
 
         const NODE_PATH = this.nodePath.join(':');
         // console.log(`attempting ${currentWorkerNumber}:${this.executorScriptJS} with NODE_PATH ${NODE_PATH} and workerData = ${JSON.stringify(workerData)}`);
-        console.log(`attempting ${strung}`);
+        // console.log(`attempting ${currentWorkerNumber} => ${strung}`);
         const worker = new Worker(this.executorScriptJS, {
             workerData,
             stdout: true,
@@ -129,7 +129,7 @@ export class Supervisor {
         });
         worker.on('exit', () => {
             clearTimeout(timeoutId);
-            console.log(`Worker ${currentWorkerNumber} for ${functionName} exiting of ${this.activeWorkers.size} running...`);
+            // console.log(`Worker ${currentWorkerNumber} for ${functionName} exiting of ${this.activeWorkers.size} running...`);
             this.activeWorkers.delete(worker);
             // console.log(`after deleting ${activeWorkers.size}`);
         });
@@ -154,7 +154,7 @@ export class Supervisor {
 
     async drain(timeout = 10_000) {
         const start = Date.now();
-        console.log("finishied draining");
+        // console.log("finishied draining");
         while (this.activeWorkers.size > 0) {
             //  sort of busy waiting
             // console.log(`Waiting with ${activeWorkers.size} active workers`)
@@ -164,6 +164,6 @@ export class Supervisor {
                 return;
             }
         }
-        console.log("finishied draining");
+        // console.log("finishied draining");
     }
 }

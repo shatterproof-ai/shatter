@@ -3,7 +3,8 @@ import { isEqual } from 'lodash';
 //  TODO: split this into an initial entrypoint and a recursive internal entrypoint
 export function* hybridize(a: any, b: any) {
     //  stupid sort so they can be written in order but are executed from the middle out
-    const splitIntervals = [0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.99].sort((a, b) => Math.abs(a - 0.5) - Math.abs(b - 0.5));
+    // const splitIntervals = [0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.99].sort((a, b) => Math.abs(a - 0.5) - Math.abs(b - 0.5));
+    const splitIntervals = [0.1, 0.5, 0.9];
 
     if (a === undefined || a === null || b === undefined || b === null) {
         yield a;
@@ -61,6 +62,10 @@ function* hybridizeNumbers(a: number, b: number, intervals: number[]) {
     const smaller = Math.min(a, b);
     const diff = larger - smaller;
     const seen = new Set<number>();
+
+    //  TODO: tunable precision
+    const minDiff = 0.2;
+
     for (const interval of intervals) {
         const value = smaller + diff * interval;
         const floored = Math.floor(value);
@@ -72,7 +77,9 @@ function* hybridizeNumbers(a: number, b: number, intervals: number[]) {
         }
 
         for (const value of values) {
-            if (!seen.has(value)) {
+            if (Math.abs(value - smaller) > minDiff
+                && Math.abs(value - larger) > minDiff
+                && !seen.has(value)) {
                 seen.add(value);
                 yield value;
             }
@@ -84,13 +91,23 @@ function* hybridizeStrings(a: string, b: string, intervals: number[]) {
     //  first part is subset of shorter string, remainder is from longer string
     //  first part is subset of longer string, rest of shorter string, rest of longer string
 
-    const shorter = a.length < b.length ? a : b;
-    const longer = a.length < b.length ? b : a;
+    const [shorter, longer] = a.length < b.length ? [a, b] : [b, a];
 
     const seen = new Set<string>();
     const longerBeginning = longer.substring(0, shorter.length);
     const shorterIsSubset = longer.startsWith(shorter);
     if (!shorterIsSubset) {
+        if (shorter.length < longer.length) {
+            //  longer truncated to the length of shorter
+            seen.add(longerBeginning);
+            yield longerBeginning;
+
+            //  longer truncated to the length of shorter - 1
+            const andAgain = longerBeginning.substring(0, longerBeginning.length - 1);
+            seen.add(andAgain);
+            yield andAgain;
+        }
+
         const edits = computeEdits(shorter, longer);
         //  apply some subset of edits for intermediate strings between shorter and longer
         for (const splitInterval of intervals) {
@@ -113,11 +130,13 @@ function* hybridizeStrings(a: string, b: string, intervals: number[]) {
 
             if (!seen.has(value)) {
                 seen.add(value);
+                yield value;
             }
         }
     }
 
     for (const interval of intervals) {
+        //  shorter + various lengths of the rest of longer
         const toTake = Math.floor(interval * (longer.length - shorter.length));
         const remainder = longer.substring(shorter.length, shorter.length + toTake);
         const value = shorter + remainder;
@@ -125,6 +144,7 @@ function* hybridizeStrings(a: string, b: string, intervals: number[]) {
             seen.add(value);
             yield value;
         }
+        //  substrings of longer
         if (!shorterIsSubset) {
             const otherValue = longerBeginning + remainder;
             if (!seen.has(otherValue)) {
@@ -215,6 +235,154 @@ function* hybridizeObjects(a: any, b: any, intervals: number[]) {
     }
 }
 
+/**
+ * 
+ * to be a strict extension, the following must be true:
+ * * all keys in base must be in maybeExtension
+ * * all values in base must be equal to the corresponding value in maybeExtension
+ *      OR the corresponding value in maybeExtension must be a strict extension of the corresponding value in base
+ * 
+ */
+export function isStrictExtension(base: any, maybeExtension: any): boolean {
+    //  nothing and nothing or nothing and something are both strict extensions
+    if (base === undefined || base === null) {
+        return true;
+    }
+
+    if (typeof base !== typeof maybeExtension) {
+        return false;
+    }
+
+    if (typeof base === "boolean") {
+        return base === maybeExtension;
+    }
+
+    if (typeof base === "number") {
+        return maybeExtension === base;
+    }
+
+    if (typeof base === "string") {
+        return maybeExtension.startsWith(base);
+    }
+
+    if (Array.isArray(base)) {
+        if (!Array.isArray(maybeExtension)) {
+            return false;
+        }
+        if (base.length > maybeExtension.length) {
+            return false;
+        }
+        for (let i = 0; i < base.length; i++) {
+            if (!isStrictExtension(base[i], maybeExtension[i])) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    if (typeof base === "object") {
+        if (typeof maybeExtension !== "object") {
+            return false;
+        }
+        const baseKeys = Object.keys(base);
+        const maybeExtensionKeys = Object.keys(maybeExtension);
+        if (baseKeys.length > maybeExtensionKeys.length) {
+            return false;
+        }
+        for (const key of baseKeys) {
+            if (!maybeExtension.hasOwnProperty(key)) {
+                return false;
+            }
+            if (!isStrictExtension(base[key], maybeExtension[key])) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    return true;
+}
+
+/*
+ compare two objects and evaluate which is more minimal
+ minimal means
+ * false < true
+ * numbers closer to zero are better than numbers further from zero
+ * shorter strings are better than longer strings
+*/
+function compareMinimality(a: any, b: any) {
+    if (a === undefined || a === null) {
+        return -1;
+    }
+    if (b === undefined || b === null) {
+        return 1;
+    }
+    if (typeof a === "boolean") {
+        if (typeof b === "boolean") {
+            //  arbitrarily decide that false is smaller than true
+            if (a === b) {
+                return 0;
+            }
+            if (a) {
+                return 1;
+            }
+        }
+        return -1;
+    }
+    if (typeof b === "boolean") {
+        return 1;
+    }
+
+    if (typeof a === "number") {
+        if (typeof b === "number") {
+            const absa = Math.abs(a);
+            const absb = Math.abs(b);
+            if (absa === absb) {
+                //  negative numbers are less minimal than positive
+                //  a = -4, b = 3 => 3 / -1
+                //  a = -4, b = -3 => -3 / -1
+                //  a = -4, b = 4 => 4 / 8
+                //  a = -4, b = -4 => -4 / 0
+                //  a = -4, b = 5 => -4 / 9
+                //  a = -4, b = -5 => -4 / 1
+                /**
+                 * a < b => -1
+                 * a == b => 0
+                 * a > b => 1
+                 */
+                if (a < 0 && b > 0) {
+                    return 1;
+                }
+                if (a > 0 && b < 0) {
+                    return -1;
+                }
+                return 0;
+            }
+        }
+        return -1;
+    }
+
+    if (typeof b === "number") {
+        return 1;
+    }
+
+    if (typeof a === "string") {
+        if (typeof b === "string") {
+            if (a.length === b.length) {
+                return 0;
+            }
+            if (a.length > b.length) {
+                return 1;
+            }
+        }
+        return -1;
+    }
+    if (typeof b === "string") {
+        return 1;
+    }
+
+}
+
 export function* shrink(o: any) {
     if (o === undefined || o === null) {
         return;
@@ -225,21 +393,22 @@ export function* shrink(o: any) {
     }
 
     if (typeof o === "number") {
-        if (o === 0) {
+        //  TODO: tunable precision
+        if (Math.abs(o) < 0.01) {
             return;
         }
-        yield o/2;
+        yield o / 2;
         if (o > 0) {
-            yield Math.floor(o/2);
+            yield Math.floor(o / 2);
         } else {
-            yield Math.ceil(o/2);
+            yield Math.ceil(o / 2);
         }
         return;
     }
 
     if (typeof o === "string") {
         if (o.length > 0) {
-            yield o.substring(0, o.length/2);
+            yield o.substring(0, o.length / 2);
         }
         return;
     }
@@ -257,7 +426,7 @@ export function* shrink(o: any) {
 
         //  TODO: verify that this equality test doesn't have false positives
         //  and has few false negatives
-        if (! isEqual(o[0], duped[0])) {
+        if (!isEqual(o[0], duped[0])) {
             yield duped.slice(0, duped.length - 1);
             //  try with just the first element shrunk
             yield duped;
@@ -277,7 +446,7 @@ export function* shrink(o: any) {
             const shrunked = { ...o };
             const preshrunkElement = o[keys[0]];
             const shrunkElement = shrink(preshrunkElement);
-            if (! isEqual(shrunkElement, preshrunkElement)) {
+            if (!isEqual(shrunkElement, preshrunkElement)) {
                 shrunked[keys[0]] = shrunkElement;
                 yield shrunked;
             }

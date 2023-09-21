@@ -17,27 +17,26 @@ const gpv = (value: number | string | boolean, generator: string, options?: Reco
     options,
 });
 
-const primeSortModBase = 7;
-const primes = [11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97].sort((a, b) => (a % primeSortModBase) - (b % primeSortModBase));
-
-//  go for absolute most common and extremes
-const mostSpecialNumbers = [0, 1, -1, 2, 4, 8, 16, 25, 32, 40, 64, 100, Math.PI, Math.SQRT2, 128, 250, 256, 500, 512, 1_000, 1_024, 2048, -1_000_000, 1_000_000, -1_000_000_000, 1_000_000_000]
-const moreSpecialNumbers = (() => {
-    const numbers: number[] = []
-    const seen = new Set<number>(mostSpecialNumbers);
+const primes = [11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97];
+//  go for absolute most common and extremes    -   for SEED
+const seedNumbers = [0, 1, -1, 2, 1_024, Math.PI, 4, 8, 500, 16, 25, -1_000_000, 1_000_000,  32, 40, 64, 100, Math.SQRT2, 128, 250, 256, 512, 1_000, 2048, -1_000_000_000, 1_000_000_000];
+//  for BREED
+const breedNumbers = (() => {
+    const numbers: number[] = [];
+    const seen = new Set<number>(seedNumbers);
     const add = (n: number) => {
         if (!seen.has(n)) {
             numbers.push(n);
             seen.add(n);
         }
-    }
+    };
 
     const neighbors = [-2, -1, 0, 1, 2];
 
     function* geneighbor(n: number, generator: string) {
         for (const neighbor of neighbors) {
             const v = n * neighbor;
-            yield v
+            yield v;
         }
     }
 
@@ -118,7 +117,7 @@ const moreSpecialNumbers = (() => {
             for (let pow2 = -3; pow2 < 4; pow2++) {
                 for (let pow3 = -3; pow3 < 3; pow3++) {
                     for (let pow5 = -3; pow5 < 3; pow5++) {
-                        for (let pow7 = -3; pow5 < 3; pow7++) {
+                        for (let pow7 = -3; pow7 < 3; pow7++) {
                             for (const seed of irrationals) {
                                 const ppow = seed * mult * (2 ** pow2) * (3 ** pow3) * (5 ** pow5) * (7 ** pow7);
                                 add(ppow);
@@ -129,10 +128,65 @@ const moreSpecialNumbers = (() => {
             }
         }
     }
-})()
 
-const mostSpecialStrings = ["https://www.shatterproof.ai/en-US/support?q=testing#t39192", "zoidberg@example.com", "Babu Chen", "36 Church Street", "+1 802-879-7121"];
-const moreSpecialStrings = [];
+    //  arbitrary measure that's probably more like a deterministic shuffle
+    const weirdness = (n: number) => {
+        return Math.log(n) % 1;
+    };
+
+    //  weirdest first
+    numbers.sort((a, b) => weirdness(b) - weirdness(b));
+    return numbers;
+
+})();
+
+const seedStrings = ["https://www.shatterproof.ai/en-US/support?q=testing#t39192", "zoidberg@example.com",
+    "Babu Chen", "36 Church Street", "+1 802-879-7121", "#3eabef", "repurpose web-enabled e-commerce", "blob",
+    "73838639", "3U32v1KXzTaES2XQ9MqapQz7hFPAQcuhpqkdQjS", "6759-5549-3524-6828-05", "HKD", "C$",
+    "GR9500328930869462827058136", "544540301", "bb2bdcec", "pessimistic-chain.info", "info", "🐵", "DELETE",
+    "70.248.90.36", "bdb1:8846:96cc:c5ad:1bea:ed90:d94b:18ba", "22:74:66:42:cd:a1", "w", "https",
+    "http://second-hand-tremor.com/", "Mozilla/5.0 (X11; Linux x86_64; rv:11.7) Gecko/20100101 Firefox/11.7.2",
+    "932", "Gerryworth", "Burkina Faso", "IM", "Cambridgeshire", "West", "Apt. 352", "ME", "Huel Terrace",
+    "37859 Therese Viaduct", "Asia/Kabul", "37848-4826",
+    "Distinctio commodi doloremque. Aliquam repudiandae voluptates neque quibusdam dolorum dolorum veniam. Impedit debitis vitae dolore accusamus unde temporibus ipsum aliquid fuga.\nConsequuntur deleniti eius perspiciatis hic. Delectus impedit totam iusto adipisci aliquam officiis. Laborum ab culpa eligendi dignissimos fugiat ullam quaerat.\nUllam veniam ullam. Cum esse suscipit sapiente fugit excepturi asperiores qui alias. Magni ex sint similique deserunt sint earum unde.",
+    "Hermaphrodite", "National", "Mrs.", "female", "MD", "Virgo", "60-926413-577421-1", "1-395-779-3064 x60295",
+    "A", "K", "0b0", "0x7", "3", "0o3", "b1abe6f0-349a-43b0-ab2f-c2a193c3a37d", "26 * ? * 4", "/proc",
+    "application/vnd.mozilla.xul+xml", "ens7f7", "5.4.4", "Electric", "Mini", "KUSDX1AY6LH949957"
+];
+
+const breedStrings = ["#3eabef", "repurpose web-enabled e-commerce", "blob", "73838639",
+    "3U32v1KXzTaES2XQ9MqapQz7hFPAQcuhpqkdQjS", "6759-5549-3524-6828-05", "HKD", "C$",
+    "GR9500328930869462827058136", "544540301", "bb2bdcec", "d3a770e6f73bdb18", "84696ccc5ad1beaed90d94b18ba33a68",
+    "863bcd1f6fcdae04cca4bce75c8f39d8a7b68e8c", "74acce7eeca8acac9c5e0f90a6ee4cee7fad26ddc48f53b5dedfaba56dfe1daa",
+    "thrifty-flume.biz", "com", "🐀", "POST", "215.188.116.97", "f3cf:40d3:8cde:ced9:7b6f:ef2e:4da3:7baa",
+    "74:1e:2f:8b:bf:61", "a7-a1-4f-90-92-55", "7b1abe6f0349", "g", "h", "zodaxef", "qU4P1Al", "kujicigi", "Mpv0wVSA",
+    "hesaqukazirusagokudayabajuheyes", "FXjpc5u8DdsZ5MItaG7VIDrEIodTg0f", "potexukadijucobulomazuzafepuvawo",
+    "eRh1oG6KBvuv4j_jyDkbodyRUF1LbdMG", "vicuborilucaqipitepunesisodusazeq", "QmZhH4ZEu3CZ6mOOXFAM0fR9bumaEc9Of",
+    "totavajukadanecetowalolojapobalawahelihosudaheheridevipegozacoqum",
+    "oWe9eauIIgGF3ZchA5z_SBZDMrp6SH2StU6NNjeoPmerNap0mL33Ds39OfcDuzyBN",
+    "lutatuwisebufupemorewacuxutoguqafetofogocoyuxasaxazohiwihebusiduhoroganegerokopabodirugaxejekoqunequzicepufakuhefifayiyekemaruj",
+    "GjwV9M0MrmHOtIAAI0DNCQO038oYDnewXFBpUupuGcsV3F2_1_If3quA2IdRljHcM3q2osL3qZm62jx8KvDSlTyo0UgQDdHjgddqBmnNwzfep4G2yPnN1Wu4bYOtrZv",
+    "https", "http://vivacious-chaos.com/", "http://slimy-blackboard.org/", "http://last-urgency.net/",
+    "http://reckless-politics.com/", "https://lean-dynasty.biz/", "https://precious-misreading.org/",
+    "https://occasional-fluke.info/", "https://grubby-robe.name/", "http://reliable-hashtag.info",
+    "http://half-deviation.net", "http://vicious-connection.name", "http://gloomy-declaration.info",
+    "https://alarmed-shed.biz", "https://sweaty-committee.name", "https://high-level-strategy.biz",
+    "https://powerful-flanker.biz",
+    "Mozilla/5.0 (Macintosh; PPC Mac OS X 10_5_9 rv:6.0; SO) AppleWebKit/534.2.1 (KHTML, like Gecko) Version/6.0.0 Safari/534.2.1",
+    "582", "North Louvenia", "Denmark", "AG", "BHS", "SZ", "Bedfordshire", "West", "Apt. 290", "VT",
+    "Connecticut", "Michaela Mountains", "72786 Arianna Land", "America/Fortaleza", "15497",
+    "Quaerat voluptatibus minus quibusdam ad accusantium. Sunt saepe non neque. Repudiandae vitae amet.\nDeserunt voluptatibus debitis. Debitis doloribus tempora repellat cum quo nihil porro doloribus. Eveniet mollitia laborum numquam accusantium possimus.\nQuisquam iusto molestiae. Laboriosam quisquam reiciendis autem voluptatem earum assumenda a illo. Magnam reprehenderit nulla occaecati eum.",
+    "Transexual", "Customer", "Mr.", "male", "PhD", "Pisces", "37-344623-931063-8", "450-265-7117 x5515", "A", "IDOCAOX",
+    "KSOPATAEZBBOYER", "MKYZQMMBTURMZJJSVXCGKYSQNLIKLHQET", "i", "geaztls", "iesblulaxccixwl", "iwskyalbibfayamokbnmvdhpzltjejvor",
+    "X", "kjkZypI", "llmKcEKYwireBWT", "HJTgDBkpYFtHwKNOQEhdonVQKkcFeWnNN", "G", "VA4Z2QT", "LI5XP40AIRY79JN", "07R9612J1VIKSTUGLEJJXR9JJO3J22JUN",
+    "t", "uznlblb", "t2gogkfp5vk16kz", "b193ndojg35z6ps2actvfe8twz0m6jicb", "k", "SJmTXZ4", "OIqKsvvcqwoOBSr", "GJ2o5XQmrlNLMuOLEsPaFzM3apUf2VfoP",
+    "0b1", "0b1011010", "0b001100011111001", "0b110010101100000110000100011010101", "0x5", "0x2A47B77", "0x8D9F64DEAAA50FB",
+    "0xFEBF6BD8CEF6D7E7ACEB11ABF1ACFAF1A", "0x2", "0xefffc1a", "0xfe6eba0e8d15e40", "0xe7a3e3a66d8537e04b8fade6ae74f2989", "0xC",
+    "0xb5a7F7b", "0x552Aa62dfAB8bEE", "0xAeD20c7b2acE19509c19FEe5FadA453f8", "1", "3600510", "832438933034921", "181266784105626110570954042129309",
+    "9", "5621911", "164521589773159", "392137832699355628461751026355878", "0o6", "0o5712575", "0o627737540510674",
+    "0o271114714516123514146076265613234", "898f9e74-d64e-4d68-971a-58d59ff79eae", "* 19 ? * 3", "/var/log", "audio/3gpp", "enxfb0483fd2ae2",
+    "wlo1", "wws1", "4.8.2", "Gasoline", "Tesla", "7VYK47S021A328481"
+];
 
 function* edgyNumbers(m = 1): Generator<GeneratedParameter, void, unknown> {
     //  stupid sort to avoid favoring small values but still be deterministic
@@ -269,7 +323,96 @@ const numberFakerses = {
     'location': ['latitude', 'longitude']
 };
 
-const optionVariants: Record<string, Record<string, any>> = {
+export const optionVariantsLimited: Record<string, Record<string, any>> = {
+    password: {
+        length: [8, 24],
+    },
+    commitSha: {
+        length: [40, 64],
+    },
+    countryCode: {
+        variant: ['alpha-2', 'alpha-3'],
+    },
+    paragraph: {
+        sentenceCount: [3],
+    },
+    alpha: {
+        casing: ['mixed'],
+        length: [15],
+    },
+    alphanumeric: {
+        casing: ['mixed'],
+        length: [14],
+    },
+    binary: {
+        length: [16],
+    },
+    hexadecimal: {
+        casing: ['upper'],
+        length: [16],
+    },
+    numeric: {
+        length: [10],
+    },
+};
+
+//  TODO: merge with optionVariantsLimited
+export const optionVariantsMedium: Record<string, Record<string, any>> = {
+    email: {
+        allowSpecialCharacters: [true, false],
+    },
+    mac: {
+        separator: [':', '-'],
+    },
+    password: {
+        length: [1, 7, 8, 31, 32, 33, 65, 127],
+        memorable: [true, false],
+    },
+    url: {
+        appendSlash: [true, false],
+        protocol: ['http', 'https'],
+    },
+    commitSha: {
+        length: [8, 16, 32, 40, 64],
+    },
+    countryCode: {
+        variant: ['alpha-2', 'alpha-3', 'numeric'],
+    },
+    state: {
+        abbreviated: [true, false],
+    },
+    paragraph: {
+        sentenceCount: [1, 2, 100, 1111],
+    },
+    alpha: {
+        casing: ['upper', 'lower', 'mixed'],
+        length: [1, 7, 15, 33],
+    },
+    alphanumeric: {
+        casing: ['upper', 'lower', 'mixed'],
+        length: [1, 7, 15, 33],
+    },
+    binary: {
+        length: [1, 7, 15, 33],
+    },
+    hexadecimal: {
+        casing: ['upper', 'lower', 'mixed'],
+        length: [1, 7, 15, 33],
+    },
+    numeric: {
+        allowLeadingZeros: [true, false],
+        length: [1, 7, 15, 33],
+    },
+    octal: {
+        length: [1, 7, 15, 33],
+    },
+    networkInterface: {
+        interfaceType: ['en', 'wl', 'ww'],
+    },
+};
+
+//TODO: merge with optionVariantsMedium
+export const optionVariantsExtensive: Record<string, Record<string, any>> = {
     email: {
         allowSpecialCharacters: [true, false],
     },
@@ -323,7 +466,7 @@ const optionVariants: Record<string, Record<string, any>> = {
     },
 };
 
-const stringFakerses = {
+export const stringFakerses = {
     'color': ['rgb'],
     'company': ['buzzPhrase'],
     'database': ['type'],
@@ -350,7 +493,6 @@ const dataDomains: Record<'string' | 'date', Record<string, Function[]>> = {
 
 Object.entries(stringFakerses).forEach(([domain, generators]) => {
     generators.forEach(generator => {
-        faker[domain as keyof typeof faker];
         const fd = faker[domain as keyof typeof faker];
         const f = [fd[generator as keyof typeof fd]];
         if (!f) {
@@ -420,8 +562,8 @@ export type Mutation = {
     path: string[],
     before: any,
     after: any,
-    type: 'scramble' | 'lengthen' | 'shorten'
-}
+    type: 'scramble' | 'lengthen' | 'shorten' | 'replace'
+};
 
 //  TODO: generify value
 export type GeneratedParameter = {
@@ -439,24 +581,27 @@ export type GeneratedParameter = {
     properties: Record<string, GeneratedParameter>,
 });
 
-export type Specimen = {
-    id: string,
-    sequence: number,
+export type BaseSpecimen = {
     parameters: GeneratedParameter[],
 } & ({
     type: 'seed',
     // generator: string,
 } | {
     type: 'reduction',
-    parent: Specimen,
+    parent: string,
 } | {
     type: 'mutation',
-    parent: Specimen,
     mutations: Mutation[],
+    parent: string,
 } | {
     type: 'hybrid',
-    parents: Specimen[],
+    parents: string[],
 });
+
+export type Specimen = BaseSpecimen & {
+    id: string,
+    sequence: number,
+};
 
 export interface GeneratedParameterList {
     id: string,
@@ -478,7 +623,7 @@ export class RetestCaseSource implements TestCaseSource {
     *start(): Iterator<GeneratedParameterList> {
 
         if (this.clusterIndex < this.clusters.length
-            && this.resultIndex >= this.clusters[this.clusterIndex].allResults.length) {
+            && this.resultIndex >= this.clusters[this.clusterIndex].results.length) {
             this.clusterIndex++;
             this.resultIndex = 0;
         }
@@ -487,7 +632,7 @@ export class RetestCaseSource implements TestCaseSource {
             return;
         }
 
-        const result = this.clusters[this.clusterIndex].allResults[this.resultIndex];
+        const result = this.clusters[this.clusterIndex].results[this.resultIndex];
         this.resultIndex++;
         //  TODO: should this save GeneratedParameterList instead of the bare parameters any[]?
         yield {
@@ -671,7 +816,7 @@ function* roundRobin(...generators: Generator<any, any, any>[]) {
     }
 }
 
-function computeDistance(a: any, b: any): number {
+export function computeDistance(a: any, b: any): number {
     if (a === b || a === null || b === null) {
         return 0;
     }
@@ -680,7 +825,7 @@ function computeDistance(a: any, b: any): number {
         const smaller = Math.min(a, b);
         const larger = Math.max(a, b);
         const difference = larger - smaller;
-        if (difference == 0) {
+        if (difference === 0) {
             return 0;
         }
         if (difference < 2 && Number.isInteger(a) && Number.isInteger(b)) {
@@ -718,12 +863,6 @@ function computeDistance(a: any, b: any): number {
 export class CombinatorialTestCaseSource /* implements TestCaseSource */ {
 
     private counter = 0;
-    private specimens = new Map<string, Specimen>();
-
-    //  map from the JSON path to a particular part of the argument list to a list of candidate values
-    //  use up all the seed values before trying anything different
-
-    private clusterMap = new Map<string, ResultCluster>();
 
     //  TODO: use this
     private weirdness = 1;
@@ -732,21 +871,13 @@ export class CombinatorialTestCaseSource /* implements TestCaseSource */ {
     //  as more parameters are created
     private maxDepth = 3;
 
-    totalHybrids = 0;
-    totalMutations = 0;
-    totalSeeds = 0;
-
     private allExecutedLines = new Set<number>();
-    //  TODO: how to fingerprint a particular parameter list so it doesn't get used again?
-    //  stringifying the JSON won't work because of canonicalization, self reference, and non-serializable objects
-    //  but maybe that's good enough for now
 
     constructor(
         private checker: ts.TypeChecker,
         private allInstrumentedLines: Set<number>,
         private f: ts.FunctionDeclaration) {
     }
-
 
     /*
     1) generate a varied set of inputs
@@ -763,43 +894,25 @@ export class CombinatorialTestCaseSource /* implements TestCaseSource */ {
 
     valueGenerators = new Map<string, Generator<GeneratedParameter, any, any>>();
 
-    fqseen = new Set<string>();
-    seenStrung = new Set<string>();
-
-    /*
-            1) SEED
-                10) generate a diverse array of inputs
-                    100) use known common edge cases
-                    200) analyze the source tree for special numbers or values and use those as seeds (basically all literals)
-                    300) use a sample of randomish fake values
-                    400) pull from those sets of primitive values to construct the composite objects
-                    500) execute
-    */
-
     *seed(): Iterator<Specimen> {
         const newGenPerPass = 10;
-        const minPerPath = 5;
-        const bisectionLimitPerPass = 10;
-        const mutationLimitPerPass = 10;
         const that = this;
 
         const edgies: Partial<Record<ts.TypeFlags, (() => Generator<GeneratedParameter, any, any>)>> = {
             [ts.TypeFlags.Any]: edgyAny,
             [ts.TypeFlags.Unknown]: edgyAny,
             [ts.TypeFlags.String]: function* () {
-                for (const s of mostSpecialStrings) {
+                for (const s of seedStrings) {
                     yield gpv(s, 'mostSpecialStrings');
                 }
             },
             [ts.TypeFlags.Number]: function* () {
-                for (const n of mostSpecialNumbers) {
+                for (const n of seedNumbers) {
                     yield gpv(n, 'mostSpecialNumbers');
                 }
             },
             [ts.TypeFlags.Boolean]: edgyBooleans,
         };
-
-        //  TODO: allow reusing a particular value if it's being used in a different place
 
         //  TODO: at some point create jq-compatible paths for neatness
         const toKey = (path: (string | number)[], value: any) => {
@@ -876,7 +989,6 @@ export class CombinatorialTestCaseSource /* implements TestCaseSource */ {
                 //  in theory we want to avoid the same value in the same place repeatedly
                 //  but it's not terrible, and the whole object duplicate avoidance may be adequate
                 // if (!fqseen.has(key)) {
-                that.fqseen.add(key);
                 return next.value;
                 // }
                 // next = gengens[i].next();
@@ -919,209 +1031,11 @@ export class CombinatorialTestCaseSource /* implements TestCaseSource */ {
                 parameters,
                 type: 'seed',
             };
-            this.totalSeeds++;
         }
     }
 
-    /*
-        2) SHRINK
-            10) for each cluster
-                100) for each input parameter
-                    1000) sort the parameter lists by that parameter
-                    2000) pick the top and bottom
-                    3000) shrink them
-                    4000) execute
-                    5000) if the result lands in the same cluster, keep shrinking
-                    6000) if the result lands in a different cluster, sort that cluster
-                        and see if it's an outermost parameter list (possibly replacing a previous one)
-                    7000) repeat (GOTO (1000)) until the tops and bottoms of each cluster cannot be shrunk further and remain valid
-                        OR the maximum attempt number is reached
-    */
-
-    /*
-    3) COVER
-        10) sort clusters by their last line executed
-        20) for each pair of cluster ([i] and [i + 1]), see if there are unexecuted lines in between
-        20) if there are unexecuted lines in between, generate inputs that execute those lines
-            100) identify the features that are common to the before and after
-            200) identify the features that are present in the after but not the before
-            300) generate more
-                1000) mutate the before in ways different from (2)
-                2000) hybridize the before and after
-                3000) generate new inputs using different features from before
-            500) execute
-            600) repeat until there are no unexecuted lines OR the maximum attempt number is reached
-
-    */
-
-    cover() {
-        //  guess wildly?
+    increaseWeirdness(): void {
+        this.weirdness++;
     }
 
-    bisect() {
-
-        /*
-        bisection - find two parameter lists that are very similar to each other but lead to different code paths
-            //  for each parameter list in a cluster, find the outermost
-            //  optimization: record which parameter lists are NOT near the edges of their cluster to avoid reexamining
-            //  for each pair of outermosts across all cluster, bisect
-        */
-
-        //  KNOWN FLAW: these bisections may be obsolete because the clusters only get analyzed once per loop instead of on each generation
-        if (clusters.length > 0) {
-            function* bisector() {
-                for (let index = 0; index < that.f.parameters.length; index++) {
-                    for (let i = 0; i < clusters.length - 1; i++) {
-                        const a = clusters[i];
-                        const b = clusters[i + 1];
-                        a.results.sort(comparameters);
-                        b.results.sort(comparameters);
-
-                        const alast = a.results[a.results.length - 1];
-                        const bfirst = b.results[0];
-
-                        const distance = computeDistance(alast.parameters[index], bfirst.parameters[index]);
-                        if (distance <= 1) {
-                            //  found the edges or close enough
-                            console.log(`found edges ${distance} between ${JSON.stringify(alast.parameters[index])} and ${JSON.stringify(bfirst.parameters[index])}`);
-                            continue;
-                        }
-                        console.log(`distance ${distance} between ${JSON.stringify(alast.parameters[index])} and ${JSON.stringify(bfirst.parameters[index])}`);
-
-                        //  generate a parameter list where every parameter is hybridized between alast and bfirst
-                        const hybridized = hybridize(alast.parameters, bfirst.parameters);
-                        for (const fullHybrid of hybridized) {
-                            //  also generate a parameter list based on alast with just the current parameter hybridized
-                            const abased = [...alast.parameters];
-                            abased[index] = fullHybrid[index];
-
-                            //  also generate a parameter list based on bfirst with just the current parameter hybridized
-                            const bbased = [...bfirst.parameters];
-                            bbased[index] = fullHybrid[index];
-
-                            for (const hybrid of [fullHybrid, abased, bbased]) {
-                                const strung = JSON.stringify(hybrid);
-                                if (!seenStrung.has(strung)) {
-                                    console.log(`hybridized ${strung} from ${JSON.stringify(alast.parameters)} and ${JSON.stringify(bfirst.parameters)})}`);
-                                    yield {
-                                        id: createId(),
-                                        sequence: that.counter++,
-                                        parameters: (fullHybrid as any[]),
-                                    };
-                                    seenStrung.add(hybrid);
-                                }
-                            }
-                        }
-                    }
-                };
-            }
-
-            let hybrids = 0;
-            for (const bisection of bisector()) {
-                yield bisection;
-                hybrids++;
-                this.totalHybrids++;
-                if (hybrids >= bisectionLimitPerPass) {
-                    break;
-                }
-            }
-        }
-
-        /**
-         * Reduction
-         * TODO: take parameters that have already been run, trim away some stuff, and run the result
-         * trimming = shortening strings, shortening arrays, and removing object properties
-         * 
-         */
-
-        /**
-         * mutation
-         * 1) find lines that have been instrumented but not executed
-         * 2) identify clusters that have exercised the lines before and/or after
-         * 3) generate parameter lists that are similar to the ones
-         *      used to get to the before and different from the after
-         * 
-         * 
-         */
-
-        let mutations = 0;
-        const allInstrumentedLines = Array.from(this.allInstrumentedLines).sort();
-        let lastBeforeFirstExecuted: number | undefined = undefined;
-        let firstUnexecuted: number | undefined = undefined;
-        let i = 0;
-        for (; i < allInstrumentedLines.length; i++) {
-            const line = allInstrumentedLines[i];
-            if (!this.allExecutedLines.has(line)) {
-                firstUnexecuted = line;
-                break;
-            }
-            lastBeforeFirstExecuted = line;
-        }
-
-        /*
-        //  in theory a tree type structure seems like the way to go here,
-        //  but (I think) simple line numbers do well enough; if we have some
-        //  code that got executed, then some code that didn't, and then optionally
-        //  some more code that, we can be pretty confident that the middle part was
-        //  in conditional or loop body, and that what got executed later is 
-        //  either an explicit else, an implicit else, or just normal unconditional
-        //  execution but either way it didn't satisfy the requirements of the missing
-        //  part, so we can say we want inputs like what got to the first part but unlike what got
-        //  to the third part.
-        */
-        if (firstUnexecuted !== undefined) {
-            let firstExecutedAfter: number | undefined = undefined;
-            for (; i < allInstrumentedLines.length; i++) {
-                const line = allInstrumentedLines[i];
-                if (this.allExecutedLines.has(line)) {
-                    firstExecutedAfter = line;
-                    break;
-                }
-            }
-
-            //  if at least one line was executed...
-            if (lastBeforeFirstExecuted !== undefined) {
-                //  otherwise Typescript doesn't know that lastBeforeFirstExecuted is defined
-                const lbfe = lastBeforeFirstExecuted;
-                //  should be in order from lowest last line to highest last line
-                //  based on the sorting done before bisection
-                const ranBefore = clusters.filter(c => c.lines.includes(lbfe));
-                const ranAfter = clusters.filter(c => firstExecutedAfter && c.lines.includes(firstExecutedAfter));
-                const ranBeforeOnly = ranBefore.filter(c => !ranAfter.includes(c));
-
-                if (firstExecutedAfter === undefined) {
-                    //  apparently we executed nothing from there to the end
-                    //  find the values that got to lastBeforeFirstExecuted and mutate those
-                } else {
-                    //  there's a hole in the middle dear liza dear liza
-                    const gotToFirstOnly: ResultCluster[] = [];
-                    const gotToBoth: ResultCluster[] = [];
-
-                    //  find the values that got to lastBeforeFirstExecuted but not firstExecutedAfter and mutate those
-                    //  X = identify what's common about the values that got to firstExecutedAfter
-                    //  Y = identify what's common about ALL the values that got to lastBeforeFirstExecuted
-                    //  mutate the values of X in a way that is not similar to Y
-                }
-            }
-        }
-
-    }
-}
-
-stats() {
-    return {
-        totalHybrids: this.totalHybrids,
-        totalMutations: this.totalMutations,
-        totalSeeds: this.totalSeeds,
-    };
-}
-
-increaseWeirdness(): void {
-    this.weirdness++;
-}
-
-update(clusterMap: Map<string, ResultCluster>, r: RunResult): void {
-    this.clusterMap = clusterMap;
-    r.lines.forEach(l => this.allExecutedLines.add(l));
-}
 }
