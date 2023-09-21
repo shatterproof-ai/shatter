@@ -1,3 +1,4 @@
+import { diff, addedDiff, deletedDiff, updatedDiff, detailedDiff } from 'deep-object-diff';
 import { createId } from '@paralleldrive/cuid2';
 import serialize from 'canonicalize';
 import { createHash } from 'crypto';
@@ -10,6 +11,7 @@ import { hybridize, isStrictExtension, shrink } from './hybridize';
 import { Outcome, RunResult, Supervisor } from './supervisor';
 import { IntrospectionContext, createInstrumenter } from './transform';
 import { isEqual } from 'lodash';
+import cluster from 'cluster';
 
 export interface AutotestResults {
     clusters: ResultCluster[];
@@ -215,6 +217,19 @@ export async function shatterAutotest(modulePaths: string[],
         }, introspectionContext.instrumentedLines.size = ${introspectionContext.instrumentedLines.size
         }`);
 
+
+        /*
+
+        1) determine the absolute minimal acceptable parameter list
+        2) run that
+        3) mutate the parameter list
+        4) elaborate on the parameter list
+        5) if one of them goes somewhere new, bisect
+        6) go to the first hole; goto 3
+
+
+        */
+
     // const generator = new CombinatorialTestCaseSource(program.getTypeChecker(), functionDeclarationNode.parameters);
     const source = new CombinatorialTestCaseSource(program.getTypeChecker(), introspectionContext.instrumentedLines, functionDeclarationNode);
     const generator = source.seed();
@@ -232,7 +247,7 @@ export async function shatterAutotest(modulePaths: string[],
                 ...basimen,
             };
             specimensById.set(specimenId, newSpecimen);
-            console.log(`Evaluating specimen ${JSON.stringify(newSpecimen)}`);
+            // console.log(`Evaluating specimen ${JSON.stringify(newSpecimen)}`);
             await supervisor.launchWorker(functionName, specimenId, newSpecimen.parameters);
             return specimenId;
         }
@@ -291,7 +306,163 @@ async function seed(maxSeeds: number, generator: Iterator<Specimen, any, undefin
     }
 }
 
-async function breed(evaluateSpecimen: (b: BaseSpecimen) => Promise<string | undefined>, allInstrumentedLines: Set<number>, allExecutedLines: Set<number>, clusters: ResultCluster[]) {
+const findFirstHole = (c:ResultCluster, instrumentedLines:number[]) => {
+    for (const lineNumber of instrumentedLines) {
+        if (! c.lines.includes(lineNumber)) {
+            return lineNumber;
+        }
+    }
+};
+
+
+//  TODO: identify sets of jsonpath => value that are common to all specimens in all clusters that hit a particular line
+/*
+    foreach specimen that got to a given line, find the minimal version of that specimen that still gets to that line
+*/
+async function breed(evaluateSpecimen: (b: BaseSpecimen) => Promise<string | undefined>, allInstrumentedLines: Set<number>, allExecutedLines: Set<number>, _clusters: ResultCluster[]) {
+
+
+    function breedForClusters(baseClusters:ResultCluster[], overshootClusters:ResultCluster[]) {
+        //  identify differences between baseClusters and overshootClusters
+
+
+    }
+
+    const instrumentedLines = Array.from(allInstrumentedLines).sort((a, b) => a - b);
+    const clustersOrderByFirstHolePosition = [..._clusters  ];
+    clustersOrderByFirstHolePosition.sort((a, b) => {
+        a.lines.sort((a, b) => a - b);
+        const aFirstSkipped = findFirstHole(a, instrumentedLines);
+        const bFirstSkipped = findFirstHole(a, instrumentedLines);
+        if (aFirstSkipped === undefined) {
+            if (bFirstSkipped === undefined) {
+                return 0;
+            }
+            return -1;
+        }
+        if (bFirstSkipped === undefined) {
+            return 1;
+        }
+        return aFirstSkipped - bFirstSkipped;
+    });
+
+    const clustersByLine = new Map<number, ResultCluster[]>();
+
+
+    //  track which clusters got closest to a given line
+    const lastBefore = new Map<number, ResultCluster[]>();
+    const firstAfter = new Map<number, ResultCluster[]>();
+    for (const l of instrumentedLines) {
+        lastBefore.set(l, []);
+        firstAfter.set(l, []);
+        clustersByLine.set(l, []);
+    }
+
+    for (const c of clustersOrderByFirstHolePosition) {
+        for (const l of c.lines) {
+            clustersByLine.get(l)!.push(c);
+        }
+    }
+
+    let lastExecutedLine = instrumentedLines[0];
+    let previousLineClusters = clustersByLine.get(lastExecutedLine);
+    if (previousLineClusters === undefined) {
+        throw new Error(`No clusters for first instrumented line ${instrumentedLines[0]}`);
+    }
+
+    let currentGap:number[] = [];
+    for (let i = 1; i < instrumentedLines.length; i++) {
+        //  should always have a value; the ?? is just so Typescript won't complain, and I dislike !
+        const currentLineClusters = clustersByLine.get(instrumentedLines[i]) ?? [];
+        if (currentLineClusters.length > 0) {
+            if (currentGap.length > 0) {
+                //  just found the end of a gap
+                breedForClusters(previousLineClusters, currentLineClusters);
+            }
+
+            currentGap = [];
+
+            previousLineClusters = currentLineClusters;
+            lastExecutedLine = instrumentedLines[i];
+            continue;
+        }
+
+        currentGap.push(instrumentedLines[i]);
+    }
+
+    if (currentGap.length > 0) {
+        //  just found the end of a gap
+        breedForClusters(previousLineClusters, []);
+    }
+
+    let previous = clustersOrderByFirstHolePosition[0];
+    for (let i = 1; i < clustersOrderByFirstHolePosition.length; i++) {
+        const current = clustersOrderByFirstHolePosition[i];
+
+        for (let j = 0; j < instrumentedLines.length; j++) {
+            const lineNumber = instrumentedLines[j];
+
+            if ((clustersByLine.get(lineNumber)?.length ?? 0) > 0) {
+                //  some other cluster hit this line, so we don't need coverage
+                continue;
+            }
+
+            const prevhas = previous.lines.includes(lineNumber);
+            const currhas = current.lines.includes(lineNumber);
+            //  if they behave the same, we don't care
+            if (prevhas === currhas) {
+                continue;
+            }
+
+            if (prevhas) {
+                const missingLines:number[] = [lineNumber];
+                for (let k = j; k < instrumentedLines.length; k++) {
+                    const currhas2 = current.lines.includes(instrumentedLines[k]);
+                    if (currhas2) {
+                        break;
+                    }
+                    missingLines.push(instrumentedLines[k]);
+                }
+                const missingLinesSet = new Set(missingLines);
+                for (const m of missingLines) {
+                    for (let k = 0; k < clustersOrderByFirstHolePosition.length; k++) {
+                        if (k === i || k === i - 1) {
+                            continue;
+                        }
+                        for (const cline of clustersOrderByFirstHolePosition[k].lines) {
+                            missingLinesSet.delete(cline);
+                        }
+                    }
+                }
+                //  some other clusters are covering these missing lines, so we don't need to look for ways to hit them
+                if (missingLinesSet.size === 0) {
+                    continue;
+                }
+
+            }
+        }
+
+        const previousFirstHole = findFirstHole(previous, instrumentedLines);
+        const currentFirstHole = findFirstHole(current, instrumentedLines);
+        if (previousFirstHole !== undefined) {
+            if (currentFirstHole === undefined) {
+                throw new Error(`Clusters out of order, ${previousFirstHole} should be before ${currentFirstHole}`);
+            }
+            if (previousFirstHole === currentFirstHole) {
+                continue;
+            }
+        } else if (currentFirstHole !== undefined) {
+            throw new Error(`Clusters out of order, ${previousFirstHole} should be before ${currentFirstHole}`);
+        }
+
+
+        const previousLast = previous.lines[previous.lines.length - 1];
+        const currentFirst = current.lines[0];
+        if (currentFirst !== previousLast + 1) {
+            // throw new Error(`Clusters out of order, ${previousLast} should be before ${currentFirst}`);
+        }
+        previous = current;
+    }
 
     /**
      * mutation
@@ -344,8 +515,8 @@ async function breed(evaluateSpecimen: (b: BaseSpecimen) => Promise<string | und
             const lbfe = lastBeforeFirstExecuted;
             //  should be in order from lowest last line to highest last line
             //  based on the sorting done before bisection
-            const ranBefore = clusters.filter(c => c.lines.includes(lbfe));
-            const ranAfter = clusters.filter(c => firstExecutedAfter && c.lines.includes(firstExecutedAfter));
+            const ranBefore = clustersOrderByFirstHolePosition.filter(c => c.lines.includes(lbfe));
+            const ranAfter = clustersOrderByFirstHolePosition.filter(c => firstExecutedAfter && c.lines.includes(firstExecutedAfter));
             const ranBeforeOnly = ranBefore.filter(c => !ranAfter.includes(c));
 
             if (firstExecutedAfter === undefined) {
@@ -370,6 +541,7 @@ async function breed(evaluateSpecimen: (b: BaseSpecimen) => Promise<string | und
 }
 
 /*
+
 bisection - find two parameter lists that are very similar to each other but lead to different code paths
     //  for each parameter list in a cluster, find the outermost
     //  optimization: record which parameter lists are NOT near the edges of their cluster to avoid reexamining
@@ -377,12 +549,16 @@ bisection - find two parameter lists that are very similar to each other but lea
 */
 async function knead(evaluateSpecimen: (b: BaseSpecimen) => Promise<string | undefined>, clustersByKey: Map<string, ResultCluster>, parameterDeclarations: ts.NodeArray<ts.ParameterDeclaration>) {
 
+
     if (clustersByKey.size === 0) {
         throw new Error(`No clusters to breed`);
     }
 
     const clusters = Array.from(clustersByKey.values());
     for (let index = 0; index < parameterDeclarations.length; index++) {
+
+        const required = !parameterDeclarations[index].questionToken;
+
         for (let i = 0; i < clusters.length - 1; i++) {
             const a = clusters[i];
             const b = clusters[i + 1];
@@ -403,7 +579,7 @@ async function knead(evaluateSpecimen: (b: BaseSpecimen) => Promise<string | und
 
             if (distance <= 1) {
                 //  found the edges or close enough
-                console.log(`found edges ${distance} between ${JSON.stringify(alast.parameters[index])} and ${JSON.stringify(bfirst.parameters[index])}`);
+                // console.log(`found edges ${distance} between ${JSON.stringify(alast.parameters[index])} and ${JSON.stringify(bfirst.parameters[index])}`);
                 continue;
             }
             // console.log(`distance ${distance} between ${JSON.stringify(alast.parameters[index])} and ${JSON.stringify(bfirst.parameters[index])}`);

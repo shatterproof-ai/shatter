@@ -545,7 +545,7 @@ export function activate(context: vscode.ExtensionContext) {
 					key: functionName,
 					label: ''
 				});
-			}, extensionSource);
+			}, { shatterproofModuleOverride: extensionSource });
 		console.log("END THE AUTOTEST");
 	}
 }

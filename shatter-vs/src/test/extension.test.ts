@@ -68,7 +68,8 @@ describe('extension', () => {
 
         const shatterproofModuleOverride = "/home/ketan/project/shatter/shatter-vs/src";
         const maxIterations = 500;
-        const maxTime = 120_000;
+        // const maxTime = 120_000;
+        const maxTime = 10_000;
         const { executed, instrumented } = await shatterAutotest(modulePaths, testfile, tempdir, functionName, (clusters) => {
             // console.log(`Received clusters ${JSON.stringify(clusters, null, 2)}`);
         }, { shatterproofModuleOverride, maxIterations, maxTime });

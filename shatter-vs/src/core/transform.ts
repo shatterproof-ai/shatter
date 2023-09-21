@@ -112,7 +112,7 @@ export const createInstrumenter = (introspectionContext: IntrospectionContext, s
                 introspectionContext.numbers.add(asNumber);
             }
             return ts.visitEachChild(node, findLiteralsVisitor, ctx);
-        }
+        };
 
         const minimalText = (node: ts.Node) => "todo recorder per-line metadata";
 
