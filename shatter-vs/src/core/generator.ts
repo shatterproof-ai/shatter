@@ -19,7 +19,7 @@ const gpv = (value: number | string | boolean, generator: string, options?: Reco
 
 const primes = [11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97];
 //  go for absolute most common and extremes    -   for SEED
-const seedNumbers = [0, 1, -1, 2, 1_024, Math.PI, 4, 8, 500, 16, 25, -1_000_000, 1_000_000,  32, 40, 64, 100, Math.SQRT2, 128, 250, 256, 512, 1_000, 2048, -1_000_000_000, 1_000_000_000];
+const seedNumbers = [0, 1, -1, 2, 1_024, Math.PI, 4, 8, 500, 16, 25, -1_000_000, 1_000_000, 32, 40, 64, 100, Math.SQRT2, 128, 250, 256, 512, 1_000, 2048, -1_000_000_000, 1_000_000_000];
 //  for BREED
 const breedNumbers = (() => {
     const numbers: number[] = [];
@@ -802,7 +802,7 @@ export const comparameters = (a: any, b: any): number => {
     throw new Error(`Unexpected type ${typeof a}`);
 };
 
-function* roundRobin(...generators: Generator<any, any, any>[]) {
+function* roundRobin(...generators: Generator<GeneratedParameter, any, any>[]) {
     let i = 0;
     while (true) {
         const g = generators[i];
@@ -913,6 +913,10 @@ export class CombinatorialTestCaseSource /* implements TestCaseSource */ {
             },
             [ts.TypeFlags.Boolean]: edgyBooleans,
         };
+        edgies[ts.TypeFlags.BooleanLiteral] = edgies[ts.TypeFlags.Boolean];
+        edgies[ts.TypeFlags.NumberLiteral] = edgies[ts.TypeFlags.Number];
+        edgies[ts.TypeFlags.StringLiteral] = edgies[ts.TypeFlags.String];
+        edgies[ts.TypeFlags.StringOrNumberLiteral] = () => roundRobin(edgies[ts.TypeFlags.StringLiteral] as any, edgies[ts.TypeFlags.NumberLiteral] as any);
 
         //  TODO: at some point create jq-compatible paths for neatness
         const toKey = (path: (string | number)[], value: any) => {
@@ -972,29 +976,65 @@ export class CombinatorialTestCaseSource /* implements TestCaseSource */ {
             }
 
             const strungPath = pathToHere.join('.');
-            let generator = that.valueGenerators.get(strungPath);
-            if (!generator) {
-                const gengens = edgies[currentType.flags];
-                if (!gengens) {
-                    throw new Error(`Dunno how to handle type ${currentType.flags}`);
+            if (currentType.isIntersection()) {
+                const intersectingTypes = currentType.types;
+                //  presumably must be an object type
+                const o: Record<string, GeneratedParameter> = {};
+                intersectingTypes.forEach((t) => {
+                    const v = valueForType(checker, t, allowedDepth, pathToHere.concat('.&'));
+                    if (v) {
+                        Object.assign(o, v);
+                    }
+                });
+                return {
+                    id: createId(),
+                    generator: 'intersector',
+                    type: 'object',
+                    properties: o,
+                };
+            }
+
+            while (true) {
+                let pathGenerator = that.valueGenerators.get(strungPath);
+                if (!pathGenerator) {
+                    let gengens = edgies[currentType.flags];
+                    if (!gengens) {
+                        if (currentType.isUnion()) {
+                            const unitedTypes = currentType.types;
+                            function* genUnion() {
+                                for (const t of unitedTypes) {
+                                    const v = valueForType(checker, t, allowedDepth, pathToHere.concat('.|'));
+                                    if (v) {
+                                        yield v;
+                                    }
+                                }
+                            }
+
+                            gengens = genUnion;
+                        } else {
+                            throw new Error(`Dunno how to handle type ${currentType.flags}: ${checker.typeToString(currentType)}`);
+                        }
+                    }
+
+                    pathGenerator = gengens();
+                    that.valueGenerators.set(strungPath, pathGenerator);
                 }
 
-                generator = gengens();
-                that.valueGenerators.set(strungPath, generator);
+                let next = pathGenerator.next();
+                if (!next.done) {
+                    const key = toKey(pathToHere, next.value);
+                    //  in theory we want to avoid the same value in the same place repeatedly
+                    //  but it's not terrible, and the whole object duplicate avoidance may be adequate
+                    // if (!fqseen.has(key)) {
+                    return next.value;
+                    // }
+                    // next = gengens[i].next();
+                }
+                //  restart the generator
+                that.valueGenerators.delete(strungPath);
             }
 
-            let next = generator.next();
-            if (!next.done) {
-                const key = toKey(pathToHere, next.value);
-                //  in theory we want to avoid the same value in the same place repeatedly
-                //  but it's not terrible, and the whole object duplicate avoidance may be adequate
-                // if (!fqseen.has(key)) {
-                return next.value;
-                // }
-                // next = gengens[i].next();
-            }
-
-            throw new Error(`Ran out of values for ${currentType.flags} and ${JSON.stringify(pathToHere)}`);
+            throw new Error(`Ran out of values for ${currentType.flags}: ${checker.typeToString(currentType)} at ${JSON.stringify(pathToHere)}`);
         };
 
         const toValue = (node: GeneratedParameter): any => {
