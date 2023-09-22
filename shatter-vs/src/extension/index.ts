@@ -299,14 +299,14 @@ function highlightLinesInEditor(editor: vscode.TextEditor | undefined, liner: Ge
 	const decorationsArray: vscode.DecorationOptions[] = [];
 	const lines: number[] = [];
 	for (const lineNumber of liner) {
-		const upByOne = lineNumber;
-		if (upByOne >= editor.document.lineCount) {
+		if (lineNumber >= editor.document.lineCount) {
 			break;
 		}
-		const line = editor.document.lineAt(upByOne); //	+1 for unclear reasons; 1-indexed? not counting the position of the function declaration?  :shrug:
-		const decoration = { range: line.range, hoverMessage: `Line ${upByOne}: ${line.text}` };
+		//	line numbers are ZERO based or ONE based?
+		const line = editor.document.lineAt(lineNumber);
+		const decoration = { range: line.range, hoverMessage: `Line ${lineNumber}: ${line.text}` };
 		decorationsArray.push(decoration);
-		lines.push(upByOne);
+		lines.push(lineNumber);
 	};
 	console.log(`highlightLinesInEditor ${JSON.stringify(lines)}}`);
 

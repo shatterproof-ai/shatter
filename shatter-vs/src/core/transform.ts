@@ -114,14 +114,54 @@ export const createInstrumenter = (introspectionContext: IntrospectionContext, s
             return ts.visitEachChild(node, findLiteralsVisitor, ctx);
         };
 
-        const minimalText = (node: ts.Node) => "todo recorder per-line metadata";
+        const minimalText = (node: ts.Node, extra?: string) => `todo recorder per-line metadata: ${extra}`;
 
-        const createInstrumentationStatement = (statement: ts.Statement, lineNumber: number) => {
+        const getAllLineNumbers = (...nodes: (ts.Node | undefined)[]): number[] => {
+            const lines: number[] = [];
+            for (const n of nodes) {
+                if (!n) {
+                    continue;
+                }
+                const startLine = ts.getLineAndCharacterOfPosition(sourceFile, n.pos).line;
+                lines.push(startLine);
+
+                const endLine = ts.getLineAndCharacterOfPosition(sourceFile, n.end).line;
+                lines.push(endLine);
+            }
+            return lines;
+        };
+
+        const getLineNumbers = (node: ts.Node): number[] => {
+            if (ts.isIfStatement(node)) {
+                return getAllLineNumbers(node.expression);
+            }
+            if (ts.isForStatement(node)) {
+                return getAllLineNumbers(
+                    node.initializer,
+                    node.incrementor,
+                    node.condition);
+            }
+            if (ts.isForOfStatement(node) || ts.isForInStatement(node)) {
+                return getAllLineNumbers(
+                    node.initializer,
+                    node.expression);
+            }
+            if (ts.isWhileStatement(node) || ts.isDoStatement(node)) {
+                return getAllLineNumbers(node.expression);
+
+            }
+            if (ts.isSwitchStatement(node)) {
+                return getAllLineNumbers(node.expression);
+            }
+            return getAllLineNumbers(node);
+        };
+
+        const createInstrumentationStatement = (statement: ts.Statement, lineNumber: number, extra: string) => {
             const instrumentation = factory.createExpressionStatement(factory.createCallExpression(
                 factory.createIdentifier(recordLineAlias),
                 undefined,
                 [factory.createNumericLiteral(lineNumber),
-                factory.createStringLiteral(minimalText(statement)),
+                factory.createStringLiteral(minimalText(statement, extra)),
                 ]
             ));
             return instrumentation;
@@ -130,8 +170,11 @@ export const createInstrumenter = (introspectionContext: IntrospectionContext, s
         //  TODO: generify this so that the type that comes in is the type that goes out to avoid casting
         const instrumentingVisitor = (node: Node): Node => {
             const instrumentStatementAsBlock = (factory: ts.NodeFactory, statement: ts.Statement) => {
-                const lineNumber = ts.getLineAndCharacterOfPosition(sourceFile, statement.pos).line;
-                const instrumentation = createInstrumentationStatement(statement, lineNumber);
+                const lineNumberStart = ts.getLineAndCharacterOfPosition(sourceFile, statement.pos).line;
+                const lineNumberEnd = ts.getLineAndCharacterOfPosition(sourceFile, statement.end).line;
+                const lineNumbers = getLineNumbers(statement);
+                const lineNumber = Math.max(...lineNumbers);
+                const instrumentation = createInstrumentationStatement(statement, lineNumber, `pos = ${statement.pos}-${statement.end}, lines = ${lineNumberStart} - ${lineNumberEnd}; alternate = ${lineNumbers})}`);
                 introspectionContext.instrumentedLines.add(lineNumber);
 
                 const visited = instrumentingVisitor(statement);
@@ -146,9 +189,12 @@ export const createInstrumenter = (introspectionContext: IntrospectionContext, s
             const instrumentBlock = (factory: ts.NodeFactory, block: ts.Block) => {
                 const newStatements: ts.Statement[] = [];
                 block.statements.forEach((statement, i) => {
-                    const lineNumber = ts.getLineAndCharacterOfPosition(sourceFile, statement.pos).line;
+                    const lineNumberStart = ts.getLineAndCharacterOfPosition(sourceFile, statement.pos).line;
+                    const lineNumberEnd = ts.getLineAndCharacterOfPosition(sourceFile, statement.end).line;
+                    const lineNumbers = getLineNumbers(statement);
+                    const lineNumber = Math.max(...lineNumbers);
+                    const instrumentation = createInstrumentationStatement(statement, lineNumber, `pos = ${statement.pos}-${statement.end}, lines = ${lineNumberStart} - ${lineNumberEnd}; alternate = ${lineNumbers})}`);
                     introspectionContext.instrumentedLines.add(lineNumber);
-                    const instrumentation = createInstrumentationStatement(statement, lineNumber);
                     newStatements.push(instrumentation);
                     newStatements.push(instrumentStatement(factory, statement));
                 });
