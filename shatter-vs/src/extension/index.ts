@@ -563,53 +563,6 @@ export function activate(context: vscode.ExtensionContext) {
 			}, { shatterproofModuleOverride: extensionSource });
 		console.log("END THE AUTOTEST");
 	}
-
-	const highlightEveryThirdEditorContextMenu = vscode.commands.registerCommand('extension.shatterHighlightEveryThird', () => {
-		if (!vscode.window.activeTextEditor) {
-			return;
-		}
-
-		const maxLines = vscode.window.activeTextEditor?.document.lineCount ?? 0;
-		function* gen() {
-			for (let i = 0; i < maxLines && i < 10_000; i += 3) {
-				yield i;
-			}
-		}
-
-		highlightLinesInEditor(vscode.window.activeTextEditor, gen());
-	});
-	context.subscriptions.push(highlightEveryThirdEditorContextMenu);
-
-	const highlightPrimeLinesEditorContextMenu = vscode.commands.registerCommand('extension.shatterHighlightPrimeLines', () => {
-		function* primer() {
-			const primes = [2];
-			let candidate = primes[0] + 1;
-			while (true) {
-				if (primes.every((prime) => candidate % prime !== 0)) {
-					primes.push(candidate);
-					yield candidate;
-				}
-				candidate++;
-			}
-		}
-
-		highlightLinesInEditor(vscode.window.activeTextEditor, primer());
-	});
-	context.subscriptions.push(highlightPrimeLinesEditorContextMenu);
-
-	const highlightFibonacciLinesEditorContextMenu = vscode.commands.registerCommand('extension.shatterHighlightFibonacciLines', () => {
-		const values = [0, 1];
-		function* fibber() {
-			for (let i = 1; ; i++) {
-				const sum = values[i] + values[i - 1];
-				values.push(sum);
-				yield sum;
-			}
-		}
-
-		highlightLinesInEditor(vscode.window.activeTextEditor, fibber());
-	});
-	context.subscriptions.push(highlightFibonacciLinesEditorContextMenu);
 }
 
 function doSelectFile(editor: vscode.TextEditor | undefined, extensionState: ExtensionState, filename: string, providers: { functionsListProvider: CommonTreeDataProvider; clustersListProvider: CommonTreeDataProvider; coverageProvider: CommonTreeDataProvider; testCasesProvider: CommonTreeDataProvider; }) {
