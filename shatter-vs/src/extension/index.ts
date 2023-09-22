@@ -531,7 +531,8 @@ export function activate(context: vscode.ExtensionContext) {
 
 		const modulePaths = [...allWorkspaceFolders, ...allNodeModules];
 
-		console.log("BEGIN THE AUTOTEST");
+		console.log(`BEGIN THE AUTOTEST of ${functionName} in ${filename}`);
+		vscode.commands.executeCommand("shatter-execution-paths.focus");
 		await shatterAutotest(modulePaths,
 			filename,
 			context.storageUri?.fsPath,
