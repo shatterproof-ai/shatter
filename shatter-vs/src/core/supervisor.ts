@@ -109,7 +109,7 @@ export class Supervisor {
                 const workerNumber: number = first.value;
                 const reworker = this.workers.get(workerNumber);
                 if (reworker) {
-                    console.log(`Reusing worker ${reworker}`);
+                    // console.log(`Reusing worker ${reworker}`);
                     this.availableWorkers.delete(workerNumber);
                     return reworker;
                 }

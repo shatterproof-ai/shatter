@@ -3,9 +3,9 @@ import * as path from 'path';
 import { join } from 'path';
 import * as ts from 'typescript';
 import * as vscode from 'vscode';
-import { AutotestResults, shatterAutotest } from '../core/shatter';
-import { RunResult } from '../core/supervisor';
-import { findFunctions } from '../core/transform';
+import { AutotestResults, ResultCluster, shatterAutotest } from '../core/shatter';
+import { Outcome, RunResult } from '../core/supervisor';
+import { FunctionMeta, findFunctions } from '../core/transform';
 
 interface CommonDisplayNode {
 	label: string;
@@ -88,66 +88,59 @@ type FunctionState = {
 };
 
 type FileState = {
-	functions: ts.FunctionDeclaration[];
+	functions: FunctionMeta[];
 	functionStates: Record<string, FunctionState>;
 };
 
+type CoverageSelection = 'all'
+	| 'missed'
+	| { clusterKeys: string[] };
+
 type ExtensionState = {
+	runningAutotestFunction?: string;
 	fileStates: Record<string, FileState>
 	activeFile?: string;
 	activeFunction?: string;
-	activeClusterKey?: string;
+	activeCoverage?: CoverageSelection;
+	activeTestCase?: string;
 };
 
 interface Providers {
 	functionsListProvider: CommonTreeDataProvider,
 	clustersListProvider: CommonTreeDataProvider,
-	coverageProvider: CommonTreeDataProvider,
-	testCasesProvider: CommonTreeDataProvider,
+	runResultProvider: CommonTreeDataProvider,
+	testCaseProvider: CommonTreeDataProvider,
 }
 
-const decorationType = vscode.window.createTextEditorDecorationType({
+const coveredDecorationType = vscode.window.createTextEditorDecorationType({
 	// gutterIconPath: context.asAbsolutePath('media/triangle.svg'),
 	//	TODO: get colors from theme and/or IDE https://code.visualstudio.com/api/references/theme-color#text-colors
 	light: {
-		backgroundColor: 'lightgray',
+		backgroundColor: 'lightblue',
 	},
 	dark: {
-		backgroundColor: 'dimgray',
+		backgroundColor: 'midnightblue',
 	},
 });
 
-function updateDecorations(editor: vscode.TextEditor, extensionState: ExtensionState, fileState: FileState) {
-	if (!extensionState.activeFunction || !extensionState.activeClusterKey) {
-		editor.setDecorations(decorationType, []);
-		return;
-	}
-	const functionState = fileState.functionStates[extensionState.activeFunction];
-	if (!functionState) {
-		//	TODO: should not happen
-		editor.setDecorations(decorationType, []);
-		return;
-	}
+const missedDecorationType = vscode.window.createTextEditorDecorationType({
+	// gutterIconPath: context.asAbsolutePath('media/triangle.svg'),
+	//	TODO: get colors from theme and/or IDE https://code.visualstudio.com/api/references/theme-color#text-colors
+	light: {
+		backgroundColor: 'orange',
+	},
+	dark: {
+		backgroundColor: 'maroon',
+	},
+});
 
-	const activeCluster = functionState.autotest.clusters.find((cluster) => cluster.key === extensionState.activeClusterKey);
-	if (!activeCluster) {
-		editor.setDecorations(decorationType, []);
-		return;
-	}
-
-	console.log(`updateDecorations for active cluster = ${activeCluster.key} and lines ${JSON.stringify(activeCluster.lines)}}`);
-
-	function* linerator() {
-		for (const line of activeCluster?.lines ?? []) {
-			yield line;
-		}
-	}
-
-	highlightLinesInEditor(editor, linerator());
+function resetDecorations(editor: vscode.TextEditor) {
+	editor.setDecorations(coveredDecorationType, []);
+	editor.setDecorations(missedDecorationType, []);
 }
 
 const refresh = (editor: vscode.TextEditor | undefined, extensionState: ExtensionState, providers: Providers) => {
-	const { functionsListProvider, clustersListProvider, coverageProvider, testCasesProvider } = providers;
+	const { functionsListProvider, clustersListProvider, runResultProvider, testCaseProvider } = providers;
 
 	const filename = extensionState.activeFile;
 	if (!filename) {
@@ -161,10 +154,14 @@ const refresh = (editor: vscode.TextEditor | undefined, extensionState: Extensio
 		return;
 	}
 
-	const nodes: CommonDisplayNode[] = fileState.functions.map((f) => ({
-		label: f.name?.text || "",
-		key: f.name?.text || "",
-	}));
+	const nodes: CommonDisplayNode[] = fileState.functions.map((f) => {
+		const runningTest = extensionState.runningAutotestFunction === f.name;
+		const runningTestLabel = runningTest ? " - testing now" : "";
+		return {
+			label: `${f.name}${runningTestLabel}` || "",
+			key: f.name || "",
+		};
+	});
 
 	functionsListProvider.refresh(nodes);
 
@@ -172,7 +169,7 @@ const refresh = (editor: vscode.TextEditor | undefined, extensionState: Extensio
 		return;
 	}
 
-	const func = fileState.functions.find((f) => f.name?.text === extensionState.activeFunction);
+	const func = fileState.functions.find((f) => f.name === extensionState.activeFunction);
 	if (!func) {
 		return;
 	}
@@ -191,45 +188,191 @@ const refresh = (editor: vscode.TextEditor | undefined, extensionState: Extensio
 		return;
 	}
 
-	const clusterNodes: CommonDisplayNode[] = results.clusters.map((cluster) => {
-		//	TODO: list each trial as a child node with duration, completion state, truncated stringified parameter list, and truncated output
+	const nodesByOutcome: Record<Outcome, CommonDisplayNode[]> = {
+		completed: [],
+		error: [],
+		timeout: [],
+		failed: []
+	};
+
+	const countByOutcome: Record<Outcome, number> = {
+		completed: 0,
+		error: 0,
+		timeout: 0,
+		failed: 0
+	};
+
+	const linesByOutcome: Record<Outcome, Set<number>> = {
+		error: new Set(),
+		completed: new Set(),
+		timeout: new Set(),
+		failed: new Set(),
+	};
+
+	const functionInstrumentedLines = new Set<number>();
+	for (let line = func.startLine; line <= func.endLine; line++) {
+		if (functionState.autotest.instrumentedLines.has(line)) {
+			functionInstrumentedLines.add(line);
+		}
+	}
+
+	const formatter = Intl.NumberFormat("en-US", { style: "percent" });
+	//	TODO: sort by coverage
+	results.clusters.forEach((cluster) => {
 		const key = cluster.key.substring(0, 6);
-		return {
-			label: `${key}: ${cluster.outcome} (${cluster.results.length} trials)`,
-			key: cluster.key,
-		};
+		countByOutcome[cluster.outcome] += cluster.results.length;
+		cluster.lines.forEach(line => linesByOutcome[cluster.outcome].add(line));
+		nodesByOutcome[cluster.outcome].push({
+			//	TODO: skip coverage for timeouts and failures
+			label: `${key} - ${formatter.format(cluster.lines.length / functionInstrumentedLines.size)} coverage (${cluster.results.length} test cases)`,
+			key: `cluster://${cluster.key}`,
+		});
 	});
+
+	const capitalize = (s: string) => {
+		return s.charAt(0).toUpperCase() + s.slice(1);
+	};
+
+	const coverage = extensionState.activeCoverage;
+	const clusters = (() => {
+		if (!coverage) {
+			return [];
+		}
+		if (coverage === 'all' || coverage === 'missed') {
+			return functionState.autotest.clusters;
+		}
+		if ('clusterKeys' in coverage) {
+			return functionState.autotest.clusters.filter((cluster) => coverage.clusterKeys.includes(cluster.key));
+		}
+		throw new Error(`unhandled coverage selection ${JSON.stringify(coverage)}`);
+	})();
+
+	const mode = coverage === 'missed' ? 'missed' : 'covered';
+
+	const clusterNodes: CommonDisplayNode[] = Object.entries(nodesByOutcome)
+		.map(([outcome, nodes]) => {
+			const baseLabel = capitalize(outcome);
+			const coverageText = (() => {
+				if (outcome === 'timeout' || outcome === 'failed') {
+					return "";
+				}
+				const coverage = linesByOutcome[outcome as Outcome].size / functionInstrumentedLines.size;
+				return `- ${formatter.format(coverage)} coverage `;
+			})();
+
+			return {
+				label: `${baseLabel} ${coverageText}(${countByOutcome[outcome as Outcome] ?? 0} test case(s))`,
+				children: nodes,
+			};
+		});
+
+	const allCoveredLines = new Set<number>();
+	Object.values(linesByOutcome).forEach((lines) => {
+		lines.forEach((line) => allCoveredLines.add(line));
+	});
+	const totalCoverageFraction = allCoveredLines.size / functionInstrumentedLines.size;
+	const uncoveredFraction = 1 - totalCoverageFraction;
+	clusterNodes.push({
+		label: `Not covered ${formatter.format(uncoveredFraction)} (${functionInstrumentedLines.size - allCoveredLines.size} lines)`,
+		key: "missed://",
+	});
+
 	clustersListProvider.refresh(clusterNodes);
 
-	if (!extensionState.activeClusterKey) {
-		return;
-	}
-
-	const selectedCluster = results.clusters.find((cluster) => cluster.key === extensionState.activeClusterKey);
-	if (!selectedCluster) {
-		return;
-	}
-
 	if (editor) {
-		//	TODO: replace with function pointer or pubsub or something that doesn't require passing around the editor object
-		updateDecorations(editor, extensionState, fileState);
+		resetDecorations(editor);
+		if (clusters.length > 0) {
+			const covered = new Set(clusters.flatMap((cluster) => cluster.lines));
+			const lines = (() => {
+				if (mode === 'missed') {
+					const uncovered = Array.from(functionInstrumentedLines)
+						.filter((line) => !covered.has(line))
+						.sort((a, b) => a - b);
+					return uncovered;
+				}
+				return Array.from(covered).sort((a, b) => a - b);
+			})();
+
+			function* linerator() {
+				for (const line of lines ?? []) {
+					yield line;
+				}
+			}
+
+			const decorationType = mode === 'covered' ? coveredDecorationType : missedDecorationType;
+
+			//	TODO: replace with function pointer or pubsub or something that doesn't require passing around the editor object
+			highlightLinesInEditor(editor, decorationType, linerator());
+		}
 	}
 
-	//	TODO: collapse contiguous line numbers into a range
+	const shortString = (a: any) => {
+		if (a === null) {
+			return 'null';
+		}
+		if (a === undefined) {
+			return 'undefined';
+		}
+		const s = JSON.stringify(a);
+		const maxLength = 40;
 
-	const coverageNodes: CommonDisplayNode[] = selectedCluster.lines.map((lineNumber) => {
-		return {
-			label: `${lineNumber}`,
-			children: [],
+		const strung = (s.length > maxLength)
+			? s.substring(0, maxLength - 3) + '...'
+			: s;
+		return strung;
+	};
+
+	if (extensionState.activeCoverage === 'missed') {
+		runResultProvider.refresh([]);
+		testCaseProvider.refresh([]);
+		return;
+	}
+
+	const runResultNodes: CommonDisplayNode[] = clusters.flatMap(c => c.results.map((result, i) => {
+		const parametersNode = {
+			label: shortString(result.parameters),
+			key: `parameters://${c.key}/${i}`
 		};
-	});
-	coverageProvider.refresh(coverageNodes);
+		return parametersNode;
+	}));
+	runResultProvider.refresh(runResultNodes);
 
-	const testCasesNodes: CommonDisplayNode[] = selectedCluster.results.map((result, i) =>
-		//	TODO: show just inputs and outputs
-		runResultToClusterNode(`[${i}]`, result)
-	);
-	testCasesProvider.refresh(testCasesNodes);
+	if (!extensionState.activeTestCase) {
+		return;
+	}
+	const rr = /(?<which>parameters|result):\/\/(?<clusterKey>[^/]+)\/(?<caseNumber>[0-9]+)/;
+	const match = rr.exec(extensionState.activeTestCase);
+	if (!match || !match.groups) {
+		return;
+	}
+
+	const which = match.groups.which;
+	const clusterKey = match.groups.clusterKey;
+	const caseNumber = parseInt(match.groups.caseNumber);
+
+	const cluster = functionState.autotest.clusters.find((c) => c.key === clusterKey);
+	if (!cluster) {
+		return;
+	}
+
+	const result = cluster.results[caseNumber];
+	if (!result) {
+		return;
+	}
+
+	//	TODO: make this cleaner, ideally like JSON.stringify(...)
+	const metadataNode = {
+		label: `Duration ${result.duration}ms`
+	};
+	const resultNode = visit('Result', result.output ?? result.error, 3);
+	const parametersNode = visit('Parameters', result.parameters, 3);
+	const testCaseNodes: CommonDisplayNode[] = [
+		metadataNode,
+		parametersNode,
+		resultNode,
+	];
+
+	testCaseProvider.refresh(testCaseNodes);
 };
 
 const doSelectFunction = (editor: vscode.TextEditor, extensionState: ExtensionState, providers: Providers, functionName: string) => {
@@ -244,17 +387,18 @@ const doSelectFunction = (editor: vscode.TextEditor, extensionState: ExtensionSt
 		return;
 	}
 
-	const selectedFunction = filestate.functions.find((f) => f.name?.text === functionName);
+	const selectedFunction = filestate.functions.find((f) => f.name === functionName);
 	if (selectedFunction) {
 		extensionState.activeFunction = functionName;
 	} else {
-		extensionState.activeClusterKey = undefined;
+		extensionState.activeCoverage = undefined;
 		extensionState.activeFunction = undefined;
 	}
 	refresh(editor, extensionState, providers);
 };
 
-const doSelectCluster = (editor: vscode.TextEditor, extensionState: ExtensionState, providers: Providers, clusterKey: string) => {
+const doSelectCluster = (editor: vscode.TextEditor, extensionState: ExtensionState, providers: Providers,
+	coverage: CoverageSelection) => {
 	if (!extensionState.activeFile) {
 		//	TODO: shouldn't happen
 		return;
@@ -272,7 +416,7 @@ const doSelectCluster = (editor: vscode.TextEditor, extensionState: ExtensionSta
 
 	const functions = findFunctions(filename);
 
-	const selectedFunction = functions.find((f) => f.name?.text === extensionState.activeFunction);
+	const selectedFunction = functions.find((f) => f.name === extensionState.activeFunction);
 	if (!selectedFunction) {
 		//	TODO: shouldn't happen
 		return;
@@ -284,14 +428,46 @@ const doSelectCluster = (editor: vscode.TextEditor, extensionState: ExtensionSta
 		return;
 	}
 
-	const cluster = functionState.autotest.clusters.find((cluster) => cluster.key === clusterKey);
-	if (cluster) {
-		extensionState.activeClusterKey = clusterKey;
-		refresh(editor, extensionState, providers);
-	}
+	extensionState.activeCoverage = coverage;
+	refresh(editor, extensionState, providers);
 };
 
-function highlightLinesInEditor(editor: vscode.TextEditor | undefined, liner: Generator<number, void, unknown>) {
+const doSelectTestCase = (editor: vscode.TextEditor, extensionState: ExtensionState, providers: Providers,
+	testCase: string) => {
+	if (!extensionState.activeFile) {
+		return;
+	}
+
+	const filename = extensionState.activeFile;
+	const filestate = extensionState.fileStates[filename];
+	if (!filestate) {
+		return;
+	}
+
+	if (!extensionState.activeFunction) {
+		return;
+	}
+
+	const functions = findFunctions(filename);
+
+	const selectedFunction = functions.find((f) => f.name === extensionState.activeFunction);
+	if (!selectedFunction) {
+		//	TODO: shouldn't happen
+		return;
+	}
+
+	const functionState = filestate.functionStates[extensionState.activeFunction];
+	if (!functionState) {
+		//	TODO: shouldn't happen
+		return;
+	}
+
+	extensionState.activeTestCase = testCase;
+	refresh(editor, extensionState, providers);
+};
+
+
+function highlightLinesInEditor(editor: vscode.TextEditor | undefined, decorationType: vscode.TextEditorDecorationType, liner: Generator<number, void, unknown>) {
 	if (!editor) {
 		return;
 	}
@@ -304,6 +480,7 @@ function highlightLinesInEditor(editor: vscode.TextEditor | undefined, liner: Ge
 		}
 		//	line numbers are ZERO based or ONE based?
 		const line = editor.document.lineAt(lineNumber);
+		//	TODO: collapse contiguous line numbers into a range
 		const decoration = { range: line.range, hoverMessage: `Line ${lineNumber}: ${line.text}` };
 		decorationsArray.push(decoration);
 		lines.push(lineNumber);
@@ -329,24 +506,27 @@ export function activate(context: vscode.ExtensionContext) {
 
 	const clustersListProvider = new CommonTreeDataProvider({
 		command: 'extension.shatterSelectCluster',
-		title: 'Functions',
+		title: 'Execution Paths',
 	});
 	context.subscriptions.push(
 		vscode.window.registerTreeDataProvider("shatter-execution-paths", clustersListProvider));
 
-	const coverageProvider = new CommonTreeDataProvider();
+	const runResultProvider = new CommonTreeDataProvider({
+		command: 'extension.shatterSelectTestCase',
+		title: 'Test Case Detail',
+	});
 	context.subscriptions.push(
-		vscode.window.registerTreeDataProvider("shatter-coverage", coverageProvider));
+		vscode.window.registerTreeDataProvider("shatter-run-results", runResultProvider));
 
-	const testCasesProvider = new CommonTreeDataProvider();
+	const testCaseProvider = new CommonTreeDataProvider();
 	context.subscriptions.push(
-		vscode.window.registerTreeDataProvider("shatter-test-cases", testCasesProvider));
+		vscode.window.registerTreeDataProvider("shatter-test-case", testCaseProvider));
 
 	const providers = {
 		functionsListProvider,
 		clustersListProvider,
-		coverageProvider,
-		testCasesProvider,
+		runResultProvider,
+		testCaseProvider,
 	};
 
 	const updateSelectedFile = () => {
@@ -369,13 +549,34 @@ export function activate(context: vscode.ExtensionContext) {
 
 	const doSelectClusterCommand = (node: CommonDisplayNode) => {
 		if (vscode.window.activeTextEditor) {
-			const clusterKey: string = node.key || "";
-			console.log(`doSelectCluster called with ${clusterKey} from ${JSON.stringify(node)}, activeFile ${extensionState.activeFile}, and activeFunction ${extensionState.activeFunction}`);
-			doSelectCluster(vscode.window.activeTextEditor, extensionState, providers, clusterKey);
+			const selection: CoverageSelection | undefined = (() => {
+				if (node.key) {
+					if (node.key.startsWith('cluster://')) {
+						const clusterKey = node.key.substring('cluster://'.length);
+						return { clusterKeys: [clusterKey] };
+					}
+					if (node.key === 'covered://') {
+						return 'all';
+					}
+					if (node.key === 'missed://') {
+						return 'missed';
+					}
+					throw new Error(`unhandled key ${node.key}`);
+				}
+			})();
+			if (selection) {
+				doSelectCluster(vscode.window.activeTextEditor, extensionState, providers, selection);
+			}
 		}
 	};
 
-	//	called by the command handler for the function selector
+	const doSelectTestCaseCommand = (node: CommonDisplayNode) => {
+		if (vscode.window.activeTextEditor) {
+			const testCase: string = node.key || "";
+			doSelectTestCase(vscode.window.activeTextEditor, extensionState, providers, testCase);
+		}
+	};
+
 	//	needs to be registered as a command because TreeView needs a command to dispatch to
 	const selectFunctionCommand = vscode.commands.registerCommand('extension.shatterSelectFunction', doSelectFunctionCommand);
 	context.subscriptions.push(selectFunctionCommand);
@@ -383,6 +584,10 @@ export function activate(context: vscode.ExtensionContext) {
 	//	needs to be registered as a command because TreeView needs a command to dispatch to
 	const selectClusterCommand = vscode.commands.registerCommand('extension.shatterSelectCluster', doSelectClusterCommand);
 	context.subscriptions.push(selectClusterCommand);
+
+	//	needs to be registered as a command because TreeView needs a command to dispatch to
+	const selectTestCaseCommand = vscode.commands.registerCommand('extension.shatterSelectTestCase', doSelectTestCaseCommand);
+	context.subscriptions.push(selectTestCaseCommand);
 
 	context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(editor => {
 		if (editor?.document.fileName) {
@@ -418,10 +623,10 @@ export function activate(context: vscode.ExtensionContext) {
 			const document = editor.document;
 
 			if (isCursorInFunctionName(cursorPosition, document, editor)) {
-				const functionNode = getFunctionNodeAtCursor(cursorPosition, document);
+				const functionMeta = getFunctionNodeAtCursor(cursorPosition, document);
 
-				if (functionNode && ts.isFunctionDeclaration(functionNode)) {
-					const functionName = functionNode.name?.text;
+				if (functionMeta) {
+					const functionName = functionMeta.name;
 					if (!functionName) {
 						throw new Error(`Top level anonymous functions are not supported`);
 					}
@@ -533,40 +738,47 @@ export function activate(context: vscode.ExtensionContext) {
 
 		console.log(`BEGIN THE AUTOTEST of ${functionName} in ${filename}`);
 		vscode.commands.executeCommand("shatter-execution-paths.focus");
-		await shatterAutotest(modulePaths,
-			filename,
-			context.storageUri?.fsPath,
-			functionName, (results: AutotestResults) => {
-				extensionState.activeFile = filename;
-				let filestate: FileState | undefined = extensionState.fileStates[filename];
-				if (!filestate) {
-					const functions = findFunctions(filename);
-					filestate = {
-						functions,
-						functionStates: {},
-					};
-					extensionState.fileStates[filename] = filestate;
-				}
-				const functionState: FunctionState = {
-					autotest: results,
-				};
-				filestate.functionStates[functionName] = functionState;
+		try {
+			extensionState.runningAutotestFunction = functionName;
 
-				// console.log(`refreshing function node to display = ${functionName} in ${filename}`);
-				// console.log(`keys ${JSON.stringify(Array.from(Object.keys(filestate.functionStates) ?? []))} => ${JSON.stringify(functionState)}`);
-				// console.log(`new functionStates entries ${JSON.stringify(filestate.functionStates)}`);
-				// console.log(`>>>>>>>>>>>>>>>>>>>  ${JSON.stringify(extensionState.fileStates[filename].functionStates)}`);
-				// console.log(`===================  ${JSON.stringify(extensionState.fileStates[filename].functionStates[functionName])}`);
-				doSelectFunctionCommand({
-					key: functionName,
-					label: ''
-				});
-			}, { shatterproofModuleOverride: extensionSource });
-		console.log("END THE AUTOTEST");
+			await shatterAutotest(modulePaths,
+				filename,
+				context.storageUri?.fsPath,
+				functionName, (results: AutotestResults) => {
+					extensionState.activeFile = filename;
+					let filestate: FileState | undefined = extensionState.fileStates[filename];
+					if (!filestate) {
+						const functions = findFunctions(filename);
+						filestate = {
+							functions,
+							functionStates: {},
+						};
+						extensionState.fileStates[filename] = filestate;
+					}
+					const functionState: FunctionState = {
+						autotest: results,
+					};
+					filestate.functionStates[functionName] = functionState;
+
+					// console.log(`refreshing function node to display = ${functionName} in ${filename}`);
+					// console.log(`keys ${JSON.stringify(Array.from(Object.keys(filestate.functionStates) ?? []))} => ${JSON.stringify(functionState)}`);
+					// console.log(`new functionStates entries ${JSON.stringify(filestate.functionStates)}`);
+					// console.log(`>>>>>>>>>>>>>>>>>>>  ${JSON.stringify(extensionState.fileStates[filename].functionStates)}`);
+					// console.log(`===================  ${JSON.stringify(extensionState.fileStates[filename].functionStates[functionName])}`);
+					doSelectFunctionCommand({
+						key: functionName,
+						label: ''
+					});
+				}, { shatterproofModuleOverride: extensionSource });
+			console.log("END THE AUTOTEST");
+			refresh(editor, extensionState, providers);
+		} finally {
+			extensionState.runningAutotestFunction = undefined;
+		}
 	}
 }
 
-function doSelectFile(editor: vscode.TextEditor | undefined, extensionState: ExtensionState, filename: string, providers: { functionsListProvider: CommonTreeDataProvider; clustersListProvider: CommonTreeDataProvider; coverageProvider: CommonTreeDataProvider; testCasesProvider: CommonTreeDataProvider; }) {
+function doSelectFile(editor: vscode.TextEditor | undefined, extensionState: ExtensionState, filename: string, providers: Providers) {
 	extensionState.activeFile = filename;
 
 	const functions = findFunctions(filename);
@@ -600,7 +812,8 @@ function isCursorInFunctionName(
 	return line.includes('function');
 }
 
-function getFunctionNodeAtCursor(cursorPosition: vscode.Position, document: vscode.TextDocument): ts.Node | undefined {
+//	TODO: consolidate with findFunctions in transform.ts
+function getFunctionNodeAtCursor(cursorPosition: vscode.Position, document: vscode.TextDocument): FunctionMeta | undefined {
 	const sourceCode = document.getText();
 	const sourceFile = ts.createSourceFile(document.fileName, sourceCode, ts.ScriptTarget.Latest, true);
 
@@ -622,7 +835,21 @@ function getFunctionNodeAtCursor(cursorPosition: vscode.Position, document: vsco
 		}
 		return ts.forEachChild(node, findFunction);
 	}
-	return findFunction(sourceFile);
+
+	const f = findFunction(sourceFile);
+	if (!f) {
+		return undefined;
+	}
+
+	const name = (f as ts.FunctionDeclaration).name?.text;
+	if (name) {
+		return {
+			name,
+			node: f as ts.FunctionDeclaration,
+			startLine: f.getStart(),
+			endLine: f.getEnd(),
+		};
+	}
 }
 
 export function deactivate() { }
@@ -669,6 +896,7 @@ class CommonTreeDataProvider implements vscode.TreeDataProvider<CommonDisplayNod
 	getTreeItem(element: CommonDisplayNode): vscode.TreeItem {
 		const treeItem = new vscode.TreeItem(element.label);
 		treeItem.collapsibleState = element.children ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.None;
+		treeItem.collapsibleState = element.children ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None;
 		//	TODO: tooltip should be expanded (but still bounded) parameter list
 		treeItem.tooltip = element.label;
 		if (this.command) {

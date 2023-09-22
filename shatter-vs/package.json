@@ -96,12 +96,12 @@
           "name": "Execution Paths"
         },
         {
-          "id": "shatter-coverage",
-          "name": "Coverage"
+          "id": "shatter-run-results",
+          "name": "Test Cases"
         },
         {
-          "id": "shatter-test-cases",
-          "name": "Test Cases"
+          "id": "shatter-test-case",
+          "name": "Test Case Details"
         }
       ]
     }

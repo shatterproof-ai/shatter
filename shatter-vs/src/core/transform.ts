@@ -52,9 +52,22 @@ const thenCanReturn = (node: ts.Statement | ts.Block): boolean => {
     return ts.isReturnStatement(node) || ts.isThrowStatement(node);
 };
 
-export const findFunctions = (sourceFileName: string): FunctionDeclaration[] => {
-    const functions: FunctionDeclaration[] = [];
+export interface FunctionMeta {
+	name: string;
+	node: ts.FunctionDeclaration;
+	startLine: number;
+	endLine: number;
+}
+
+export const findFunctions = (sourceFileName: string): FunctionMeta[] => {
+    const functions: FunctionMeta[] = [];
     const exportedFunctions = new Set<string>();
+
+    const program = ts.createProgram([sourceFileName], {});
+    const sourceFile = program.getSourceFile(sourceFileName);
+    if (! sourceFile) {
+        throw new Error(`Could not find source file ${sourceFileName}`);
+    }
 
     const findFunctionsVisitor = (node: Node): Node => {
         if (ts.isSourceFile(node)) {
@@ -67,15 +80,18 @@ export const findFunctions = (sourceFileName: string): FunctionDeclaration[] => 
             if (node.modifiers && node.modifiers.find(modifier => modifier.kind === ts.SyntaxKind.ExportKeyword)) {
                 exportedFunctions.add(node.name.text);
             }
-            functions.push(node);
+            functions.push({
+                name: node.name.text,
+                node,
+                startLine: ts.getLineAndCharacterOfPosition(sourceFile, node.pos).line,
+                endLine: ts.getLineAndCharacterOfPosition(sourceFile, node.end).line,
+            });
 
             //  do not recurse into functions; we only care about top level
         }
         return node;
     };
 
-    const program = ts.createProgram([sourceFileName], {});
-    const sourceFile = program.getSourceFile(sourceFileName);
     ts.visitNode(sourceFile, findFunctionsVisitor);
     return functions;
 };
