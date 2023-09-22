@@ -74,7 +74,7 @@ export class Supervisor {
             this.busyWorkers.delete(wm.workerNumber);
             wm.worker.terminate();
 
-            if (outcome != 'expired') {
+            if (outcome !== 'expired') {
                 const meta = this.invocationMetaSpecimen.get(specimenId)!;
                 console.log(`Worker ${wm.workerNumber} for ${meta.invocation.functionName} ${outcome} ${error}...`);
 
@@ -109,7 +109,7 @@ export class Supervisor {
                 const workerNumber: number = first.value;
                 const reworker = this.workers.get(workerNumber);
                 if (reworker) {
-                    console.log(`Reusing worker ${reworker}`)
+                    console.log(`Reusing worker ${reworker}`);
                     this.availableWorkers.delete(workerNumber);
                     return reworker;
                 }
@@ -245,7 +245,7 @@ export class Supervisor {
                     return;
                 }
             }
-        }
+        };
 
         console.log(`Draining with ${this.workers.size} workers`);
         await waitSome(100, 100);
