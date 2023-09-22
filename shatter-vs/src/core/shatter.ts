@@ -1,6 +1,5 @@
 import { diff, addedDiff, deletedDiff, updatedDiff, detailedDiff } from 'deep-object-diff';
 import { createId } from '@paralleldrive/cuid2';
-import serialize from 'canonicalize';
 import { createHash } from 'crypto';
 import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -12,6 +11,7 @@ import { Outcome, RunResult, Supervisor } from './supervisor';
 import { IntrospectionContext, createInstrumenter } from './transform';
 import { isEqual } from 'lodash';
 import cluster from 'cluster';
+import { canonicallyStringify } from './util';
 
 export interface AutotestResults {
     clusters: ResultCluster[];
@@ -235,7 +235,7 @@ export async function shatterAutotest(modulePaths: string[],
     const generator = source.seed();
 
     async function evaluateSpecimen(basimen: BaseSpecimen) {
-        const serialized = serialize(basimen.parameters);
+        const serialized = canonicallyStringify(basimen.parameters);
         if (serialized && !parameterListsAttempted.has(serialized)) {
             parameterListsAttempted.add(serialized);
 
@@ -438,6 +438,7 @@ async function breed(evaluateSpecimen: (b: BaseSpecimen) => Promise<string | und
                 if (missingLinesSet.size === 0) {
                     continue;
                 }
+
 
             }
         }
