@@ -118,9 +118,6 @@ const decorationType = vscode.window.createTextEditorDecorationType({
 });
 
 function updateDecorations(editor: vscode.TextEditor, extensionState: ExtensionState, fileState: FileState) {
-	const text = editor.document.getText();
-	const decorationsArray: vscode.DecorationOptions[] = [];
-
 	if (!extensionState.activeFunction || !extensionState.activeClusterKey) {
 		editor.setDecorations(decorationType, []);
 		return;
@@ -140,18 +137,13 @@ function updateDecorations(editor: vscode.TextEditor, extensionState: ExtensionS
 
 	console.log(`updateDecorations for active cluster = ${activeCluster.key} and lines ${JSON.stringify(activeCluster.lines)}}`);
 
-	if (activeCluster) {
-		activeCluster.lines.forEach(lineNumber => {
-			const line = editor.document.lineAt(lineNumber + 1);	//	+1 for unclear reasons; 1-indexed? not counting the position of the function declaration?  :shrug:
-			const decoration = { range: line.range, hoverMessage: `Line ${lineNumber}: ${line.text}` };
-			decorationsArray.push(decoration);
-		});
-
-		editor.setDecorations(decorationType, decorationsArray);
-	} else {
-		//	TODO: logic for removing decorations
-		editor.setDecorations(decorationType, []);
+	function* linerator() {
+		for (const line of activeCluster?.lines ?? []) {
+			yield line;
+		}
 	}
+
+	highlightLinesInEditor(editor, linerator());
 }
 
 const refresh = (editor: vscode.TextEditor | undefined, extensionState: ExtensionState, providers: Providers) => {
@@ -299,6 +291,27 @@ const doSelectCluster = (editor: vscode.TextEditor, extensionState: ExtensionSta
 	}
 };
 
+function highlightLinesInEditor(editor: vscode.TextEditor | undefined, liner: Generator<number, void, unknown>) {
+	if (!editor) {
+		return;
+	}
+
+	const decorationsArray: vscode.DecorationOptions[] = [];
+	const lines: number[] = [];
+	for (const lineNumber of liner) {
+		const upByOne = lineNumber;
+		if (upByOne >= editor.document.lineCount) {
+			break;
+		}
+		const line = editor.document.lineAt(upByOne); //	+1 for unclear reasons; 1-indexed? not counting the position of the function declaration?  :shrug:
+		const decoration = { range: line.range, hoverMessage: `Line ${upByOne}: ${line.text}` };
+		decorationsArray.push(decoration);
+		lines.push(upByOne);
+	};
+	console.log(`highlightLinesInEditor ${JSON.stringify(lines)}}`);
+
+	editor.setDecorations(decorationType, decorationsArray);
+}
 
 export function activate(context: vscode.ExtensionContext) {
 	//	TODO: if there's an open editor when the extension is activated, select that file
@@ -550,6 +563,53 @@ export function activate(context: vscode.ExtensionContext) {
 			}, { shatterproofModuleOverride: extensionSource });
 		console.log("END THE AUTOTEST");
 	}
+
+	const highlightEveryThirdEditorContextMenu = vscode.commands.registerCommand('extension.shatterHighlightEveryThird', () => {
+		if (!vscode.window.activeTextEditor) {
+			return;
+		}
+
+		const maxLines = vscode.window.activeTextEditor?.document.lineCount ?? 0;
+		function* gen() {
+			for (let i = 0; i < maxLines && i < 10_000; i += 3) {
+				yield i;
+			}
+		}
+
+		highlightLinesInEditor(vscode.window.activeTextEditor, gen());
+	});
+	context.subscriptions.push(highlightEveryThirdEditorContextMenu);
+
+	const highlightPrimeLinesEditorContextMenu = vscode.commands.registerCommand('extension.shatterHighlightPrimeLines', () => {
+		function* primer() {
+			const primes = [2];
+			let candidate = primes[0] + 1;
+			while (true) {
+				if (primes.every((prime) => candidate % prime !== 0)) {
+					primes.push(candidate);
+					yield candidate;
+				}
+				candidate++;
+			}
+		}
+
+		highlightLinesInEditor(vscode.window.activeTextEditor, primer());
+	});
+	context.subscriptions.push(highlightPrimeLinesEditorContextMenu);
+
+	const highlightFibonacciLinesEditorContextMenu = vscode.commands.registerCommand('extension.shatterHighlightFibonacciLines', () => {
+		const values = [0, 1];
+		function* fibber() {
+			for (let i = 1; ; i++) {
+				const sum = values[i] + values[i - 1];
+				values.push(sum);
+				yield sum;
+			}
+		}
+
+		highlightLinesInEditor(vscode.window.activeTextEditor, fibber());
+	});
+	context.subscriptions.push(highlightFibonacciLinesEditorContextMenu);
 }
 
 function doSelectFile(editor: vscode.TextEditor | undefined, extensionState: ExtensionState, filename: string, providers: { functionsListProvider: CommonTreeDataProvider; clustersListProvider: CommonTreeDataProvider; coverageProvider: CommonTreeDataProvider; testCasesProvider: CommonTreeDataProvider; }) {

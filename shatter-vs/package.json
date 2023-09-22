@@ -30,6 +30,18 @@
       {
         "command": "extension.shatterRetestFunctionViewContainer",
         "title": "Regression test"
+      },
+      {
+        "command": "extension.shatterHighlightEveryThird",
+        "title": "Highlight every third line"
+      },
+      {
+        "command": "extension.shatterHighlightPrimeLines",
+        "title": "Highlight prime lines"
+      },
+      {
+        "command": "extension.shatterHighlightFibonacciLines",
+        "title": "Highlight Fibonacci lines"
       }
     ],
     "menus": {
@@ -45,6 +57,15 @@
         },
         {
           "command": "extension.shatterRetestContext"
+        },
+        {
+          "command": "extension.shatterHighlightEveryThird"
+        },
+        {
+          "command": "extension.shatterHighlightPrimeLines"
+        },
+        {
+          "command": "extension.shatterHighlightFibonacciLines"
         }
       ],
       "view/item/context": [
