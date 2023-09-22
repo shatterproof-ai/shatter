@@ -492,6 +492,8 @@ export function activate(context: vscode.ExtensionContext) {
 		updateSelectedFile();
 	}
 
+	//	TODO: some sort of status display during execution
+	//	TODO: show the sidebar when running
 	async function autotestFunction(filename: string, functionName: string) {
 		const allTsConfigs: string[] = [];
 		const allPackageJsons: string[] = [];

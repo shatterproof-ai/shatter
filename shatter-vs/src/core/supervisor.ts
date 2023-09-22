@@ -1,4 +1,5 @@
 import { Worker } from 'worker_threads';
+import { Invocation, InvocationMeta, InvocationResult, WorkerSetup } from './worker-protocol';
 
 // eslint-disable-next-line @typescript-eslint/naming-convention
 export const Outcomes = ['completed', 'error', 'timeout', 'failed'] as const;
@@ -6,6 +7,7 @@ export type Outcome = typeof Outcomes[number];
 
 export interface RunResult {
     specimenId: string
+    functionName: string
     parameters: any[]
     executedBranches: string[]
     lines: number[]
@@ -20,26 +22,44 @@ export interface RunResult {
 }
 
 const maxWaitForWorkerTime = 10_000;
+const maxInvocationsPerWorker = 200;
+
+interface WorkerMeta extends WorkerSetup {
+    worker: Worker
+}
 
 export class Supervisor {
-    private activeWorkers = new Set<Worker>();
+    private busyWorkers = new Map<number, string>();
+    private availableWorkers = new Set<number>();
+    private workers = new Map<number, WorkerMeta>();
     private count = 0;
 
-    private resultByParameters = new Map<string, RunResult>();
-    private attemptedParameters = new Set<string>();
+    private resultByInvocation = new Map<string, RunResult>();
+    private attemptedInvocations = new Set<string>();
+
+    private invocationsPerWorker = new Map<number, number>();
+    private invocationMetaSpecimen = new Map<string, InvocationMeta>();
 
     private timeLimit = 1_000;
     constructor(
         private nodePath: string[],
         private executorScriptJS: string,
-        private onResult: (result: RunResult) => void,
         private maxActiveWorkers: number) {
     }
 
-    async launchWorker(functionName: string, specimenId: string, parameters: any[]) {
+    async launchWorker(functionName: string, specimenId: string, parameters: any[], onCompletion: (_: Invocation, __: RunResult) => void) {
+        const invocation: Invocation = {
+            functionName, parameters,
+        };
+
+        const strung = JSON.stringify(invocation);
+        if (this.attemptedInvocations.has(strung)) {
+            return;
+        }
 
         const start = Date.now();
-        while (this.activeWorkers.size > this.maxActiveWorkers) {
+        while (this.busyWorkers.size > this.maxActiveWorkers
+            && this.availableWorkers.size === 0) {
             //  sort of busy waiting
             // console.log(`Waiting with ${activeWorkers.size} active workers`)
             await new Promise((resolve) => setTimeout(resolve, 1000));
@@ -48,122 +68,194 @@ export class Supervisor {
             }
         }
 
-        const currentWorkerNumber = ++this.count;
-        const workerData = {
-            filePath: this.executorScriptJS, functionName, parameters, currentWorkerNumber
+        const stopWorker = (wm: WorkerMeta, outcome: 'expired' | 'timeout' | 'error', error?: any) => {
+            clearTimeout(timeoutId);
+            const specimenId = this.busyWorkers.get(wm.workerNumber)!;
+            this.busyWorkers.delete(wm.workerNumber);
+            wm.worker.terminate();
+
+            if (outcome != 'expired') {
+                const meta = this.invocationMetaSpecimen.get(specimenId)!;
+                console.log(`Worker ${wm.workerNumber} for ${meta.invocation.functionName} ${outcome} ${error}...`);
+
+                const duration = Date.now() - meta.launched;
+                //  TODO: 
+                const strungError = error ? '' + error : undefined;
+                const result: RunResult = {
+                    ...meta.invocation,
+                    specimenId,
+                    error: strungError,
+                    completed: false,
+                    duration,
+                    executedBranches: [],
+                    outcome,
+                    lines: [],
+                    linesInOrder: [],
+                };
+
+                //  don't overwrite previous results because they may be good
+                //  in case somehow we executed a duplicate
+                if (!this.resultByInvocation.has(strung)) {
+                    this.resultByInvocation.set(strung, result);
+                }
+
+                onCompletion(meta.invocation, result);
+            }
         };
 
-        const strung = JSON.stringify(parameters);
-        if (this.attemptedParameters.has(strung)) {
-            return;
-        }
-
-        const NODE_PATH = this.nodePath.join(':');
-        // console.log(`attempting ${currentWorkerNumber}:${this.executorScriptJS} with NODE_PATH ${NODE_PATH} and workerData = ${JSON.stringify(workerData)}`);
-        // console.log(`attempting ${currentWorkerNumber} => ${strung}`);
-        const worker = new Worker(this.executorScriptJS, {
-            workerData,
-            stdout: true,
-            stderr: true,
-            env: {
-                // eslint-disable-next-line @typescript-eslint/naming-convention
-                NODE_PATH,
+        const worker: WorkerMeta = (() => {
+            if (this.availableWorkers.size > 0) {
+                const first = this.availableWorkers.values().next();
+                const workerNumber: number = first.value;
+                const reworker = this.workers.get(workerNumber);
+                if (reworker) {
+                    console.log(`Reusing worker ${reworker}`)
+                    this.availableWorkers.delete(workerNumber);
+                    return reworker;
+                }
+                console.error(`Inexplicably unable to find worker ${workerNumber}`);
             }
-        });
+            const currentWorkerNumber = ++this.count;
+            const workerData: WorkerSetup = {
+                filePath: this.executorScriptJS, workerNumber: currentWorkerNumber,
+            };
 
-        worker.stderr.on('data', (data) => {
-            //  TODO: do nothing for now
-        });
+            const NODE_PATH = this.nodePath.join(':');
 
-        worker.stderr.on('error', () => {
-            //  TODO: maybe this will be useful at some point?
-        });
+            // console.log(`attempting ${currentWorkerNumber}:${this.executorScriptJS} with NODE_PATH ${NODE_PATH} and workerData = ${JSON.stringify(workerData)}`);
+            console.log(`attempting ${currentWorkerNumber} => ${strung}`);
+            const newWorker = new Worker(this.executorScriptJS, {
+                workerData,
+                stdout: true,
+                stderr: true,
+                env: {
+                    // eslint-disable-next-line @typescript-eslint/naming-convention
+                    NODE_PATH,
+                }
+            });
+            newWorker.stderr.on('data', (data) => {
+                //  TODO: do nothing for now
+            });
 
-        worker.stdout.on('data', (data) => {
-            //  TODO: maybe this will be useful at some point?
-        });
+            newWorker.stderr.on('error', () => {
+                //  TODO: maybe this will be useful at some point?
+            });
 
-        this.activeWorkers.add(worker);
+            newWorker.stdout.on('data', (data) => {
+                //  TODO: maybe this will be useful at some point?
+            });
 
-        const launched = Date.now();
+            newWorker.on('error', (error) => {
+                //  TODO: be less willing to give up on error; how to identify the recoverable ones?  by stack trace?
+                stopWorker(worker, "error", error);
+                throw error;
+            });
+            newWorker.on('exit', () => {
+                clearTimeout(timeoutId);
+                // console.log(`Worker ${currentWorkerNumber} for ${functionName} exiting of ${this.activeWorkers.size} running...`);
+                this.busyWorkers.delete(worker.workerNumber);   //  necessary in case of some anomalous exit that isn't triggered by a message
+                // console.log(`after deleting ${activeWorkers.size}`);
+            });
+            newWorker.on('message', (msg) => {
+                clearTimeout(timeoutId);
+                const { output, error, duration, executedBranches, lines, linesInOrder }: InvocationResult = msg;
+
+                const specimenId = this.busyWorkers.get(worker.workerNumber)!;
+
+                const meta = this.invocationMetaSpecimen.get(specimenId)!;
+                console.log(`Worker ${worker.workerNumber} for ${meta.invocation.functionName} completed`);
+
+                // console.log(`And executed branches = `)
+                const strungError = error ? '' + error : undefined;
+                const result: RunResult = {
+                    ...meta.invocation,
+                    specimenId,
+                    output,
+                    error: strungError,
+                    completed: true,
+                    duration,
+                    executedBranches,
+                    outcome: error ? 'error' : 'completed',
+                    lines,
+                    linesInOrder,
+                };
+
+                this.resultByInvocation.set(strung, result);
+
+                this.busyWorkers.delete(worker.workerNumber);
+
+                const invocationCount = this.invocationsPerWorker.get(worker.workerNumber);
+                if (invocationCount === undefined || invocationCount >= maxInvocationsPerWorker) {
+                    if (invocationCount === undefined) {
+                        console.error(`No invocations for worker ${worker.workerNumber}; tidying up`);
+                    }
+                    stopWorker(worker, 'expired');
+                } else {
+                    this.availableWorkers.add(worker.workerNumber);
+                }
+
+                onCompletion(meta.invocation, result);
+            });
+
+            const wwmm: WorkerMeta = {
+                filePath: this.executorScriptJS,
+                worker: newWorker,
+                workerNumber: currentWorkerNumber,
+            };
+
+            this.workers.set(currentWorkerNumber, wwmm);
+            return wwmm;
+        })();
+
+        this.busyWorkers.set(worker.workerNumber, specimenId);
+        this.invocationsPerWorker.set(worker.workerNumber, (this.invocationsPerWorker.get(worker.workerNumber) ?? 0) + 1);
+
+        const meta: InvocationMeta = {
+            specimenId,
+            invocation,
+            launched: Date.now(),
+        };
+
+        this.invocationMetaSpecimen.set(specimenId, meta);
+
+        // console.log(`invoking worker ${worker.workerNumber}: ${worker.worker}`);
+        worker.worker.postMessage(meta);
+
         const timeoutId = setTimeout(() => {
-            const timedOut = Date.now();
-            if (!this.activeWorkers.has(worker)) {
+            if (!this.busyWorkers.has(worker.workerNumber)) {
                 //  in case timeout hasn't been cleared for some reason
                 return;
             }
-            const duration = timedOut - launched;
-            // console.log(`Timeout after ${elapsed} ms of ${currentWorkerNumber} with workerData = ${JSON.stringify(workerData)}`)
-            worker.terminate();
-            this.activeWorkers.delete(worker);
-            //  don't overwrite a previous run
-            //  TODO: do overwrite if the previous run timed out, but limit the number of times
-            if (!this.resultByParameters.has(strung)) {
-                const result: RunResult = {
-                    specimenId, parameters, output: undefined, completed: false, duration, executedBranches: [], outcome: 'timeout',
-                    lines: [], linesInOrder: [],
-                };
-                this.resultByParameters.set(strung, result);
-                this.onResult(result);
-            }
+            stopWorker(worker, "timeout");
         }, this.timeLimit);
-
-        worker.on('error', (error) => {
-            clearTimeout(timeoutId);
-            console.log(`Worker ${currentWorkerNumber} for ${functionName} errored ${error}...`);
-            worker.terminate();
-            this.activeWorkers.delete(worker);
-
-            const duration = Date.now() - launched;
-            //  TODO: 
-            const strungError = error ? '' + error : undefined;
-            const result: RunResult = {
-                specimenId, parameters, error: strungError, completed: false, duration, executedBranches: [], outcome: 'failed', lines: [], linesInOrder: [],
-            };
-
-            this.resultByParameters.set(strung, result);
-
-            this.onResult(result);
-
-            throw error;
-        });
-        worker.on('exit', () => {
-            clearTimeout(timeoutId);
-            // console.log(`Worker ${currentWorkerNumber} for ${functionName} exiting of ${this.activeWorkers.size} running...`);
-            this.activeWorkers.delete(worker);
-            // console.log(`after deleting ${activeWorkers.size}`);
-        });
-        worker.on('message', (msg) => {
-            const { output, error, duration, executedBranches, lines, linesInOrder }: { output: any, error: any, duration: number, executedBranches: string[], lines: number[], linesInOrder: number[] } = msg;
-
-            // console.log(`${currentWorkerNumber}  ${functionName} (${JSON.stringify(parameters)}) => ${error ?? JSON.stringify(output)} in ${duration}ms`);
-
-            // console.log(`And executed branches = `)
-            const strungError = error ? '' + error : undefined;
-            const result: RunResult = {
-                specimenId, parameters, output, error: strungError, completed: true, duration, executedBranches, outcome: error ? 'error' : 'completed',
-                lines, linesInOrder,
-            };
-
-            this.resultByParameters.set(strung, result);
-
-            this.onResult(result);
-        });
-        return [currentWorkerNumber, worker];
+        return worker.workerNumber;
     }
 
     async drain(timeout = 10_000) {
         const start = Date.now();
         // console.log("finishied draining");
-        while (this.activeWorkers.size > 0) {
-            //  sort of busy waiting
-            // console.log(`Waiting with ${activeWorkers.size} active workers`)
-            await new Promise((resolve) => setTimeout(resolve, 100));
-            if (Date.now() - start > timeout) {
-                console.error(`Timed out waiting for workers to finish`);
-                return;
+        const waitSome = async (delay: number, max: number) => {
+            let count = 0;
+            while (this.busyWorkers.size > 0 && count++ < max) {
+                //  sort of busy waiting
+                // console.log(`Waiting with ${activeWorkers.size} active workers`)
+                await new Promise((resolve) => setTimeout(resolve, delay));
+                if (Date.now() - start > timeout) {
+                    console.error(`Timed out waiting for workers to finish`);
+                    return;
+                }
             }
         }
+
+        console.log(`Draining with ${this.workers.size} workers`);
+        await waitSome(100, 100);
+
+        //  TODO: determine appropriate semantics of exit; does it interrupt execution or is it graceful?
+        for (const workerMeta of this.workers.values()) {
+            workerMeta.worker.terminate();
+        }
+
+        await waitSome(100, 100);
         // console.log("finishied draining");
     }
 }

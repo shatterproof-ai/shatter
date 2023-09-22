@@ -12,6 +12,7 @@ import { IntrospectionContext, createInstrumenter } from './transform';
 import { isEqual } from 'lodash';
 import cluster from 'cluster';
 import { canonicallyStringify } from './util';
+import { Invocation } from './worker-protocol';
 
 export interface AutotestResults {
     clusters: ResultCluster[];
@@ -211,24 +212,24 @@ export async function shatterAutotest(modulePaths: string[],
         runResult.lines.forEach(line => allExecutedLines.add(line));
     };
 
-    const supervisor = new Supervisor(modulePaths, executorScriptJs, onResult, 15);
+    const supervisor = new Supervisor(modulePaths, executorScriptJs, 15);
     console.log(`tryna allExecutedBranches.size = ${allExecutedBranches.size
         // }, introspectionContext.knownBranches.size = ${introspectionContext._knownBranches.size
         }, introspectionContext.instrumentedLines.size = ${introspectionContext.instrumentedLines.size
         }`);
 
 
-        /*
+    /*
 
-        1) determine the absolute minimal acceptable parameter list
-        2) run that
-        3) mutate the parameter list
-        4) elaborate on the parameter list
-        5) if one of them goes somewhere new, bisect
-        6) go to the first hole; goto 3
+    1) determine the absolute minimal acceptable parameter list
+    2) run that
+    3) mutate the parameter list
+    4) elaborate on the parameter list
+    5) if one of them goes somewhere new, bisect
+    6) go to the first hole; goto 3
 
 
-        */
+    */
 
     // const generator = new CombinatorialTestCaseSource(program.getTypeChecker(), functionDeclarationNode.parameters);
     const source = new CombinatorialTestCaseSource(program.getTypeChecker(), introspectionContext.instrumentedLines, functionDeclarationNode);
@@ -248,7 +249,9 @@ export async function shatterAutotest(modulePaths: string[],
             };
             specimensById.set(specimenId, newSpecimen);
             // console.log(`Evaluating specimen ${JSON.stringify(newSpecimen)}`);
-            await supervisor.launchWorker(functionName, specimenId, newSpecimen.parameters);
+            await supervisor.launchWorker(functionName, specimenId, newSpecimen.parameters, (invocation: Invocation, result: RunResult) => {
+                onResult(result);
+            });
             return specimenId;
         }
     }
@@ -306,9 +309,9 @@ async function seed(maxSeeds: number, generator: Iterator<Specimen, any, undefin
     }
 }
 
-const findFirstHole = (c:ResultCluster, instrumentedLines:number[]) => {
+const findFirstHole = (c: ResultCluster, instrumentedLines: number[]) => {
     for (const lineNumber of instrumentedLines) {
-        if (! c.lines.includes(lineNumber)) {
+        if (!c.lines.includes(lineNumber)) {
             return lineNumber;
         }
     }
@@ -322,14 +325,14 @@ const findFirstHole = (c:ResultCluster, instrumentedLines:number[]) => {
 async function breed(evaluateSpecimen: (b: BaseSpecimen) => Promise<string | undefined>, allInstrumentedLines: Set<number>, allExecutedLines: Set<number>, _clusters: ResultCluster[]) {
 
 
-    function breedForClusters(baseClusters:ResultCluster[], overshootClusters:ResultCluster[]) {
+    function breedForClusters(baseClusters: ResultCluster[], overshootClusters: ResultCluster[]) {
         //  identify differences between baseClusters and overshootClusters
 
 
     }
 
     const instrumentedLines = Array.from(allInstrumentedLines).sort((a, b) => a - b);
-    const clustersOrderByFirstHolePosition = [..._clusters  ];
+    const clustersOrderByFirstHolePosition = [..._clusters];
     clustersOrderByFirstHolePosition.sort((a, b) => {
         a.lines.sort((a, b) => a - b);
         const aFirstSkipped = findFirstHole(a, instrumentedLines);
@@ -370,7 +373,7 @@ async function breed(evaluateSpecimen: (b: BaseSpecimen) => Promise<string | und
         throw new Error(`No clusters for first instrumented line ${instrumentedLines[0]}`);
     }
 
-    let currentGap:number[] = [];
+    let currentGap: number[] = [];
     for (let i = 1; i < instrumentedLines.length; i++) {
         //  should always have a value; the ?? is just so Typescript won't complain, and I dislike !
         const currentLineClusters = clustersByLine.get(instrumentedLines[i]) ?? [];
@@ -415,7 +418,7 @@ async function breed(evaluateSpecimen: (b: BaseSpecimen) => Promise<string | und
             }
 
             if (prevhas) {
-                const missingLines:number[] = [lineNumber];
+                const missingLines: number[] = [lineNumber];
                 for (let k = j; k < instrumentedLines.length; k++) {
                     const currhas2 = current.lines.includes(instrumentedLines[k]);
                     if (currhas2) {
@@ -597,7 +600,7 @@ async function knead(evaluateSpecimen: (b: BaseSpecimen) => Promise<string | und
                 bbased[index] = fullHybrid[index];
 
                 for (const hybridParams of [fullHybrid, abased, bbased]) {
-                    evaluateSpecimen({
+                    await evaluateSpecimen({
                         parameters: hybridParams,
                         type: 'hybrid',
                         parents: [alast.specimenId, bfirst.specimenId],
