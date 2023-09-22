@@ -213,25 +213,13 @@ function* hybridizeObjects(a: any, b: any, intervals: number[]) {
             }
         }
 
-        const used: Record<string | number, any[]> = {};
-        const hybridizers: Record<string | number, Generator<any, any, any>> = {};
-        for (const key of commonKeys) {
-            hybridizers[key] = pickHybrid(a[key], b[key], interval);
-        }
-
         for (let i = 0; i < numberToGenerate; i++) {
             const candidate: Record<string | number, any> = { ...base };
             for (const key of commonKeys) {
-                const hk = hybridizers[key];
-                const n = hk.next();
-                if (n.done) {
-                    hybridizers[key] = pickHybrid(a[key], b[key], interval);
-                }
-                candidate[key] = n.value;
+                candidate[key] = pickHybrid(a[key], b[key], interval);
             }
             yield candidate;
         }
-
     }
 }
 
@@ -420,16 +408,17 @@ export function* shrink(o: any) {
 
         //  try with just the last element removed
         yield o.slice(0, o.length - 1);
-        //  try with the first element shrunk and the last element removed
         const duped = [...o];
-        duped[0] = shrink(o[0]);
-
-        //  TODO: verify that this equality test doesn't have false positives
-        //  and has few false negatives
-        if (!isEqual(o[0], duped[0])) {
-            yield duped.slice(0, duped.length - 1);
-            //  try with just the first element shrunk
-            yield duped;
+        for (const shrunkElement of shrink(o[0])) {
+            duped[0] = shrunkElement;
+            //  TODO: verify that this equality test doesn't have false positives
+            //  and has few false negatives
+            if (!isEqual(o[0], duped[0])) {
+                //  try with the first element shrunk and the last element removed
+                yield duped.slice(0, duped.length - 1);
+                //  try with just the first element shrunk
+                yield duped;
+            }
         }
 
         return;
@@ -445,10 +434,11 @@ export function* shrink(o: any) {
             //  try with the given key shrunk
             const shrunked = { ...o };
             const preshrunkElement = o[keys[0]];
-            const shrunkElement = shrink(preshrunkElement);
-            if (!isEqual(shrunkElement, preshrunkElement)) {
-                shrunked[keys[0]] = shrunkElement;
-                yield shrunked;
+            for (const shrunkElement of shrink(preshrunkElement)) {
+                if (!isEqual(shrunkElement, preshrunkElement)) {
+                    shrunked[keys[0]] = shrunkElement;
+                    yield shrunked;
+                }
             }
             //  try with the given key removed
             const trunked = { ...o };

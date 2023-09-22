@@ -817,7 +817,7 @@ function* roundRobin(...generators: Generator<GeneratedParameter, any, any>[]) {
 }
 
 export function computeDistance(a: any, b: any): number {
-    if (a === b || a === null || b === null) {
+    if (a === b || a === null || b === null || a === undefined || b === undefined) {
         return 0;
     }
 
