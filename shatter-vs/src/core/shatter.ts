@@ -370,6 +370,7 @@ async function breed(evaluateSpecimen: (b: BaseSpecimen) => Promise<string | und
     let lastExecutedLine = instrumentedLines[0];
     let previousLineClusters = clustersByLine.get(lastExecutedLine);
     if (previousLineClusters === undefined) {
+        //  TODO: this can happen if the only clusters are failed or timed out clusters
         throw new Error(`No clusters for first instrumented line ${instrumentedLines[0]}`);
     }
 
