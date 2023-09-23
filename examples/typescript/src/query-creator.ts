@@ -779,7 +779,7 @@ const constructUnfacetedSearchQuery = ({
     return qbUgc
 }
 
-export const constructSearchQuery = async (
+export async function constructSearchQuery(
     availableResultFieldCombined: Record<string, ResultField>,
     input: SearchInput,
     personalization: SearchPersonalization,
@@ -789,7 +789,7 @@ export const constructSearchQuery = async (
     facetInputs: FacetInputValue[],
     requestedColumnNames: Set<string>,
     impliedColumns: Set<string>,
-) => {
+) {
     const allErrors: FacetValidationError[] = []
 
     const requestedFields = Object.values(availableResultFieldCombined)
