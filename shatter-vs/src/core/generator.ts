@@ -923,8 +923,22 @@ export class CombinatorialTestCaseSource /* implements TestCaseSource */ {
             return JSON.stringify({ path, value });
         };
 
+        const valueForTypeNode = function (checker: ts.TypeChecker, typeNode: ts.TypeNode, allowedDepth: number, pathToHere: (string | number)[],): GeneratedParameter {
+            if (ts.isTypeReferenceNode(typeNode)) {
+
+            } else {
+                const currentType = typeNode
+                    ? checker.getTypeAtLocation(typeNode)
+                    : checker.getAnyType();
+
+                const p: GeneratedParameter = valueForType(checker, currentType, 4, [j]);
+                return p;
+            }
+        }
+
         const valueForType = function (checker: ts.TypeChecker, currentType: ts.Type, allowedDepth: number, pathToHere: (string | number)[],): GeneratedParameter {
             if (checker.isArrayType(currentType)) {
+                //  TODO: ugly cast
                 const typeargs = checker.getTypeArguments(currentType as ts.TypeReference);
                 const elementttype = typeargs[0];
 
@@ -957,6 +971,11 @@ export class CombinatorialTestCaseSource /* implements TestCaseSource */ {
                         properties: {},
                     };
                 }
+
+
+                currentType.pattern
+
+
                 //  TODO: omit some, add some extra
                 const o: Record<string, GeneratedParameter> = {};
                 currentType.getProperties().forEach((prop) => {
@@ -1056,13 +1075,13 @@ export class CombinatorialTestCaseSource /* implements TestCaseSource */ {
         for (let i = 0; i < newGenPerPass; i++) {
             const parameters: any[] = [];
             for (let j = 0; j < this.f.parameters.length; j++) {
-                const t = this.f.parameters[j].type;
-                const currentType = t
-                    ? this.checker.getTypeAtLocation(t)
-                    : this.checker.getAnyType();
-
-                const p: GeneratedParameter = valueForType(this.checker, currentType, 4, [j]);
-                parameters.push(toValue(p));
+                const typeNode = this.f.parameters[j].type;
+                if (typeNode) {
+                    const p: GeneratedParameter = valueForTypeNode(this.checker, typeNode, 4, [j]);
+                    parameters.push(toValue(p));
+                } else {
+                    parameters.push(undefined);
+                }
             }
 
             yield {
