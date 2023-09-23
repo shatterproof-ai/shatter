@@ -80,6 +80,32 @@ describe('extension', () => {
     });
 });
 
+describe('complicated', () => {
+    it('should pass', async () => {
+        //  TODO: duh
+        const testfile = "/home/ketan/project/shatter/examples/typescript/src/query-creator.ts";
+
+        const functionName = "constructSearchQuery";
+
+        const modulePaths = ["/home/ketan/project/shatter/examples/typescript/node_modules"];
+
+        const shatterproofModuleOverride = "/home/ketan/project/shatter/shatter-vs/src";
+        const maxIterations = 500;
+        // const maxTime = 120_000;
+        const maxTime = 10_000;
+
+        const tempdir = mkdtempSync(join(tmpdir(), "shatter-test-"));
+
+        const { executed, instrumented } = await shatterAutotest(modulePaths, testfile, tempdir, functionName, (clusters) => {
+            // console.log(`Received clusters ${JSON.stringify(clusters, null, 2)}`);
+        }, { shatterproofModuleOverride, maxIterations, maxTime });
+        const unexecuted = instrumented.filter((i) => !executed.includes(i));
+        console.log(`Executed     ${executed}`);
+        console.log(`Instrumented ${instrumented}`);
+        console.log(`Missed       ${unexecuted}`);
+    });
+});
+
 
 const permute = function* (first: [string, (string | number)[]], rest: [string, (string | number)[]][], opts: any = {}): Generator<any, void, unknown> {
     const [optionKey, optionValues] = first;
