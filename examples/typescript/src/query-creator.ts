@@ -1,13 +1,14 @@
+import { Pool } from 'pg';
 
-import { ComparisonOperatorExpression, ExpressionBuilder, ExpressionWrapper, SqlBool, sql } from 'kysely';
+import { ComparisonOperatorExpression, ExpressionBuilder, ExpressionWrapper, Kysely, PostgresDialect, SqlBool, sql } from 'kysely';
 import { isEmpty } from 'lodash';
 
 type FacetValidationError = {
     message: string
     facet?: string
     component?: string
-  }
-  
+}
+
 const logger = {
     debug: (s: string) => { },
     info: (s: string) => { },
@@ -355,11 +356,6 @@ type SecondaryQueryField = {
 
 type ResultField = ColumnResultField | JsonResultField<any> | PersonalizedField | ExpressionField | SecondaryQueryField
 
-type JsonFieldInput = (Omit<JsonResultField<any>, 'jsonColumn' | 'datakey' | 'path' | 'type' | 'valueStructure'>
-    & Partial<Pick<JsonResultField<any>, 'path' | 'valueStructure'>> & {
-        range?: NumericColumnRange  //  hack hack
-    })
-
 const rfPath = (rf: JsonResultField<JsonColumn>) => {
     const datasetColumn = `data->'${rf.datakey}'`
 
@@ -557,9 +553,9 @@ interface ComplexClause extends BasicClause {
     clauses: Clause[]
 }
 
- type Clause = (SimpleClause | ComplexClause | NegativeClause | JsonContainsClause)
+type Clause = (SimpleClause | ComplexClause | NegativeClause | JsonContainsClause)
 
- interface FacetBuilder {
+interface FacetBuilder {
     getName(): string
     get(): ExtendedFacet
     apply(availableResultFields: Record<string, ResultField>, personalization: SearchPersonalization, facetInput: FacetInputValue): Facetation
@@ -574,6 +570,160 @@ type ExtendedFacet = Omit<Facet, 'components' | 'eligibleCustomers'> & {
 type ExtendedFacetComponent = FacetComponent & {
     resultFields: BaseResultField[]
 }
+
+import type { ColumnType } from 'kysely';
+type Generated<T> = T extends ColumnType<infer S, infer I, infer U>
+    ? ColumnType<S, I | undefined, U>
+    : ColumnType<T, T | undefined, T>
+type Timestamp = ColumnType<Date, Date | string, Date | string>
+
+type AnnualDataset = {
+    id: string
+    unit_id: string
+    created: Generated<Timestamp>
+    updated: Generated<Timestamp>
+    version: Generated<number>
+    theme: Theme
+    datakey: string
+    is_latest: Generated<boolean>
+    year: number
+    data: unknown
+}
+
+type CIPData = {
+    id: string
+    code: string
+    description: string
+}
+
+type Conference = {
+    name: string
+}
+
+type Dataset = {
+    id: string
+    unit_id: string
+    created: Generated<Timestamp>
+    updated: Generated<Timestamp>
+    version: Generated<number>
+    theme: Theme
+    datakey: string
+    data: unknown
+}
+
+type Institution = {
+    unit_id: string
+    ope6_id: string
+    ope8_id: string
+    created: Generated<Timestamp>
+    updated: Generated<Timestamp>
+    version: Generated<number>
+    institution_name: string
+    city: string
+    state: string
+    nces: unknown | null
+    weather: unknown | null
+    rankings: unknown | null
+    athletics: unknown | null
+    admissions: unknown | null
+    fields_of_study: unknown | null
+    misc: unknown | null
+}
+
+type State = {
+    code: string
+    name: string
+}
+
+type ZipCoordinates = {
+    zip_code: string
+    additional: unknown
+}
+
+type DB = {
+    annual_dataset: AnnualDataset
+    cip_data: CIPData
+    conference: Conference
+    dataset: Dataset
+    institution: Institution
+    state: State
+    zip_coordinates: ZipCoordinates
+}
+
+interface AnnualDatasetMerged {
+    unit_id: string
+    theme: Theme
+    datakey: string
+    maxyear: number
+    data: any
+}
+
+interface AnnualDatasetLatest {
+    unit_id: string
+    theme: Theme
+    datakey: string
+    year: number
+    data: unknown
+}
+
+//  TODO: turn Pick into Omit
+interface DatasetMerged extends Omit<Institution, 'created' | 'updated' | 'version' | 'nces' | 'weather' | 'rankings' | 'athletics' | 'admissions' | 'fields_of_study' | 'misc'> {
+    unit_id: string
+    theme: Theme
+    datakey: string
+    maxyear?: number
+    name_search_vector: string
+    name_location_search_vector: string
+    data: any
+}
+
+interface DatasetLatest {
+    unit_id: string
+    theme: Theme
+    datakey: string
+    year?: number
+    data: unknown
+}
+
+interface DBGenPlusUnsupported extends DB {
+    institution: DB['institution'] & {
+        coordinates: string
+    },
+    annual_dataset_merged: AnnualDatasetMerged,
+    annual_dataset_latest: AnnualDatasetLatest,
+    dataset_merged: DatasetMerged,
+    dataset_latest: DatasetLatest,
+}
+
+const SCHEMAS: Record<keyof DBGenPlusUnsupported, string> = {
+    zip_coordinates: 'location',
+    state: 'location',
+
+    cip_data: 'search_base',
+    conference: 'search_base',
+    institution: 'search_base',
+    annual_dataset: 'search_base',
+    dataset: 'search_base',
+
+    annual_dataset_latest: 'search_base', //  TODO: delete
+    annual_dataset_merged: 'search_base', //  TODO: delete
+    dataset_latest: 'search_base',
+    dataset_merged: 'search_base',
+} as const
+
+//    [K in keyof T as K extends string ? `${P}${K}` : never]: T[K]
+
+type DBWithSchemas = {
+    [K in keyof typeof SCHEMAS as `${typeof SCHEMAS[K]}.${K}`]: DBGenPlusUnsupported[K]
+}
+
+const db = new Kysely<DBWithSchemas>({
+    dialect: new PostgresDialect({
+        pool: new Pool({
+            connectionString: process.env['DATABASE_URL']
+        })
+    })
+})
 
 const constructUnfacetedSearchQuery = ({
     availableResultFieldCombined,
@@ -629,7 +779,7 @@ const constructUnfacetedSearchQuery = ({
     return qbUgc
 }
 
- export const constructSearchQuery = async (
+export const constructSearchQuery = async (
     availableResultFieldCombined: Record<string, ResultField>,
     input: SearchInput,
     personalization: SearchPersonalization,
