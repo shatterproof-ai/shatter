@@ -128,9 +128,18 @@ export async function shatterAutotest(modulePaths: string[],
     if (!functionDeclarationNode) {
         throw new Error(`Could not find function ${functionName}`);
     }
+
     // rewrite code of given function (or everything if lazy) to add instrumentation
     const [instrumentedFile, executorScriptJs, introspectionContext] = writeInstrumented(sourceFile, options?.shatterproofModuleOverride);
-    // instrospect function and generate a set of candidate inputs
+    const functionStartLine = ts.getLineAndCharacterOfPosition(sourceFile, functionDeclarationNode.pos).line;
+    const functionEndLine = ts.getLineAndCharacterOfPosition(sourceFile, functionDeclarationNode.end).line;
+
+    const instrumentedFunctionLines = new Set<number>();
+    for (let functionLine = functionStartLine; functionLine < functionEndLine; functionLine++) {
+        if (introspectionContext.instrumentedLines.has(functionLine)) {
+            instrumentedFunctionLines.add(functionLine);
+        }
+    }
 
     console.log(`created ${instrumentedFile} compiled to ${executorScriptJs} with storageBaseDirectory = ${storageBaseDirectory}`);
 
