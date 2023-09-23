@@ -1,10 +1,6 @@
 
-import { ComparisonOperatorExpression, sql } from 'kysely';
-import { Datakey } from 'src/lib/dataset';
-import { logger } from 'src/lib/logger';
-import { BaseResultField, JsonResultField, NUMERIC_TYPES, ResultField, escapeAndQuote, escapeAndQuoteAll, resolveReference } from 'src/lib/resultFields';
-import { BinaryInputField, Bound, ChoiceFieldInputValue, ChoiceInputField, Facet, FacetComponent, FacetComponentInputValues, FacetInputValue, LabeledValue, NumberFieldInputValue, NumberInputField, PersonalizationInput, RangeFieldInputValue, RangeInputField, TextInputField, Theme } from 'types/graphql';
-import { SearchPersonalization } from './search';
+import { ComparisonOperatorExpression, ExpressionBuilder, ExpressionWrapper, SqlBool, sql } from 'kysely';
+import { isEmpty } from 'lodash';
 
 type FacetValidationError = {
     message: string

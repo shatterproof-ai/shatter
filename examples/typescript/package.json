@@ -12,6 +12,11 @@
   "author": "Ketan Gangatirkar",
   "license": "ISC",
   "devDependencies": {
+    "@types/lodash": "^4.14.199",
     "typescript": "^5.2.2"
+  },
+  "dependencies": {
+    "kysely": "^0.26.3",
+    "lodash": "^4.17.21"
   }
 }
