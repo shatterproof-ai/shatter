@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import * as ts from 'typescript';
-import { BaseSpecimen, CombinatorialTestCaseSource, RetestCaseSource, Specimen, comparameters, computeDistance } from './generator';
+import { BaseSpecimen, CombinatorialTestCaseSource, DefaultCustomTypeHandler, RetestCaseSource, Specimen, comparameters, computeDistance } from './generator';
 import { hybridize, isStrictExtension, shrink } from './hybridize';
 import { Outcome, RunResult, Supervisor } from './supervisor';
 import { IntrospectionContext, createInstrumenter } from './transform';
@@ -240,8 +240,9 @@ export async function shatterAutotest(modulePaths: string[],
 
     */
 
+    const customTypeHandler = new DefaultCustomTypeHandler();
     // const generator = new CombinatorialTestCaseSource(program.getTypeChecker(), functionDeclarationNode.parameters);
-    const source = new CombinatorialTestCaseSource(program.getTypeChecker(), introspectionContext.instrumentedLines, functionDeclarationNode);
+    const source = new CombinatorialTestCaseSource(customTypeHandler, program.getTypeChecker(), introspectionContext.instrumentedLines, functionDeclarationNode);
     const generator = source.seed();
 
     async function evaluateSpecimen(basimen: BaseSpecimen) {

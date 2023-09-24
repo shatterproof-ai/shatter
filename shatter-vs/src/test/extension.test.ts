@@ -20,6 +20,8 @@ describe('scratch space', () => {
             mm: Map<number, any>,
         };
 
+        type nono = number;
+
         namespace Nomen {
             export type Z = {
                 a: number,
@@ -30,7 +32,7 @@ describe('scratch space', () => {
             nn: Map<number, any>,
         }
 
-        function hello(m:Map<string, number>, m2:M, n:MMM, nz:Nomen.Z, mnmnmn:Map<string, Map<number, Map<boolean, any>>>) {
+        function hello(m:Map<string, number>, m2:M, n:MMM, nz:Nomen.Z, mnmnmn:Map<string, Map<number, Map<boolean, any>>>, nooonoooo:nono) {
         }
 
         const y = () => 0;
@@ -48,12 +50,12 @@ describe('scratch space', () => {
 
 
         const dumpType = (type: ts.Type, line: number) => {
-
             return `TYPE (${line}): type.aliasSymbol?.getName() = ${type.aliasSymbol?.getName()
                 }; type.pattern?.getText() = ${type.pattern?.getText()
                 }; type.flags = ${type.flags
                 }; type.symbol.getName() = ${type.symbol?.getName()
                 }; type to string = ${checker.typeToString(type)
+                }; alias type args = ${type.aliasTypeArguments?.map((t) => checker.typeToString(t)).join(', ')})
                 }`;
         };
 
@@ -109,7 +111,7 @@ describe('scratch space', () => {
 describe('extension', () => {
     it('should pass', async () => {
         const sourceCode = `
-        function hello(n:number, msg:string) {
+        function hello(n:number, msgKey:string, messages:Map<string, string>, s_unused:Set<number>) {
             if (n <= 0) {
                 throw new Error("n must be at least 1");
             }
@@ -144,6 +146,7 @@ describe('extension', () => {
                 }
             }
 
+            const msg = messages.get(msgKey) ?? "default message";
             for (let i = 0; i < n; i++) {
                 if (i > 50) {
                     break;
