@@ -8,6 +8,7 @@ import { ResultCluster } from '../core/shatter';
 import { RunResult } from '../core/supervisor';
 import { hybridize } from './hybridize';
 import path = require('path');
+import { pick } from 'lodash';
 
 const gpv = (value: number | string | boolean, generator: string, options?: Record<string, any>): GeneratedParameter => ({
     id: createId(),
@@ -248,80 +249,12 @@ function* edgyNumbers(m = 1): Generator<GeneratedParameter, void, unknown> {
     }
 }
 
-//  progressively get weirder
-function* edgyFloats(): Generator<GeneratedParameter, void, unknown> {
-    const seeds = [
-        Math.PI,
-        Math.E,
-        Math.SQRT2,
-        Math.LN10,
-        Math.LN2,
-        Math.LOG10E,
-        Math.LOG2E,
-        Math.SQRT1_2,
-    ];
-
-    const bases = [[2, 63], [5, 6], [10, 10]];
-    const mults = [1, -1];
-
-    for (const powers of [1, 2, 3]) {
-        for (let i = -1; i < 50; i++) {
-            for (const seed of seeds) {
-                const v = i * seed;
-                const generatorName = i === 1 ? 'basicRationals' : 'basicRationalSimpleMultiples';
-                yield gpv(v, generatorName);
-            }
-        }
-
-        //  pure exponents e.g. 625, 4096, 100_000_000
-        for (const mult of mults) {
-            for (const [base, maxponent] of bases) {
-                for (let i = 0; i < maxponent; i++) {
-                    for (const seed of seeds) {
-                        const powered = seed * mult * (base ** i);
-                        yield gpv(powered, 'basicRationalsComplexMultiples');
-                    }
-                }
-            }
-        }
-
-        //  e.g. likely fractions
-        for (const mult of mults) {
-            for (let pow2 = -3; pow2 < 4; pow2++) {
-                for (let pow3 = -3; pow3 < 3; pow3++) {
-                    for (let pow5 = -3; pow5 < 3; pow5++) {
-                        for (let pow7 = -3; pow5 < 3; pow7++) {
-                            for (const seed of seeds) {
-                                const ppow = seed * mult * (2 ** pow2) * (3 ** pow3) * (5 ** pow5) * (7 ** pow7);
-                                yield gpv(ppow, 'basicRationalsExponentialProducts');
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    //  utterly stupid; just to make sure it doesn't run out of numbers
-    for (let i = 11; i < 2 ** 32; i = Math.ceil(1.3 * i) + 13) {
-        for (const s of seeds) {
-            yield gpv(i * s, 'basicRationalsPositiveStupid');
-            yield gpv(-(i * s), 'basicRationalsNegativeStupid');
-        }
-    }
-
-}
-
 function* edgyBooleans(): Generator<GeneratedParameter, void, unknown> {
     while (true) {
         yield gpv(true, 'edgyBooleans');
         yield gpv(false, 'edgyBooleans');
     }
 }
-
-const numberFakerses = {
-    'location': ['latitude', 'longitude']
-};
 
 export const optionVariantsLimited: Record<string, Record<string, any>> = {
     password: {
@@ -522,9 +455,29 @@ function* edgyStrings(): Generator<GeneratedParameter, void, unknown> {
         generator: string,
         function: Function,
     }[] = [];
-    for (const [name, generators] of Object.entries(dataDomains.string)) {
-        for (const generator of generators) {
-            gengen.push({ category: name, generator: generator.name, function: generator });
+
+    for (const s of seedStrings) {
+        yield {
+            id: createId(),
+            generator: 'seedStrings',
+            type: 'value',
+            value: s,
+        };
+    }
+
+    for (const s of breedStrings) {
+        yield {
+            id: createId(),
+            generator: 'seedStrings',
+            type: 'value',
+            value: s,
+        };
+    }
+
+
+    for (const [name, fakers] of Object.entries(dataDomains.string)) {
+        for (const faquer of fakers) {
+            gengen.push({ category: name, generator: faquer.name, function: faquer });
         };
     }
 
@@ -532,28 +485,31 @@ function* edgyStrings(): Generator<GeneratedParameter, void, unknown> {
     let i = 1;
     let generated = 0;
 
-    //  variations on just one thing
-    for (let i = 0; i < 10; i++) {
-        for (const gen of gengen) {
-            const v: string = gen.function();
-            yield gpv(v, 's(tr)ingle');
+    //  TODO: simplify; this doesn't need to be stateful like this; just have a Set<string> seen
+    while (true) {
+        //  variations on just one thing
+        for (let i = 0; i < 10; i++) {
+            for (const gen of gengen) {
+                const v: string = gen.function();
+                yield gpv(v, 's(tr)ingle');
+                generated++;
+            }
+        }
+
+        //  a mix of things
+        for (; i < 100_000; i = Math.ceil(i * 1.2)) {
+            const pieces: string[] = [];
+            while (pieces.length < i) {
+                if (pos >= gengen.length) {
+                    pos = 0;
+                }
+                const v = gengen[pos++].function();
+                pieces.push(v);
+            }
+            const v = pieces.join(' ');
+            yield gpv(v, 'mingle');
             generated++;
         }
-    }
-
-    //  a mix of things
-    for (; i < 100_000; i = Math.ceil(i * 1.2)) {
-        const pieces: string[] = [];
-        while (pieces.length < i) {
-            if (pos >= gengen.length) {
-                pos = 0;
-            }
-            const v = gengen[pos++].function();
-            pieces.push(v);
-        }
-        const v = pieces.join(' ');
-        yield gpv(v, 'mingle');
-        generated++;
     }
     console.error(`Apparently there are no strings left with i = ${i}; generated = ${generated}`);
 }
@@ -646,97 +602,6 @@ export class RetestCaseSource implements TestCaseSource {
     }
 }
 
-function* crossProductGenerator(input: any[]): Generator<GeneratedParameterList, void, void> {
-    if (input.length === 0) {
-        return;
-    }
-
-    let sequence = 0;
-    const [first, ...rest] = input;
-
-    if (first.type === 'empty') {
-        for (const node of crossProductGenerator(rest)) {
-            yield {
-                id: '',
-                sequence: sequence++,
-                parameters: [undefined, node.parameters]
-            };
-        }
-    } else if (first.type === 'any' || first.type === 'unknown') {
-        for (const value of first.range) {
-            for (const node of crossProductGenerator(rest)) {
-                yield {
-                    id: '',
-                    sequence: sequence++,
-                    parameters: [value, ...node.parameters]
-                };
-            }
-        }
-    } else if (first.type === 'number' || first.type === 'string' || first.type === 'boolean') {
-        for (const value of first.range) {
-            yield {
-                id: '',
-                sequence: sequence++,
-                parameters: [value],
-            };
-        }
-    } else if (first.type === 'array') {
-        if (first.range === null) {
-            //  TODO: error
-            return;
-        }
-
-        const lengths = [0, 1, 2, 3, 5, 8, 13];
-        const subCrossProductGenerator = crossProductGenerator([first.range]);
-        const values: any[] = [];
-        const maxNeeded = lengths.reduce((a, b) => a + b, 0);
-        for (const subNode of subCrossProductGenerator) {
-            values.push(subNode);
-            if (values.length >= maxNeeded) {
-                break;
-            }
-        }
-        let vi = 0;
-        for (const length of lengths) {
-            for (let j = 0; j < length; j++) {
-                const generated: GeneratedParameterList = {
-                    id: '',
-                    sequence: sequence++,
-                    parameters: values[vi++].parameters,
-                };
-
-                yield generated;
-                if (vi >= values.length) {
-                    vi = 0;
-                }
-            }
-        }
-    } else if (first.type === 'object') {
-        const keys = Object.keys(first.ranges);
-        const bs = Math.floor(Math.random() * 2 ** (keys.length + 1));    //  +1 because we want the leading digit to have a 50% chance
-        const permutations = 2 * keys.length;   //  arbitrary; can be smarter later
-        for (let i = 0; i < permutations; i++) {
-            const values: Record<string, any> = {};
-            for (let j = 0; j < keys.length; j++) {
-                const key = keys[j];
-                const value = first.ranges[key];
-                if ((bs & (1 << j)) !== 0) {
-                    // values[key] = constructValue(value);
-                }
-            }
-            yield {
-                id: '',
-                sequence: sequence++,
-                parameters: [values],
-            };
-        }
-    } else {
-        for (const node of crossProductGenerator(rest)) {
-            yield node;
-        }
-    }
-}
-
 export const comparameters = (a: any, b: any): number => {
     //  null and undefined always sort to the end
     if (a === null || a === undefined) {
@@ -804,20 +669,6 @@ export const comparameters = (a: any, b: any): number => {
 
     throw new Error(`Unexpected type ${typeof a}`);
 };
-
-function* roundRobin(...generators: Generator<GeneratedParameter, any, any>[]) {
-    let i = 0;
-    while (true) {
-        const g = generators[i];
-        const next = g.next();
-        if (next.done) {
-            generators[i] = generators[i];
-        } else {
-            yield next.value;
-            i = (i + 1) % generators.length;
-        }
-    }
-}
 
 export function computeDistance(a: any, b: any): number {
     if (a === b || a === null || b === null || a === undefined || b === undefined) {
@@ -942,36 +793,429 @@ enum
 
 */
 
+interface ValueGenerator {
+    next: () => Generator<GeneratedParameter, any, any>;
+}
+
+type Sizer = (o?: any) => Generator<number, any, any>;
+type PropertyPicker = (k: string[]) => Generator<string[], any, any>;
+type ElementsPicker = (max: number) => Generator<number[], any, any>;
+type ElementPicker = (max: number) => Generator<number, any, any>;
+
+class LiteralValueGenerator implements ValueGenerator {
+    constructor(private value: any) { }
+    *next(): Generator<GeneratedParameter, any, any> {
+        while (true) {
+            yield {
+                id: createId(),
+                generator: this.constructor.name,
+                type: 'value',
+                value: this.value,
+            };
+        }
+    }
+}
+
+class SimpleValueGenerator implements ValueGenerator {
+    constructor(private flags: ts.TypeFlags) { }
+
+    *next(): Generator<GeneratedParameter, any, any> {
+        while (true) {
+            switch (this.flags) {
+                case ts.TypeFlags.Any:
+                case ts.TypeFlags.Unknown:
+                    yield* edgyAny();
+                    break;
+                case ts.TypeFlags.String:
+                    yield* edgyStrings();
+                    break;
+                case ts.TypeFlags.Number:
+                    yield* edgyNumbers();
+                    break;
+                case ts.TypeFlags.Boolean:
+                    yield* edgyBooleans();
+                    break;
+                default:
+                    throw new Error(`Unexpected type ${this.flags}`);
+            }
+        }
+    }
+}
+
+class RoundRobinValueGenerator implements ValueGenerator {
+    constructor(private values: any[]) { }
+
+    *next(): Generator<GeneratedParameter, any, any> {
+        while (true) {
+            for (const v of this.values) {
+                yield {
+                    id: createId(),
+                    generator: this.constructor.name,
+                    type: 'value',
+                    value: v,
+                };
+            }
+        }
+    }
+}
+
 //  composite generators
-interface SimpleObjectGenerator {
-    propertyGenerators: Record<string, Generator<GeneratedParameter, any, any>>,
+class SimpleObjectGenerator implements ValueGenerator {
+    constructor(
+        private propertyGenerators: Record<string, Generator<GeneratedParameter, any, any>>,
+        private picker?: PropertyPicker,
+    ) { }
+
+    *next(): Generator<GeneratedParameter, any, any> {
+        const allProperties = Object.keys(this.propertyGenerators);
+        const keysGenerator = this.picker
+            ? this.picker(allProperties)
+            : function* () {
+                while (true) {
+                    yield allProperties;
+                }
+            }();
+
+        while (true) {
+            for (const keys of keysGenerator) {
+                const o: Record<string, GeneratedParameter> = {};
+                for (const k of keys) {
+                    const key = k as string;
+                    const next = this.propertyGenerators[key].next();
+                    if (next.done) {
+                        throw new Error(`Generator ${key} is done`);
+                    }
+
+                    o[key] = next.value;
+                }
+
+                yield {
+                    id: createId(),
+                    generator: this.constructor.name,
+                    type: 'object',
+                    properties: o,
+                };
+            }
+        }
+    }
 }
 
-interface ArrayGenerator {
-    elementGenerator: Generator<GeneratedParameter, any, any>,
-    sizeGenerator: Generator<number, any, any>,
+class ArrayGenerator implements ValueGenerator {
+    constructor(
+        private elementGenerator: Generator<GeneratedParameter, any, any>,
+        private sizer: Sizer,
+    ) { }
+
+    *next(): Generator<GeneratedParameter, any, any> {
+        while (true) {
+            for (const count of this.sizer()) {
+                const a = [];
+                for (let i = 0; i < count; i++) {
+                    const next = this.elementGenerator.next();
+                    if (next.done) {
+                        throw new Error(`Generator ${this.elementGenerator.constructor.name} is done`);
+                    }
+                    a.push(next.value);
+                }
+
+                yield {
+                    id: createId(),
+                    generator: this.constructor.name,
+                    type: 'array',
+                    range: a,
+                };
+            }
+        }
+    }
 }
 
-interface MapGenerator {
-    keyGenerator: Generator<GeneratedParameter, any, any>,
-    valueGenerator: Generator<GeneratedParameter, any, any>,
-    sizeGenerator: Generator<number, any, any>,
+class MapGenerator implements ValueGenerator {
+    constructor(
+        private keyGenerator: Generator<GeneratedParameter, any, any>,
+        private valueGenerator: Generator<GeneratedParameter, any, any>,
+        private sizer: Sizer,
+    ) { }
+
+    *next(): Generator<GeneratedParameter, any, any> {
+        while (true) {
+            for (const count of this.sizer()) {
+                const m = new Map();
+                for (let i = 0; i < count; i++) {
+                    const key = this.keyGenerator.next();
+                    if (key.done) {
+                        throw new Error(`Generator ${this.keyGenerator.constructor.name} is done`);
+                    }
+                    const value = this.valueGenerator.next();
+                    if (value.done) {
+                        throw new Error(`Generator ${this.valueGenerator.constructor.name} is done`);
+                    }
+                    m.set(key.value, value.value);
+                }
+                yield {
+                    id: createId(),
+                    generator: this.constructor.name,
+                    type: 'class',
+                    instance: m,
+                };
+            }
+        }
+    }
 }
 
-interface SetGenerator {
-    elementGenerator: Generator<GeneratedParameter, any, any>,
-    sizeGenerator: Generator<number, any, any>,
+class SetGenerator implements ValueGenerator {
+    constructor(
+        private elementGenerator: Generator<GeneratedParameter, any, any>,
+        private sizer: Sizer,
+    ) { }
+
+    *next(): Generator<GeneratedParameter, any, any> {
+        while (true) {
+            for (const count of this.sizer()) {
+                const s = new Set();
+                for (let i = 0; i < count; i++) {
+                    const next = this.elementGenerator.next();
+                    if (next.done) {
+                        throw new Error(`Generator ${this.elementGenerator.constructor.name} is done`);
+                    }
+                    s.add(next.value);
+                }
+                yield {
+                    id: createId(),
+                    generator: this.constructor.name,
+                    type: 'class',
+                    instance: s,
+                };
+            }
+        }
+    }
 }
 
-interface UnionGenerator {
-    generators: Generator<GeneratedParameter, any, any>[],
+//  TODO: IntersectionGenerator;
+//  intersections are just objects
+
+class IntersectionGenerator implements ValueGenerator {
+    constructor(
+        private generators: Generator<GeneratedParameter, any, any>[],
+    ) { }
+
+    *next(): Generator<GeneratedParameter, any, any> {
+        while (true) {
+            // const values: any[] = [];
+            // const keyCount:Record<string, number> = {};
+            // for (const generator of this.generators) {
+            //     const next = generator.next();
+            //     if (next.done) {
+            //         throw new Error(`Generator ${generator.constructor.name} is done`);
+            //     }
+            //     const o = next.value;
+            //     for (const key of Object.keys(o)) {
+            //         if (!keyCount[key]) {
+            //             keyCount[key] = 0;
+            //         }
+            //         keyCount[key]++;
+            //     }
+            //     values.push(o);
+            // }
+
+            // const keys = Object.keys(keyCount).filter(k => keyCount[k] === values.length);
+            // const o: Record<string, any> = {};
+            // for (const key of keys) {
+            //     const generatorsForKey = this.generators.map(g => g[key]);
+            //     o[key] = new IntersectionGenerator(generatorsForKey).next().value;
+            // }
+
+
+            // yield {
+            //     id: createId(),
+            //     generator: this.constructor.name,
+            //     type: 'object',
+            //     properties: values,
+            // };
+        }
+    }
 }
 
-interface IntersectionGenerator {
-    generators: Generator<GeneratedParameter, any, any>[],
+class UnionGenerator implements ValueGenerator {
+    constructor(
+        private generators: Generator<GeneratedParameter, any, any>[],
+        private picker: ElementPicker,
+    ) { }
+
+    *next(): Generator<GeneratedParameter, any, any> {
+        while (true) {
+            for (const index of this.picker(this.generators.length)) {
+                const generator = this.generators[index];
+                const next = generator.next();
+                if (next.done) {
+                    throw new Error(`Generator ${generator.constructor.name} is done`);
+                }
+                yield next.value;
+            }
+        }
+    }
 }
 
+//  like an array but can be heterogeneous
+class TupleGenerator implements ValueGenerator {
+    constructor(
+        private generators: Generator<GeneratedParameter, any, any>[],
+    ) { }
 
+    *next(): Generator<GeneratedParameter, any, any> {
+        while (true) {
+            const values: any[] = [];
+            for (const generator of this.generators) {
+                const next = generator.next();
+                if (next.done) {
+                    throw new Error(`Generator ${generator.constructor.name} is done`);
+                }
+                values.push(next.value);
+            }
+        }
+    }
+}
+
+//  TODO: at some point create jq-compatible paths in pathToHere for neatness
+function* generatorator(checker: ts.TypeChecker, currentType: ts.Type, currentDepth: number, pathToHere: string[] = []): Generator<GeneratedParameter, any, any> {
+    const targetCollectionSizes = [3, 0, 1, 10, 2];
+
+    if (currentDepth < 0) {
+        return new LiteralValueGenerator(undefined);
+    }
+
+    function* stupidSizer() {
+        let i = 0;
+        while (true) {
+            yield targetCollectionSizes[i++ % targetCollectionSizes.length];
+        }
+    }
+
+    function* stupidPicker(max: number) {
+        let i = 0;
+        while (true) {
+            yield i++ % max;
+        }
+    }
+
+    function* stupidPropertyPicker(keys: string[]) {
+        while (true) {
+            yield keys;
+        }
+    }
+
+    switch (currentType.flags) {
+        case ts.TypeFlags.Any:
+        case ts.TypeFlags.Unknown:
+        case ts.TypeFlags.String:
+        case ts.TypeFlags.Number:
+        case ts.TypeFlags.Boolean:
+            return new SimpleValueGenerator(currentType.flags);
+
+        case ts.TypeFlags.StringLiteral:
+            return new LiteralValueGenerator("TODO extract literal value");
+
+        case ts.TypeFlags.NumberLiteral:
+            //  TODO extract literal value
+            return new LiteralValueGenerator(4);
+
+        //  TODO extract literal value
+        case ts.TypeFlags.BooleanLiteral:
+            return new LiteralValueGenerator(true);
+
+        case ts.TypeFlags.EnumLiteral:
+            if (isEnumType(currentType)) {
+                const enumValues = currentType.symbol.members;
+                if (enumValues) {
+                    return new RoundRobinValueGenerator(Object.values(enumValues));
+                }
+                throw new Error(`Enum type ${checker.typeToString(currentType)} has no values`);
+            }
+            throw new Error(`Impossible type ${currentType.flags}`);
+
+        case ts.TypeFlags.Null:
+            return new LiteralValueGenerator(null);
+
+        case ts.TypeFlags.Undefined:
+            return new LiteralValueGenerator(undefined);
+
+        case ts.TypeFlags.Object:
+            if (checker.isArrayType(currentType)) {
+                return new ArrayGenerator(generatorator(checker, checker.getTypeArguments(currentType as ts.TypeReference)[0], currentDepth - 1, pathToHere.concat(".[]")), stupidSizer);
+            }
+            if (currentType.isIntersection()) {
+                const intersectingTypes = currentType.types;
+                //  presumably must be an object type
+                throw new Error("Not ready for intersectionality");
+            }
+            if (currentType.isUnion()) {
+                const unionTypes = currentType.types;
+                const generators: Generator<GeneratedParameter, any, any>[] = [];
+                for (const unionType of unionTypes) {
+                    generators.push(generatorator(checker, unionType, currentDepth, pathToHere.concat(" | ")));
+                }
+                return new UnionGenerator(generators, stupidPicker);
+            }
+
+            const typeName = currentType.getSymbol()?.getName();
+            if (typeName === 'Map') {
+                if (!isTypeReference(currentType)) {
+                    throw new Error(`Unexpected type not a reference ${checker.typeToString(currentType)}`);
+                }
+                const [keyType, valueType] = (() => {
+                    if (currentType.typeArguments && currentType.typeArguments.length === 2) {
+                        return currentType.typeArguments;
+                    }
+                    //  when types are not specified, just go string=>string
+                    return [checker.getStringType(), checker.getStringType()];
+                })();
+
+                const keyGenerator = generatorator(checker, keyType, currentDepth - 1, pathToHere.concat('.key'));
+                const valueGenerator = generatorator(checker, valueType, currentDepth - 1, pathToHere.concat('.value'));
+                return new MapGenerator(keyGenerator, valueGenerator, stupidSizer);
+            }
+
+            if (typeName === 'Set') {
+                if (!isTypeReference(currentType)) {
+                    throw new Error(`Unexpected type not a reference ${checker.typeToString(currentType)}`);
+                }
+
+                //  when unspecified make it a string
+                const elementType = currentType.typeArguments?.length === 1 ? currentType.typeArguments[0] : checker.getStringType();
+
+                const elementGenerator = generatorator(checker, elementType, currentDepth - 1, pathToHere.concat('.element'));
+                return new SetGenerator(elementGenerator, stupidSizer);
+            }
+
+            const propertyGenerators: Record<string, Generator<GeneratedParameter, any, any>> = {};
+            checker.getPropertiesOfType(currentType).forEach(p => {
+                if (p.valueDeclaration) {
+                    const t = checker.getTypeOfSymbolAtLocation(p, p.valueDeclaration);
+                    propertyGenerators[p.name] = generatorator(checker, t, currentDepth - 1, pathToHere.concat(`.${p.name}`));
+                }
+            });
+
+            return new SimpleObjectGenerator(propertyGenerators, stupidPropertyPicker);
+    };
+
+    throw new Error(`Unexpected type ${checker.typeToString(currentType)}`);
+}
+
+//  construct a stateful hierarchy of generators    
+function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclaration) {
+    const generators: Generator<GeneratedParameter, any, any>[] = [];
+    for (let j = 0; j < f.parameters.length; j++) {
+        const t = f.parameters[j].type;
+        const currentType = t
+            ? checker.getTypeAtLocation(t)
+            : checker.getAnyType();
+
+        const generator = generatorator(checker, currentType, 3, []);
+        generators.push(generator);
+    }
+
+    const tg = new TupleGenerator(generators);
+    yield* tg.next();
+}
 
 export class CombinatorialTestCaseSource /* implements TestCaseSource */ {
 
@@ -1005,7 +1249,7 @@ export class CombinatorialTestCaseSource /* implements TestCaseSource */ {
         (how to avoid just regenerating the previously attempted non-minimal values
             or ones that will be similarly ineffective?)
     6) take the minima, compare them against the other clusters and hybridize for edginess
-
+ 
     */
 
 
@@ -1015,242 +1259,7 @@ export class CombinatorialTestCaseSource /* implements TestCaseSource */ {
         const f = this.f;
         const checker = this.checker;
 
-
-        //  TODO: at some point create jq-compatible paths for neatness
-        const toKey = (path: (string | number)[], value: any) => {
-            return JSON.stringify({ path, value });
-        };
-
-        const generatorForType = function* (currentType: ts.Type, allowedDepth: number, pathToHere: (string | number)[]) {
-            const edgies: Partial<Record<ts.TypeFlags, (() => Generator<GeneratedParameter, any, any>)>> = {
-                [ts.TypeFlags.Any]: edgyAny,
-                [ts.TypeFlags.Unknown]: edgyAny,
-                [ts.TypeFlags.String]: function* () {
-                    for (const s of seedStrings) {
-                        yield gpv(s, 'mostSpecialStrings');
-                    }
-                },
-                [ts.TypeFlags.Number]: function* () {
-                    for (const n of seedNumbers) {
-                        yield gpv(n, 'mostSpecialNumbers');
-                    }
-                },
-                [ts.TypeFlags.Boolean]: edgyBooleans,
-            };
-            edgies[ts.TypeFlags.BooleanLiteral] = edgies[ts.TypeFlags.Boolean];
-            edgies[ts.TypeFlags.NumberLiteral] = edgies[ts.TypeFlags.Number];
-            edgies[ts.TypeFlags.StringLiteral] = edgies[ts.TypeFlags.String];
-            edgies[ts.TypeFlags.StringOrNumberLiteral] = () => roundRobin(edgies[ts.TypeFlags.StringLiteral] as any, edgies[ts.TypeFlags.NumberLiteral] as any);
-    
-            if (isEnumType(currentType)) {
-                const enumValues = currentType.symbol.members;
-                if (enumValues) {
-                    for (const k of Object.keys(enumValues)) {
-                        const value = enumValues[k as keyof typeof enumValues];
-                        yield {
-                            id: createId(),
-                            generator: "custom-type-handler-enum",
-                            type: 'value',
-                            value,
-                            options: {},
-                        };
-                    }
-                }
-
-                return;
-            }
-
-            if (currentType.isIntersection()) {
-                const intersectingTypes = currentType.types;
-                //  presumably must be an object type
-                const o: Record<string, GeneratedParameter> = {};
-                intersectingTypes.forEach((t) => {
-                    //  TODO: convert to generator for type
-                    const v = valueForType(checker, t, allowedDepth, pathToHere.concat('.&'));
-                    if (v) {
-                        Object.assign(o, v);
-                    }
-                });
-
-                yield {
-                    id: createId(),
-                    generator: 'intersector',
-                    type: 'object',
-                    properties: o,
-                };
-
-                return;
-            }
-            
-            const targetCollectionSizes = [3, 0, 1, 10, 2];
-
-            if (checker.isArrayType(currentType)) {
-                const typeargs = checker.getTypeArguments(currentType as ts.TypeReference);
-                const elementttype = typeargs[0];
-
-                const values: any[] = [];
-
-                for (const length of targetCollectionSizes) {
-                    for (let i = 0; i < length; i++) {
-                        const a = valueForType(checker, elementttype, allowedDepth - 1, pathToHere.concat(".[]"));
-                        values.push(a);
-                    }
-
-                    yield {
-                        id: createId(),
-                        generator: 'array',
-                        type: 'array',
-                        range: values,
-                        options: {
-                            length,
-                        },
-                    };
-                }
-
-                return;
-            }
-
-            if (currentType.flags === ts.TypeFlags.Object) {
-                if (allowedDepth === 0) {
-                    while (true) {
-                        yield {
-                            id: createId(),
-                            generator: 'object',
-                            type: 'object',
-                            properties: {},
-                        };
-                    }
-                }
-
-                const typeName = currentType.getSymbol()?.getName();
-                if (typeName === 'Map') {
-                    if (!isTypeReference(currentType)) {
-                        throw new Error(`Unexpected type not a reference ${checker.typeToString(currentType)}`);
-                    }
-                    const [keyType, valueType] = (() => {
-                        if (currentType.typeArguments && currentType.typeArguments.length === 2) {
-                            return currentType.typeArguments;
-                        }
-                        //  when types are not specified, just go string=>string
-                        return [checker.getStringType(), checker.getStringType()];
-                    })();
-
-                    for (const targetSize of targetCollectionSizes) {
-                        const m = new Map();
-                        for (let i = 0; i < targetSize; i++) {
-                            let knext = valueForType(checker, keyType, allowedDepth - 1, pathToHere.concat('.key'));
-                            let vnext = valueForType(checker, valueType, allowedDepth - 1, pathToHere.concat('.value'));
-
-                            const key = gpValue(knext);
-                            const value = gpValue(vnext);
-
-                            m.set(key, value);
-                        }
-
-                        yield {
-                            id: createId(),
-                            generator: "custom-type-handler-map",
-                            type: 'class',
-                            instance: m,
-                        };
-                    }
-                    return;
-                }
-
-                if (typeName === 'Set') {
-                    if (!isTypeReference(currentType)) {
-                        throw new Error(`Unexpected type not a reference ${checker.typeToString(currentType)}`);
-                    }
-
-                    //  when unspecified make it a string
-                    const elementType = currentType.typeArguments?.length === 1 ? currentType.typeArguments[0] : checker.getStringType();
-
-                    for (const targetSize of targetCollectionSizes) {
-                        const s = new Set();
-                        for (let i = 0; i < targetSize; i++) {
-                            const element = g(checker, elementType, allowedDepth - 1, pathToHere.concat('.element'));
-                            s.add(gpValue(element));
-                        }
-
-                        yield {
-                            id: createId(),
-                            generator: "custom-type-handler-set",
-                            type: 'class',
-                            instance: s,
-                        };
-                    }
-                    return;
-                }
-
-                while (true) {
-                    //  TODO: omit some, add some extra
-                    const o: Record<string, GeneratedParameter> = {};
-                    currentType.getProperties().forEach((prop) => {
-                        if (prop.valueDeclaration) {
-                            const proptype = checker.getTypeOfSymbolAtLocation(prop, prop.valueDeclaration);
-                            //  TODO: if the type doesn't allow null or missing....?
-                            o[prop.name] = valueForType(checker, proptype, allowedDepth - 1, pathToHere.concat(`.["${prop.escapedName}"]`));
-                        }
-                    });
-    
-                    yield {
-                        id: createId(),
-                        generator: 'object',
-                        type: 'object',
-                        properties: o,
-                    };
-                }
-                return;
-            }
-        };
-
-
-        const valueForType = function (checker: ts.TypeChecker, currentType: ts.Type, allowedDepth: number, pathToHere: (string | number)[]): GeneratedParameter {
-            const strungPath = pathToHere.join('.');
-
-            while (true) {
-                let pathGenerator = that.activeGenerators.get(strungPath);
-                if (!pathGenerator) {
-                    let gengens = edgies[currentType.flags];
-                    if (!gengens) {
-                        if (currentType.isUnion()) {
-                            const unitedTypes = currentType.types;
-                            function* genUnion() {
-                                for (const t of unitedTypes) {
-                                    const v = valueForType(checker, t, allowedDepth, pathToHere.concat('.|'));
-                                    if (v) {
-                                        yield v;
-                                    }
-                                }
-                            }
-
-                            gengens = genUnion;
-                        } else {
-                            throw new Error(`Dunno how to handle type ${currentType.flags}: ${checker.typeToString(currentType)}`);
-                        }
-                    }
-
-                    pathGenerator = gengens();
-                    that.activeGenerators.set(strungPath, pathGenerator);
-                }
-
-                let next = pathGenerator.next();
-                if (!next.done) {
-                    const key = toKey(pathToHere, next.value);
-                    //  in theory we want to avoid the same value in the same place repeatedly
-                    //  but it's not terrible, and the whole object duplicate avoidance may be adequate
-                    // if (!fqseen.has(key)) {
-                    return next.value;
-                    // }
-                    // next = gengens[i].next();
-                }
-                //  restart the generator
-                that.activeGenerators.delete(strungPath);
-            }
-
-            throw new Error(`Ran out of values for ${currentType.flags}: ${checker.typeToString(currentType)} at ${JSON.stringify(pathToHere)}`);
-        };
-
+        //  TODO: using TupleGenerator and then unpacking like this... needlessly elaborate?
         const toValue = (node: GeneratedParameter): any => {
             if (node.type === 'value') {
                 return node.value;
@@ -1271,23 +1280,12 @@ export class CombinatorialTestCaseSource /* implements TestCaseSource */ {
             throw new Error(`Unexpected type ${node['type']}`);
         };
 
-        for (let i = 0; i < newGenPerPass; i++) {
-            const parameters: any[] = [];
-            for (let j = 0; j < f.parameters.length; j++) {
-                const t = f.parameters[j].type;
-                const currentType = t
-                    ? checker.getTypeAtLocation(t)
-                    : checker.getAnyType();
-
-                const p: GeneratedParameter = valueForType(checker, currentType, 4, [j]);
-                const v = toValue(p);
-                parameters.push(v);
-            }
-
+        const generator = functionGeneratorator(checker, f);
+        for (const value of generator) {
             yield {
                 id: createId(),
                 sequence: this.counter++,
-                parameters,
+                parameters: toValue(value),
                 type: 'seed',
             };
         }
