@@ -5,6 +5,106 @@ import { join } from 'path';
 import { faker } from '@faker-js/faker';
 import { optionVariantsMedium, stringFakerses } from '../core/generator';
 import { shatterAutotest } from "../core/shatter";
+import * as ts from 'typescript';
+namespace Nomen {
+    export type Z = {
+        a: number,
+    };
+}
+
+
+describe('scratch space', () => {
+    it('does', () => {
+        const sourceCode = `
+        type M = {
+            mm: Map<number, any>,
+        };
+
+        namespace Nomen {
+            export type Z = {
+                a: number,
+            };
+        }
+        
+        interface MMM {
+            nn: Map<number, any>,
+        }
+
+        function hello(m:Map<string, number>, m2:M, n:MMM, nz:Nomen.Z, mnmnmn:Map<string, Map<number, Map<boolean, any>>>) {
+        }
+
+        const y = () => 0;
+        `;
+
+        const tempdir = mkdtempSync(join(tmpdir(), "shatter-test-"));
+        const sourceFilePath = join(tempdir, 'zert.ts');
+        writeFileSync(sourceFilePath, sourceCode);
+
+        const program = ts.createProgram([sourceFilePath], {});
+
+        const checker = program.getTypeChecker();
+
+        const source = program.getSourceFile(sourceFilePath);
+
+
+        const dumpType = (type: ts.Type, line: number) => {
+
+            return `TYPE (${line}): type.aliasSymbol?.getName() = ${type.aliasSymbol?.getName()
+                }; type.pattern?.getText() = ${type.pattern?.getText()
+                }; type.flags = ${type.flags
+                }; type.symbol.getName() = ${type.symbol?.getName()
+                }; type to string = ${checker.typeToString(type)
+                }`;
+        };
+
+        const visitor = (node: ts.Node) => {
+            if (ts.isFunctionLike(node)) {
+                node.parameters.forEach((param) => {
+                    const typeNode = param.type;
+                    if (!typeNode) {
+                        return;
+                    }
+
+                    const dumpTypeNode = (typeNode: ts.TypeNode, soFar:string[]=[]) => {
+                        const baseType = checker.getTypeFromTypeNode(typeNode);
+                        const line = ts.getLineAndCharacterOfPosition(source!, typeNode.pos).line;
+            
+                        console.log(`PARAMETER NODE Name: ${param.name.getText()} ${soFar.join('.')}; flags = ${typeNode.flags
+                            }; text = ${typeNode.getText()
+                            }; dumpTypes = ${dumpType(baseType, line)
+                            }`);
+            
+                        if (ts.isTypeReferenceNode(typeNode)) {
+                            const referencedType = checker.getTypeFromTypeNode(typeNode);
+                            console.log(`TYPE REFERENCE NODE: ${typeNode.typeName.getText()}; typeNode.flags = ${typeNode.flags}; FQN = ${checker.getFullyQualifiedName(referencedType.symbol)
+                                }; dumpTypes = ${dumpType(referencedType, -1)
+                                }`);
+                            typeNode.typeArguments?.forEach((typeArg, i) => {
+                                dumpTypeNode(typeArg, soFar.concat([`typeArg${i}`]));
+                            });
+                        }
+            
+                    };
+            
+                    dumpTypeNode(typeNode);
+                });
+                return;
+            }
+            if (ts.isInterfaceDeclaration(node)) {
+
+            }
+            if (ts.isTypeAliasDeclaration(node)) {
+            }
+            node.getChildren().forEach((child) => {
+                ts.visitNode(child, visitor);
+            });
+            return node;
+        };
+        ts.visitNode(source, visitor);
+
+    });
+});
+
 
 describe('extension', () => {
     it('should pass', async () => {
@@ -124,7 +224,7 @@ const permute = function* (first: [string, (string | number)[]], rest: [string, 
 
 describe('throwaway', () => {
     it('does', () => {
-        const strangs:string[] = [];
+        const strangs: string[] = [];
         Object.entries(stringFakerses).forEach(([domain, generators]) => {
             generators.forEach((generator) => {
                 for (let i = 0; i < 1; i++) {

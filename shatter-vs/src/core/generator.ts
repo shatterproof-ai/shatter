@@ -577,6 +577,9 @@ export type GeneratedParameter = {
     type: 'array',
     range: GeneratedParameter[],
 } | {
+    type: 'class',
+    instance: any,
+} | {
     type: 'object',
     properties: Record<string, GeneratedParameter>,
 });
@@ -860,6 +863,107 @@ export function computeDistance(a: any, b: any): number {
     throw new Error(`Unexpected type ${typeof a}`);
 }
 
+export interface CustomTypeHandler {
+    //  false means it cannot handle the type.  If it can handle the type but has no values,
+    //  it should return an empty generator
+    generatorFor(sourceFile: ts.SourceFile, checker: ts.TypeChecker, typeNode: ts.TypeNode, allowedDepth: number, pathToHere: (string | number)[],
+        g: (checker: ts.TypeChecker, currentType: ts.Type, allowedDepth: number, pathToHere: (string | number)[]) => GeneratedParameter
+    ): Generator<GeneratedParameter, any, any> | false
+}
+
+const gpValue = (gp: GeneratedParameter) => {
+    switch (gp.type) {
+        case 'value':
+            return gp.value;
+        case 'array':
+            return gp.range;
+        case 'class':
+            return gp.instance;
+        case 'object':
+            return gp.properties;
+    }
+    throw new Error(`Unexpected type ${gp['type']}`);
+};
+
+export class DefaultCustomTypeHandler implements CustomTypeHandler {
+    *generatorFor(sourceFile: ts.SourceFile, checker: ts.TypeChecker, typeNode: ts.TypeNode, allowedDepth: number, pathToHere: (string | number)[],
+        g: (checker: ts.TypeChecker, currentType: ts.Type, allowedDepth: number, pathToHere: (string | number)[]) => GeneratedParameter
+    ): Generator<GeneratedParameter, any, any> | false {
+        //  Set, Map, Date, and Enum
+        const type = checker.getTypeFromTypeNode(typeNode);
+        const targetCollectionSizes = [3, 0, 1, 10, 2];
+
+        if (ts.isClassLike(typeNode)) {
+            if (typeNode.name?.text === 'Map') {
+
+                const typeargs = checker.getTypeArguments(type as ts.TypeReference);
+                const keyType = typeargs[0];
+                const valueType = typeargs[1];
+
+                for (const targetSize of targetCollectionSizes) {
+                    const m = new Map();
+                    for (let i = 0; i < targetSize; i++) {
+                        let knext = g(checker, keyType, allowedDepth, pathToHere.concat('.key'));
+                        let vnext = g(checker, valueType, allowedDepth - 1, pathToHere.concat('.value'));
+
+                        const key = gpValue(knext);
+                        const value = gpValue(vnext);
+
+                        m.set(key, value);
+
+                    }
+                    yield {
+                        id: createId(),
+                        generator: "custom-type-handler-map",
+                        type: 'class',
+                        instance: m,
+                    };
+                }
+
+                return;
+            }
+
+            if (typeNode.name?.text === 'Set') {
+                const typeargs = checker.getTypeArguments(type as ts.TypeReference);
+                const elementType = typeargs[0];
+                for (const targetSize of targetCollectionSizes) {
+                    const s = new Set();
+                    for (let i = 0; i < targetSize; i++) {
+                        const element = g(checker, elementType, allowedDepth - 1, pathToHere.concat('.element'));
+                        s.add(gpValue(element));
+                    }
+                    yield {
+                        id: createId(),
+                        generator: "custom-type-handler-set",
+                        type: 'class',
+                        instance: s,
+                    };
+                }
+                return;
+            }
+        }
+
+        if (type.flags === ts.TypeFlags.EnumLiteral) {
+            const enumType = checker.getTypeAtLocation(typeNode);
+            const enumName = enumType.symbol.name;
+            const enumValues = enumType.symbol.members;
+            if (enumValues) {
+                for (const k of Object.keys(enumValues)) {
+                    const value = enumValues[k as keyof typeof enumValues];
+                    yield {
+                        id: createId(),
+                        generator: "custom-type-handler-enum",
+                        type: 'value',
+                        value,
+                        options: {},
+                    };
+                }
+            }
+            return;
+        }
+    }
+}
+
 export class CombinatorialTestCaseSource /* implements TestCaseSource */ {
 
     private counter = 0;
@@ -874,6 +978,8 @@ export class CombinatorialTestCaseSource /* implements TestCaseSource */ {
     private allExecutedLines = new Set<number>();
 
     constructor(
+        //  Have one single handler; if multiple are required, use delegation.  This 
+        private customTypeHandler: CustomTypeHandler,
         private checker: ts.TypeChecker,
         private allInstrumentedLines: Set<number>,
         private f: ts.FunctionDeclaration) {
@@ -923,94 +1029,87 @@ export class CombinatorialTestCaseSource /* implements TestCaseSource */ {
             return JSON.stringify({ path, value });
         };
 
-        const valueForTypeNode = function (checker: ts.TypeChecker, typeNode: ts.TypeNode, allowedDepth: number, pathToHere: (string | number)[],): GeneratedParameter {
-            if (ts.isTypeReferenceNode(typeNode)) {
+        const valueForType = function (checker: ts.TypeChecker, currentType: ts.Type, allowedDepth: number, pathToHere: (string | number)[]): GeneratedParameter {
+            const customGenerator = that.customTypeHandler.generatorFor(that.f.getSourceFile(), checker,
+                currentType, allowedDepth, pathToHere,
 
+                //  enclosure to retain 'this'
+                (checker: ts.TypeChecker, currentType: ts.Type, allowedDepth: number, pathToHere: (string | number)[]) => {
+                    valueForType(checker, currentType, allowedDepth, pathToHere);
+                }
+            );
+            const strungPath = pathToHere.join('.');
+            if (customGenerator) {
+                that.valueGenerators.set(strungPath, customGenerator);
             } else {
-                const currentType = typeNode
-                    ? checker.getTypeAtLocation(typeNode)
-                    : checker.getAnyType();
-
-                const p: GeneratedParameter = valueForType(checker, currentType, 4, [j]);
-                return p;
-            }
-        }
-
-        const valueForType = function (checker: ts.TypeChecker, currentType: ts.Type, allowedDepth: number, pathToHere: (string | number)[],): GeneratedParameter {
-            if (checker.isArrayType(currentType)) {
-                //  TODO: ugly cast
-                const typeargs = checker.getTypeArguments(currentType as ts.TypeReference);
-                const elementttype = typeargs[0];
-
-                const values: any[] = [];
-
-                const length = Math.floor(Math.random() * 10);
-
-                for (let i = 0; i < length; i++) {
-                    const a = valueForType(checker, elementttype, allowedDepth - 1, pathToHere.concat(".[]"));
-                    values.push(a);
+                if (currentType.isIntersection()) {
+                    const intersectingTypes = currentType.types;
+                    //  presumably must be an object type
+                    const o: Record<string, GeneratedParameter> = {};
+                    intersectingTypes.forEach((t) => {
+                        const v = valueForType(checker, t, allowedDepth, pathToHere.concat('.&'));
+                        if (v) {
+                            Object.assign(o, v);
+                        }
+                    });
+                    return {
+                        id: createId(),
+                        generator: 'intersector',
+                        type: 'object',
+                        properties: o,
+                    };
                 }
 
-                return {
-                    id: createId(),
-                    generator: 'array',
-                    type: 'array',
-                    range: values,
-                    options: {
-                        length,
-                    },
-                };
-            }
+                if (checker.isArrayType(currentType)) {
+                    const typeargs = checker.getTypeArguments(currentType as ts.TypeReference);
+                    const elementttype = typeargs[0];
 
-            if (currentType.flags === ts.TypeFlags.Object) {
-                if (allowedDepth === 0) {
+                    const values: any[] = [];
+
+                    const length = Math.floor(Math.random() * 10);
+
+                    for (let i = 0; i < length; i++) {
+                        const a = valueForType(checker, elementttype, allowedDepth - 1, pathToHere.concat(".[]"));
+                        values.push(a);
+                    }
+
+                    return {
+                        id: createId(),
+                        generator: 'array',
+                        type: 'array',
+                        range: values,
+                        options: {
+                            length,
+                        },
+                    };
+                }
+
+                if (currentType.flags === ts.TypeFlags.Object) {
+                    if (allowedDepth === 0) {
+                        return {
+                            id: createId(),
+                            generator: 'object',
+                            type: 'object',
+                            properties: {},
+                        };
+                    }
+                    //  TODO: omit some, add some extra
+                    const o: Record<string, GeneratedParameter> = {};
+                    currentType.getProperties().forEach((prop) => {
+                        if (prop.valueDeclaration) {
+                            const proptype = checker.getTypeOfSymbolAtLocation(prop, prop.valueDeclaration);
+                            //  TODO: if the type doesn't allow null or missing....?
+                            o[prop.name] = valueForType(checker, proptype, allowedDepth - 1, pathToHere.concat(`.["${prop.escapedName}"]`));
+                        }
+                    });
+
                     return {
                         id: createId(),
                         generator: 'object',
                         type: 'object',
-                        properties: {},
+                        properties: o,
                     };
                 }
-
-
-                currentType.pattern
-
-
-                //  TODO: omit some, add some extra
-                const o: Record<string, GeneratedParameter> = {};
-                currentType.getProperties().forEach((prop) => {
-                    if (prop.valueDeclaration) {
-                        const proptype = checker.getTypeOfSymbolAtLocation(prop, prop.valueDeclaration);
-                        //  TODO: if the type doesn't allow null or missing....?
-                        o[prop.name] = valueForType(checker, proptype, allowedDepth - 1, pathToHere.concat(`.["${prop.escapedName}"]`));
-                    }
-                });
-
-                return {
-                    id: createId(),
-                    generator: 'object',
-                    type: 'object',
-                    properties: o,
-                };
-            }
-
-            const strungPath = pathToHere.join('.');
-            if (currentType.isIntersection()) {
-                const intersectingTypes = currentType.types;
-                //  presumably must be an object type
-                const o: Record<string, GeneratedParameter> = {};
-                intersectingTypes.forEach((t) => {
-                    const v = valueForType(checker, t, allowedDepth, pathToHere.concat('.&'));
-                    if (v) {
-                        Object.assign(o, v);
-                    }
-                });
-                return {
-                    id: createId(),
-                    generator: 'intersector',
-                    type: 'object',
-                    properties: o,
-                };
             }
 
             while (true) {
