@@ -188,62 +188,13 @@ const breedStrings = ["#3eabef", "repurpose web-enabled e-commerce", "blob", "73
 ];
 
 function* edgyNumbers(m = 1): Generator<GeneratedParameter, void, unknown> {
-    //  stupid sort to avoid favoring small values but still be deterministic
-
-    const neighbors = [-2, -1, 0, 1, 2];
-
-    function* geneighbor(n: number, generator: string) {
-        for (const neighbor of neighbors) {
-            const v = n * neighbor;
-            yield gpv(v, generator);
+    while (true) {
+        for (const n of seedNumbers) {
+            yield gpv(n, 'seedNumbers');
         }
-    }
-
-    const bases = [[2, 63], [5, 6], [10, 10]];
-    const mults = [1, -1];
-
-    for (let i = -1; i < 11; i++) {
-        const v = m * i;
-        yield gpv(v, 'smallWholes');
-    }
-
-    for (const prime of primes) {
-        const v = m * prime;
-        for (const gp of geneighbor(v, 'primes')) {
-            yield gp;
+        for (const n of breedNumbers) {
+            yield gpv(n, 'breedNumbers');
         }
-    }
-
-    //  pure exponents e.g. 625, 4096, 100_000_000
-    for (const mult of mults) {
-        for (const [base, maxponent] of bases) {
-            for (let i = 0; i < maxponent; i++) {
-                const powered = m * mult * (base ** i);
-                for (const gp of geneighbor(powered, 'pureExponents')) {
-                    yield gp;
-                }
-            }
-        }
-    }
-
-    //  e.g. -45, 720, 250
-    for (const mult of mults) {
-        for (let pow2 = 1; pow2 < 10; pow2++) {
-            for (let pow3 = 1; pow3 < 4; pow3++) {
-                for (let pow5 = 1; pow5 < 6; pow5++) {
-                    const ppow = m * mult * (2 ** pow2) * (3 ** pow3) * (5 ** pow5);
-                    for (const gp of geneighbor(ppow, 'exponentProducts')) {
-                        yield gp;
-                    }
-                }
-            }
-        }
-    }
-
-    for (let i = 11; i < 2 ** 32; i = Math.ceil(1.3 * i) + 13) {
-        //  utterly stupid; just to make sure it doesn't run out of numbers
-        yield gpv(i, 'positiveStupid');
-        yield gpv(-i, 'negativeStupid');
     }
 }
 
@@ -720,20 +671,6 @@ export function computeDistance(a: any, b: any): number {
     throw new Error(`Unexpected type ${typeof a}`);
 }
 
-const gpValue = (gp: GeneratedParameter) => {
-    switch (gp.type) {
-        case 'value':
-            return gp.value;
-        case 'array':
-            return gp.range;
-        case 'class':
-            return gp.instance;
-        case 'object':
-            return gp.properties;
-    }
-    throw new Error(`Unexpected type ${gp['type']}`);
-};
-
 const isObjectType = (type: ts.Type): type is ts.ObjectType => {
     return (type as ts.ObjectType).objectFlags !== undefined;
 };
@@ -749,63 +686,12 @@ const isEnumType = (type: ts.Type): type is ts.EnumType => {
 };
 
 
-/*
-    suppose type like
-
-    {
-        a: string,
-        b: number,
-        c: {
-            d: string,
-            e: number,
-            m: Map<string, {
-                f: string,
-                g: number,
-            }>,
-        }.
-        d: boolean,
-        e: {
-            thing: number,
-            thang: string,
-        }[],
-    }
-
-    want:
-        'a' => string generator
-        'b' => number generator
-        'c' => object generator
-            'c.d' => string generator
-            'c.e' => number generator
-            'c.m' => object generator
-                'c.m.f' => string generator
-                'c.m.g' => number generator
-        'd' => boolean generator
-        'e' => array generator
-            'e.[]' => object generator
-                'e.[].thing' => number generator
-                'e.[].thang' => string generator
-
-*/
-
-/*
-
-//  atomic generators
-
-edgyStrings
-edgyNumbers
-edgyBooleans
-date
-enum
-
-*/
-
 interface ValueGenerator {
     generate: () => Generator<GeneratedParameter, any, any>;
 }
 
 type Sizer = (o?: any) => Generator<number, any, any>;
 type PropertyPicker = (k: string[]) => Generator<string[], any, any>;
-type ElementsPicker = (max: number) => Generator<number[], any, any>;
 type ElementPicker = (max: number) => Generator<number, any, any>;
 
 class LiteralValueGenerator implements ValueGenerator {
@@ -1237,7 +1123,6 @@ function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclarati
 }
 
 export class CombinatorialTestCaseSource /* implements TestCaseSource */ {
-
     private counter = 0;
 
     //  TODO: use this
@@ -1257,20 +1142,6 @@ export class CombinatorialTestCaseSource /* implements TestCaseSource */ {
         private allInstrumentedLines: Set<number>,
         private f: ts.FunctionDeclaration) {
     }
-
-    /*
-    1) generate a varied set of inputs
-    2) run them
-    3) cluster them
-    4) foreach value in a cluster, keep minimizing until it's no longer in the cluster 
-        (be sure to check to see if the minimized version is already in the cluster)
-    5) identify unexecuted lines and try to mutate the minima to cover them
-        (how to avoid just regenerating the previously attempted non-minimal values
-            or ones that will be similarly ineffective?)
-    6) take the minima, compare them against the other clusters and hybridize for edginess
- 
-    */
-
 
     *seed(): Iterator<Specimen> {
         const newGenPerPass = 10;
@@ -1313,5 +1184,4 @@ export class CombinatorialTestCaseSource /* implements TestCaseSource */ {
     increaseWeirdness(): void {
         this.weirdness++;
     }
-
 }
