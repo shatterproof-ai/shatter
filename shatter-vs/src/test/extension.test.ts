@@ -199,6 +199,7 @@ describe('complicated', () => {
     it('should pass', async () => {
         //  TODO: duh
         const testfile = "/home/ketan/project/shatter/examples/typescript/src/query-creator.ts";
+        // const testfile = "/home/ketan/project/shatter/examples/typescript/src/query-creator-short.ts";
 
         const functionName = "constructSearchQuery";
 

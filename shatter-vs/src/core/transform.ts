@@ -89,6 +89,16 @@ export const findFunctions = (sourceFileName: string): FunctionMeta[] => {
 
             //  do not recurse into functions; we only care about top level
         }
+
+        if (ts.isArrowFunction(node)) {
+            if (ts.isBinaryExpression(node.parent)) {
+                if (ts.isIdentifier(node.parent.left)) {
+                    //  TODO
+                    //  possibly of form let x = () => 5;
+                }
+            }
+        }
+
         return node;
     };
 
@@ -172,12 +182,12 @@ export const createInstrumenter = (introspectionContext: IntrospectionContext, s
             return getAllLineNumbers(node);
         };
 
-        const createInstrumentationStatement = (statement: ts.Statement, lineNumber: number, extra: string) => {
+        const createInstrumentationStatement = (forNode: ts.Node, lineNumber: number, extra: string) => {
             const instrumentation = factory.createExpressionStatement(factory.createCallExpression(
                 factory.createIdentifier(recordLineAlias),
                 undefined,
                 [factory.createNumericLiteral(lineNumber),
-                factory.createStringLiteral(minimalText(statement, extra)),
+                factory.createStringLiteral(minimalText(forNode, extra)),
                 ]
             ));
             return instrumentation;
@@ -292,33 +302,78 @@ export const createInstrumenter = (introspectionContext: IntrospectionContext, s
                 return statement;
             };
 
-            //  export all functions - TODO: this may create conflicts.  A cheat would be to add an exported magic function that just does dispatch
-            //  Currently DOES NOT WORK, but is it even necessary?  seems unnecessary in the extension.test.ts
             if (ts.isFunctionDeclaration(node)) {
-                const exportModifier = node.modifiers?.find(modifier => modifier.kind === ts.SyntaxKind.ExportKeyword);
-                if (!exportModifier) {
-                    if (node.parent === node.getSourceFile()) { //  this means it's a top level function
-                        const modifiers = [...node.modifiers ?? []];
-                        const newExportModifier = factory.createModifier(ts.SyntaxKind.ExportKeyword);
-                        // modifiers.push(newExportModifier);
+                if (node.parent === node.getSourceFile()) { //  this means it's a top level function
+                    const modifiers = [...node.modifiers ?? []];
 
-                        if (node.body) {
-                            const modbod = instrumentBlock(factory, node.body);
-                            const newFunction = factory.createFunctionDeclaration(
-                                modifiers,
-                                node.asteriskToken,
-                                node.name,
-                                node.typeParameters,
-                                node.parameters,
-                                node.type,
-                                modbod
-                            );
-                            return newFunction;
-                        } else {
-                            throw new Error(`Function ${node.name?.text} has no body`);
-                        }
+                    if (node.body) {
+                        const modbod = instrumentBlock(factory, node.body);
+                        const newFunction = factory.createFunctionDeclaration(
+                            modifiers,
+                            node.asteriskToken,
+                            node.name,
+                            node.typeParameters,
+                            node.parameters,
+                            node.type,
+                            modbod
+                        );
+                        return newFunction;
+                    } else {
+                        throw new Error(`Function ${node.name?.text} has no body`);
                     }
                 }
+            }
+
+            if (ts.isArrowFunction(node)) {
+                const modbod =
+                    (() => {
+                        if (ts.isBlock(node.body)) {
+                            return instrumentBlock(factory, node.body);
+                        }
+
+                        const line = ts.getLineAndCharacterOfPosition(sourceFile, node.body.pos).line;
+
+                        const instrumentationStatement = createInstrumentationStatement(node.body, line, "nah");
+                        const returnStatement = factory.createReturnStatement(node.body);
+                        const statements = factory.createNodeArray([
+                            instrumentationStatement,
+                            returnStatement,
+                        ]);
+
+                        return factory.createBlock(statements);
+
+                    })();
+
+                const newArrowFunction = factory.createArrowFunction(node.modifiers, node.typeParameters, node.parameters, node.type, node.equalsGreaterThanToken, modbod);
+                // console.log(`new arrow function ${newArrowFunction.getText()}`);
+                return newArrowFunction;
+            }
+
+            if (ts.isVariableStatement(node)) {
+                const newDeclarations = node.declarationList.declarations.map(d => {
+                    if (!d.initializer) {
+                        return d;
+                    }
+
+                    const newInitializer = instrumentingVisitor(d.initializer);
+                    const newD = factory.createVariableDeclaration(d.name, d.exclamationToken, d.type, newInitializer as any);
+                    return newD;
+                });
+
+                const newDeclarationList = factory.createVariableDeclarationList(newDeclarations, node.flags);
+                const newVariableStatement = factory.createVariableStatement(node.modifiers, newDeclarationList);
+                return newVariableStatement;
+            }
+
+            if (ts.isExpressionStatement(node)) {
+                if (ts.isBinaryExpression(node.expression)) {
+                    const newLeft = ts.visitEachChild(node.expression.left, instrumentingVisitor, ctx);
+                    const newRight = ts.visitEachChild(node.expression.right, instrumentingVisitor, ctx);
+                    const updatedExpression = factory.updateBinaryExpression(node.expression, newLeft, node.expression.operatorToken, newRight);
+                    return factory.createExpressionStatement(updatedExpression);
+                }
+
+                return ts.visitEachChild(node.expression, instrumentingVisitor, ctx);
             }
 
             if (ts.isStatement(node)) {

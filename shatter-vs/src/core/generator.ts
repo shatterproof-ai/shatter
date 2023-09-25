@@ -1152,12 +1152,14 @@ function generatorator(checker: ts.TypeChecker, currentType: ts.Type, currentDep
         case ts.TypeFlags.Any:
         case ts.TypeFlags.Unknown:
         case ts.TypeFlags.String:
+        case ts.TypeFlags.StringLike:
         case ts.TypeFlags.Number:
+        case ts.TypeFlags.NumberLike:
         case ts.TypeFlags.Boolean:
+        case ts.TypeFlags.BooleanLike:
             // console.log(`Simple ${checker.typeToString(currentType)}`);
             return new SimpleValueGenerator(currentType.flags);
 
-        //  TODO extract literal value
         case ts.TypeFlags.Null:
             // console.log(`Null ${checker.typeToString(currentType)}`);
             return new LiteralValueGenerator(null);
@@ -1165,6 +1167,9 @@ function generatorator(checker: ts.TypeChecker, currentType: ts.Type, currentDep
         case ts.TypeFlags.Undefined:
             // console.log(`Undefined ${checker.typeToString(currentType)}`);
             return new LiteralValueGenerator(undefined);
+
+        case ts.TypeFlags.BooleanLiteral:
+            checker.getBooleanType();
 
         case ts.TypeFlags.Object:
 
@@ -1211,7 +1216,7 @@ function generatorator(checker: ts.TypeChecker, currentType: ts.Type, currentDep
             return new SimpleObjectGenerator(propertyGenerators, stupidPropertyPicker);
     };
 
-    throw new Error(`Unexpected type ${checker.typeToString(currentType)}`);
+    throw new Error(`Unexpected type ${checker.typeToString(currentType)} ${checker.typeToTypeNode(currentType, undefined, undefined)?.getText()}`);
 }
 
 //  construct a stateful hierarchy of generators    
