@@ -64,6 +64,9 @@ function* neighboringStrings(s: string) {
     //  duplicate the last character
     yield s + s.charAt(s.length - 1);
 
+    yield ' \t' + s + ' \t';
+    yield ' \t\n' + s + ' \t\n';
+
     const neighbors = [-2, -1, 1, 2];
     const neighboringChars = function* (s: string) {
         if (s.length !== 1) {

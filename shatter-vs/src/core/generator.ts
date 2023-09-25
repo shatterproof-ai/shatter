@@ -124,6 +124,14 @@ const literalValueGeneratorFactory: ValueGenerator = function (configuration: Ge
     if (type.isLiteral()) {
         return fixedValueGeneratorFactory('literalValueGeneratorFactory', type.value);
     }
+    //  isLiteral() implementation inexplicably does not cover boolean literals
+    //            return !!(this.flags & (128 /* StringLiteral */ | 256 /* NumberLiteral */ | 2048 /* BigIntLiteral */));
+    if (type.flags === ts.TypeFlags.BooleanLiteral) {
+        const t = checker.getTrueType();
+        //  TODO: yuck
+        const boolvalue = checker.typeToString(type) === checker.typeToString(t);
+        return fixedValueGeneratorFactory('literalValueGeneratorFactory', boolvalue);
+    }
     return undefined;
 };
 
@@ -218,9 +226,11 @@ const stateAwareGenerator = function* (configuration: GeneratorConfiguration, ch
 };
 
 const arrayValueGenerator: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type): G | undefined {
-    if (checker.isArrayType(type)) {
+    if (!checker.isArrayLikeType(type)) {
         return;
     }
+
+    const elementType = checker.getTypeArguments(type as ts.TypeReference)[0];
 
     const generateEmpty = (): GeneratedParameter => ({
         id: createId(),
@@ -230,7 +240,6 @@ const arrayValueGenerator: ValueGenerator = function (configuration: GeneratorCo
     });
 
     const generate = function* (configuration: GeneratorConfiguration, state: GeneratorState): G {
-        const elementType = checker.getTypeArguments(type as ts.TypeReference)[0];
         const newState: GeneratorState = {
             currentDepth: state.currentDepth + 1,
             pathToHere: state.pathToHere.concat(".[]"),
@@ -570,7 +579,7 @@ function generatorator(configuration: GeneratorConfiguration, checker: ts.TypeCh
         simpleValueGeneratorFactory,
         enumValueGeneratorFactory,
         arrayValueGenerator,
-        intersectionValueGeneratorFactory,
+        // intersectionValueGeneratorFactory,
         unionValueGeneratorFactory,
         objectValueGeneratorFactory,
     ];
@@ -582,7 +591,7 @@ function generatorator(configuration: GeneratorConfiguration, checker: ts.TypeCh
         }
     }
 
-    throw new Error(`Unexpected type ${checker.typeToString(currentType)} ${checker.typeToTypeNode(currentType, undefined, undefined)?.getText()}`);
+    throw new Error(`Unexpected type ${currentType.flags} ${checker.typeToString(currentType)}`);
 }
 
 //  construct a stateful hierarchy of generators    
@@ -621,7 +630,7 @@ function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclarati
             const generator = generators[i];
             const next = generator.next();
             if (next.done) {
-                throw new Error(`Generator[${i}] ${generator.constructor.name} is done`);
+                throw new Error(`Generator[${i}] is done`);
             }
             values.push(next.value);
         }
