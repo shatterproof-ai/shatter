@@ -3,9 +3,9 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 
 import { faker } from '@faker-js/faker';
-import { optionVariantsMedium, stringFakerses } from '../core/generator';
-import { shatterAutotest } from "../core/shatter";
 import * as ts from 'typescript';
+import { shatterAutotest } from "../core/shatter";
+import { stringFakerses, optionVariantsMedium } from '../core/seed';
 namespace Nomen {
     export type Z = {
         a: number,
