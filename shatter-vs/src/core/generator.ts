@@ -75,6 +75,16 @@ export class RetestCaseSource implements TestCaseSource {
     }
 }
 
+interface GeneratorConfiguration {
+    maxDepth: number;
+    weirdness: number;
+}
+
+interface GeneratorState {
+    currentDepth: number;
+    pathToHere: string[];
+}
+
 const isObjectType = (type: ts.Type): type is ts.ObjectType => {
     return (type as ts.ObjectType).objectFlags !== undefined;
 };
@@ -111,6 +121,14 @@ class LiteralValueGenerator implements ValueGenerator {
     }
 }
 
+type ValueGeneratorFactory = (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type) => ValueGenerator | undefined;
+
+const literalValueGeneratorFactory: ValueGeneratorFactory = (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type) => {
+    if (type.isLiteral()) {
+        return new LiteralValueGenerator(type.value);
+    }
+};
+
 class SimpleValueGenerator implements ValueGenerator {
     constructor(private flags: ts.TypeFlags) { }
 
@@ -137,6 +155,23 @@ class SimpleValueGenerator implements ValueGenerator {
     }
 }
 
+const simpleTypeFlags = [
+    ts.TypeFlags.Any,
+    ts.TypeFlags.Unknown,
+    ts.TypeFlags.String,
+    ts.TypeFlags.Number,
+    ts.TypeFlags.Boolean,
+    ts.TypeFlags.StringLike,
+    ts.TypeFlags.NumberLike,
+    ts.TypeFlags.BooleanLike
+];
+
+const simpleValueGeneratorFactory: ValueGeneratorFactory = (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type) => {
+    if (simpleTypeFlags.includes(type.flags)) {
+        return new SimpleValueGenerator(type.flags);
+    }
+};
+
 class RoundRobinValueGenerator implements ValueGenerator {
     constructor(private values: any[]) { }
 
@@ -153,6 +188,17 @@ class RoundRobinValueGenerator implements ValueGenerator {
         }
     }
 }
+
+const enumValueGeneratorFactory: ValueGeneratorFactory = (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type) => {
+    if (isEnumType(type)) {
+        const enumValues = type.symbol.members;
+        if (enumValues) {
+            return new RoundRobinValueGenerator(Object.values(enumValues));
+        }
+        throw new Error(`Enum type ${checker.typeToString(type)} has no values`);
+    }
+};
+
 
 //  composite generators
 class SimpleObjectGenerator implements ValueGenerator {
@@ -223,6 +269,18 @@ class ArrayGenerator implements ValueGenerator {
         }
     }
 }
+
+const arrayValueGeneratorFactory: ValueGeneratorFactory = (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type) => {
+    if (checker.isArrayType(type)) {
+        const elementType = checker.getTypeArguments(type as ts.TypeReference)[0];
+        const newState: GeneratorState = {
+            currentDepth: state.currentDepth + 1,
+            pathToHere: state.pathToHere.concat(".[]"),
+        };
+        const elementGenerator = generatorator(configuration, checker, newState, elementType);
+        return new ArrayGenerator(elementGenerator.generate(), stupidSizer);
+    }
+};
 
 class MapGenerator implements ValueGenerator {
     constructor(
@@ -330,6 +388,15 @@ class IntersectionGenerator implements ValueGenerator {
     }
 }
 
+const intersectionValueGeneratorFactory: ValueGeneratorFactory = (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type) => {
+    if (type.isIntersection()) {
+        const intersectingTypes = type.types;
+        //  presumably must be an object type
+        throw new Error("Not ready for intersectionality");
+    }
+    return undefined;
+};
+
 class UnionGenerator implements ValueGenerator {
     constructor(
         private generators: Generator<GeneratedParameter, any, any>[],
@@ -349,6 +416,83 @@ class UnionGenerator implements ValueGenerator {
         }
     }
 }
+
+const unionValueGeneratorFactory: ValueGeneratorFactory = (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type) => {
+    if (type.isUnion()) {
+        const unionTypes = type.types;
+        const generators: Generator<GeneratedParameter, any, any>[] = [];
+        for (const unionType of unionTypes) {
+            const newState = {
+                currentDepth: state.currentDepth,
+                pathToHere: state.pathToHere.concat(" | "),
+            };
+            const g = generatorator(configuration, checker, newState, unionType);
+            generators.push(g.generate());
+        }
+        return new UnionGenerator(generators, stupidPicker);
+    }
+};
+
+const objectValueGeneratorFactory: ValueGeneratorFactory = (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type) => {
+    const typeName = type.getSymbol()?.getName();
+    if (typeName === 'Map') {
+        if (!isTypeReference(type)) {
+            throw new Error(`Unexpected type not a reference ${checker.typeToString(type)}`);
+        }
+        const [keyType, valueType] = (() => {
+            if (type.typeArguments && type.typeArguments.length === 2) {
+                return type.typeArguments;
+            }
+            //  when types are not specified, just go string=>string
+            return [checker.getStringType(), checker.getStringType()];
+        })();
+
+        const keyGenerator = generatorator(configuration, checker, {
+            currentDepth: state.currentDepth + 1,
+            pathToHere: state.pathToHere.concat('.key'),
+        }, keyType);
+
+        const valueGenerator = generatorator(configuration, checker, {
+            currentDepth: state.currentDepth + 1,
+            pathToHere: state.pathToHere.concat('.value'),
+        }, valueType);
+        // console.log(`Map ${checker.typeToString(currentType)}`)
+        return new MapGenerator(keyGenerator.generate(), valueGenerator.generate(), stupidSizer);
+    }
+
+    if (typeName === 'Set') {
+        if (!isTypeReference(type)) {
+            throw new Error(`Unexpected type not a reference ${checker.typeToString(type)}`);
+        }
+
+        //  when unspecified make it a string
+        const elementType = type.typeArguments?.length === 1 ? type.typeArguments[0] : checker.getStringType();
+
+        const newState = {
+            currentDepth: state.currentDepth + 1,
+            pathToHere: state.pathToHere.concat('.element'),
+        };
+        const elementGenerator = generatorator(configuration, checker, newState, elementType);
+        return new SetGenerator(elementGenerator.generate(), stupidSizer);
+    }
+
+    const propertyGenerators: Record<string, Generator<GeneratedParameter, any, any>> = {};
+    checker.getPropertiesOfType(type).forEach(p => {
+        if (p.valueDeclaration) {
+            const propertyType = checker.getTypeOfSymbolAtLocation(p, p.valueDeclaration);
+
+            const newState = {
+                currentDepth: state.currentDepth + 1,
+                pathToHere: state.pathToHere.concat(`.${p.name}`),
+            };
+
+            propertyGenerators[p.name] = generatorator(configuration, checker, newState, propertyType).generate();
+        }
+    });
+
+    // console.log(`Object ${checker.typeToString(currentType)}`)
+    return new SimpleObjectGenerator(propertyGenerators, stupidPropertyPicker);
+};
 
 //  like an array but can be heterogeneous
 class TupleGenerator implements ValueGenerator {
@@ -399,117 +543,45 @@ function* stupidPropertyPicker(keys: string[]) {
 }
 
 //  TODO: at some point create jq-compatible paths in pathToHere for neatness
-function generatorator(checker: ts.TypeChecker, currentType: ts.Type, currentDepth: number, pathToHere: string[] = []): ValueGenerator {
+function generatorator(configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, currentType: ts.Type): ValueGenerator {
 
-    if (currentDepth < 0) {
+    if (state.currentDepth > configuration.maxDepth) {
         return new LiteralValueGenerator(undefined);
     }
 
-    if (currentType.isLiteral()) {
-        return new LiteralValueGenerator(currentType.value);
-    }
+    const factories: ValueGeneratorFactory[] = [
+        literalValueGeneratorFactory,
+        simpleValueGeneratorFactory,
+        enumValueGeneratorFactory,
+        arrayValueGeneratorFactory,
+        intersectionValueGeneratorFactory,
+        unionValueGeneratorFactory,
+        objectValueGeneratorFactory,
+    ];
 
-    if (isEnumType(currentType)) {
-        const enumValues = currentType.symbol.members;
-        if (enumValues) {
-            return new RoundRobinValueGenerator(Object.values(enumValues));
+    for (const factory of factories) {
+        const generator = factory(configuration, checker, state, currentType);
+        if (generator) {
+            return generator;
         }
-        throw new Error(`Enum type ${checker.typeToString(currentType)} has no values`);
     }
-
-    if (checker.isArrayType(currentType)) {
-        const elementType = checker.getTypeArguments(currentType as ts.TypeReference)[0];
-        const elementGenerator = generatorator(checker, elementType, currentDepth - 1, pathToHere.concat(".[]"));
-        return new ArrayGenerator(elementGenerator.generate(), stupidSizer);
-    }
-    if (currentType.isIntersection()) {
-        const intersectingTypes = currentType.types;
-        //  presumably must be an object type
-        throw new Error("Not ready for intersectionality");
-    }
-    if (currentType.isUnion()) {
-        const unionTypes = currentType.types;
-        const generators: Generator<GeneratedParameter, any, any>[] = [];
-        for (const unionType of unionTypes) {
-            const g = generatorator(checker, unionType, currentDepth, pathToHere.concat(" | "));
-            generators.push(g.generate());
-        }
-        return new UnionGenerator(generators, stupidPicker);
-    }
-
-    switch (currentType.flags) {
-        case ts.TypeFlags.Any:
-        case ts.TypeFlags.Unknown:
-        case ts.TypeFlags.String:
-        case ts.TypeFlags.StringLike:
-        case ts.TypeFlags.Number:
-        case ts.TypeFlags.NumberLike:
-        case ts.TypeFlags.Boolean:
-        case ts.TypeFlags.BooleanLike:
-            // console.log(`Simple ${checker.typeToString(currentType)}`);
-            return new SimpleValueGenerator(currentType.flags);
-
-        case ts.TypeFlags.Null:
-            // console.log(`Null ${checker.typeToString(currentType)}`);
-            return new LiteralValueGenerator(null);
-
-        case ts.TypeFlags.Undefined:
-            // console.log(`Undefined ${checker.typeToString(currentType)}`);
-            return new LiteralValueGenerator(undefined);
-
-        case ts.TypeFlags.BooleanLiteral:
-            checker.getBooleanType();
-
-        case ts.TypeFlags.Object:
-
-            const typeName = currentType.getSymbol()?.getName();
-            if (typeName === 'Map') {
-                if (!isTypeReference(currentType)) {
-                    throw new Error(`Unexpected type not a reference ${checker.typeToString(currentType)}`);
-                }
-                const [keyType, valueType] = (() => {
-                    if (currentType.typeArguments && currentType.typeArguments.length === 2) {
-                        return currentType.typeArguments;
-                    }
-                    //  when types are not specified, just go string=>string
-                    return [checker.getStringType(), checker.getStringType()];
-                })();
-
-                const keyGenerator = generatorator(checker, keyType, currentDepth - 1, pathToHere.concat('.key'));
-                const valueGenerator = generatorator(checker, valueType, currentDepth - 1, pathToHere.concat('.value'));
-                // console.log(`Map ${checker.typeToString(currentType)}`)
-                return new MapGenerator(keyGenerator.generate(), valueGenerator.generate(), stupidSizer);
-            }
-
-            if (typeName === 'Set') {
-                if (!isTypeReference(currentType)) {
-                    throw new Error(`Unexpected type not a reference ${checker.typeToString(currentType)}`);
-                }
-
-                //  when unspecified make it a string
-                const elementType = currentType.typeArguments?.length === 1 ? currentType.typeArguments[0] : checker.getStringType();
-
-                const elementGenerator = generatorator(checker, elementType, currentDepth - 1, pathToHere.concat('.element'));
-                return new SetGenerator(elementGenerator.generate(), stupidSizer);
-            }
-
-            const propertyGenerators: Record<string, Generator<GeneratedParameter, any, any>> = {};
-            checker.getPropertiesOfType(currentType).forEach(p => {
-                if (p.valueDeclaration) {
-                    const t = checker.getTypeOfSymbolAtLocation(p, p.valueDeclaration);
-                    propertyGenerators[p.name] = generatorator(checker, t, currentDepth - 1, pathToHere.concat(`.${p.name}`)).generate();
-                }
-            });
-
-            // console.log(`Object ${checker.typeToString(currentType)}`)
-            return new SimpleObjectGenerator(propertyGenerators, stupidPropertyPicker);
-    };
 
     throw new Error(`Unexpected type ${checker.typeToString(currentType)} ${checker.typeToTypeNode(currentType, undefined, undefined)?.getText()}`);
 }
 
 //  construct a stateful hierarchy of generators    
 function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclaration) {
+
+    const state: GeneratorState = {
+        currentDepth: 0,
+        pathToHere: [],
+    };
+
+    const configuration: GeneratorConfiguration = {
+        maxDepth: 3,
+        weirdness: 1,
+    };
+
     const generators: Generator<GeneratedParameter, any, any>[] = [];
     for (let j = 0; j < f.parameters.length; j++) {
         const t = f.parameters[j].type;
@@ -517,7 +589,7 @@ function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclarati
             ? checker.getTypeAtLocation(t)
             : checker.getAnyType();
 
-        const generator = generatorator(checker, currentType, 3, []).generate();
+        const generator = generatorator(configuration, checker, state, currentType).generate();
         generators.push(generator);
     }
 
