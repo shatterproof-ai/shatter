@@ -137,6 +137,7 @@ export const createInstrumenter = (introspectionContext: IntrospectionContext, s
                 const asNumber = parseFloat(node.text);
                 introspectionContext.numbers.add(asNumber);
             }
+            throw new Error("Try to hit embedded values");
             return ts.visitEachChild(node, findLiteralsVisitor, ctx);
         };
 
@@ -386,6 +387,9 @@ export const createInstrumenter = (introspectionContext: IntrospectionContext, s
 
         //  discover functions and add them to the context
         ts.visitNode(sourceFile, findExportedFunctionsVisitor);
+
+        //  discover literal string and number values and add them to the context
+        ts.visitNode(sourceFile, findLiteralsVisitor);
 
         //  BEGIN instrumenting code
         const visited = ts.visitNode(sourceFile, instrumentingVisitor);

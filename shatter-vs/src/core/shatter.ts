@@ -242,7 +242,7 @@ export async function shatterAutotest(modulePaths: string[],
 
     // const generator = new CombinatorialTestCaseSource(program.getTypeChecker(), functionDeclarationNode.parameters);
     const source = new CombinatorialTestCaseSource(program.getTypeChecker(), introspectionContext.instrumentedLines, functionDeclarationNode);
-    const generator = source.seed();
+    const generator = source.seed({numbers:introspectionContext.numbers, strings:introspectionContext.strings});
 
     async function evaluateSpecimen(basimen: BaseSpecimen) {
         const serialized = canonicallyStringify(basimen.parameters);

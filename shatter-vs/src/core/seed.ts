@@ -1,6 +1,11 @@
 import { faker } from '@faker-js/faker';
 import { createId } from "@paralleldrive/cuid2";
 
+export interface Literals {
+    numbers: Set<number>,
+    strings: Set<string>,
+}
+
 //  TODO: generify value
 export type GeneratedParameter = {
     id: string,
@@ -23,7 +28,9 @@ export type GeneratedParameter = {
     properties: Record<string, GeneratedParameter>,
 });
 
-const gpv = (value: number | string | boolean, generator: string, options?: Record<string, any>): GeneratedParameter => ({
+const gpv = (value: number | string | boolean, generator: string, options?: Record<string, any>): GeneratedParameter & {
+    type: 'value'
+} => ({
     id: createId(),
     generator,
     type: 'value',
@@ -32,28 +39,69 @@ const gpv = (value: number | string | boolean, generator: string, options?: Reco
 });
 
 
+const numberNeighbors = [-2, -1, 0, 1, 2];
+
+function* neighboringNumbers(n: number) {
+    for (const neighbor of numberNeighbors) {
+        const v = n * neighbor;
+        yield v;
+    }
+}
+
+function* neighboringStrings(s: string) {
+    yield s;
+    if (s.length === 0) {
+        return;
+    }
+    //  remove one character at the beginning
+
+    const rest = s.slice(1);
+    yield rest;
+
+    //  remove one character at the end
+    yield s.substring(0, s.length - 1);
+
+    //  duplicate the last character
+    yield s + s.charAt(s.length - 1);
+
+    const neighbors = [-2, -1, 1, 2];
+    const neighboringChars = function* (s: string) {
+        if (s.length !== 1) {
+            throw new Error(`prevChar called on ${s} with length ${s.length} not 0`);
+        }
+
+        const code = s.codePointAt(0);
+        if (code) {
+            for (const offset of neighbors) {
+                const targetCode = code + offset;
+                if (targetCode > 31) {
+                    const result = String.fromCodePoint(targetCode);
+                    yield result;
+                }
+            }
+        }
+    };
+
+    for (const pos of [0, s.length - 1]) {
+        const char = s.charAt(pos);
+        for (const neighbor of neighboringChars(char)) {
+            const result = s.slice(0, pos) + neighbor + s.slice(pos + 1);
+            yield result;
+        }
+    }
+}
+
 const primes = [11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97];
 //  go for absolute most common and extremes    -   for SEED
 const seedNumbers = [0, 1, -1, 2, 1_024, Math.PI, 4, 8, 500, 16, 25, -1_000_000, 1_000_000, 32, 40, 64, 100, Math.SQRT2, 128, 250, 256, 512, 1_000, 2048, -1_000_000_000, 1_000_000_000];
 //  for BREED
 const breedNumbers = (() => {
-    const numbers: number[] = [];
     const seen = new Set<number>(seedNumbers);
     const add = (n: number) => {
         if (!seen.has(n)) {
-            numbers.push(n);
             seen.add(n);
         }
     };
-
-    const neighbors = [-2, -1, 0, 1, 2];
-
-    function* geneighbor(n: number, generator: string) {
-        for (const neighbor of neighbors) {
-            const v = n * neighbor;
-            yield v;
-        }
-    }
 
     const bases = [[2, 63], [5, 6], [10, 10]];
     const mults = [1, -1];
@@ -65,7 +113,7 @@ const breedNumbers = (() => {
     }
 
     for (const prime of primes) {
-        for (const v of geneighbor(prime, 'primes')) {
+        for (const v of neighboringNumbers(prime)) {
             add(v);
         }
     }
@@ -75,7 +123,7 @@ const breedNumbers = (() => {
         for (const [base, maxponent] of bases) {
             for (let i = 0; i < maxponent; i++) {
                 const powered = mult * (base ** i);
-                for (const v of geneighbor(powered, 'pureExponents')) {
+                for (const v of neighboringNumbers(powered)) {
                     add(v);
                 }
             }
@@ -88,7 +136,7 @@ const breedNumbers = (() => {
             for (let pow3 = 1; pow3 < 4; pow3++) {
                 for (let pow5 = 1; pow5 < 6; pow5++) {
                     const ppow = mult * (2 ** pow2) * (3 ** pow3) * (5 ** pow5);
-                    for (const v of geneighbor(ppow, 'exponentProducts')) {
+                    for (const v of neighboringNumbers(ppow)) {
                         add(v);
                     }
                 }
@@ -107,10 +155,10 @@ const breedNumbers = (() => {
         Math.SQRT1_2,
     ];
 
-    for (const powers of [1, 2, 3]) {
+    for (const power of [1, 2, 3]) {
         for (let i = -1; i < 50; i++) {
             for (const seed of irrationals) {
-                const v = i * seed;
+                const v = i * seed ** power;
                 add(v);
             }
         }
@@ -144,15 +192,13 @@ const breedNumbers = (() => {
         }
     }
 
-    //  arbitrary measure that's probably more like a deterministic shuffle
+    //  arbitrary measure that's just a deterministic shuffle
     const weirdness = (n: number) => {
         return Math.log(n) % 1;
     };
 
     //  weirdest first
-    numbers.sort((a, b) => weirdness(b) - weirdness(b));
-    return numbers;
-
+    return Array.from(seen).sort((a, b) => weirdness(b) - weirdness(b));
 })();
 
 const seedStrings = ["https://www.shatterproof.ai/en-US/support?q=testing#t39192", "zoidberg@example.com",
@@ -203,8 +249,13 @@ const breedStrings = ["#3eabef", "repurpose web-enabled e-commerce", "blob", "73
     "wlo1", "wws1", "4.8.2", "Gasoline", "Tesla", "7VYK47S021A328481"
 ];
 
-export function* edgyNumbers(m = 1): Generator<GeneratedParameter, void, unknown> {
+export function* edgyNumbers(literals?: Literals): Generator<GeneratedParameter, void, unknown> {
     while (true) {
+        for (const base of literals?.numbers ?? []) {
+            for (const n of neighboringNumbers(base)) {
+                yield gpv(n, 'literals.numbers');
+            }
+        }
         for (const n of seedNumbers) {
             yield gpv(n, 'seedNumbers');
         }
@@ -214,13 +265,12 @@ export function* edgyNumbers(m = 1): Generator<GeneratedParameter, void, unknown
     }
 }
 
-export function* edgyBooleans(): Generator<GeneratedParameter, void, unknown> {
+export function* edgyBooleans(literals?: Literals): Generator<GeneratedParameter, void, unknown> {
     while (true) {
         yield gpv(true, 'edgyBooleans');
         yield gpv(false, 'edgyBooleans');
     }
 }
-
 
 export const stringFakerses = {
     'color': ['rgb'],
@@ -260,8 +310,16 @@ Object.entries(stringFakerses).forEach(([domain, generators]) => {
 
 faker.seed(10481);
 
-export function* edgyAny(): Generator<GeneratedParameter, void, unknown> {
+export function* edgyAny(literals?: Literals): Generator<GeneratedParameter, void, unknown> {
     while (true) {
+        for (const n of literals?.numbers ?? []) {
+            yield gpv(n, 'literals.numbers');
+        }
+
+        for (const s of literals?.strings ?? []) {
+            yield gpv(s, 'literals.numbers');
+        }
+
         yield {
             id: createId(),
             generator: 'edgyAny',
@@ -270,7 +328,6 @@ export function* edgyAny(): Generator<GeneratedParameter, void, unknown> {
         };
     }
 }
-
 
 export const optionVariantsLimited: Record<string, Record<string, any>> = {
     password: {
@@ -416,23 +473,41 @@ export const optionVariantsExtensive: Record<string, Record<string, any>> = {
 };
 
 //  TODO: apply options
-export function* edgyStrings(): Generator<GeneratedParameter, void, unknown> {
-    for (const s of seedStrings) {
-        yield {
-            id: createId(),
-            generator: 'seedStrings',
-            type: 'value',
-            value: s,
-        };
+export function* edgyStrings(literals?: Literals): Generator<GeneratedParameter, void, unknown> {
+    const seen = new Set<string>();
+
+    for (const s of literals?.strings ?? []) {
+        const sn = gpv(s, 'literals.strings');
+        if (!seen.has(sn.value)) {
+            yield sn;
+            seen.add(sn.value);
+        }
     }
 
-    for (const s of breedStrings) {
-        yield {
-            id: createId(),
-            generator: 'seedStrings',
-            type: 'value',
-            value: s,
-        };
+    for (const s of seedStrings) {
+        for (const value of neighboringStrings(s)) {
+            if (!seen.has(value)) {
+                seen.add(value);
+                yield {
+                    id: createId(),
+                    generator: 'seedStrings',
+                    type: 'value',
+                    value,
+                };
+            }
+        }
+    }
+
+    for (const value of breedStrings) {
+        if (!seen.has(value)) {
+            seen.add(value);
+            yield {
+                id: createId(),
+                generator: 'seedStrings',
+                type: 'value',
+                value,
+            };
+        }
     }
 
     function* optionExplore(allVariants: any, keys: string[], chosen: any): Generator<any, any, any> {

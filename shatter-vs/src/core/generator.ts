@@ -4,7 +4,7 @@ import { createId } from "@paralleldrive/cuid2";
 
 import { ResultCluster } from '../core/shatter';
 import { RunResult } from '../core/supervisor';
-import { GeneratedParameter, edgyAny, edgyBooleans, edgyNumbers, edgyStrings } from './seed';
+import { GeneratedParameter, Literals, edgyAny, edgyBooleans, edgyNumbers, edgyStrings } from './seed';
 import { set } from 'lodash';
 
 export type Mutation = {
@@ -79,6 +79,7 @@ export class RetestCaseSource implements TestCaseSource {
 interface GeneratorConfiguration {
     maxDepth: number;
     weirdness: number;
+    literals?: Literals;
 }
 
 interface GeneratorState {
@@ -145,16 +146,16 @@ const simpleValueGeneratorFactory: ValueGenerator = function (configuration: Gen
                 switch (type.flags) {
                     case ts.TypeFlags.Any:
                     case ts.TypeFlags.Unknown:
-                        yield* edgyAny();
+                        yield* edgyAny(configuration.literals);
                         break;
                     case ts.TypeFlags.String:
-                        yield* edgyStrings();
+                        yield* edgyStrings(configuration.literals);
                         break;
                     case ts.TypeFlags.Number:
-                        yield* edgyNumbers();
+                        yield* edgyNumbers(configuration.literals);
                         break;
                     case ts.TypeFlags.Boolean:
-                        yield* edgyBooleans();
+                        yield* edgyBooleans(configuration.literals);
                         break;
                     default:
                         throw new Error(`Unexpected type ${type.flags}`);
@@ -166,7 +167,7 @@ const simpleValueGeneratorFactory: ValueGenerator = function (configuration: Gen
     return undefined;
 };
 
-const enumValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type):G|undefined {
+const enumValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type): G | undefined {
     if (isEnumType(type)) {
         const enumValues = type.symbol.members;
         if (enumValues) {
@@ -307,7 +308,7 @@ const intersectionValueGeneratorFactory: ValueGenerator = function* (configurati
     // };
 };
 
-const unionValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type):G|undefined {
+const unionValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type): G | undefined {
     if (type.isUnion()) {
         const g = function* () {
             const unionTypes = type.types;
@@ -580,7 +581,7 @@ function generatorator(configuration: GeneratorConfiguration, checker: ts.TypeCh
 }
 
 //  construct a stateful hierarchy of generators    
-function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclaration): G {
+function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclaration, literals?: Literals): G {
 
     const state: GeneratorState = {
         currentDepth: 0,
@@ -590,6 +591,7 @@ function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclarati
     const configuration: GeneratorConfiguration = {
         maxDepth: 3,
         weirdness: 1,
+        ...literals,
     };
 
     const ft = checker.getTypeAtLocation(f);//  TODO: when can we directly get a ts.Type that is a function?
@@ -648,7 +650,7 @@ export class CombinatorialTestCaseSource /* implements TestCaseSource */ {
         private f: ts.FunctionDeclaration) {
     }
 
-    *seed(): Iterator<Specimen> {
+    *seed(literals?: Literals): Iterator<Specimen> {
         const newGenPerPass = 10;
         const that = this;
         const f = this.f;
@@ -675,7 +677,7 @@ export class CombinatorialTestCaseSource /* implements TestCaseSource */ {
             throw new Error(`Unexpected type ${node['type']}`);
         };
 
-        const generator = functionGeneratorator(checker, f);
+        const generator = functionGeneratorator(checker, f, literals);
         for (const value of generator) {
             yield {
                 id: createId(),
