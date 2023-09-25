@@ -5,13 +5,13 @@ import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import * as ts from 'typescript';
-import { BaseSpecimen, CombinatorialTestCaseSource, RetestCaseSource, Specimen, comparameters, computeDistance } from './generator';
+import { BaseSpecimen, CombinatorialTestCaseSource, RetestCaseSource, Specimen } from './generator';
 import { hybridize, isStrictExtension, shrink } from './hybridize';
 import { Outcome, RunResult, Supervisor } from './supervisor';
 import { IntrospectionContext, createInstrumenter } from './transform';
 import { isEqual } from 'lodash';
 import cluster from 'cluster';
-import { canonicallyStringify } from './util';
+import { canonicallyStringify, comparameters, computeDistance } from './util';
 import { Invocation } from './worker-protocol';
 
 export interface AutotestResults {
