@@ -5,6 +5,7 @@ import { createId } from "@paralleldrive/cuid2";
 import { ResultCluster } from '../core/shatter';
 import { RunResult } from '../core/supervisor';
 import { GeneratedParameter, edgyAny, edgyBooleans, edgyNumbers, edgyStrings } from './seed';
+import { set } from 'lodash';
 
 export type Mutation = {
     path: string[],
@@ -107,34 +108,37 @@ type Sizer = (o?: any) => Generator<number, any, any>;
 type PropertyPicker = (k: string[]) => Generator<string[], any, any>;
 type ElementPicker = (max: number) => Generator<number, any, any>;
 
-class LiteralValueGenerator implements ValueGenerator {
-    constructor(private value: any) { }
-    *generate(): Generator<GeneratedParameter, any, any> {
+type G = Generator<GeneratedParameter, any, any>;
+type ValueGeneratorrr = (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type) => G
+
+const literalValueGeneratorFactory: ValueGeneratorrr = function* (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type) {
+    if (type.isLiteral()) {
         while (true) {
             yield {
                 id: createId(),
-                generator: this.constructor.name,
+                generator: 'literalValueGeneratorFactory',
                 type: 'value',
-                value: this.value,
+                value: type.value,
             };
         }
     }
-}
-
-type ValueGeneratorFactory = (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type) => ValueGenerator | undefined;
-
-const literalValueGeneratorFactory: ValueGeneratorFactory = (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type) => {
-    if (type.isLiteral()) {
-        return new LiteralValueGenerator(type.value);
-    }
 };
 
-class SimpleValueGenerator implements ValueGenerator {
-    constructor(private flags: ts.TypeFlags) { }
+const simpleTypeFlags = [
+    ts.TypeFlags.Any,
+    ts.TypeFlags.Unknown,
+    ts.TypeFlags.String,
+    ts.TypeFlags.Number,
+    ts.TypeFlags.Boolean,
+    ts.TypeFlags.StringLike,
+    ts.TypeFlags.NumberLike,
+    ts.TypeFlags.BooleanLike
+];
 
-    *generate(): Generator<GeneratedParameter, any, any> {
+const simpleValueGeneratorFactory: ValueGeneratorrr = function* (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type) {
+    if (simpleTypeFlags.includes(type.flags)) {
         while (true) {
-            switch (this.flags) {
+            switch (type.flags) {
                 case ts.TypeFlags.Any:
                 case ts.TypeFlags.Unknown:
                     yield* edgyAny();
@@ -149,275 +153,128 @@ class SimpleValueGenerator implements ValueGenerator {
                     yield* edgyBooleans();
                     break;
                 default:
-                    throw new Error(`Unexpected type ${this.flags}`);
+                    throw new Error(`Unexpected type ${type.flags}`);
             }
         }
-    }
-}
-
-const simpleTypeFlags = [
-    ts.TypeFlags.Any,
-    ts.TypeFlags.Unknown,
-    ts.TypeFlags.String,
-    ts.TypeFlags.Number,
-    ts.TypeFlags.Boolean,
-    ts.TypeFlags.StringLike,
-    ts.TypeFlags.NumberLike,
-    ts.TypeFlags.BooleanLike
-];
-
-const simpleValueGeneratorFactory: ValueGeneratorFactory = (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type) => {
-    if (simpleTypeFlags.includes(type.flags)) {
-        return new SimpleValueGenerator(type.flags);
     }
 };
 
-class RoundRobinValueGenerator implements ValueGenerator {
-    constructor(private values: any[]) { }
-
-    *generate(): Generator<GeneratedParameter, any, any> {
-        while (true) {
-            for (const v of this.values) {
-                yield {
-                    id: createId(),
-                    generator: this.constructor.name,
-                    type: 'value',
-                    value: v,
-                };
-            }
-        }
-    }
-}
-
-const enumValueGeneratorFactory: ValueGeneratorFactory = (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type) => {
+const enumValueGeneratorFactory: ValueGeneratorrr = function* (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type) {
     if (isEnumType(type)) {
         const enumValues = type.symbol.members;
         if (enumValues) {
-            return new RoundRobinValueGenerator(Object.values(enumValues));
+            while (true) {
+                for (const v of enumValues) {
+                    yield {
+                        id: createId(),
+                        generator: 'enumValueGeneratorFactory',
+                        type: 'value',
+                        value: v,
+                    };
+                }
+            }
+
         }
         throw new Error(`Enum type ${checker.typeToString(type)} has no values`);
     }
 };
 
-
-//  composite generators
-class SimpleObjectGenerator implements ValueGenerator {
-    constructor(
-        private propertyGenerators: Record<string, Generator<GeneratedParameter, any, any>>,
-        private picker?: PropertyPicker,
-    ) { }
-
-    *generate(): Generator<GeneratedParameter, any, any> {
-        const allProperties = Object.keys(this.propertyGenerators);
-        const keysGenerator = this.picker
-            ? this.picker(allProperties)
-            : function* () {
-                while (true) {
-                    yield allProperties;
-                }
-            }();
-
-        while (true) {
-            for (const keys of keysGenerator) {
-                const o: Record<string, GeneratedParameter> = {};
-                for (const k of keys) {
-                    const key = k as string;
-                    const next = this.propertyGenerators[key].next();
-                    if (next.done) {
-                        throw new Error(`Generator ${key} is done`);
-                    }
-
-                    o[key] = next.value;
-                }
-
-                yield {
-                    id: createId(),
-                    generator: this.constructor.name,
-                    type: 'object',
-                    properties: o,
-                };
-            }
-        }
-    }
-}
-
-class ArrayGenerator implements ValueGenerator {
-    constructor(
-        private elementGenerator: Generator<GeneratedParameter, any, any>,
-        private sizer: Sizer,
-    ) { }
-
-    *generate(): Generator<GeneratedParameter, any, any> {
-        while (true) {
-            for (const count of this.sizer()) {
-                const a = [];
-                for (let i = 0; i < count; i++) {
-                    const next = this.elementGenerator.next();
-                    if (next.done) {
-                        throw new Error(`Generator ${this.elementGenerator.constructor.name} is done`);
-                    }
-                    a.push(next.value);
-                }
-
-                yield {
-                    id: createId(),
-                    generator: this.constructor.name,
-                    type: 'array',
-                    range: a,
-                };
-            }
-        }
-    }
-}
-
-const arrayValueGeneratorFactory: ValueGeneratorFactory = (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type) => {
+const arrayValueGenerator: ValueGeneratorrr = function* (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type) {
     if (checker.isArrayType(type)) {
-        const elementType = checker.getTypeArguments(type as ts.TypeReference)[0];
-        const newState: GeneratorState = {
-            currentDepth: state.currentDepth + 1,
-            pathToHere: state.pathToHere.concat(".[]"),
-        };
-        const elementGenerator = generatorator(configuration, checker, newState, elementType);
-        return new ArrayGenerator(elementGenerator.generate(), stupidSizer);
+        let operatingDepth = 0;
+
+        while (true) {
+            //  oh for a while/else loop...
+            if (state.currentDepth >= configuration.maxDepth) {
+                while (operatingDepth >= configuration.maxDepth) {
+                    yield {
+                        id: createId(),
+                        generator: 'arrayValueGenerator',
+                        type: 'array',
+                        range: [],
+                    };
+                }
+            } else {
+                const elementType = checker.getTypeArguments(type as ts.TypeReference)[0];
+                const newState: GeneratorState = {
+                    currentDepth: state.currentDepth + 1,
+                    pathToHere: state.pathToHere.concat(".[]"),
+                };
+
+                const sizer = stupidSizer;
+
+                const elementGenerator = generatorator(configuration, checker, newState, elementType);
+                while (operatingDepth <= configuration.maxDepth) {
+                    for (const count of sizer()) {
+                        const a = [];
+                        for (let i = 0; i < count; i++) {
+                            const next = elementGenerator.next();
+                            if (next.done) {
+                                throw new Error(`Generator ${elementGenerator.constructor.name} is done`);
+                            }
+                            a.push(next.value);
+                        }
+
+                        yield {
+                            id: createId(),
+                            generator: 'arrayValueGenerator',
+                            type: 'array',
+                            range: a,
+                        };
+                    }
+                }
+            }
+
+            operatingDepth = configuration.maxDepth;
+        }
+
     }
 };
-
-class MapGenerator implements ValueGenerator {
-    constructor(
-        private keyGenerator: Generator<GeneratedParameter, any, any>,
-        private valueGenerator: Generator<GeneratedParameter, any, any>,
-        private sizer: Sizer,
-    ) { }
-
-    *generate(): Generator<GeneratedParameter, any, any> {
-        while (true) {
-            for (const count of this.sizer()) {
-                const m = new Map();
-                for (let i = 0; i < count; i++) {
-                    const key = this.keyGenerator.next();
-                    if (key.done) {
-                        throw new Error(`Generator ${this.keyGenerator.constructor.name} is done`);
-                    }
-                    const value = this.valueGenerator.next();
-                    if (value.done) {
-                        throw new Error(`Generator ${this.valueGenerator.constructor.name} is done`);
-                    }
-                    m.set(key.value, value.value);
-                }
-                yield {
-                    id: createId(),
-                    generator: this.constructor.name,
-                    type: 'class',
-                    instance: m,
-                };
-            }
-        }
-    }
-}
-
-class SetGenerator implements ValueGenerator {
-    constructor(
-        private elementGenerator: Generator<GeneratedParameter, any, any>,
-        private sizer: Sizer,
-    ) { }
-
-    *generate(): Generator<GeneratedParameter, any, any> {
-        while (true) {
-            for (const count of this.sizer()) {
-                const s = new Set();
-                for (let i = 0; i < count; i++) {
-                    const next = this.elementGenerator.next();
-                    if (next.done) {
-                        throw new Error(`Generator ${this.elementGenerator.constructor.name} is done`);
-                    }
-                    s.add(next.value);
-                }
-                yield {
-                    id: createId(),
-                    generator: this.constructor.name,
-                    type: 'class',
-                    instance: s,
-                };
-            }
-        }
-    }
-}
 
 //  TODO: IntersectionGenerator;
 //  intersections are just objects
-
-class IntersectionGenerator implements ValueGenerator {
-    constructor(
-        private generators: Generator<GeneratedParameter, any, any>[],
-    ) { }
-
-    *generate(): Generator<GeneratedParameter, any, any> {
-        while (true) {
-            // const values: any[] = [];
-            // const keyCount:Record<string, number> = {};
-            // for (const generator of this.generators) {
-            //     const next = generator.next();
-            //     if (next.done) {
-            //         throw new Error(`Generator ${generator.constructor.name} is done`);
-            //     }
-            //     const o = next.value;
-            //     for (const key of Object.keys(o)) {
-            //         if (!keyCount[key]) {
-            //             keyCount[key] = 0;
-            //         }
-            //         keyCount[key]++;
-            //     }
-            //     values.push(o);
-            // }
-
-            // const keys = Object.keys(keyCount).filter(k => keyCount[k] === values.length);
-            // const o: Record<string, any> = {};
-            // for (const key of keys) {
-            //     const generatorsForKey = this.generators.map(g => g[key]);
-            //     o[key] = new IntersectionGenerator(generatorsForKey).next().value;
-            // }
-
-
-            // yield {
-            //     id: createId(),
-            //     generator: this.constructor.name,
-            //     type: 'object',
-            //     properties: values,
-            // };
-        }
+const intersectionValueGeneratorFactory: ValueGeneratorrr = function* (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type) {
+    if (!type.isIntersection()) {
+        return undefined;
     }
-}
+    const intersectingTypes = type.types;
+    //  presumably must be an object type
+    throw new Error("Not ready for intersectionality");
 
-const intersectionValueGeneratorFactory: ValueGeneratorFactory = (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type) => {
-    if (type.isIntersection()) {
-        const intersectingTypes = type.types;
-        //  presumably must be an object type
-        throw new Error("Not ready for intersectionality");
-    }
-    return undefined;
+    // const values: any[] = [];
+    // const keyCount:Record<string, number> = {};
+    // for (const generator of this.generators) {
+    //     const next = generator.next();
+    //     if (next.done) {
+    //         throw new Error(`Generator ${generator.constructor.name} is done`);
+    //     }
+    //     const o = next.value;
+    //     for (const key of Object.keys(o)) {
+    //         if (!keyCount[key]) {
+    //             keyCount[key] = 0;
+    //         }
+    //         keyCount[key]++;
+    //     }
+    //     values.push(o);
+    // }
+
+    // const keys = Object.keys(keyCount).filter(k => keyCount[k] === values.length);
+    // const o: Record<string, any> = {};
+    // for (const key of keys) {
+    //     const generatorsForKey = this.generators.map(g => g[key]);
+    //     o[key] = new IntersectionGenerator(generatorsForKey).next().value;
+    // }
+
+
+    // yield {
+    //     id: createId(),
+    //     generator: this.constructor.name,
+    //     type: 'object',
+    //     properties: values,
+    // };
 };
 
-class UnionGenerator implements ValueGenerator {
-    constructor(
-        private generators: Generator<GeneratedParameter, any, any>[],
-        private picker: ElementPicker,
-    ) { }
-
-    *generate(): Generator<GeneratedParameter, any, any> {
-        while (true) {
-            for (const index of this.picker(this.generators.length)) {
-                const generator = this.generators[index];
-                const next = generator.next();
-                if (next.done) {
-                    throw new Error(`Generator ${generator.constructor.name} is done`);
-                }
-                yield next.value;
-            }
-        }
-    }
-}
-
-const unionValueGeneratorFactory: ValueGeneratorFactory = (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type) => {
+const unionValueGeneratorFactory: ValueGeneratorrr = function* (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type) {
     if (type.isUnion()) {
         const unionTypes = type.types;
         const generators: Generator<GeneratedParameter, any, any>[] = [];
@@ -427,133 +284,252 @@ const unionValueGeneratorFactory: ValueGeneratorFactory = (configuration: Genera
                 pathToHere: state.pathToHere.concat(" | "),
             };
             const g = generatorator(configuration, checker, newState, unionType);
-            generators.push(g.generate());
+            generators.push(g);
         }
-        return new UnionGenerator(generators, stupidPicker);
+
+        const picker = stupidPicker;
+        while (true) {
+            for (const index of picker(generators.length)) {
+                const generator = generators[index];
+                const next = generator.next();
+                if (next.done) {
+                    throw new Error(`Generator ${generator.constructor.name} is done`);
+                }
+                yield next.value;
+            }
+        }
     }
 };
 
-const objectValueGeneratorFactory: ValueGeneratorFactory = (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type) => {
-    const typeName = type.getSymbol()?.getName();
-    if (typeName === 'Map') {
-        if (!isTypeReference(type)) {
-            throw new Error(`Unexpected type not a reference ${checker.typeToString(type)}`);
-        }
-        const [keyType, valueType] = (() => {
-            if (type.typeArguments && type.typeArguments.length === 2) {
-                return type.typeArguments;
+//  does NOT validate its argument
+const mapValueGeneratorFactory: ValueGeneratorrr = function* (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type) {
+    if (!isTypeReference(type)) {
+        throw new Error(`Unexpected type not a reference ${checker.typeToString(type)}`);
+    }
+
+    let operatingDepth = 0;
+    const sizer = stupidSizer;
+
+    while (true) {
+        if (state.currentDepth >= configuration.maxDepth) {
+            while (operatingDepth >= configuration.maxDepth) {
+                yield {
+                    id: createId(),
+                    generator: 'mapValueGenerator',
+                    type: 'class',
+                    instance: new Map(),
+                };
             }
-            //  when types are not specified, just go string=>string
-            return [checker.getStringType(), checker.getStringType()];
-        })();
+        } else {
+            const [keyType, valueType] = (() => {
+                if (type.typeArguments && type.typeArguments.length === 2) {
+                    return type.typeArguments;
+                }
+                //  when types are not specified, just go string=>string
+                return [checker.getStringType(), checker.getStringType()];
+            })();
 
-        const keyGenerator = generatorator(configuration, checker, {
-            currentDepth: state.currentDepth + 1,
-            pathToHere: state.pathToHere.concat('.key'),
-        }, keyType);
+            const keyGenerator = generatorator(configuration, checker, {
+                currentDepth: state.currentDepth + 1,
+                pathToHere: state.pathToHere.concat('.key'),
+            }, keyType);
 
-        const valueGenerator = generatorator(configuration, checker, {
-            currentDepth: state.currentDepth + 1,
-            pathToHere: state.pathToHere.concat('.value'),
-        }, valueType);
-        // console.log(`Map ${checker.typeToString(currentType)}`)
-        return new MapGenerator(keyGenerator.generate(), valueGenerator.generate(), stupidSizer);
-    }
+            const valueGenerator = generatorator(configuration, checker, {
+                currentDepth: state.currentDepth + 1,
+                pathToHere: state.pathToHere.concat('.value'),
+            }, valueType);
 
-    if (typeName === 'Set') {
-        if (!isTypeReference(type)) {
-            throw new Error(`Unexpected type not a reference ${checker.typeToString(type)}`);
+            while (operatingDepth <= configuration.maxDepth) {
+                for (const count of sizer()) {
+                    const m = new Map();
+                    for (let i = 0; i < count; i++) {
+                        const key = keyGenerator.next();
+                        if (key.done) {
+                            throw new Error(`Generator ${keyGenerator.constructor.name} is done`);
+                        }
+                        const value = valueGenerator.next();
+                        if (value.done) {
+                            throw new Error(`Generator ${valueGenerator.constructor.name} is done`);
+                        }
+                        m.set(key.value, value.value);
+                    }
+                    yield {
+                        id: createId(),
+                        generator: 'mapValueGenerator',
+                        type: 'class',
+                        instance: m,
+                    };
+                }
+            }
         }
-
-        //  when unspecified make it a string
-        const elementType = type.typeArguments?.length === 1 ? type.typeArguments[0] : checker.getStringType();
-
-        const newState = {
-            currentDepth: state.currentDepth + 1,
-            pathToHere: state.pathToHere.concat('.element'),
-        };
-        const elementGenerator = generatorator(configuration, checker, newState, elementType);
-        return new SetGenerator(elementGenerator.generate(), stupidSizer);
     }
+};
 
-    const propertyGenerators: Record<string, Generator<GeneratedParameter, any, any>> = {};
-    checker.getPropertiesOfType(type).forEach(p => {
-        if (p.valueDeclaration) {
-            const propertyType = checker.getTypeOfSymbolAtLocation(p, p.valueDeclaration);
+const setValueGeneratorFactory = function* (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type) {
+    let operatingDepth = 0;
+    const sizer = stupidSizer;
+
+    while (true) {
+        if (state.currentDepth >= configuration.maxDepth) {
+            while (operatingDepth >= configuration.maxDepth) {
+                yield {
+                    id: createId(),
+                    generator: 'mapValueGenerator',
+                    type: 'class',
+                    instance: new Map(),
+                };
+            }
+        } else {
+            if (!isTypeReference(type)) {
+                throw new Error(`Unexpected type not a reference ${checker.typeToString(type)}`);
+            }
+
+            //  when unspecified make it a string
+            const elementType = type.typeArguments?.length === 1 ? type.typeArguments[0] : checker.getStringType();
 
             const newState = {
                 currentDepth: state.currentDepth + 1,
-                pathToHere: state.pathToHere.concat(`.${p.name}`),
+                pathToHere: state.pathToHere.concat('.element'),
             };
+            const elementGenerator = generatorator(configuration, checker, newState, elementType);
 
-            propertyGenerators[p.name] = generatorator(configuration, checker, newState, propertyType).generate();
-        }
-    });
-
-    // console.log(`Object ${checker.typeToString(currentType)}`)
-    return new SimpleObjectGenerator(propertyGenerators, stupidPropertyPicker);
-};
-
-//  like an array but can be heterogeneous
-class TupleGenerator implements ValueGenerator {
-    constructor(
-        private generators: Generator<GeneratedParameter, any, any>[],
-    ) { }
-
-    *generate(): Generator<GeneratedParameter, any, any> {
-        while (true) {
-            const values: any[] = [];
-            for (let i = 0; i < this.generators.length; i++) {
-                const generator = this.generators[i];
-                const next = generator.next();
-                if (next.done) {
-                    throw new Error(`Generator[${i}] ${generator.constructor.name} is done`);
+            for (const count of sizer()) {
+                const s = new Set();
+                for (let i = 0; i < count; i++) {
+                    const next = elementGenerator.next();
+                    if (next.done) {
+                        throw new Error(`Generator ${elementGenerator.constructor.name} is done`);
+                    }
+                    s.add(next.value);
                 }
-                values.push(next.value);
+                yield {
+                    id: createId(),
+                    generator: 'setValueGeneratorFactory',
+                    type: 'class',
+                    instance: s,
+                };
             }
-            yield {
-                id: createId(),
-                generator: this.constructor.name,
-                type: 'array',
-                range: values,
-            };
         }
     }
-}
+};
 
-const targetCollectionSizes = [3, 0, 1, 10, 2];
-function* stupidSizer() {
+const basicObjectValueGeneratorFactory: ValueGeneratorrr = function* (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type) {
+    let operatingDepth = 0;
+    const picker = stupidPropertyPicker;
+
+    while (true) {
+        if (state.currentDepth >= configuration.maxDepth) {
+            while (operatingDepth >= configuration.maxDepth) {
+                yield {
+                    id: createId(),
+                    generator: 'mapValueGenerator',
+                    type: 'class',
+                    instance: new Map(),
+                };
+            }
+        } else {
+            const propertyGenerators: Record<string, Generator<GeneratedParameter, any, any>> = {};
+            checker.getPropertiesOfType(type).forEach(p => {
+                if (p.valueDeclaration) {
+                    const propertyType = checker.getTypeOfSymbolAtLocation(p, p.valueDeclaration);
+
+                    const newState = {
+                        currentDepth: state.currentDepth + 1,
+                        pathToHere: state.pathToHere.concat(`.${p.name}`),
+                    };
+
+                    propertyGenerators[p.name] = generatorator(configuration, checker, newState, propertyType);
+                }
+            });
+
+            const allProperties = Object.keys(propertyGenerators);
+            const keysGenerator = picker
+                ? picker(allProperties)
+                : function* () {
+                    while (true) {
+                        yield allProperties;
+                    }
+                }();
+
+            while (operatingDepth < configuration.maxDepth) {
+                for (const keys of keysGenerator) {
+                    const o: Record<string, GeneratedParameter> = {};
+                    for (const k of keys) {
+                        const key = k as string;
+                        const next = propertyGenerators[key].next();
+                        if (next.done) {
+                            throw new Error(`Generator ${key} is done`);
+                        }
+
+                        o[key] = next.value;
+                    }
+
+                    yield {
+                        id: createId(),
+                        generator: 'basicObjectValueGeneratorFactory',
+                        type: 'object',
+                        properties: o,
+                    };
+                }
+            }
+
+        }
+    }
+};
+
+const objectValueGeneratorFactory: ValueGeneratorrr = function* (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type) {
+    if (type.flags !== ts.TypeFlags.Object) {
+        return;
+    };
+
+    if (type.isClass()) {
+        const typeName = type.getSymbol()?.getName();
+        if (typeName === 'Map') {
+            return mapValueGeneratorFactory(configuration, checker, state, type);
+        }
+
+        if (typeName === 'Set') {
+            return setValueGeneratorFactory(configuration, checker, state, type);
+        }
+    }
+
+    return basicObjectValueGeneratorFactory(configuration, checker, state, type);
+
+};
+
+const stupidSizer: Sizer = function* () {
     let i = 0;
+    const targetCollectionSizes = [3, 0, 1, 10, 2];
     while (true) {
         yield targetCollectionSizes[i++ % targetCollectionSizes.length];
     }
-}
+};
 
-function* stupidPicker(max: number) {
+const stupidPicker: ElementPicker = function* (max: number) {
     let i = 0;
     while (true) {
         yield i++ % max;
     }
-}
+};
 
-function* stupidPropertyPicker(keys: string[]) {
+const stupidPropertyPicker: PropertyPicker = function* (keys: string[]) {
     while (true) {
         yield keys;
     }
-}
+};
 
 //  TODO: at some point create jq-compatible paths in pathToHere for neatness
-function generatorator(configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, currentType: ts.Type): ValueGenerator {
+function generatorator(configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, currentType: ts.Type): G {
 
     if (state.currentDepth > configuration.maxDepth) {
-        return new LiteralValueGenerator(undefined);
+        return literalValueGeneratorFactory(configuration, checker, state, checker.getUndefinedType());
     }
 
-    const factories: ValueGeneratorFactory[] = [
+    const factories: ValueGeneratorrr[] = [
         literalValueGeneratorFactory,
         simpleValueGeneratorFactory,
         enumValueGeneratorFactory,
-        arrayValueGeneratorFactory,
+        arrayValueGenerator,
         intersectionValueGeneratorFactory,
         unionValueGeneratorFactory,
         objectValueGeneratorFactory,
@@ -570,7 +546,7 @@ function generatorator(configuration: GeneratorConfiguration, checker: ts.TypeCh
 }
 
 //  construct a stateful hierarchy of generators    
-function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclaration) {
+function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclaration): G {
 
     const state: GeneratorState = {
         currentDepth: 0,
@@ -582,6 +558,10 @@ function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclarati
         weirdness: 1,
     };
 
+    console.log(`function type = ${checker.typeToString(checker.getTypeAtLocation(f))}`);
+
+    //  don't try to convert this to the factory/generator style because function declarations require
+    //  an AST Node not just a type
     const generators: Generator<GeneratedParameter, any, any>[] = [];
     for (let j = 0; j < f.parameters.length; j++) {
         const t = f.parameters[j].type;
@@ -589,12 +569,27 @@ function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclarati
             ? checker.getTypeAtLocation(t)
             : checker.getAnyType();
 
-        const generator = generatorator(configuration, checker, state, currentType).generate();
+        const generator = generatorator(configuration, checker, state, currentType);
         generators.push(generator);
     }
 
-    const tg = new TupleGenerator(generators);
-    yield* tg.generate();
+    while (true) {
+        const values: any[] = [];
+        for (let i = 0; i < generators.length; i++) {
+            const generator = generators[i];
+            const next = generator.next();
+            if (next.done) {
+                throw new Error(`Generator[${i}] ${generator.constructor.name} is done`);
+            }
+            values.push(next.value);
+        }
+        yield {
+            id: createId(),
+            generator: 'functionGeneratorator',
+            type: 'tuple',
+            values,
+        };
+    }
 }
 
 export class CombinatorialTestCaseSource /* implements TestCaseSource */ {

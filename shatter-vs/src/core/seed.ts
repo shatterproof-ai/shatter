@@ -13,6 +13,9 @@ export type GeneratedParameter = {
     type: 'array',
     range: GeneratedParameter[],
 } | {
+    type: 'tuple',
+    values: GeneratedParameter[],
+} | {
     type: 'class',
     instance: any,
 } | {
