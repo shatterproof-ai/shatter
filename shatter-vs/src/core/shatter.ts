@@ -303,7 +303,7 @@ export async function shatterAutotest(modulePaths: string[],
 
     console.log(`Finished after ${count} iterations and ${Date.now() - startTime}ms with ${allExecutedLines.size}/${introspectionContext.instrumentedLines.size} lines executed`);
 
-    return { executed, instrumented };
+    return { executed, instrumented, clusters };
 }
 
 

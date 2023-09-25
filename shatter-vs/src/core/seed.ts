@@ -43,7 +43,7 @@ const numberNeighbors = [-2, -1, 0, 1, 2];
 
 function* neighboringNumbers(n: number) {
     for (const neighbor of numberNeighbors) {
-        const v = n * neighbor;
+        const v = n + neighbor;
         yield v;
     }
 }
@@ -251,9 +251,11 @@ const breedStrings = ["#3eabef", "repurpose web-enabled e-commerce", "blob", "73
 
 export function* edgyNumbers(literals?: Literals): Generator<GeneratedParameter, void, unknown> {
     while (true) {
-        for (const base of literals?.numbers ?? []) {
-            for (const n of neighboringNumbers(base)) {
-                yield gpv(n, 'literals.numbers');
+        for (const m of [1, -1, 2, -2]) {
+            for (const base of literals?.numbers ?? []) {
+                for (const n of neighboringNumbers(base * m)) {
+                    yield gpv(n, 'literals.numbers');
+                }
             }
         }
         for (const n of seedNumbers) {

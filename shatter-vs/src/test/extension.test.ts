@@ -70,18 +70,18 @@ describe('scratch space', () => {
                         return;
                     }
 
-                    const dumpTypeNode = (typeNode: ts.TypeNode, soFar:string[]=[]) => {
+                    const dumpTypeNode = (typeNode: ts.TypeNode, soFar: string[] = []) => {
                         const baseType = checker.getTypeFromTypeNode(typeNode);
                         const line = ts.getLineAndCharacterOfPosition(source!, typeNode.pos).line;
-            
+
                         console.log(`PARAMETER NODE Name: ${param.name.getText()} ${soFar.join('.')}; flags = ${typeNode.flags
                             }; text = ${typeNode.getText()
                             }; dumpTypes = ${dumpType(baseType, line)
                             }`);
-            
+
                         if (ts.isTypeReferenceNode(typeNode)) {
                             const referencedType = checker.getTypeFromTypeNode(typeNode);
-                            if (referencedType) {}
+                            if (referencedType) { }
                             console.log(`TYPE REFERENCE NODE: ${typeNode.typeName.getText()}; typeNode.flags = ${typeNode.flags /*}; FQN = ${checker.getFullyQualifiedName(referencedType.symbol)
                             */}; dumpTypes = ${dumpType(referencedType, -1)
                                 }`);
@@ -97,9 +97,9 @@ describe('scratch space', () => {
                         if (ts.isStringLiteralLike(typeNode)) {
                             console.log(`STRING LITERAL NODE: ${typeNode.text}`);
                         }
-            
+
                     };
-            
+
                     dumpTypeNode(typeNode);
                 });
                 return;
@@ -119,6 +119,82 @@ describe('scratch space', () => {
     });
 });
 
+
+describe('scratch space 2', () => {
+    it('should find every embedded literal number or string', () => {
+        const sourceCode = `
+        const yes = "no no no";
+        type M = {
+            mm: 7777,
+        };
+
+        const calibrrasshis = {
+            x: {
+                y: {
+                    z: 5915,
+                },
+                y2: {
+                    z2: {
+                        _: "faofaffo",
+                    }
+                }
+            }
+        };
+
+        function hello(m:string, n:number, o:any) {
+            if (m == "hellp") {
+                return 2510;
+            }
+            if (n == 5142 || (n == 9719 && (m == "hello" || m == "goodbye"))) {
+                return 1192;
+            }
+            const t = (aaa:'bbbbbbb') => "ccccccccccccccccccc";
+            if (o?.a?.b?.c == "that") {
+                return 2531;
+            }
+            return -1412;
+        }
+
+        const zort = (x:"a"|"b"|"c") => {
+            return 1111;
+        }
+        `;
+
+        const tempdir = mkdtempSync(join(tmpdir(), "shatter-test-"));
+        const sourceFilePath = join(tempdir, 'zert.ts');
+        writeFileSync(sourceFilePath, sourceCode);
+
+        const program = ts.createProgram([sourceFilePath], {});
+
+        const sourceFile = program.getSourceFile(sourceFilePath);
+        if (!sourceFile) {
+            throw new Error(`No source file ${sourceFilePath}`);
+        }
+
+        const literals: any[] = [];
+        const transformer = (ctx: ts.TransformationContext) => (sourceFile: ts.SourceFile): ts.SourceFile => {
+            const visitor = (node: ts.Node): ts.Node => {
+                if (ts.isStringLiteral(node)) {
+                    literals.push(node.text);
+                }
+                if (ts.isNumericLiteral(node)) {
+                    const asNumber = parseFloat(node.text);
+                    literals.push(asNumber);
+                }
+
+                return ts.visitEachChild(node, visitor, ctx);
+            };
+
+            ts.visitNode(sourceFile, visitor);
+
+            return sourceFile;
+        };
+
+        const transformed = ts.transform(sourceFile, [transformer]);
+
+        console.log(`Literals: ${JSON.stringify(literals.sort(), null, 2)}`);
+    });
+});
 
 describe('extension', () => {
     it('should pass', async () => {
@@ -192,6 +268,94 @@ describe('extension', () => {
         console.log(`Executed     ${executed}`);
         console.log(`Instrumented ${instrumented}`);
         console.log(`Missed       ${unexecuted}`);
+    });
+});
+
+describe('extensionension', () => {
+    it('should should pass', async () => {
+        const sourceCode = `
+        function romannumeral(n: number): string {
+            if (typeof n != 'number' || n < 0) {
+                throw new Error(\`Invalid input \${n}\`)
+            }
+        
+            if (n == 0) {
+                return ""
+            }
+        
+            if (n > 3999) {
+                throw new Error(\`Invalid input \${n}\`)
+            }
+        
+            if (n >= 1000) {
+                return 'M' + romannumeral(n - 1000)
+            }
+            if (n >= 900) {
+                return 'CM' + romannumeral(n - 900)
+            }
+            if (n >= 500) {
+                return 'D' + romannumeral(n - 500)
+            }
+            if (n >= 400) {
+                return 'CD' + romannumeral(n - 400)
+            }
+            if (n >= 100) {
+                return 'C' + romannumeral(n - 100)
+            }
+            if (n >= 90) {
+                return 'XC' + romannumeral(n - 90)
+            }
+            if (n >= 50) {
+                return 'L' + romannumeral(n - 50)
+            }
+            if (n >= 40) {
+                return 'XL' + romannumeral(n - 40)
+            }
+            if (n >= 10) {
+                return 'X' + romannumeral(n - 10)
+            }
+            if (n == 9) {
+                return 'IX'
+            }
+            if (n >= 5) {
+                return 'V' + romannumeral(n - 5)
+            }
+            if (n == 4) {
+                return 'IV'
+            }
+        
+            return 'I'.repeat(n)
+        }
+        `;
+
+        const tempdir = mkdtempSync(join(tmpdir(), "shatter-test-"));
+        const testfile = join(tempdir, 'roro.ts');
+        writeFileSync(testfile, sourceCode);
+
+        const functionName = "romannumeral";
+
+        const modulePaths = process.env.NODE_ENV?.split(':') ?? [];
+
+        const shatterproofModuleOverride = "/home/ketan/project/shatter/shatter-vs/src";
+        const maxIterations = 500;
+        // const maxTime = 120_000;
+        const maxTime = 10_000;
+        const { executed, instrumented, clusters } = await shatterAutotest(modulePaths, testfile, tempdir, functionName, (clusters) => {
+            // console.log(`Received clusters ${JSON.stringify(clusters, null, 2)}`);
+        }, { shatterproofModuleOverride, maxIterations, maxTime });
+        const unexecuted = instrumented.filter((i) => !executed.includes(i));
+        console.log(`Executed     ${executed}`);
+        console.log(`Instrumented ${instrumented}`);
+        console.log(`Missed       ${unexecuted}`);
+
+        const testCases: any[][] = [];
+        clusters.forEach((cluster) => {
+            cluster.results.forEach((result) => {
+                testCases.push(result.parameters);
+            });
+        });
+
+        console.log(`Test cases: ${JSON.stringify(testCases)}`);
     });
 });
 

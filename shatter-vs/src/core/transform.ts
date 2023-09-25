@@ -137,7 +137,7 @@ export const createInstrumenter = (introspectionContext: IntrospectionContext, s
                 const asNumber = parseFloat(node.text);
                 introspectionContext.numbers.add(asNumber);
             }
-            throw new Error("Try to hit embedded values");
+
             return ts.visitEachChild(node, findLiteralsVisitor, ctx);
         };
 

@@ -526,6 +526,11 @@ const objectValueGeneratorFactory: ValueGenerator = function (configuration: Gen
         if (typeName === 'Set') {
             return setValueGeneratorFactory(configuration, checker, state, type);
         }
+
+        //  TODO: Date, RegExp, and Symbol
+        //  https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects
+
+        //  TODO: Promise
     }
 
     return basicObjectValueGeneratorFactory(configuration, checker, state, type);
@@ -591,7 +596,7 @@ function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclarati
     const configuration: GeneratorConfiguration = {
         maxDepth: 3,
         weirdness: 1,
-        ...literals,
+        literals,
     };
 
     const ft = checker.getTypeAtLocation(f);//  TODO: when can we directly get a ts.Type that is a function?
@@ -674,6 +679,10 @@ export class CombinatorialTestCaseSource /* implements TestCaseSource */ {
             if (node.type === 'class') {
                 return node.instance;
             }
+            if (node.type === 'tuple') {
+                return node.values.map(toValue);
+            }
+
             throw new Error(`Unexpected type ${node['type']}`);
         };
 
