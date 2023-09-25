@@ -6,9 +6,7 @@ import { faker } from '@faker-js/faker';
 import { distance as levenshtein } from 'fastest-levenshtein';
 import { ResultCluster } from '../core/shatter';
 import { RunResult } from '../core/supervisor';
-import { hybridize } from './hybridize';
 import path = require('path');
-import { pick } from 'lodash';
 
 const gpv = (value: number | string | boolean, generator: string, options?: Record<string, any>): GeneratedParameter => ({
     id: createId(),
@@ -450,12 +448,6 @@ function* edgyAny(): Generator<GeneratedParameter, void, unknown> {
 
 //  TODO: apply options
 function* edgyStrings(): Generator<GeneratedParameter, void, unknown> {
-    const gengen: {
-        category: string,
-        generator: string,
-        function: Function,
-    }[] = [];
-
     for (const s of seedStrings) {
         yield {
             id: createId(),
@@ -474,44 +466,58 @@ function* edgyStrings(): Generator<GeneratedParameter, void, unknown> {
         };
     }
 
-
-    for (const [name, fakers] of Object.entries(dataDomains.string)) {
-        for (const faquer of fakers) {
-            gengen.push({ category: name, generator: faquer.name, function: faquer });
-        };
-    }
-
-    let pos = 0;
-    let i = 1;
-    let generated = 0;
-
-    //  TODO: simplify; this doesn't need to be stateful like this; just have a Set<string> seen
-    while (true) {
-        //  variations on just one thing
-        for (let i = 0; i < 10; i++) {
-            for (const gen of gengen) {
-                const v: string = gen.function();
-                yield gpv(v, 's(tr)ingle');
-                generated++;
-            }
+    function* optionExplore(allVariants: any, keys: string[], chosen: any): Generator<any, any, any> {
+        if (keys.length === 0) {
+            yield chosen;
+            return;
         }
 
-        //  a mix of things
-        for (; i < 100_000; i = Math.ceil(i * 1.2)) {
-            const pieces: string[] = [];
-            while (pieces.length < i) {
-                if (pos >= gengen.length) {
-                    pos = 0;
+        const currentKey = keys[0];
+        const restKeys = keys.slice(1);
+        //  always try one without anything selected for this one
+        yield* optionExplore(allVariants, restKeys, chosen);
+
+        if (keys.length > 0) {
+            const variants = allVariants[currentKey];
+            for (const variant of variants) {
+                const newChoices = {
+                    ...chosen,
+                    [currentKey]: variant,
+                };
+                yield* optionExplore(allVariants, restKeys, newChoices);
+            }
+        }
+    }
+
+    function* optionate(fakerKey: string) {
+        const optionSets = [optionVariantsLimited, optionVariantsMedium, optionVariantsExtensive];
+        while (true) {
+            for (const optionSet of optionSets) {
+                if (optionSet[fakerKey]) {
+                    const keys = Object.keys(optionSet[fakerKey]);
+                    yield* optionExplore(optionSet[fakerKey], keys, {});
+                } else {
+                    yield {};
                 }
-                const v = gengen[pos++].function();
-                pieces.push(v);
             }
-            const v = pieces.join(' ');
-            yield gpv(v, 'mingle');
-            generated++;
         }
     }
-    console.error(`Apparently there are no strings left with i = ${i}; generated = ${generated}`);
+
+    while (true) {
+        for (const [fakerCategoryName, fakers] of Object.entries(stringFakerses)) {
+            for (const fakerName of fakers) {
+                const fakerCategory = faker[fakerCategoryName as keyof typeof faker];
+                const fakerFunction = fakerCategory?.[fakerName as keyof typeof fakerCategory] as any;
+                if (!fakerFunction) {
+                    throw new Error(`No faker for ${fakerCategoryName}.${fakerName}`);
+                }
+
+                for (const options of optionate(fakerName)) {
+                    yield gpv(fakerFunction(options), `${fakerCategoryName}.${fakerName}`);
+                }
+            }
+        }
+    }
 }
 
 export type Mutation = {
@@ -794,7 +800,7 @@ enum
 */
 
 interface ValueGenerator {
-    next: () => Generator<GeneratedParameter, any, any>;
+    generate: () => Generator<GeneratedParameter, any, any>;
 }
 
 type Sizer = (o?: any) => Generator<number, any, any>;
@@ -804,7 +810,7 @@ type ElementPicker = (max: number) => Generator<number, any, any>;
 
 class LiteralValueGenerator implements ValueGenerator {
     constructor(private value: any) { }
-    *next(): Generator<GeneratedParameter, any, any> {
+    *generate(): Generator<GeneratedParameter, any, any> {
         while (true) {
             yield {
                 id: createId(),
@@ -819,7 +825,7 @@ class LiteralValueGenerator implements ValueGenerator {
 class SimpleValueGenerator implements ValueGenerator {
     constructor(private flags: ts.TypeFlags) { }
 
-    *next(): Generator<GeneratedParameter, any, any> {
+    *generate(): Generator<GeneratedParameter, any, any> {
         while (true) {
             switch (this.flags) {
                 case ts.TypeFlags.Any:
@@ -845,7 +851,7 @@ class SimpleValueGenerator implements ValueGenerator {
 class RoundRobinValueGenerator implements ValueGenerator {
     constructor(private values: any[]) { }
 
-    *next(): Generator<GeneratedParameter, any, any> {
+    *generate(): Generator<GeneratedParameter, any, any> {
         while (true) {
             for (const v of this.values) {
                 yield {
@@ -866,7 +872,7 @@ class SimpleObjectGenerator implements ValueGenerator {
         private picker?: PropertyPicker,
     ) { }
 
-    *next(): Generator<GeneratedParameter, any, any> {
+    *generate(): Generator<GeneratedParameter, any, any> {
         const allProperties = Object.keys(this.propertyGenerators);
         const keysGenerator = this.picker
             ? this.picker(allProperties)
@@ -906,7 +912,7 @@ class ArrayGenerator implements ValueGenerator {
         private sizer: Sizer,
     ) { }
 
-    *next(): Generator<GeneratedParameter, any, any> {
+    *generate(): Generator<GeneratedParameter, any, any> {
         while (true) {
             for (const count of this.sizer()) {
                 const a = [];
@@ -936,7 +942,7 @@ class MapGenerator implements ValueGenerator {
         private sizer: Sizer,
     ) { }
 
-    *next(): Generator<GeneratedParameter, any, any> {
+    *generate(): Generator<GeneratedParameter, any, any> {
         while (true) {
             for (const count of this.sizer()) {
                 const m = new Map();
@@ -968,7 +974,7 @@ class SetGenerator implements ValueGenerator {
         private sizer: Sizer,
     ) { }
 
-    *next(): Generator<GeneratedParameter, any, any> {
+    *generate(): Generator<GeneratedParameter, any, any> {
         while (true) {
             for (const count of this.sizer()) {
                 const s = new Set();
@@ -998,7 +1004,7 @@ class IntersectionGenerator implements ValueGenerator {
         private generators: Generator<GeneratedParameter, any, any>[],
     ) { }
 
-    *next(): Generator<GeneratedParameter, any, any> {
+    *generate(): Generator<GeneratedParameter, any, any> {
         while (true) {
             // const values: any[] = [];
             // const keyCount:Record<string, number> = {};
@@ -1041,7 +1047,7 @@ class UnionGenerator implements ValueGenerator {
         private picker: ElementPicker,
     ) { }
 
-    *next(): Generator<GeneratedParameter, any, any> {
+    *generate(): Generator<GeneratedParameter, any, any> {
         while (true) {
             for (const index of this.picker(this.generators.length)) {
                 const generator = this.generators[index];
@@ -1061,46 +1067,85 @@ class TupleGenerator implements ValueGenerator {
         private generators: Generator<GeneratedParameter, any, any>[],
     ) { }
 
-    *next(): Generator<GeneratedParameter, any, any> {
+    *generate(): Generator<GeneratedParameter, any, any> {
         while (true) {
             const values: any[] = [];
-            for (const generator of this.generators) {
+            for (let i = 0; i < this.generators.length; i++) {
+                const generator = this.generators[i];
                 const next = generator.next();
                 if (next.done) {
-                    throw new Error(`Generator ${generator.constructor.name} is done`);
+                    throw new Error(`Generator[${i}] ${generator.constructor.name} is done`);
                 }
                 values.push(next.value);
             }
+            yield {
+                id: createId(),
+                generator: this.constructor.name,
+                type: 'array',
+                range: values,
+            };
         }
     }
 }
 
-//  TODO: at some point create jq-compatible paths in pathToHere for neatness
-function* generatorator(checker: ts.TypeChecker, currentType: ts.Type, currentDepth: number, pathToHere: string[] = []): Generator<GeneratedParameter, any, any> {
-    const targetCollectionSizes = [3, 0, 1, 10, 2];
+const targetCollectionSizes = [3, 0, 1, 10, 2];
+function* stupidSizer() {
+    let i = 0;
+    while (true) {
+        yield targetCollectionSizes[i++ % targetCollectionSizes.length];
+    }
+}
 
+function* stupidPicker(max: number) {
+    let i = 0;
+    while (true) {
+        yield i++ % max;
+    }
+}
+
+function* stupidPropertyPicker(keys: string[]) {
+    while (true) {
+        yield keys;
+    }
+}
+
+//  TODO: at some point create jq-compatible paths in pathToHere for neatness
+function generatorator(checker: ts.TypeChecker, currentType: ts.Type, currentDepth: number, pathToHere: string[] = []): ValueGenerator {
+    
     if (currentDepth < 0) {
         return new LiteralValueGenerator(undefined);
     }
 
-    function* stupidSizer() {
-        let i = 0;
-        while (true) {
-            yield targetCollectionSizes[i++ % targetCollectionSizes.length];
-        }
+    if (currentType.isLiteral()) {
+        return new LiteralValueGenerator(currentType.value);
     }
 
-    function* stupidPicker(max: number) {
-        let i = 0;
-        while (true) {
-            yield i++ % max;
+    if (isEnumType(currentType)) {
+        const enumValues = currentType.symbol.members;
+        if (enumValues) {
+            return new RoundRobinValueGenerator(Object.values(enumValues));
         }
+        throw new Error(`Enum type ${checker.typeToString(currentType)} has no values`);
     }
 
-    function* stupidPropertyPicker(keys: string[]) {
-        while (true) {
-            yield keys;
+    if (checker.isArrayType(currentType)) {
+        const elementType = checker.getTypeArguments(currentType as ts.TypeReference)[0];
+        const elementGenerator = generatorator(checker, elementType, currentDepth - 1, pathToHere.concat(".[]"));
+        return new ArrayGenerator(elementGenerator.generate(), stupidSizer);
+    }
+    if (currentType.isIntersection()) {
+        const intersectingTypes = currentType.types;
+        //  presumably must be an object type
+        throw new Error("Not ready for intersectionality");
+    }
+    if (currentType.isUnion()) {
+        const unionTypes = currentType.types;
+        const generators: Generator<GeneratedParameter, any, any>[] = [];
+        for (const unionType of unionTypes) {
+            const g = generatorator(checker, unionType, currentDepth, pathToHere.concat(" | "));
+            generators.push(g.generate());
         }
+        return new UnionGenerator(generators, stupidPicker);
     }
 
     switch (currentType.flags) {
@@ -1109,52 +1154,19 @@ function* generatorator(checker: ts.TypeChecker, currentType: ts.Type, currentDe
         case ts.TypeFlags.String:
         case ts.TypeFlags.Number:
         case ts.TypeFlags.Boolean:
+            // console.log(`Simple ${checker.typeToString(currentType)}`);
             return new SimpleValueGenerator(currentType.flags);
 
-        case ts.TypeFlags.StringLiteral:
-            return new LiteralValueGenerator("TODO extract literal value");
-
-        case ts.TypeFlags.NumberLiteral:
-            //  TODO extract literal value
-            return new LiteralValueGenerator(4);
-
         //  TODO extract literal value
-        case ts.TypeFlags.BooleanLiteral:
-            return new LiteralValueGenerator(true);
-
-        case ts.TypeFlags.EnumLiteral:
-            if (isEnumType(currentType)) {
-                const enumValues = currentType.symbol.members;
-                if (enumValues) {
-                    return new RoundRobinValueGenerator(Object.values(enumValues));
-                }
-                throw new Error(`Enum type ${checker.typeToString(currentType)} has no values`);
-            }
-            throw new Error(`Impossible type ${currentType.flags}`);
-
         case ts.TypeFlags.Null:
+            // console.log(`Null ${checker.typeToString(currentType)}`);
             return new LiteralValueGenerator(null);
 
         case ts.TypeFlags.Undefined:
+            // console.log(`Undefined ${checker.typeToString(currentType)}`);
             return new LiteralValueGenerator(undefined);
 
         case ts.TypeFlags.Object:
-            if (checker.isArrayType(currentType)) {
-                return new ArrayGenerator(generatorator(checker, checker.getTypeArguments(currentType as ts.TypeReference)[0], currentDepth - 1, pathToHere.concat(".[]")), stupidSizer);
-            }
-            if (currentType.isIntersection()) {
-                const intersectingTypes = currentType.types;
-                //  presumably must be an object type
-                throw new Error("Not ready for intersectionality");
-            }
-            if (currentType.isUnion()) {
-                const unionTypes = currentType.types;
-                const generators: Generator<GeneratedParameter, any, any>[] = [];
-                for (const unionType of unionTypes) {
-                    generators.push(generatorator(checker, unionType, currentDepth, pathToHere.concat(" | ")));
-                }
-                return new UnionGenerator(generators, stupidPicker);
-            }
 
             const typeName = currentType.getSymbol()?.getName();
             if (typeName === 'Map') {
@@ -1171,7 +1183,8 @@ function* generatorator(checker: ts.TypeChecker, currentType: ts.Type, currentDe
 
                 const keyGenerator = generatorator(checker, keyType, currentDepth - 1, pathToHere.concat('.key'));
                 const valueGenerator = generatorator(checker, valueType, currentDepth - 1, pathToHere.concat('.value'));
-                return new MapGenerator(keyGenerator, valueGenerator, stupidSizer);
+                // console.log(`Map ${checker.typeToString(currentType)}`)
+                return new MapGenerator(keyGenerator.generate(), valueGenerator.generate(), stupidSizer);
             }
 
             if (typeName === 'Set') {
@@ -1183,17 +1196,18 @@ function* generatorator(checker: ts.TypeChecker, currentType: ts.Type, currentDe
                 const elementType = currentType.typeArguments?.length === 1 ? currentType.typeArguments[0] : checker.getStringType();
 
                 const elementGenerator = generatorator(checker, elementType, currentDepth - 1, pathToHere.concat('.element'));
-                return new SetGenerator(elementGenerator, stupidSizer);
+                return new SetGenerator(elementGenerator.generate(), stupidSizer);
             }
 
             const propertyGenerators: Record<string, Generator<GeneratedParameter, any, any>> = {};
             checker.getPropertiesOfType(currentType).forEach(p => {
                 if (p.valueDeclaration) {
                     const t = checker.getTypeOfSymbolAtLocation(p, p.valueDeclaration);
-                    propertyGenerators[p.name] = generatorator(checker, t, currentDepth - 1, pathToHere.concat(`.${p.name}`));
+                    propertyGenerators[p.name] = generatorator(checker, t, currentDepth - 1, pathToHere.concat(`.${p.name}`)).generate();
                 }
             });
 
+            // console.log(`Object ${checker.typeToString(currentType)}`)
             return new SimpleObjectGenerator(propertyGenerators, stupidPropertyPicker);
     };
 
@@ -1209,12 +1223,12 @@ function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclarati
             ? checker.getTypeAtLocation(t)
             : checker.getAnyType();
 
-        const generator = generatorator(checker, currentType, 3, []);
+        const generator = generatorator(checker, currentType, 3, []).generate();
         generators.push(generator);
     }
 
     const tg = new TupleGenerator(generators);
-    yield* tg.next();
+    yield* tg.generate();
 }
 
 export class CombinatorialTestCaseSource /* implements TestCaseSource */ {

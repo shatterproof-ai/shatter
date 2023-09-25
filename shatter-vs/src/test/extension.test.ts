@@ -35,6 +35,9 @@ describe('scratch space', () => {
         function hello(m:Map<string, number>, m2:M, n:MMM, nz:Nomen.Z, mnmnmn:Map<string, Map<number, Map<boolean, any>>>, nooonoooo:nono) {
         }
 
+        function zort(x:"a"|"b"|"c") {
+        }
+
         const y = () => 0;
         `;
 
@@ -78,12 +81,21 @@ describe('scratch space', () => {
             
                         if (ts.isTypeReferenceNode(typeNode)) {
                             const referencedType = checker.getTypeFromTypeNode(typeNode);
-                            console.log(`TYPE REFERENCE NODE: ${typeNode.typeName.getText()}; typeNode.flags = ${typeNode.flags}; FQN = ${checker.getFullyQualifiedName(referencedType.symbol)
-                                }; dumpTypes = ${dumpType(referencedType, -1)
+                            if (referencedType) {}
+                            console.log(`TYPE REFERENCE NODE: ${typeNode.typeName.getText()}; typeNode.flags = ${typeNode.flags /*}; FQN = ${checker.getFullyQualifiedName(referencedType.symbol)
+                            */}; dumpTypes = ${dumpType(referencedType, -1)
                                 }`);
                             typeNode.typeArguments?.forEach((typeArg, i) => {
                                 dumpTypeNode(typeArg, soFar.concat([`typeArg${i}`]));
                             });
+                        }
+                        if (ts.isUnionTypeNode(typeNode)) {
+                            typeNode.types.forEach((type, i) => {
+                                dumpTypeNode(type, soFar.concat([`type${i}`]));
+                            });
+                        }
+                        if (ts.isStringLiteralLike(typeNode)) {
+                            console.log(`STRING LITERAL NODE: ${typeNode.text}`);
                         }
             
                     };

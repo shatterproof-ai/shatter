@@ -163,7 +163,7 @@ export class Supervisor {
                 const specimenId = this.busyWorkers.get(worker.workerNumber)!;
 
                 const meta = this.invocationMetaSpecimen.get(specimenId)!;
-                console.log(`Worker ${worker.workerNumber} for ${meta.invocation.functionName} completed`);
+                // console.log(`Worker ${worker.workerNumber} for ${meta.invocation.functionName} completed`);
 
                 // console.log(`And executed branches = `)
                 const strungError = error ? '' + error : undefined;
