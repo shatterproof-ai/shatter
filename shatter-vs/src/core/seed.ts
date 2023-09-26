@@ -24,6 +24,12 @@ export type GeneratedParameter = {
     type: 'class',
     instance: any,
 } | {
+    type: 'constructor',
+    constructor: any,
+} | {
+    type: 'callable',
+    callable: any,
+} | {
     type: 'object',
     properties: Record<string, GeneratedParameter>,
 });

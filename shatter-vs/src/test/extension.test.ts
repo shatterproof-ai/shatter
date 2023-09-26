@@ -271,12 +271,99 @@ describe('extension', () => {
     });
 });
 
-describe('extensionension', () => {
+describe('extensionensiondate ', () => {
     it('should should pass', async () => {
         const sourceCode = `
+        function timeDifference(targetDate: Date, baseDate: Date): string {
+            let difference = targetDate.getTime() - baseDate.getTime();
+            const future = difference > 0;
+        
+            difference = Math.abs(difference);
+        
+            const minute = 1000 * 60;
+            const hour = minute * 60;
+            const day = hour * 24;
+        
+            const days = Math.floor(difference / day);
+            difference -= days * day;
+        
+            const hours = Math.floor(difference / hour);
+            difference -= hours * hour;
+        
+            const minutes = Math.floor(difference / minute);
+        
+            let result = '';
+        
+            if (days) {
+                result += \`\${days} day\${days > 1 ? 's' : ''}\`;
+            }
+            if (hours) {
+                if (result) {
+                    result += ', ';
+                }
+                result += \`\${hours} hour\${hours > 1 ? 's' : ''}\`;
+            }
+            if (minutes) {
+                if (result) {
+                    result += ', ';
+                }
+                result += \`\${minutes} minute\${minutes > 1 ? 's' : ''}\`;
+            }
+        
+            if (!result) {
+                return "right now";
+            }
+        
+            if (future) {
+                return \`\${result} from now\`;
+            }
+            return \`\${result} ago\`;
+        }
+        `;
+
+        const tempdir = mkdtempSync(join(tmpdir(), "shatter-test-"));
+        const testfile = join(tempdir, 'dadatata.ts');
+        writeFileSync(testfile, sourceCode);
+
+        const functionName = "timeDifference";
+
+        const modulePaths = process.env.NODE_ENV?.split(':') ?? [];
+
+        const shatterproofModuleOverride = "/home/ketan/project/shatter/shatter-vs/src";
+        const maxIterations = 500;
+        // const maxTime = 120_000;
+        const maxTime = 10_000;
+        const { executed, instrumented, clusters } = await shatterAutotest(modulePaths, testfile, tempdir, functionName, (clusters) => {
+            // console.log(`Received clusters ${ JSON.stringify(clusters, null, 2) }`);
+        }, { shatterproofModuleOverride, maxIterations, maxTime });
+        const unexecuted = instrumented.filter((i) => !executed.includes(i));
+        console.log(`Executed     ${executed}`);
+        console.log(`Instrumented ${instrumented}`);
+        console.log(`Missed       ${unexecuted}`);
+
+        const testCases: any[][] = [];
+        clusters.forEach((cluster) => {
+            cluster.results.forEach((result) => {
+                testCases.push(result.parameters);
+            });
+        });
+
+        console.log(`Test cases: ${JSON.stringify(testCases)}`);
+    });
+});
+
+describe('extensionensionddfdsf', () => {
+    it('should should pass', async () => {
+        const sourceCode = `
+        class C { }
+
+        class Regexpp { }
+
+        class Date { }
+
         function romannumeral(n: number): string {
-            if (typeof n != 'number' || n < 0) {
-                throw new Error(\`Invalid input \${n}\`)
+        if (typeof n != 'number' || n < 0) {
+            throw new Error(\`Invalid input \${n}\`)
             }
         
             if (n == 0) {

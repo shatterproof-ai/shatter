@@ -298,6 +298,8 @@ export async function shatterAutotest(modulePaths: string[],
         }
     }
 
+    await supervisor.terminate();
+
     const executed = Array.from(allExecutedLines).sort((a, b) => a - b);
     const instrumented = Array.from(introspectionContext.instrumentedLines).sort((a, b) => a - b);
 
