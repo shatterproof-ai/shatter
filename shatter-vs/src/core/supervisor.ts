@@ -150,19 +150,35 @@ export class Supervisor {
                 stopWorker(worker, "error", error);
                 throw error;
             });
+            console.log(`adding exit handler to ${currentWorkerNumber}`);
             newWorker.on('exit', () => {
                 clearTimeout(timeoutId);
                 // console.log(`Worker ${currentWorkerNumber} for ${functionName} exiting of ${this.activeWorkers.size} running...`);
                 this.busyWorkers.delete(worker.workerNumber);   //  necessary in case of some anomalous exit that isn't triggered by a message
+                this.workers.delete(worker.workerNumber);
                 // console.log(`after deleting ${activeWorkers.size}`);
             });
             newWorker.on('message', (msg) => {
                 clearTimeout(timeoutId);
-                const { output, error, duration, executedBranches, lines, linesInOrder }: InvocationResult = msg;
+                const { specimenId, output, error, duration, executedBranches, lines, linesInOrder }: InvocationResult = msg;
 
-                const specimenId = this.busyWorkers.get(worker.workerNumber)!;
+                this.busyWorkers.delete(worker.workerNumber);
 
-                const meta = this.invocationMetaSpecimen.get(specimenId)!;
+                const invocationCount = this.invocationsPerWorker.get(worker.workerNumber);
+                if (invocationCount === undefined || invocationCount >= maxInvocationsPerWorker) {
+                    if (invocationCount === undefined) {
+                        console.error(`No invocations for worker ${worker.workerNumber}; tidying up`);
+                    }
+                    stopWorker(worker, 'expired');
+                } else {
+                    this.availableWorkers.add(worker.workerNumber);
+                }
+
+                const meta = this.invocationMetaSpecimen.get(specimenId);
+                if (!meta) {
+                    console.error(`Unable to find invocation meta for specimen ${specimenId}`);
+                    return;
+                }
                 // console.log(`Worker ${worker.workerNumber} for ${meta.invocation.functionName} completed`);
 
                 // console.log(`And executed branches = `)
@@ -181,18 +197,6 @@ export class Supervisor {
                 };
 
                 this.resultByInvocation.set(strung, result);
-
-                this.busyWorkers.delete(worker.workerNumber);
-
-                const invocationCount = this.invocationsPerWorker.get(worker.workerNumber);
-                if (invocationCount === undefined || invocationCount >= maxInvocationsPerWorker) {
-                    if (invocationCount === undefined) {
-                        console.error(`No invocations for worker ${worker.workerNumber}; tidying up`);
-                    }
-                    stopWorker(worker, 'expired');
-                } else {
-                    this.availableWorkers.add(worker.workerNumber);
-                }
 
                 onCompletion(meta.invocation, result);
             });
@@ -231,7 +235,7 @@ export class Supervisor {
         return worker.workerNumber;
     }
 
-    async drain(timeout = 10_000) {
+    async drain(timeout = 2_000) {
         const start = Date.now();
         // console.log("finishied draining");
         const waitSome = async (delay: number, max: number) => {
@@ -248,14 +252,33 @@ export class Supervisor {
         };
 
         console.log(`Draining with ${this.workers.size} workers`);
-        await waitSome(100, 100);
+        const waitDuration = 100;
+        await waitSome(waitDuration, timeout/waitDuration);
+    }
+
+    async terminate(timeout = 10_000) {
+        const waitSome = async (delay: number, max: number) => {
+            let count = 0;
+            const start = Date.now();
+            while (this.workers.size > 0 && count++ < max) {
+                //  sort of busy waiting
+                // console.log(`Waiting with ${activeWorkers.size} active workers`)
+                await new Promise((resolve) => setTimeout(resolve, delay));
+                if (Date.now() - start > timeout) {
+                    console.error(`Timed out waiting for workers to finish`);
+                    return;
+                }
+            }
+        };
 
         //  TODO: determine appropriate semantics of exit; does it interrupt execution or is it graceful?
         for (const workerMeta of this.workers.values()) {
+            console.log(`Terminating worker ${workerMeta.workerNumber}`);
             workerMeta.worker.terminate();
         }
 
-        await waitSome(100, 100);
+        const waitDuration = 100;
+        await waitSome(waitDuration, timeout/waitDuration);
         // console.log("finishied draining");
     }
 }
