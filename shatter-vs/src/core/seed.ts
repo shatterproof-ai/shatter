@@ -21,6 +21,9 @@ export type GeneratedParameter = {
     type: 'tuple',
     values: GeneratedParameter[],
 } | {
+    type: 'intersection',
+    parts: GeneratedParameter[],
+} | {
     type: 'class',
     instance: any,
 } | {

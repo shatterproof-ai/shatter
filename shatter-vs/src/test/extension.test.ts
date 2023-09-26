@@ -120,6 +120,103 @@ describe('scratch space', () => {
 });
 
 
+describe('scratch space 55', () => {
+    it('does', () => {
+        const sourceCode = `
+type N = string & number;
+type SS = {
+k: number
+} & {
+j: string
+};
+
+type NN = {
+k: number
+} & {
+k: string
+};
+
+type SSNN = {
+n: N;
+ss: SS;
+nn: NN;
+a: number|string;
+b: boolean;
+};
+
+type SSSNNN = Pick<SSNN, "n"|"ss"|"nn"|"a">;
+
+const s:SSSNNN = {} as any;
+`;
+
+        const tempdir = mkdtempSync(join(tmpdir(), "shatter-test-"));
+        const sourceFilePath = join(tempdir, 'zert.ts');
+        writeFileSync(sourceFilePath, sourceCode);
+
+        const program = ts.createProgram([sourceFilePath], {});
+
+        const checker = program.getTypeChecker();
+
+        const source = program.getSourceFile(sourceFilePath);
+
+        const visitType = (type: ts.Type): string => {
+            if (type.isIntersection()) {
+                const pieces = type.types.flatMap(t => visitType(t));
+                return pieces.join('&');
+            } else {
+                if (type.isLiteral()) {
+                    return checker.typeToString(type);
+                }
+
+                const simpleTypeFlags = [
+                    ts.TypeFlags.Any,
+                    ts.TypeFlags.Unknown,
+                    ts.TypeFlags.String,
+                    ts.TypeFlags.Number,
+                    ts.TypeFlags.Boolean,
+                    ts.TypeFlags.StringLike,
+                    ts.TypeFlags.NumberLike,
+                    ts.TypeFlags.BooleanLike
+                ];
+                if (simpleTypeFlags.includes(type.flags)) {
+                    return checker.typeToString(type);
+                }
+
+                return "{ " + checker.getPropertiesOfType(type).map((p) => {
+                    if (p.valueDeclaration) {
+                        const propt = checker.getTypeOfSymbolAtLocation(p, p.valueDeclaration);
+                        const t = visitType(propt);
+                        return `${p.getName()}: ${t}`;
+                    }
+                    return "<novad>";
+                }).join(", ") + " }";
+            }
+
+        };
+
+        const visitor = (node: ts.Node) => {
+            if (ts.isTypeNode(node)) {
+                const start = ts.getLineAndCharacterOfPosition(source!, node.pos);
+                const end = ts.getLineAndCharacterOfPosition(source!, node.end);
+                if (ts.isTypeReferenceNode(node)) {
+                    node.typeName.getText();
+                    const t = checker.getTypeFromTypeNode(node);
+                }
+                const t = checker.getTypeFromTypeNode(node);
+                const pos = `${start.line}:${start.character}-${end.line}:${end.character}`;
+                console.log(`111 ${pos} Type = ${visitType(t)}`);
+            }
+            node.getChildren().forEach((child) => {
+                ts.visitNode(child, visitor);
+            });
+            return node;
+        };
+        ts.visitNode(source, visitor);
+
+    });
+});
+
+
 describe('scratch space 2', () => {
     it('should find every embedded literal number or string', () => {
         const sourceCode = `

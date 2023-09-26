@@ -275,77 +275,111 @@ const arrayValueGenerator: ValueGenerator = function (configuration: GeneratorCo
     });
 };
 
+const extractGeneratedParameterValue = (node: GeneratedParameter): any => {
+    if (node.type === 'value') {
+        return node.value;
+    }
+    if (node.type === 'array') {
+        return node.range.map(extractGeneratedParameterValue);
+    }
+    if (node.type === 'object') {
+        const o: Record<string, any> = {};
+        Object.entries(node.properties).forEach(([k, v]) => {
+            o[k] = extractGeneratedParameterValue(v);
+        });
+        return o;
+    }
+    if (node.type === 'class') {
+        return node.instance;
+    }
+    if (node.type === 'tuple') {
+        return node.values.map(extractGeneratedParameterValue);
+    }
+    if (node.type === 'constructor') {
+        return node.constructor;
+    }
+    if (node.type === 'callable') {
+        return node.callable;
+    }
+    if (node.type === 'intersection') {
+        const merged: any = {};
+        for (const part of node.parts) {
+            const o = extractGeneratedParameterValue(part);
+            Object.assign(merged, o);
+        }
+        return merged;
+    }
+    throw new Error(`Unexpected type ${node['type']}`);
+};
+
+const generatorsForUnionOrIntersectionType = (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.UnionOrIntersectionType) => {
+    const unionTypes = type.types;
+    const generators: G[] = [];
+    for (const unionType of unionTypes) {
+        const newState = {
+            currentDepth: state.currentDepth,
+            pathToHere: state.pathToHere.concat(" | "),
+        };
+        const g = generatorator(configuration, checker, newState, unionType);
+        generators.push(g);
+    }
+
+    return generators;
+};
+
 //  TODO: IntersectionGenerator;
 //  intersections are just objects
-const intersectionValueGeneratorFactory: ValueGenerator = function* (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type) {
+const intersectionValueGeneratorFactory: ValueGenerator = (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type) => {
     if (!type.isIntersection()) {
         return undefined;
     }
-    const intersectingTypes = type.types;
-    //  presumably must be an object type
-    throw new Error("Not ready for intersectionality");
 
-    // const values: any[] = [];
-    // const keyCount:Record<string, number> = {};
-    // for (const generator of this.generators) {
-    //     const next = generator.next();
-    //     if (next.done) {
-    //         throw new Error(`Generator ${generator.constructor.name} is done`);
-    //     }
-    //     const o = next.value;
-    //     for (const key of Object.keys(o)) {
-    //         if (!keyCount[key]) {
-    //             keyCount[key] = 0;
-    //         }
-    //         keyCount[key]++;
-    //     }
-    //     values.push(o);
-    // }
+    const generators = generatorsForUnionOrIntersectionType(configuration, checker, state, type);
 
-    // const keys = Object.keys(keyCount).filter(k => keyCount[k] === values.length);
-    // const o: Record<string, any> = {};
-    // for (const key of keys) {
-    //     const generatorsForKey = this.generators.map(g => g[key]);
-    //     o[key] = new IntersectionGenerator(generatorsForKey).next().value;
-    // }
+    function* g(): G {
+        while (true) {
+            //  intersecting types are always objects
+            const parts: GeneratedParameter[] = [];
+            for (const generator of generators) {
+                const next = generator.next();
+                if (next.done) {
+                    throw new Error(`Generator ${generator.constructor.name} is done`);
+                }
+                const o = next.value;
+                parts.push(o);
+            }
 
-    // yield {
-    //     id: createId(),
-    //     generator: this.constructor.name,
-    //     type: 'object',
-    //     properties: values,
-    // };
+            const gp: GeneratedParameter = {
+                id: createId(),
+                generator: 'intersectionValueGeneratorFactory',
+                type: 'intersection',
+                parts,
+            };
+            yield gp;
+        }
+    }
+
+    return g();
 };
 
 const unionValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type): G | undefined {
-    if (type.isUnion()) {
-        const g = function* () {
-            const unionTypes = type.types;
-            const generators: G[] = [];
-            for (const unionType of unionTypes) {
-                const newState = {
-                    currentDepth: state.currentDepth,
-                    pathToHere: state.pathToHere.concat(" | "),
-                };
-                const g = generatorator(configuration, checker, newState, unionType);
-                generators.push(g);
-            }
-
-            const picker = stupidPicker;
-            while (true) {
-                for (const index of picker(generators.length)) {
-                    const generator = generators[index];
-                    const next = generator.next();
-                    if (next.done) {
-                        throw new Error(`Generator ${generator.constructor.name} is done`);
-                    }
-                    const gp = next.value;
-                    yield gp;
-                }
-            }
-        };
-        return g();
+    if (!type.isUnion()) {
+        return undefined;
     }
+    const generators = generatorsForUnionOrIntersectionType(configuration, checker, state, type);
+    const g = function* () {
+        while (true) {
+            for (const generator of generators) {
+                const next = generator.next();
+                if (next.done) {
+                    throw new Error(`Generator ${generator.constructor.name} is done`);
+                }
+                const gp = next.value;
+                yield gp;
+            }
+        }
+    };
+    return g();
 };
 
 //  does NOT validate its argument
@@ -973,7 +1007,7 @@ function generatorator(configuration: GeneratorConfiguration, checker: ts.TypeCh
         simpleValueGeneratorFactory,
         enumValueGeneratorFactory,
         arrayValueGenerator,
-        // intersectionValueGeneratorFactory,
+        intersectionValueGeneratorFactory,
         unionValueGeneratorFactory,
         objectValueGeneratorFactory,
     ];
@@ -987,23 +1021,6 @@ function generatorator(configuration: GeneratorConfiguration, checker: ts.TypeCh
 
     throw new Error(`Unexpected type ${currentType.flags} ${checker.typeToString(currentType)}`);
 }
-
-const crossBlend = function* (mods: number[], p1: any[], p2: any[]) {
-    for (const mod of mods) {
-        if (p1.length < mod) {
-            continue;
-        }
-        const values: any[] = [];
-        for (let i = 0; i < p1.length; i++) {
-            if (i % mod === 0) {
-                values.push(p1[i]);
-            } else {
-                values.push(p2[i]);
-            }
-        }
-        yield values;
-    }
-};
 
 //  construct a stateful hierarchy of generators    
 function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclaration, literals?: Literals): G {
@@ -1034,7 +1051,6 @@ function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclarati
 
     const generatorsByType = new Map<ts.Type, G>();
     let previousValuesByType: Map<ts.Type, any>[] = [];
-    let previousValues:  any[][] = [];
     //  don't try to convert this to the factory/generator style because function declarations require
     //  an AST Node not just a type
     // const generators: G[] = [];
@@ -1047,32 +1063,18 @@ function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclarati
         const typeGenerator = generatorsByType.get(currentType);
         if (!typeGenerator) {
             const generator = generatorator(configuration, checker, state, currentType);
+            const t = checker.typeToString(currentType);
             generatorsByType.set(currentType, generator);
         }
     }
 
     while (true) {
-        // const crossProduct = function* (first: any[], rest: any[][]): Generator<any[], any, any> {
-        //     if (rest.length === 0) {
-        //         for (const f of first) {
-        //             yield [f];
-        //         }
-        //         return;
-        //     }
-
-        //     for (const f of first) {
-        //         for (const r of crossProduct(rest[0], rest.slice(1))) {
-        //             yield [f, ...r];
-        //         }
-        //     }
-        // };
-
         //  generate exactly one (1) value for each parameter type; this guarantees that we sometimes pass in identical values
         const valuesByType = new Map<ts.Type, any>();
         generatorsByType.forEach((generator, type) => {
             const next = generator.next();
             if (next.done) {
-                throw new Error(`Generator ${generator.constructor.name} is done`);
+                throw new Error(`Generator for ${checker.typeToString(type)} is done`);
             }
             valuesByType.set(type, next.value);
         });
@@ -1148,64 +1150,23 @@ export class CombinatorialTestCaseSource /* implements TestCaseSource */ {
     //  TODO: use this
     private weirdness = 1;
 
-    //  how deep to go into nested objects; meant to be increased
-    //  as more parameters are created
-    private maxDepth = 3;
-
-    private allExecutedLines = new Set<number>();
-
-    private activeGenerators = new Map<string, G>();
-
     constructor(
         //  Have one single handler; if multiple are required, use delegation.  This 
         private checker: ts.TypeChecker,
-        private allInstrumentedLines: Set<number>,
         private f: ts.FunctionDeclaration) {
     }
 
     *seed(literals?: Literals): Iterator<Specimen> {
-        const newGenPerPass = 10;
-        const that = this;
         const f = this.f;
         const checker = this.checker;
 
         //  TODO: using TupleGenerator and then unpacking like this... needlessly elaborate?
-        const toValue = (node: GeneratedParameter): any => {
-            if (node.type === 'value') {
-                return node.value;
-            }
-            if (node.type === 'array') {
-                return node.range.map(toValue);
-            }
-            if (node.type === 'object') {
-                const o: Record<string, any> = {};
-                Object.entries(node.properties).forEach(([k, v]) => {
-                    o[k] = toValue(v);
-                });
-                return o;
-            }
-            if (node.type === 'class') {
-                return node.instance;
-            }
-            if (node.type === 'tuple') {
-                return node.values.map(toValue);
-            }
-            if (node.type === 'constructor') {
-                return node.constructor;
-            }
-            if (node.type === 'callable') {
-                return node.callable;
-            }
-
-            throw new Error(`Unexpected type ${node['type']}`);
-        };
-
         const generator = functionGeneratorator(checker, f, literals);
         for (const value of generator) {
             yield {
                 id: createId(),
                 sequence: this.counter++,
-                parameters: toValue(value),
+                parameters: extractGeneratedParameterValue(value),
                 type: 'seed',
             };
         }
