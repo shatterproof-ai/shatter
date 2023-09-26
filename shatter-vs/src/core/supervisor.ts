@@ -254,6 +254,7 @@ export class Supervisor {
         console.log(`Draining with ${this.workers.size} workers`);
         const waitDuration = 100;
         await waitSome(waitDuration, timeout/waitDuration);
+        console.log(`Finished draining after ${Date.now() - start} ms with ${this.workers.size}`);
     }
 
     async terminate(timeout = 10_000) {

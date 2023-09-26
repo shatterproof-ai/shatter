@@ -272,22 +272,32 @@ export async function shatterAutotest(modulePaths: string[],
 
     while (count < maxIterations && Date.now() - startTime < maxTime) {
         const toSeed = Math.max(introspectionContext.instrumentedLines.size - allExecutedLines.size, 5) * maxSeeds;
+        const seedStart = Date.now();
         await seed(toSeed, generator, evaluateSpecimen);
         await supervisor.drain();
+        const seedEnd = Date.now();
 
         //  WEED
+        const weedStart = Date.now();
         await weed(evaluateSpecimen, maxShrinkGenerations, clustersByKey, functionDeclarationNode.parameters, specimensById, supervisor);
         await supervisor.drain();
+        const weedEnd = Date.now();
 
         //  BREED
+        const breedStart = Date.now();
         await breed(evaluateSpecimen, introspectionContext.instrumentedLines, allExecutedLines, clusters);
         await supervisor.drain();
+        const breedEnd = Date.now();
 
         //  KNEAD
         //  only do clusters that have distance > 1 from neighbors
         //  and if they've gotten closer recently
+        const kneadStart = Date.now();
         await knead(evaluateSpecimen, clustersByKey, functionDeclarationNode.parameters);
         await supervisor.drain();
+        const kneadEnd = Date.now();
+
+        console.log(`Timings: seed ${seedEnd - seedStart}ms, weed ${weedEnd - weedStart}ms, breed ${breedEnd - breedStart}ms, knead ${kneadEnd - kneadStart}ms`);
 
         if (introspectionContext.instrumentedLines.size - allExecutedLines.size === 0) {
             //  TODO: continue until at least N examples in each cluster
