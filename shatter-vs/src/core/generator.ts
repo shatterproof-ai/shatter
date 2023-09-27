@@ -4,7 +4,7 @@ import { createId } from "@paralleldrive/cuid2";
 
 import { ResultCluster } from '../core/shatter';
 import { RunResult } from '../core/supervisor';
-import {  Literals, edgyAny, edgyBooleans, edgyNumbers, edgyStrings } from './seed';
+import { Literals, edgyAny, edgyBooleans, edgyNumberRanges, edgyNumbers, edgyStrings } from './seed';
 import { pick, set } from 'lodash';
 import { GeneratedParameter } from './common';
 
@@ -247,6 +247,12 @@ const arrayValueGenerator: ValueGenerator = function (configuration: GeneratorCo
         };
 
         const sizer = stupidSizer;
+
+        if (elementType.flags === ts.TypeFlags.Number) {
+            //  in some cases we don't want to think of arrays as collections
+            //  of unrelated elements
+            yield* edgyNumberRanges(configuration.literals);
+        }
 
         const elementGenerator = generatorator(configuration, checker, newState, elementType);
         while (true) {
