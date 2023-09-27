@@ -1,3 +1,5 @@
+import { GeneratedParameter } from "./common"
+
 export interface WorkerSetup {
     filePath: string
     workerNumber: number
@@ -6,6 +8,7 @@ export interface WorkerSetup {
 export interface Invocation {
     functionName: string
     serializedParameters: string
+    parameters: GeneratedParameter[]
 }
 
 export interface InvocationMeta {

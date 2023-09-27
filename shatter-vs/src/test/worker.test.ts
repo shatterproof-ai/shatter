@@ -1,3 +1,4 @@
+import { GeneratedParameter, extractGeneratedParameterValue } from "../core/common";
 import { work } from "../core/worker";
 import { InvocationMeta } from "../core/worker-protocol";
 
@@ -7,16 +8,26 @@ describe('worker', () => {
     it('wwww', async () => {
         const functionName = 'foof';
         const functions = {
-            [functionName]: (x:number, y:string) => 4,
+            [functionName]: (x: number, y: string) => 4,
         };
-        
-        const serializedParameters = serializeJavascript([4, functionName]);
-        const message:InvocationMeta = {
+
+        const parameters: GeneratedParameter[] = [{
+            id: '1',
+            type: 'value',
+            generator: 'tizzest',
+            value: 4
+        }];
+
+        const resolvedParameters = parameters.map(extractGeneratedParameterValue);
+
+        const serializedParameters = serializeJavascript(resolvedParameters);
+        const message: InvocationMeta = {
             specimenId: "12412",
             launched: 0,
             invocation: {
                 functionName,
                 serializedParameters,
+                parameters,
             }
         }
 

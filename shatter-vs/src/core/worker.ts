@@ -2,10 +2,14 @@ import { parentPort, workerData } from 'worker_threads';
 import { ExecutionContext, contextStorage } from './recorder';
 import { Invocation, InvocationMeta, InvocationResult, WorkerSetup } from './worker-protocol';
 import serializeJavascript = require("serialize-javascript");
+import { extractGeneratedParameterValue } from './common';
 
 export function work(functions: Record<string, Function>, workerNumber: number, message: any) {
     const { invocation, specimenId }: InvocationMeta = message;
-    const { functionName, serializedParameters }: Invocation = invocation;
+    const { functionName, serializedParameters, parameters }: Invocation = invocation;
+
+    const resolvedParameters = parameters.map(extractGeneratedParameterValue);
+
     const executedBranches = new Set<string>();
 
     const ic: ExecutionContext = {
@@ -23,7 +27,7 @@ export function work(functions: Record<string, Function>, workerNumber: number, 
         try {
             console.log(`calling ${workerNumber} ${functionName} (${serializedParameters})`);
             const parameters = eval(serializedParameters)
-            output = f.call(null, ...parameters);
+            output = f.call(null, ...resolvedParameters);
             // console.log(`called ${currentWorkerNumber} ${functionName} (${JSON.stringify(parameters)}) => ${JSON.stringify(output)}`);
         } catch (e) {
             /* 

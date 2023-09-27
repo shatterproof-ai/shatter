@@ -1,5 +1,6 @@
 import { Worker } from 'worker_threads';
 import { Invocation, InvocationMeta, InvocationResult, WorkerSetup } from './worker-protocol';
+import { GeneratedParameter, extractGeneratedParameterValue } from './common';
 
 import serializeJavascript = require("serialize-javascript");
 
@@ -49,10 +50,10 @@ export class Supervisor {
         private maxActiveWorkers: number) {
     }
 
-    async launchWorker(functionName: string, specimenId: string, parameters: any[], onCompletion: (_: Invocation, __: RunResult) => void) {
-        const serializedParameters = serializeJavascript(parameters);
+    async launchWorker(functionName: string, specimenId: string, parameters: GeneratedParameter[], onCompletion: (_: Invocation, __: RunResult) => void) {
+        const serializedParameters = serializeJavascript(parameters.map(extractGeneratedParameterValue));
         const invocation: Invocation = {
-            functionName, serializedParameters,
+            functionName, serializedParameters, parameters,
         };
 
         const strung = serializeJavascript({ functionName, parameters });

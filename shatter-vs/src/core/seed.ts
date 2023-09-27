@@ -1,41 +1,11 @@
 import { faker } from '@faker-js/faker';
 import { createId } from "@paralleldrive/cuid2";
+import { GeneratedParameter } from './common';
 
 export interface Literals {
     numbers: Set<number>,
     strings: Set<string>,
 }
-
-//  TODO: generify value
-export type GeneratedParameter = {
-    id: string,
-    generator: string,
-    options?: Record<string, any>,
-} & ({
-    type: 'value',
-    value: any,
-} | {
-    type: 'array',
-    range: GeneratedParameter[],
-} | {
-    type: 'tuple',
-    values: GeneratedParameter[],
-} | {
-    type: 'intersection',
-    parts: GeneratedParameter[],
-} | {
-    type: 'class',
-    instance: any,
-} | {
-    type: 'constructor',
-    constructor: any,
-} | {
-    type: 'callable',
-    callable: any,
-} | {
-    type: 'object',
-    properties: Record<string, GeneratedParameter>,
-});
 
 const gpv = (value: number | string | boolean, generator: string, options?: Record<string, any>): GeneratedParameter & {
     type: 'value'

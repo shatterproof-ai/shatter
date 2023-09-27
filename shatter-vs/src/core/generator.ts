@@ -4,8 +4,9 @@ import { createId } from "@paralleldrive/cuid2";
 
 import { ResultCluster } from '../core/shatter';
 import { RunResult } from '../core/supervisor';
-import { GeneratedParameter, Literals, edgyAny, edgyBooleans, edgyNumbers, edgyStrings } from './seed';
+import {  Literals, edgyAny, edgyBooleans, edgyNumbers, edgyStrings } from './seed';
 import { pick, set } from 'lodash';
+import { GeneratedParameter } from './common';
 
 export type Mutation = {
     path: string[],
@@ -273,43 +274,6 @@ const arrayValueGenerator: ValueGenerator = function (configuration: GeneratorCo
         generateEmpty,
         generate,
     });
-};
-
-const extractGeneratedParameterValue = (node: GeneratedParameter): any => {
-    if (node.type === 'value') {
-        return node.value;
-    }
-    if (node.type === 'array') {
-        return node.range.map(extractGeneratedParameterValue);
-    }
-    if (node.type === 'object') {
-        const o: Record<string, any> = {};
-        Object.entries(node.properties).forEach(([k, v]) => {
-            o[k] = extractGeneratedParameterValue(v);
-        });
-        return o;
-    }
-    if (node.type === 'class') {
-        return node.instance;
-    }
-    if (node.type === 'tuple') {
-        return node.values.map(extractGeneratedParameterValue);
-    }
-    if (node.type === 'constructor') {
-        return node.constructor;
-    }
-    if (node.type === 'callable') {
-        return node.callable;
-    }
-    if (node.type === 'intersection') {
-        const merged: any = {};
-        for (const part of node.parts) {
-            const o = extractGeneratedParameterValue(part);
-            Object.assign(merged, o);
-        }
-        return merged;
-    }
-    throw new Error(`Unexpected type ${node['type']}`);
 };
 
 const generatorsForUnionOrIntersectionType = (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.UnionOrIntersectionType) => {
@@ -755,7 +719,7 @@ const functionValueGeneratorFactory: ValueGenerator = function (configuration: G
                     id: createId(),
                     generator: 'functionValueGeneratorFactory',
                     type: 'callable',
-                    callable: (_: any) => returnValue,
+                    returnValue,
                 };
             }
         }
@@ -1023,15 +987,9 @@ function generatorator(configuration: GeneratorConfiguration, checker: ts.TypeCh
 }
 
 //  construct a stateful hierarchy of generators    
-function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclaration, literals?: Literals): G {
+function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclaration, literals?: Literals): Generator<GeneratedParameter[], any, any> {
     if (f.parameters.length === 0) {
-        yield {
-            id: createId(),
-            generator: 'functionGeneratorator',
-            type: 'tuple',
-            values: [],
-        };
-
+        yield [];
         return;
     }
 
@@ -1090,12 +1048,7 @@ function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclarati
             newValues.push(v);
         }
 
-        yield {
-            id: createId(),
-            generator: 'functionGeneratorator',
-            type: 'tuple',
-            values: newValues,
-        };
+        yield newValues;
 
         //  no cross blending lists with past lists if there's only one value
         if (newValues.length === 1) {
@@ -1126,12 +1079,7 @@ function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclarati
                     }
                 }
 
-                yield {
-                    id: createId(),
-                    generator: 'functionGeneratorator',
-                    type: 'tuple',
-                    values,
-                };
+                yield values;
             }
         }
 
@@ -1163,12 +1111,13 @@ export class CombinatorialTestCaseSource /* implements TestCaseSource */ {
         //  TODO: using TupleGenerator and then unpacking like this... needlessly elaborate?
         const generator = functionGeneratorator(checker, f, literals);
         for (const value of generator) {
-            yield {
+            const s:Specimen = {
                 id: createId(),
                 sequence: this.counter++,
-                parameters: extractGeneratedParameterValue(value),
+                parameters: value,
                 type: 'seed',
             };
+            yield s;
         }
     }
 
