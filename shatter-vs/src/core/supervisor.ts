@@ -3,6 +3,9 @@ import { Invocation, InvocationMeta, InvocationResult, WorkerSetup } from './wor
 import { GeneratedParameter, extractGeneratedParameterValue } from './common';
 
 import serializeJavascript = require("serialize-javascript");
+import { execute, work } from './worker';
+import { basename, dirname, join } from 'path';
+import { symlinkSync } from 'fs';
 
 // eslint-disable-next-line @typescript-eslint/naming-convention
 export const Outcomes = ['completed', 'error', 'timeout', 'failed'] as const;
@@ -47,10 +50,22 @@ export class Supervisor {
     constructor(
         private nodePath: string[],
         private executorScriptJS: string,
-        private maxActiveWorkers: number) {
+        private maxActiveWorkers: number,
+        private inBand: boolean,
+    ) {
+        //  TODO: not just in band?
+        if (this.inBand) {
+            if (this.nodePath.length !== 1) {
+                throw new Error(`In-band execution can only have one directory in node path but got ${this.nodePath}`);
+            }
+            const realNodeModulesPath = this.nodePath[0];
+            const linkedNodeModulesPath = join(dirname(this.executorScriptJS), 'node_modules');
+            symlinkSync(realNodeModulesPath, linkedNodeModulesPath);
+        }
     }
 
     async execute(functionName: string, specimenId: string, parameters: GeneratedParameter[], onCompletion: (_: Invocation, __: RunResult) => void) {
+        console.log(`Parameters is ${JSON.stringify(parameters)}`);
         const serializedParameters = serializeJavascript(parameters.map(extractGeneratedParameterValue));
         const invocation: Invocation = {
             functionName, serializedParameters, parameters,
@@ -61,7 +76,69 @@ export class Supervisor {
             return;
         }
 
+        const meta: InvocationMeta = {
+            specimenId,
+            invocation,
+            launched: Date.now(),
+        };
+
+        //  store metadata in a map because workers get reused, so we can't capture the metadata
+        //  from the surrounding scope in a closure for the out-of-band version; that only works
+        //  for the in-band version or the first run of the out-of-band version
+        this.invocationMetaSpecimen.set(specimenId, meta);
+
         const start = Date.now();
+        process.env.MAIN_PROCESS = '1';
+
+        const processInvocationResult = (invocationResult: InvocationResult) => {
+            const { specimenId, output, error, duration, executedBranches, lines, linesInOrder }: InvocationResult = invocationResult;
+
+            const meta = this.invocationMetaSpecimen.get(specimenId);
+            if (!meta) {
+                console.error(`Unable to find invocation meta for specimen ${specimenId}`);
+                return;
+            }
+            // console.log(`Worker ${worker.workerNumber} for ${meta.invocation.functionName} completed`);
+
+            // console.log(`And executed branches = `)
+            const strungError = error ? '' + error : undefined;
+            const result: RunResult = {
+                ...meta.invocation,
+                specimenId,
+                output,
+                error: strungError,
+                completed: true,
+                duration,
+                executedBranches,
+                outcome: error ? 'error' : 'completed',
+                lines,
+                linesInOrder,
+            };
+
+            this.resultByInvocation.set(strung, result);
+
+            onCompletion(meta.invocation, result);
+        };
+
+        //  support in-band execution for simpler debugging and viewing of output
+        //  (TODO: figure out how to capture worker stdout and stderr)
+        if (this.inBand) {
+            try {
+                const module = await import(this.executorScriptJS);
+                const functions = {
+                    [functionName]: module[functionName],
+                };
+
+                const result = work(functions, 0, meta);
+
+                processInvocationResult(result);
+
+            } catch (e) {
+                console.error(`Unable to execute ${functionName} in-band: ${e}`);
+            }
+            return;
+        }
+
         while (this.busyWorkers.size > this.maxActiveWorkers
             && this.availableWorkers.size === 0) {
             //  sort of busy waiting
@@ -79,7 +156,11 @@ export class Supervisor {
             wm.worker.terminate();
 
             if (outcome !== 'expired') {
-                const meta = this.invocationMetaSpecimen.get(specimenId)!;
+                const meta = this.invocationMetaSpecimen.get(specimenId);
+                if (!meta) {
+                    console.error(`Unable to find invocation meta for specimen ${specimenId}`);
+                    return;
+                }
                 console.log(`Worker ${wm.workerNumber} for ${meta.invocation.functionName} ${outcome} ${error}...`);
 
                 const duration = Date.now() - meta.launched;
@@ -164,10 +245,9 @@ export class Supervisor {
             });
             newWorker.on('message', (msg) => {
                 clearTimeout(timeoutId);
-                console.log(`received message ${msg}`);
-                const invocationResult:InvocationResult = msg;
+                console.log(`received message ${JSON.stringify(msg)}`);
+                const invocationResult: InvocationResult = msg;
                 // const invocationResult:InvocationResult = eval(msg);
-                const { specimenId, output, error, duration, executedBranches, lines, linesInOrder }: InvocationResult = invocationResult;
 
                 this.busyWorkers.delete(worker.workerNumber);
 
@@ -181,31 +261,7 @@ export class Supervisor {
                     this.availableWorkers.add(worker.workerNumber);
                 }
 
-                const meta = this.invocationMetaSpecimen.get(specimenId);
-                if (!meta) {
-                    console.error(`Unable to find invocation meta for specimen ${specimenId}`);
-                    return;
-                }
-                // console.log(`Worker ${worker.workerNumber} for ${meta.invocation.functionName} completed`);
-
-                // console.log(`And executed branches = `)
-                const strungError = error ? '' + error : undefined;
-                const result: RunResult = {
-                    ...meta.invocation,
-                    specimenId,
-                    output,
-                    error: strungError,
-                    completed: true,
-                    duration,
-                    executedBranches,
-                    outcome: error ? 'error' : 'completed',
-                    lines,
-                    linesInOrder,
-                };
-
-                this.resultByInvocation.set(strung, result);
-
-                onCompletion(meta.invocation, result);
+                processInvocationResult(invocationResult);
             });
 
             const wwmm: WorkerMeta = {
@@ -221,15 +277,8 @@ export class Supervisor {
         this.busyWorkers.set(worker.workerNumber, specimenId);
         this.invocationsPerWorker.set(worker.workerNumber, (this.invocationsPerWorker.get(worker.workerNumber) ?? 0) + 1);
 
-        const meta: InvocationMeta = {
-            specimenId,
-            invocation,
-            launched: Date.now(),
-        };
-
-        this.invocationMetaSpecimen.set(specimenId, meta);
-
         // console.log(`invoking worker ${worker.workerNumber}: ${worker.worker}`);
+        meta.launched = Date.now(); //  reset because we may have waited for a worker to become available
         worker.worker.postMessage(meta);
 
         const timeoutId = setTimeout(() => {

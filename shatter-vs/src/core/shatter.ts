@@ -121,6 +121,7 @@ export async function shatterAutotest(modulePaths: string[],
         shatterproofModuleOverride?: string,
         maxIterations?: number,
         maxTime?: number,
+        inBand?: boolean,
     }
 ) {
     // parse whole file into abstract syntax tree
@@ -224,7 +225,7 @@ export async function shatterAutotest(modulePaths: string[],
         runResult.lines.forEach(line => allExecutedLines.add(line));
     };
 
-    const supervisor = new Supervisor(modulePaths, executorScriptJs, 15);
+    const supervisor = new Supervisor(modulePaths, executorScriptJs, 15, !!options?.inBand);
     console.log(`tryna allExecutedBranches.size = ${allExecutedBranches.size
         // }, introspectionContext.knownBranches.size = ${introspectionContext._knownBranches.size
         }, introspectionContext.instrumentedLines.size = ${introspectionContext.instrumentedLines.size

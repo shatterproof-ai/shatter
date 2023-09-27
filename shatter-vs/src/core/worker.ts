@@ -19,12 +19,12 @@ export function work(functions: Record<string, Function>, workerNumber: number, 
     };
 
     const f = functions[functionName];
-    return contextStorage.run(ic, async () => {
+    return contextStorage.run(ic, () => {
         const start = Date.now();
         let output: any = undefined;
         let error: any = undefined;
         try {
-            console.log(`calling ${workerNumber} ${functionName} (${serializedParameters})`);
+            console.log(`calling ${workerNumber} ${functionName} (${resolvedParameters})`);
             // const parameters = eval(serializedParameters)
             output = f.call(null, ...resolvedParameters);
             // console.log(`called ${currentWorkerNumber} ${functionName} (${JSON.stringify(parameters)}) => ${JSON.stringify(output)}`);
@@ -59,6 +59,11 @@ export function work(functions: Record<string, Function>, workerNumber: number, 
 
 // eslint-disable-next-line @typescript-eslint/ban-types
 export async function execute(functions: Record<string, Function>) {
+    //  running in band so don't act like a worker thread
+    if (process.env.MAIN_PROCESS === '1') {
+        return;
+    }
+
     if (!parentPort) {
         throw new Error("No parent port");
     }
@@ -68,11 +73,9 @@ export async function execute(functions: Record<string, Function>) {
     const { filePath, workerNumber }: WorkerSetup = workerData;
 
     definitelyNotNullParentPortToMakeTypescriptHappy.on('message', (message) => {
-        work(functions, workerNumber, message)
-            .then(result => {
-                // const msg = serializeJavascript(result);
-                const msg = result;
-                definitelyNotNullParentPortToMakeTypescriptHappy.postMessage(msg)
-            });
-    })
+        const result = work(functions, workerNumber, message);
+        // const msg = serializeJavascript(result);
+        const msg = result;
+        definitelyNotNullParentPortToMakeTypescriptHappy.postMessage(msg);
+    });
 }

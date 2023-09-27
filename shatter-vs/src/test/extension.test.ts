@@ -562,7 +562,7 @@ describe('complicated', () => {
 
         const { executed, instrumented } = await shatterAutotest(modulePaths, testfile, tempdir, functionName, (clusters) => {
             // console.log(`Received clusters ${JSON.stringify(clusters, null, 2)}`);
-        }, { shatterproofModuleOverride, maxIterations, maxTime });
+        }, { shatterproofModuleOverride, maxIterations, maxTime, inBand: true });
         const unexecuted = instrumented.filter((i) => !executed.includes(i));
         console.log(`Executed     ${executed}`);
         console.log(`Instrumented ${instrumented}`);
