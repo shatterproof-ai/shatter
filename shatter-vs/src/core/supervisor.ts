@@ -165,7 +165,8 @@ export class Supervisor {
             newWorker.on('message', (msg) => {
                 clearTimeout(timeoutId);
                 console.log(`received message ${msg}`);
-                const invocationResult:InvocationResult = eval(msg);
+                const invocationResult:InvocationResult = msg;
+                // const invocationResult:InvocationResult = eval(msg);
                 const { specimenId, output, error, duration, executedBranches, lines, linesInOrder }: InvocationResult = invocationResult;
 
                 this.busyWorkers.delete(worker.workerNumber);

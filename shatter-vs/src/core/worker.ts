@@ -1,8 +1,7 @@
 import { parentPort, workerData } from 'worker_threads';
+import { extractGeneratedParameterValue } from './common';
 import { ExecutionContext, contextStorage } from './recorder';
 import { Invocation, InvocationMeta, InvocationResult, WorkerSetup } from './worker-protocol';
-import serializeJavascript = require("serialize-javascript");
-import { extractGeneratedParameterValue } from './common';
 
 export function work(functions: Record<string, Function>, workerNumber: number, message: any) {
     const { invocation, specimenId }: InvocationMeta = message;
@@ -26,7 +25,7 @@ export function work(functions: Record<string, Function>, workerNumber: number, 
         let error: any = undefined;
         try {
             console.log(`calling ${workerNumber} ${functionName} (${serializedParameters})`);
-            const parameters = eval(serializedParameters)
+            // const parameters = eval(serializedParameters)
             output = f.call(null, ...resolvedParameters);
             // console.log(`called ${currentWorkerNumber} ${functionName} (${JSON.stringify(parameters)}) => ${JSON.stringify(output)}`);
         } catch (e) {
@@ -70,7 +69,10 @@ export async function execute(functions: Record<string, Function>) {
 
     definitelyNotNullParentPortToMakeTypescriptHappy.on('message', (message) => {
         work(functions, workerNumber, message)
-            .then(result =>
-                definitelyNotNullParentPortToMakeTypescriptHappy.postMessage(serializeJavascript(result)));
+            .then(result => {
+                // const msg = serializeJavascript(result);
+                const msg = result;
+                definitelyNotNullParentPortToMakeTypescriptHappy.postMessage(msg)
+            });
     })
 }
