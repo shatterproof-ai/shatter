@@ -1,4 +1,5 @@
 import { isEqual } from 'lodash';
+import { GeneratedParameter } from './common';
 
 //  TODO: split this into an initial entrypoint and a recursive internal entrypoint
 export function* hybridize(a: any, b: any) {
@@ -371,7 +372,7 @@ function compareMinimality(a: any, b: any) {
 
 }
 
-export function* shrink(o: any) {
+export function* shrink(o: GeneratedParameter) {
     if (o === undefined || o === null) {
         return;
     }

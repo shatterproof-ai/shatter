@@ -25,6 +25,7 @@ describe('scratch space', () => {
         namespace Nomen {
             export type Z = {
                 a: number,
+                bbbbbbbbbbbbbb?: string,
             };
         }
         
@@ -187,6 +188,97 @@ const s:SSSNNN = {} as any;
                         const propt = checker.getTypeOfSymbolAtLocation(p, p.valueDeclaration);
                         const t = visitType(propt);
                         return `${p.getName()}: ${t}`;
+                    }
+                    return "<novad>";
+                }).join(", ") + " }";
+            }
+
+        };
+
+        const visitor = (node: ts.Node) => {
+            if (ts.isTypeNode(node)) {
+                const start = ts.getLineAndCharacterOfPosition(source!, node.pos);
+                const end = ts.getLineAndCharacterOfPosition(source!, node.end);
+                if (ts.isTypeReferenceNode(node)) {
+                    node.typeName.getText();
+                    const t = checker.getTypeFromTypeNode(node);
+                }
+                const t = checker.getTypeFromTypeNode(node);
+                const pos = `${start.line}:${start.character}-${end.line}:${end.character}`;
+                console.log(`111 ${pos} Type = ${visitType(t)}`);
+            }
+            node.getChildren().forEach((child) => {
+                ts.visitNode(child, visitor);
+            });
+            return node;
+        };
+        ts.visitNode(source, visitor);
+
+    });
+});
+
+describe('scratch space 66', () => {
+    it('does', () => {
+        const sourceCode = `
+type N = {
+so?: number;
+sr: number;
+};
+`;
+
+        const tempdir = mkdtempSync(join(tmpdir(), "shatter-test-"));
+        const sourceFilePath = join(tempdir, 'zert.ts');
+        writeFileSync(sourceFilePath, sourceCode);
+
+        const program = ts.createProgram([sourceFilePath], {});
+
+        const checker = program.getTypeChecker();
+
+        const source = program.getSourceFile(sourceFilePath);
+
+        const visitType = (type: ts.Type): string => {
+            if (type.isIntersection()) {
+                const pieces = type.types.flatMap(t => visitType(t));
+                return pieces.join('&');
+            } else {
+                if (type.isLiteral()) {
+                    return checker.typeToString(type);
+                }
+
+                const simpleTypeFlags = [
+                    ts.TypeFlags.Any,
+                    ts.TypeFlags.Unknown,
+                    ts.TypeFlags.String,
+                    ts.TypeFlags.Number,
+                    ts.TypeFlags.Boolean,
+                    ts.TypeFlags.StringLike,
+                    ts.TypeFlags.NumberLike,
+                    ts.TypeFlags.BooleanLike
+                ];
+                if (simpleTypeFlags.includes(type.flags)) {
+                    return checker.typeToString(type);
+                }
+
+                return "{ " + checker.getPropertiesOfType(type).map((p) => {
+                    if (p.valueDeclaration) {
+                        const propt = checker.getTypeOfSymbolAtLocation(p, p.valueDeclaration);
+
+                        for (const d of p.getDeclarations() ?? []) {
+                            if (ts.isPropertySignature(d)) {
+                                const q = d.questionToken;
+                                const r = q;
+                            }
+                            if (ts.isPropertyDeclaration(d)) {
+                                const q = d.questionToken;
+                                const r = q;
+                            }
+                        }
+
+                        const isOptional = p.getDeclarations()?.find(d => ts.isPropertySignature(d) && d.questionToken);
+
+                        const qts = p.getDeclarations()?.map((d) => ts.isQuestionToken(d));
+                        const t = visitType(propt);
+                        return `${p.getName()}${isOptional ? '?' : ''}: ${t}`;
                     }
                     return "<novad>";
                 }).join(", ") + " }";
@@ -545,6 +637,7 @@ describe('extensionensionddfdsf', () => {
 
 describe('complicated', () => {
     it('should pass', async () => {
+
         //  TODO: duh
         const testfile = "/home/ketan/project/shatter/examples/typescript/src/query-creator.ts";
         // const testfile = "/home/ketan/project/shatter/examples/typescript/src/query-creator-short.ts";

@@ -41,6 +41,7 @@ export type GeneratedParameter = {
 } | {
     type: 'object',
     properties: Record<string, GeneratedParameter>,
+    required
 });
 
 export const extractGeneratedParameterValue = (node: GeneratedParameter): any => {

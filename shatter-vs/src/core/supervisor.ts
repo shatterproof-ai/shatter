@@ -65,8 +65,9 @@ export class Supervisor {
     }
 
     async execute(functionName: string, specimenId: string, parameters: GeneratedParameter[], onCompletion: (_: Invocation, __: RunResult) => void) {
-        console.log(`Parameters is ${JSON.stringify(parameters)}`);
-        const serializedParameters = serializeJavascript(parameters.map(extractGeneratedParameterValue));
+        const resolvedParameters = parameters.map(extractGeneratedParameterValue);
+        console.log(`Parameters is ${JSON.stringify(resolvedParameters)}`);
+        const serializedParameters = serializeJavascript(resolvedParameters);
         const invocation: Invocation = {
             functionName, serializedParameters, parameters,
         };

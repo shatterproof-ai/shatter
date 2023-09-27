@@ -3,6 +3,7 @@ import { Node, SourceFile } from 'typescript';
 
 import { createId } from '@paralleldrive/cuid2';
 import { FunctionDeclaration } from 'typescript';
+import { SourceMapGenerator } from 'source-map';
 
 const SP_FAKE_KEY = "__sp_fake";
 const SP_ORIGINAL_KEY = "__sp_original";
@@ -53,10 +54,10 @@ const thenCanReturn = (node: ts.Statement | ts.Block): boolean => {
 };
 
 export interface FunctionMeta {
-	name: string;
-	node: ts.FunctionDeclaration;
-	startLine: number;
-	endLine: number;
+    name: string;
+    node: ts.FunctionDeclaration;
+    startLine: number;
+    endLine: number;
 }
 
 export const findFunctions = (sourceFileName: string): FunctionMeta[] => {
@@ -65,7 +66,7 @@ export const findFunctions = (sourceFileName: string): FunctionMeta[] => {
 
     const program = ts.createProgram([sourceFileName], {});
     const sourceFile = program.getSourceFile(sourceFileName);
-    if (! sourceFile) {
+    if (!sourceFile) {
         throw new Error(`Could not find source file ${sourceFileName}`);
     }
 
@@ -111,6 +112,10 @@ export const findFunctions = (sourceFileName: string): FunctionMeta[] => {
 //  TODO: instrument every line because every line could throw an exception and thus be a branch
 export const createInstrumenter = (introspectionContext: IntrospectionContext, shatterproofModuleOverride?: string) => {
     return (ctx: ts.TransformationContext) => (sourceFile: SourceFile): SourceFile => {
+        var _uselessSourceMap = new SourceMapGenerator({
+            file: sourceFile.fileName,
+        });
+
         const factory = ctx.factory;
 
         const executeAlias = factory.createUniqueName("shatterproof_execute").text;
@@ -191,6 +196,26 @@ export const createInstrumenter = (introspectionContext: IntrospectionContext, s
                 factory.createStringLiteral(minimalText(forNode, extra)),
                 ]
             ));
+
+            // const originalPosition = ts.getLineAndCharacterOfPosition(sourceFile, forNode.pos);
+            // _uselessSourceMap.addMapping({
+            //     generated: {
+            //         //  TODO: don't know this yet!
+            //         line: 0,
+            //         column: 0,
+            //     },
+            //     source: sourceFile.fileName,
+            //     original: {
+            //         line: originalPosition.line,
+            //         column: originalPosition.character,
+            //     },
+            // });
+
+            //  THIS DOES NOT WORK to make sure the instrumentation statement is on the same line as the node and keep source maps happy
+            //  TODO: do something like record(...) && originalStatement?
+            ts.setEmitFlags(forNode, ts.EmitFlags.SingleLine);
+            ts.setEmitFlags(instrumentation, ts.EmitFlags.SingleLine);
+
             return instrumentation;
         };
 

@@ -1,7 +1,7 @@
 import { diff, addedDiff, deletedDiff, updatedDiff, detailedDiff } from 'deep-object-diff';
 import { createId } from '@paralleldrive/cuid2';
 import { createHash } from 'crypto';
-import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import * as ts from 'typescript';
@@ -13,6 +13,7 @@ import { isEqual } from 'lodash';
 import cluster from 'cluster';
 import { canonicallyStringify, comparameters, computeDistance } from './util';
 import { Invocation } from './worker-protocol';
+import { GeneratedParameter } from './common';
 
 export interface AutotestResults {
     clusters: ResultCluster[];
@@ -246,7 +247,7 @@ export async function shatterAutotest(modulePaths: string[],
 
     // const generator = new CombinatorialTestCaseSource(program.getTypeChecker(), functionDeclarationNode.parameters);
     const source = new CombinatorialTestCaseSource(program.getTypeChecker(), functionDeclarationNode);
-    const generator = source.seed({numbers:introspectionContext.numbers, strings:introspectionContext.strings});
+    const generator = source.seed({ numbers: introspectionContext.numbers, strings: introspectionContext.strings });
 
     async function evaluateSpecimen(basimen: BaseSpecimen) {
         //  TODO: will this have false positive matches on function members?
@@ -581,7 +582,7 @@ bisection - find two parameter lists that are very similar to each other but lea
     //  for each pair of outermosts across all cluster, bisect
 */
 async function knead(evaluateSpecimen: (b: BaseSpecimen) => Promise<string | undefined>, clustersByKey: Map<string, ResultCluster>, parameterDeclarations: ts.NodeArray<ts.ParameterDeclaration>,
-specimens: Map<string, Specimen>) {
+    specimens: Map<string, Specimen>) {
 
 
     if (clustersByKey.size === 0) {
@@ -646,7 +647,7 @@ specimens: Map<string, Specimen>) {
 
 async function weed(evaluateSpecimen: (b: BaseSpecimen) => Promise<string | undefined>, maxShrinkGenerations: number, clustersByKey: Map<string, ResultCluster>, parameterDeclarations: ts.NodeArray<ts.ParameterDeclaration>, specimensById: Map<string, Specimen>, supervisor: Supervisor) {
     const pendingShrinkings = new Set<string>();
-    const enshrinken = async (baseParameters: any[], toShrinkParameterIndex: number, baseSpecimenId: string) => {
+    const enshrinken = async (baseParameters: GeneratedParameter[], toShrinkParameterIndex: number, baseSpecimenId: string) => {
         const specimenIds: string[] = [];
         for (const thisParameterValues of shrink(baseParameters[toShrinkParameterIndex])) {
             const parameters = [...baseParameters];
@@ -852,9 +853,36 @@ export function writeInstrumented(sourceFile: ts.SourceFile,
         strings: new Set(),
     };
 
+    const projectCompilerOptions: ts.CompilerOptions = (() => {
+        const configFileName = ts.findConfigFile(
+            "./",
+            ts.sys.fileExists,
+            "tsconfig.json"
+        );
+
+        if (!configFileName) {
+            return {};
+        }
+
+        const configFile = ts.readConfigFile(configFileName, ts.sys.readFile);
+        return ts.parseJsonConfigFileContent(
+            configFile.config,
+            ts.sys,
+            "./"
+        );
+    })();
+
+    const compilerOptions:ts.CompilerOptions = {
+        module: ts.ModuleKind.CommonJS,
+        target: ts.ScriptTarget.ES2020,
+        ...projectCompilerOptions,
+        // isolatedModules: true,  //  TODO: is this necessary?
+        inlineSourceMap: true,
+        sourceMap: true,
+    };
+
     const codeTransformer = createInstrumenter(introspectionContext, shatterproofModuleOverride);
-    //  TODO: pass in project's compiler options
-    const transformed = ts.transform(sourceFile, [codeTransformer]);
+    const transformed = ts.transform(sourceFile, [codeTransformer], compilerOptions);
 
     const tempdir = mkdtempSync(join(tmpdir(), "shatterproof-"));
     const printer = ts.createPrinter({ newLine: ts.NewLineKind.LineFeed });
@@ -862,10 +890,27 @@ export function writeInstrumented(sourceFile: ts.SourceFile,
     const modifiedSourcefilePath = join(tempdir, 'temp.ts');
 
     const transformedSource = printer.printNode(ts.EmitHint.Unspecified, transformed.transformed[0], transformed.transformed[0]);
-
     writeFileSync(modifiedSourcefilePath, transformedSource);
 
-    const modifiedProgram = ts.createProgram([modifiedSourcefilePath], {});
+    const startingSource = readFileSync(sourceFile.fileName, 'utf8');
+    const transpilationOutput = ts.transpileModule(startingSource, {
+        fileName: modifiedSourcefilePath,
+        transformers: {
+            before: [codeTransformer]
+        },
+        compilerOptions,
+    });
+
+    // const sourceMap = transpilationOutput.sourceMapText;
+    // console.log(`sourceMap = ${sourceMap}`);
+
+    // const modifiedSourcefilePath2 = join(tempdir, 'temp2.js');
+    const executorScriptJs = modifiedSourcefilePath.replace(/\.tsx?$/, '.js');
+    const executorScriptJs2 = modifiedSourcefilePath.replace(/\.tsx?$/, '2.js');
+    // writeFileSync(executorScriptJs, transpilationOutput.outputText);
+    writeFileSync(executorScriptJs2, transpilationOutput.outputText);
+
+    const modifiedProgram = ts.createProgram([modifiedSourcefilePath], compilerOptions);
     const modifiedSource = modifiedProgram.getSourceFile(modifiedSourcefilePath);
     if (!modifiedSource) {
         throw new Error(`Could not find source file ${modifiedSourcefilePath}`);
@@ -873,7 +918,6 @@ export function writeInstrumented(sourceFile: ts.SourceFile,
     //  TODO: how to know what the filename is?  Is that what writeFileCallback does?
     //  Or does that replace the file writing that would otherwise happen?
     modifiedProgram.emit();
-    const executorScriptJs = modifiedSourcefilePath.replace(/\.tsx?$/, '.js');
 
     //  write a new version of the function with instrumentation
     //  replace it in the AST
