@@ -21,6 +21,18 @@ export type GeneratedParameter = {
     type: 'class',
     instance: any,
 } | {
+    type: 'map',
+    entries: [GeneratedParameter, GeneratedParameter][],
+} | {
+    type: 'set',
+    entries: GeneratedParameter[],
+} | {
+    type: 'date',
+    epochMs: number,
+} | {
+    type: 'regexp',
+    pattern: string,
+} | {
     type: 'constructor',
     constructed: GeneratedParameter,
 } | {
@@ -45,6 +57,29 @@ export const extractGeneratedParameterValue = (node: GeneratedParameter): any =>
         });
         return o;
     }
+    if (node.type === 'map') {
+        const m = new Map();
+        node.entries.forEach(([k, v]) => {
+            const key = extractGeneratedParameterValue(k);
+            const value = extractGeneratedParameterValue(v);
+            m.set(key, value);
+        });
+        return m;
+    }
+    if (node.type === 'set') {
+        const s = new Set();
+        node.entries.forEach((v) => {
+            const value = extractGeneratedParameterValue(v);
+            s.add(value);
+        });
+        return s;
+    }
+    if (node.type === 'date') {
+        return new Date(node.epochMs);
+    }
+    if (node.type === 'regexp') {
+        return new RegExp(node.pattern);
+    }
     if (node.type === 'class') {
         return node.instance;
     }
@@ -56,7 +91,7 @@ export const extractGeneratedParameterValue = (node: GeneratedParameter): any =>
         return (_:any) => v;
     }
     if (node.type === 'callable') {
-        const v = extractGeneratedParameterValue(node.returnValue)
+        const v = extractGeneratedParameterValue(node.returnValue);
         return (_:any) => v;
     }
     if (node.type === 'intersection') {

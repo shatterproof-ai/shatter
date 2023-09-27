@@ -364,8 +364,8 @@ const mapValueGeneratorFactory: ValueGenerator = function (configuration: Genera
     const generateEmpty = (): GeneratedParameter => ({
         id: createId(),
         generator: 'mapValueGenerator',
-        type: 'class',
-        instance: new Map(),
+        type: 'map',
+        entries: [],
     });
 
     const generate = function* (configuration: GeneratorConfiguration, state: GeneratorState): G {
@@ -390,7 +390,7 @@ const mapValueGeneratorFactory: ValueGenerator = function (configuration: Genera
 
         while (true) {
             for (const count of sizer()) {
-                const m = new Map();
+                const entries: [GeneratedParameter, GeneratedParameter][] = [];
                 for (let i = 0; i < count; i++) {
                     const key = keyGenerator.next();
                     if (key.done) {
@@ -400,13 +400,13 @@ const mapValueGeneratorFactory: ValueGenerator = function (configuration: Genera
                     if (value.done) {
                         throw new Error(`Generator ${valueGenerator.constructor.name} is done`);
                     }
-                    m.set(key.value, value.value);
+                    entries.push([key.value, value.value]);
                 }
                 yield {
                     id: createId(),
                     generator: 'mapValueGenerator',
-                    type: 'class',
-                    instance: m,
+                    type: 'map',
+                    entries,
                 };
             }
         }
@@ -444,19 +444,19 @@ const setValueGeneratorFactory: ValueGenerator = function (configuration: Genera
         while (true) {
 
             for (const count of sizer()) {
-                const s = new Set();
+                const entries: GeneratedParameter[] = [];
                 for (let i = 0; i < count; i++) {
                     const next = elementGenerator.next();
                     if (next.done) {
                         throw new Error(`Generator ${elementGenerator.constructor.name} is done`);
                     }
-                    s.add(next.value);
+                    entries.push(next.value);
                 }
                 yield {
                     id: createId(),
                     generator: 'setValueGeneratorFactory',
-                    type: 'class',
-                    instance: s,
+                    type: 'set',
+                    entries,
                 };
             }
         }
@@ -535,12 +535,12 @@ const dateValueGeneratorFactory: ValueGenerator = function (configuration: Gener
             for (const perturbationMultiplier of [0, 1, -1, 2, -2]) {
                 for (const perturbation of perturbations) {
                     for (const baseDateEpoch of baseDatesEpoch) {
-                        const date = new Date(baseDateEpoch + perturbation * perturbationMultiplier + neighborOffset);
+                        const epochMs = baseDateEpoch + perturbation * perturbationMultiplier + neighborOffset;
                         yield {
                             id: createId(),
                             generator: 'dateValueGeneratorFactory',
-                            type: 'value',
-                            value: date,
+                            type: 'date',
+                            epochMs,
                         };
                     }
                 }
@@ -641,8 +641,8 @@ const regexpValueGeneratorFactory: ValueGenerator = function (configuration: Gen
                 yield {
                     id: createId(),
                     generator: 'regexpValueGeneratorFactory',
-                    type: 'value',
-                    value: pattern,
+                    type: 'regexp',
+                    pattern: pattern.toString(),
                 };
             }
         }
