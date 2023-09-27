@@ -50,7 +50,7 @@ export class Supervisor {
         private maxActiveWorkers: number) {
     }
 
-    async launchWorker(functionName: string, specimenId: string, parameters: GeneratedParameter[], onCompletion: (_: Invocation, __: RunResult) => void) {
+    async execute(functionName: string, specimenId: string, parameters: GeneratedParameter[], onCompletion: (_: Invocation, __: RunResult) => void) {
         const serializedParameters = serializeJavascript(parameters.map(extractGeneratedParameterValue));
         const invocation: Invocation = {
             functionName, serializedParameters, parameters,

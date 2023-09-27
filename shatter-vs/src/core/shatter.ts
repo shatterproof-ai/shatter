@@ -264,7 +264,7 @@ export async function shatterAutotest(modulePaths: string[],
             };
             specimensById.set(specimenId, newSpecimen);
             // console.log(`Evaluating specimen ${JSON.stringify(newSpecimen)}`);
-            await supervisor.launchWorker(functionName, specimenId, newSpecimen.parameters, (invocation: Invocation, result: RunResult) => {
+            await supervisor.execute(functionName, specimenId, newSpecimen.parameters, (invocation: Invocation, result: RunResult) => {
                 onResult(result);
             });
             return specimenId;
