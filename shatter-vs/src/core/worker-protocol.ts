@@ -5,7 +5,7 @@ export interface WorkerSetup {
 
 export interface Invocation {
     functionName: string
-    parameters: any[]
+    serializedParameters: string
 }
 
 export interface InvocationMeta {

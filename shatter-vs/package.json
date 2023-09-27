@@ -135,8 +135,10 @@
   "dependencies": {
     "@faker-js/faker": "^8.0.2",
     "@paralleldrive/cuid2": "^2.2.2",
+    "@types/serialize-javascript": "^5.0.2",
     "deep-object-diff": "^1.1.9",
     "fastest-levenshtein": "^1.0.16",
-    "lodash": "^4.17.21"
+    "lodash": "^4.17.21",
+    "serialize-javascript": "^6.0.1"
   }
 }

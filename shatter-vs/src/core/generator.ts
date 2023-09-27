@@ -71,7 +71,7 @@ export class RetestCaseSource implements TestCaseSource {
         yield {
             id: createId(),
             sequence: this.counter++,
-            parameters: result.parameters,
+            parameters: [],
         };
     }
 }

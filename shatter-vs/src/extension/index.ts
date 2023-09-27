@@ -6,6 +6,7 @@ import * as vscode from 'vscode';
 import { AutotestResults, ResultCluster, shatterAutotest } from '../core/shatter';
 import { Outcome, RunResult } from '../core/supervisor';
 import { FunctionMeta, findFunctions } from '../core/transform';
+import { Specimen } from '../core/generator';
 
 interface CommonDisplayNode {
 	label: string;
@@ -48,38 +49,6 @@ function visit(k: string | number, o: any, depth = 0): CommonDisplayNode {
 
 	return {
 		label: `${key}: ${JSON.stringify(o)}`,
-	};
-}
-
-const clusterValues = (values: any[]) =>
-	values.map((value, i) => visit(i, value, 3));
-
-function runResultToClusterNode(prefix: string, result: RunResult): CommonDisplayNode {
-	const resultChildren: CommonDisplayNode[] = [];
-	if (result.output) {
-		resultChildren.push(
-			visit("output", result.output, 3));
-	}
-
-	if (result.error) {
-		resultChildren.push(
-			visit("error", result.error, 3));
-	}
-
-	return {
-		label: prefix,
-		children: [{
-			label: "Duration",
-			children: [{
-				label: `${result.duration}ms`
-			}]
-		}, {
-			label: "Parameters",
-			children: clusterValues(result.parameters)
-		}, {
-			label: "Result",
-			children: resultChildren
-		}],
 	};
 }
 
@@ -313,7 +282,7 @@ const refresh = (editor: vscode.TextEditor | undefined, extensionState: Extensio
 		if (a === undefined) {
 			return 'undefined';
 		}
-		const s = JSON.stringify(a);
+		const s = typeof a === 'string' ? a : JSON.stringify(a);
 		const maxLength = 40;
 
 		const strung = (s.length > maxLength)
@@ -328,9 +297,12 @@ const refresh = (editor: vscode.TextEditor | undefined, extensionState: Extensio
 		return;
 	}
 
+	const specimEntries = clusters.flatMap(c =>
+		c.specimens.map((specimen): [string, Specimen] => [specimen.id, specimen])
+	);
 	const runResultNodes: CommonDisplayNode[] = clusters.flatMap(c => c.results.map((result, i) => {
 		const parametersNode = {
-			label: shortString(result.parameters),
+			label: shortString(result.serializedParameters),
 			key: `parameters://${c.key}/${i}`
 		};
 		return parametersNode;
@@ -365,7 +337,14 @@ const refresh = (editor: vscode.TextEditor | undefined, extensionState: Extensio
 		label: `Duration ${result.duration}ms`
 	};
 	const resultNode = visit('Result', result.output ?? result.error, 3);
-	const parametersNode = visit('Parameters', result.parameters, 3);
+
+	const specimen = cluster.specimens.find(s => s.id === result.specimenId);
+	if (!specimen) {
+		console.error(`Unable to find specimen ${result.specimenId}`);
+		return;
+	}
+
+	const parametersNode = visit('Parameters', specimen.parameters, 3);
 	const testCaseNodes: CommonDisplayNode[] = [
 		metadataNode,
 		parametersNode,
@@ -465,7 +444,6 @@ const doSelectTestCase = (editor: vscode.TextEditor, extensionState: ExtensionSt
 	extensionState.activeTestCase = testCase;
 	refresh(editor, extensionState, providers);
 };
-
 
 function highlightLinesInEditor(editor: vscode.TextEditor | undefined, decorationType: vscode.TextEditorDecorationType, liner: Generator<number, void, unknown>) {
 	if (!editor) {

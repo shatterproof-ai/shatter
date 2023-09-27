@@ -1,6 +1,8 @@
 import { Worker } from 'worker_threads';
 import { Invocation, InvocationMeta, InvocationResult, WorkerSetup } from './worker-protocol';
 
+import serializeJavascript = require("serialize-javascript");
+
 // eslint-disable-next-line @typescript-eslint/naming-convention
 export const Outcomes = ['completed', 'error', 'timeout', 'failed'] as const;
 export type Outcome = typeof Outcomes[number];
@@ -8,7 +10,7 @@ export type Outcome = typeof Outcomes[number];
 export interface RunResult {
     specimenId: string
     functionName: string
-    parameters: any[]
+    serializedParameters: string
     executedBranches: string[]
     lines: number[]
     linesInOrder: number[]
@@ -48,11 +50,12 @@ export class Supervisor {
     }
 
     async launchWorker(functionName: string, specimenId: string, parameters: any[], onCompletion: (_: Invocation, __: RunResult) => void) {
+        const serializedParameters = serializeJavascript(parameters);
         const invocation: Invocation = {
-            functionName, parameters,
+            functionName, serializedParameters,
         };
 
-        const strung = JSON.stringify(invocation);
+        const strung = serializeJavascript({ functionName, parameters });
         if (this.attemptedInvocations.has(strung)) {
             return;
         }
@@ -160,7 +163,9 @@ export class Supervisor {
             });
             newWorker.on('message', (msg) => {
                 clearTimeout(timeoutId);
-                const { specimenId, output, error, duration, executedBranches, lines, linesInOrder }: InvocationResult = msg;
+                console.log(`received message ${msg}`);
+                const invocationResult:InvocationResult = eval(msg);
+                const { specimenId, output, error, duration, executedBranches, lines, linesInOrder }: InvocationResult = invocationResult;
 
                 this.busyWorkers.delete(worker.workerNumber);
 
@@ -253,7 +258,7 @@ export class Supervisor {
 
         console.log(`Draining with ${this.workers.size} workers`);
         const waitDuration = 100;
-        await waitSome(waitDuration, timeout/waitDuration);
+        await waitSome(waitDuration, timeout / waitDuration);
         console.log(`Finished draining after ${Date.now() - start} ms with ${this.workers.size}`);
     }
 
@@ -279,7 +284,7 @@ export class Supervisor {
         }
 
         const waitDuration = 100;
-        await waitSome(waitDuration, timeout/waitDuration);
+        await waitSome(waitDuration, timeout / waitDuration);
         // console.log("finishied draining");
     }
 }

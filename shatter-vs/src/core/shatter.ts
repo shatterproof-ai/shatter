@@ -26,6 +26,7 @@ export interface ResultCluster {
     lines: number[]
     //  includes potential duplicates if the same line is hit twice
     linesInOrder: number[]
+    specimens: Specimen[]
     results: RunResult[]
     //  one to one with parameter list
     leasts: Specimen[]
@@ -195,12 +196,14 @@ export async function shatterAutotest(modulePaths: string[],
                 lines: runResult.lines,
                 linesInOrder: runResult.linesInOrder,
                 outcome,
+                specimens: [specimen],
                 results: [],
                 //  the single specimen has the values that are the least and the most for all parameters
-                leasts: runResult.parameters.map(_ => specimen),
-                mosts: runResult.parameters.map(_ => specimen),
+                //  iniitally the only existing specimen is least and most in all cases
+                leasts: specimen.parameters.map(_ => specimen),
+                mosts: specimen.parameters.map(_ => specimen),
                 totalTime: 0,
-                distancesToClusters: runResult.parameters.map(_ => new Map()),
+                distancesToClusters: specimen.parameters.map(_ => new Map()),
             };
             clusters.push(cluster);
             clustersByKey.set(clusterKey, cluster);
@@ -245,6 +248,9 @@ export async function shatterAutotest(modulePaths: string[],
     const generator = source.seed({numbers:introspectionContext.numbers, strings:introspectionContext.strings});
 
     async function evaluateSpecimen(basimen: BaseSpecimen) {
+        //  TODO: will this have false positive matches on function members?
+        //  the alternative is to use serialize-javascript, but that does not
+        //  seem to produce a canonical ordering
         const serialized = canonicallyStringify(basimen.parameters);
         if (serialized && !parameterListsAttempted.has(serialized)) {
             parameterListsAttempted.add(serialized);
@@ -293,7 +299,7 @@ export async function shatterAutotest(modulePaths: string[],
         //  only do clusters that have distance > 1 from neighbors
         //  and if they've gotten closer recently
         const kneadStart = Date.now();
-        await knead(evaluateSpecimen, clustersByKey, functionDeclarationNode.parameters);
+        await knead(evaluateSpecimen, clustersByKey, functionDeclarationNode.parameters, specimensById);
         await supervisor.drain();
         const kneadEnd = Date.now();
 
@@ -573,7 +579,8 @@ bisection - find two parameter lists that are very similar to each other but lea
     //  optimization: record which parameter lists are NOT near the edges of their cluster to avoid reexamining
     //  for each pair of outermosts across all cluster, bisect
 */
-async function knead(evaluateSpecimen: (b: BaseSpecimen) => Promise<string | undefined>, clustersByKey: Map<string, ResultCluster>, parameterDeclarations: ts.NodeArray<ts.ParameterDeclaration>) {
+async function knead(evaluateSpecimen: (b: BaseSpecimen) => Promise<string | undefined>, clustersByKey: Map<string, ResultCluster>, parameterDeclarations: ts.NodeArray<ts.ParameterDeclaration>,
+specimens: Map<string, Specimen>) {
 
 
     if (clustersByKey.size === 0) {
@@ -595,7 +602,10 @@ async function knead(evaluateSpecimen: (b: BaseSpecimen) => Promise<string | und
             const alast = a.results[a.results.length - 1];
             const bfirst = b.results[0];
 
-            const distance = computeDistance(alast.parameters[index], bfirst.parameters[index]);
+            const specimenA = specimens.get(alast.specimenId)!;
+            const specimenB = specimens.get(bfirst.specimenId)!;
+
+            const distance = computeDistance(specimenA.parameters[index], specimenB.parameters[index]);
 
             const aToB = a.distancesToClusters[index].get(b.key) ?? Infinity;
             if (distance < aToB) {
@@ -611,14 +621,14 @@ async function knead(evaluateSpecimen: (b: BaseSpecimen) => Promise<string | und
             // console.log(`distance ${distance} between ${JSON.stringify(alast.parameters[index])} and ${JSON.stringify(bfirst.parameters[index])}`);
 
             //  generate a parameter list where every parameter is hybridized between alast and bfirst
-            const hybridized = hybridize(alast.parameters, bfirst.parameters);
+            const hybridized = hybridize(specimenA.parameters, specimenB.parameters);
             for (const fullHybrid of hybridized) {
                 //  also generate a parameter list based on alast with just the current parameter hybridized
-                const abased = [...alast.parameters];
+                const abased = [...specimenA.parameters];
                 abased[index] = fullHybrid[index];
 
                 //  also generate a parameter list based on bfirst with just the current parameter hybridized
-                const bbased = [...bfirst.parameters];
+                const bbased = [...specimenB.parameters];
                 bbased[index] = fullHybrid[index];
 
                 for (const hybridParams of [fullHybrid, abased, bbased]) {
@@ -660,19 +670,22 @@ async function weed(evaluateSpecimen: (b: BaseSpecimen) => Promise<string | unde
             for (let i = 0; i < parameterDeclarations.length; i++) {
                 cluster.results.sort((a, b) => {
                     //  sort by the key parameter first
-                    const avalue = a.parameters[i];
-                    const bvalue = b.parameters[i];
+                    const specimenA = specimensById.get(a.specimenId)!;
+                    const specimenB = specimensById.get(b.specimenId)!;
+
+                    const avalue = specimenA.parameters[i];
+                    const bvalue = specimenB.parameters[i];
                     const core = comparameters(avalue, bvalue);
                     if (core !== 0) {
                         return core;
                     }
                     //  then all the rest if necessary
-                    for (let j = 0; j < a.parameters.length && j < b.parameters.length; j++) {
+                    for (let j = 0; j < specimenA.parameters.length && j < specimenB.parameters.length; j++) {
                         if (i === j) {
                             continue;
                         }
-                        const avalue = a.parameters[j];
-                        const bvalue = b.parameters[j];
+                        const avalue = specimenA.parameters[j];
+                        const bvalue = specimenB.parameters[j];
                         const sub = comparameters(avalue, bvalue);
                         if (sub !== 0) {
                             return sub;
@@ -682,28 +695,32 @@ async function weed(evaluateSpecimen: (b: BaseSpecimen) => Promise<string | unde
                 });
 
                 const top = cluster.results[0];
-                cluster.mosts[i] = specimensById.get(top.specimenId)!;
-                const allToShrink = [top];
+                const topSpecimen = specimensById.get(top.specimenId)!;
+                cluster.mosts[i] = topSpecimen;
+                const allToShrink = [topSpecimen];
 
                 //  find the minimal least by climbing from the bottom until
                 //  hitting a value that is not a strict extension of the previous
                 if (cluster.results.length > 1) {
                     let minimalLeastIndex = cluster.results.length - 1;
+                    let specimenMinimalLeast = specimensById.get(cluster.results[minimalLeastIndex].specimenId)!;
                     for (let j = minimalLeastIndex - 1; j >= 0; j--) {
                         const current = cluster.results[j];
-                        const minimalLeast = cluster.results[minimalLeastIndex];
-                        if (!isStrictExtension(current.parameters[i], minimalLeast.parameters[i])) {
+                        const specimenCurrent = specimensById.get(current.specimenId)!;
+
+                        if (!isStrictExtension(specimenCurrent.parameters[i], specimenMinimalLeast.parameters[i])) {
                             break;
                         }
                     }
 
-                    const bottom = cluster.results[minimalLeastIndex];
-                    allToShrink.push(bottom);
-                    cluster.leasts[i] = specimensById.get(bottom.specimenId)!;
+                    const bottomResult = cluster.results[minimalLeastIndex];
+                    const bottomSpecimen = specimensById.get(bottomResult.specimenId)!;
+                    allToShrink.push(bottomSpecimen);
+                    cluster.leasts[i] = bottomSpecimen;
                 }
 
                 for (const toShrink of allToShrink) {
-                    const specimenIds = await enshrinken(toShrink.parameters, i, toShrink.specimenId);
+                    const specimenIds = await enshrinken(toShrink.parameters, i, toShrink.id);
                     specimenIds.forEach(id => pendingShrinkings.add(id));
                 }
             }
@@ -762,7 +779,7 @@ function sortClusters(clusters: ResultCluster[]) {
 
     clusters.forEach(cluster => {
         cluster.results.sort((a, b) =>
-            JSON.stringify(a.parameters).localeCompare(JSON.stringify(b.parameters))
+            a.serializedParameters.localeCompare(b.serializedParameters)
         );
     });
 }

@@ -438,10 +438,10 @@ describe('extensionensiondate ', () => {
         console.log(`Instrumented ${instrumented}`);
         console.log(`Missed       ${unexecuted}`);
 
-        const testCases: any[][] = [];
+        const testCases: string[] = [];
         clusters.forEach((cluster) => {
             cluster.results.forEach((result) => {
-                testCases.push(result.parameters);
+                testCases.push(result.serializedParameters);
             });
         });
 
@@ -532,14 +532,14 @@ describe('extensionensionddfdsf', () => {
         console.log(`Instrumented ${instrumented}`);
         console.log(`Missed       ${unexecuted}`);
 
-        const testCases: any[][] = [];
+        const testCases: string[] = [];
         clusters.forEach((cluster) => {
             cluster.results.forEach((result) => {
-                testCases.push(result.parameters);
+                testCases.push(result.serializedParameters);
             });
         });
 
-        console.log(`Test cases: ${JSON.stringify(testCases)}`);
+        console.log(`Test cases: ${testCases}`);
     });
 });
 
