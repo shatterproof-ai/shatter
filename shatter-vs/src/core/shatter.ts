@@ -1,19 +1,16 @@
-import { diff, addedDiff, deletedDiff, updatedDiff, detailedDiff } from 'deep-object-diff';
 import { createId } from '@paralleldrive/cuid2';
 import { createHash } from 'crypto';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import * as ts from 'typescript';
+import { GeneratedParameter } from './common';
 import { BaseSpecimen, CombinatorialTestCaseSource, RetestCaseSource, Specimen } from './generator';
 import { hybridize, isStrictExtension, shrink } from './hybridize';
 import { Outcome, RunResult, Supervisor } from './supervisor';
 import { IntrospectionContext, createInstrumenter } from './transform';
-import { isEqual } from 'lodash';
-import cluster from 'cluster';
 import { canonicallyStringify, comparameters, computeDistance } from './util';
 import { Invocation } from './worker-protocol';
-import { GeneratedParameter } from './common';
 
 export interface AutotestResults {
     clusters: ResultCluster[];
@@ -64,30 +61,6 @@ function canonicalClusterKey(result: RunResult) {
     return key;
 }
 // TODO: iterables and generators, regular expressions, promises, tagged templates, and more
-export type TestArgument = {
-    name: string,
-    position?: number
-} & ({
-    parameterStructure: 'primitive'
-    argumentType: 'null' | 'undefined' | 'boolean' | 'number' | 'string' | 'symbol' | 'bigint' | 'function',
-    value: any
-} | {
-    parameterStructure: 'object'
-    argumentType: 'Date',
-    value: Date
-} | {
-    parameterStructure: 'object'
-    argumentType: 'object',
-    value: Record<string, TestArgument>
-} | {
-    parameterStructure: 'array'
-    argumentType: string,
-    value: Record<string, TestArgument>
-} | {
-    parameterStructure: 'function',
-    argumentType: string,   //  TODO: how to describe function type?
-    value: any
-});
 
 export async function shatterRetest(modulePaths: string[],
     inputFile: string,
