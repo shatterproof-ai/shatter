@@ -1,5 +1,7 @@
 import { isEqual } from 'lodash';
 import { GeneratedParameter } from './common';
+import { G } from './generator';
+import { createId } from '@paralleldrive/cuid2';
 
 //  TODO: split this into an initial entrypoint and a recursive internal entrypoint
 export function* hybridize(a: any, b: any) {
@@ -372,84 +374,129 @@ function compareMinimality(a: any, b: any) {
 
 }
 
-export function* shrink(o: GeneratedParameter) {
-    if (o === undefined || o === null) {
+export function* shrink(gp: GeneratedParameter): G {
+    if (gp === undefined || gp === null) {
         return;
     }
 
-    if (typeof o === "boolean") {
-        return;
-    }
 
-    if (typeof o === "number") {
-        //  TODO: tunable precision
-        if (Math.abs(o) < 0.01) {
+    if (gp.type === 'value') {
+        //  unshrinkable
+        if (typeof gp.value === "boolean") {
             return;
         }
-        yield o / 2;
-        if (o > 0) {
-            yield Math.floor(o / 2);
-        } else {
-            yield Math.ceil(o / 2);
-        }
-        return;
-    }
 
-    if (typeof o === "string") {
-        if (o.length > 0) {
-            yield o.substring(0, o.length / 2);
-        }
-        return;
-    }
+        if (typeof gp.value === "number") {
+            //  TODO: tunable precision
+            if (Math.abs(gp.value) < 0.01) {
+                return;
+            }
 
-    if (Array.isArray(o)) {
-        if (o.length === 0) {
+            const values = [gp.value / 2];
+
+            if (gp.value > 0) {
+                values.push(Math.floor(gp.value / 2));
+            } else {
+                values.push(Math.ceil(gp.value / 2));
+            }
+
+            for (const v of values) {
+                yield {
+                    id: createId(),
+                    generator: 'shrinker',
+                    type: 'value',
+                    value: v,
+                }
+            }
+
             return;
         }
+
+        if (typeof gp.value === "string") {
+            if (gp.value.length > 0) {
+                yield {
+                    id: createId(),
+                    generator: 'shrinker',
+                    type: 'value',
+                    value: gp.value.substring(0, gp.value.length / 2),
+                };
+            }
+            return;
+        }
+    }
+
+
+    if (gp.type === 'array') {
+        if (gp.elements.length === 0) {
+            return;
+        }
+
 
         //  try with just the last element removed
-        yield o.slice(0, o.length - 1);
-        const duped = [...o];
-        for (const shrunkElement of shrink(o[0])) {
-            duped[0] = shrunkElement;
+        const arrayses: any[][] = []
+        arrayses.push(gp.elements.slice(0, gp.elements.length - 1));
+        const duped = [...gp.elements];
+        for (const shrunkElement of shrink(gp.elements[0])) {
             //  TODO: verify that this equality test doesn't have false positives
             //  and has few false negatives
-            if (!isEqual(o[0], duped[0])) {
+            if (!isEqual(gp.elements[0], shrunkElement)) {
+                duped[0] = shrunkElement;
                 //  try with the first element shrunk and the last element removed
-                yield duped.slice(0, duped.length - 1);
-                //  try with just the first element shrunk
-                yield duped;
+                arrayses.push(duped.slice(0, duped.length - 1));
+                //  try with the first element shrunk and everything else the same
+                arrayses.push(duped);
+                //  try it with just the first, shrunk element
+                arrayses.push([shrunkElement]);
+            }
+        }
+
+        for (const array of arrayses) {
+            yield {
+                id: createId(),
+                generator: 'shrinker',
+                type: 'array',
+                elements: array,
             }
         }
 
         return;
     }
 
-    if (typeof o === "object") {
-        const keys = Object.keys(o);
+    if (gp.type === "object") {
+        const keys = Object.keys(gp);
         if (keys.length === 0) {
             return;
         }
 
-        for (let i = 0; i < keys.length; i++) {
+        for (const currentKey of keys) {
             //  try with the given key shrunk
-            const shrunked = { ...o };
-            const preshrunkElement = o[keys[0]];
+            const preshrunkElement = gp.properties[currentKey];
             for (const shrunkElement of shrink(preshrunkElement)) {
                 if (!isEqual(shrunkElement, preshrunkElement)) {
-                    shrunked[keys[0]] = shrunkElement;
+                    const shrunked: GeneratedParameter = {
+                        ...gp,
+                        properties: { ...gp.properties },
+                    };
+                    if (shrunkElement !== undefined || !gp.required.includes(currentKey)) {
+                        shrunked.properties[currentKey] = shrunkElement;
+                    }
                     yield shrunked;
                 }
             }
-            //  try with the given key removed
-            const trunked = { ...o };
-            delete trunked[keys[keys.length - 1]];
-            yield trunked;
+            if (!gp.required.includes(currentKey)) {
+                //  try with the given key removed
+                const trunked: GeneratedParameter = {
+                    ...gp,
+                    properties: { ...gp.properties },
+                };
+                delete trunked.properties[currentKey];
+                yield trunked;
+            }
         }
         return;
     }
 
-    throw new Error(`Unhandled input type ${typeof o}`);
+    throw new Error(`Unhandled input type ${typeof gp}`);
 }
 
 type Edit = {

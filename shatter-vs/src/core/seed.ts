@@ -403,7 +403,7 @@ export function* edgyNumberRanges(literals?: Literals): Generator<GeneratedParam
             id: createId(),
             generator: 'arrayValueGenerator',
             type: 'array',
-            range: range.map((n) => ({
+            elements: range.map((n) => ({
                 id: createId(),
                 generator: 'arrayValueGenerator-specialNumber',
                 type: 'value',
@@ -473,6 +473,7 @@ export function* edgyAny(literals?: Literals): Generator<GeneratedParameter, voi
             generator: 'edgyAny',
             type: 'object',
             properties: {},
+            required: [],
         };
     }
 }

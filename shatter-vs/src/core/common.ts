@@ -10,7 +10,7 @@ export type GeneratedParameter = {
     value: any,
 } | {
     type: 'array',
-    range: GeneratedParameter[],
+    elements: GeneratedParameter[],
 } | {
     type: 'tuple',
     values: GeneratedParameter[],
@@ -40,68 +40,74 @@ export type GeneratedParameter = {
     returnValue: GeneratedParameter,
 } | {
     type: 'object',
-    properties: Record<string, GeneratedParameter>,
-    required
+        properties: Record<string, GeneratedParameter>,
+    required: string[],
 });
 
-export const extractGeneratedParameterValue = (node: GeneratedParameter): any => {
-    if (node.type === 'value') {
-        return node.value;
+export const extractGeneratedParameterValue = (gp: GeneratedParameter): any => {
+    if (gp.type === 'value') {
+        return gp.value;
     }
-    if (node.type === 'array') {
-        return node.range.map(extractGeneratedParameterValue);
+    if (gp.type === 'array') {
+        if (gp.elements) {
+            return gp.elements.map(extractGeneratedParameterValue);
+        }
+        throw new Error(`Unexpected missing elements in array gp ${JSON.stringify(gp)}`)
     }
-    if (node.type === 'object') {
+    if (gp.type === 'object') {
         const o: Record<string, any> = {};
-        Object.entries(node.properties).forEach(([k, v]) => {
+        Object.entries(gp.properties).forEach(([k, v]) => {
             o[k] = extractGeneratedParameterValue(v);
         });
         return o;
     }
-    if (node.type === 'map') {
+    if (gp.type === 'map') {
         const m = new Map();
-        node.entries.forEach(([k, v]) => {
+        gp.entries.forEach(([k, v]) => {
             const key = extractGeneratedParameterValue(k);
             const value = extractGeneratedParameterValue(v);
             m.set(key, value);
         });
         return m;
     }
-    if (node.type === 'set') {
+    if (gp.type === 'set') {
         const s = new Set();
-        node.entries.forEach((v) => {
+        gp.entries.forEach((v) => {
             const value = extractGeneratedParameterValue(v);
             s.add(value);
         });
         return s;
     }
-    if (node.type === 'date') {
-        return new Date(node.epochMs);
+    if (gp.type === 'date') {
+        return new Date(gp.epochMs);
     }
-    if (node.type === 'regexp') {
-        return new RegExp(node.pattern);
+    if (gp.type === 'regexp') {
+        return new RegExp(gp.pattern);
     }
-    if (node.type === 'class') {
-        return node.instance;
+    if (gp.type === 'class') {
+        return gp.instance;
     }
-    if (node.type === 'tuple') {
-        return node.values.map(extractGeneratedParameterValue);
+    if (gp.type === 'tuple') {
+        return gp.values.map(extractGeneratedParameterValue);
     }
-    if (node.type === 'constructor') {
-        const v = extractGeneratedParameterValue(node.constructed);
+    if (gp.type === 'constructor') {
+        const v = extractGeneratedParameterValue(gp.constructed);
         return (_:any) => v;
     }
-    if (node.type === 'callable') {
-        const v = extractGeneratedParameterValue(node.returnValue);
-        return (_:any) => v;
+    if (gp.type === 'callable') {
+        const v = extractGeneratedParameterValue(gp.returnValue);
+        return (_:any) => {
+            return v;
+        };
     }
-    if (node.type === 'intersection') {
+    if (gp.type === 'intersection') {
         const merged: any = {};
-        for (const part of node.parts) {
+        for (const part of gp.parts) {
             const o = extractGeneratedParameterValue(part);
             Object.assign(merged, o);
         }
         return merged;
     }
-    throw new Error(`Unexpected type ${node['type']}`);
+    throw new Error(`Unexpected type ${gp['type']}`);
 };
+

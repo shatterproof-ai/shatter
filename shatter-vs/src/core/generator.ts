@@ -106,7 +106,7 @@ type Sizer = (o?: any) => Generator<number, any, any>;
 type PropertyPicker = (k: string[]) => Generator<string[], any, any>;
 type ElementPicker = (max: number) => Generator<number, any, any>;
 
-type G = Generator<GeneratedParameter, any, any>;
+export type G = Generator<GeneratedParameter, any, any>;
 type ValueGenerator = (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type) => G | undefined;
 
 const fixedValueGeneratorFactory = function* (generator: string, value: any): G {
@@ -237,7 +237,7 @@ const arrayValueGenerator: ValueGenerator = function (configuration: GeneratorCo
         id: createId(),
         generator: 'arrayValueGenerator',
         type: 'array',
-        range: [],
+        elements: [],
     });
 
     const generate = function* (configuration: GeneratorConfiguration, state: GeneratorState): G {
@@ -270,7 +270,7 @@ const arrayValueGenerator: ValueGenerator = function (configuration: GeneratorCo
                     id: createId(),
                     generator: 'arrayValueGenerator',
                     type: 'array',
-                    range: a,
+                    elements: a,
                 };
             }
         }
@@ -658,12 +658,14 @@ const basicObjectValueGeneratorFactory: ValueGenerator = function (configuration
     const generateEmpty = (): GeneratedParameter => ({
         id: createId(),
         generator: 'basicObjectValueGenerator',
-        type: 'object',
-        properties: {},
+        type: 'value',
+        value: undefined,
     });
 
     const generate = function* (configuration: GeneratorConfiguration, state: GeneratorState): G {
         const propertyGenerators: Record<string, G> = {};
+
+        const required = new Set<string>();
         checker.getPropertiesOfType(type).forEach(p => {
             if (p.valueDeclaration) {
                 const propertyType = checker.getTypeOfSymbolAtLocation(p, p.valueDeclaration);
@@ -674,6 +676,10 @@ const basicObjectValueGeneratorFactory: ValueGenerator = function (configuration
                 };
 
                 propertyGenerators[p.name] = generatorator(configuration, checker, newState, propertyType);
+
+                if (!(p.flags & ts.SymbolFlags.Optional)) {
+                    required.add(p.name);
+                }
             }
         });
 
@@ -698,6 +704,7 @@ const basicObjectValueGeneratorFactory: ValueGenerator = function (configuration
                     generator: 'basicObjectValueGeneratorFactory',
                     type: 'object',
                     properties: o,
+                    required: Array.from(required),
                 };
             }
         }
@@ -1117,7 +1124,7 @@ export class CombinatorialTestCaseSource /* implements TestCaseSource */ {
         //  TODO: using TupleGenerator and then unpacking like this... needlessly elaborate?
         const generator = functionGeneratorator(checker, f, literals);
         for (const value of generator) {
-            const s:Specimen = {
+            const s: Specimen = {
                 id: createId(),
                 sequence: this.counter++,
                 parameters: value,
