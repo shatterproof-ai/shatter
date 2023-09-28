@@ -1,63 +1,137 @@
-import { isEqual } from 'lodash';
+import { create, isEqual } from 'lodash';
 import { GeneratedParameter, skip } from './common';
 import { G } from './generator';
 import { createId } from '@paralleldrive/cuid2';
 
 //  TODO: split this into an initial entrypoint and a recursive internal entrypoint
-export function* hybridize(a: GeneratedParameter[], b: GeneratedParameter[]) {
+export function* hybridize(a: GeneratedParameter, b: GeneratedParameter): G {
     //  stupid sort so they can be written in order but are executed from the middle out
     // const splitIntervals = [0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.99].sort((a, b) => Math.abs(a - 0.5) - Math.abs(b - 0.5));
     const splitIntervals = [0.1, 0.5, 0.9];
 
-    if (a === undefined || a === null || b === undefined || b === null) {
-        yield a;
-        yield b;
+    if (a.type !== b.type) {
+        //  TODO: will this error be a problem with union types?
+        throw new Error(`Attempting unnatural hybridization of ${a.type} with ${b.type}`);
+    }
+
+    if (a.type === 'callable' || a.type === 'constructor' || a.type === 'intersection'
+        || a.type === 'regexp' || a.type === 'class' || a.type === 'tuple') {
+            //  in theory regexps, classes, and tuples can be hybridized... later
+        return;
+    }
+    if (a.type === 'value' && b.type === 'value') {
+        if (a.value === undefined || a.value === null || b.value === undefined || b.value === null) {
+            yield a;
+            yield b;
+            return;
+        }
+
+        if (typeof a.value !== typeof b.value) {
+            //  TODO: will this error be a problem with union types?
+            throw new Error(`Attempting unnatural hybridization of ${typeof a.value} and ${typeof b.value}`)
+        }
+
+        if (typeof a === "boolean") {
+            //  no in between
+            return;
+        }
+
+        if (typeof a.value === "number") {
+            for (const n of hybridizeNumbers(a.value, b.value, splitIntervals)) {
+                yield {
+                    id: createId(),
+                    type: 'value',
+                    generator: 'hybridize',
+                    value: n,
+                };
+            }
+            return;
+        }
+
+        if (typeof a.value === "string") {
+            for (const s of hybridizeStrings(a.value, b.value, splitIntervals)) {
+                yield {
+                    id: createId(),
+                    type: 'value',
+                    generator: 'hybridize',
+                    value: s,
+                };
+            }
+            return;
+        }
+    }
+
+    if (a.type === 'date' && b.type === 'date') {
+        if (a.epochMs !== b.epochMs) {
+            yield {
+                id: createId(),
+                type: 'date',
+                generator: 'hybridize',
+                epochMs: Math.floor((a.epochMs + b.epochMs)/2),
+            }
+        }
+
         return;
     }
 
-    if (typeof a !== typeof b) {
-        throw new Error(`Differing input types ${typeof a} and ${typeof b}`);
-    }
-
-    if (typeof a === "number") {
-        for (const n of hybridizeNumbers(a, b, splitIntervals)) {
-            yield n;
+    if (a.type === 'array' && b.type === 'array') {
+        for (const elements of hybridizeArrays(a.elements, b.elements, splitIntervals)) {
+            yield {
+                id: createId(),
+                type: 'array',
+                generator: 'hybridize',
+                elements,
+            };
         }
         return;
     }
 
-    if (typeof a === "string") {
-        for (const s of hybridizeStrings(a, b, splitIntervals)) {
-            yield s;
+    if (a.type === "object" && b.type === "object") {
+        if (!isEqual(a.required, b.required)) {
+            //  TODO: not entirely sure what to do here; seems like this should never happen because required should be immutable
+            return;
+        }
+
+        for (const properties of hybridizeObjects(a.properties, b.properties, splitIntervals)) {
+            yield {
+                id: createId(),
+                type: 'object',
+                generator: 'hybridize',
+                properties,
+                required: a.required,
+            };
         }
         return;
     }
 
-    if (typeof a === "boolean") {
-        if (a || b) {
-            yield true;
+
+    if (a.type === 'set' && b.type === 'set') {
+        const aaa = a.entries;
+        const bbb = b.entries;
+        for (const hhhh of hybridizeArrays(aaa, bbb, splitIntervals)) {
+            yield {
+                id: createId(),
+                type: 'set',
+                generator: 'hybridize',
+                entries: hhhh,
+            }
         }
-        if (!a || !b) {
-            yield false;
-        }
-        return;
     }
 
-    if (Array.isArray(a) && Array.isArray(b)) {
-        for (const arr of hybridizeArrays(a, b, splitIntervals)) {
-            yield arr;
+    if (a.type === 'map' && b.type === 'map') {
+        const aaa = a.entries;
+        const bbb = b.entries;
+        for (const hhhh of hybridizeArrays(aaa, bbb, splitIntervals)) {
+            yield {
+                id: createId(),
+                type: 'map',
+                generator: 'hybridize',
+                entries: hhhh,
+            }
         }
-        return;
     }
 
-    if (typeof a === "object" && typeof b === "object") {
-        for (const o of hybridizeObjects(a, b, splitIntervals)) {
-            yield o;
-        }
-        return;
-    }
-
-    throw new Error(`Unhandled input types ${typeof a} and ${typeof b}`);
+    throw new Error(`Unhandled input types ${a.type} from ${a.generator}:${a.id} and ${b.type} from ${b.generator}:${b.id}`);
 }
 
 function* hybridizeNumbers(a: number, b: number, intervals: number[]) {

@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from
 import { tmpdir } from 'os';
 import { join } from 'path';
 import * as ts from 'typescript';
-import { GeneratedParameter } from './common';
+import { GeneratedParameter, skip } from './common';
 import { BaseSpecimen, CombinatorialTestCaseSource, RetestCaseSource, Specimen } from './generator';
 import { hybridize, isStrictExtension, shrink } from './hybridize';
 import { Outcome, RunResult, Supervisor } from './supervisor';
@@ -595,25 +595,25 @@ async function knead(evaluateSpecimen: (b: BaseSpecimen) => Promise<string | und
             }
             // console.log(`distance ${distance} between ${JSON.stringify(alast.parameters[index])} and ${JSON.stringify(bfirst.parameters[index])}`);
 
-            //  generate a parameter list where every parameter is hybridized between alast and bfirst
-            const hybridized = hybridize(specimenA.parameters, specimenB.parameters);
-            for (const fullHybrid of hybridized) {
-                //  also generate a parameter list based on alast with just the current parameter hybridized
-                const abased = [...specimenA.parameters];
-                abased[index] = fullHybrid[index];
+            const arbitraryListLimit = 5;
+            const arbitraryParameterVariationLimit = 4;
+            for (let i = 0; i < arbitraryListLimit; i++) {
+                const parameters: GeneratedParameter[] = [];
+                for (let j = 0; j < specimenA.parameters.length; j++) {
+                    const hybridized = hybridize(specimenA.parameters[i], specimenB.parameters[i]);
+                    let k = 0;
 
-                //  also generate a parameter list based on bfirst with just the current parameter hybridized
-                const bbased = [...specimenB.parameters];
-                bbased[index] = fullHybrid[index];
-
-                for (const hybridParams of [fullHybrid, abased, bbased]) {
-                    await evaluateSpecimen({
-                        parameters: hybridParams,
-                        type: 'hybrid',
-                        parents: [alast.specimenId, bfirst.specimenId],
-                    });
+                    const p: GeneratedParameter = skip(hybridized, i + j) ?? specimenA.parameters[i];
+                    parameters.push(p);
                 }
+
+                evaluateSpecimen({
+                    type: 'hybrid',
+                    parameters,
+                    parents: [specimenA.id, specimenB.id],
+                });
             }
+
         }
     }
 }
@@ -845,7 +845,7 @@ export function writeInstrumented(sourceFile: ts.SourceFile,
         );
     })();
 
-    const compilerOptions:ts.CompilerOptions = {
+    const compilerOptions: ts.CompilerOptions = {
         module: ts.ModuleKind.CommonJS,
         target: ts.ScriptTarget.ES2020,
         ...projectCompilerOptions,
