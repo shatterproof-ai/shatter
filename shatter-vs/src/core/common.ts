@@ -42,6 +42,9 @@ export type GeneratedParameter = {
     type: 'callable',
     returnValue: GeneratedParameter,
 } | {
+    //  For when the object graph goes on but we can't
+    type: 'terminal',
+} | {
     type: 'object',
     properties: Record<string, GeneratedParameter>,
     required: string[],
@@ -49,6 +52,9 @@ export type GeneratedParameter = {
 });
 
 export const extractGeneratedParameterValue = (gp: GeneratedParameter): any => {
+    if (gp.type === 'terminal') {
+        return undefined;
+    }
     if (gp.type === 'value') {
         return gp.value;
     }
