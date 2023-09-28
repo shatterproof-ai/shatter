@@ -19,16 +19,19 @@ export function work(functions: Record<string, Function>, workerNumber: number, 
     };
 
     const f = functions[functionName];
-    return contextStorage.run(ic, () => {
+    return contextStorage.run(ic, async () => {
         const start = Date.now();
         let output: any = undefined;
         let error: any = undefined;
-        try {
-            console.log(`calling ${workerNumber} ${functionName} (${resolvedParameters})`);
-            // const parameters = eval(serializedParameters)
-            output = f.call(null, ...resolvedParameters);
-            // console.log(`called ${currentWorkerNumber} ${functionName} (${JSON.stringify(parameters)}) => ${JSON.stringify(output)}`);
-        } catch (e) {
+
+        console.log(`calling ${workerNumber} ${functionName} at ${start}}`);
+        // const parameters = eval(serializedParameters)
+
+        const p = Promise.resolve(f.call(null, ...resolvedParameters));
+
+        return p.then((o) => {
+            output = o;
+        }).catch((e) => {
             /* 
             TODO: how to differentiate between types of error
             * well-functioning code, e.g. validation
@@ -37,8 +40,8 @@ export function work(functions: Record<string, Function>, workerNumber: number, 
             * crash the VM, e.g. out of memory error
             */
             error = e;
-            console.log(`${workerNumber} ${functionName} (${serializedParameters}) threw ${e}`);
-        } finally {
+        })
+        .finally(() => {
             const end = Date.now();
             const duration = end - start;
 
@@ -53,7 +56,7 @@ export function work(functions: Record<string, Function>, workerNumber: number, 
                 linesInOrder: ic.linesInOrder
             };
             return result;
-        }
+        });
     });
 }
 
@@ -72,10 +75,12 @@ export async function execute(functions: Record<string, Function>) {
     //  TODO: run this in a loop to allow reuse of threads OR use a thread pool (benchmark overhead first)
     const { filePath, workerNumber }: WorkerSetup = workerData;
 
-    definitelyNotNullParentPortToMakeTypescriptHappy.on('message', (message) => {
-        const result = work(functions, workerNumber, message);
+    definitelyNotNullParentPortToMakeTypescriptHappy.on('message', async (message) => {
+        await work(functions, workerNumber, message)
+            .then((result) => {
+                const msg = result;
+                definitelyNotNullParentPortToMakeTypescriptHappy.postMessage(msg);
+            });
         // const msg = serializeJavascript(result);
-        const msg = result;
-        definitelyNotNullParentPortToMakeTypescriptHappy.postMessage(msg);
     });
 }

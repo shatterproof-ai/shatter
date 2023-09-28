@@ -130,7 +130,7 @@ export class Supervisor {
                     [functionName]: module[functionName],
                 };
 
-                const result = work(functions, 0, meta);
+                const result = await work(functions, 0, meta);
 
                 processInvocationResult(result);
 
