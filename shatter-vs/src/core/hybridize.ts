@@ -1,10 +1,10 @@
 import { isEqual } from 'lodash';
-import { GeneratedParameter } from './common';
+import { GeneratedParameter, skip } from './common';
 import { G } from './generator';
 import { createId } from '@paralleldrive/cuid2';
 
 //  TODO: split this into an initial entrypoint and a recursive internal entrypoint
-export function* hybridize(a: any, b: any) {
+export function* hybridize(a: GeneratedParameter[], b: GeneratedParameter[]) {
     //  stupid sort so they can be written in order but are executed from the middle out
     // const splitIntervals = [0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.99].sort((a, b) => Math.abs(a - 0.5) - Math.abs(b - 0.5));
     const splitIntervals = [0.1, 0.5, 0.9];
@@ -374,11 +374,139 @@ function compareMinimality(a: any, b: any) {
 
 }
 
+const shrinkArray = (elements: GeneratedParameter[]) => {
+    if (elements.length === 0) {
+        return [];
+    }
+
+    //  try with just the last element removed
+    const arrayses: any[][] = []
+    arrayses.push(elements.slice(0, elements.length - 1));
+    const duped = [...elements];
+    for (const shrunkElement of shrink(elements[0])) {
+        //  TODO: verify that this equality test doesn't have false positives
+        //  and has few false negatives
+        if (!isEqual(elements[0], shrunkElement)) {
+            duped[0] = shrunkElement;
+            //  try with the first element shrunk and the last element removed
+            arrayses.push(duped.slice(0, duped.length - 1));
+            //  try with the first element shrunk and everything else the same
+            arrayses.push(duped);
+            //  try it with just the first, shrunk element
+            arrayses.push([shrunkElement]);
+        }
+    }
+    return arrayses
+}
+
+//  TODO: front load more dramatic shrinkings and expect the in-between to be handled by hybridization
 export function* shrink(gp: GeneratedParameter): G {
     if (gp === undefined || gp === null) {
+        throw new Error("Cannot shrink undefined or null");
+    }
+
+    if (gp.type === "callable" || gp.type === "constructor") {
         return;
     }
 
+    if (gp.type === "intersection") {
+        for (const part of gp.parts) {
+            let i = 0;
+            for (const shrunk of shrink(part)) {
+                yield shrunk;
+                //  arbitrary cutoff
+                if (i++ > 3) {
+                    break;
+                }
+            }
+        }
+        return;
+    }
+
+    if (gp.type === 'map') {
+        if (gp.entries.length === 0) {
+            return;
+        }
+
+        //  try without the entry at i
+        for (let i = 0; i < gp.entries.length; i++) {
+            yield {
+                ...gp,
+                entries: gp.entries.slice(0, i).concat(gp.entries.slice(i + 1)),
+            }
+        }
+
+        const shrinkers: [G, G][] = [];
+        for (let i = 0; i < gp.entries.length; i++) {
+            shrinkers.push([
+                shrink(gp.entries[i][0]),
+                shrink(gp.entries[i][1]),
+            ]);
+        }
+
+        //  try with every entry shrunk
+        //  arbitrarily set a limit on the number of variations
+        for (let i = 0; i < 5; i++) {
+            const shrunkEntries: [GeneratedParameter, GeneratedParameter][] = [];
+            for (let j = 0; j < gp.entries.length; j++) {
+                //  skip ahead unevenly to avoid lockstep equals
+                //  provides more variety, and that can be hybridized
+                const shrunkKey = skip(shrinkers[j][0], 2 * i + 1);
+                const shrunkValue = skip(shrinkers[j][1], 2 * i);
+                if (shrunkKey && shrunkValue) {
+                    shrunkEntries.push([shrunkKey, shrunkValue]);
+                } else {
+                    //  if we run out of shrunk values, just use the original
+                    shrunkEntries.push(gp.entries[j]);
+                }
+            }
+
+            yield {
+                ...gp,
+                entries: shrunkEntries,
+            }
+        }
+        return;
+    }
+
+    if (gp.type === 'set') {
+        if (gp.entries.length === 0) {
+            return;
+        }
+
+        for (const variation of shrinkArray(gp.entries)) {
+            yield {
+                id: createId(),
+                generator: 'shrinker',
+                type: 'set',
+                entries: variation,
+            }
+        }
+        return;
+    }
+
+    if (gp.type === "regexp") {
+        //  maybe eventually do something silly like getting the parse tree and lopping off a branch
+        return;
+    }
+
+    if (gp.type === "date") {
+        //  TODO: maybe there's some semantically meaningful
+        //  to shrink this; maybe converge on Date.now() or nearabouts?
+        return;
+    }
+
+    if (gp.type === "tuple") {
+        for (const values of shrinkArray(gp.values)) {
+            yield {
+                id: createId(),
+                generator: 'shrinker',
+                type: 'tuple',
+                values,
+            }
+        }
+        return;
+    }
 
     if (gp.type === 'value') {
         //  unshrinkable
@@ -388,16 +516,22 @@ export function* shrink(gp: GeneratedParameter): G {
 
         if (typeof gp.value === "number") {
             //  TODO: tunable precision
+            const values: number[] = []
             if (Math.abs(gp.value) < 0.01) {
-                return;
+                if (gp.value === 0) {
+                    return;
+                }
+                values.push(0);
             }
 
-            const values = [gp.value / 2];
+            if (gp.value !== 0) {
+                values.push(gp.value / 2);
 
-            if (gp.value > 0) {
-                values.push(Math.floor(gp.value / 2));
-            } else {
-                values.push(Math.ceil(gp.value / 2));
+                if (gp.value > 0) {
+                    values.push(Math.floor(gp.value / 2));
+                } else {
+                    values.push(Math.ceil(gp.value / 2));
+                }
             }
 
             for (const v of values) {
@@ -427,30 +561,7 @@ export function* shrink(gp: GeneratedParameter): G {
 
 
     if (gp.type === 'array') {
-        if (gp.elements.length === 0) {
-            return;
-        }
-
-
-        //  try with just the last element removed
-        const arrayses: any[][] = []
-        arrayses.push(gp.elements.slice(0, gp.elements.length - 1));
-        const duped = [...gp.elements];
-        for (const shrunkElement of shrink(gp.elements[0])) {
-            //  TODO: verify that this equality test doesn't have false positives
-            //  and has few false negatives
-            if (!isEqual(gp.elements[0], shrunkElement)) {
-                duped[0] = shrunkElement;
-                //  try with the first element shrunk and the last element removed
-                arrayses.push(duped.slice(0, duped.length - 1));
-                //  try with the first element shrunk and everything else the same
-                arrayses.push(duped);
-                //  try it with just the first, shrunk element
-                arrayses.push([shrunkElement]);
-            }
-        }
-
-        for (const array of arrayses) {
+        for (const array of shrinkArray(gp.elements)) {
             yield {
                 id: createId(),
                 generator: 'shrinker',
@@ -471,6 +582,9 @@ export function* shrink(gp: GeneratedParameter): G {
         for (const currentKey of keys) {
             //  try with the given key shrunk
             const preshrunkElement = gp.properties[currentKey];
+            if (!preshrunkElement) {
+                continue;
+            }
             for (const shrunkElement of shrink(preshrunkElement)) {
                 if (!isEqual(shrunkElement, preshrunkElement)) {
                     const shrunked: GeneratedParameter = {
@@ -496,7 +610,7 @@ export function* shrink(gp: GeneratedParameter): G {
         return;
     }
 
-    throw new Error(`Unhandled input type ${typeof gp}`);
+    throw new Error(`Unhandled input type ${gp.type}`);
 }
 
 type Edit = {

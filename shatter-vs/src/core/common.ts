@@ -127,3 +127,15 @@ export const compressRanges = (lines: number[]) => {
 
 	return compressedRanges;
 };
+
+export const skip = <T, U, V>(g:Generator<T, U, V>, n:number):T|undefined => {
+    let latest:T|undefined = undefined;
+    for (let i = 0; i < n + 1; i++) {
+        const it = g.next();
+        if (it.done) {
+            break;
+        }
+        latest = it.value;
+    }
+    return latest;
+}
