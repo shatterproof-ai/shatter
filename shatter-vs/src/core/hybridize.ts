@@ -28,7 +28,7 @@ export function* hybridize(a: GeneratedParameter, b: GeneratedParameter): G {
 
         if (typeof a.value !== typeof b.value) {
             //  TODO: will this error be a problem with union types?
-            throw new Error(`Attempting unnatural hybridization of ${typeof a.value} and ${typeof b.value}`)
+            throw new Error(`Attempting unnatural hybridization of ${typeof a.value} and ${typeof b.value}`);
         }
 
         if (typeof a === "boolean") {
@@ -68,7 +68,7 @@ export function* hybridize(a: GeneratedParameter, b: GeneratedParameter): G {
                 type: 'date',
                 generator: 'hybridize',
                 epochMs: Math.floor((a.epochMs + b.epochMs)/2),
-            }
+            };
         }
 
         return;
@@ -114,7 +114,7 @@ export function* hybridize(a: GeneratedParameter, b: GeneratedParameter): G {
                 type: 'set',
                 generator: 'hybridize',
                 entries: hhhh,
-            }
+            };
         }
     }
 
@@ -127,7 +127,7 @@ export function* hybridize(a: GeneratedParameter, b: GeneratedParameter): G {
                 type: 'map',
                 generator: 'hybridize',
                 entries: hhhh,
-            }
+            };
         }
     }
 
@@ -454,7 +454,7 @@ const shrinkArray = (elements: GeneratedParameter[]) => {
     }
 
     //  try with just the last element removed
-    const arrayses: any[][] = []
+    const arrayses: any[][] = [];
     arrayses.push(elements.slice(0, elements.length - 1));
     const duped = [...elements];
     for (const shrunkElement of shrink(elements[0])) {
@@ -470,8 +470,8 @@ const shrinkArray = (elements: GeneratedParameter[]) => {
             arrayses.push([shrunkElement]);
         }
     }
-    return arrayses
-}
+    return arrayses;
+};
 
 //  TODO: front load more dramatic shrinkings and expect the in-between to be handled by hybridization
 export function* shrink(gp: GeneratedParameter): G {
@@ -507,7 +507,7 @@ export function* shrink(gp: GeneratedParameter): G {
             yield {
                 ...gp,
                 entries: gp.entries.slice(0, i).concat(gp.entries.slice(i + 1)),
-            }
+            };
         }
 
         const shrinkers: [G, G][] = [];
@@ -538,7 +538,7 @@ export function* shrink(gp: GeneratedParameter): G {
             yield {
                 ...gp,
                 entries: shrunkEntries,
-            }
+            };
         }
         return;
     }
@@ -554,7 +554,7 @@ export function* shrink(gp: GeneratedParameter): G {
                 generator: 'shrinker',
                 type: 'set',
                 entries: variation,
-            }
+            };
         }
         return;
     }
@@ -577,7 +577,7 @@ export function* shrink(gp: GeneratedParameter): G {
                 generator: 'shrinker',
                 type: 'tuple',
                 values,
-            }
+            };
         }
         return;
     }
@@ -590,7 +590,7 @@ export function* shrink(gp: GeneratedParameter): G {
 
         if (typeof gp.value === "number") {
             //  TODO: tunable precision
-            const values: number[] = []
+            const values: number[] = [];
             if (Math.abs(gp.value) < 0.01) {
                 if (gp.value === 0) {
                     return;
@@ -614,7 +614,7 @@ export function* shrink(gp: GeneratedParameter): G {
                     generator: 'shrinker',
                     type: 'value',
                     value: v,
-                }
+                };
             }
 
             return;
@@ -641,7 +641,7 @@ export function* shrink(gp: GeneratedParameter): G {
                 generator: 'shrinker',
                 type: 'array',
                 elements: array,
-            }
+            };
         }
 
         return;

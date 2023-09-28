@@ -52,7 +52,7 @@ export const extractGeneratedParameterValue = (gp: GeneratedParameter): any => {
         if (gp.elements) {
             return gp.elements.map(extractGeneratedParameterValue);
         }
-        throw new Error(`Unexpected missing elements in array gp ${JSON.stringify(gp)}`)
+        throw new Error(`Unexpected missing elements in array gp ${JSON.stringify(gp)}`);
     }
     if (gp.type === 'object') {
         const o: Record<string, any> = {};
@@ -116,7 +116,7 @@ export const compressRanges = (lines: number[]) => {
 	let currentRangeEnd = lines[0];
 	const compressedRanges: [number, number][] = [];
 	for (let i = 1; i < lines.length; i++) {
-		if (currentRangeStart + 1 == lines[i]) {
+		if (currentRangeStart + 1 === lines[i]) {
 			currentRangeEnd = lines[i];
 		} else {
 			compressedRanges.push([currentRangeStart, currentRangeEnd]);
@@ -138,4 +138,4 @@ export const skip = <T, U, V>(g:Generator<T, U, V>, n:number):T|undefined => {
         latest = it.value;
     }
     return latest;
-}
+};
