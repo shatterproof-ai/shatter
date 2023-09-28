@@ -1,6 +1,5 @@
 import { faker } from '@faker-js/faker';
-import { createId } from "@paralleldrive/cuid2";
-import { GeneratedParameter } from './common';
+import { GeneratedParameter, newId } from './common';
 import { reverse } from 'lodash';
 
 export interface Literals {
@@ -11,7 +10,7 @@ export interface Literals {
 const gpv = (value: number | string | boolean, generator: string, options?: Record<string, any>): GeneratedParameter & {
     type: 'value'
 } => ({
-    id: createId(),
+    id: newId('value'),
     generator,
     type: 'value',
     value,
@@ -257,7 +256,7 @@ const powers = (base: number, low: number, high: number) => {
         values.push(base ** i);
     }
     return values;
-}
+};
 
 const multiples = (base: number, low: number, high: number) => {
     const values: number[] = [];
@@ -265,7 +264,7 @@ const multiples = (base: number, low: number, high: number) => {
         values.push(base * i);
     }
     return values;
-}
+};
 
 const specialNumberRanges: number[][] = [
     primes,
@@ -391,7 +390,7 @@ const _notSpecialEnoughNumberRanges = [
     [125, 2.359100728134798, -55, 63.3961271550478, -124, 81.70561432752184, 71, 126.4135188571788, -80, 39.881554610685264],
     [86, 70.8316082510735, -106, 45.35450160817318, -58, 45.234212278565465, -14, 6.287976843729201, 126, 50.73272855912405, -56],
     [-111, 93.872878218907, -131, 87.5793543185275, 100, 57.659421572738, -24, 55.89106850879004, -42, 20.477776436872794, 68, 42.857431988066196, -114, 13.370383869929155, -112],
-]
+];
 
 export function* edgyNumberRanges(literals?: Literals): Generator<GeneratedParameter, void, unknown> {
     const combinedNumberRanges = literals?.numbers
@@ -400,11 +399,11 @@ export function* edgyNumberRanges(literals?: Literals): Generator<GeneratedParam
 
     for (const range of combinedNumberRanges) {
         yield {
-            id: createId(),
+            id: newId('edgy-range'),
             generator: 'arrayValueGenerator',
             type: 'array',
             elements: range.map((n) => ({
-                id: createId(),
+                id: newId('edgy-range-element'),
                 generator: 'arrayValueGenerator-specialNumber',
                 type: 'value',
                 value: n,
@@ -469,7 +468,7 @@ export function* edgyAny(literals?: Literals): Generator<GeneratedParameter, voi
         }
 
         yield {
-            id: createId(),
+            id: newId('edgy-any'),
             generator: 'edgyAny',
             type: 'object',
             properties: {},
@@ -638,7 +637,7 @@ export function* edgyStrings(literals?: Literals): Generator<GeneratedParameter,
             if (!seen.has(value)) {
                 seen.add(value);
                 yield {
-                    id: createId(),
+                    id: newId('edgy-strings'),
                     generator: 'seedStrings',
                     type: 'value',
                     value,
@@ -651,7 +650,7 @@ export function* edgyStrings(literals?: Literals): Generator<GeneratedParameter,
         if (!seen.has(value)) {
             seen.add(value);
             yield {
-                id: createId(),
+                id: newId('edgy-strings'),
                 generator: 'seedStrings',
                 type: 'value',
                 value,

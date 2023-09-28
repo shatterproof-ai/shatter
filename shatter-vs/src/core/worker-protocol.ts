@@ -1,4 +1,4 @@
-import { GeneratedParameter } from "./common"
+import { GeneratedParameter } from "./common";
 
 export interface WorkerSetup {
     filePath: string
@@ -7,20 +7,20 @@ export interface WorkerSetup {
 
 export interface Invocation {
     functionName: string
-    serializedParameters: string
-    parameters: GeneratedParameter[]
+    serializedParameterValues: string
 }
 
 export interface InvocationMeta {
     specimenId: string
     launched: number
     invocation: Invocation
+    generatedParameters: GeneratedParameter[]
 }
 
 export interface InvocationResult {
     specimenId: string
     output?: any
-    error?: any
+    error?: { message: string, stack: any }
     duration: number
     executedBranches: string[]
     lines: number[]

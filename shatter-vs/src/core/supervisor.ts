@@ -6,6 +6,7 @@ import serializeJavascript = require("serialize-javascript");
 import { execute, work } from './worker';
 import { basename, dirname, join } from 'path';
 import { symlinkSync } from 'fs';
+import { Specimen } from './generator';
 
 // eslint-disable-next-line @typescript-eslint/naming-convention
 export const Outcomes = ['completed', 'error', 'timeout', 'failed'] as const;
@@ -14,7 +15,7 @@ export type Outcome = typeof Outcomes[number];
 export interface RunResult {
     specimenId: string
     functionName: string
-    serializedParameters: string
+    serializedParameterValues: string
     executedBranches: string[]
     lines: number[]
     linesInOrder: number[]
@@ -64,29 +65,33 @@ export class Supervisor {
         }
     }
 
-    async execute(functionName: string, specimenId: string, parameters: GeneratedParameter[], onCompletion: (_: Invocation, __: RunResult) => void) {
-        const resolvedParameters = parameters.map(extractGeneratedParameterValue);
-        console.log(`Parameters for ${specimenId} is ${JSON.stringify(resolvedParameters)}`);
-        const serializedParameters = serializeJavascript(resolvedParameters);
+    async execute(functionName: string, specimen:Specimen, onCompletion: (_: Invocation, __: RunResult) => void) {
+        const resolvedParameters = specimen.parameters.map(extractGeneratedParameterValue);
+        const serializedParameterValues = serializeJavascript(resolvedParameters);
         const invocation: Invocation = {
-            functionName, serializedParameters, parameters,
+            functionName, serializedParameterValues,
         };
 
-        const strung = serializeJavascript({ functionName, parameters });
+        const strung = serializeJavascript({ functionName, parameters: specimen.parameters });
         if (this.attemptedInvocations.has(strung)) {
             return;
         }
 
         const meta: InvocationMeta = {
-            specimenId,
+            specimenId: specimen.id,
             invocation,
+            generatedParameters: specimen.parameters,
             launched: Date.now(),
         };
 
         //  store metadata in a map because workers get reused, so we can't capture the metadata
         //  from the surrounding scope in a closure for the out-of-band version; that only works
         //  for the in-band version or the first run of the out-of-band version
-        this.invocationMetaSpecimen.set(specimenId, meta);
+        this.invocationMetaSpecimen.set(specimen.id, meta);
+
+        console.log(`#${this.count} at ${new Date()} - ${specimen.id} : ${specimen.parameters} is ${JSON.stringify(resolvedParameters)}`);
+        console.log(`${specimen.id} : ${JSON.stringify(specimen.parameters)}`);
+        this.count++;
 
         const start = Date.now();
         process.env.MAIN_PROCESS = '1';
@@ -94,6 +99,7 @@ export class Supervisor {
         const processInvocationResult = (invocationResult: InvocationResult) => {
             const { specimenId, output, error, duration, executedBranches, lines, linesInOrder }: InvocationResult = invocationResult;
 
+            console.log(`received specimenId ${specimenId}; closure has ${specimen.id}`);
             const meta = this.invocationMetaSpecimen.get(specimenId);
             if (!meta) {
                 console.error(`Unable to find invocation meta for specimen ${specimenId}`);
@@ -102,7 +108,7 @@ export class Supervisor {
             // console.log(`Worker ${worker.workerNumber} for ${meta.invocation.functionName} completed`);
 
             // console.log(`And executed branches = `)
-            const strungError = error ? '' + error : undefined;
+            const strungError = error ? JSON.stringify(error) : undefined;
             const result: RunResult = {
                 ...meta.invocation,
                 specimenId,
@@ -134,8 +140,8 @@ export class Supervisor {
 
                 processInvocationResult(result);
 
-            } catch (e) {
-                console.error(`Unable to execute ${functionName} in-band: ${e}`);
+            } catch (e:any) {
+                console.error(`Unable to execute ${functionName} in-band: ${e} - ${e.stack}`);
             }
             return;
         }
@@ -201,7 +207,7 @@ export class Supervisor {
                 }
                 console.error(`Inexplicably unable to find worker ${workerNumber}`);
             }
-            const currentWorkerNumber = ++this.count;
+            const currentWorkerNumber = this.count;
             const workerData: WorkerSetup = {
                 filePath: this.executorScriptJS, workerNumber: currentWorkerNumber,
             };
@@ -209,7 +215,7 @@ export class Supervisor {
             const NODE_PATH = this.nodePath.join(':');
 
             // console.log(`attempting ${currentWorkerNumber}:${this.executorScriptJS} with NODE_PATH ${NODE_PATH} and workerData = ${JSON.stringify(workerData)}`);
-            console.log(`attempting ${currentWorkerNumber} => ${strung}`);
+            // console.log(`attempting ${currentWorkerNumber} => ${strung}`);
             const newWorker = new Worker(this.executorScriptJS, {
                 workerData,
                 stdout: true,
@@ -275,7 +281,7 @@ export class Supervisor {
             return wwmm;
         })();
 
-        this.busyWorkers.set(worker.workerNumber, specimenId);
+        this.busyWorkers.set(worker.workerNumber, specimen.id);
         this.invocationsPerWorker.set(worker.workerNumber, (this.invocationsPerWorker.get(worker.workerNumber) ?? 0) + 1);
 
         // console.log(`invoking worker ${worker.workerNumber}: ${worker.worker}`);
@@ -293,6 +299,9 @@ export class Supervisor {
     }
 
     async drain(timeout = 2_000) {
+        if (this.inBand) {
+            return;
+        }
         const start = Date.now();
         // console.log("finishied draining");
         const waitSome = async (delay: number, max: number) => {
@@ -315,6 +324,9 @@ export class Supervisor {
     }
 
     async terminate(timeout = 10_000) {
+        if (this.inBand) {
+            return;
+        }
         const waitSome = async (delay: number, max: number) => {
             let count = 0;
             const start = Date.now();

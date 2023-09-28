@@ -1,7 +1,6 @@
 import * as ts from 'typescript';
 import { Node, SourceFile } from 'typescript';
 
-import { createId } from '@paralleldrive/cuid2';
 import { FunctionDeclaration } from 'typescript';
 import { SourceMapGenerator } from 'source-map';
 

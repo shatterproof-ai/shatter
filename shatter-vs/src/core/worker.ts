@@ -4,10 +4,11 @@ import { ExecutionContext, contextStorage } from './recorder';
 import { Invocation, InvocationMeta, InvocationResult, WorkerSetup } from './worker-protocol';
 
 export function work(functions: Record<string, Function>, workerNumber: number, message: any) {
-    const { invocation, specimenId }: InvocationMeta = message;
-    const { functionName, serializedParameters, parameters }: Invocation = invocation;
+    const { invocation, specimenId, generatedParameters }: InvocationMeta = message;
+    const { functionName, serializedParameterValues }: Invocation = invocation;
 
-    const resolvedParameters = parameters.map(extractGeneratedParameterValue);
+    console.log(`worker ${workerNumber} executing ${functionName} for ${specimenId}`);
+    const resolvedParameters = generatedParameters.map(extractGeneratedParameterValue);
 
     const executedBranches = new Set<string>();
 
@@ -22,7 +23,7 @@ export function work(functions: Record<string, Function>, workerNumber: number, 
     return contextStorage.run(ic, async () => {
 
         const start = Date.now();
-        console.log(`calling ${workerNumber} ${functionName} for ${specimenId} at ${start}`);
+        // console.log(`calling ${workerNumber} ${functionName} for ${specimenId} at ${new Date(start)}`);
         // const parameters = eval(serializedParameters)
 
         const p = Promise.resolve(f.call(null, ...resolvedParameters));
@@ -40,8 +41,11 @@ export function work(functions: Record<string, Function>, workerNumber: number, 
                 lines,
                 linesInOrder: ic.linesInOrder
             };
+
+            console.log(`worker ${workerNumber} finishing ${functionName} for ${specimenId}`);
+
             return result;
-        }
+        };
 
         return p.then((output) => {
             return finishIt({ output });
@@ -53,8 +57,9 @@ export function work(functions: Record<string, Function>, workerNumber: number, 
             * serious error, e.g. stack overflow
             * crash the VM, e.g. out of memory error
             */
-            return finishIt({ error });
-        })
+           console.error(`worker ${workerNumber} ${functionName} error for ${specimenId}: ${error} at ${error.stack}`);
+            return finishIt({ error: { message: '' + error, stack: error.stack} });
+        });
     });
 }
 

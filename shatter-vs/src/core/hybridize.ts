@@ -1,7 +1,6 @@
 import { create, isEqual } from 'lodash';
-import { GeneratedParameter, skip } from './common';
+import { GeneratedParameter, newId, skip } from './common';
 import { G } from './generator';
-import { createId } from '@paralleldrive/cuid2';
 
 //  TODO: split this into an initial entrypoint and a recursive internal entrypoint
 export function* hybridize(a: GeneratedParameter, b: GeneratedParameter): G {
@@ -39,7 +38,7 @@ export function* hybridize(a: GeneratedParameter, b: GeneratedParameter): G {
         if (typeof a.value === "number") {
             for (const n of hybridizeNumbers(a.value, b.value, splitIntervals)) {
                 yield {
-                    id: createId(),
+                    id: newId('hybrid-number'),
                     type: 'value',
                     generator: 'hybridize',
                     value: n,
@@ -51,7 +50,7 @@ export function* hybridize(a: GeneratedParameter, b: GeneratedParameter): G {
         if (typeof a.value === "string") {
             for (const s of hybridizeStrings(a.value, b.value, splitIntervals)) {
                 yield {
-                    id: createId(),
+                    id: newId('hybrid-string'),
                     type: 'value',
                     generator: 'hybridize',
                     value: s,
@@ -64,7 +63,7 @@ export function* hybridize(a: GeneratedParameter, b: GeneratedParameter): G {
     if (a.type === 'date' && b.type === 'date') {
         if (a.epochMs !== b.epochMs) {
             yield {
-                id: createId(),
+                id: newId('hybrid-date'),
                 type: 'date',
                 generator: 'hybridize',
                 epochMs: Math.floor((a.epochMs + b.epochMs)/2),
@@ -77,7 +76,7 @@ export function* hybridize(a: GeneratedParameter, b: GeneratedParameter): G {
     if (a.type === 'array' && b.type === 'array') {
         for (const elements of hybridizeArrays(a.elements, b.elements, splitIntervals)) {
             yield {
-                id: createId(),
+                id: newId('hybrid-array'),
                 type: 'array',
                 generator: 'hybridize',
                 elements,
@@ -94,7 +93,7 @@ export function* hybridize(a: GeneratedParameter, b: GeneratedParameter): G {
 
         for (const properties of hybridizeObjects(a.properties, b.properties, splitIntervals)) {
             yield {
-                id: createId(),
+                id: newId('hybrid-object'),
                 type: 'object',
                 generator: 'hybridize',
                 properties,
@@ -110,7 +109,7 @@ export function* hybridize(a: GeneratedParameter, b: GeneratedParameter): G {
         const bbb = b.entries;
         for (const hhhh of hybridizeArrays(aaa, bbb, splitIntervals)) {
             yield {
-                id: createId(),
+                id: newId('hybrid-set'),
                 type: 'set',
                 generator: 'hybridize',
                 entries: hhhh,
@@ -123,7 +122,7 @@ export function* hybridize(a: GeneratedParameter, b: GeneratedParameter): G {
         const bbb = b.entries;
         for (const hhhh of hybridizeArrays(aaa, bbb, splitIntervals)) {
             yield {
-                id: createId(),
+                id: newId('hybrid-map'),
                 type: 'map',
                 generator: 'hybridize',
                 entries: hhhh,
@@ -550,7 +549,7 @@ export function* shrink(gp: GeneratedParameter): G {
 
         for (const variation of shrinkArray(gp.entries)) {
             yield {
-                id: createId(),
+                id: newId('shrink-set'),
                 generator: 'shrinker',
                 type: 'set',
                 entries: variation,
@@ -573,7 +572,7 @@ export function* shrink(gp: GeneratedParameter): G {
     if (gp.type === "tuple") {
         for (const values of shrinkArray(gp.values)) {
             yield {
-                id: createId(),
+                id: newId('shrink-tuple'),
                 generator: 'shrinker',
                 type: 'tuple',
                 values,
@@ -610,7 +609,7 @@ export function* shrink(gp: GeneratedParameter): G {
 
             for (const v of values) {
                 yield {
-                    id: createId(),
+                    id: newId('shrink-number'),
                     generator: 'shrinker',
                     type: 'value',
                     value: v,
@@ -623,7 +622,7 @@ export function* shrink(gp: GeneratedParameter): G {
         if (typeof gp.value === "string") {
             if (gp.value.length > 0) {
                 yield {
-                    id: createId(),
+                    id: newId('shrink-string'),
                     generator: 'shrinker',
                     type: 'value',
                     value: gp.value.substring(0, gp.value.length / 2),
@@ -637,7 +636,7 @@ export function* shrink(gp: GeneratedParameter): G {
     if (gp.type === 'array') {
         for (const array of shrinkArray(gp.elements)) {
             yield {
-                id: createId(),
+                id: newId('shrink-array'),
                 generator: 'shrinker',
                 type: 'array',
                 elements: array,

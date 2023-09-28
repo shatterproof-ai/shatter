@@ -1,5 +1,8 @@
 
 //  TODO: generify value
+
+import { createId } from "@paralleldrive/cuid2";
+
 //  NOTE: all value objects must be serializable
 export type GeneratedParameter = {
     id: string,
@@ -42,6 +45,7 @@ export type GeneratedParameter = {
     type: 'object',
     properties: Record<string, GeneratedParameter>,
     required: string[],
+    declaredType: string,
 });
 
 export const extractGeneratedParameterValue = (gp: GeneratedParameter): any => {
@@ -138,4 +142,8 @@ export const skip = <T, U, V>(g:Generator<T, U, V>, n:number):T|undefined => {
         latest = it.value;
     }
     return latest;
+};
+
+export const newId = (type:string):string => {
+    return `${type}-${createId()}`;
 };

@@ -309,6 +309,82 @@ sr: number;
 });
 
 
+describe('scratch space 26223423', () => {
+    it('typeses', () => {
+        const sourceCode = `
+        type X = {
+            x: number,
+        }
+        
+        type Y<T> = {
+            t: T,
+        }
+        
+        type Z = Y<X>;
+        type XX = Map<string, number>;
+        type XX<Y, Z> = Map<Y, Z>;
+        `;
+
+        //  alias type arguments are on the LEFT
+        //  type arguments are on the RIGHT
+
+        const tempdir = mkdtempSync(join(tmpdir(), "shatter-test-"));
+        const sourceFilePath = join(tempdir, 'zertzert.ts');
+        writeFileSync(sourceFilePath, sourceCode);
+
+        const program = ts.createProgram([sourceFilePath], {});
+        const checker = program.getTypeChecker();
+
+        const sourceFile = program.getSourceFile(sourceFilePath);
+        if (!sourceFile) {
+            throw new Error(`No source file ${sourceFilePath}`);
+        }
+
+        const traverseType = (type: ts.Type) => {
+            const typeReference = type as ts.TypeReference;
+            console.log(`Type reference ${checker.typeToString(typeReference.target)
+            } with flags ${type.flags} and object flags ${(type as any).objectFlags
+                } with type arguments ${typeReference.typeArguments?.map((t) => checker.typeToString(t)).join(', ')
+                } and alias type arguments  ${typeReference.aliasTypeArguments?.map((t) => checker.typeToString(t)).join(', ')}`);
+        };
+
+        const transformer = (ctx: ts.TransformationContext) => (sourceFile: ts.SourceFile): ts.SourceFile => {
+            const visitor = (node: ts.Node): ts.Node => {
+
+                if (ts.isTypeNode(node)) {
+                    console.log('-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=');
+                    console.log(`Type node ${node.getText()}`);
+                    traverseType(checker.getTypeFromTypeNode(node));
+                    console.log('-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=');
+                    return node;
+                }
+
+                if (ts.isTypeAliasDeclaration(node)) {
+                    console.log('-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=');
+                    console.log(`Type alias declaration ${node.getText()}`);
+                    traverseType(checker.getTypeFromTypeNode(node.type));
+                    node.typeParameters?.forEach((typeParameter) => {
+                        console.log(`Type parameter ${typeParameter.getText()}`);
+                        if (typeParameter.constraint) {
+                            traverseType(checker.getTypeFromTypeNode(typeParameter.constraint));
+                        }
+                    });
+                    console.log('-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=');
+                    return node;
+                }
+
+                return ts.visitEachChild(node, visitor, ctx);
+            };
+
+            ts.visitNode(sourceFile, visitor);
+
+            return sourceFile;
+        };
+
+        const transformed = ts.transform(sourceFile, [transformer]);
+    });
+});
+
 describe('scratch space 2', () => {
     it('should find every embedded literal number or string', () => {
         const sourceCode = `
@@ -533,7 +609,7 @@ describe('extensionensiondate ', () => {
         const testCases: string[] = [];
         clusters.forEach((cluster) => {
             cluster.results.forEach((result) => {
-                testCases.push(result.serializedParameters);
+                testCases.push(result.serializedParameterValues);
             });
         });
 
@@ -627,7 +703,7 @@ describe('extensionensionddfdsf', () => {
         const testCases: string[] = [];
         clusters.forEach((cluster) => {
             cluster.results.forEach((result) => {
-                testCases.push(result.serializedParameters);
+                testCases.push(result.serializedParameterValues);
             });
         });
 

@@ -1,10 +1,9 @@
-import { createId } from '@paralleldrive/cuid2';
 import { createHash } from 'crypto';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import * as ts from 'typescript';
-import { GeneratedParameter, skip } from './common';
+import { GeneratedParameter, newId, skip } from './common';
 import { BaseSpecimen, CombinatorialTestCaseSource, RetestCaseSource, Specimen } from './generator';
 import { hybridize, isStrictExtension, shrink } from './hybridize';
 import { Outcome, RunResult, Supervisor } from './supervisor';
@@ -151,8 +150,16 @@ export async function shatterAutotest(modulePaths: string[],
     const onResult = (runResult: RunResult) => {
         // console.log(`Received result ${JSON.stringify(runResult)}`);
         // find the appropriate cluster or create it
+        console.log(`Getting specimen ID ${runResult.specimenId}`);
+
+        if (!runResult.specimenId) {
+            throw new Error(`No specimenId in ${JSON.stringify(runResult)}`);
+        }
         specimenResults.set(runResult.specimenId, runResult);
-        const specimen = specimensById.get(runResult.specimenId)!;
+        const specimen = specimensById.get(runResult.specimenId);
+        if (!specimen) {
+            throw new Error(`No specimen for ${runResult.specimenId}`);
+        }
         const clusterKey = canonicalClusterKey(runResult);
         let cluster = clustersByKey.get(clusterKey);
         if (!cluster) {
@@ -222,6 +229,13 @@ export async function shatterAutotest(modulePaths: string[],
     const source = new CombinatorialTestCaseSource(program.getTypeChecker(), functionDeclarationNode);
     const generator = source.seed({ numbers: introspectionContext.numbers, strings: introspectionContext.strings });
 
+    const typeCounts: Record<Specimen['type'], number> = {
+        'seed': 0,
+        'reduction': 0,
+        'mutation': 0,
+        'hybrid': 0,
+        'edgication': 0,
+    };
     async function evaluateSpecimen(basimen: BaseSpecimen) {
         //  TODO: will this have false positive matches on function members?
         //  the alternative is to use serialize-javascript, but that does not
@@ -230,16 +244,17 @@ export async function shatterAutotest(modulePaths: string[],
         if (serialized && !parameterListsAttempted.has(serialized)) {
             parameterListsAttempted.add(serialized);
 
-            const specimenId = createId();
-
+            const specimenId = newId(basimen.type);
             const newSpecimen: Specimen = {
                 id: specimenId,
                 sequence: count++,
+                sequenceInType: typeCounts[basimen.type]++,
                 ...basimen,
             };
+            console.log(`=====> Adding specimen ID ${specimenId}`);
             specimensById.set(specimenId, newSpecimen);
             // console.log(`Evaluating specimen ${JSON.stringify(newSpecimen)}`);
-            await supervisor.execute(functionName, specimenId, newSpecimen.parameters, (invocation: Invocation, result: RunResult) => {
+            await supervisor.execute(functionName, newSpecimen, (invocation: Invocation, result: RunResult) => {
                 onResult(result);
             });
             return specimenId;
@@ -300,7 +315,7 @@ export async function shatterAutotest(modulePaths: string[],
 }
 
 
-async function seed(maxSeeds: number, generator: Iterator<Specimen, any, undefined>, evaluateSpecimen: (basimen: BaseSpecimen) => Promise<string | undefined>) {
+async function seed(maxSeeds: number, generator: Iterator<BaseSpecimen, any, undefined>, evaluateSpecimen: (basimen: BaseSpecimen) => Promise<string | undefined>) {
     for (let i = 0; i < maxSeeds; i++) {
         const g = generator.next();
         if (g.done) {
@@ -754,7 +769,7 @@ function sortClusters(clusters: ResultCluster[]) {
 
     clusters.forEach(cluster => {
         cluster.results.sort((a, b) =>
-            a.serializedParameters.localeCompare(b.serializedParameters)
+            a.serializedParameterValues.localeCompare(b.serializedParameterValues)
         );
     });
 }

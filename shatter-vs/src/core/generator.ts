@@ -1,12 +1,10 @@
 import * as ts from 'typescript';
 
-import { createId } from "@paralleldrive/cuid2";
-
 import { ResultCluster } from '../core/shatter';
 import { RunResult } from '../core/supervisor';
 import { Literals, edgyAny, edgyBooleans, edgyNumberRanges, edgyNumbers, edgyStrings } from './seed';
 import { pick, set } from 'lodash';
-import { GeneratedParameter } from './common';
+import { GeneratedParameter, extractGeneratedParameterValue, newId } from './common';
 
 export type Mutation = {
     path: string[],
@@ -30,10 +28,14 @@ export type BaseSpecimen = {
 } | {
     type: 'hybrid',
     parents: string[],
+} | {
+    type: 'edgication',
+    parents: string[],
 });
 
 export type Specimen = BaseSpecimen & {
     id: string,
+    sequenceInType: number,
     sequence: number,
 };
 
@@ -70,13 +72,14 @@ export class RetestCaseSource implements TestCaseSource {
         this.resultIndex++;
         //  TODO: should this save GeneratedParameterList instead of the bare parameters any[]?
         yield {
-            id: createId(),
+            id: newId('retest'),
             sequence: this.counter++,
             parameters: [],
         };
     }
 }
 
+//  TODO: an allow list for potentially self-referential types
 interface GeneratorConfiguration {
     maxDepth: number;
     weirdness: number;
@@ -97,6 +100,11 @@ const isTypeReference = (type: ts.Type): type is ts.TypeReference => {
         && ((type.objectFlags & ts.ObjectFlags.Reference) !== 0);
 };
 
+const isAnonymousType = (type: ts.Type): boolean => {
+    return isObjectType(type)
+        && ((type.objectFlags & ts.ObjectFlags.Anonymous) !== 0);
+};
+
 const isEnumType = (type: ts.Type): type is ts.EnumType => {
     //  TODO: when will this be Enum and when EnumLiteral?
     return ((type.flags & ts.TypeFlags.Enum) !== 0
@@ -104,14 +112,14 @@ const isEnumType = (type: ts.Type): type is ts.EnumType => {
 };
 
 type Sizer = (o?: any) => Generator<number, any, any>;
-type PropertyPicker = (k: string[]) => Generator<string[], any, any>;
+type PropertyPicker = (k: string[], required: Set<string>) => Generator<string[], any, any>;
 type ElementPicker = (max: number) => Generator<number, any, any>;
 
 export type G = Generator<GeneratedParameter, any, any>;
 type ValueGenerator = (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type) => G | undefined;
 
 const fixedValueGeneratorFactory = function* (generator: string, value: any): G {
-    const id = createId();
+    const id = newId('value');
     while (true) {
         yield {
             id,
@@ -149,7 +157,7 @@ const simpleTypeFlags = [
 ];
 
 const simpleValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type) {
-    if (simpleTypeFlags.includes(type.flags)) {
+    if (simpleTypeFlags.includes(type.flags)) { //  TODO: is this a bitmask?
         //  I think this wrapping is necessary to keep Javascript from being confused about whether there's a generator here; returning immediately from a generator defined with function* without ever yielding still returns a Generator object
         const g = function* () {
             while (true) {
@@ -185,7 +193,7 @@ const enumValueGeneratorFactory: ValueGenerator = function (configuration: Gener
                 while (true) {
                     for (const v of enumValues) {
                         const gp: GeneratedParameter = {
-                            id: createId(),
+                            id: newId('enum'),
                             generator: 'enumValueGeneratorFactory',
                             type: 'value',
                             value: v,
@@ -228,14 +236,14 @@ const stateAwareGenerator = function* (configuration: GeneratorConfiguration, ch
 };
 
 const arrayValueGenerator: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type): G | undefined {
-    if (!checker.isArrayLikeType(type)) {
+    if (!checker.isArrayType(type)) {
         return;
     }
 
     const elementType = checker.getTypeArguments(type as ts.TypeReference)[0];
 
     const generateEmpty = (): GeneratedParameter => ({
-        id: createId(),
+        id: newId('empty-array'),
         generator: 'arrayValueGenerator',
         type: 'array',
         elements: [],
@@ -268,7 +276,7 @@ const arrayValueGenerator: ValueGenerator = function (configuration: GeneratorCo
                 }
 
                 yield {
-                    id: createId(),
+                    id: newId('array'),
                     generator: 'arrayValueGenerator',
                     type: 'array',
                     elements: a,
@@ -321,7 +329,7 @@ const intersectionValueGeneratorFactory: ValueGenerator = (configuration: Genera
             }
 
             const gp: GeneratedParameter = {
-                id: createId(),
+                id: newId('intersection'),
                 generator: 'intersectionValueGeneratorFactory',
                 type: 'intersection',
                 parts,
@@ -363,7 +371,7 @@ const mapValueGeneratorFactory: ValueGenerator = function (configuration: Genera
     const sizer = stupidSizer;
 
     const generateEmpty = (): GeneratedParameter => ({
-        id: createId(),
+        id: newId('empty-map'),
         generator: 'mapValueGenerator',
         type: 'map',
         entries: [],
@@ -404,7 +412,7 @@ const mapValueGeneratorFactory: ValueGenerator = function (configuration: Genera
                     entries.push([key.value, value.value]);
                 }
                 yield {
-                    id: createId(),
+                    id: newId('map'),
                     generator: 'mapValueGenerator',
                     type: 'map',
                     entries,
@@ -427,7 +435,7 @@ const setValueGeneratorFactory: ValueGenerator = function (configuration: Genera
     const sizer = stupidSizer;
 
     const generateEmpty = (): GeneratedParameter => ({
-        id: createId(),
+        id: newId('empty-set'),
         generator: 'setValueGenerator',
         type: 'class',
         instance: new Set(),
@@ -454,7 +462,7 @@ const setValueGeneratorFactory: ValueGenerator = function (configuration: Genera
                     entries.push(next.value);
                 }
                 yield {
-                    id: createId(),
+                    id: newId('set'),
                     generator: 'setValueGeneratorFactory',
                     type: 'set',
                     entries,
@@ -538,7 +546,7 @@ const dateValueGeneratorFactory: ValueGenerator = function (configuration: Gener
                     for (const baseDateEpoch of baseDatesEpoch) {
                         const epochMs = baseDateEpoch + perturbation * perturbationMultiplier + neighborOffset;
                         yield {
-                            id: createId(),
+                            id: newId('date'),
                             generator: 'dateValueGeneratorFactory',
                             type: 'date',
                             epochMs,
@@ -640,7 +648,7 @@ const regexpValueGeneratorFactory: ValueGenerator = function (configuration: Gen
         while (true) {
             for (const pattern of patterns) {
                 yield {
-                    id: createId(),
+                    id: newId('pattern'),
                     generator: 'regexpValueGeneratorFactory',
                     type: 'regexp',
                     pattern: pattern.toString(),
@@ -656,8 +664,10 @@ const basicObjectValueGeneratorFactory: ValueGenerator = function (configuration
     //  in theory this can be a parameter in the future
     const picker = stupidPropertyPicker;
 
+    const declaredType = checker.typeToString(type);
+
     const generateEmpty = (): GeneratedParameter => ({
-        id: createId(),
+        id: newId('empty-object'),
         generator: 'basicObjectValueGenerator',
         type: 'value',
         value: undefined,
@@ -676,16 +686,17 @@ const basicObjectValueGeneratorFactory: ValueGenerator = function (configuration
                     pathToHere: state.pathToHere.concat(`.${p.name}`),
                 };
 
+                const isRequired = !(p.flags & ts.SymbolFlags.Optional);
                 propertyGenerators[p.name] = generatorator(configuration, checker, newState, propertyType);
 
-                if (!(p.flags & ts.SymbolFlags.Optional)) {
+                if (isRequired) {
                     required.add(p.name);
                 }
             }
         });
 
         const allProperties = Object.keys(propertyGenerators);
-        const keysGenerator = picker(allProperties);
+        const keysGenerator = picker(allProperties, required);
 
         while (true) {
             for (const keys of keysGenerator) {
@@ -697,15 +708,21 @@ const basicObjectValueGeneratorFactory: ValueGenerator = function (configuration
                         throw new Error(`Generator ${key} is done`);
                     }
 
+                    const v = extractGeneratedParameterValue(next.value);
+                    if (v === undefined && required.has(key)) {
+                        console.log(`Required property ${key} is undefined at depth ${state.currentDepth}`);
+                    }
+
                     o[key] = next.value;
                 }
 
                 yield {
-                    id: createId(),
+                    id: newId('object'),
                     generator: 'basicObjectValueGeneratorFactory',
                     type: 'object',
                     properties: o,
                     required: Array.from(required),
+                    declaredType,
                 };
             }
         }
@@ -730,7 +747,7 @@ const functionValueGeneratorFactory: ValueGenerator = function (configuration: G
         while (true) {
             for (const returnValue of generatorator(configuration, checker, state, returnType)) {
                 yield {
-                    id: createId(),
+                    id: newId('function'),
                     generator: 'functionValueGeneratorFactory',
                     type: 'callable',
                     returnValue,
@@ -890,7 +907,7 @@ const isDefaultGlobalType = (checker: ts.TypeChecker, type: ts.Type): boolean =>
 };
 
 const objectValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type) {
-    if (! (type.flags & ts.TypeFlags.Object)) {
+    if (!(type.flags & ts.TypeFlags.Object)) {
         return;
     };
 
@@ -967,11 +984,247 @@ const stupidPicker: ElementPicker = function* (max: number) {
     }
 };
 
-const stupidPropertyPicker: PropertyPicker = function* (keys: string[]) {
+const stupidPropertyPicker: PropertyPicker = function* (keys: string[], required: Set<string>) {
     while (true) {
         yield keys;
     }
 };
+
+type TypeID = string | number;
+
+interface SelfReferentiality {
+    partial: boolean;  //  one potential path from here leads to self reference
+    full: boolean; //  every potential path from here leads to self reference
+}
+
+    /*
+object flags        Reference = 4,
+object flags        Anonymous = 16,
+
+symbol flags         TypeAlias = 524288,
+type flags         Object = 524288,
+
+
+object flags 524288 = ??? maybe object again?
+object flags 524368 = ??? Instantiated & Anonymous
+    */
+
+
+function areTypeArgumentsSelfReferential(type: ts.Type, checker: ts.TypeChecker, pathToHere: string[], seen: Set<TypeID>, expectedTypeArgs:number): SelfReferentiality[] {
+    if (!isTypeReference(type)) {
+        if ('typeArguments' in type && (type as any).typeArguments) {
+            console.log(`type ${checker.typeToString(type)} ${pathToHere} has ignored type arguments ${(type as any).typeArguments}`);
+        }
+        return [{
+            partial: false,
+            full: false,
+        }];
+    }
+
+    if (!type.typeArguments) {
+        return [{
+            partial: false,
+            full: false,
+        }];
+    }
+
+    if (type.typeArguments.length !== expectedTypeArgs) {
+        throw new Error(`Expected ${expectedTypeArgs} type arguments for ${checker.typeToString(type)} but got ${type.typeArguments.length}`);
+    }
+
+    const id: TypeID = (type as any).id;
+    const typeSRs = type.typeArguments.map(t => {
+
+        const newSeen = new Set(seen);
+        newSeen.add(id);
+
+        const typeSR = isSelfReferential(checker, t, pathToHere.concat(['<type-argument>']), newSeen);
+        //  TODO: how to tell if a type argument is optional?
+        return typeSR;
+    });
+
+    return typeSRs;
+}
+
+function reduce(typeSRs: SelfReferentiality[]): SelfReferentiality {
+    const typeSR = typeSRs?.reduce((a, b) => {
+        const combined: SelfReferentiality = {
+            partial: a.partial || b.partial,
+            full: a.full && b.full,
+        };
+        return combined;
+    }, {
+        partial: false,
+        full: false,
+    });
+
+    return typeSR;
+}
+
+//  TODO: this function is a test case!
+//  to see if there is any way at all out of the maze, not whether there might be a cycle
+export const isSelfReferential = (checker: ts.TypeChecker, type: ts.Type, pathToHere: string[], seen: Set<TypeID>): SelfReferentiality => {
+
+    const tts = checker.typeToString(type);
+    if (tts === 'Clause') {
+        console.log('strang');
+    }
+
+    const isSimple = simpleTypeFlags.find(f => (f & type.flags) !== 0);
+
+    if (isSimple) {
+        console.log(`simple type ${checker.typeToString(type)} ${pathToHere} is not self-referential`);
+        return {
+            partial: false,
+            full: false,
+        };
+    }
+
+    const callables = checker.getSignaturesOfType(type, ts.SignatureKind.Call);
+    if (callables.length > 0) {
+        // console.log(`callable type ${checker.typeToString(type)} ${pathToHere} is not self-referential`);
+        return {
+            partial: false,
+            full: false,
+        };
+    }
+
+    const constructors = checker.getSignaturesOfType(type, ts.SignatureKind.Construct);
+    if (constructors.length > 0) {
+        // console.log(`constructor type ${checker.typeToString(type)} ${pathToHere} is not self-referential`);
+        return {
+            partial: false,
+            full: false,
+        };
+    }
+
+    const id: TypeID = (type as any).id;
+    if (seen.has(id)) {
+        return {
+            partial: true,
+            full: true,
+        };
+    }
+
+    const newSeen = new Set(seen);
+    newSeen.add(id);
+
+    if (checker.isArrayType(type)) {
+        const typeArgsISR = areTypeArgumentsSelfReferential(type, checker, pathToHere, newSeen, 1);
+        const isr = reduce(typeArgsISR);
+        console.log(`array type ${checker.typeToString(type)} ${pathToHere} is ${JSON.stringify(isr)}`);
+        return isr;
+    }
+
+    if (type.isUnion()) {
+        const selves = type.types.map(t => isSelfReferential(checker, t, pathToHere.concat((['|'])), newSeen));
+        const possible = selves.some(s => s.partial);
+        //  unions require EVERY subtype to be self-referential to be fully self-referential;
+        //  intersections require that just one be self-referential
+        const fully = selves.every(s => s.full);
+        const isr = {
+            partial: possible,
+            full: fully,
+        };
+        console.log(`union type ${checker.typeToString(type)} ${pathToHere} is ${JSON.stringify(isr)}`);
+        return isr;
+    }
+
+    if (type.isIntersection()) {
+        const selves = type.types.map(t => isSelfReferential(checker, t, pathToHere.concat(['&']), newSeen));
+        const possible = selves.some(s => s.partial);
+        //  unions require EVERY subtype to be self-referential to be fully self-referential;
+        //  intersections require that just one be self-referential
+        const fully = selves.some(s => s.full);
+        const isr = {
+            partial: possible,
+            full: fully,
+        };
+        console.log(`intersection type ${checker.typeToString(type)} ${pathToHere} is ${JSON.stringify(isr)}`);
+        return isr;
+    }
+
+    if (isDefaultGlobalType(checker, type)) {
+        const typeName = type.getSymbol()?.getName();
+        if (typeName === 'Date' || typeName === 'RegExp') {
+            console.log(`default global type ${checker.typeToString(type)} ${pathToHere} is not self-referential`);
+            return {
+                partial: false,
+                full: false,
+            };
+        }
+
+        if (typeName === 'Map') {
+            const typeArgsISR = areTypeArgumentsSelfReferential(type, checker, pathToHere, newSeen, 2);
+            const [keySelfReferentiality, valueSelfReferentiality] = typeArgsISR;
+
+            const isr = {
+                partial: keySelfReferentiality.partial || valueSelfReferentiality.partial,
+                full: keySelfReferentiality.full || valueSelfReferentiality.full,
+            };
+
+            console.log(`map type ${checker.typeToString(type)} ${pathToHere} is ${JSON.stringify(isr)}`);
+
+            return isr;
+        }
+
+        if (typeName === 'Set') {
+            const typeArgsISR = areTypeArgumentsSelfReferential(type, checker, pathToHere, newSeen, 1)[0];
+            console.log(`set type ${checker.typeToString(type)} ${pathToHere} is ${JSON.stringify(typeArgsISR)}`);
+
+            return typeArgsISR;
+        }
+    }
+
+    if (type.isClassOrInterface()) {
+        console.log(`class or interface type ${checker.typeToString(type)} ${pathToHere}`);
+    }
+    const properties = checker.getPropertiesOfType(type);
+    const selves = properties.map(p => {
+        if (!p.valueDeclaration) {
+            //  TODO: determine when this might happen; possible=true,fully=false is the I dunno answer
+            return {
+                partial: true,
+                full: false,
+            };
+        }
+        const propertyType = checker.getTypeOfSymbolAtLocation(p, p.valueDeclaration);
+        const propertyReferentiality = isSelfReferential(checker, propertyType, pathToHere.concat([`.${p.getName()}`]), newSeen);
+        const isRequired = !(p.flags & ts.SymbolFlags.Optional);
+
+        //  if the property is required, then it could be partially self-referential and fully self-referential
+        if (isRequired) {
+            console.log(`Required property ${p.getName()} on ${checker.typeToString(type)} from ${pathToHere} ${JSON.stringify(propertyReferentiality)}`);
+            return propertyReferentiality;
+        }
+
+        //  if the property is optional, then it could be partially self-referential and is not fully self-referential
+        const isr = {
+            partial: propertyReferentiality.partial,
+            full: false,
+        };
+        console.log(`Optional property ${p.getName()} from ${pathToHere} ${JSON.stringify(propertyReferentiality)}`);
+        return isr;
+    });
+
+    const typeArgsISR = reduce(areTypeArgumentsSelfReferential(type, checker, pathToHere, newSeen, 1));
+
+    
+    const possible = typeArgsISR?.partial || (properties.length > 0 && selves.some(s => s.partial));
+    //  normally fulll requires AND semantics but type arguments aren't optional
+    const fully = typeArgsISR?.full || (properties.length > 0 && selves.every(s => s.full));
+    const isr = {
+        partial: possible,
+        full: fully,
+    };
+
+    console.log(`class or interface type ${checker.typeToString(type)} ${pathToHere} is ${JSON.stringify(isr)}`);
+
+    return isr;
+
+    throw new Error(`Not ready for type ${checker.typeToString(type)}`);
+};
+
 
 //  TODO: at some point create jq-compatible paths in pathToHere for neatness
 function generatorator(configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, currentType: ts.Type): G {
@@ -1034,6 +1287,9 @@ function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclarati
 
         const typeGenerator = generatorsByType.get(currentType);
         if (!typeGenerator) {
+
+            const isr = isSelfReferential(checker, currentType, [`[${j}]`], new Set());
+
             const generator = generatorator(configuration, checker, state, currentType);
             const t = checker.typeToString(currentType);
             generatorsByType.set(currentType, generator);
@@ -1118,16 +1374,14 @@ export class CombinatorialTestCaseSource /* implements TestCaseSource */ {
         private f: ts.FunctionDeclaration) {
     }
 
-    *seed(literals?: Literals): Iterator<Specimen> {
+    *seed(literals?: Literals): Iterator<BaseSpecimen> {
         const f = this.f;
         const checker = this.checker;
 
         //  TODO: using TupleGenerator and then unpacking like this... needlessly elaborate?
         const generator = functionGeneratorator(checker, f, literals);
         for (const value of generator) {
-            const s: Specimen = {
-                id: createId(),
-                sequence: this.counter++,
+            const s: BaseSpecimen = {
                 parameters: value,
                 type: 'seed',
             };
