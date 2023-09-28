@@ -99,7 +99,8 @@ const isTypeReference = (type: ts.Type): type is ts.TypeReference => {
 
 const isEnumType = (type: ts.Type): type is ts.EnumType => {
     //  TODO: when will this be Enum and when EnumLiteral?
-    return type.flags === ts.TypeFlags.Enum || type.flags === ts.TypeFlags.EnumLiteral;
+    return ((type.flags & ts.TypeFlags.Enum) !== 0
+        || (type.flags & ts.TypeFlags.EnumLiteral) !== 0);
 };
 
 type Sizer = (o?: any) => Generator<number, any, any>;
@@ -127,7 +128,7 @@ const literalValueGeneratorFactory: ValueGenerator = function (configuration: Ge
     }
     //  isLiteral() implementation inexplicably does not cover boolean literals
     //            return !!(this.flags & (128 /* StringLiteral */ | 256 /* NumberLiteral */ | 2048 /* BigIntLiteral */));
-    if (type.flags === ts.TypeFlags.BooleanLiteral) {
+    if (type.flags & ts.TypeFlags.BooleanLiteral) {
         const t = checker.getTrueType();
         //  TODO: yuck
         const boolvalue = checker.typeToString(type) === checker.typeToString(t);
@@ -248,7 +249,7 @@ const arrayValueGenerator: ValueGenerator = function (configuration: GeneratorCo
 
         const sizer = stupidSizer;
 
-        if (elementType.flags === ts.TypeFlags.Number) {
+        if (elementType.flags & ts.TypeFlags.Number) {
             //  in some cases we don't want to think of arrays as collections
             //  of unrelated elements
             yield* edgyNumberRanges(configuration.literals);
@@ -889,7 +890,7 @@ const isDefaultGlobalType = (checker: ts.TypeChecker, type: ts.Type): boolean =>
 };
 
 const objectValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type) {
-    if (type.flags !== ts.TypeFlags.Object) {
+    if (! (type.flags & ts.TypeFlags.Object)) {
         return;
     };
 
