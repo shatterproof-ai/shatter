@@ -40,7 +40,7 @@ export type GeneratedParameter = {
     returnValue: GeneratedParameter,
 } | {
     type: 'object',
-        properties: Record<string, GeneratedParameter>,
+    properties: Record<string, GeneratedParameter>,
     required: string[],
 });
 
