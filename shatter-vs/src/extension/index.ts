@@ -411,23 +411,6 @@ const doSelectCluster = (editor: vscode.TextEditor, extensionState: ExtensionSta
 	refresh(editor, extensionState, providers);
 };
 
-const compressRanges = (lines: number[]) => {
-	let currentRangeStart = lines[0];
-	let currentRangeEnd = lines[0];
-	const ranges: [number, number][] = [];
-	for (let i = 1; i < lines.length; i++) {
-		if (currentRangeStart + 1 == lines[i]) {
-			currentRangeEnd = lines[i];
-		} else {
-			ranges.push([currentRangeStart, currentRangeEnd]);
-			currentRangeStart = lines[i];
-			currentRangeEnd = lines[i];
-		}
-	}
-
-	return compressRanges;
-};
-
 const doSelectTestCase = (editor: vscode.TextEditor, extensionState: ExtensionState, providers: Providers,
 	testCase: string) => {
 	if (!extensionState.activeFile) {

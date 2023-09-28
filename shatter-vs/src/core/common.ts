@@ -111,3 +111,19 @@ export const extractGeneratedParameterValue = (gp: GeneratedParameter): any => {
     throw new Error(`Unexpected type ${gp['type']}`);
 };
 
+export const compressRanges = (lines: number[]) => {
+	let currentRangeStart = lines[0];
+	let currentRangeEnd = lines[0];
+	const compressedRanges: [number, number][] = [];
+	for (let i = 1; i < lines.length; i++) {
+		if (currentRangeStart + 1 == lines[i]) {
+			currentRangeEnd = lines[i];
+		} else {
+			compressedRanges.push([currentRangeStart, currentRangeEnd]);
+			currentRangeStart = lines[i];
+			currentRangeEnd = lines[i];
+		}
+	}
+
+	return compressedRanges;
+};
