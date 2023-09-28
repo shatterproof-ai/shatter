@@ -20,18 +20,32 @@ export function work(functions: Record<string, Function>, workerNumber: number, 
 
     const f = functions[functionName];
     return contextStorage.run(ic, async () => {
-        const start = Date.now();
-        let output: any = undefined;
-        let error: any = undefined;
 
-        console.log(`calling ${workerNumber} ${functionName} at ${start}}`);
+        const start = Date.now();
+        console.log(`calling ${workerNumber} ${functionName} for ${specimenId} at ${start}}`);
         // const parameters = eval(serializedParameters)
 
         const p = Promise.resolve(f.call(null, ...resolvedParameters));
 
-        return p.then((o) => {
-            output = o;
-        }).catch((e) => {
+        const finishIt = (p:Partial<Pick<InvocationResult, 'output'|'error'>>) => {
+            const end = Date.now();
+            const duration = end - start;
+
+            const lines = Array.from(ic.lines).sort((a, b) => a - b);
+            const result: InvocationResult = {
+                ...p,
+                specimenId,
+                duration,
+                executedBranches: Array.from(executedBranches),
+                lines,
+                linesInOrder: ic.linesInOrder
+            };
+            return result;
+        }
+
+        return p.then((output) => {
+            return finishIt({ output });
+        }).catch((error) => {
             /* 
             TODO: how to differentiate between types of error
             * well-functioning code, e.g. validation
@@ -39,24 +53,8 @@ export function work(functions: Record<string, Function>, workerNumber: number, 
             * serious error, e.g. stack overflow
             * crash the VM, e.g. out of memory error
             */
-            error = e;
+            return finishIt({ error });
         })
-        .finally(() => {
-            const end = Date.now();
-            const duration = end - start;
-
-            const lines = Array.from(ic.lines).sort((a, b) => a - b);
-            const result: InvocationResult = {
-                specimenId,
-                output,
-                error,
-                duration,
-                executedBranches: Array.from(executedBranches),
-                lines,
-                linesInOrder: ic.linesInOrder
-            };
-            return result;
-        });
     });
 }
 
