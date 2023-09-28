@@ -22,7 +22,7 @@ export function work(functions: Record<string, Function>, workerNumber: number, 
     return contextStorage.run(ic, async () => {
 
         const start = Date.now();
-        console.log(`calling ${workerNumber} ${functionName} for ${specimenId} at ${start}}`);
+        console.log(`calling ${workerNumber} ${functionName} for ${specimenId} at ${start}`);
         // const parameters = eval(serializedParameters)
 
         const p = Promise.resolve(f.call(null, ...resolvedParameters));
