@@ -13,6 +13,11 @@ namespace Nomen {
     };
 }
 
+type ZZ = {
+    aa: 5,
+    aaa?: 5,
+    aaaa: number,
+};
 
 describe('scratch space', () => {
     it('does', () => {
@@ -344,7 +349,7 @@ describe('scratch space 26223423', () => {
         const traverseType = (type: ts.Type) => {
             const typeReference = type as ts.TypeReference;
             console.log(`Type reference ${checker.typeToString(typeReference.target)
-            } with flags ${type.flags} and object flags ${(type as any).objectFlags
+                } with flags ${type.flags} and object flags ${(type as any).objectFlags
                 } with type arguments ${typeReference.typeArguments?.map((t) => checker.typeToString(t)).join(', ')
                 } and alias type arguments  ${typeReference.aliasTypeArguments?.map((t) => checker.typeToString(t)).join(', ')}`);
         };
