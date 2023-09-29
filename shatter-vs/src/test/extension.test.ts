@@ -6,6 +6,7 @@ import { faker } from '@faker-js/faker';
 import * as ts from 'typescript';
 import { shatterAutotest } from "../core/shatter";
 import { stringFakerses, optionVariantsMedium } from '../core/seed';
+import { GeneratedParameter } from '../core/common';
 namespace Nomen {
     export type Z = {
         a: number,
@@ -606,10 +607,10 @@ describe('extensionensiondate ', () => {
         console.log(`Instrumented ${instrumented}`);
         console.log(`Missed       ${unexecuted}`);
 
-        const testCases: string[] = [];
+        const testCases: GeneratedParameter[][] = [];
         clusters.forEach((cluster) => {
-            cluster.results.forEach((result) => {
-                testCases.push(result.serializedParameterValues);
+            cluster.specimens.forEach((specimen) => {
+                testCases.push(specimen.parameters);
             });
         });
 

@@ -3,7 +3,7 @@ import * as ts from 'typescript';
 import { ResultCluster } from '../core/shatter';
 import { RunResult } from '../core/supervisor';
 import { Literals, edgyAny, edgyBooleans, edgyNumberRanges, edgyNumbers, edgyStrings } from './seed';
-import { pick, set } from 'lodash';
+import { keys, pick, set } from 'lodash';
 import { GeneratedParameter, extractGeneratedParameterValue, newId } from './common';
 import { type } from 'os';
 
@@ -82,8 +82,7 @@ export class RetestCaseSource implements TestCaseSource {
 
 //  TODO: an allow list for potentially self-referential types
 interface GeneratorConfiguration {
-    softDepthLimit: number;
-    hardDepthLimit: number;
+    depthLimit: number;
     weirdness: number;
     literals?: Literals;
 }
@@ -211,7 +210,7 @@ const enumValueGeneratorFactory: ValueGenerator = function (configuration: Gener
 };
 
 interface TwoPhaseGenerator {
-    generateFinite: (configuration: GeneratorConfiguration, state: GeneratorState) => GeneratedParameter;
+    generateEmpty: (configuration: GeneratorConfiguration, state: GeneratorState) => GeneratedParameter;
     generate: (configuration: GeneratorConfiguration, state: GeneratorState) => G;
 };
 
@@ -221,17 +220,18 @@ interface TwoPhaseGenerator {
 IF there are any subgenerators that can stay under the limit, pick from those
 
 IF there are no subgenerators that can stay under the limit, get as close to the limit as possible and halt
+OR throw an error
 
 replace direct access to generators with a wrapper that knows shortest and longest
 
-TODO: increase max depth with weirdness
+TODO: increase max depth with weirdness; increase if too many objects can't be fully generated
 
 */
 
 const stateAwareGenerator = function* (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, g: TwoPhaseGenerator, typeAncestors: ts.Type[]) {
     const currentDepth = state.currentDepth;
     while (true) {
-        if (state.currentDepth >= configuration.hardDepthLimit) {
+        if (state.currentDepth >= configuration.depthLimit) {
             const gp: GeneratedParameter = {
                 id: newId('terminal'),
                 generator: 'stateAwareGenerator-terminal',
@@ -240,15 +240,15 @@ const stateAwareGenerator = function* (configuration: GeneratorConfiguration, ch
             yield gp;
             return;
         }
-        if (state.currentDepth >= configuration.softDepthLimit) {
-            const gg = g.generateFinite(configuration, state);
-            while (currentDepth >= configuration.softDepthLimit) {
+        if (state.currentDepth >= configuration.depthLimit) {
+            const gg = g.generateEmpty(configuration, state);
+            while (currentDepth >= configuration.depthLimit) {
                 yield gg;
             }
         } else {
             const gg = g.generate(configuration, state);
             const operatingWeirdness = configuration.weirdness;
-            while (currentDepth <= configuration.softDepthLimit || operatingWeirdness !== configuration.weirdness) {
+            while (currentDepth <= configuration.depthLimit || operatingWeirdness !== configuration.weirdness) {
                 const v = gg.next();
                 if (v.done) {
                     throw new Error(`Generator ${gg.constructor.name} is done`);
@@ -266,7 +266,7 @@ const arrayValueGenerator: ValueGenerator = function (configuration: GeneratorCo
 
     const elementType = checker.getTypeArguments(type as ts.TypeReference)[0];
 
-    const generateFinite = (): GeneratedParameter => ({
+    const generateEmpty = (): GeneratedParameter => ({
         id: newId('empty-array'),
         generator: 'arrayValueGenerator',
         type: 'array',
@@ -310,23 +310,9 @@ const arrayValueGenerator: ValueGenerator = function (configuration: GeneratorCo
     };
 
     return stateAwareGenerator(configuration, checker, state, type, {
-        generateFinite,
+        generateEmpty: generateEmpty,
         generate,
     }, typeAncestors);
-};
-
-const generatorsForUnionOrIntersectionType = (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.UnionOrIntersectionType, typeAncestors: ts.Type[]) => {
-    const generators: G[] = [];
-    for (const subtype of type.types) {
-        const newState = {
-            currentDepth: state.currentDepth,
-            pathToHere: state.pathToHere.concat(" | "),
-        };
-        const g = generatorator(configuration, checker, newState, subtype, typeAncestors.concat([type]));
-        generators.push(g);
-    }
-
-    return generators;
 };
 
 //  TODO: IntersectionGenerator;
@@ -336,7 +322,15 @@ const intersectionValueGeneratorFactory: ValueGenerator = (configuration: Genera
         return undefined;
     }
 
-    const generators = generatorsForUnionOrIntersectionType(configuration, checker, state, type, typeAncestors);
+    const generators: G[] = [];
+    for (const subtype of type.types) {
+        const newState = {
+            currentDepth: state.currentDepth,
+            pathToHere: state.pathToHere.concat(" | "),
+        };
+        const g = generatorator(configuration, checker, newState, subtype, typeAncestors.concat([type]));
+        generators.push(g);
+    }
 
     function* g(): G {
         while (true) {
@@ -375,40 +369,31 @@ const unionValueGeneratorFactory: ValueGenerator = function (configuration: Gene
     const depths: SelfReferentiality[] = type.types
         .map(subtype => getTypeDepth(checker, subtype, pathToHere, newTypeAncestors));
 
-    const allGenerators: G[] = [];
     const terminableGenerators: G[] = [];
     for (let i = 0; i < type.types.length; i++) {
-        const subtype = type.types[i];
-        const depth = depths[i];
-        const newState = {
-            currentDepth: state.currentDepth,
-            pathToHere,
-        };
-        const g = generatorator(configuration, checker, newState, subtype, newTypeAncestors);
-        if (depth.shortest + state.currentDepth <= configuration.hardDepthLimit) {
+        if (depths[i].shortest + state.currentDepth <= configuration.depthLimit) {
+            const newState = {
+                currentDepth: state.currentDepth,
+                pathToHere,
+            };
+            const g = generatorator(configuration, checker, newState, type.types[i], newTypeAncestors);
             terminableGenerators.push(g);
         }
-        allGenerators.push(g);
+    }
+
+    if (terminableGenerators.length === 0) {
+        throw new Error(`Unexpectedly no generators available at depth ${state.currentDepth} <= ${configuration.depthLimit}: ${depths.map(d => d.shortest).join(', ')}`);
     }
 
     const g = function* () {
         while (true) {
-            if (terminableGenerators.length === 0) {
-                const gp:GeneratedParameter = {
-                    id: newId('terminal'),
-                    generator: 'unionValueGeneratorFactory',
-                    type: 'terminal',
-                };
-                yield gp;
-            } else {
-                for (const generator of allGenerators) {
-                    const next = generator.next();
-                    if (next.done) {
-                        throw new Error(`Generator ${generator.constructor.name} is done`);
-                    }
-                    const gp = next.value;
-                    yield gp;
+            for (const generator of terminableGenerators) {
+                const next = generator.next();
+                if (next.done) {
+                    throw new Error(`Generator ${generator.constructor.name} is done`);
                 }
+                const gp = next.value;
+                yield gp;
             }
         }
     };
@@ -424,7 +409,7 @@ const mapValueGeneratorFactory: ValueGenerator = function (configuration: Genera
 
     const sizer = stupidSizer;
 
-    const generateFinite = (): GeneratedParameter => ({
+    const generateEmpty = (): GeneratedParameter => ({
         id: newId('empty-map'),
         generator: 'mapValueGenerator',
         type: 'map',
@@ -476,7 +461,7 @@ const mapValueGeneratorFactory: ValueGenerator = function (configuration: Genera
     };
 
     return stateAwareGenerator(configuration, checker, state, type, {
-        generateFinite,
+        generateEmpty,
         generate,
     }, typeAncestors);
 };
@@ -488,7 +473,7 @@ const setValueGeneratorFactory: ValueGenerator = function (configuration: Genera
 
     const sizer = stupidSizer;
 
-    const generateFinite = (): GeneratedParameter => ({
+    const generateEmpty = (): GeneratedParameter => ({
         id: newId('empty-set'),
         generator: 'setValueGenerator',
         type: 'class',
@@ -526,7 +511,7 @@ const setValueGeneratorFactory: ValueGenerator = function (configuration: Genera
     };
 
     return stateAwareGenerator(configuration, checker, state, type, {
-        generateFinite,
+        generateEmpty,
         generate,
     }, typeAncestors);
 };
@@ -720,51 +705,53 @@ const basicObjectValueGeneratorFactory: ValueGenerator = function (configuration
 
     const declaredType = checker.typeToString(type);
 
-    const generateFinite = (): GeneratedParameter => ({
-        id: newId('empty-object'),
-        generator: 'basicObjectValueGenerator',
-        type: 'value',
-        value: undefined,
-    });
-
-    const generate = function* (configuration: GeneratorConfiguration, state: GeneratorState): G {
+    const generate = function* (): G {
         const propertyGenerators: Record<string, G> = {};
-
+        const depths: Record<string, SelfReferentiality> = {};
+        
         const required = new Set<string>();
+        const keysAllowed = new Set<string>();
         checker.getPropertiesOfType(type).forEach(p => {
             if (p.valueDeclaration) {
+                const isRequired = !(p.flags & ts.SymbolFlags.Optional);
+                if (isRequired) {
+                    required.add(p.name);
+                }
+
                 const propertyType = checker.getTypeOfSymbolAtLocation(p, p.valueDeclaration);
+                const depth = getTypeDepth(checker, propertyType, state.pathToHere.concat(`.${p.name}`), typeAncestors.concat([type]));
+                depths[p.name] = depth;
+
+                if (depth.shortest + state.currentDepth <= configuration.depthLimit) {
+                    keysAllowed.add(p.name);
+                } else {
+                    if (required.has(p.name)) {
+                        //  TODO: custom error type
+                        //  TODO: this should be caught earlier in preflight
+                        throw new Error(`Required property ${p.name} cannot be generated at depth ${state.currentDepth} <= ${configuration.depthLimit}`);
+                    }
+                }
 
                 const newState = {
                     currentDepth: state.currentDepth + 1,
                     pathToHere: state.pathToHere.concat(`.${p.name}`),
                 };
 
-                const isRequired = !(p.flags & ts.SymbolFlags.Optional);
                 propertyGenerators[p.name] = generatorator(configuration, checker, newState, propertyType, typeAncestors.concat([type]));
-
-                if (isRequired) {
-                    required.add(p.name);
-                }
             }
         });
 
-        const allProperties = Object.keys(propertyGenerators);
-
-        if (state.currentDepth >= configuration.softDepthLimit) {
-            if (required.size === allProperties.length) {
-                yield generateFinite();
-                return;
-            }
-        }
-
-        const keysGenerator = picker(allProperties, required);
+        const keysGenerator = picker(Array.from(keysAllowed), required);
 
         while (true) {
             for (const keys of keysGenerator) {
                 const o: Record<string, GeneratedParameter> = {};
                 for (const k of keys) {
                     const key = k as string;
+                    if (!keysAllowed.has(key)) {
+                        continue;
+                    }
+
                     const next = propertyGenerators[key].next();
                     if (next.done) {
                         throw new Error(`Generator ${key} is done`);
@@ -790,10 +777,7 @@ const basicObjectValueGeneratorFactory: ValueGenerator = function (configuration
         }
     };
 
-    return stateAwareGenerator(configuration, checker, state, type, {
-        generateFinite,
-        generate,
-    }, typeAncestors);
+    return generate();
 };
 
 const functionValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, typeAncestors: ts.Type[]) {
@@ -1096,7 +1080,7 @@ function getTypeArgumentsDepth(type: ts.Type, checker: ts.TypeChecker, pathToHer
 
     const id: TypeID = (type as any).id;
     const typeSRs = type.typeArguments.map(t => {
-        const typeSR = getTypeDepth(checker, t, pathToHere.concat(['<type-argument>']), seen.concat([t]));
+        const typeSR = getTypeDepth(checker, t, pathToHere.concat(['<type-argument>']), seen);
         //  TODO: how to tell if a type argument is optional?
         return typeSR;
     });
@@ -1104,20 +1088,21 @@ function getTypeArgumentsDepth(type: ts.Type, checker: ts.TypeChecker, pathToHer
     return typeSRs;
 }
 
-function reduce(typeSRs: SelfReferentiality[]): SelfReferentiality {
-    const typeSR = typeSRs?.reduce((a, b) => {
-        const combined: SelfReferentiality = {
-            shortest: Math.min(a.shortest, b.shortest),
-            longest: Math.max(a.longest, b.longest),
-        };
-        return combined;
-    }, {
-        shortest: Infinity,
-        longest: 0,
-    });
+//  Math.min returns Infinity if any argument is undefined or if the argument list is empty
+const minZero = (...args: number[]): number => {
+    if (args.length === 0) {
+        return 0;
+    }
+    return Math.min(...args.filter(a => a !== undefined));
+};
 
-    return typeSR;
-}
+//  Math.max returns -Infinity if any argument is undefined or if the argument list is empty
+const maxZero = (...args: number[]): number => {
+    if (args.length === 0) {
+        return 0;
+    }
+    return Math.max(...args.filter(a => a !== undefined));
+};
 
 //  TODO: this function is a test case!
 //  to see if there is any way at all out of the maze, not whether there might be a cycle
@@ -1181,11 +1166,11 @@ export const getTypeDepth = (checker: ts.TypeChecker, type: ts.Type, pathToHere:
     if (type.isUnion()) {
         const depths = type.types.map(t => getTypeDepth(checker, t, pathToHere.concat((['|'])), newSeen));
 
-        const shortest = depths.reduce((a, b) => Math.min(a, b.shortest), Infinity);
-        const longest = depths.reduce((a, b) => Math.max(a, b.longest), 0);
-
         //  Union shortest depth is the shortest of the shortest depths of the subtypes
         //  because we can pick which one we want
+        const shortest = minZero(...depths.map(d => d.shortest));
+        const longest = minZero(...depths.map(d => d.longest));
+
         const isr = {
             shortest,
             longest,
@@ -1199,8 +1184,8 @@ export const getTypeDepth = (checker: ts.TypeChecker, type: ts.Type, pathToHere:
 
         //  Intersection shortest depth is the largest of the shortest depths of the subtypes
         //  because we don't get a choice; we have to go to them all
-        const shortest = depths.reduce((a, b) => Math.max(a, b.shortest), Infinity);
-        const longest = depths.reduce((a, b) => Math.max(a, b.longest), 0);
+        const shortest = maxZero(...depths.map(d => d.shortest));
+        const longest = minZero(...depths.map(d => d.longest));
         const isr = {
             shortest,
             longest,
@@ -1280,14 +1265,14 @@ export const getTypeDepth = (checker: ts.TypeChecker, type: ts.Type, pathToHere:
 
     const typeArgsDepths = getTypeArgumentsDepth(type, checker, pathToHere, newSeen);
 
-    const shortestTypeArgDepth = Math.min(...typeArgsDepths.map(s => s.shortest));
-    const shortestPropertyDepth = Math.min(...selves.map(s => s.shortest));
+    const shortestTypeArgDepth = minZero(...typeArgsDepths.map(s => s.shortest));
+    const shortestPropertyDepth = minZero(...selves.map(s => s.shortest));
     //  MAX on shortest like in an intersection type; can't just pick the type arguments or the property types;
     //  we need to get to the bottom of both
     const shortest = Math.max(shortestTypeArgDepth, shortestPropertyDepth);
 
-    const longestTypeArgDepth = Math.max(...typeArgsDepths.map(s => s.longest));
-    const longestPropertyDepth = Math.max(...selves.map(s => s.longest));
+    const longestTypeArgDepth = maxZero(...typeArgsDepths.map(s => s.longest));
+    const longestPropertyDepth = maxZero(...selves.map(s => s.longest));
     const longest = Math.max(longestTypeArgDepth, longestPropertyDepth);
 
     const depth = {
@@ -1306,7 +1291,7 @@ export const getTypeDepth = (checker: ts.TypeChecker, type: ts.Type, pathToHere:
 //  TODO: at some point create jq-compatible paths in pathToHere for neatness
 function generatorator(configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, currentType: ts.Type, typeAncestors: ts.Type[]): G {
 
-    if (state.currentDepth > configuration.softDepthLimit) {
+    if (state.currentDepth > configuration.depthLimit) {
         return fixedValueGeneratorFactory('generatorator', undefined);
     }
 
@@ -1337,105 +1322,145 @@ function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclarati
         return;
     }
 
-    const state: GeneratorState = {
-        currentDepth: 0,
-        pathToHere: [],
-    };
+    for (let depthLimit = 0; depthLimit < 5; depthLimit++) {
+        const state: GeneratorState = {
+            currentDepth: 0,
+            pathToHere: [],
+        };
 
-    const configuration: GeneratorConfiguration = {
-        softDepthLimit: 3,
-        hardDepthLimit: 5,
-        weirdness: 1,
-        literals,
-    };
+        const configuration: GeneratorConfiguration = {
+            depthLimit,
+            weirdness: 1,
+            literals,
+        };
 
-    const ft = checker.getTypeAtLocation(f);//  TODO: when can we directly get a ts.Type that is a function?
-    // console.log(`function type = ${checker.typeToString(checker.getTypeAtLocation(f))}`);
+        const generatorsByType = new Map<ts.Type, G>();
+        let previousValuesByType: Map<ts.Type, any>[] = [];
+        //  don't try to convert this to the factory/generator style because function declarations require
+        //  an AST Node not just a type
+        // const generators: G[] = [];
 
-    const generatorsByType = new Map<ts.Type, G>();
-    let previousValuesByType: Map<ts.Type, any>[] = [];
-    //  don't try to convert this to the factory/generator style because function declarations require
-    //  an AST Node not just a type
-    // const generators: G[] = [];
-    for (let j = 0; j < f.parameters.length; j++) {
-        const t = f.parameters[j].type;
-        const currentType = t
-            ? checker.getTypeAtLocation(t)
-            : checker.getAnyType();
-
-        const typeGenerator = generatorsByType.get(currentType);
-        if (!typeGenerator) {
-
-            const isr = isSelfReferential(checker, currentType, [`[${j}]`], new Set());
-
-            const generator = generatorator(configuration, checker, state, currentType, []);
-            const t = checker.typeToString(currentType);
-            generatorsByType.set(currentType, generator);
-        }
-    }
-
-    while (true) {
-        //  generate exactly one (1) value for each parameter type; this guarantees that we sometimes pass in identical values
-        const valuesByType = new Map<ts.Type, any>();
-        generatorsByType.forEach((generator, type) => {
-            const next = generator.next();
-            if (next.done) {
-                throw new Error(`Generator for ${checker.typeToString(type)} is done`);
+        let deepEnough = true;
+        const shortests:number[] = [];
+        let notDeepEnough: number[] = [];
+        for (let j = 0; j < f.parameters.length && deepEnough; j++) {
+            const parameter = f.parameters[j];
+            const ptypeNode = parameter.type;
+            if (!ptypeNode) {
+                throw new Error(`Parameter ${j} of ${f.name?.getText()} has no type node`);
             }
-            valuesByType.set(type, next.value);
-        });
 
-        const newValues: any[] = [];
+            const ptype = checker.getTypeFromTypeNode(ptypeNode);
+            const depth = getTypeDepth(checker, ptype, [`[${j}]`], []);
+            shortests.push(depth.shortest);
+
+            if (depth.shortest > depthLimit) {
+                notDeepEnough.push(j);
+            }
+        }
+
+        if (notDeepEnough.length > 0) {
+
+            const depthReport = notDeepEnough.map(parameterIndex => {
+                const p = f.parameters[parameterIndex];
+
+                const name = p.name?.getText();
+
+                const typeNode = p.type;
+                const parameterType = typeNode
+                    ? checker.getTypeAtLocation(typeNode)
+                    : checker.getAnyType();
+
+                const shortest = shortests[parameterIndex] ;
+                return {
+                    index: parameterIndex,
+                    name,
+                    shortest: shortest === Infinity ? 'Infinity' : shortest,
+                    type: checker.typeToString(parameterType),
+                };
+            });
+
+            console.log(`Minimum depth ${depthLimit} is too low ${JSON.stringify(depthReport)}`);
+            continue;
+        }
+
         for (let j = 0; j < f.parameters.length; j++) {
             const t = f.parameters[j].type;
             const currentType = t
                 ? checker.getTypeAtLocation(t)
                 : checker.getAnyType();
 
-            const v = valuesByType.get(currentType);
-            newValues.push(v);
-        }
-
-        yield newValues;
-
-        //  no cross blending lists with past lists if there's only one value
-        if (newValues.length === 1) {
-            continue;
-        }
-
-        //  this ensures when different parameters have identical values
-        //  we have lists where the values are equal
-        //  and lists where they are different
-        //  we both want and don't want test cases where the same value is used for multiple parameters
-        //  always blend with the last one and then a deterministic subset of the remaining;
-        //  this is where we want generators with high variance between successive values
-        // for (let i = previousValuesByType.length - 1; i >= 0; i = i * 0.9 - 2) {
-        for (let i = previousValuesByType.length - 1; i >= 0; i = i * 0.9 - 2) {
-            for (const mod of [2, 3, 5]) {
-                const values: any[] = [];
-                for (let j = 0; j < f.parameters.length; j++) {
-                    const t = f.parameters[j].type;
-                    const currentType = t
-                        ? checker.getTypeAtLocation(t)
-                        : checker.getAnyType();
-
-                    //  use both i and j so that we don't always blend the same parameters
-                    if ((i + j) % mod === 0) {
-                        values.push(previousValuesByType[i].get(currentType));
-                    } else {
-                        values.push(newValues[j]);
-                    }
-                }
-
-                yield values;
+            const typeGenerator = generatorsByType.get(currentType);
+            if (!typeGenerator) {
+                const generator = generatorator(configuration, checker, state, currentType, []);
+                const t = checker.typeToString(currentType);
+                generatorsByType.set(currentType, generator);
             }
         }
 
-        previousValuesByType.push(valuesByType);
-        //  keep a decent number of past rounds to blend with
-        if (previousValuesByType.length > Math.min(5, f.parameters.length)) {
-            //  TODO: deterministically vary which one gets dropped
-            previousValuesByType = previousValuesByType.slice(1);
+        while (true) {
+            //  generate exactly one (1) value for each parameter type; this guarantees that we sometimes pass in identical values
+            const valuesByType = new Map<ts.Type, any>();
+            generatorsByType.forEach((generator, type) => {
+                const next = generator.next();
+                if (next.done) {
+                    throw new Error(`Generator for ${checker.typeToString(type)} is done`);
+                }
+                valuesByType.set(type, next.value);
+            });
+
+            const newValues: any[] = [];
+            for (let j = 0; j < f.parameters.length; j++) {
+                const t = f.parameters[j].type;
+                const currentType = t
+                    ? checker.getTypeAtLocation(t)
+                    : checker.getAnyType();
+
+                const v = valuesByType.get(currentType);
+                newValues.push(v);
+            }
+
+            yield newValues;
+
+            //  no cross blending lists with past lists if there's only one value
+            if (newValues.length === 1) {
+                continue;
+            }
+
+            //  this ensures when different parameters have identical values
+            //  we have lists where the values are equal
+            //  and lists where they are different
+            //  we both want and don't want test cases where the same value is used for multiple parameters
+            //  always blend with the last one and then a deterministic subset of the remaining;
+            //  this is where we want generators with high variance between successive values
+            // for (let i = previousValuesByType.length - 1; i >= 0; i = i * 0.9 - 2) {
+            for (let i = previousValuesByType.length - 1; i >= 0; i = i * 0.9 - 2) {
+                for (const mod of [2, 3, 5]) {
+                    const values: any[] = [];
+                    for (let j = 0; j < f.parameters.length; j++) {
+                        const t = f.parameters[j].type;
+                        const currentType = t
+                            ? checker.getTypeAtLocation(t)
+                            : checker.getAnyType();
+
+                        //  use both i and j so that we don't always blend the same parameters
+                        if ((i + j) % mod === 0) {
+                            values.push(previousValuesByType[i].get(currentType));
+                        } else {
+                            values.push(newValues[j]);
+                        }
+                    }
+
+                    yield values;
+                }
+            }
+
+            previousValuesByType.push(valuesByType);
+            //  keep a decent number of past rounds to blend with
+            if (previousValuesByType.length > Math.min(5, f.parameters.length)) {
+                //  TODO: deterministically vary which one gets dropped
+                previousValuesByType = previousValuesByType.slice(1);
+            }
         }
     }
 }

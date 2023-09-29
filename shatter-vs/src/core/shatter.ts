@@ -150,7 +150,6 @@ export async function shatterAutotest(modulePaths: string[],
     const onResult = (runResult: RunResult) => {
         // console.log(`Received result ${JSON.stringify(runResult)}`);
         // find the appropriate cluster or create it
-        console.log(`Getting specimen ID ${runResult.specimenId}`);
 
         if (!runResult.specimenId) {
             throw new Error(`No specimenId in ${JSON.stringify(runResult)}`);
@@ -615,13 +614,17 @@ async function knead(evaluateSpecimen: (b: BaseSpecimen) => Promise<string | und
             for (let i = 0; i < arbitraryListLimit; i++) {
                 const parameters: GeneratedParameter[] = [];
                 for (let j = 0; j < specimenA.parameters.length; j++) {
-                    const hybridized = hybridize(specimenA.parameters[i], specimenB.parameters[i]);
+                    const paramA = specimenA.parameters[j];
+                    const paramB = specimenB.parameters[j];
+                    const hybridized = hybridize(paramA, paramB);
                     let k = 0;
 
-                    const p: GeneratedParameter = skip(hybridized, i + j) ?? specimenA.parameters[i];
+                    const backupValue = (i % 2 === 0) ? paramA : paramB;
+                    const p: GeneratedParameter = skip(hybridized, i + j) ?? backupValue;
                     parameters.push(p);
                 }
 
+                //  the parameter list may be a repeat, but that'll get dealt with downstream
                 evaluateSpecimen({
                     type: 'hybrid',
                     parameters,

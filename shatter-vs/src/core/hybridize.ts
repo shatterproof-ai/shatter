@@ -98,6 +98,7 @@ export function* hybridize(a: GeneratedParameter, b: GeneratedParameter): G {
                 generator: 'hybridize',
                 properties,
                 required: a.required,
+                declaredType: a.declaredType,
             };
         }
         return;
@@ -115,8 +116,9 @@ export function* hybridize(a: GeneratedParameter, b: GeneratedParameter): G {
                 entries: hhhh,
             };
         }
+        return;
     }
-
+    
     if (a.type === 'map' && b.type === 'map') {
         const aaa = a.entries;
         const bbb = b.entries;
@@ -128,6 +130,7 @@ export function* hybridize(a: GeneratedParameter, b: GeneratedParameter): G {
                 entries: hhhh,
             };
         }
+        return;
     }
 
     throw new Error(`Unhandled input types ${a.type} from ${a.generator}:${a.id} and ${b.type} from ${b.generator}:${b.id}`);

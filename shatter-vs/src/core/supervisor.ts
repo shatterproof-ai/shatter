@@ -33,6 +33,8 @@ const maxInvocationsPerWorker = 200;
 
 interface WorkerMeta extends WorkerSetup {
     worker: Worker
+    invocations: number
+    timeoutId?: NodeJS.Timeout
 }
 
 export class Supervisor {
@@ -41,10 +43,9 @@ export class Supervisor {
     private workers = new Map<number, WorkerMeta>();
     private count = 0;
 
-    private resultByInvocation = new Map<string, RunResult>();
+    private resultBySpecimen = new Map<string, RunResult>();
     private attemptedInvocations = new Set<string>();
 
-    private invocationsPerWorker = new Map<number, number>();
     private invocationMetaSpecimen = new Map<string, InvocationMeta>();
 
     private timeLimit = 1_000;
@@ -65,7 +66,96 @@ export class Supervisor {
         }
     }
 
-    async execute(functionName: string, specimen:Specimen, onCompletion: (_: Invocation, __: RunResult) => void) {
+    processInvocationResult(invocationResult: InvocationResult, onCompletion: (_: Invocation, __: RunResult) => void) {
+        const { specimenId, output, error, duration, executedBranches, lines, linesInOrder }: InvocationResult = invocationResult;
+
+        const meta = this.invocationMetaSpecimen.get(specimenId);
+        if (!meta) {
+            console.error(`Unable to find invocation meta for specimen ${specimenId}`);
+            return;
+        }
+        // console.log(`Worker ${worker.workerNumber} for ${meta.invocation.functionName} completed`);
+
+        // console.log(`And executed branches = `)
+        const strungError = error ? JSON.stringify(error) : undefined;
+        const result: RunResult = {
+            ...meta.invocation,
+            specimenId,
+            output,
+            error: strungError,
+            completed: true,
+            duration,
+            executedBranches,
+            outcome: error ? 'error' : 'completed',
+            lines,
+            linesInOrder,
+        };
+
+        this.resultBySpecimen.set(meta.specimenId, result);
+
+        onCompletion(meta.invocation, result);
+    };
+
+    //  why have this separate from purgeWorker?
+    onWorkerExit(worker: WorkerMeta,) {
+        this.purgeWorker(worker);
+    }
+
+    onWorkerMessage(invocationResult: InvocationResult, worker: WorkerMeta, onCompletion: (_: Invocation, __: RunResult) => void) {
+        // console.log(`received message ${JSON.stringify(invocationResult)}`);
+        // const invocationResult:InvocationResult = eval(msg);
+        clearTimeout(worker.timeoutId);
+        worker.timeoutId = undefined;
+        if (worker.invocations >= maxInvocationsPerWorker) {
+            this.purgeWorker(worker);
+        } else {
+            this.availableWorkers.add(worker.workerNumber);
+        }
+        
+        this.processInvocationResult(invocationResult, onCompletion);
+        this.busyWorkers.delete(worker.workerNumber);
+    }
+
+    purgeWorker(wm: WorkerMeta) {
+        clearTimeout(wm.timeoutId);
+        this.workers.delete(wm.workerNumber);
+        this.busyWorkers.delete(wm.workerNumber);
+        this.availableWorkers.delete(wm.workerNumber);
+        wm.worker.terminate();
+    }
+
+    stopWorker(wm: WorkerMeta, outcome: 'timeout' | 'error', onCompletion: (_: Invocation, __: RunResult) => void, error?: any) {
+        const specimenId = this.busyWorkers.get(wm.workerNumber)!;
+        this.purgeWorker(wm);
+
+        const meta = this.invocationMetaSpecimen.get(specimenId);
+        if (!meta) {
+            console.error(`Unable to find invocation meta for specimen ${specimenId}`);
+            return;
+        }
+        console.log(`Worker ${wm.workerNumber} for ${meta.invocation.functionName} ${outcome} ${error}...`);
+
+        const duration = Date.now() - meta.launched;
+        //  TODO: 
+        const strungError = error ? '' + error : undefined;
+        const result: RunResult = {
+            ...meta.invocation,
+            specimenId,
+            error: strungError,
+            completed: false,
+            duration,
+            executedBranches: [],
+            outcome,
+            lines: [],
+            linesInOrder: [],
+        };
+
+        this.resultBySpecimen.set(specimenId, result);
+
+        onCompletion(meta.invocation, result);
+    };
+
+    async execute(functionName: string, specimen: Specimen, onCompletion: (_: Invocation, __: RunResult) => void) {
         const resolvedParameters = specimen.parameters.map(extractGeneratedParameterValue);
         const serializedParameterValues = serializeJavascript(resolvedParameters);
         const invocation: Invocation = {
@@ -96,37 +186,6 @@ export class Supervisor {
         const start = Date.now();
         process.env.MAIN_PROCESS = '1';
 
-        const processInvocationResult = (invocationResult: InvocationResult) => {
-            const { specimenId, output, error, duration, executedBranches, lines, linesInOrder }: InvocationResult = invocationResult;
-
-            console.log(`received specimenId ${specimenId}; closure has ${specimen.id}`);
-            const meta = this.invocationMetaSpecimen.get(specimenId);
-            if (!meta) {
-                console.error(`Unable to find invocation meta for specimen ${specimenId}`);
-                return;
-            }
-            // console.log(`Worker ${worker.workerNumber} for ${meta.invocation.functionName} completed`);
-
-            // console.log(`And executed branches = `)
-            const strungError = error ? JSON.stringify(error) : undefined;
-            const result: RunResult = {
-                ...meta.invocation,
-                specimenId,
-                output,
-                error: strungError,
-                completed: true,
-                duration,
-                executedBranches,
-                outcome: error ? 'error' : 'completed',
-                lines,
-                linesInOrder,
-            };
-
-            this.resultByInvocation.set(strung, result);
-
-            onCompletion(meta.invocation, result);
-        };
-
         //  support in-band execution for simpler debugging and viewing of output
         //  (TODO: figure out how to capture worker stdout and stderr)
         if (this.inBand) {
@@ -138,9 +197,9 @@ export class Supervisor {
 
                 const result = await work(functions, 0, meta);
 
-                processInvocationResult(result);
+                this.processInvocationResult(result, onCompletion);
 
-            } catch (e:any) {
+            } catch (e: any) {
                 console.error(`Unable to execute ${functionName} in-band: ${e} - ${e.stack}`);
             }
             return;
@@ -156,45 +215,6 @@ export class Supervisor {
             }
         }
 
-        const stopWorker = (wm: WorkerMeta, outcome: 'expired' | 'timeout' | 'error', error?: any) => {
-            clearTimeout(timeoutId);
-            const specimenId = this.busyWorkers.get(wm.workerNumber)!;
-            this.busyWorkers.delete(wm.workerNumber);
-            wm.worker.terminate();
-
-            if (outcome !== 'expired') {
-                const meta = this.invocationMetaSpecimen.get(specimenId);
-                if (!meta) {
-                    console.error(`Unable to find invocation meta for specimen ${specimenId}`);
-                    return;
-                }
-                console.log(`Worker ${wm.workerNumber} for ${meta.invocation.functionName} ${outcome} ${error}...`);
-
-                const duration = Date.now() - meta.launched;
-                //  TODO: 
-                const strungError = error ? '' + error : undefined;
-                const result: RunResult = {
-                    ...meta.invocation,
-                    specimenId,
-                    error: strungError,
-                    completed: false,
-                    duration,
-                    executedBranches: [],
-                    outcome,
-                    lines: [],
-                    linesInOrder: [],
-                };
-
-                //  don't overwrite previous results because they may be good
-                //  in case somehow we executed a duplicate
-                if (!this.resultByInvocation.has(strung)) {
-                    this.resultByInvocation.set(strung, result);
-                }
-
-                onCompletion(meta.invocation, result);
-            }
-        };
-
         const worker: WorkerMeta = (() => {
             if (this.availableWorkers.size > 0) {
                 const first = this.availableWorkers.values().next();
@@ -203,6 +223,7 @@ export class Supervisor {
                 if (reworker) {
                     // console.log(`Reusing worker ${reworker}`);
                     this.availableWorkers.delete(workerNumber);
+
                     return reworker;
                 }
                 console.error(`Inexplicably unable to find worker ${workerNumber}`);
@@ -239,42 +260,23 @@ export class Supervisor {
 
             newWorker.on('error', (error) => {
                 //  TODO: be less willing to give up on error; how to identify the recoverable ones?  by stack trace?
-                stopWorker(worker, "error", error);
+                this.stopWorker(worker, "error", onCompletion, error);
                 throw error;
             });
-            console.log(`adding exit handler to ${currentWorkerNumber}`);
+
             newWorker.on('exit', () => {
-                clearTimeout(timeoutId);
-                // console.log(`Worker ${currentWorkerNumber} for ${functionName} exiting of ${this.activeWorkers.size} running...`);
-                this.busyWorkers.delete(worker.workerNumber);   //  necessary in case of some anomalous exit that isn't triggered by a message
-                this.workers.delete(worker.workerNumber);
-                // console.log(`after deleting ${activeWorkers.size}`);
+                this.onWorkerExit(worker);
             });
+
             newWorker.on('message', (msg) => {
-                clearTimeout(timeoutId);
-                console.log(`received message ${JSON.stringify(msg)}`);
-                const invocationResult: InvocationResult = msg;
-                // const invocationResult:InvocationResult = eval(msg);
-
-                this.busyWorkers.delete(worker.workerNumber);
-
-                const invocationCount = this.invocationsPerWorker.get(worker.workerNumber);
-                if (invocationCount === undefined || invocationCount >= maxInvocationsPerWorker) {
-                    if (invocationCount === undefined) {
-                        console.error(`No invocations for worker ${worker.workerNumber}; tidying up`);
-                    }
-                    stopWorker(worker, 'expired');
-                } else {
-                    this.availableWorkers.add(worker.workerNumber);
-                }
-
-                processInvocationResult(invocationResult);
+                this.onWorkerMessage(msg, worker, onCompletion);
             });
 
             const wwmm: WorkerMeta = {
                 filePath: this.executorScriptJS,
                 worker: newWorker,
                 workerNumber: currentWorkerNumber,
+                invocations: 0,
             };
 
             this.workers.set(currentWorkerNumber, wwmm);
@@ -282,19 +284,18 @@ export class Supervisor {
         })();
 
         this.busyWorkers.set(worker.workerNumber, specimen.id);
-        this.invocationsPerWorker.set(worker.workerNumber, (this.invocationsPerWorker.get(worker.workerNumber) ?? 0) + 1);
+
+        worker.timeoutId = setTimeout(() => {
+            if (!this.busyWorkers.has(worker.workerNumber)) {
+                return;
+            }
+            this.stopWorker(worker, "timeout", onCompletion);
+        }, this.timeLimit);
 
         // console.log(`invoking worker ${worker.workerNumber}: ${worker.worker}`);
         meta.launched = Date.now(); //  reset because we may have waited for a worker to become available
         worker.worker.postMessage(meta);
 
-        const timeoutId = setTimeout(() => {
-            if (!this.busyWorkers.has(worker.workerNumber)) {
-                //  in case timeout hasn't been cleared for some reason
-                return;
-            }
-            stopWorker(worker, "timeout");
-        }, this.timeLimit);
         return worker.workerNumber;
     }
 
@@ -311,7 +312,7 @@ export class Supervisor {
                 // console.log(`Waiting with ${activeWorkers.size} active workers`)
                 await new Promise((resolve) => setTimeout(resolve, delay));
                 if (Date.now() - start > timeout) {
-                    console.error(`Timed out waiting for workers to finish`);
+                    console.error(`Timed out waiting for workers ${Array.from(this.busyWorkers.keys()).join(", ")} to finish`);
                     return;
                 }
             }
@@ -335,7 +336,7 @@ export class Supervisor {
                 // console.log(`Waiting with ${activeWorkers.size} active workers`)
                 await new Promise((resolve) => setTimeout(resolve, delay));
                 if (Date.now() - start > timeout) {
-                    console.error(`Timed out waiting for workers to finish`);
+                    console.error(`Timed out waiting for workers ${Array.from(this.workers.values()).map(w => w.workerNumber).join(", ")} to finish`);
                     return;
                 }
             }
