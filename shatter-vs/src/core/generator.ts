@@ -82,12 +82,14 @@ export class RetestCaseSource implements TestCaseSource {
 
 //  TODO: an allow list for potentially self-referential types
 interface GeneratorConfiguration {
-    depthLimit: number;
+    depthLimit: number; //  INCLUDSIVE; <= depth limit is a-okay
     weirdness: number;
     literals?: Literals;
 }
 
 interface GeneratorState {
+    //  currentDepth and pathToHere are separate because for union types currentDepth doesn't increase
+    //  but we want to include the union type in the path
     currentDepth: number;
     pathToHere: string[];
 }
@@ -223,41 +225,7 @@ IF there are no subgenerators that can stay under the limit, get as close to the
 OR throw an error
 
 replace direct access to generators with a wrapper that knows shortest and longest
-
-TODO: increase max depth with weirdness; increase if too many objects can't be fully generated
-
 */
-
-const stateAwareGenerator = function* (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, g: TwoPhaseGenerator, typeAncestors: ts.Type[]) {
-    const currentDepth = state.currentDepth;
-    while (true) {
-        if (state.currentDepth >= configuration.depthLimit) {
-            const gp: GeneratedParameter = {
-                id: newId('terminal'),
-                generator: 'stateAwareGenerator-terminal',
-                type: 'terminal',
-            };
-            yield gp;
-            return;
-        }
-        if (state.currentDepth >= configuration.depthLimit) {
-            const gg = g.generateEmpty(configuration, state);
-            while (currentDepth >= configuration.depthLimit) {
-                yield gg;
-            }
-        } else {
-            const gg = g.generate(configuration, state);
-            const operatingWeirdness = configuration.weirdness;
-            while (currentDepth <= configuration.depthLimit || operatingWeirdness !== configuration.weirdness) {
-                const v = gg.next();
-                if (v.done) {
-                    throw new Error(`Generator ${gg.constructor.name} is done`);
-                }
-                yield v.value;
-            }
-        }
-    }
-};
 
 const arrayValueGenerator: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, typeAncestors: ts.Type[]): G | undefined {
     if (!checker.isArrayType(type)) {
@@ -273,9 +241,10 @@ const arrayValueGenerator: ValueGenerator = function (configuration: GeneratorCo
         elements: [],
     });
 
-    const generate = function* (configuration: GeneratorConfiguration, state: GeneratorState): G {
+    const generate = function* (): G {
+        const depthCountingHere = state.currentDepth + 1;
         const newState: GeneratorState = {
-            currentDepth: state.currentDepth + 1,
+            currentDepth: depthCountingHere,
             pathToHere: state.pathToHere.concat(".[]"),
         };
 
@@ -287,32 +256,35 @@ const arrayValueGenerator: ValueGenerator = function (configuration: GeneratorCo
             yield* edgyNumberRanges(configuration.literals);
         }
 
-        const elementGenerator = generatorator(configuration, checker, newState, elementType, typeAncestors.concat([type]));
+        const isr = getTypeDepth(checker, elementType, newState.pathToHere, typeAncestors.concat(type));
+        const minimumRequiredDepth = isr.shortest + depthCountingHere;
+        const elementGenerator = generatorator(configuration, checker, newState, elementType, typeAncestors.concat(type));
         while (true) {
-            for (const count of sizer()) {
-                const a = [];
-                for (let i = 0; i < count; i++) {
-                    const next = elementGenerator.next();
-                    if (next.done) {
-                        throw new Error(`Generator ${elementGenerator.constructor.name} is done`);
+            if (minimumRequiredDepth > configuration.depthLimit) {
+                yield generateEmpty();
+            } else {
+                for (const count of sizer()) {
+                    const a = [];
+                    for (let i = 0; i < count; i++) {
+                        const next = elementGenerator.next();
+                        if (next.done) {
+                            throw new Error(`Generator ${elementGenerator.constructor.name} is done`);
+                        }
+                        a.push(next.value);
                     }
-                    a.push(next.value);
-                }
 
-                yield {
-                    id: newId('array'),
-                    generator: 'arrayValueGenerator',
-                    type: 'array',
-                    elements: a,
-                };
+                    yield {
+                        id: newId('array'),
+                        generator: 'arrayValueGenerator',
+                        type: 'array',
+                        elements: a,
+                    };
+                }
             }
         }
     };
 
-    return stateAwareGenerator(configuration, checker, state, type, {
-        generateEmpty: generateEmpty,
-        generate,
-    }, typeAncestors);
+    return generate();
 };
 
 //  TODO: IntersectionGenerator;
@@ -323,16 +295,27 @@ const intersectionValueGeneratorFactory: ValueGenerator = (configuration: Genera
     }
 
     const generators: G[] = [];
+    const depthCountingHere = state.currentDepth + 1;
     for (const subtype of type.types) {
         const newState = {
-            currentDepth: state.currentDepth,
-            pathToHere: state.pathToHere.concat(" | "),
+            currentDepth: depthCountingHere,
+            pathToHere: state.pathToHere.concat(" & "),
         };
-        const g = generatorator(configuration, checker, newState, subtype, typeAncestors.concat([type]));
-        generators.push(g);
+        const isr = getTypeDepth(checker, subtype, newState.pathToHere, typeAncestors.concat(type));
+        const minimumRequiredDepth = isr.shortest + depthCountingHere;
+
+        if (minimumRequiredDepth <= configuration.depthLimit) {
+            const g = generatorator(configuration, checker, newState, subtype, typeAncestors.concat(type));
+            generators.push(g);
+        }
     }
 
     function* g(): G {
+
+        if (generators.length === 0) {
+            throw new Error(`Unexpectedly no generators available at depth ${state.currentDepth} <= ${configuration.depthLimit}`);
+        }
+
         while (true) {
             //  intersecting types are always objects
             const parts: GeneratedParameter[] = [];
@@ -363,31 +346,34 @@ const unionValueGeneratorFactory: ValueGenerator = function (configuration: Gene
         return undefined;
     }
 
+    const depthCountingHere = state.currentDepth;   //  do NOT add 1
     const pathToHere = state.pathToHere.concat(" | ");
-    const newTypeAncestors = typeAncestors.concat([type]);
+    const newTypeAncestors = typeAncestors.concat(type);
 
     const depths: SelfReferentiality[] = type.types
         .map(subtype => getTypeDepth(checker, subtype, pathToHere, newTypeAncestors));
 
-    const terminableGenerators: G[] = [];
+    const generators: G[] = [];
     for (let i = 0; i < type.types.length; i++) {
-        if (depths[i].shortest + state.currentDepth <= configuration.depthLimit) {
+        const minimumRequiredDepth = depths[i].shortest + depthCountingHere;
+        if (minimumRequiredDepth <= configuration.depthLimit) {
             const newState = {
-                currentDepth: state.currentDepth,
+                currentDepth: depthCountingHere,
                 pathToHere,
             };
             const g = generatorator(configuration, checker, newState, type.types[i], newTypeAncestors);
-            terminableGenerators.push(g);
+            generators.push(g);
         }
     }
 
-    if (terminableGenerators.length === 0) {
+    if (generators.length === 0) {
         throw new Error(`Unexpectedly no generators available at depth ${state.currentDepth} <= ${configuration.depthLimit}: ${depths.map(d => d.shortest).join(', ')}`);
     }
 
     const g = function* () {
         while (true) {
-            for (const generator of terminableGenerators) {
+            //  TODO: run the shorter depth ones first
+            for (const generator of generators) {
                 const next = generator.next();
                 if (next.done) {
                     throw new Error(`Generator ${generator.constructor.name} is done`);
@@ -416,7 +402,7 @@ const mapValueGeneratorFactory: ValueGenerator = function (configuration: Genera
         entries: [],
     });
 
-    const generate = function* (configuration: GeneratorConfiguration, state: GeneratorState): G {
+    const generate = function* (): G {
         const [keyType, valueType] = (() => {
             if (type.typeArguments && type.typeArguments.length === 2) {
                 return type.typeArguments;
@@ -425,45 +411,54 @@ const mapValueGeneratorFactory: ValueGenerator = function (configuration: Genera
             return [checker.getStringType(), checker.getStringType()];
         })();
 
-        const updepth = state.currentDepth + 1;
+        const newKeyPathToHere = state.pathToHere.concat('.key');
+        const keyIsr = getTypeDepth(checker, keyType, state.pathToHere, typeAncestors.concat(type));
+
+        const newValuePathToHere = state.pathToHere.concat('.value');
+        const valueIsr = getTypeDepth(checker, valueType, newValuePathToHere, typeAncestors.concat(type));
+
+        const depthCountingHere = state.currentDepth + 1;
+        const minimumRequiredDepth = depthCountingHere + Math.max(keyIsr.shortest, valueIsr.shortest);
+
         const keyGenerator = generatorator(configuration, checker, {
-            currentDepth: updepth,
-            pathToHere: state.pathToHere.concat('.key'),
-        }, keyType, typeAncestors.concat([type]));
+            currentDepth: depthCountingHere,
+            pathToHere: newKeyPathToHere,
+        }, keyType, typeAncestors.concat(type));
 
         const valueGenerator = generatorator(configuration, checker, {
-            currentDepth: updepth,
-            pathToHere: state.pathToHere.concat('.value'),
-        }, valueType, typeAncestors.concat([type]));
+            currentDepth: depthCountingHere,
+            pathToHere: newValuePathToHere,
+        }, valueType, typeAncestors.concat(type));
 
         while (true) {
-            for (const count of sizer()) {
-                const entries: [GeneratedParameter, GeneratedParameter][] = [];
-                for (let i = 0; i < count; i++) {
-                    const key = keyGenerator.next();
-                    if (key.done) {
-                        throw new Error(`Generator ${keyGenerator.constructor.name} is done`);
+            if (minimumRequiredDepth > configuration.depthLimit) {
+                yield generateEmpty();
+            } else {
+                for (const count of sizer()) {
+                    const entries: [GeneratedParameter, GeneratedParameter][] = [];
+                    for (let i = 0; i < count; i++) {
+                        const key = keyGenerator.next();
+                        if (key.done) {
+                            throw new Error(`Generator ${keyGenerator.constructor.name} is done`);
+                        }
+                        const value = valueGenerator.next();
+                        if (value.done) {
+                            throw new Error(`Generator ${valueGenerator.constructor.name} is done`);
+                        }
+                        entries.push([key.value, value.value]);
                     }
-                    const value = valueGenerator.next();
-                    if (value.done) {
-                        throw new Error(`Generator ${valueGenerator.constructor.name} is done`);
-                    }
-                    entries.push([key.value, value.value]);
+                    yield {
+                        id: newId('map'),
+                        generator: 'mapValueGenerator',
+                        type: 'map',
+                        entries,
+                    };
                 }
-                yield {
-                    id: newId('map'),
-                    generator: 'mapValueGenerator',
-                    type: 'map',
-                    entries,
-                };
             }
         }
     };
 
-    return stateAwareGenerator(configuration, checker, state, type, {
-        generateEmpty,
-        generate,
-    }, typeAncestors);
+    return generate();
 };
 
 const setValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, typeAncestors: ts.Type[]) {
@@ -480,40 +475,46 @@ const setValueGeneratorFactory: ValueGenerator = function (configuration: Genera
         instance: new Set(),
     });
 
-    const generate = function* (configuration: GeneratorConfiguration, state: GeneratorState): G {
+    const generate = function* (): G {
         //  when unspecified make it a string
         const elementType = type.typeArguments?.length === 1 ? type.typeArguments[0] : checker.getStringType();
+        const newPathToHere = state.pathToHere.concat('.element');
+
+        const isr = getTypeDepth(checker, elementType, newPathToHere, typeAncestors.concat(type));
+        const depthCountingHere = state.currentDepth + 1;
+        const minimumRequiredDepth = isr.shortest + depthCountingHere;
 
         const newState = {
-            currentDepth: state.currentDepth + 1,
-            pathToHere: state.pathToHere.concat('.element'),
+            currentDepth: depthCountingHere,
+            pathToHere: newPathToHere,
         };
-        const elementGenerator = generatorator(configuration, checker, newState, elementType, typeAncestors.concat([type]));
-        while (true) {
 
-            for (const count of sizer()) {
-                const entries: GeneratedParameter[] = [];
-                for (let i = 0; i < count; i++) {
-                    const next = elementGenerator.next();
-                    if (next.done) {
-                        throw new Error(`Generator ${elementGenerator.constructor.name} is done`);
+        const elementGenerator = generatorator(configuration, checker, newState, elementType, typeAncestors.concat(type));
+        while (true) {
+            if (minimumRequiredDepth > configuration.depthLimit) {
+                yield generateEmpty();
+            } else {
+                for (const count of sizer()) {
+                    const entries: GeneratedParameter[] = [];
+                    for (let i = 0; i < count; i++) {
+                        const next = elementGenerator.next();
+                        if (next.done) {
+                            throw new Error(`Generator ${elementGenerator.constructor.name} is done`);
+                        }
+                        entries.push(next.value);
                     }
-                    entries.push(next.value);
+                    yield {
+                        id: newId('set'),
+                        generator: 'setValueGeneratorFactory',
+                        type: 'set',
+                        entries,
+                    };
                 }
-                yield {
-                    id: newId('set'),
-                    generator: 'setValueGeneratorFactory',
-                    type: 'set',
-                    entries,
-                };
             }
         }
     };
 
-    return stateAwareGenerator(configuration, checker, state, type, {
-        generateEmpty,
-        generate,
-    }, typeAncestors);
+    return generate();
 };
 
 const dateValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, typeAncestors: ts.Type[]) {
@@ -705,10 +706,12 @@ const basicObjectValueGeneratorFactory: ValueGenerator = function (configuration
 
     const declaredType = checker.typeToString(type);
 
+    const depthCountingHere = state.currentDepth + 1;
+
     const generate = function* (): G {
         const propertyGenerators: Record<string, G> = {};
         const depths: Record<string, SelfReferentiality> = {};
-        
+
         const required = new Set<string>();
         const keysAllowed = new Set<string>();
         checker.getPropertiesOfType(type).forEach(p => {
@@ -719,28 +722,30 @@ const basicObjectValueGeneratorFactory: ValueGenerator = function (configuration
                 }
 
                 const propertyType = checker.getTypeOfSymbolAtLocation(p, p.valueDeclaration);
-                const depth = getTypeDepth(checker, propertyType, state.pathToHere.concat(`.${p.name}`), typeAncestors.concat([type]));
+                const depth = getTypeDepth(checker, propertyType, state.pathToHere.concat(`.${p.name}`), typeAncestors.concat(type));
                 depths[p.name] = depth;
 
-                if (depth.shortest + state.currentDepth <= configuration.depthLimit) {
+                const requiredDepth = depth.shortest + depthCountingHere;
+                if (requiredDepth <= configuration.depthLimit) {
                     keysAllowed.add(p.name);
                 } else {
                     if (required.has(p.name)) {
                         //  TODO: custom error type
                         //  TODO: this should be caught earlier in preflight
-                        throw new Error(`Required property ${p.name} cannot be generated at depth ${state.currentDepth} <= ${configuration.depthLimit}`);
+                        throw new Error(`Required property ${p.name}:${checker.typeToString(propertyType)} cannot be generated for required depth ${requiredDepth} <= ${configuration.depthLimit}: ${state.pathToHere}`);
                     }
                 }
 
                 const newState = {
-                    currentDepth: state.currentDepth + 1,
+                    currentDepth: depthCountingHere,
                     pathToHere: state.pathToHere.concat(`.${p.name}`),
                 };
 
-                propertyGenerators[p.name] = generatorator(configuration, checker, newState, propertyType, typeAncestors.concat([type]));
+                propertyGenerators[p.name] = generatorator(configuration, checker, newState, propertyType, typeAncestors.concat(type));
             }
         });
 
+        //  TODO: skip optional properties first, then add optional properties in order from shortest to longest
         const keysGenerator = picker(Array.from(keysAllowed), required);
 
         while (true) {
@@ -759,7 +764,7 @@ const basicObjectValueGeneratorFactory: ValueGenerator = function (configuration
 
                     const v = extractGeneratedParameterValue(next.value);
                     if (v === undefined && required.has(key)) {
-                        console.log(`Required property ${key} is undefined at depth ${state.currentDepth}`);
+                        console.log(`Required property ${key} is undefined at depth ${state.currentDepth} ${state.pathToHere}}`);
                     }
 
                     o[key] = next.value;
@@ -791,7 +796,7 @@ const functionValueGeneratorFactory: ValueGenerator = function (configuration: G
 
     const g = function* (): G {
         while (true) {
-            for (const returnValue of generatorator(configuration, checker, state, returnType, typeAncestors.concat([type]))) {
+            for (const returnValue of generatorator(configuration, checker, state, returnType, typeAncestors.concat(type))) {
                 yield {
                     id: newId('function'),
                     generator: 'functionValueGeneratorFactory',
@@ -1039,8 +1044,11 @@ const stupidPropertyPicker: PropertyPicker = function* (keys: string[], required
 type TypeID = string | number;
 
 interface SelfReferentiality {
+    pathToHere: string[];
     shortest: number;
     longest: number;
+    children: SelfReferentiality[];
+    typesToHere: string[];
 }
 
 /*
@@ -1055,6 +1063,8 @@ object flags 524288 = ??? maybe object again?
 object flags 524368 = ??? Instantiated & Anonymous
 */
 
+const typeStrings = (checker: ts.TypeChecker, types: ts.Type[]): string[] => 
+    types.map(t => checker.typeToString(t));
 
 function getTypeArgumentsDepth(type: ts.Type, checker: ts.TypeChecker, pathToHere: string[], seen: ts.Type[], expectedTypeArgs?: number): SelfReferentiality[] {
     if (!isTypeReference(type)) {
@@ -1062,15 +1072,21 @@ function getTypeArgumentsDepth(type: ts.Type, checker: ts.TypeChecker, pathToHer
             console.log(`type ${checker.typeToString(type)} ${pathToHere} has ignored type arguments ${(type as any).typeArguments}`);
         }
         return [{
+            pathToHere,
             shortest: 0,
             longest: 0,
+            children: [],
+            typesToHere: typeStrings(checker, seen),
         }];
     }
 
     if (!type.typeArguments) {
         return [{
+            pathToHere,
             shortest: 0,
             longest: 0,
+            children: [],
+            typesToHere: typeStrings(checker, seen),
         }];
     }
 
@@ -1079,8 +1095,8 @@ function getTypeArgumentsDepth(type: ts.Type, checker: ts.TypeChecker, pathToHer
     }
 
     const id: TypeID = (type as any).id;
-    const typeSRs = type.typeArguments.map(t => {
-        const typeSR = getTypeDepth(checker, t, pathToHere.concat(['<type-argument>']), seen);
+    const typeSRs = type.typeArguments.map((t, i) => {
+        const typeSR = getTypeDepth(checker, t, pathToHere.concat(`<${i}>`), seen);
         //  TODO: how to tell if a type argument is optional?
         return typeSR;
     });
@@ -1116,10 +1132,13 @@ export const getTypeDepth = (checker: ts.TypeChecker, type: ts.Type, pathToHere:
     const isSimple = simpleTypeFlags.find(f => (f & type.flags) !== 0);
 
     if (isSimple) {
-        console.log(`simple type ${checker.typeToString(type)} ${pathToHere} is not self-referential`);
+        // console.log(`simple type ${checker.typeToString(type)} ${pathToHere} is not self-referential`);
         return {
+            pathToHere,
             shortest: 0,
             longest: 0,
+            children: [],
+            typesToHere: typeStrings(checker, seen),
         };
     }
 
@@ -1127,8 +1146,11 @@ export const getTypeDepth = (checker: ts.TypeChecker, type: ts.Type, pathToHere:
     if (callables.length > 0) {
         // console.log(`callable type ${checker.typeToString(type)} ${pathToHere} is not self-referential`);
         return {
+            pathToHere,
             shortest: 0,
             longest: 0,
+            children: [],
+            typesToHere: typeStrings(checker, seen),
         };
     }
 
@@ -1136,8 +1158,11 @@ export const getTypeDepth = (checker: ts.TypeChecker, type: ts.Type, pathToHere:
     if (constructors.length > 0) {
         // console.log(`constructor type ${checker.typeToString(type)} ${pathToHere} is not self-referential`);
         return {
+            pathToHere,
             shortest: 0,
             longest: 0,
+            children: [],
+            typesToHere: typeStrings(checker, seen),
         };
     }
 
@@ -1145,21 +1170,27 @@ export const getTypeDepth = (checker: ts.TypeChecker, type: ts.Type, pathToHere:
     for (const seenType of seen) {
         if ((seenType as any).id === (type as any).id) {
             return {
+                pathToHere,
                 shortest: Infinity,
                 longest: Infinity,
+                children: [],
+                typesToHere: typeStrings(checker, seen),
             };
         }
     }
 
-    const newSeen = seen.concat([type]);
+    const newSeen = seen.concat(type);
 
     if (checker.isArrayType(type)) {
         const typeArgsISR = getTypeArgumentsDepth(type, checker, pathToHere, newSeen, 1)[0];
 
-        console.log(`array type ${checker.typeToString(type)} ${pathToHere} is ${JSON.stringify(typeArgsISR)}`);
+        // console.log(`array type ${checker.typeToString(type)} ${pathToHere} is ${JSON.stringify(typeArgsISR)}`);
         return {
+            pathToHere,
             shortest: 1 + typeArgsISR.shortest,
             longest: 1 + typeArgsISR.longest,
+            children: [typeArgsISR],
+            typesToHere: typeStrings(checker, seen),
         };
     }
 
@@ -1168,14 +1199,18 @@ export const getTypeDepth = (checker: ts.TypeChecker, type: ts.Type, pathToHere:
 
         //  Union shortest depth is the shortest of the shortest depths of the subtypes
         //  because we can pick which one we want
+        //  do NOT add one to depth because this is an indirection not a composition
         const shortest = minZero(...depths.map(d => d.shortest));
         const longest = minZero(...depths.map(d => d.longest));
 
         const isr = {
+            pathToHere,
             shortest,
             longest,
+            children: depths,
+            typesToHere: typeStrings(checker, seen),
         };
-        console.log(`union type ${checker.typeToString(type)} ${pathToHere} is ${JSON.stringify(isr)}`);
+        // console.log(`union type ${checker.typeToString(type)} ${pathToHere} is ${JSON.stringify(isr)}`);
         return isr;
     }
 
@@ -1184,103 +1219,125 @@ export const getTypeDepth = (checker: ts.TypeChecker, type: ts.Type, pathToHere:
 
         //  Intersection shortest depth is the largest of the shortest depths of the subtypes
         //  because we don't get a choice; we have to go to them all
-        const shortest = maxZero(...depths.map(d => d.shortest));
-        const longest = minZero(...depths.map(d => d.longest));
+        //  add one to depth because it's basically an object type, just defined compositionally
+        const shortest = 1 + maxZero(...depths.map(d => d.shortest));
+        const longest = 1 + minZero(...depths.map(d => d.longest));
         const isr = {
+            pathToHere,
             shortest,
             longest,
+            children: depths,
+            typesToHere: typeStrings(checker, seen),
         };
-        console.log(`intersection type ${checker.typeToString(type)} ${pathToHere} is ${JSON.stringify(isr)}`);
+        // console.log(`intersection type ${checker.typeToString(type)} ${pathToHere} is ${JSON.stringify(isr)}`);
         return isr;
     }
 
     if (isDefaultGlobalType(checker, type)) {
         const typeName = type.getSymbol()?.getName();
         if (typeName === 'Date' || typeName === 'RegExp') {
-            console.log(`default global type ${checker.typeToString(type)} ${pathToHere} is not self-referential`);
+            // console.log(`default global type ${checker.typeToString(type)} ${pathToHere} is not self-referential`);
             return {
+                pathToHere,
                 shortest: 0,
                 longest: 0,
+                children: [],
+                typesToHere: typeStrings(checker, seen),
             };
         }
 
         if (typeName === 'Map') {
-            const typeArgsISR = getTypeArgumentsDepth(type, checker, pathToHere, newSeen, 2);
-            const [keySelfReferentiality, valueSelfReferentiality] = typeArgsISR;
+            const mapEntriesISR = getTypeArgumentsDepth(type, checker, pathToHere, newSeen, 2);
+            const [keyISR, valueISR] = mapEntriesISR;
 
             const isr = {
+                pathToHere,
                 //  MAX on shortest like in an intersection type; can't pick just one of key or value; we need both
                 //  although in practice keys are going to be simple types and always be smaller than value types
-                shortest: 1 + Math.max(keySelfReferentiality.shortest, valueSelfReferentiality.shortest),
-                longest: 1 + Math.max(keySelfReferentiality.longest, valueSelfReferentiality.longest),
+                shortest: 1 + Math.max(keyISR.shortest, valueISR.shortest),
+                longest: 1 + Math.max(keyISR.longest, valueISR.longest),
+                children: mapEntriesISR,
+                typesToHere: typeStrings(checker, seen),
             };
 
-            console.log(`map type ${checker.typeToString(type)} ${pathToHere} is ${JSON.stringify(isr)}`);
+            // console.log(`map type ${checker.typeToString(type)} ${pathToHere} is ${JSON.stringify(isr)}`);
 
             return isr;
         }
 
         if (typeName === 'Set') {
-            const typeArgsISR = getTypeArgumentsDepth(type, checker, pathToHere, newSeen, 1)[0];
-            console.log(`set type ${checker.typeToString(type)} ${pathToHere} is ${JSON.stringify(typeArgsISR)}`);
+            const setElementISR = getTypeArgumentsDepth(type, checker, pathToHere, newSeen, 1)[0];
+            // console.log(`set type ${checker.typeToString(type)} ${pathToHere} is ${JSON.stringify(typeArgsISR)}`);
 
             return {
-                shortest: 1 + typeArgsISR.shortest,
-                longest: 1 + typeArgsISR.longest,
+                pathToHere,
+                shortest: 1 + setElementISR.shortest,
+                longest: 1 + setElementISR.longest,
+                children: [setElementISR],
+                typesToHere: typeStrings(checker, seen),
             };
         }
     }
 
     if (type.isClassOrInterface()) {
-        console.log(`class or interface type ${checker.typeToString(type)} ${pathToHere}`);
+        // console.log(`class or interface type ${checker.typeToString(type)} ${pathToHere}`);
     }
 
     const properties = checker.getPropertiesOfType(type);
-    const selves = properties.map(p => {
+    const propertyDepths = properties.map((p):SelfReferentiality => {
         if (!p.valueDeclaration) {
             //  TODO: determine when this might happen; 0/0 is the lazy answer
             return {
+                pathToHere,
                 shortest: 0,
                 longest: 0,
+                children: [],
+                typesToHere: typeStrings(checker, seen.concat(type)),
             };
         }
         const propertyType = checker.getTypeOfSymbolAtLocation(p, p.valueDeclaration);
-        const propertyDepth = getTypeDepth(checker, propertyType, pathToHere.concat([`.${p.getName()}`]), newSeen);
+        const propertyDepth = getTypeDepth(checker, propertyType, pathToHere.concat(`.${p.getName()}`), newSeen);
         const isRequired = !(p.flags & ts.SymbolFlags.Optional);
 
         //  if the property is required, then it could be partially self-referential and fully self-referential
         if (isRequired) {
-            console.log(`Required property ${p.getName()} on ${checker.typeToString(type)} from ${pathToHere} ${JSON.stringify(propertyDepth)}`);
+            // console.log(`Required property ${p.getName()} on ${checker.typeToString(type)} from ${pathToHere} ${JSON.stringify(propertyDepth)}`);
             return propertyDepth;
         }
 
         //  if the property is optional, then it could be partially self-referential and is not fully self-referential
         const isr = {
+            pathToHere,
             shortest: 0,
             longest: propertyDepth.longest,
+            children: [propertyDepth],
+            typesToHere: typeStrings(checker, seen.concat(type)),
         };
-        console.log(`Optional property ${p.getName()} from ${pathToHere} ${JSON.stringify(isr)}`);
+        // console.log(`Optional property ${p.getName()} from ${pathToHere} ${JSON.stringify(isr)}`);
         return isr;
     });
 
     const typeArgsDepths = getTypeArgumentsDepth(type, checker, pathToHere, newSeen);
 
     const shortestTypeArgDepth = minZero(...typeArgsDepths.map(s => s.shortest));
-    const shortestPropertyDepth = minZero(...selves.map(s => s.shortest));
+    const shortestPropertyDepth = minZero(...propertyDepths.map(s => s.shortest));
     //  MAX on shortest like in an intersection type; can't just pick the type arguments or the property types;
     //  we need to get to the bottom of both
-    const shortest = Math.max(shortestTypeArgDepth, shortestPropertyDepth);
+    const shortest = 1 + Math.max(shortestTypeArgDepth, shortestPropertyDepth);
 
     const longestTypeArgDepth = maxZero(...typeArgsDepths.map(s => s.longest));
-    const longestPropertyDepth = maxZero(...selves.map(s => s.longest));
-    const longest = Math.max(longestTypeArgDepth, longestPropertyDepth);
+    const longestPropertyDepth = maxZero(...propertyDepths.map(s => s.longest));
+    const longest = 1 + Math.max(longestTypeArgDepth, longestPropertyDepth);
 
-    const depth = {
+    const depth:SelfReferentiality = {
+        pathToHere,
         shortest,
         longest,
+        children: [...typeArgsDepths, ...propertyDepths],
+        typesToHere: typeStrings(checker, seen),
     };
 
-    console.log(`class or interface type ${checker.typeToString(type)} ${pathToHere} is ${JSON.stringify(depth)}`);
+    // console.log(`class or interface type ${checker.typeToString(type)} ${pathToHere} is ${JSON.stringify(depth)}`);
 
     return depth;
 
@@ -1306,7 +1363,7 @@ function generatorator(configuration: GeneratorConfiguration, checker: ts.TypeCh
     ];
 
     for (const factory of factories) {
-        const generator = factory(configuration, checker, state, currentType, typeAncestors.concat([currentType]));
+        const generator = factory(configuration, checker, state, currentType, typeAncestors.concat(currentType));
         if (generator) {
             return generator;
         }
@@ -1324,6 +1381,7 @@ function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclarati
 
     const MAXIMUM_DEPTH = 6;
     const minimumDepths: number[] = [];
+    const allDepths: SelfReferentiality[] = [];
     for (let j = 0; j < f.parameters.length; j++) {
         const parameter = f.parameters[j];
         const ptypeNode = parameter.type;
@@ -1334,10 +1392,13 @@ function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclarati
         const ptype = checker.getTypeFromTypeNode(ptypeNode);
         const depth = getTypeDepth(checker, ptype, [`[${j}]`], []);
         minimumDepths.push(depth.shortest);
+        allDepths.push(depth);
     }
 
-    const lowest = minZero(...minimumDepths);
-    const highest = maxZero(...minimumDepths);
+    console.log(`Depths ${JSON.stringify(allDepths, null, 2)}`);
+
+    const lowestMinimum = minZero(...minimumDepths);
+    const highestMinimum = maxZero(...minimumDepths);
 
     const depthReport = minimumDepths.map((shortest, parameterIndex) => {
         const p = f.parameters[parameterIndex];
@@ -1357,110 +1418,128 @@ function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclarati
         };
     });
 
-    console.log(`Depths ${lowest}-${highest}; max = ${MAXIMUM_DEPTH} - ${JSON.stringify(depthReport)}`);
+    console.log(`Depths ${lowestMinimum}-${highestMinimum}; max = ${MAXIMUM_DEPTH} - ${JSON.stringify(depthReport, null, 2)}`);
 
-    for (let depthLimit = lowest; depthLimit < MAXIMUM_DEPTH; depthLimit++) {
-        const state: GeneratorState = {
-            currentDepth: 0,
-            pathToHere: [],
-        };
+    let previousValuesByType: Map<ts.Type, any>[] = [];
 
-        const configuration: GeneratorConfiguration = {
-            depthLimit,
-            weirdness: 1,
-            literals,
-        };
+    //  save the generators by depth to resume at previous point in stream instead of restarting
+    //  TODO: this can probably itself be put into generator state
+    let generatorsByTypeByDepth = new Map<number, Map<ts.Type, G>>();
+    //  do a batch at each depth level then start again from the lowest
+    while (true) {
+        for (let currentDepthLimit = highestMinimum; currentDepthLimit < MAXIMUM_DEPTH; currentDepthLimit++) {
+            //  1p, 4p, 9p, 16p, 25p
+            const maxValuesAtThisDepth = f.parameters.length * 2 * ((1 + currentDepthLimit) ** 2);
+            let valuesYieldedAtThisDepth = 0;
 
-        const generatorsByType = new Map<ts.Type, G>();
-        let previousValuesByType: Map<ts.Type, any>[] = [];
-        //  don't try to convert this to the factory/generator style because function declarations require
-        //  an AST Node not just a type
-        // const generators: G[] = [];
+            const state: GeneratorState = {
+                currentDepth: 0,
+                pathToHere: [],
+            };
 
-        for (let j = 0; j < f.parameters.length; j++) {
-            const parameter = f.parameters[j];
-            const ptypeNode = parameter.type;
-            if (!ptypeNode) {
-                throw new Error(`Parameter ${j} of ${f.name?.getText()} has no type node`);
-            }
-        }
+            const configuration: GeneratorConfiguration = {
+                depthLimit: currentDepthLimit,
+                weirdness: 1,
+                literals,
+            };
 
-        for (let j = 0; j < f.parameters.length; j++) {
-            const t = f.parameters[j].type;
-            const currentType = t
-                ? checker.getTypeAtLocation(t)
-                : checker.getAnyType();
+            let generatorsByType = generatorsByTypeByDepth.get(currentDepthLimit);
+            if (!generatorsByType) {
+                generatorsByType = new Map<ts.Type, G>();
+                //  don't try to convert this to the factory/generator style because function declarations require
+                //  an AST Node not just a type
+                // const generators: G[] = [];
 
-            const typeGenerator = generatorsByType.get(currentType);
-            if (!typeGenerator) {
-                const generator = generatorator(configuration, checker, state, currentType, []);
-                const t = checker.typeToString(currentType);
-                generatorsByType.set(currentType, generator);
-            }
-        }
-
-        while (true) {
-            //  generate exactly one (1) value for each parameter type; this guarantees that we sometimes pass in identical values
-            const valuesByType = new Map<ts.Type, any>();
-            generatorsByType.forEach((generator, type) => {
-                const next = generator.next();
-                if (next.done) {
-                    throw new Error(`Generator for ${checker.typeToString(type)} is done`);
+                for (let i = 0; i < f.parameters.length; i++) {
+                    const parameter = f.parameters[i];
+                    const ptypeNode = parameter.type;
+                    if (!ptypeNode) {
+                        throw new Error(`Parameter ${i} of ${f.name?.getText()} has no type node`);
+                    }
                 }
-                valuesByType.set(type, next.value);
-            });
 
-            const newValues: any[] = [];
-            for (let j = 0; j < f.parameters.length; j++) {
-                const t = f.parameters[j].type;
-                const currentType = t
-                    ? checker.getTypeAtLocation(t)
-                    : checker.getAnyType();
+                for (let j = 0; j < f.parameters.length; j++) {
+                    const t = f.parameters[j].type;
+                    const currentType = t
+                        ? checker.getTypeAtLocation(t)
+                        : checker.getAnyType();
 
-                const v = valuesByType.get(currentType);
-                newValues.push(v);
+                    const typeGenerator = generatorsByType.get(currentType);
+                    if (!typeGenerator) {
+                        const generator = generatorator(configuration, checker, state, currentType, []);
+                        const t = checker.typeToString(currentType);
+                        generatorsByType.set(currentType, generator);
+                    }
+                }
             }
 
-            yield newValues;
+            while (valuesYieldedAtThisDepth < maxValuesAtThisDepth) {
+                //  generate exactly one (1) value for each parameter type; this guarantees that we sometimes pass in identical values
+                //  variations 
+                const valuesByType = new Map<ts.Type, any>();
+                generatorsByType.forEach((generator, type) => {
+                    const next = generator.next();
+                    if (next.done) {
+                        throw new Error(`Generator for ${checker.typeToString(type)} is done`);
+                    }
+                    valuesByType.set(type, next.value);
+                });
 
-            //  no cross blending lists with past lists if there's only one value
-            if (newValues.length === 1) {
-                continue;
-            }
+                const newValues: any[] = [];
+                for (let j = 0; j < f.parameters.length; j++) {
+                    const t = f.parameters[j].type;
+                    const currentType = t
+                        ? checker.getTypeAtLocation(t)
+                        : checker.getAnyType();
 
-            //  this ensures when different parameters have identical values
-            //  we have lists where the values are equal
-            //  and lists where they are different
-            //  we both want and don't want test cases where the same value is used for multiple parameters
-            //  always blend with the last one and then a deterministic subset of the remaining;
-            //  this is where we want generators with high variance between successive values
-            // for (let i = previousValuesByType.length - 1; i >= 0; i = i * 0.9 - 2) {
-            for (let i = previousValuesByType.length - 1; i >= 0; i = i * 0.9 - 2) {
-                for (const mod of [2, 3, 5]) {
-                    const values: any[] = [];
-                    for (let j = 0; j < f.parameters.length; j++) {
-                        const t = f.parameters[j].type;
-                        const currentType = t
-                            ? checker.getTypeAtLocation(t)
-                            : checker.getAnyType();
+                    const v = valuesByType.get(currentType);
+                    newValues.push(v);
+                }
 
-                        //  use both i and j so that we don't always blend the same parameters
-                        if ((i + j) % mod === 0) {
-                            values.push(previousValuesByType[i].get(currentType));
-                        } else {
-                            values.push(newValues[j]);
+                yield newValues;
+
+                //  no cross blending lists with past lists if there's only one value
+                if (newValues.length === 1) {
+                    continue;
+                }
+
+                //  this ensures when different parameters have identical values
+                //  we have lists where the values are equal
+                //  and lists where they are different
+                //  we both want and don't want test cases where the same value is used for multiple parameters
+                //  always blend with the last one and then a deterministic subset of the remaining;
+                //  this is where we want generators with high variance between successive values
+                // for (let i = previousValuesByType.length - 1; i >= 0; i = i * 0.9 - 2) {
+                for (let i = previousValuesByType.length - 1; i >= 0 && valuesYieldedAtThisDepth < maxValuesAtThisDepth; i = i * 0.9 - 2) {
+                    for (const mod of [2, 3, 5]) {
+                        const values: any[] = [];
+                        for (let j = 0; j < f.parameters.length; j++) {
+                            const t = f.parameters[j].type;
+                            const currentType = t
+                                ? checker.getTypeAtLocation(t)
+                                : checker.getAnyType();
+
+                            //  use both i and j so that we don't always blend the same parameters
+                            if ((i + j) % mod === 0) {
+                                values.push(previousValuesByType[i].get(currentType));
+                            } else {
+                                values.push(newValues[j]);
+                            }
+                        }
+
+                        yield values;
+                        if (valuesYieldedAtThisDepth++ >= maxValuesAtThisDepth) {
+                            break;
                         }
                     }
-
-                    yield values;
                 }
-            }
 
-            previousValuesByType.push(valuesByType);
-            //  keep a decent number of past rounds to blend with
-            if (previousValuesByType.length > Math.min(5, f.parameters.length)) {
-                //  TODO: deterministically vary which one gets dropped
-                previousValuesByType = previousValuesByType.slice(1);
+                previousValuesByType.push(valuesByType);
+                //  keep a decent number of past rounds to blend with
+                if (previousValuesByType.length > Math.min(5, f.parameters.length)) {
+                    //  TODO: deterministically vary which one gets dropped
+                    previousValuesByType = previousValuesByType.slice(1);
+                }
             }
         }
     }
