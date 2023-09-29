@@ -1322,7 +1322,44 @@ function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclarati
         return;
     }
 
-    for (let depthLimit = 0; depthLimit < 5; depthLimit++) {
+    const MAXIMUM_DEPTH = 6;
+    const minimumDepths: number[] = [];
+    for (let j = 0; j < f.parameters.length; j++) {
+        const parameter = f.parameters[j];
+        const ptypeNode = parameter.type;
+        if (!ptypeNode) {
+            throw new Error(`Parameter ${j} of ${f.name?.getText()} has no type node`);
+        }
+
+        const ptype = checker.getTypeFromTypeNode(ptypeNode);
+        const depth = getTypeDepth(checker, ptype, [`[${j}]`], []);
+        minimumDepths.push(depth.shortest);
+    }
+
+    const lowest = minZero(...minimumDepths);
+    const highest = maxZero(...minimumDepths);
+
+    const depthReport = minimumDepths.map((shortest, parameterIndex) => {
+        const p = f.parameters[parameterIndex];
+
+        const name = p.name?.getText();
+
+        const typeNode = p.type;
+        const parameterType = typeNode
+            ? checker.getTypeAtLocation(typeNode)
+            : checker.getAnyType();
+
+        return {
+            index: parameterIndex,
+            name,
+            shortest: shortest === Infinity ? 'Infinity' : shortest,
+            type: checker.typeToString(parameterType),
+        };
+    });
+
+    console.log(`Depths ${lowest}-${highest}; max = ${MAXIMUM_DEPTH} - ${JSON.stringify(depthReport)}`);
+
+    for (let depthLimit = lowest; depthLimit < MAXIMUM_DEPTH; depthLimit++) {
         const state: GeneratorState = {
             currentDepth: 0,
             pathToHere: [],
@@ -1340,48 +1377,12 @@ function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclarati
         //  an AST Node not just a type
         // const generators: G[] = [];
 
-        let deepEnough = true;
-        const shortests:number[] = [];
-        let notDeepEnough: number[] = [];
-        for (let j = 0; j < f.parameters.length && deepEnough; j++) {
+        for (let j = 0; j < f.parameters.length; j++) {
             const parameter = f.parameters[j];
             const ptypeNode = parameter.type;
             if (!ptypeNode) {
                 throw new Error(`Parameter ${j} of ${f.name?.getText()} has no type node`);
             }
-
-            const ptype = checker.getTypeFromTypeNode(ptypeNode);
-            const depth = getTypeDepth(checker, ptype, [`[${j}]`], []);
-            shortests.push(depth.shortest);
-
-            if (depth.shortest > depthLimit) {
-                notDeepEnough.push(j);
-            }
-        }
-
-        if (notDeepEnough.length > 0) {
-
-            const depthReport = notDeepEnough.map(parameterIndex => {
-                const p = f.parameters[parameterIndex];
-
-                const name = p.name?.getText();
-
-                const typeNode = p.type;
-                const parameterType = typeNode
-                    ? checker.getTypeAtLocation(typeNode)
-                    : checker.getAnyType();
-
-                const shortest = shortests[parameterIndex] ;
-                return {
-                    index: parameterIndex,
-                    name,
-                    shortest: shortest === Infinity ? 'Infinity' : shortest,
-                    type: checker.typeToString(parameterType),
-                };
-            });
-
-            console.log(`Minimum depth ${depthLimit} is too low ${JSON.stringify(depthReport)}`);
-            continue;
         }
 
         for (let j = 0; j < f.parameters.length; j++) {
