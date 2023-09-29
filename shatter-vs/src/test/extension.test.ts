@@ -712,6 +712,17 @@ describe('extensionensionddfdsf', () => {
     });
 });
 
+describe('infinitue', () => {
+
+    it('ddddd', () => {
+
+        type X = {
+            fx: (x: number) => X,
+        };
+    });
+});
+
+
 describe('complicated', () => {
     it('should pass', async () => {
 

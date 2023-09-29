@@ -233,6 +233,7 @@ const arrayValueGenerator: ValueGenerator = function (configuration: GeneratorCo
     }
 
     const elementType = checker.getTypeArguments(type as ts.TypeReference)[0];
+    const tts = checker.typeToString(elementType);
 
     const generateEmpty = (): GeneratedParameter => ({
         id: newId('empty-array'),
@@ -313,7 +314,7 @@ const intersectionValueGeneratorFactory: ValueGenerator = (configuration: Genera
     function* g(): G {
 
         if (generators.length === 0) {
-            throw new Error(`Unexpectedly no generators available at depth ${state.currentDepth} <= ${configuration.depthLimit}`);
+            throw new Error(`Unexpectedly no generators available at depth ${state.currentDepth} <= ${configuration.depthLimit} for ${state.pathToHere} and ${typeStrings(checker, typeAncestors)}`);
         }
 
         while (true) {
@@ -722,6 +723,7 @@ const basicObjectValueGeneratorFactory: ValueGenerator = function (configuration
                 }
 
                 const propertyType = checker.getTypeOfSymbolAtLocation(p, p.valueDeclaration);
+                const tts = checker.typeToString(propertyType);
                 const depth = getTypeDepth(checker, propertyType, state.pathToHere.concat(`.${p.name}`), typeAncestors.concat(type));
                 depths[p.name] = depth;
 
@@ -795,8 +797,12 @@ const functionValueGeneratorFactory: ValueGenerator = function (configuration: G
     const returnType = callSignatures[0].getReturnType();
 
     const g = function* (): G {
+        const newState: GeneratorState = {
+            currentDepth: 0,    //  function generators restart the depth counting because they're different object trees
+            pathToHere: state.pathToHere.concat('.()'),
+        };
         while (true) {
-            for (const returnValue of generatorator(configuration, checker, state, returnType, typeAncestors.concat(type))) {
+            for (const returnValue of generatorator(configuration, checker, newState, returnType, typeAncestors.concat(type))) {
                 yield {
                     id: newId('function'),
                     generator: 'functionValueGeneratorFactory',
@@ -1063,7 +1069,7 @@ object flags 524288 = ??? maybe object again?
 object flags 524368 = ??? Instantiated & Anonymous
 */
 
-const typeStrings = (checker: ts.TypeChecker, types: ts.Type[]): string[] => 
+const typeStrings = (checker: ts.TypeChecker, types: ts.Type[]): string[] =>
     types.map(t => checker.typeToString(t));
 
 function getTypeArgumentsDepth(type: ts.Type, checker: ts.TypeChecker, pathToHere: string[], seen: ts.Type[], expectedTypeArgs?: number): SelfReferentiality[] {
@@ -1122,12 +1128,9 @@ const maxZero = (...args: number[]): number => {
 
 //  TODO: this function is a test case!
 //  to see if there is any way at all out of the maze, not whether there might be a cycle
+//  TODO: combine with the generators using a visitor
 export const getTypeDepth = (checker: ts.TypeChecker, type: ts.Type, pathToHere: string[], seen: ts.Type[]): SelfReferentiality => {
-
     const tts = checker.typeToString(type);
-    if (tts === 'Clause') {
-        console.log('strang');
-    }
 
     const isSimple = simpleTypeFlags.find(f => (f & type.flags) !== 0);
 
@@ -1144,28 +1147,27 @@ export const getTypeDepth = (checker: ts.TypeChecker, type: ts.Type, pathToHere:
 
     const callables = checker.getSignaturesOfType(type, ts.SignatureKind.Call);
     if (callables.length > 0) {
-        // console.log(`callable type ${checker.typeToString(type)} ${pathToHere} is not self-referential`);
+        //  reset from zero because this is not a direct link
+        //  TODO: what if this is a method, and somewhere in its return value hierarchy
+        //  is a reference to the type that contains this method?  how to avoid infinite recursion?
+        //  when might this happen?  When pulling a value out of a cyclic graph.
+        //  When doing a recursive algorithm where the return value is a smaller version of the same thing.
+        const isr = getTypeDepth(checker, callables[0].getReturnType(), pathToHere.concat('.()'), []);
         return {
             pathToHere,
-            shortest: 0,
-            longest: 0,
-            children: [],
+            shortest: 1,
+            longest: 1,
+            children: [isr],
             typesToHere: typeStrings(checker, seen),
         };
     }
 
     const constructors = checker.getSignaturesOfType(type, ts.SignatureKind.Construct);
     if (constructors.length > 0) {
-        // console.log(`constructor type ${checker.typeToString(type)} ${pathToHere} is not self-referential`);
-        return {
-            pathToHere,
-            shortest: 0,
-            longest: 0,
-            children: [],
-            typesToHere: typeStrings(checker, seen),
-        };
+        //  reset depth from zero because this is not a direct link
+        const isr = getTypeDepth(checker, constructors[0].getReturnType(), pathToHere.concat('.new()'), []);
+        return isr;
     }
-
 
     for (const seenType of seen) {
         if ((seenType as any).id === (type as any).id) {
@@ -1187,7 +1189,7 @@ export const getTypeDepth = (checker: ts.TypeChecker, type: ts.Type, pathToHere:
         // console.log(`array type ${checker.typeToString(type)} ${pathToHere} is ${JSON.stringify(typeArgsISR)}`);
         return {
             pathToHere,
-            shortest: 1 + typeArgsISR.shortest,
+            shortest: 1,    //  an empty array is always an option
             longest: 1 + typeArgsISR.longest,
             children: [typeArgsISR],
             typesToHere: typeStrings(checker, seen),
@@ -1254,7 +1256,7 @@ export const getTypeDepth = (checker: ts.TypeChecker, type: ts.Type, pathToHere:
                 pathToHere,
                 //  MAX on shortest like in an intersection type; can't pick just one of key or value; we need both
                 //  although in practice keys are going to be simple types and always be smaller than value types
-                shortest: 1 + Math.max(keyISR.shortest, valueISR.shortest),
+                shortest: 1,    //  an empty map is always an option
                 longest: 1 + Math.max(keyISR.longest, valueISR.longest),
                 children: mapEntriesISR,
                 typesToHere: typeStrings(checker, seen),
@@ -1271,7 +1273,7 @@ export const getTypeDepth = (checker: ts.TypeChecker, type: ts.Type, pathToHere:
 
             return {
                 pathToHere,
-                shortest: 1 + setElementISR.shortest,
+                shortest: 1,    //  an empty set is always an option
                 longest: 1 + setElementISR.longest,
                 children: [setElementISR],
                 typesToHere: typeStrings(checker, seen),
@@ -1284,13 +1286,13 @@ export const getTypeDepth = (checker: ts.TypeChecker, type: ts.Type, pathToHere:
     }
 
     const properties = checker.getPropertiesOfType(type);
-    const propertyDepths = properties.map((p):SelfReferentiality => {
+    const propertyDepths = properties.map((p): SelfReferentiality => {
         if (!p.valueDeclaration) {
-            //  TODO: determine when this might happen; 0/0 is the lazy answer
+            //  TODO: determine when this might happen and what the actual right answer is
             return {
                 pathToHere,
-                shortest: 0,
-                longest: 0,
+                shortest: 1,
+                longest: 1,
                 children: [],
                 typesToHere: typeStrings(checker, seen.concat(type)),
             };
@@ -1301,19 +1303,25 @@ export const getTypeDepth = (checker: ts.TypeChecker, type: ts.Type, pathToHere:
 
         //  if the property is required, then it could be partially self-referential and fully self-referential
         if (isRequired) {
-            // console.log(`Required property ${p.getName()} on ${checker.typeToString(type)} from ${pathToHere} ${JSON.stringify(propertyDepth)}`);
-            return propertyDepth;
+            console.log(`Required property ${p.getName()} on ${checker.typeToString(type)} from ${pathToHere} ${JSON.stringify(propertyDepth)}`);
+            return {
+                pathToHere,
+                shortest: 1 + propertyDepth.shortest,
+                longest: 1 + propertyDepth.longest,
+                children: [propertyDepth],
+                typesToHere: typeStrings(checker, seen.concat(type)),
+            };
         }
 
         //  if the property is optional, then it could be partially self-referential and is not fully self-referential
         const isr = {
             pathToHere,
-            shortest: 0,
-            longest: propertyDepth.longest,
+            shortest: 1,    //  in the case where the property is omitted
+            longest: 1 + propertyDepth.longest,
             children: [propertyDepth],
             typesToHere: typeStrings(checker, seen.concat(type)),
         };
-        // console.log(`Optional property ${p.getName()} from ${pathToHere} ${JSON.stringify(isr)}`);
+        console.log(`Optional property ${p.getName()} from ${pathToHere} ${JSON.stringify(isr)}`);
         return isr;
     });
 
@@ -1323,13 +1331,13 @@ export const getTypeDepth = (checker: ts.TypeChecker, type: ts.Type, pathToHere:
     const shortestPropertyDepth = minZero(...propertyDepths.map(s => s.shortest));
     //  MAX on shortest like in an intersection type; can't just pick the type arguments or the property types;
     //  we need to get to the bottom of both
-    const shortest = 1 + Math.max(shortestTypeArgDepth, shortestPropertyDepth);
+    const shortest = Math.max(shortestTypeArgDepth, shortestPropertyDepth);
 
     const longestTypeArgDepth = maxZero(...typeArgsDepths.map(s => s.longest));
     const longestPropertyDepth = maxZero(...propertyDepths.map(s => s.longest));
-    const longest = 1 + Math.max(longestTypeArgDepth, longestPropertyDepth);
+    const longest = Math.max(longestTypeArgDepth, longestPropertyDepth);
 
-    const depth:SelfReferentiality = {
+    const depth: SelfReferentiality = {
         pathToHere,
         shortest,
         longest,
