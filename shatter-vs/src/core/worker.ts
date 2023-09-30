@@ -29,7 +29,8 @@ export function work(functions: Record<string, Function>, workerNumber: number, 
         // console.log(`calling ${workerNumber} ${functionName} for ${specimenId} at ${new Date(start)}`);
         // const parameters = eval(serializedParameters)
 
-        const p = Promise.resolve(f.call(null, ...resolvedParameters));
+        //  wrap in an async function to ensure that the result is a promise as a lowest common denominator thing
+        const p = Promise.resolve((async () => f.call(null, ...resolvedParameters))());
 
         const finishIt = (p: Partial<Pick<InvocationResult, 'output' | 'error'>>) => {
             const end = Date.now();
