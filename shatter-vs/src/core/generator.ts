@@ -412,7 +412,8 @@ const intersectionValueGeneratorFactory: ValueGenerator = (configuration: Genera
     }
 
     if (generappers.length === 0) {
-        throw new Error(`Unexpectedly no generators available within floor limit ${newNumberOfLevelsAvailable} <= ${configuration.depthLimit} for ${pathToString(checker, path)}`);
+        console.log(`No generators available within floor limit ${newNumberOfLevelsAvailable} <= ${configuration.depthLimit} for ${pathToString(checker, path)}`);
+        return undefined;
     }
 
     function* gIntersection(): G {
@@ -485,7 +486,8 @@ const unionValueGeneratorFactory: ValueGenerator = function (configuration: Gene
     }
 
     if (generappers.length === 0) {
-        throw new Error(`Unexpectedly no generators available at depth ${newNumberOfLevelsAvailable} <= ${configuration.depthLimit}; ${pathToString(checker, path)}`);
+        console.log(`No generators available at depth ${newNumberOfLevelsAvailable} <= ${configuration.depthLimit}; ${pathToString(checker, path)}`);
+        return undefined;
     }
 
     const gUnion = function* () {
@@ -929,11 +931,11 @@ const basicObjectValueGeneratorFactory: ValueGenerator = function (configuration
 
             const isRequired = !(p.flags & ts.SymbolFlags.Optional);
             if (isRequired) {
-                if (pgw) {
-                    required.add(p.name);
-                } else {
-                    throw new Error(`Required property ${p.name}:${checker.typeToString(propertyType)} cannot be generated at depth ${configuration.depthLimit}: ${pathToString(checker, path)}`);
+                if (!pgw) {
+                    console.log(`Required property ${p.name}:${checker.typeToString(propertyType)} cannot be generated at depth ${configuration.depthLimit}: ${pathToString(checker, path)}`);
+                    return undefined;
                 }
+                required.add(p.name);
             } else {
                 if (!pgw) {
                     continue;
@@ -943,7 +945,8 @@ const basicObjectValueGeneratorFactory: ValueGenerator = function (configuration
             const isAllowed = pgw.shortest <= newNumberOfLevelsAvailable;
             if (!isAllowed && required.has(p.name)) {
                 //  TODO: custom error type
-                throw new Error(`Required property ${p.name}:${checker.typeToString(propertyType)} cannot be generated for required depth ${pgw.shortest} <= ${configuration.depthLimit}: ${pathToString(checker, path)}`);
+                console.log(`Required property ${p.name}:${checker.typeToString(propertyType)} cannot be generated for required depth ${pgw.shortest} <= ${configuration.depthLimit}: ${pathToString(checker, path)}`);
+                return undefined;
             }
 
             if (isAllowed) {
