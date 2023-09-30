@@ -302,7 +302,7 @@ const refresh = (editor: vscode.TextEditor | undefined, extensionState: Extensio
 	);
 	const runResultNodes: CommonDisplayNode[] = clusters.flatMap(c => c.results.map((result, i) => {
 		const parametersNode = {
-			label: shortString(result.serializedParameters),
+			label: shortString(result.serializedParameterValues),
 			key: `parameters://${c.key}/${i}`
 		};
 		return parametersNode;

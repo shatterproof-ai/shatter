@@ -4,52 +4,120 @@
 import { createId } from "@paralleldrive/cuid2";
 
 //  NOTE: all value objects must be serializable
-export type GeneratedParameter = {
+interface BaseGeneratedParameter {
     id: string,
     generator: string,
     options?: Record<string, any>,
-} & ({
+}
+
+//  TODO: isn't this the same as simple types?
+export const valueSubtypes = ["string", "number", "enum", "boolean", "undefined", "null"] as const;
+export type ValueSubtype = typeof valueSubtypes[number];
+
+export const isValueSubtype = (s: string): s is ValueSubtype => {
+    return valueSubtypes.includes(s as ValueSubtype);
+};
+
+interface BaseValueGeneratedParameter extends BaseGeneratedParameter {
+    subtype: ValueSubtype,
     type: 'value',
-    value: any,
-} | {
+}
+
+export interface StringGeneratedParameter extends BaseValueGeneratedParameter {
+    subtype: 'string',
+    value: string,
+}
+
+export interface NumberGeneratedParameter extends BaseValueGeneratedParameter {
+    subtype: 'number',
+    value: number,
+}
+
+export interface BooleanGeneratedParameter extends BaseValueGeneratedParameter {
+    subtype: 'boolean',
+    value: boolean,
+}
+
+export interface UndefinedGeneratedParameter extends BaseValueGeneratedParameter {
+    subtype: 'undefined',
+    value: undefined,
+}
+
+export interface NullGeneratedParameter extends BaseValueGeneratedParameter {
+    subtype: 'null',
+    value: null,
+}
+
+export interface EnumGeneratedParameter extends BaseValueGeneratedParameter {
+    subtype: 'enum',
+    value: any;
+}
+
+export type ValueGeneratedParameter = (StringGeneratedParameter | NumberGeneratedParameter | BooleanGeneratedParameter | UndefinedGeneratedParameter | NullGeneratedParameter | EnumGeneratedParameter);
+
+export interface ArrayGeneratedParameter extends BaseGeneratedParameter {
     type: 'array',
     elements: GeneratedParameter[],
-} | {
+}
+
+export interface TupleGeneratedParameter extends BaseGeneratedParameter {
     type: 'tuple',
     values: GeneratedParameter[],
-} | {
+}
+
+export interface IntersectionGeneratedParameter extends BaseGeneratedParameter {
     type: 'intersection',
     parts: GeneratedParameter[],
-} | {
+}
+
+export interface ClassGeneratedParameter extends BaseGeneratedParameter {
     type: 'class',
     instance: any,
-} | {
+}
+
+export interface MapGeneratedParameter extends BaseGeneratedParameter {
     type: 'map',
     entries: [GeneratedParameter, GeneratedParameter][],
-} | {
+}
+
+export interface SetGeneratedParameter extends BaseGeneratedParameter {
     type: 'set',
     entries: GeneratedParameter[],
-} | {
+}
+
+export interface DateGeneratedParameter extends BaseGeneratedParameter {
     type: 'date',
     epochMs: number,
-} | {
+}
+
+export interface RegExpGeneratedParameter extends BaseGeneratedParameter {
     type: 'regexp',
     pattern: string,
-} | {
+}
+
+export interface ConstructorGeneratedParameter extends BaseGeneratedParameter {
     type: 'constructor',
     constructed: GeneratedParameter,
-} | {
+}
+
+export interface CallableGeneratedParameter extends BaseGeneratedParameter {
     type: 'callable',
     returnValue: GeneratedParameter,
-} | {
+}
+
+export interface TerminalGeneratedParameter extends BaseGeneratedParameter {
     //  For when the object graph goes on but we can't
     type: 'terminal',
-} | {
+}
+
+export interface ObjectGeneratedParameter extends BaseGeneratedParameter {
     type: 'object',
     properties: Record<string, GeneratedParameter>,
     required: string[],
     declaredType: string,
-});
+}
+
+export type GeneratedParameter = ValueGeneratedParameter | ArrayGeneratedParameter | TupleGeneratedParameter | IntersectionGeneratedParameter | ClassGeneratedParameter | MapGeneratedParameter | SetGeneratedParameter | DateGeneratedParameter | RegExpGeneratedParameter | ConstructorGeneratedParameter | CallableGeneratedParameter | TerminalGeneratedParameter | ObjectGeneratedParameter;
 
 export const extractGeneratedParameterValue = (gp: GeneratedParameter): any => {
     if (gp.type === 'terminal') {

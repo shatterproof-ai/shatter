@@ -11,25 +11,26 @@ describe('worker', () => {
             [functionName]: (x: number, y: string) => 4,
         };
 
-        const parameters: GeneratedParameter[] = [{
+        const generatedParameters: GeneratedParameter[] = [{
             id: '1',
             type: 'value',
+            subtype: 'number',
             generator: 'tizzest',
             value: 4
         }];
 
-        const resolvedParameters = parameters.map(extractGeneratedParameterValue);
+        const resolvedParameters = generatedParameters.map(extractGeneratedParameterValue);
 
-        const serializedParameters = serializeJavascript(resolvedParameters);
+        const serializedParameterValues = serializeJavascript(resolvedParameters);
         const message: InvocationMeta = {
             specimenId: "12412",
             launched: 0,
+            generatedParameters,
             invocation: {
                 functionName,
-                serializedParameters,
-                parameters,
+                serializedParameterValues,
             }
-        }
+        };
 
         console.log(`calling ${functionName} of ${Object.keys(functions)}`);
         const result = await work(functions, 3, message);

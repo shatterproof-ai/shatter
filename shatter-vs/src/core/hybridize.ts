@@ -1,5 +1,5 @@
 import { create, isEqual } from 'lodash';
-import { GeneratedParameter, newId, skip } from './common';
+import { ArrayGeneratedParameter, GeneratedParameter, MapGeneratedParameter, NumberGeneratedParameter, ObjectGeneratedParameter, SetGeneratedParameter, StringGeneratedParameter, newId, skip } from './common';
 import { G } from './generator';
 
 //  TODO: split this into an initial entrypoint and a recursive internal entrypoint
@@ -25,37 +25,23 @@ export function* hybridize(a: GeneratedParameter, b: GeneratedParameter): G {
             return;
         }
 
-        if (typeof a.value !== typeof b.value) {
+        if (a.subtype !== b.subtype) {
             //  TODO: will this error be a problem with union types?
-            throw new Error(`Attempting unnatural hybridization of ${typeof a.value} and ${typeof b.value}`);
+            throw new Error(`Attempting unnatural hybridization of ${a.subtype} and ${b.subtype}`);
         }
 
-        if (typeof a === "boolean") {
+        if (a.subtype === "boolean") {
             //  no in between
             return;
         }
 
-        if (typeof a.value === "number") {
-            for (const n of hybridizeNumbers(a.value, b.value, splitIntervals)) {
-                yield {
-                    id: newId('hybrid-number'),
-                    type: 'value',
-                    generator: 'hybridize',
-                    value: n,
-                };
-            }
+        if (a.subtype === "number" && b.subtype === "number") {
+            yield* hybridizeNumbers(a, b, splitIntervals);
             return;
         }
 
-        if (typeof a.value === "string") {
-            for (const s of hybridizeStrings(a.value, b.value, splitIntervals)) {
-                yield {
-                    id: newId('hybrid-string'),
-                    type: 'value',
-                    generator: 'hybridize',
-                    value: s,
-                };
-            }
+        if (a.subtype === "string" && b.subtype === "string") {
+            yield* hybridizeStrings(a, b, splitIntervals);
             return;
         }
     }
@@ -74,14 +60,7 @@ export function* hybridize(a: GeneratedParameter, b: GeneratedParameter): G {
     }
 
     if (a.type === 'array' && b.type === 'array') {
-        for (const elements of hybridizeArrays(a.elements, b.elements, splitIntervals)) {
-            yield {
-                id: newId('hybrid-array'),
-                type: 'array',
-                generator: 'hybridize',
-                elements,
-            };
-        }
+        yield* hybridizeArrays(a, b, splitIntervals);
         return;
     }
 
@@ -91,54 +70,26 @@ export function* hybridize(a: GeneratedParameter, b: GeneratedParameter): G {
             return;
         }
 
-        for (const properties of hybridizeObjects(a.properties, b.properties, splitIntervals)) {
-            yield {
-                id: newId('hybrid-object'),
-                type: 'object',
-                generator: 'hybridize',
-                properties,
-                required: a.required,
-                declaredType: a.declaredType,
-            };
-        }
+        yield* hybridizeObjects(a, b, splitIntervals);
         return;
     }
-
 
     if (a.type === 'set' && b.type === 'set') {
-        const aaa = a.entries;
-        const bbb = b.entries;
-        for (const hhhh of hybridizeArrays(aaa, bbb, splitIntervals)) {
-            yield {
-                id: newId('hybrid-set'),
-                type: 'set',
-                generator: 'hybridize',
-                entries: hhhh,
-            };
-        }
+        yield* hybridizeSets(a, b, splitIntervals);
         return;
     }
-    
+
     if (a.type === 'map' && b.type === 'map') {
-        const aaa = a.entries;
-        const bbb = b.entries;
-        for (const hhhh of hybridizeArrays(aaa, bbb, splitIntervals)) {
-            yield {
-                id: newId('hybrid-map'),
-                type: 'map',
-                generator: 'hybridize',
-                entries: hhhh,
-            };
-        }
+        yield* hybridizeMaps(a, a, splitIntervals);
         return;
     }
 
     throw new Error(`Unhandled input types ${a.type} from ${a.generator}:${a.id} and ${b.type} from ${b.generator}:${b.id}`);
 }
 
-function* hybridizeNumbers(a: number, b: number, intervals: number[]) {
-    const larger = Math.max(a, b);
-    const smaller = Math.min(a, b);
+function* hybridizeNumbers(a: NumberGeneratedParameter, b: NumberGeneratedParameter, intervals: number[]): Generator<NumberGeneratedParameter, void, unknown> {
+    const larger = Math.max(a.value, b.value);
+    const smaller = Math.min(a.value, b.value);
     const diff = larger - smaller;
     const seen = new Set<number>();
 
@@ -160,34 +111,55 @@ function* hybridizeNumbers(a: number, b: number, intervals: number[]) {
                 && Math.abs(value - larger) > minDiff
                 && !seen.has(value)) {
                 seen.add(value);
-                yield value;
+                const gp: NumberGeneratedParameter = {
+                    id: newId('hybrid-number'),
+                    type: 'value',
+                    subtype: 'number',
+                    generator: 'hybridize',
+                    value,
+                };
+                yield gp;
             }
         }
     }
 }
-function* hybridizeStrings(a: string, b: string, intervals: number[]) {
+function* hybridizeStrings(a: StringGeneratedParameter, b: StringGeneratedParameter, intervals: number[]): Generator<StringGeneratedParameter, void, unknown> {
     //  first part is shorter string, second part is longer string
     //  first part is subset of shorter string, remainder is from longer string
     //  first part is subset of longer string, rest of shorter string, rest of longer string
 
-    const [shorter, longer] = a.length < b.length ? [a, b] : [b, a];
+    const [shorter, longer] = a.value.length < b.value.length ? [a, b] : [b, a];
 
     const seen = new Set<string>();
-    const longerBeginning = longer.substring(0, shorter.length);
-    const shorterIsSubset = longer.startsWith(shorter);
+    const longerBeginning = longer.value.substring(0, shorter.value.length);
+    const shorterIsSubset = longer.value.startsWith(shorter.value);
     if (!shorterIsSubset) {
-        if (shorter.length < longer.length) {
+        if (shorter.value.length < longer.value.length) {
             //  longer truncated to the length of shorter
             seen.add(longerBeginning);
-            yield longerBeginning;
+            const gpLongerBeginning: StringGeneratedParameter = {
+                id: newId('hybrid-string'),
+                type: 'value',
+                subtype: 'string',
+                generator: 'hybridize',
+                value: longerBeginning,
+            };
+            yield gpLongerBeginning;
 
             //  longer truncated to the length of shorter - 1
             const andAgain = longerBeginning.substring(0, longerBeginning.length - 1);
             seen.add(andAgain);
-            yield andAgain;
+            const gpAndAgain: StringGeneratedParameter = {
+                id: newId('hybrid-string'),
+                type: 'value',
+                subtype: 'string',
+                generator: 'hybridize',
+                value: andAgain,
+            };
+            yield gpAndAgain;
         }
 
-        const edits = computeEdits(shorter, longer);
+        const edits = computeEdits(shorter.value, longer.value);
         //  apply some subset of edits for intermediate strings between shorter and longer
         for (const splitInterval of intervals) {
             const editsToApply = Math.floor(splitInterval * edits.length);
@@ -195,7 +167,7 @@ function* hybridizeStrings(a: string, b: string, intervals: number[]) {
                 continue;
             }
 
-            let value: string = shorter;
+            let value: string = shorter.value;
             for (let i = 0; i < editsToApply; i++) {
                 const edit = edits[i];
                 if (edit.type === 'delete') {
@@ -209,32 +181,53 @@ function* hybridizeStrings(a: string, b: string, intervals: number[]) {
 
             if (!seen.has(value)) {
                 seen.add(value);
-                yield value;
+                const gp: StringGeneratedParameter = {
+                    id: newId('hybrid-string'),
+                    type: 'value',
+                    subtype: 'string',
+                    generator: 'hybridize',
+                    value,
+                };
+                yield gp;
             }
         }
     }
 
     for (const interval of intervals) {
         //  shorter + various lengths of the rest of longer
-        const toTake = Math.floor(interval * (longer.length - shorter.length));
-        const remainder = longer.substring(shorter.length, shorter.length + toTake);
+        const toTake = Math.floor(interval * (longer.value.length - shorter.value.length));
+        const remainder = longer.value.substring(shorter.value.length, shorter.value.length + toTake);
         const value = shorter + remainder;
         if (!seen.has(value)) {
             seen.add(value);
-            yield value;
+            const gp: StringGeneratedParameter = {
+                id: newId('hybrid-string'),
+                type: 'value',
+                subtype: 'string',
+                generator: 'hybridize',
+                value,
+            };
+            yield gp;
         }
         //  substrings of longer
         if (!shorterIsSubset) {
             const otherValue = longerBeginning + remainder;
             if (!seen.has(otherValue)) {
                 seen.add(otherValue);
-                yield otherValue;
+                const gp: StringGeneratedParameter = {
+                    id: newId('hybrid-string'),
+                    type: 'value',
+                    subtype: 'string',
+                    generator: 'hybridize',
+                    value: otherValue,
+                };
+                yield gp;
             }
         }
     }
 }
 
-const pickHybrid = (a: any, b: any, interval: number) => {
+const pickHybrid = (a: GeneratedParameter, b: GeneratedParameter, interval: number) => {
     const hg = hybridize(a, b);
     const all = Array.from(hg);
     if (all.length > 0) {
@@ -242,7 +235,7 @@ const pickHybrid = (a: any, b: any, interval: number) => {
     }
 };
 
-function* hybridizeArrays(a: any[], b: any[], intervals: number[]) {
+function* hybridizeElements(a: GeneratedParameter[], b: GeneratedParameter[], intervals: number[]) {
     const shorter = a.length < b.length ? a : b;
     const longer = a.length < b.length ? b : a;
 
@@ -264,7 +257,18 @@ function* hybridizeArrays(a: any[], b: any[], intervals: number[]) {
     }
 }
 
-function* hybridizeObjects(a: any, b: any, intervals: number[]) {
+function* hybridizeArrays(a: ArrayGeneratedParameter, b: ArrayGeneratedParameter, intervals: number[]): Generator<ArrayGeneratedParameter, void, unknown> {
+    for (const elements of hybridizeElements(a.elements, b.elements, intervals)) {
+        yield {
+            id: newId('hybrid-array'),
+            type: 'array',
+            generator: 'hybridize',
+            elements,
+        };
+    }
+}
+
+function* hybridizeObjects(a: ObjectGeneratedParameter, b: ObjectGeneratedParameter, intervals: number[]): Generator<ObjectGeneratedParameter, void, unknown> {
     const numberToGenerate = intervals.length;
 
     const commonKeys = Object.keys(a).filter(k => b.hasOwnProperty(k));
@@ -277,7 +281,7 @@ function* hybridizeObjects(a: any, b: any, intervals: number[]) {
         const aKeysToTake = Math.floor(interval * commonKeys.length);
         let aKeyCount = 0;
         for (const key of distinctKeysA) {
-            base[key] = a[key];
+            base[key] = a.properties[key];
             aKeyCount++;
             if (aKeyCount >= aKeysToTake) {
                 break;
@@ -286,7 +290,7 @@ function* hybridizeObjects(a: any, b: any, intervals: number[]) {
 
         const bKeysToTake = Math.floor((1 - interval) * commonKeys.length);
         for (const key of distinctKeysB) {
-            base[key] = b[key];
+            base[key] = b.properties[key];
             if (Object.keys(base).length === aKeysToTake + bKeysToTake) {
                 break;
             }
@@ -295,10 +299,59 @@ function* hybridizeObjects(a: any, b: any, intervals: number[]) {
         for (let i = 0; i < numberToGenerate; i++) {
             const candidate: Record<string | number, any> = { ...base };
             for (const key of commonKeys) {
-                candidate[key] = pickHybrid(a[key], b[key], interval);
+                candidate[key] = pickHybrid(a.properties[key], b.properties[key], interval);
             }
-            yield candidate;
+            const gp:ObjectGeneratedParameter = {
+                id: newId('hybrid-object'),
+                type: 'object',
+                generator: 'hybridize',
+                properties: candidate,
+                required: a.required,
+                declaredType: a.declaredType,
+            };
+            yield gp;
         }
+    }
+}
+
+function* hybridizeSets(a: SetGeneratedParameter, b: SetGeneratedParameter, intervals: number[]): Generator<SetGeneratedParameter, void, unknown> {
+    for (const elements of hybridizeElements(Array.from(a.entries), Array.from(b.entries), intervals)) {
+        yield {
+            id: newId('hybrid-set'),
+            type: 'set',
+            generator: 'hybridize',
+            entries: elements,
+        };
+    }
+}
+
+function* hybridizeMaps(a: MapGeneratedParameter, b: MapGeneratedParameter, intervals: number[]): Generator<MapGeneratedParameter, void, unknown> {
+    const shorter = a.entries.length < b.entries.length ? a : b;
+    const longer = a.entries.length < b.entries.length ? b : a;
+
+    for (const interval of intervals) {
+        const arr: [GeneratedParameter, GeneratedParameter][] = [];
+        for (let i = 0; i < shorter.entries.length; i++) {
+            // Taking only median hybrid for simplicity
+            const key = pickHybrid(shorter.entries[i][0], longer.entries[i][0], interval);
+            const value = pickHybrid(shorter.entries[i][1], longer.entries[i][1], interval);
+            if (key !== undefined && value !== undefined) {
+                arr.push([key, value]);
+            }
+        }
+        //  add a subset of the rest of longer
+        const toTake = Math.floor(interval * (longer.entries.length - shorter.entries.length));
+        for (let i = shorter.entries.length; i < shorter.entries.length + toTake; i++) {
+            arr.push(longer.entries[i]);
+        }
+        
+        const gp:MapGeneratedParameter = {
+            id: newId('hybrid-map'),
+            type: 'map',
+            generator: 'hybridize',
+            entries: arr,
+        };
+        yield gp;
     }
 }
 
@@ -585,12 +638,7 @@ export function* shrink(gp: GeneratedParameter): G {
     }
 
     if (gp.type === 'value') {
-        //  unshrinkable
-        if (typeof gp.value === "boolean") {
-            return;
-        }
-
-        if (typeof gp.value === "number") {
+        if (gp.subtype === "number") {
             //  TODO: tunable precision
             const values: number[] = [];
             if (Math.abs(gp.value) < 0.01) {
@@ -615,6 +663,7 @@ export function* shrink(gp: GeneratedParameter): G {
                     id: newId('shrink-number'),
                     generator: 'shrinker',
                     type: 'value',
+                    subtype: 'number',
                     value: v,
                 };
             }
@@ -622,17 +671,19 @@ export function* shrink(gp: GeneratedParameter): G {
             return;
         }
 
-        if (typeof gp.value === "string") {
+        if (gp.subtype === "string") {
             if (gp.value.length > 0) {
                 yield {
                     id: newId('shrink-string'),
                     generator: 'shrinker',
                     type: 'value',
+                    subtype: 'string',
                     value: gp.value.substring(0, gp.value.length / 2),
                 };
             }
-            return;
         }
+        //  other subtypes are unshrinkable
+        return;
     }
 
 
@@ -683,6 +734,11 @@ export function* shrink(gp: GeneratedParameter): G {
                 yield trunked;
             }
         }
+        return;
+    }
+
+    if (gp.type === 'class') {
+        //  TODO: shrink classes (by only shrinking the value members not methods)
         return;
     }
 

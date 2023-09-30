@@ -1,5 +1,5 @@
 import { faker } from '@faker-js/faker';
-import { GeneratedParameter, newId } from './common';
+import { ArrayGeneratedParameter, BooleanGeneratedParameter, GeneratedParameter, NumberGeneratedParameter, ObjectGeneratedParameter, StringGeneratedParameter, ValueGeneratedParameter, ValueSubtype, newId } from './common';
 import { reverse } from 'lodash';
 
 export interface Literals {
@@ -7,12 +7,35 @@ export interface Literals {
     strings: Set<string>,
 }
 
-const gpv = (value: number | string | boolean, generator: string, options?: Record<string, any>): GeneratedParameter & {
+const gpvs = (value: string, generator: string, options?: Record<string, any>): StringGeneratedParameter & {
     type: 'value'
 } => ({
     id: newId('value'),
     generator,
     type: 'value',
+    subtype: 'string',
+    value,
+    options,
+});
+
+const gpvb = (value: boolean, generator: string, options?: Record<string, any>): BooleanGeneratedParameter & {
+    type: 'value'
+} => ({
+    id: newId('value'),
+    generator,
+    type: 'value',
+    subtype: 'boolean',
+    value,
+    options,
+});
+
+const gpvn = (value: number, generator: string, options?: Record<string, any>): NumberGeneratedParameter & {
+    type: 'value'
+} => ({
+    id: newId('value'),
+    generator,
+    type: 'value',
+    subtype: 'number',
     value,
     options,
 });
@@ -237,15 +260,15 @@ export function* edgyNumbers(literals?: Literals): Generator<GeneratedParameter,
         for (const m of [1, -1, 2, -2]) {
             for (const base of literals?.numbers ?? []) {
                 for (const n of neighboringNumbers(base * m)) {
-                    yield gpv(n, 'literals.numbers');
+                    yield gpvn(n, 'literals.numbers');
                 }
             }
         }
         for (const n of seedNumbers) {
-            yield gpv(n, 'seedNumbers');
+            yield gpvn(n, 'seedNumbers');
         }
         for (const n of breedNumbers) {
-            yield gpv(n, 'breedNumbers');
+            yield gpvn(n, 'breedNumbers');
         }
     }
 }
@@ -398,7 +421,7 @@ export function* edgyNumberRanges(literals?: Literals): Generator<GeneratedParam
         : specialNumberRanges;
 
     for (const range of combinedNumberRanges) {
-        yield {
+        const gp: ArrayGeneratedParameter = {
             id: newId('edgy-range'),
             generator: 'arrayValueGenerator',
             type: 'array',
@@ -406,16 +429,18 @@ export function* edgyNumberRanges(literals?: Literals): Generator<GeneratedParam
                 id: newId('edgy-range-element'),
                 generator: 'arrayValueGenerator-specialNumber',
                 type: 'value',
+                subtype: 'number',
                 value: n,
             })),
         };
+        yield gp;
     }
 }
 
 export function* edgyBooleans(literals?: Literals): Generator<GeneratedParameter, void, unknown> {
     while (true) {
-        yield gpv(true, 'edgyBooleans');
-        yield gpv(false, 'edgyBooleans');
+        yield gpvb(true, 'edgyBooleans');
+        yield gpvb(false, 'edgyBooleans');
     }
 }
 
@@ -460,20 +485,22 @@ faker.seed(10481);
 export function* edgyAny(literals?: Literals): Generator<GeneratedParameter, void, unknown> {
     while (true) {
         for (const n of literals?.numbers ?? []) {
-            yield gpv(n, 'literals.numbers');
+            yield gpvn(n, 'literals.numbers');
         }
 
         for (const s of literals?.strings ?? []) {
-            yield gpv(s, 'literals.numbers');
+            yield gpvs(s, 'literals.strings');
         }
 
-        yield {
+        const ogp: ObjectGeneratedParameter = {
             id: newId('edgy-any'),
             generator: 'edgyAny',
+            declaredType: 'any',
             type: 'object',
             properties: {},
             required: [],
         };
+        yield ogp;
     }
 }
 
@@ -625,7 +652,7 @@ export function* edgyStrings(literals?: Literals): Generator<GeneratedParameter,
     const seen = new Set<string>();
 
     for (const s of literals?.strings ?? []) {
-        const sn = gpv(s, 'literals.strings');
+        const sn = gpvs(s, 'literals.strings');
         if (!seen.has(sn.value)) {
             yield sn;
             seen.add(sn.value);
@@ -640,6 +667,7 @@ export function* edgyStrings(literals?: Literals): Generator<GeneratedParameter,
                     id: newId('edgy-strings'),
                     generator: 'seedStrings',
                     type: 'value',
+                    subtype: 'string',
                     value,
                 };
             }
@@ -653,6 +681,7 @@ export function* edgyStrings(literals?: Literals): Generator<GeneratedParameter,
                 id: newId('edgy-strings'),
                 generator: 'seedStrings',
                 type: 'value',
+                subtype: 'string',
                 value,
             };
         }
@@ -705,7 +734,7 @@ export function* edgyStrings(literals?: Literals): Generator<GeneratedParameter,
                 }
 
                 for (const options of optionate(fakerName)) {
-                    yield gpv(fakerFunction(options), `${fakerCategoryName}.${fakerName}`);
+                    yield gpvs(fakerFunction(options), `${fakerCategoryName}.${fakerName}`);
                 }
             }
         }

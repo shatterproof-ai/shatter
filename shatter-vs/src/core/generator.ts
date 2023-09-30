@@ -4,7 +4,7 @@ import { ResultCluster } from '../core/shatter';
 import { RunResult } from '../core/supervisor';
 import { Literals, edgyAny, edgyBooleans, edgyNumberRanges, edgyNumbers, edgyStrings } from './seed';
 import { keys, pick, set } from 'lodash';
-import { GeneratedParameter, extractGeneratedParameterValue, newId } from './common';
+import { GeneratedParameter, extractGeneratedParameterValue, isValueSubtype, newId, valueSubtypes } from './common';
 import { type } from 'os';
 import ts = require('typescript');
 
@@ -122,9 +122,11 @@ export type G = Generator<GeneratedParameter, any, any>;
 
 interface PathSegment {
     type: ts.Type,
-    specifier: string,
+    //  TODO: change this to an enum of union|intersection|object|literal|array|map|set|date|regexp|function|class|etc.
+    specifier: GeneratedParameter['generator'],
 }
 
+//  TODO: make this generic around its GeneratedParameter type?
 //  ugh GeneratorWrapper what a dumb name
 interface GeneratorWrapper {
     path: PathSegment[];
@@ -137,12 +139,19 @@ interface GeneratorWrapper {
 type ValueGenerator = (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: PathSegment[]) => GeneratorWrapper | undefined;
 
 const fixedValueGeneratorFactory = function* (generator: string, value: any): G {
+
+    const subtype = typeof value;
+    if (! isValueSubtype(subtype)) {
+        throw new Error(`Unexpected value type ${subtype}`);
+    }
+
     const id = newId('value');
     while (true) {
         yield {
             id,
             generator,
             type: 'value',
+            subtype,
             value,
         };
     }
@@ -225,7 +234,7 @@ const simpleValueGeneratorFactory: ValueGenerator = function (configuration: Gen
     return undefined;
 };
 
-const enumValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: PathSegment[]) {
+const enumValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: PathSegment[]):GeneratorWrapper|undefined {
     if (isEnumType(type)) {
         const enumValues = type.symbol.members;
         if (enumValues) {
@@ -236,6 +245,7 @@ const enumValueGeneratorFactory: ValueGenerator = function (configuration: Gener
                             id: newId('enum'),
                             generator: 'enumValueGeneratorFactory',
                             type: 'value',
+                            subtype: 'enum',
                             value: v,
                         };
                         yield gp;
@@ -303,8 +313,8 @@ const arrayValueGenerator: ValueGenerator = function (configuration: GeneratorCo
         const numberRangyGw: GeneratorWrapper = {
             path,
             type,
-            shortest: 0,
-            longest: 0,
+            shortest: 1,
+            longest: 1,
             generator: edgyNumberRanges(configuration.literals),
         };
         return numberRangyGw;
@@ -321,7 +331,7 @@ const arrayValueGenerator: ValueGenerator = function (configuration: GeneratorCo
         specifier: '[]',
     }));
 
-    if (!elementGenerator?.generator || elementGenerator.shortest > newNumberOfLevelsAvailable) {
+    if (!elementGenerator || elementGenerator.shortest > newNumberOfLevelsAvailable) {
         const emptyGw: GeneratorWrapper = {
             path,
             type,
@@ -390,7 +400,7 @@ const intersectionValueGeneratorFactory: ValueGenerator = (configuration: Genera
     const generappers: GeneratorWrapper[] = [];
     for (const subtype of type.types) {
         const gw = generatorator(configuration, checker, newState, subtype, newPath);
-        if (gw?.generator && gw.shortest <= newNumberOfLevelsAvailable) {
+        if (gw && gw.shortest <= newNumberOfLevelsAvailable) {
             generappers.push(gw);
             if (gw.shortest < shortest) {
                 shortest = gw.shortest;
@@ -553,7 +563,7 @@ const mapValueGeneratorFactory: ValueGenerator = function (configuration: Genera
     });
     const valGer = generatorator(configuration, checker, newState, valueType, newValuePath);
 
-    if (keyGer.shortest > newNumberOfLevelsAvailable || valGer.shortest > newNumberOfLevelsAvailable) {
+    if (! keyGer || keyGer.shortest > newNumberOfLevelsAvailable || !valGer || valGer.shortest > newNumberOfLevelsAvailable) {
         const gw: GeneratorWrapper = {
             path,
             type,
@@ -592,14 +602,14 @@ const mapValueGeneratorFactory: ValueGenerator = function (configuration: Genera
         }
     };
 
-    const shortest = Math.min(keyGer.shortest, valGer.shortest);
-    const longest = Math.max(keyGer.longest, valGer.longest);
+    const shortestChild = Math.min(keyGer.shortest, valGer.shortest);
+    const longestChild = Math.max(keyGer.longest, valGer.longest);
 
     const gw: GeneratorWrapper = {
         path,
         type,
-        shortest,
-        longest,
+        shortest: shortestChild + 1,
+        longest: longestChild + 1,
         generator: gMap(),
     };
 
@@ -891,12 +901,12 @@ const basicObjectValueGeneratorFactory: ValueGenerator = function (configuration
     const newState = {
         numberOfLevelsAvailable: newNumberOfLevelsAvailable,
     };
-    
+
     const propertyGenerators: Record<string, GeneratorWrapper> = {};
     const required = new Set<string>();
 
-    let shortest = 0;
-    let longest = 0;
+    let shortestChild = 0;
+    let longestChild = 0;
     for (const p of checker.getPropertiesOfType(type)) {
         const declaration = getDeclaration(p);
         if (declaration) {
@@ -908,27 +918,41 @@ const basicObjectValueGeneratorFactory: ValueGenerator = function (configuration
 
             const tts = checker.typeToString(propertyType);
 
-            //  this should allow self-referential optional properties,
-            //  e.g. minimally type X = { x?: X }
-            const isAllowed = pgw.shortest <= newNumberOfLevelsAvailable;
+            /*
+                                REQUIRED                                    NOT REQUIRED
+                                PROVIDED            NOT PROVIDED            PROVIDED            NOT PROVIDED
+                        
+            ALLOWED             YES                 ERROR                   YES                 NO         
+            NOT ALLOWED         ERROR               ERROR                   NO                  NO
+
+            */
+
             const isRequired = !(p.flags & ts.SymbolFlags.Optional);
             if (isRequired) {
-                required.add(p.name);
+                if (pgw) {
+                    required.add(p.name);
+                } else {
+                    throw new Error(`Required property ${p.name}:${checker.typeToString(propertyType)} cannot be generated at depth ${configuration.depthLimit}: ${pathToString(checker, path)}`);
+                }
+            } else {
+                if (! pgw) {
+                    continue;
+                }
             }
-
+            
+            const isAllowed = pgw.shortest <= newNumberOfLevelsAvailable;
             if (!isAllowed && required.has(p.name)) {
                 //  TODO: custom error type
-                //  TODO: this should be caught earlier in preflight
                 throw new Error(`Required property ${p.name}:${checker.typeToString(propertyType)} cannot be generated for required depth ${pgw.shortest} <= ${configuration.depthLimit}: ${pathToString(checker, path)}`);
             }
 
             if (isAllowed) {
                 propertyGenerators[p.name] = pgw;
-                if (pgw.shortest < shortest) {
-                    shortest = pgw.shortest;
+                if (pgw.shortest < shortestChild) {
+                    shortestChild = pgw.shortest;
                 }
-                if (pgw.longest > longest) {
-                    longest = pgw.longest;
+                if (pgw.longest > longestChild) {
+                    longestChild = pgw.longest;
                 }
             }
         }
@@ -969,13 +993,11 @@ const basicObjectValueGeneratorFactory: ValueGenerator = function (configuration
     };
 
     //  count the current object as a step
-    shortest++;
-    longest++;
     const gw: GeneratorWrapper = {
         path,
         type,
-        shortest,
-        longest,
+        shortest: shortestChild + 1,
+        longest: longestChild + 1,
         generator: gBasicObject(),
     };
     return gw;
@@ -999,8 +1021,14 @@ const functionValueGeneratorFactory: ValueGenerator = function (configuration: G
         specifier: '()',
     }));
 
+    if (!g) {
+        //  ????
+        throw new Error(`Function return type ${checker.typeToString(returnType)} cannot be generated at depth ${configuration.depthLimit}: ${pathToString(checker, path)}`);
+    }
+
     if (g.shortest > configuration.depthLimit) {
         //  ????
+        throw new Error(`Function return type ${checker.typeToString(returnType)} cannot be generated at depth ${g.shortest} <= ${configuration.depthLimit}: ${pathToString(checker, path)}`);
     }
 
     const gFunctionValue = function* (): G {
@@ -1256,8 +1284,6 @@ const stupidPropertyPicker: PropertyPicker = function* (keys: string[], required
     }
 };
 
-type TypeID = string | number;
-
 //  IFF unseen type and no children -- shortest = 0, longest = 0
 //  if seen type and no children -- shortest = Infinity, longest = Infinity
 //  shortest = 0 for collection types - array, map, set, and objects with only optional properties; empty collections are treated like scalars
@@ -1267,13 +1293,6 @@ type TypeID = string | number;
 //  longest = 1 for callables
 //  longest = 0 + max(children) for unions
 //  longest = 1 + max(children) for non-unions, including collections and objects
-interface SelfReferentiality {
-    pathToHere: string[];
-    shortest: number;
-    longest: number;
-    children: SelfReferentiality[];
-    typesToHere: string[];
-}
 
 /*
 object flags        Reference = 4,
@@ -1286,52 +1305,6 @@ type flags         Object = 524288,
 object flags 524288 = ??? maybe object again?
 object flags 524368 = ??? Instantiated & Anonymous
 */
-
-const typeStrings = (checker: ts.TypeChecker, types: ts.Type[]): string[] =>
-    types.map(t => checker.typeToString(t));
-
-//  TODO: type args calculations may be too low by one in most or all cases
-//  because they're not adding + 1 from the containing type.  maybe it's
-//  desirable that they don't because perhaps the containing type is something
-//  that doesn't add depth?  Maybe some kind of union type or some other kind
-//  of type that doesn't add depth?
-function getTypeArgumentsDepth(type: ts.Type, checker: ts.TypeChecker, pathToHere: string[], seen: ts.Type[], expectedTypeArgs?: number): SelfReferentiality[] {
-    if (!isTypeReference(type)) {
-        if ('typeArguments' in type && (type as any).typeArguments) {
-            console.log(`type ${checker.typeToString(type)} ${pathToHere} has ignored type arguments ${(type as any).typeArguments}`);
-        }
-        return [{
-            pathToHere,
-            shortest: 0,
-            longest: 0,
-            children: [],
-            typesToHere: typeStrings(checker, seen),
-        }];
-    }
-
-    if (!type.typeArguments) {
-        return [{
-            pathToHere,
-            shortest: 0,
-            longest: 0,
-            children: [],
-            typesToHere: typeStrings(checker, seen),
-        }];
-    }
-
-    if (expectedTypeArgs !== undefined && type.typeArguments.length !== expectedTypeArgs) {
-        throw new Error(`Expected ${expectedTypeArgs} type arguments for ${checker.typeToString(type)} but got ${type.typeArguments.length}`);
-    }
-
-    const id: TypeID = (type as any).id;
-    const typeSRs = type.typeArguments.map((t, i) => {
-        const typeSR = getTypeDepth(checker, t, pathToHere.concat(`<${i}>`), seen);
-        //  TODO: how to tell if a type argument is optional?
-        return typeSR;
-    });
-
-    return typeSRs;
-}
 
 //  Math.min returns Infinity if any argument is undefined or if the argument list is empty
 const minZero = (...args: number[]): number => {
@@ -1362,259 +1335,10 @@ const getDeclaration = (symbol: ts.Symbol) => {
     throw new Error(`No declaration for symbol ${symbol.getName()}`);
 };
 
-//  TODO: this function is a test case!
-//  to see if there is any way at all out of the maze, not whether there might be a cycle
-//  TODO: combine with the generators using a visitor
-export const getTypeDepth = (checker: ts.TypeChecker, type: ts.Type, pathToHere: string[], seen: ts.Type[]): SelfReferentiality => {
-    const tts = checker.typeToString(type);
-
-    const isSimple = simpleTypeFlags.find(f => (f & type.flags) !== 0);
-
-    if (isSimple) {
-        // console.log(`simple type ${checker.typeToString(type)} ${pathToHere} is not self-referential`);
-        return {
-            pathToHere,
-            shortest: 0,
-            longest: 0,
-            children: [],
-            typesToHere: typeStrings(checker, seen),
-        };
-    }
-
-    const callables = checker.getSignaturesOfType(type, ts.SignatureKind.Call);
-    if (callables.length > 0) {
-        const returnType = callables[0].getReturnType();
-        if (seen.includes(returnType)) {
-            //  TODO: handle the case where the return type refers to a type higher
-            //  up in this object tree, i.e. a circularity, more gracefully without
-            //  creating an infinite recursion
-            //  when might this happen?  When pulling a value out of a cyclic graph.
-            //  When doing a recursive algorithm where the return value is a smaller version of the same thing.
-            return {
-                pathToHere,
-                shortest: Infinity,
-                longest: Infinity,
-                children: [],
-                typesToHere: typeStrings(checker, seen),
-            };
-        }
-        //  reset from zero because this is not a direct link
-        const isr = getTypeDepth(checker, returnType, pathToHere.concat('.()'), [type]);
-        return {
-            pathToHere,
-            shortest: 1,
-            longest: 1,
-            children: [isr],
-            typesToHere: typeStrings(checker, seen),
-        };
-    }
-
-    const constructors = checker.getSignaturesOfType(type, ts.SignatureKind.Construct);
-    if (constructors.length > 0) {
-        //  reset depth from zero because this is not a direct link
-        const isr = getTypeDepth(checker, constructors[0].getReturnType(), pathToHere.concat('.new()'), []);
-        return isr;
-    }
-
-    const newSeen = seen.concat(type);
-    if (type.isUnion()) {
-        const depths = type.types.map(t => getTypeDepth(checker, t, pathToHere.concat((['|'])), newSeen));
-
-        //  Union shortest depth is the shortest of the shortest depths of the subtypes
-        //  because we can pick which one we want
-        //  do NOT add one to depth because this is an indirection not a composition
-        const shortest = minZero(...depths.map(d => d.shortest));
-        const longest = maxZero(...depths.map(d => d.longest));
-
-        const isr = {
-            pathToHere,
-            shortest,
-            longest,
-            children: depths,
-            typesToHere: typeStrings(checker, seen),
-        };
-        // console.log(`union type ${checker.typeToString(type)} ${pathToHere} is ${JSON.stringify(isr)}`);
-        return isr;
-    }
-
-    //  checking for repetition is intentionally AFTER union handling
-    //  because a union type self-reference could be okay as long as it terminates
-    //  and presumably the levels count-down will catch that
-    for (const seenType of seen) {
-        if ((seenType as any).id === (type as any).id) {
-            return {
-                pathToHere,
-                shortest: Infinity,
-                longest: Infinity,
-                children: [],
-                typesToHere: typeStrings(checker, seen),
-            };
-        }
-    }
-
-    if (checker.isArrayType(type)) {
-        const typeArgsISR = getTypeArgumentsDepth(type, checker, pathToHere, newSeen, 1)[0];
-
-        // console.log(`array type ${checker.typeToString(type)} ${pathToHere} is ${JSON.stringify(typeArgsISR)}`);
-        return {
-            pathToHere,
-            shortest: 0,    //  an empty array is always an option
-            longest: 1 + typeArgsISR.longest,
-            children: [typeArgsISR],
-            typesToHere: typeStrings(checker, seen),
-        };
-    }
-
-    if (type.isIntersection()) {
-        const depths = type.types.map(t => getTypeDepth(checker, t, pathToHere.concat((['|'])), newSeen));
-
-        //  Intersection shortest depth is the largest of the shortest depths of the subtypes
-        //  because we don't get a choice; we have to go to them all
-        //  add one to depth because it's basically an object type, just defined compositionally
-        const shortest = 1 + maxZero(...depths.map(d => d.shortest));
-        const longest = 1 + maxZero(...depths.map(d => d.longest));
-        const isr = {
-            pathToHere,
-            shortest,
-            longest,
-            children: depths,
-            typesToHere: typeStrings(checker, seen),
-        };
-        // console.log(`intersection type ${checker.typeToString(type)} ${pathToHere} is ${JSON.stringify(isr)}`);
-        return isr;
-    }
-
-    if (isDefaultGlobalType(checker, type)) {
-        const typeName = type.getSymbol()?.getName();
-        if (typeName === 'Date' || typeName === 'RegExp') {
-            // console.log(`default global type ${checker.typeToString(type)} ${pathToHere} is not self-referential`);
-            return {
-                pathToHere,
-                shortest: 0,
-                longest: 0,
-                children: [],
-                typesToHere: typeStrings(checker, seen),
-            };
-        }
-
-        if (typeName === 'Map') {
-            const mapEntriesISR = getTypeArgumentsDepth(type, checker, pathToHere, newSeen, 2);
-            const [keyISR, valueISR] = mapEntriesISR;
-
-            const isr = {
-                pathToHere,
-                //  MAX on shortest like in an intersection type; can't pick just one of key or value; we need both
-                //  although in practice keys are going to be simple types and always be smaller than value types
-                shortest: 0,    //  an empty map is always an option
-                longest: 1 + Math.max(keyISR.longest, valueISR.longest),
-                children: mapEntriesISR,
-                typesToHere: typeStrings(checker, seen),
-            };
-
-            // console.log(`map type ${checker.typeToString(type)} ${pathToHere} is ${JSON.stringify(isr)}`);
-
-            return isr;
-        }
-
-        if (typeName === 'Set') {
-            const setElementISR = getTypeArgumentsDepth(type, checker, pathToHere, newSeen, 1)[0];
-            // console.log(`set type ${checker.typeToString(type)} ${pathToHere} is ${JSON.stringify(typeArgsISR)}`);
-
-            return {
-                pathToHere,
-                shortest: 0,    //  an empty set is always an option
-                longest: 1 + setElementISR.longest,
-                children: [setElementISR],
-                typesToHere: typeStrings(checker, seen),
-            };
-        }
-    }
-
-    if (type.isClassOrInterface()) {
-        // console.log(`class or interface type ${checker.typeToString(type)} ${pathToHere}`);
-    }
-
-    const properties = checker.getPropertiesOfType(type);
-    const propertyDepths = properties.map((p): SelfReferentiality => {
-        const declaration = getDeclaration(p);
-        if (!declaration) {
-            //  TODO: determine when this might happen and what the actual right answer is
-            return {
-                pathToHere,
-                shortest: 0,
-                longest: 0,
-                children: [],
-                typesToHere: typeStrings(checker, seen.concat(type)),
-            };
-        }
-        const propertyType = checker.getTypeOfSymbolAtLocation(p, declaration);
-        const propertyDepth = getTypeDepth(checker, propertyType, pathToHere.concat(`.${p.getName()}`), newSeen);
-        const isRequired = !(p.flags & ts.SymbolFlags.Optional);
-
-        //  if the property is required, then it could be partially self-referential and fully self-referential
-        if (isRequired) {
-            // console.log(`Required property ${p.getName()} on ${checker.typeToString(type)} from ${pathToHere} ${JSON.stringify(propertyDepth)}`);
-            return {
-                pathToHere,
-                shortest: 1 + propertyDepth.shortest,
-                longest: 1 + propertyDepth.longest,
-                children: [propertyDepth],
-                typesToHere: typeStrings(checker, seen.concat(type)),
-            };
-        }
-
-        //  if the property is optional, then it could be partially self-referential and is not fully self-referential
-        const isr = {
-            pathToHere,
-            shortest: 0,    //  in the case where the property is omitted
-            longest: 1 + propertyDepth.longest,
-            children: [propertyDepth],
-            typesToHere: typeStrings(checker, seen.concat(type)),
-        };
-        // console.log(`Optional property ${p.getName()} from ${pathToHere} ${JSON.stringify(isr)}`);
-        return isr;
-    });
-
-    const typeArgsDepths = getTypeArgumentsDepth(type, checker, pathToHere, newSeen);
-
-    const shortestTypeArgDepth = minZero(...typeArgsDepths.map(s => s.shortest));
-    const shortestPropertyDepth = minZero(...propertyDepths.map(s => s.shortest));
-    //  MAX on shortest like in an intersection type; can't just pick the type arguments or the property types;
-    //  we need to get to the bottom of both
-    const shortest = Math.max(shortestTypeArgDepth, shortestPropertyDepth);
-
-    const longestTypeArgDepth = maxZero(...typeArgsDepths.map(s => s.longest));
-    const longestPropertyDepth = maxZero(...propertyDepths.map(s => s.longest));
-    const longest = Math.max(longestTypeArgDepth, longestPropertyDepth);
-
-    const depth: SelfReferentiality = {
-        pathToHere,
-        shortest,
-        longest,
-        children: [...typeArgsDepths, ...propertyDepths],
-        typesToHere: typeStrings(checker, seen),
-    };
-
-    // console.log(`class or interface type ${checker.typeToString(type)} ${pathToHere} is ${JSON.stringify(depth)}`);
-
-    return depth;
-
-    throw new Error(`Not ready for type ${checker.typeToString(type)}`);
-};
-
-
-//  TODO: at some point create jq-compatible paths in pathToHere for neatness
-function generatorator(configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: PathSegment[]): GeneratorWrapper {
+//  returns null if there is insufficient depth to generate a value
+function generatorator(configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: PathSegment[]): GeneratorWrapper | undefined {
     if (state.numberOfLevelsAvailable < 0) {
-        console.trace(`Unexpected negative distance to floor is ${state.numberOfLevelsAvailable}; path to here is ${pathToString(checker, path)}`);
-        const gw: GeneratorWrapper = {
-            path,
-            type,
-            shortest: 0,
-            longest: 0,
-            generator: fixedValueGeneratorFactory('literalValueGeneratorFactory', undefined),
-        };
-        return gw;
+        return undefined;
     }
 
     const factories: ValueGenerator[] = [
@@ -1645,45 +1369,6 @@ function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclarati
     }
 
     const MAXIMUM_DEPTH = 6;
-    const minimumDepths: number[] = [];
-    const allDepths: SelfReferentiality[] = [];
-    for (let j = 0; j < f.parameters.length; j++) {
-        const parameter = f.parameters[j];
-        const ptypeNode = parameter.type;
-        if (!ptypeNode) {
-            throw new Error(`Parameter ${j} of ${f.name?.getText()} has no type node`);
-        }
-
-        const ptype = checker.getTypeFromTypeNode(ptypeNode);
-        const depth = getTypeDepth(checker, ptype, [`[${j}]`], []);
-        minimumDepths.push(depth.shortest);
-        allDepths.push(depth);
-    }
-
-    console.log(`Depths ${JSON.stringify(allDepths, null, 2)}`);
-
-    const lowestMinimum = minZero(...minimumDepths);
-    const highestMinimum = maxZero(...minimumDepths);
-
-    const depthReport = minimumDepths.map((shortest, parameterIndex) => {
-        const p = f.parameters[parameterIndex];
-
-        const name = p.name?.getText();
-
-        const typeNode = p.type;
-        const parameterType = typeNode
-            ? checker.getTypeAtLocation(typeNode)
-            : checker.getAnyType();
-
-        return {
-            index: parameterIndex,
-            name,
-            shortest: shortest === Infinity ? 'Infinity' : shortest,
-            type: checker.typeToString(parameterType),
-        };
-    });
-
-    console.log(`Depths ${lowestMinimum}-${highestMinimum}; max = ${MAXIMUM_DEPTH} - ${JSON.stringify(depthReport, null, 2)}`);
 
     let previousValuesByType: Map<ts.Type, any>[] = [];
 
@@ -1692,7 +1377,7 @@ function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclarati
     let generappersByTypeByDepth = new Map<number, Map<ts.Type, GeneratorWrapper>>();
     //  do a batch at each depth level then start again from the lowest
     while (true) {
-        for (let currentDepthLimit = highestMinimum; currentDepthLimit < MAXIMUM_DEPTH; currentDepthLimit++) {
+        for (let currentDepthLimit = 0; currentDepthLimit < MAXIMUM_DEPTH; currentDepthLimit++) {
             //  1p, 4p, 9p, 16p, 25p
             const maxValuesAtThisDepth = f.parameters.length * 2 * ((1 + currentDepthLimit) ** 2);
             let valuesYieldedAtThisDepth = 0;
@@ -1707,7 +1392,9 @@ function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclarati
                 literals,
             };
 
+            const parametersExceedingMinimumDepth: number[] = [];
             let generappersByType = generappersByTypeByDepth.get(currentDepthLimit);
+            const generappersByPosition: GeneratorWrapper[] = [];
             if (!generappersByType) {
                 generappersByType = new Map<ts.Type, GeneratorWrapper>();
                 //  don't try to convert this to the factory/generator style because function declarations require
@@ -1728,13 +1415,26 @@ function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclarati
                         ? checker.getTypeAtLocation(t)
                         : checker.getAnyType();
 
-                    const typeGenerator = generappersByType.get(currentType);
-                    if (!typeGenerator) {
-                        const generator = generatorator(configuration, checker, state, currentType, []);
-                        const t = checker.typeToString(currentType);
-                        generappersByType.set(currentType, generator);
+                    let generapper = generappersByType.get(currentType);
+                    if (!generapper) {
+                        generapper = generatorator(configuration, checker, state, currentType, []);
+                        if (generapper) {
+                            const t = checker.typeToString(currentType);
+                            generappersByType.set(currentType, generapper);
+                            if (generapper.shortest > currentDepthLimit) {
+                                parametersExceedingMinimumDepth.push(j);
+                            }
+                            generappersByPosition.push(generapper);
+                        } else {
+                            parametersExceedingMinimumDepth.push(j);
+                        }
                     }
                 }
+            }
+
+            if (parametersExceedingMinimumDepth.length > 0) {
+                console.log(`${parametersExceedingMinimumDepth.length} parameters exceed minimum depth ${currentDepthLimit}; skipping - ${parametersExceedingMinimumDepth.map(i => `${i}:${generappersByPosition[i]?.shortest ?? -1}`).join(', ')}}`);
+                continue;
             }
 
             while (valuesYieldedAtThisDepth < maxValuesAtThisDepth) {
