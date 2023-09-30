@@ -266,6 +266,7 @@ export async function shatterAutotest(modulePaths: string[],
     const maxShrinkGenerations = 10;
     const minResultsPerCluster = 4;
 
+    //  TODO: prioritize variation in simpler types, e.g. numbers, over variation in more complex types, e.g. Maps
     while (count < maxIterations && Date.now() - startTime < maxTime) {
         const toSeed = Math.max(introspectionContext.instrumentedLines.size - allExecutedLines.size, 5) * maxSeeds;
         const seedStart = Date.now();
@@ -311,7 +312,7 @@ export async function shatterAutotest(modulePaths: string[],
 
     console.log(`Finished after ${count} iterations and ${Date.now() - startTime}ms with ${allExecutedLines.size}/${introspectionContext.instrumentedLines.size} lines executed`);
 
-    return { executed, instrumented, clusters };
+    return { count, executed, instrumented, clusters };
 }
 
 

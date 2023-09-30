@@ -44,6 +44,7 @@ export class Supervisor {
     private count = 0;
 
     private resultBySpecimen = new Map<string, RunResult>();
+    //  TODO: this may not be the place to prevent reruns; perhaps the caller?
     private attemptedInvocations = new Set<string>();
 
     private invocationMetaSpecimen = new Map<string, InvocationMeta>();

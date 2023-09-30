@@ -469,6 +469,7 @@ describe('scratch space 2', () => {
 
 describe('extension', () => {
     it('should pass', async () => {
+        console.log("exjjeectuing");
         const sourceCode = `
         function hello(n:number, msgKey:string, messages:Map<string, string>, s_unused:Set<number>) {
             if (n <= 0) {
@@ -491,16 +492,16 @@ describe('extension', () => {
                     break;
                 }
                 case 10: {
-                    console.log("n is 10");
+                    console.log(\`1010 n is \${n}, msgKey = \${msgKey}\`);
                     break;
                 }
                 case 15: {
-                    console.log("n is 15");
+                    console.log(\`1515 n is \${n}, msgKey = \${msgKey}\`);
                     break;
                 }
                 case 40:
-                case 41: {
-                    console.log("n is 40 or 41");
+                    case 41: {
+                    console.log(\`444 n is \${n}, msgKey = \${msgKey}\`);
                     break;
                 }
             }
@@ -532,18 +533,29 @@ describe('extension', () => {
         const maxIterations = 500;
         // const maxTime = 120_000;
         const maxTime = 10_000;
-        const { executed, instrumented } = await shatterAutotest(modulePaths, testfile, tempdir, functionName, (clusters) => {
+        const inBand = true;
+        const { executed, instrumented, clusters } = await shatterAutotest(modulePaths, testfile, tempdir, functionName, (clusters) => {
             // console.log(`Received clusters ${JSON.stringify(clusters, null, 2)}`);
-        }, { shatterproofModuleOverride, maxIterations, maxTime });
+        }, { shatterproofModuleOverride, maxIterations, maxTime, inBand, });
         const unexecuted = instrumented.filter((i) => !executed.includes(i));
         console.log(`Executed     ${executed}`);
         console.log(`Instrumented ${instrumented}`);
         console.log(`Missed       ${unexecuted}`);
+
+        const testCases: GeneratedParameter[][] = [];
+        clusters.forEach((cluster) => {
+            cluster.specimens.forEach((specimen) => {
+                testCases.push(specimen.parameters);
+            });
+        });
+
+        console.log(`Test cases: ${JSON.stringify(testCases)}`);
     });
 });
 
 describe('extensionensiondate ', () => {
     it('should should pass', async () => {
+        console.log("fdkljliasdfas");
         const sourceCode = `
         function timeDifference(targetDate: Date, baseDate: Date): string {
             let difference = targetDate.getTime() - baseDate.getTime();
@@ -624,7 +636,8 @@ describe('extensionensiondate ', () => {
 });
 
 describe('extensionensionddfdsf', () => {
-    it('should should pass', async () => {
+    it('should should pass pass', async () => {
+        console.log("6398dfshkjh32");
         const sourceCode = `
         class C { }
 
@@ -730,6 +743,7 @@ describe('infinitue', () => {
 
 describe('complicated', () => {
     it('should pass', async () => {
+        console.log("gv90gf9y453hjvd");
 
         //  TODO: duh
         const testfile = "/home/ketan/project/shatter/examples/typescript/src/query-creator.ts";
