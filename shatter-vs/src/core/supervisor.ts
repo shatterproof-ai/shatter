@@ -50,7 +50,9 @@ const canonicalizeInvocation = (meta: InvocationMeta) => {
 export class Supervisor {
     private busyWorkers = new Map<number, string>();
     private availableWorkers = new Set<number>();
-    private workers = new Map<number, WorkerMeta>();
+    private activeWorkers = new Map<number, WorkerMeta>();
+    //  TODO: worker accounting is broken somewhere and there are leaks; this is a blunt force attempt to clean up better
+    private allWorkersEver = new Set<WorkerMeta>();
     private count = 0;
 
     private resultBySpecimen = new Map<string, RunResult>();
@@ -129,7 +131,7 @@ export class Supervisor {
 
     purgeWorker(wm: WorkerMeta) {
         clearTimeout(wm.timeoutId);
-        this.workers.delete(wm.workerNumber);
+        this.activeWorkers.delete(wm.workerNumber);
         this.busyWorkers.delete(wm.workerNumber);
         this.availableWorkers.delete(wm.workerNumber);
         wm.worker.terminate();
@@ -231,7 +233,7 @@ export class Supervisor {
             if (this.availableWorkers.size > 0) {
                 const first = this.availableWorkers.values().next();
                 const workerNumber: number = first.value;
-                const reworker = this.workers.get(workerNumber);
+                const reworker = this.activeWorkers.get(workerNumber);
                 if (reworker) {
                     // console.log(`Reusing worker ${reworker}`);
                     this.availableWorkers.delete(workerNumber);
@@ -258,6 +260,7 @@ export class Supervisor {
                     NODE_PATH,
                 }
             });
+
             newWorker.stderr.on('data', (data) => {
                 //  TODO: do nothing for now
             });
@@ -291,7 +294,8 @@ export class Supervisor {
                 invocations: 0,
             };
 
-            this.workers.set(currentWorkerNumber, wwmm);
+            this.activeWorkers.set(currentWorkerNumber, wwmm);
+            this.allWorkersEver.add(wwmm);
             return wwmm;
         })();
 
@@ -330,10 +334,10 @@ export class Supervisor {
             }
         };
 
-        console.log(`Draining with ${this.workers.size} workers`);
+        console.log(`Draining with ${this.activeWorkers.size} workers`);
         const waitDuration = 100;
         await waitSome(waitDuration, timeout / waitDuration);
-        console.log(`Finished draining after ${Date.now() - start} ms with ${this.workers.size}`);
+        console.log(`Finished draining after ${Date.now() - start} ms with ${this.activeWorkers.size}`);
     }
 
     async terminate(timeout = 10_000) {
@@ -343,19 +347,19 @@ export class Supervisor {
         const waitSome = async (delay: number, max: number) => {
             let count = 0;
             const start = Date.now();
-            while (this.workers.size > 0 && count++ < max) {
+            while (this.activeWorkers.size > 0 && count++ < max) {
                 //  sort of busy waiting
                 // console.log(`Waiting with ${activeWorkers.size} active workers`)
                 await new Promise((resolve) => setTimeout(resolve, delay));
                 if (Date.now() - start > timeout) {
-                    console.error(`Timed out waiting for workers ${Array.from(this.workers.values()).map(w => w.workerNumber).join(", ")} to finish`);
+                    console.error(`Timed out waiting for workers ${Array.from(this.activeWorkers.values()).map(w => w.workerNumber).join(", ")} to finish`);
                     return;
                 }
             }
         };
 
         //  TODO: determine appropriate semantics of exit; does it interrupt execution or is it graceful?
-        for (const workerMeta of this.workers.values()) {
+        for (const workerMeta of this.allWorkersEver.values()) {
             console.log(`Terminating worker ${workerMeta.workerNumber}`);
             workerMeta.worker.terminate();
         }
