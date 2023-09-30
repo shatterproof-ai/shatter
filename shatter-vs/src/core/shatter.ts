@@ -252,7 +252,6 @@ export async function shatterAutotest(modulePaths: string[],
                 sequenceInType: typeCounts[basimen.type]++,
                 ...basimen,
             };
-            console.log(`=====> Adding specimen ID ${specimenId}`);
             specimensById.set(specimenId, newSpecimen);
             // console.log(`Evaluating specimen ${JSON.stringify(newSpecimen)}`);
             await supervisor.execute(functionName, newSpecimen, (invocation: Invocation, result: RunResult) => {

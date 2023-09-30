@@ -7,7 +7,7 @@ export function work(functions: Record<string, Function>, workerNumber: number, 
     const { invocation, specimenId, generatedParameters }: InvocationMeta = message;
     const { functionName, serializedParameterValues }: Invocation = invocation;
 
-    console.log(`worker ${workerNumber} executing ${functionName} for ${specimenId}`);
+    // console.log(`worker ${workerNumber} executing ${functionName} for ${specimenId}`);
     const resolvedParameters = generatedParameters.map(extractGeneratedParameterValue);
 
     const executedBranches = new Set<string>();
@@ -42,7 +42,7 @@ export function work(functions: Record<string, Function>, workerNumber: number, 
                 linesInOrder: ic.linesInOrder
             };
 
-            console.log(`worker ${workerNumber} finishing ${functionName} for ${specimenId}`);
+            // console.log(`worker ${workerNumber} finishing ${functionName} for ${specimenId}`);
 
             return result;
         };
