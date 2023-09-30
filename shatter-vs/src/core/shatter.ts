@@ -578,7 +578,9 @@ async function knead(evaluateSpecimen: (b: BaseSpecimen) => Promise<string | und
         throw new Error(`No clusters to breed`);
     }
 
-    const clusters = Array.from(clustersByKey.values());
+    const clusters = Array.from(clustersByKey.values())
+        //  don't bother to hybridize errors, timeouts, or failures; the most we want to do there is bisect
+        .filter(c => c.outcome === 'completed');
     for (let index = 0; index < parameterDeclarations.length; index++) {
 
         const required = !parameterDeclarations[index].questionToken;
