@@ -484,11 +484,11 @@ describe('extension', () => {
             
             switch (n) {
                 case 3: {
-                    console.log("n is 3");
+                    console.log(\`333 n is \${n}, msgKey = \${msgKey}\`);
                     break;
                 }
                 case 6: {
-                    console.log("n is 6");
+                    console.log(\`666 n is \${n}, msgKey = \${msgKey}\`);
                     break;
                 }
                 case 10: {
