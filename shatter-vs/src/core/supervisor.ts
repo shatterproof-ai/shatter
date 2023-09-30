@@ -37,6 +37,16 @@ interface WorkerMeta extends WorkerSetup {
     timeoutId?: NodeJS.Timeout
 }
 
+const canonicalizeInvocation = (meta: InvocationMeta) => {
+    const resolvedParameters = meta.generatedParameters.map(extractGeneratedParameterValue);
+    const canonicalized = serializeJavascript({
+        functionName: meta.invocation.functionName,
+        resolvedParameters
+    });
+
+    return canonicalized;
+};
+
 export class Supervisor {
     private busyWorkers = new Map<number, string>();
     private availableWorkers = new Set<number>();
@@ -163,17 +173,18 @@ export class Supervisor {
             functionName, serializedParameterValues,
         };
 
-        const strung = serializeJavascript({ functionName, parameters: specimen.parameters });
-        if (this.attemptedInvocations.has(strung)) {
-            return;
-        }
-
         const meta: InvocationMeta = {
             specimenId: specimen.id,
             invocation,
             generatedParameters: specimen.parameters,
             launched: Date.now(),
         };
+
+        const canonicalizedInvocation = canonicalizeInvocation(meta);
+        if (this.attemptedInvocations.has(canonicalizedInvocation)) {
+            return;
+        }
+        this.attemptedInvocations.add(canonicalizedInvocation);
 
         //  store metadata in a map because workers get reused, so we can't capture the metadata
         //  from the surrounding scope in a closure for the out-of-band version; that only works
