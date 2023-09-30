@@ -472,7 +472,7 @@ describe('extension', () => {
     it('should pass', async () => {
         console.log("exjjeectuing");
         const sourceCode = `
-        export function hello(n:number, msgKey:string, messages:Map<string, string>, s_unused:Set<number>) {
+        function hello(n:number, msgKey:string, messages:Map<string, string>, s_unused:Set<number>) {
             if (n <= 0) {
                 throw new Error("n must be at least 1");
             }
@@ -558,7 +558,7 @@ describe('extensionensiondate ', () => {
     it('should should pass', async () => {
         console.log("fdkljliasdfas");
         const sourceCode = `
-        export function timeDifference(targetDate: Date, baseDate: Date): string {
+        function timeDifference(targetDate: Date, baseDate: Date): string {
             let difference = targetDate.getTime() - baseDate.getTime();
             const future = difference > 0;
         

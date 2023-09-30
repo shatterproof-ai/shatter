@@ -328,24 +328,32 @@ export const createInstrumenter = (introspectionContext: IntrospectionContext, s
             };
 
             if (ts.isFunctionDeclaration(node)) {
+                const newModifiers = [...node.modifiers ?? []];
                 if (node.parent === node.getSourceFile()) { //  this means it's a top level function
-                    const modifiers = [...node.modifiers ?? []];
-
-                    if (node.body) {
-                        const modbod = instrumentBlock(factory, node.body);
-                        const newFunction = factory.createFunctionDeclaration(
-                            modifiers,
-                            node.asteriskToken,
-                            node.name,
-                            node.typeParameters,
-                            node.parameters,
-                            node.type,
-                            modbod
-                        );
-                        return newFunction;
-                    } else {
-                        throw new Error(`Function ${node.name?.text} has no body`);
+                    //  Export the function
+                    const exportModifier = newModifiers?.find(modifier => modifier.kind === ts.SyntaxKind.ExportKeyword);
+                    if (!exportModifier) {
+                        if (node.parent === node.getSourceFile()) { //  this means it's a top level function
+                            const newExportModifier = factory.createModifier(ts.SyntaxKind.ExportKeyword);
+                            newModifiers.push(newExportModifier);
+                        }
                     }
+                }
+
+                if (node.body) {
+                    const modbod = instrumentBlock(factory, node.body);
+                    const newFunction = factory.createFunctionDeclaration(
+                        newModifiers,
+                        node.asteriskToken,
+                        node.name,
+                        node.typeParameters,
+                        node.parameters,
+                        node.type,
+                        modbod
+                    );
+                    return newFunction;
+                } else {
+                    throw new Error(`Function ${node.name?.text} has no body`);
                 }
             }
 
@@ -374,6 +382,7 @@ export const createInstrumenter = (introspectionContext: IntrospectionContext, s
                 return newArrowFunction;
             }
 
+            //  TODO: if it's a top-level variable statement of a function or arrow function type, export it
             if (ts.isVariableStatement(node)) {
                 const newDeclarations = node.declarationList.declarations.map(d => {
                     if (!d.initializer) {
