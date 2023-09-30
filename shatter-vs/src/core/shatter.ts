@@ -813,7 +813,7 @@ function saveClusters(inputFile: string, storageBaseDirectory: string, functionN
 export function parse(sourceFilePath: string): [ts.Program, ts.SourceFile] {
 
     if (!sourceFilePath) {
-        throw new Error(`Could not find source file for function $${sourceFilePath}`);
+        throw new Error(`Could not find source file for function ${sourceFilePath}`);
     }
     const program = ts.createProgram([sourceFilePath], {});
 

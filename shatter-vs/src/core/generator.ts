@@ -521,7 +521,6 @@ function pathToString(checker: ts.TypeChecker, path: PathSegment[]) {
 //  does NOT validate its argument
 const mapValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: PathSegment[]) {
     if (!isTypeReference(type)) {
-        isTypeReference(type);
         throw new Error(`Unexpected type not a reference ${checker.typeToString(type)}`);
     }
 
@@ -1361,7 +1360,7 @@ function generatorator(configuration: GeneratorConfiguration, checker: ts.TypeCh
         }
     }
 
-    throw new Error(`Unexpected type ${type.flags} ${checker.typeToString(type)}`);
+    throw new Error(`Unable to handle type ${checker.typeToString(type)}`);
 }
 
 //  construct a stateful hierarchy of generators    
@@ -1403,14 +1402,6 @@ function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclarati
                 //  don't try to convert this to the factory/generator style because function declarations require
                 //  an AST Node not just a type
                 // const generators: G[] = [];
-
-                for (let i = 0; i < f.parameters.length; i++) {
-                    const parameter = f.parameters[i];
-                    const ptypeNode = parameter.type;
-                    if (!ptypeNode) {
-                        throw new Error(`Parameter ${i} of ${f.name?.getText()} has no type node`);
-                    }
-                }
 
                 for (let j = 0; j < f.parameters.length; j++) {
                     const t = f.parameters[j].type;
