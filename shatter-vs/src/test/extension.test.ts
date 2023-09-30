@@ -555,7 +555,7 @@ describe('extension', () => {
     });
 });
 
-describe('extensionensiondate ', () => {
+describe('extinction ', () => {
     it('should should pass', async () => {
         console.log("fdkljliasdfas");
         const sourceCode = `
@@ -640,7 +640,7 @@ describe('extensionensiondate ', () => {
     });
 });
 
-describe('extensionensionddfdsf', () => {
+describe('distinction', () => {
     it('should should pass pass', async () => {
         console.log("6398dfshkjh32");
         const sourceCode = `
