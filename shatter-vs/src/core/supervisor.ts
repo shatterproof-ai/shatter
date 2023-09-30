@@ -179,8 +179,8 @@ export class Supervisor {
         //  for the in-band version or the first run of the out-of-band version
         this.invocationMetaSpecimen.set(specimen.id, meta);
 
-        console.log(`#${this.count} at ${new Date()} - ${specimen.id} : ${specimen.parameters} is ${JSON.stringify(resolvedParameters)}`);
-        console.log(`${specimen.id} : ${JSON.stringify(specimen.parameters)}`);
+        // console.log(`#${this.count} at ${new Date()} - ${specimen.id} : ${specimen.parameters} is ${JSON.stringify(resolvedParameters)}`);
+        // console.log(`${specimen.id} : ${JSON.stringify(specimen.parameters)}`);
         this.count++;
 
         const start = Date.now();
