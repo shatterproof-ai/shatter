@@ -547,7 +547,7 @@ describe('extension', () => {
         const testCases: GeneratedParameter[][] = [];
         clusters.forEach((cluster) => {
             cluster.specimens.forEach((specimen) => {
-                testCases.push(specimen.parameters);
+                testCases.push(specimen.parameters.map(extractGeneratedParameterValue));
             });
         });
 
@@ -629,7 +629,7 @@ describe('extensionensiondate ', () => {
         const testCases: GeneratedParameter[][] = [];
         clusters.forEach((cluster) => {
             cluster.specimens.forEach((specimen) => {
-                testCases.push(specimen.parameters);
+                testCases.push(specimen.parameters.map(extractGeneratedParameterValue));
             });
         });
 
@@ -724,10 +724,10 @@ describe('extensionensionddfdsf', () => {
         console.log(`Instrumented ${instrumented}`);
         console.log(`Missed       ${unexecuted}`);
 
-        const testCases: string[] = [];
+        const testCases: any[] = [];
         clusters.forEach((cluster) => {
-            cluster.results.forEach((result) => {
-                testCases.push(result.serializedParameterValues);
+            cluster.specimens.forEach((specimen) => {
+                testCases.push(specimen.parameters.map(extractGeneratedParameterValue));
             });
         });
 
