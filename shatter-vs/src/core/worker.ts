@@ -20,6 +20,9 @@ export function work(functions: Record<string, Function>, workerNumber: number, 
     };
 
     const f = functions[functionName];
+    if (!f) {
+        throw new Error(`No function ${functionName} in ${Object.keys(functions)}`);
+    }
     return contextStorage.run(ic, async () => {
 
         const start = Date.now();

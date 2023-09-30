@@ -467,11 +467,12 @@ describe('scratch space 2', () => {
     });
 });
 
+
 describe('extension', () => {
     it('should pass', async () => {
         console.log("exjjeectuing");
         const sourceCode = `
-        function hello(n:number, msgKey:string, messages:Map<string, string>, s_unused:Set<number>) {
+        export function hello(n:number, msgKey:string, messages:Map<string, string>, s_unused:Set<number>) {
             if (n <= 0) {
                 throw new Error("n must be at least 1");
             }
@@ -557,7 +558,7 @@ describe('extensionensiondate ', () => {
     it('should should pass', async () => {
         console.log("fdkljliasdfas");
         const sourceCode = `
-        function timeDifference(targetDate: Date, baseDate: Date): string {
+        export function timeDifference(targetDate: Date, baseDate: Date): string {
             let difference = targetDate.getTime() - baseDate.getTime();
             const future = difference > 0;
         
