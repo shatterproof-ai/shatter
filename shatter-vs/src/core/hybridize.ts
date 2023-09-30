@@ -15,7 +15,7 @@ export function* hybridize(a: GeneratedParameter, b: GeneratedParameter): G {
 
     if (a.type === 'callable' || a.type === 'constructor' || a.type === 'intersection'
         || a.type === 'regexp' || a.type === 'class' || a.type === 'tuple') {
-            //  in theory regexps, classes, and tuples can be hybridized... later
+        //  in theory regexps, classes, and tuples can be hybridized... later
         return;
     }
     if (a.type === 'value' && b.type === 'value') {
@@ -52,7 +52,7 @@ export function* hybridize(a: GeneratedParameter, b: GeneratedParameter): G {
                 id: newId('hybrid-date'),
                 type: 'date',
                 generator: 'hybridize',
-                epochMs: Math.floor((a.epochMs + b.epochMs)/2),
+                epochMs: Math.floor((a.epochMs + b.epochMs) / 2),
             };
         }
 
@@ -301,7 +301,7 @@ function* hybridizeObjects(a: ObjectGeneratedParameter, b: ObjectGeneratedParame
             for (const key of commonKeys) {
                 candidate[key] = pickHybrid(a.properties[key], b.properties[key], interval);
             }
-            const gp:ObjectGeneratedParameter = {
+            const gp: ObjectGeneratedParameter = {
                 id: newId('hybrid-object'),
                 type: 'object',
                 generator: 'hybridize',
@@ -344,8 +344,8 @@ function* hybridizeMaps(a: MapGeneratedParameter, b: MapGeneratedParameter, inte
         for (let i = shorter.entries.length; i < shorter.entries.length + toTake; i++) {
             arr.push(longer.entries[i]);
         }
-        
-        const gp:MapGeneratedParameter = {
+
+        const gp: MapGeneratedParameter = {
             id: newId('hybrid-map'),
             type: 'map',
             generator: 'hybridize',

@@ -170,11 +170,11 @@ export const extractGeneratedParameterValue = (gp: GeneratedParameter): any => {
     }
     if (gp.type === 'constructor') {
         const v = extractGeneratedParameterValue(gp.constructed);
-        return (_:any) => v;
+        return (_: any) => v;
     }
     if (gp.type === 'callable') {
         const v = extractGeneratedParameterValue(gp.returnValue);
-        return (_:any) => {
+        return (_: any) => {
             return v;
         };
     }
@@ -190,24 +190,24 @@ export const extractGeneratedParameterValue = (gp: GeneratedParameter): any => {
 };
 
 export const compressRanges = (lines: number[]) => {
-	let currentRangeStart = lines[0];
-	let currentRangeEnd = lines[0];
-	const compressedRanges: [number, number][] = [];
-	for (let i = 1; i < lines.length; i++) {
-		if (currentRangeStart + 1 === lines[i]) {
-			currentRangeEnd = lines[i];
-		} else {
-			compressedRanges.push([currentRangeStart, currentRangeEnd]);
-			currentRangeStart = lines[i];
-			currentRangeEnd = lines[i];
-		}
-	}
+    let currentRangeStart = lines[0];
+    let currentRangeEnd = lines[0];
+    const compressedRanges: [number, number][] = [];
+    for (let i = 1; i < lines.length; i++) {
+        if (currentRangeStart + 1 === lines[i]) {
+            currentRangeEnd = lines[i];
+        } else {
+            compressedRanges.push([currentRangeStart, currentRangeEnd]);
+            currentRangeStart = lines[i];
+            currentRangeEnd = lines[i];
+        }
+    }
 
-	return compressedRanges;
+    return compressedRanges;
 };
 
-export const skip = <T, U, V>(g:Iterator<T, U, V>, n:number):T|undefined => {
-    let latest:T|undefined = undefined;
+export const skip = <T, U, V>(g: Iterator<T, U, V>, n: number): T | undefined => {
+    let latest: T | undefined = undefined;
     let i = 0;
     for (; i < n + 1; i++) {
         const it = g.next();
@@ -219,6 +219,6 @@ export const skip = <T, U, V>(g:Iterator<T, U, V>, n:number):T|undefined => {
     return latest;
 };
 
-export const newId = (type:string):string => {
+export const newId = (type: string): string => {
     return `${type}-${createId()}`;
 };

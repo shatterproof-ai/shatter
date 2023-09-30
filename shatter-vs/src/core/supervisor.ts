@@ -111,7 +111,7 @@ export class Supervisor {
         } else {
             this.availableWorkers.add(worker.workerNumber);
         }
-        
+
         this.processInvocationResult(invocationResult, onCompletion);
         this.busyWorkers.delete(worker.workerNumber);
     }

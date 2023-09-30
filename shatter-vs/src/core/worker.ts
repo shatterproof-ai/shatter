@@ -28,7 +28,7 @@ export function work(functions: Record<string, Function>, workerNumber: number, 
 
         const p = Promise.resolve(f.call(null, ...resolvedParameters));
 
-        const finishIt = (p:Partial<Pick<InvocationResult, 'output'|'error'>>) => {
+        const finishIt = (p: Partial<Pick<InvocationResult, 'output' | 'error'>>) => {
             const end = Date.now();
             const duration = end - start;
 
@@ -57,8 +57,8 @@ export function work(functions: Record<string, Function>, workerNumber: number, 
             * serious error, e.g. stack overflow
             * crash the VM, e.g. out of memory error
             */
-           console.error(`worker ${workerNumber} ${functionName} error for ${specimenId}: ${error} at ${error.stack}`);
-            return finishIt({ error: { message: '' + error, stack: error.stack} });
+            // console.error(`worker ${workerNumber} ${functionName} error for ${specimenId}: ${error} at ${error.stack}`);
+            return finishIt({ error: { message: '' + error, stack: error.stack } });
         });
     });
 }

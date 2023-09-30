@@ -141,7 +141,7 @@ type ValueGenerator = (configuration: GeneratorConfiguration, checker: ts.TypeCh
 const fixedValueGeneratorFactory = function* (generator: string, value: any): G {
 
     const subtype = typeof value;
-    if (! isValueSubtype(subtype)) {
+    if (!isValueSubtype(subtype)) {
         throw new Error(`Unexpected value type ${subtype}`);
     }
 
@@ -234,7 +234,7 @@ const simpleValueGeneratorFactory: ValueGenerator = function (configuration: Gen
     return undefined;
 };
 
-const enumValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: PathSegment[]):GeneratorWrapper|undefined {
+const enumValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: PathSegment[]): GeneratorWrapper | undefined {
     if (isEnumType(type)) {
         const enumValues = type.symbol.members;
         if (enumValues) {
@@ -563,7 +563,7 @@ const mapValueGeneratorFactory: ValueGenerator = function (configuration: Genera
     });
     const valGer = generatorator(configuration, checker, newState, valueType, newValuePath);
 
-    if (! keyGer || keyGer.shortest > newNumberOfLevelsAvailable || !valGer || valGer.shortest > newNumberOfLevelsAvailable) {
+    if (!keyGer || keyGer.shortest > newNumberOfLevelsAvailable || !valGer || valGer.shortest > newNumberOfLevelsAvailable) {
         const gw: GeneratorWrapper = {
             path,
             type,
@@ -935,11 +935,11 @@ const basicObjectValueGeneratorFactory: ValueGenerator = function (configuration
                     throw new Error(`Required property ${p.name}:${checker.typeToString(propertyType)} cannot be generated at depth ${configuration.depthLimit}: ${pathToString(checker, path)}`);
                 }
             } else {
-                if (! pgw) {
+                if (!pgw) {
                     continue;
                 }
             }
-            
+
             const isAllowed = pgw.shortest <= newNumberOfLevelsAvailable;
             if (!isAllowed && required.has(p.name)) {
                 //  TODO: custom error type
