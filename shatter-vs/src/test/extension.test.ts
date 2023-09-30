@@ -6,7 +6,8 @@ import { faker } from '@faker-js/faker';
 import * as ts from 'typescript';
 import { shatterAutotest } from "../core/shatter";
 import { stringFakerses, optionVariantsMedium } from '../core/seed';
-import { GeneratedParameter } from '../core/common';
+import { GeneratedParameter, extractGeneratedParameterValue } from '../core/common';
+import { asyncs, finished, started } from '../core/util';
 namespace Nomen {
     export type Z = {
         a: number,
@@ -633,6 +634,9 @@ describe('extensionensiondate ', () => {
         });
 
         console.log(`Test cases: ${JSON.stringify(testCases)}`);
+        console.log(`open asyncs = ${Array.from(asyncs)}`);
+        console.log(`started = ${Array.from(started)}`);
+        console.log(`finished = ${Array.from(finished)}`);
     });
 });
 
@@ -727,7 +731,12 @@ describe('extensionensionddfdsf', () => {
             });
         });
 
-        console.log(`Test cases: ${testCases}`);
+        console.log(`Test cases: ${JSON.stringify(testCases)}`);
+        console.log(`open asyncs = ${Array.from(asyncs)}`);
+
+        const startedButNotFinished = Array.from(started).filter((s) => !finished.has(s));
+
+        console.log(`startedButNotFinished = ${Array.from(startedButNotFinished)}`);
     });
 });
 

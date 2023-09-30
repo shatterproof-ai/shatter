@@ -2,6 +2,7 @@ import { parentPort, workerData } from 'worker_threads';
 import { extractGeneratedParameterValue } from './common';
 import { ExecutionContext, contextStorage } from './recorder';
 import { Invocation, InvocationMeta, InvocationResult, WorkerSetup } from './worker-protocol';
+import { wrapAsync } from './util';
 
 export function work(functions: Record<string, Function>, workerNumber: number, message: any) {
     const { invocation, specimenId, generatedParameters }: InvocationMeta = message;
@@ -23,14 +24,21 @@ export function work(functions: Record<string, Function>, workerNumber: number, 
     if (!f) {
         throw new Error(`No function ${functionName} in ${Object.keys(functions)}`);
     }
-    return contextStorage.run(ic, async () => {
+    return contextStorage.run(ic, wrapAsync("worker", async () => {
 
         const start = Date.now();
         // console.log(`calling ${workerNumber} ${functionName} for ${specimenId} at ${new Date(start)}`);
         // const parameters = eval(serializedParameters)
 
         //  wrap in an async function to ensure that the result is a promise as a lowest common denominator thing
-        const p = Promise.resolve((async () => f.call(null, ...resolvedParameters))());
+        const p = Promise.resolve((async () => {
+            console.log(`worker ${workerNumber} executing ${functionName} for ${specimenId}`);
+            try {
+                return f.call(null, ...resolvedParameters);
+            } finally {
+                console.log(`worker ${workerNumber} executed ${functionName} for ${specimenId}`);
+            }
+        })());
 
         const finishIt = (p: Partial<Pick<InvocationResult, 'output' | 'error'>>) => {
             const end = Date.now();
@@ -64,11 +72,11 @@ export function work(functions: Record<string, Function>, workerNumber: number, 
             // console.error(`worker ${workerNumber} ${functionName} error for ${specimenId}: ${error} at ${error.stack}`);
             return finishIt({ error: { message: '' + error, stack: error.stack } });
         });
-    });
+    }));
 }
 
 // eslint-disable-next-line @typescript-eslint/ban-types
-export async function execute(functions: Record<string, Function>) {
+export const execute = wrapAsync("execute", async function (functions: Record<string, Function>) {
     //  running in band so don't act like a worker thread
     if (process.env.MAIN_PROCESS === '1') {
         return;
@@ -90,4 +98,4 @@ export async function execute(functions: Record<string, Function>) {
             });
         // const msg = serializeJavascript(result);
     });
-}
+});

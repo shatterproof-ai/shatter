@@ -7,6 +7,7 @@ import { execute, work } from './worker';
 import { basename, dirname, join } from 'path';
 import { symlinkSync } from 'fs';
 import { Specimen } from './generator';
+import { wrapAsync, wrapAsyncMethod } from './util';
 
 // eslint-disable-next-line @typescript-eslint/naming-convention
 export const Outcomes = ['completed', 'error', 'timeout', 'failed'] as const;
@@ -53,6 +54,8 @@ export class Supervisor {
     private activeWorkers = new Map<number, WorkerMeta>();
     //  TODO: worker accounting is broken somewhere and there are leaks; this is a blunt force attempt to clean up better
     private allWorkersEver = new Set<WorkerMeta>();
+    private exited = new Set<WorkerMeta>();
+    private purged = new Set<WorkerMeta>();
     private count = 0;
 
     private resultBySpecimen = new Map<string, RunResult>();
@@ -60,6 +63,8 @@ export class Supervisor {
     private attemptedInvocations = new Set<string>();
 
     private invocationMetaSpecimen = new Map<string, InvocationMeta>();
+
+    private terminated = false;
 
     private timeLimit = 1_000;
     constructor(
@@ -84,7 +89,10 @@ export class Supervisor {
 
         const meta = this.invocationMetaSpecimen.get(specimenId);
         if (!meta) {
-            console.error(`Unable to find invocation meta for specimen ${specimenId}`);
+            if (this.terminated) {
+                console.error(`Unable to find invocation meta for specimen ${specimenId}`);
+            }
+
             return;
         }
         // console.log(`Worker ${worker.workerNumber} for ${meta.invocation.functionName} completed`);
@@ -111,6 +119,7 @@ export class Supervisor {
 
     //  why have this separate from purgeWorker?
     onWorkerExit(worker: WorkerMeta,) {
+        this.exited.add(worker);
         this.purgeWorker(worker);
     }
 
@@ -135,6 +144,7 @@ export class Supervisor {
         this.busyWorkers.delete(wm.workerNumber);
         this.availableWorkers.delete(wm.workerNumber);
         wm.worker.terminate();
+        this.purged.add(wm);
     }
 
     stopWorker(wm: WorkerMeta, outcome: 'timeout' | 'error', onCompletion: (_: Invocation, __: RunResult) => void, error?: any) {
@@ -143,7 +153,9 @@ export class Supervisor {
 
         const meta = this.invocationMetaSpecimen.get(specimenId);
         if (!meta) {
-            console.error(`Unable to find invocation meta for specimen ${specimenId}`);
+            if (!this.terminated) {
+                console.error(`Unable to find invocation meta for specimen ${specimenId}`);
+            }
             return;
         }
         console.log(`Worker ${wm.workerNumber} for ${meta.invocation.functionName} ${outcome} ${error}...`);
@@ -168,6 +180,7 @@ export class Supervisor {
         onCompletion(meta.invocation, result);
     };
 
+    @wrapAsyncMethod
     async execute(functionName: string, specimen: Specimen, onCompletion: (_: Invocation, __: RunResult) => void) {
         const resolvedParameters = specimen.parameters.map(extractGeneratedParameterValue);
         const serializedParameterValues = serializeJavascript(resolvedParameters);
@@ -280,6 +293,9 @@ export class Supervisor {
             });
 
             newWorker.on('exit', () => {
+                if (!this.terminated) {
+                    console.log(`Worker ${worker.workerNumber} exited`);
+                }
                 this.onWorkerExit(worker);
             });
 
@@ -315,13 +331,14 @@ export class Supervisor {
         return worker.workerNumber;
     }
 
+    @wrapAsyncMethod
     async drain(timeout = 2_000) {
         if (this.inBand) {
             return;
         }
         const start = Date.now();
         // console.log("finishied draining");
-        const waitSome = async (delay: number, max: number) => {
+        const waitSome = wrapAsync("drain-wait", async (delay: number, max: number) => {
             let count = 0;
             while (this.busyWorkers.size > 0 && count++ < max) {
                 //  sort of busy waiting
@@ -332,7 +349,7 @@ export class Supervisor {
                     return;
                 }
             }
-        };
+        });
 
         console.log(`Draining with ${this.activeWorkers.size} workers`);
         const waitDuration = 100;
@@ -340,11 +357,13 @@ export class Supervisor {
         console.log(`Finished draining after ${Date.now() - start} ms with ${this.activeWorkers.size}`);
     }
 
+    @wrapAsyncMethod
     async terminate(timeout = 10_000) {
+        this.terminated = true;
         if (this.inBand) {
             return;
         }
-        const waitSome = async (delay: number, max: number) => {
+        const waitSome = wrapAsync("terminate-wait", async (delay: number, max: number) => {
             let count = 0;
             const start = Date.now();
             while (this.activeWorkers.size > 0 && count++ < max) {
@@ -356,16 +375,21 @@ export class Supervisor {
                     return;
                 }
             }
-        };
+        });
 
         //  TODO: determine appropriate semantics of exit; does it interrupt execution or is it graceful?
         for (const workerMeta of this.allWorkersEver.values()) {
-            console.log(`Terminating worker ${workerMeta.workerNumber}`);
-            workerMeta.worker.terminate();
+            if (!this.exited.has(workerMeta)) {
+                console.log(`Terminating worker ${workerMeta.workerNumber}`);
+                this.purgeWorker(workerMeta);
+            }
         }
+
 
         const waitDuration = 100;
         await waitSome(waitDuration, timeout / waitDuration);
         // console.log("finishied draining");
+        console.log(`Purged ${this.purged.size} = ${Array.from(this.purged).join(", ")}`);
+        console.log(`Exited ${this.exited.size} = ${Array.from(this.exited).join(", ")}`);
     }
 }

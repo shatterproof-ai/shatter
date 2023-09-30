@@ -1,4 +1,5 @@
 import { distance as levenshtein } from 'fastest-levenshtein';
+import { newId } from './common';
 
 //  based on https://github.com/erdtman/canonicalize (Apache licensed)
 //  for some reason the import wasn't working with the library
@@ -150,4 +151,46 @@ export function computeDistance(a: any, b: any): number {
     }
 
     throw new Error(`Unexpected type ${typeof a}`);
+}
+
+export const asyncs = new Set<string>();
+export const started = new Set<string>();
+export const finished = new Set<string>();
+
+//   const cachify = <T, A extends [any] | any[]>(fn: (...a: A) => Promise<T>): ((...args: A) => Promise<T>) => {
+
+export function wrapAsync<F extends (...args: any) => any>(name: string, f: F): ((...args: Parameters<F>) => ReturnType<F>) {
+    return function (...args: Parameters<F>): ReturnType<F> {
+        const id = newId(name);
+        asyncs.add(id);
+        started.add(id);
+        try {
+            //  TODO: what's the right this behavior?
+            const result = f.apply(null, args);
+            return result;
+        } finally {
+            asyncs.delete(id);
+            finished.add(id);
+        }
+    };
+}
+
+export function wrapAsyncMethod(originalMethod: any, context: ClassMethodDecoratorContext) {
+    const methodName = String(context.name);
+
+    function replacementMethod(this: any, ...args: any[]) {
+        const id = newId(methodName);
+        asyncs.add(id);
+        started.add(id);
+        try {
+            const result = originalMethod.call(this, ...args);
+            return result;
+
+        } finally {
+            asyncs.delete(id);
+            finished.add(id);
+        }
+    }
+
+    return replacementMethod;
 }
