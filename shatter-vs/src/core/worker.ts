@@ -1,15 +1,15 @@
 import { parentPort, workerData } from 'worker_threads';
-import { extractGeneratedParameterValue } from './common';
+import { rehydrateGeneratedParameterValue } from './common';
 import { ExecutionContext, contextStorage } from './recorder';
 import { Invocation, InvocationMeta, InvocationResult, WorkerSetup } from './worker-protocol';
 import { wrapAsync } from './util';
 
-export function work(functions: Record<string, Function>, workerNumber: number, message: any) {
+export function work(activeModule: any, workerNumber: number, message: any) {
     const { invocation, specimenId, generatedParameters }: InvocationMeta = message;
     const { functionName, serializedParameterValues }: Invocation = invocation;
 
     // console.log(`worker ${workerNumber} executing ${functionName} for ${specimenId}`);
-    const resolvedParameters = generatedParameters.map(extractGeneratedParameterValue);
+    const resolvedParameters = generatedParameters.map(gp => rehydrateGeneratedParameterValue(gp, activeModule));
 
     const executedBranches = new Set<string>();
 
@@ -20,9 +20,9 @@ export function work(functions: Record<string, Function>, workerNumber: number, 
         linesInOrder: [],
     };
 
-    const f = functions[functionName];
+    const f = activeModule[functionName];
     if (!f) {
-        throw new Error(`No function ${functionName} in ${Object.keys(functions)}`);
+        throw new Error(`No function ${functionName} in ${Object.keys(activeModule)}`);
     }
     return contextStorage.run(ic, wrapAsync("worker", async () => {
 

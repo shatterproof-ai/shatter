@@ -72,7 +72,8 @@ export interface IntersectionGeneratedParameter extends BaseGeneratedParameter {
 
 export interface ClassGeneratedParameter extends BaseGeneratedParameter {
     type: 'class',
-    instance: any,
+    fullyQualifiedName: string,
+    parameters: GeneratedParameter[],
 }
 
 export interface MapGeneratedParameter extends BaseGeneratedParameter {
@@ -95,11 +96,6 @@ export interface RegExpGeneratedParameter extends BaseGeneratedParameter {
     pattern: string,
 }
 
-export interface ConstructorGeneratedParameter extends BaseGeneratedParameter {
-    type: 'constructor',
-    constructed: GeneratedParameter,
-}
-
 export interface CallableGeneratedParameter extends BaseGeneratedParameter {
     type: 'callable',
     returnValue: GeneratedParameter,
@@ -117,9 +113,13 @@ export interface ObjectGeneratedParameter extends BaseGeneratedParameter {
     declaredType: string,
 }
 
-export type GeneratedParameter = ValueGeneratedParameter | ArrayGeneratedParameter | TupleGeneratedParameter | IntersectionGeneratedParameter | ClassGeneratedParameter | MapGeneratedParameter | SetGeneratedParameter | DateGeneratedParameter | RegExpGeneratedParameter | ConstructorGeneratedParameter | CallableGeneratedParameter | TerminalGeneratedParameter | ObjectGeneratedParameter;
+export type GeneratedParameter = ValueGeneratedParameter | ArrayGeneratedParameter | TupleGeneratedParameter | IntersectionGeneratedParameter | ClassGeneratedParameter | MapGeneratedParameter | SetGeneratedParameter | DateGeneratedParameter | RegExpGeneratedParameter | CallableGeneratedParameter | TerminalGeneratedParameter | ObjectGeneratedParameter;
 
-export const extractGeneratedParameterValue = (gp: GeneratedParameter): any => {
+const extractGeneratedParameterValues = (gp: GeneratedParameter, rehydrate:boolean, activeModule: any): any => {
+    function extractor(gp: GeneratedParameter): any {
+        return extractGeneratedParameterValues(gp, rehydrate, activeModule);
+    }
+
     if (gp.type === 'terminal') {
         return undefined;
     }
@@ -128,52 +128,84 @@ export const extractGeneratedParameterValue = (gp: GeneratedParameter): any => {
     }
     if (gp.type === 'array') {
         if (gp.elements) {
-            return gp.elements.map(extractGeneratedParameterValue);
+            return gp.elements.map(extractor);
         }
         throw new Error(`Unexpected missing elements in array gp ${JSON.stringify(gp)}`);
     }
     if (gp.type === 'object') {
         const o: Record<string, any> = {};
         Object.entries(gp.properties).forEach(([k, v]) => {
-            o[k] = extractGeneratedParameterValue(v);
+            o[k] = extractor(v);
         });
         return o;
     }
     if (gp.type === 'map') {
+        if (!rehydrate) {
+            return gp.entries;
+        }
         const m = new Map();
         gp.entries.forEach(([k, v]) => {
-            const key = extractGeneratedParameterValue(k);
-            const value = extractGeneratedParameterValue(v);
+            const key = extractor(k);
+            const value = extractor(v);
             m.set(key, value);
         });
         return m;
     }
     if (gp.type === 'set') {
+        if (!rehydrate) {
+            return gp.entries;
+        }
         const s = new Set();
         gp.entries.forEach((v) => {
-            const value = extractGeneratedParameterValue(v);
+            const value = extractor(v);
             s.add(value);
         });
         return s;
     }
     if (gp.type === 'date') {
-        return new Date(gp.epochMs);
+        if (rehydrate) {
+            return new Date(gp.epochMs);
+        }
+        return gp.epochMs;
     }
     if (gp.type === 'regexp') {
+        if (!rehydrate) {
+            return gp.pattern;
+        }
         return new RegExp(gp.pattern);
     }
     if (gp.type === 'class') {
-        return gp.instance;
+        //  We are guaranteed that the given class is in the current/global
+        //  scope because it's declared in the signature of the function under test
+        if (!rehydrate) {
+            return {
+                className: gp.fullyQualifiedName,
+                parameters: gp.parameters.map(extractor),
+            };
+        }
+        
+        const classRef = (activeModule as any)[gp.fullyQualifiedName];
+        if (!classRef) {
+            const keyses = Object.keys(activeModule);
+            const exportses = Object.keys(activeModule);
+            throw new Error(`Class ${gp.fullyQualifiedName} not found in module scope; available keys: ${keyses.join(', ')}, exportses = ${exportses.join(', ')}}`);
+        }
+
+        const resolvedParameters = gp.parameters.map(extractor);
+
+        const instance = new classRef(resolvedParameters);
+        return instance;
     }
     if (gp.type === 'tuple') {
-        return gp.values.map(extractGeneratedParameterValue);
-    }
-    if (gp.type === 'constructor') {
-        const v = extractGeneratedParameterValue(gp.constructed);
-        return (_: any) => v;
+        return gp.values.map(extractor);
     }
     if (gp.type === 'callable') {
-        const v = extractGeneratedParameterValue(gp.returnValue);
+        if (!rehydrate) {
+            return {
+                returnValue: extractor(gp.returnValue),
+            };
+        }
+        const v = extractor(gp.returnValue);
         return (_: any) => {
             return v;
         };
@@ -181,13 +213,19 @@ export const extractGeneratedParameterValue = (gp: GeneratedParameter): any => {
     if (gp.type === 'intersection') {
         const merged: any = {};
         for (const part of gp.parts) {
-            const o = extractGeneratedParameterValue(part);
+            const o = extractor(part);
             Object.assign(merged, o);
         }
         return merged;
     }
     throw new Error(`Unexpected type ${gp['type']}`);
 };
+
+export const extractGeneratedParameterValue = (gp: GeneratedParameter): any => 
+     extractGeneratedParameterValues(gp, false, {});
+    
+export const rehydrateGeneratedParameterValue = (gp: GeneratedParameter, activeModule:any): any =>
+    extractGeneratedParameterValues(gp, true, activeModule);
 
 export const compressRanges = (lines: number[]) => {
     let currentRangeStart = lines[0];

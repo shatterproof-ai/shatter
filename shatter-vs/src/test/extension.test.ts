@@ -473,7 +473,13 @@ describe('extension', () => {
     it('should pass', async () => {
         console.log("exjjeectuing");
         const sourceCode = `
-        function hello(n:number, msgKey:string, messages:Map<string, string>, s_unused:Set<number>) {
+
+        class Numbererer {
+            constructor(public n:number) { }
+        }
+
+        function hello(nn:Numbererer, msgKey:string, messages:Map<string, string>, ) {
+            const n = nn.n;
             if (n <= 0) {
                 throw new Error("n must be at least 1");
             }
@@ -737,6 +743,200 @@ describe('distinction', () => {
         const startedButNotFinished = Array.from(started).filter((s) => !finished.has(s));
 
         console.log(`startedButNotFinished = ${Array.from(startedButNotFinished)}`);
+    });
+});
+
+/*
+function getConstructorParameters(type: ts.Type, checker: ts.TypeChecker): ts.Symbol[] {
+    const constructor = type.symbol.members?.get(ts.InternalSymbolName.Constructor);
+    if (!constructor) {
+        throw new Error(`No constructor for ${checker.typeToString(type)}`);
+    }
+
+    if (ts.isdeclara) {
+
+    }
+
+    const parameters = constructor.valueDeclaration?.parameters;
+    if (!parameters) {
+        throw new Error(`No parameters for ${checker.typeToString(type)}`);
+    }
+    return parameters.map((p) => {
+        const symbol = checker.getSymbolAtLocation(p.name);
+        if (!symbol) {
+            throw new Error(`No symbol for ${p.name.getText()}`);
+        }
+        return symbol;
+    });
+}
+*/
+describe('class scratch fever', () => {
+
+    class AAAA {
+        public constructor() { }
+    };
+
+    const x = AAAA;
+    new x();
+
+    new AAAA();
+
+    it('does does', async () => {
+        const sourceCode = `
+
+        // import ts = require('typescript');
+
+        export namespace Nomen {
+            export class X {
+                public constructor(private n:number) {}
+            }
+        }
+
+        export class Y {
+            y = "hello";
+        }
+
+        class T {
+            // constructor(n:ts.Node, nnx:Nomen.X) {}
+            // constructor(nnx:Nomen.X) {}
+            constructor() {}
+            meth() {
+                const x = "man";
+            }
+        }
+
+        class Numbererer {
+            constructor(public n:number) { }
+        }
+
+        function faff(n:Numbererer) {}
+
+        `;
+
+        /*
+        1) compile the code above
+        2) parse it
+        3) extract the constructor
+        4) write  to a file
+        5) import it
+        6) instantiate it
+        */
+
+        const tempdir = mkdtempSync(join(tmpdir(), "shatter-test-"));
+        const sourceFilePath = join(tempdir, 'classcratch.ts');
+        writeFileSync(sourceFilePath, sourceCode);
+        console.log(`path = ${sourceFilePath}`);
+
+        const program = ts.createProgram([sourceFilePath], {});
+
+        const checker = program.getTypeChecker();
+
+        const source = program.getSourceFile(sourceFilePath);
+
+        const fqns: string[] = [];
+        const nems: string[] = [];
+
+        let belowDecl = false;
+        let depth = 0;
+        const visitor = (node: ts.Node) => {
+            if (ts.isConstructSignatureDeclaration(node)) {
+                const sigdec = checker.getSignatureFromDeclaration(node);
+                console.log(`Construct signature ${node.getText()} ${sigdec}`);
+            }
+            if (ts.isTypeReferenceNode(node)) {
+                console.log(`parent = ${node.parent.getText()}`);
+                const type = checker.getTypeAtLocation(node);
+                console.log(`basic type ${checker.typeToString(type)} type flags = ${type.flags}`);
+                
+                const tttt = checker.getTypeOfSymbol(type.symbol);
+                const constructors = checker.getSignaturesOfType(tttt, ts.SignatureKind.Construct);
+                const callables = checker.getSignaturesOfType(tttt, ts.SignatureKind.Call);
+
+                console.log(`symbol ${type.symbol.getName()} type ${checker.typeToString(tttt)} flags = ${type.flags} has ${constructors.length} constructors`);
+                if (constructors.length > 0) {
+                    const c = constructors[0];
+                    const params = c.getParameters().map((p) => [checker.typeToString(checker.getTypeOfSymbol(p)), p.getName()]);
+                    console.log(`params = ${JSON.stringify(params)}`);
+                }
+            }
+
+            if (ts.isClassDeclaration(node)) {
+                belowDecl = true;
+                const type = checker.getTypeAtLocation(node);
+                if (!type.isClass()) {
+                    throw new Error(`Expected class in declaration but got ${checker.typeToString(type)}`);
+                }
+
+                const descls = type.symbol.getDeclarations();
+                const cd = descls?.find((d) => (d.kind === ts.SyntaxKind.ClassDeclaration || d.kind === ts.SyntaxKind.ClassExpression));
+                if (cd) {
+                    const cdt = checker.getTypeAtLocation(cd);
+                    // console.log(`Class declaration ${(type as any).id} ${(cdt as any).id} ${cd.getText()} = ${checker.typeToString(cdt)}`);
+                }
+
+                const ttttt = checker.getTypeOfSymbolAtLocation(type.symbol, node);
+
+                const fqn = checker.getFullyQualifiedName(type.symbol);
+                fqns.push(fqn);
+                nems.push(type.symbol.getName());
+
+                // console.log(`Class ${type.symbol.getName()} => ${checker.getPropertiesOfType(type).map(s => s.getName()).join(", ")}`);
+
+                // const constructors = type.getConstructSignatures();
+                const constructors = checker.getSignaturesOfType(type, ts.SignatureKind.Construct);
+                const callables = checker.getSignaturesOfType(type, ts.SignatureKind.Call);
+                if (constructors.length === 0) {
+                    // console.log(`No constructors at depth ${depth} for ${node.getText()} with ${node.getChildCount()} children`);
+                } else {
+                    console.log(`${constructors.length} for ${node.getText()}`);
+                }
+
+                depth++;
+                node.getChildren().forEach((child) => {
+                    ts.visitNode(child, visitor);
+                });
+                depth--;
+                belowDecl = false;
+            } else {
+                if (belowDecl) {
+                    // console.log(`Child at depth ${depth} is ${ts.SyntaxKind[node.kind]}`);
+                }
+
+                if (ts.isFunctionDeclaration(node)) {
+                    node.parameters.forEach((p) => {
+                        const ptype = checker.getTypeAtLocation(p);
+                        const pctors = checker.getSignaturesOfType(ptype, ts.SignatureKind.Construct)
+                        console.log(`ptype = ${checker.typeToString(ptype)} => ${pctors.length} constructors`);
+                    });
+                }
+
+                depth++;
+                node.getChildren().forEach((child) => {
+                    ts.visitNode(child, visitor);
+                });
+                depth--;
+            }
+            return node;
+        };
+        ts.visitNode(source, visitor);
+
+        console.log(`fqns = ${JSON.stringify(fqns)}`);
+        console.log(`nems = ${JSON.stringify(nems)}`);
+
+        await import(sourceFilePath).then((m) => {
+            console.log(`m keys = ${Object.keys(m)}`);
+            const xclass = m['Nomen']['X'];
+            // console.log(`xclass = ${xclass}`);
+            const x = new xclass(5);
+
+            const yclass = m['Y'];
+            // console.log(`yclass = ${yclass}`);
+            const y = new yclass();
+
+            console.log(`x = ${x}, x.n = ${x.n}`);
+            console.log(`y = ${y}, y.y = ${y.y}`);
+        });
+
     });
 });
 

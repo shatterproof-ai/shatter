@@ -13,8 +13,8 @@ export function* hybridize(a: GeneratedParameter, b: GeneratedParameter): G {
         throw new Error(`Attempting unnatural hybridization of ${a.type} with ${b.type}`);
     }
 
-    if (a.type === 'callable' || a.type === 'constructor' || a.type === 'intersection'
-        || a.type === 'regexp' || a.type === 'class' || a.type === 'tuple') {
+    if (a.type === 'callable' || a.type === 'intersection'
+        || a.type === 'regexp' || a.type === 'tuple') {
         //  in theory regexps, classes, and tuples can be hybridized... later
         return;
     }
@@ -82,6 +82,28 @@ export function* hybridize(a: GeneratedParameter, b: GeneratedParameter): G {
     if (a.type === 'map' && b.type === 'map') {
         yield* hybridizeMaps(a, a, splitIntervals);
         return;
+    }
+
+    if (a.type === 'class' && b.type === 'class') {
+        for (const first of [true, false]) {
+            const newParameters: GeneratedParameter[] = [];
+            let aThenB = first;
+            for (let i = 0; i < a.parameters.length; i++) {
+                const p = aThenB ? a.parameters[i] : b.parameters[i];
+                newParameters.push(p);
+                aThenB = !aThenB;
+            }
+
+            const gp: GeneratedParameter = {
+                id: newId('hybrid-class'),
+                type: 'class',
+                generator: 'hybridize',
+                fullyQualifiedName: a.fullyQualifiedName,
+                parameters: newParameters,
+            };
+            yield gp;
+
+        }
     }
 
     throw new Error(`Unhandled input types ${a.type} from ${a.generator}:${a.id} and ${b.type} from ${b.generator}:${b.id}`);
@@ -534,7 +556,7 @@ export function* shrink(gp: GeneratedParameter): G {
         throw new Error("Cannot shrink undefined or null");
     }
 
-    if (gp.type === "callable" || gp.type === "constructor") {
+    if (gp.type === "callable") {
         return;
     }
 
@@ -738,7 +760,7 @@ export function* shrink(gp: GeneratedParameter): G {
     }
 
     if (gp.type === 'class') {
-        //  TODO: shrink classes (by only shrinking the value members not methods)
+        //  TODO: shrink classes by shrinking the elements in the parameter list
         return;
     }
 

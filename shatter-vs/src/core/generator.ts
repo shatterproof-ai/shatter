@@ -4,9 +4,10 @@ import { ResultCluster } from '../core/shatter';
 import { RunResult } from '../core/supervisor';
 import { Literals, edgyAny, edgyBooleans, edgyNumberRanges, edgyNumbers, edgyStrings } from './seed';
 import { keys, pick, set } from 'lodash';
-import { GeneratedParameter, extractGeneratedParameterValue, isValueSubtype, newId, valueSubtypes } from './common';
+import { GeneratedParameter, extractGeneratedParameterValue, isValueSubtype, newId, rehydrateGeneratedParameterValue, valueSubtypes } from './common';
 import { type } from 'os';
 import ts = require('typescript');
+import { wrapAsync } from './util';
 
 export type Mutation = {
     path: string[],
@@ -126,17 +127,23 @@ interface PathSegment {
     specifier: GeneratedParameter['generator'],
 }
 
+export interface RuntimeContext {
+    activeModule: any;
+}
+
+//  Critically important: the GeneratorWrapper is constructed upfront at analysis time,
+//      before the function under test is tested and possibly in a different thread or process
+//      its generator executes at runtime immediately before and possibly in a different thread or process
 //  TODO: make this generic around its GeneratedParameter type?
-//  ugh GeneratorWrapper what a dumb name
-interface GeneratorWrapper {
+interface GeneratorFactory {
     path: PathSegment[];
     shortest: number;
     longest: number;
     type: ts.Type,
-    generator: G,
+    generator: (g:RuntimeContext) => G,
 }
 
-type ValueGenerator = (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: PathSegment[]) => GeneratorWrapper | undefined;
+type ValueGenerator = (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: PathSegment[]) => GeneratorFactory | undefined;
 
 const fixedValueGeneratorFactory = function* (generator: string, value: any): G {
 
@@ -159,12 +166,12 @@ const fixedValueGeneratorFactory = function* (generator: string, value: any): G 
 
 const literalValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: PathSegment[]) {
     if (type.isLiteral()) {
-        const gw: GeneratorWrapper = {
+        const gw: GeneratorFactory = {
             path,
             type,
             shortest: 0,
             longest: 0,
-            generator: fixedValueGeneratorFactory('literalValueGeneratorFactory', type.value),
+            generator: (_:any) => fixedValueGeneratorFactory('literalValueGeneratorFactory', type.value),
         };
         return gw;
     }
@@ -175,12 +182,12 @@ const literalValueGeneratorFactory: ValueGenerator = function (configuration: Ge
         //  TODO: yuck
         const boolvalue = checker.typeToString(type) === checker.typeToString(t);
 
-        const gw: GeneratorWrapper = {
+        const gw: GeneratorFactory = {
             path,
             type,
             shortest: 0,
             longest: 0,
-            generator: fixedValueGeneratorFactory('literalValueGeneratorFactory', boolvalue),
+            generator: (_:any) => fixedValueGeneratorFactory('literalValueGeneratorFactory', boolvalue),
         };
         return gw;
     }
@@ -222,19 +229,19 @@ const simpleValueGeneratorFactory: ValueGenerator = function (configuration: Gen
                 }
             }
         };
-        const gw: GeneratorWrapper = {
+        const gw: GeneratorFactory = {
             path,
             type,
             shortest: 0,
             longest: 0,
-            generator: gSimpleValue(),
+            generator:gSimpleValue,
         };
         return gw;
     }
     return undefined;
 };
 
-const enumValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: PathSegment[]): GeneratorWrapper | undefined {
+const enumValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: PathSegment[]): GeneratorFactory | undefined {
     if (isEnumType(type)) {
         const enumValues = type.symbol.members;
         if (enumValues) {
@@ -252,12 +259,12 @@ const enumValueGeneratorFactory: ValueGenerator = function (configuration: Gener
                     }
                 }
             };
-            const gw: GeneratorWrapper = {
+            const gw: GeneratorFactory = {
                 path,
                 type,
                 shortest: 0,
                 longest: 0,
-                generator: gEnumValue(),
+                generator:  gEnumValue,
             };
             return gw;
         }
@@ -296,12 +303,12 @@ const arrayValueGenerator: ValueGenerator = function (configuration: GeneratorCo
     }
 
     if (state.numberOfLevelsAvailable <= 0) {
-        const emptyGw: GeneratorWrapper = {
+        const emptyGw: GeneratorFactory = {
             path,
             type,
             shortest: 0,
             longest: 0,
-            generator: generateEmpty(),
+            generator: generateEmpty,
         };
         return emptyGw;
     }
@@ -310,12 +317,12 @@ const arrayValueGenerator: ValueGenerator = function (configuration: GeneratorCo
     //  arrays as collections of unrelated elements
     //  we know state.numberOfLevelsAvailable > 0, and number[] has depth of 1, so we good
     if (elementType.flags & ts.TypeFlags.Number) {
-        const numberRangyGw: GeneratorWrapper = {
+        const numberRangyGw: GeneratorFactory = {
             path,
             type,
             shortest: 1,
             longest: 1,
-            generator: edgyNumberRanges(configuration.literals),
+            generator: (_:any) => edgyNumberRanges(configuration.literals),
         };
         return numberRangyGw;
     }
@@ -332,20 +339,20 @@ const arrayValueGenerator: ValueGenerator = function (configuration: GeneratorCo
     }));
 
     if (!elementGenerator || elementGenerator.shortest > newNumberOfLevelsAvailable) {
-        const emptyGw: GeneratorWrapper = {
+        const emptyGw: GeneratorFactory = {
             path,
             type,
             shortest: 0,
             longest: 0,
-            generator: generateEmpty(),
+            generator: generateEmpty,
         };
         return emptyGw;
     }
 
-    const egen = elementGenerator.generator;
-
+    
     const sizer = stupidSizer;
-    const gArray = function* (): G {
+    const gArray = function* (rc:RuntimeContext): G {
+        const egen = elementGenerator.generator(rc);
         while (true) {
             for (const count of sizer()) {
                 const a = [];
@@ -367,12 +374,12 @@ const arrayValueGenerator: ValueGenerator = function (configuration: GeneratorCo
         }
     };
 
-    const gw: GeneratorWrapper = {
+    const gw: GeneratorFactory = {
         path,
         type,
         shortest: 0,
         longest: 0,
-        generator: gArray(),
+        generator: gArray,
     };
     return gw;
 };
@@ -397,7 +404,7 @@ const intersectionValueGeneratorFactory: ValueGenerator = (configuration: Genera
 
     let shortest = 0;
     let longest = 0;
-    const generappers: GeneratorWrapper[] = [];
+    const generappers: GeneratorFactory[] = [];
     for (const subtype of type.types) {
         const gw = generatorator(configuration, checker, newState, subtype, newPath);
         if (gw && gw.shortest <= newNumberOfLevelsAvailable) {
@@ -416,14 +423,16 @@ const intersectionValueGeneratorFactory: ValueGenerator = (configuration: Genera
         return undefined;
     }
 
-    function* gIntersection(): G {
+    function* gIntersection(rc:RuntimeContext): G {
+        const generators:G[] = generappers.map(g => g.generator(rc));
+
         while (true) {
             //  intersecting types are always objects
             const parts: GeneratedParameter[] = [];
-            for (const generapper of generappers) {
-                const next = generapper.generator.next();
+            for (let i = 0; i < generappers.length; i++) {
+                const next = generators[i].next();
                 if (next.done) {
-                    throw new Error(`Generator ${generapper.constructor.name} is done`);
+                    throw new Error(`Generator ${generappers[i].constructor.name} is done`);
                 }
                 const o = next.value;
                 parts.push(o);
@@ -442,12 +451,12 @@ const intersectionValueGeneratorFactory: ValueGenerator = (configuration: Genera
     //  count the current intersection as a step
     shortest++;
     longest++;
-    const gw: GeneratorWrapper = {
+    const gw: GeneratorFactory = {
         path,
         type,
         shortest,
         longest,
-        generator: gIntersection(),
+        generator: gIntersection,
     };
 
     return gw;
@@ -470,7 +479,7 @@ const unionValueGeneratorFactory: ValueGenerator = function (configuration: Gene
 
     let shortest = 0;
     let longest = 0;
-    const generappers: GeneratorWrapper[] = [];
+    const generappers: GeneratorFactory[] = [];
     for (let i = 0; i < type.types.length; i++) {
         const tts = checker.typeToString(type.types[i]);
         const gw = generatorator(configuration, checker, newState, type.types[i], newPath);
@@ -490,13 +499,15 @@ const unionValueGeneratorFactory: ValueGenerator = function (configuration: Gene
         return undefined;
     }
 
-    const gUnion = function* () {
+    const gUnion = function* (rc:RuntimeContext) {
+        const generators = generappers.map(g => g.generator(rc));
+
         while (true) {
             //  TODO: run the shorter depth ones first
-            for (const generapper of generappers) {
-                const next = generapper.generator.next();
+            for (let i = 0; i < generappers.length; i++) {
+                const next = generators[i].next();
                 if (next.done) {
-                    throw new Error(`Generator ${generapper.constructor.name} is done`);
+                    throw new Error(`Generator ${generappers[i].constructor.name} is done`);
                 }
                 const gp = next.value;
                 yield gp;
@@ -504,12 +515,12 @@ const unionValueGeneratorFactory: ValueGenerator = function (configuration: Gene
         }
     };
 
-    const gw: GeneratorWrapper = {
+    const gw: GeneratorFactory = {
         path,
         type,
         shortest,
         longest,
-        generator: gUnion(),
+        generator: gUnion,
     };
     return gw;
 };
@@ -556,40 +567,42 @@ const mapValueGeneratorFactory: ValueGenerator = function (configuration: Genera
         type,
         specifier: '.key',
     });
-    const keyGer = generatorator(configuration, checker, newState, keyType, newKeyPath);
+    const keyGeneratorFactory = generatorator(configuration, checker, newState, keyType, newKeyPath);
 
     const newValuePath = path.concat({
         type,
         specifier: '.value',
     });
-    const valGer = generatorator(configuration, checker, newState, valueType, newValuePath);
+    const valueGeneratorFactory = generatorator(configuration, checker, newState, valueType, newValuePath);
 
-    if (!keyGer || keyGer.shortest > newNumberOfLevelsAvailable || !valGer || valGer.shortest > newNumberOfLevelsAvailable) {
-        const gw: GeneratorWrapper = {
+    if (!keyGeneratorFactory || keyGeneratorFactory.shortest > newNumberOfLevelsAvailable || !valueGeneratorFactory || valueGeneratorFactory.shortest > newNumberOfLevelsAvailable) {
+        const gw: GeneratorFactory = {
             path,
             type,
             shortest: 0,
             longest: 0,
-            generator: generateEmpty(),
+            generator: generateEmpty,
         };
         return gw;
     }
 
-    const gMap = function* (): G {
+    const gMap = function* (rc:RuntimeContext): G {
         //  the newNumberOfLevelsAvailable <= 0 check seems like a band aid for an undiagnosed
         //  level counting bug somewhere else
 
+        const keyGenerator = keyGeneratorFactory.generator(rc);
+        const valueGenerator = valueGeneratorFactory.generator(rc);
         while (true) {
             for (const count of sizer()) {
                 const entries: [GeneratedParameter, GeneratedParameter][] = [];
                 for (let i = 0; i < count; i++) {
-                    const key = keyGer.generator.next();
+                    const key = keyGenerator.next();
                     if (key.done) {
-                        throw new Error(`Key generator is done ${pathToString(checker, keyGer.path)}`);
+                        throw new Error(`Key generator is done ${pathToString(checker, keyGeneratorFactory.path)}`);
                     }
-                    const value = valGer.generator.next();
+                    const value = valueGenerator.next();
                     if (value.done) {
-                        throw new Error(`Value generator is done ${pathToString(checker, valGer.path)}`);
+                        throw new Error(`Value generator is done ${pathToString(checker, valueGeneratorFactory.path)}`);
                     }
                     entries.push([key.value, value.value]);
                 }
@@ -603,15 +616,15 @@ const mapValueGeneratorFactory: ValueGenerator = function (configuration: Genera
         }
     };
 
-    const shortestChild = Math.min(keyGer.shortest, valGer.shortest);
-    const longestChild = Math.max(keyGer.longest, valGer.longest);
+    const shortestChild = Math.min(keyGeneratorFactory.shortest, valueGeneratorFactory.shortest);
+    const longestChild = Math.max(keyGeneratorFactory.longest, valueGeneratorFactory.longest);
 
-    const gw: GeneratorWrapper = {
+    const gw: GeneratorFactory = {
         path,
         type,
         shortest: shortestChild + 1,
         longest: longestChild + 1,
-        generator: gMap(),
+        generator: gMap,
     };
 
     return gw;
@@ -629,8 +642,8 @@ const setValueGeneratorFactory: ValueGenerator = function (configuration: Genera
         const empty: GeneratedParameter = {
             id: newId('empty-set'),
             generator: 'setValueGenerator',
-            type: 'class',
-            instance: new Set(),
+            type: 'set',
+            entries: [],
         };
 
         while (true) {
@@ -649,27 +662,28 @@ const setValueGeneratorFactory: ValueGenerator = function (configuration: Genera
         numberOfLevelsAvailable: newNumberOfLevelsAvailable,
     };
 
-    const elementGenerator = generatorator(configuration, checker, newState, elementType, newPath);
-    if (!elementGenerator?.generator || elementGenerator.shortest > newNumberOfLevelsAvailable) {
-        const gw: GeneratorWrapper = {
+    const elementGeneratorFactory = generatorator(configuration, checker, newState, elementType, newPath);
+    if (!elementGeneratorFactory?.generator || elementGeneratorFactory.shortest > newNumberOfLevelsAvailable) {
+        const gw: GeneratorFactory = {
             path,
             type,
             shortest: 0,
             longest: 0,
-            generator: generateEmpty(),
+            generator: generateEmpty,
         };
         return gw;
     }
 
-    const gSet = function* (): G {
+    const gSet = function* (rc:RuntimeContext): G {
         //  when unspecified make it a string
+        const elementGenerator = elementGeneratorFactory.generator(rc);
         while (true) {
             for (const count of sizer()) {
                 const entries: GeneratedParameter[] = [];
                 for (let i = 0; i < count; i++) {
-                    const next = elementGenerator.generator.next();
+                    const next = elementGenerator.next();
                     if (next.done) {
-                        throw new Error(`Generator ${elementGenerator.constructor.name} is done`);
+                        throw new Error(`Generator ${elementGeneratorFactory.constructor.name} is done`);
                     }
                     entries.push(next.value);
                 }
@@ -683,12 +697,12 @@ const setValueGeneratorFactory: ValueGenerator = function (configuration: Genera
         }
     };
 
-    const gw: GeneratorWrapper = {
+    const gw: GeneratorFactory = {
         path,
         type,
-        shortest: 1 + elementGenerator.shortest,
-        longest: 1 + elementGenerator.longest,
-        generator: gSet(),
+        shortest: 1 + elementGeneratorFactory.shortest,
+        longest: 1 + elementGeneratorFactory.longest,
+        generator: gSet,
     };
 
     return gw;
@@ -756,7 +770,7 @@ const dateValueGeneratorFactory: ValueGenerator = function (configuration: Gener
         2,
     ];
 
-    function* g(): G {
+    function* gDate(_:RuntimeContext): G {
         for (const neighborOffset of neighbors) {
             for (const perturbationMultiplier of [0, 1, -1, 2, -2]) {
                 for (const perturbation of perturbations) {
@@ -774,12 +788,12 @@ const dateValueGeneratorFactory: ValueGenerator = function (configuration: Gener
         }
     }
 
-    const gw: GeneratorWrapper = {
+    const gw: GeneratorFactory = {
         path,
         type,
         shortest: 0,
         longest: 0,
-        generator: g(),
+        generator:gDate,
     };
     return gw;
 };
@@ -868,7 +882,7 @@ const regexpValueGeneratorFactory: ValueGenerator = function (configuration: Gen
         /"><img src="x:x" onerror="alert(XSS)">/,
     ];
 
-    function* g(): G {
+    function* gRegexp(_:RuntimeContext): G {
         while (true) {
             for (const pattern of patterns) {
                 yield {
@@ -881,12 +895,12 @@ const regexpValueGeneratorFactory: ValueGenerator = function (configuration: Gen
         }
     }
 
-    const gw: GeneratorWrapper = {
+    const gw: GeneratorFactory = {
         path,
         type,
         shortest: 0,
         longest: 0,
-        generator: g(),
+        generator: gRegexp,
     };
     return gw;
 };
@@ -903,7 +917,7 @@ const basicObjectValueGeneratorFactory: ValueGenerator = function (configuration
         numberOfLevelsAvailable: newNumberOfLevelsAvailable,
     };
 
-    const propertyGenerators: Record<string, GeneratorWrapper> = {};
+    const propertyGeneratorFactories: Record<string, GeneratorFactory> = {};
     const required = new Set<string>();
 
     let shortestChild = 0;
@@ -949,7 +963,7 @@ const basicObjectValueGeneratorFactory: ValueGenerator = function (configuration
             }
 
             if (isAllowed) {
-                propertyGenerators[p.name] = pgw;
+                propertyGeneratorFactories[p.name] = pgw;
                 if (pgw.shortest < shortestChild) {
                     shortestChild = pgw.shortest;
                 }
@@ -960,21 +974,27 @@ const basicObjectValueGeneratorFactory: ValueGenerator = function (configuration
         }
     }
 
-    const gBasicObject = function* (): G {
+    const gBasicObject = function* (rc:RuntimeContext): G {
         //  TODO: skip optional properties first, then add optional properties in order from shortest to longest
-        const keysGenerator = picker(Array.from(Object.keys(propertyGenerators)), required);
+        const keysGenerator = picker(Array.from(Object.keys(propertyGeneratorFactories)), required);
+
+        const propertyGenerators = Object.fromEntries(
+        Object.entries(propertyGeneratorFactories).map(([k, v]) =>  
+             [k, v.generator(rc)]
+        ));
+
         while (true) {
             for (const keys of keysGenerator) {
                 const o: Record<string, GeneratedParameter> = {};
                 for (const k of keys) {
                     const key = k as string;
 
-                    const next = propertyGenerators[key].generator.next();
+                    const next = propertyGenerators[key].next();
                     if (next.done) {
                         throw new Error(`Generator ${key} is done`);
                     }
 
-                    const v = extractGeneratedParameterValue(next.value);
+                    const v = rehydrateGeneratedParameterValue(next.value, rc);
                     if (v === undefined && required.has(key)) {
                         console.log(`Required property ${key} is undefined at depth ${newNumberOfLevelsAvailable} ${pathToString(checker, path)}}`);
                     }
@@ -995,12 +1015,12 @@ const basicObjectValueGeneratorFactory: ValueGenerator = function (configuration
     };
 
     //  count the current object as a step
-    const gw: GeneratorWrapper = {
+    const gw: GeneratorFactory = {
         path,
         type,
         shortest: shortestChild + 1,
         longest: longestChild + 1,
-        generator: gBasicObject(),
+        generator: gBasicObject,
     };
     return gw;
 };
@@ -1033,9 +1053,10 @@ const functionValueGeneratorFactory: ValueGenerator = function (configuration: G
         throw new Error(`Function return type ${checker.typeToString(returnType)} cannot be generated at depth ${g.shortest} <= ${configuration.depthLimit}: ${pathToString(checker, path)}`);
     }
 
-    const gFunctionValue = function* (): G {
+    const gFunctionValue = function* (rc:RuntimeContext): G {
+        const rvGenerator = g.generator(rc);
         while (true) {
-            for (const returnValue of g.generator) {
+            for (const returnValue of rvGenerator) {
                 yield {
                     id: newId('function'),
                     generator: 'functionValueGeneratorFactory',
@@ -1046,12 +1067,12 @@ const functionValueGeneratorFactory: ValueGenerator = function (configuration: G
         }
     };
 
-    const gw: GeneratorWrapper = {
+    const gw: GeneratorFactory = {
         path,
         type,
         shortest: 0,
         longest: 0,
-        generator: gFunctionValue(),
+        generator: gFunctionValue,
     };
     return gw;
 };
@@ -1265,6 +1286,162 @@ const objectValueGeneratorFactory: ValueGenerator = function (configuration: Gen
     return basicObjectValueGeneratorFactory(configuration, checker, state, type, path);
 };
 
+function construct(type: ts.InterfaceType, constructor: ts.Signature, args: any[]) {
+}
+
+
+
+const classValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: PathSegment[]) {
+    if (!type.isClass()) {
+        return;
+    }
+
+    //  for mysterious typescript reasons, we have to dig one level deeper
+    //  to get the reference to the class that can provide the actual constructors
+    //  maybe there's some type reference indirection?
+    const stype = checker.getTypeOfSymbol(type.symbol);
+    const constructors = checker.getSignaturesOfType(stype, ts.SignatureKind.Construct);
+    // const constructors = checker.getSignaturesOfType(type, ts.SignatureKind.Construct);
+
+    console.log(`type = ${checker.typeToString(type)}; symbol type = ${checker.typeToString(stype)} with ${constructors.length}`);
+    // console.log(`type = ${checker.typeToString(type)} with ${constructors.length}; symbol type = ${checker.typeToString(stype)} with ${sconstructors.length}`);
+
+    // const constructors = type.getConstructSignatures();
+    if (constructors.length === 0) {
+        throw new Error(`Class ${checker.typeToString(type)} has no constructors`);
+    }
+
+    if (constructors.length > 1) {
+        console.log(`Class ${checker.typeToString(type)} has multiple constructors; I guess now we know how that happens`);
+    }
+
+    //  constructor parameters count against our complexity limits because they're inputs
+    //  and thus are rooted in the same object tree as the initial call much like
+    //  object properties or array elements etc.
+    //  in contrast function types generate the return value, which is a separate object tree
+    const newNumberOfLevelsAvailable = state.numberOfLevelsAvailable - 1;
+
+    const newPath = path.concat({
+        type,
+        specifier: '.new()',
+    });
+
+    let overallShortest = 0;
+    let overallLongest = 0;
+    const constructorGenerators: GeneratorFactory[] = [];
+    for (let i = 0; i < constructors.length; i++) {
+        const parameters = constructors[i].getParameters();
+
+        const parametersExceedingMinimumDepth: number[] = [];
+        const generappersByPosition: GeneratorFactory[] = [];
+        let generappersByType = new Map<ts.Type, GeneratorFactory>();
+        //  don't try to convert this to the factory/generator style because function declarations require
+        //  an AST Node not just a type
+        // const generators: G[] = [];
+
+        let shortest = 0;
+        let longest = 0;
+        for (let j = 0; j < parameters.length; j++) {
+            const currentType = checker.getTypeOfSymbolAtLocation(parameters[j], constructors[i].getDeclaration());
+            let generapper = generappersByType.get(currentType);
+            if (!generapper) {
+                generapper = generatorator(configuration, checker, state, currentType, []);
+                if (generapper) {
+                    const t = checker.typeToString(currentType);
+                    generappersByType.set(currentType, generapper);
+                    if (generapper.shortest > newNumberOfLevelsAvailable) {
+                        parametersExceedingMinimumDepth.push(j);
+                    }
+                    generappersByPosition.push(generapper);
+                    if (shortest > generapper.shortest) {
+                        shortest = generapper.shortest;
+                    }
+                    if (longest < generapper.longest) {
+                        longest = generapper.longest;
+                    }
+                } else {
+                    parametersExceedingMinimumDepth.push(j);
+                }
+            }
+        }
+
+        if (parametersExceedingMinimumDepth.length === 0) {
+            const fqn = checker.getFullyQualifiedName(type.symbol);
+
+            //  RUN TIME
+            function* gConstructor(rc:RuntimeContext) {
+                const generators = generappersByPosition.map(g => g.generator(rc));
+                while (true) {
+                    const args: GeneratedParameter[] = [];
+                    for (let i = 0; i < generappersByPosition.length; i++) {
+                        const next = generators[i].next();
+                        if (next.done) {
+                            throw new Error(`Generator ${checker.typeToString(generappersByPosition[i].type)} is done`);
+                        }
+
+                        args.push(next.value);
+                    }
+
+                    const gp: GeneratedParameter = {
+                        id: newId('class'),
+                        generator: 'classValueGeneratorFactory',
+                        type: 'class',
+                        fullyQualifiedName: fqn,
+                        parameters: args,
+                    };
+                    yield gp;
+                }
+            };
+
+            if (shortest < overallShortest) {
+                overallShortest = shortest;
+            }
+
+            if (longest > overallLongest) {
+                overallLongest = longest;
+            }
+
+            const constructorGw: GeneratorFactory = {
+                path: newPath,
+                shortest,
+                longest,
+                type,
+                generator: gConstructor,
+            };
+            constructorGenerators.push(constructorGw);
+        }
+    }
+
+    if (constructorGenerators.length === 0) {
+        return;
+    }
+
+    //  TODO: make it clearer that the generators are at runtime versus the rest of this, which is at load time
+    const gClass = function* (rc:RuntimeContext): G {
+        const generators = constructorGenerators.map(g => g.generator(rc));
+        while (true) {
+            for (let i = 0; i < constructorGenerators.length; i++) {
+                const next = generators[i].next();
+                if (next.done) {
+                    throw new Error(`Generator ${checker.typeToString(constructorGenerators[i].type)} is done`);
+                }
+
+                yield next.value;
+            }
+        }
+    };
+
+    const classGW: GeneratorFactory = {
+        path: newPath,
+        shortest: 1 + overallShortest,
+        longest: 1 + overallLongest,
+        type,
+        generator: gClass,
+    };
+
+    return classGW;
+};
+
 const stupidSizer: Sizer = function* () {
     let i = 0;
     const targetCollectionSizes = [3, 0, 1, 10, 2];
@@ -1338,7 +1515,7 @@ const getDeclaration = (symbol: ts.Symbol) => {
 };
 
 //  returns null if there is insufficient depth to generate a value
-function generatorator(configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: PathSegment[]): GeneratorWrapper | undefined {
+function generatorator(configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: PathSegment[]): GeneratorFactory | undefined {
     if (state.numberOfLevelsAvailable < 0) {
         return undefined;
     }
@@ -1350,6 +1527,7 @@ function generatorator(configuration: GeneratorConfiguration, checker: ts.TypeCh
         arrayValueGenerator,
         intersectionValueGeneratorFactory,
         unionValueGeneratorFactory,
+        classValueGeneratorFactory,
         objectValueGeneratorFactory,
     ];
 
@@ -1360,11 +1538,11 @@ function generatorator(configuration: GeneratorConfiguration, checker: ts.TypeCh
         }
     }
 
-    throw new Error(`Unable to handle type ${checker.typeToString(type)}`);
+    console.log(`Unable to handle type ${checker.typeToString(type)} within depth ${state.numberOfLevelsAvailable}`);
 }
 
 //  construct a stateful hierarchy of generators    
-function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclaration, literals?: Literals): Generator<GeneratedParameter[], any, any> {
+function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclaration, runtimeContext:RuntimeContext, literals?: Literals): Generator<GeneratedParameter[], any, any> {
     if (f.parameters.length === 0) {
         yield [];
         return;
@@ -1376,7 +1554,8 @@ function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclarati
 
     //  save the generators by depth to resume at previous point in stream instead of restarting
     //  TODO: this can probably itself be put into generator state
-    let generappersByTypeByDepth = new Map<number, Map<ts.Type, GeneratorWrapper>>();
+    let generappersByTypeByDepth = new Map<number, Map<ts.Type, GeneratorFactory>>();
+    let generatorsByTypeByDepth = new Map<number, Map<ts.Type, G>>();
     //  do a batch at each depth level then start again from the lowest
     while (true) {
         for (let currentDepthLimit = 0; currentDepthLimit < MAXIMUM_DEPTH; currentDepthLimit++) {
@@ -1396,9 +1575,12 @@ function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclarati
 
             const parametersExceedingMinimumDepth: number[] = [];
             let generappersByType = generappersByTypeByDepth.get(currentDepthLimit);
-            const generappersByPosition: GeneratorWrapper[] = [];
-            if (!generappersByType) {
-                generappersByType = new Map<ts.Type, GeneratorWrapper>();
+            let generatorsByType = generatorsByTypeByDepth.get(currentDepthLimit);
+            const generappersByPosition: GeneratorFactory[] = [];
+            const generatorsByPosition: G[] = [];
+            if (!generappersByType || !generatorsByType) {
+                generappersByType = new Map<ts.Type, GeneratorFactory>();
+                generatorsByType = new Map<ts.Type, G>();
                 //  don't try to convert this to the factory/generator style because function declarations require
                 //  an AST Node not just a type
                 // const generators: G[] = [];
@@ -1419,6 +1601,10 @@ function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclarati
                                 parametersExceedingMinimumDepth.push(j);
                             }
                             generappersByPosition.push(generapper);
+
+                            const generator = generapper.generator(runtimeContext);
+                            generatorsByType.set(currentType, generator);
+                            generatorsByPosition.push(generator);
                         } else {
                             parametersExceedingMinimumDepth.push(j);
                         }
@@ -1435,8 +1621,8 @@ function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclarati
                 //  generate exactly one (1) value for each parameter type; this guarantees that we sometimes pass in identical values
                 //  variations 
                 const valuesByType = new Map<ts.Type, any>();
-                for (const [type, generapper] of generappersByType.entries()) {
-                    const next = generapper.generator.next();
+                for (const [type, generator] of generatorsByType.entries()) {
+                    const next = generator.next();
                     if (next.done) {
                         throw new Error(`Generator for ${checker.typeToString(type)} is done`);
                     }
@@ -1515,12 +1701,12 @@ export class CombinatorialTestCaseSource /* implements TestCaseSource */ {
         private f: ts.FunctionDeclaration) {
     }
 
-    *seed(literals?: Literals): Iterator<BaseSpecimen> {
+    *seed(runtimeContext:RuntimeContext, literals?: Literals): Iterator<BaseSpecimen> {
         const f = this.f;
         const checker = this.checker;
 
         //  TODO: using TupleGenerator and then unpacking like this... needlessly elaborate?
-        const generator = functionGeneratorator(checker, f, literals);
+        const generator = functionGeneratorator(checker, f, runtimeContext, literals);
         for (const value of generator) {
             const s: BaseSpecimen = {
                 parameters: value,

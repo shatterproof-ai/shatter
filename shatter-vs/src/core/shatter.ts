@@ -4,7 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import * as ts from 'typescript';
 import { GeneratedParameter, newId, skip } from './common';
-import { BaseSpecimen, CombinatorialTestCaseSource, RetestCaseSource, Specimen } from './generator';
+import { BaseSpecimen, CombinatorialTestCaseSource, RetestCaseSource, RuntimeContext, Specimen } from './generator';
 import { hybridize, isStrictExtension, shrink } from './hybridize';
 import { Outcome, RunResult, Supervisor } from './supervisor';
 import { IntrospectionContext, createInstrumenter } from './transform';
@@ -149,6 +149,8 @@ async function shatterAutotestt(modulePaths: string[],
     //  a set of canonicalized JSON serializations
     const parameterListsAttempted = new Set<string>();
 
+    new ts.OperationCanceledException();
+
     const onResult = (runResult: RunResult) => {
         // console.log(`Received result ${JSON.stringify(runResult)}`);
         // find the appropriate cluster or create it
@@ -227,9 +229,12 @@ async function shatterAutotestt(modulePaths: string[],
 
     */
 
+    const runtimeContext:RuntimeContext = {
+        activeModule: undefined
+    };
     // const generator = new CombinatorialTestCaseSource(program.getTypeChecker(), functionDeclarationNode.parameters);
     const source = new CombinatorialTestCaseSource(program.getTypeChecker(), functionDeclarationNode);
-    const generator = source.seed({ numbers: introspectionContext.numbers, strings: introspectionContext.strings });
+    const generator = source.seed(runtimeContext, { numbers: introspectionContext.numbers, strings: introspectionContext.strings });
 
     const typeCounts: Record<Specimen['type'], number> = {
         'seed': 0,

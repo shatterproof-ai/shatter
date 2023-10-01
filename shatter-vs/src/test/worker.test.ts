@@ -1,4 +1,4 @@
-import { GeneratedParameter, extractGeneratedParameterValue } from "../core/common";
+import { GeneratedParameter, rehydrateGeneratedParameterValue } from "../core/common";
 import { work } from "../core/worker";
 import { InvocationMeta } from "../core/worker-protocol";
 
@@ -19,7 +19,7 @@ describe('worker', () => {
             value: 4
         }];
 
-        const resolvedParameters = generatedParameters.map(extractGeneratedParameterValue);
+        const resolvedParameters = generatedParameters.map(rehydrateGeneratedParameterValue);
 
         const serializedParameterValues = serializeJavascript(resolvedParameters);
         const message: InvocationMeta = {

@@ -217,10 +217,8 @@ export class Supervisor {
         //  (TODO: figure out how to capture worker stdout and stderr)
         if (this.inBand) {
             try {
-                const module = await import(this.executorScriptJS);
-                const functions = {
-                    [functionName]: module[functionName],
-                };
+                const imported = await import(this.executorScriptJS);
+                const functions = imported;
 
                 const result = await work(functions, 0, meta);
 

@@ -327,7 +327,9 @@ export const createInstrumenter = (introspectionContext: IntrospectionContext, s
                 return statement;
             };
 
-            if (ts.isFunctionDeclaration(node)) {
+            //  export top level functions so we can call them
+            //  export top level classes so that we can instantiate them for functions that reference them
+            if (ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)) {
                 const newModifiers = [...node.modifiers ?? []];
                 if (node.parent === node.getSourceFile()) { //  this means it's a top level function
                     //  Export the function
@@ -340,20 +342,35 @@ export const createInstrumenter = (introspectionContext: IntrospectionContext, s
                     }
                 }
 
-                if (node.body) {
-                    const modbod = instrumentBlock(factory, node.body);
-                    const newFunction = factory.createFunctionDeclaration(
+                if (ts.isFunctionDeclaration(node)) {
+                    if (node.body) {
+                        const modbod = instrumentBlock(factory, node.body);
+                        const newFunction = factory.createFunctionDeclaration(
+                            newModifiers,
+                            node.asteriskToken,
+                            node.name,
+                            node.typeParameters,
+                            node.parameters,
+                            node.type,
+                            modbod
+                        );
+                        return newFunction;
+                    } else {
+                        throw new Error(`Function ${node.name?.text} has no body`);
+                    }
+                } else {
+                    //  do the instrumentation
+                    const visiteded = ts.visitEachChild(node, instrumentingVisitor, ctx);
+
+                    const newClass = factory.updateClassDeclaration(
+                        visiteded as ts.ClassDeclaration,
                         newModifiers,
-                        node.asteriskToken,
                         node.name,
                         node.typeParameters,
-                        node.parameters,
-                        node.type,
-                        modbod
+                        node.heritageClauses,
+                        node.members
                     );
-                    return newFunction;
-                } else {
-                    throw new Error(`Function ${node.name?.text} has no body`);
+                    return newClass;
                 }
             }
 
@@ -441,10 +458,11 @@ export const createInstrumenter = (introspectionContext: IntrospectionContext, s
                 ));
         });
 
-        const executionArguments = factory.createObjectLiteralExpression(
-            assignments,
-            true
-        );
+        // const executionArguments = factory.createObjectLiteralExpression(
+        //     assignments,
+        //     true
+        // );
+        const executionArguments = factory.createIdentifier("module.exports");
 
         const invokeExecutionCall = factory.createExpressionStatement(factory.createCallExpression(
             factory.createIdentifier(executeAlias),
