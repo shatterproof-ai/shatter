@@ -140,7 +140,7 @@ interface GeneratorFactory {
     shortest: number;
     longest: number;
     type: ts.Type,
-    generator: (g:RuntimeContext) => G,
+    generator: (rc:RuntimeContext) => G,
 }
 
 type ValueGenerator = (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: PathSegment[]) => GeneratorFactory | undefined;
@@ -1629,8 +1629,16 @@ function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclarati
                     valuesByType.set(type, next.value);
                 };
 
+                const arbitrarySkipProbability = 0.1;
                 const newValues: any[] = [];
                 for (let j = 0; j < f.parameters.length; j++) {
+                    //  if this parameter is optional, sometimes skip it and the rest
+                    if (f.parameters[j].questionToken) {
+                        if (Math.random() < arbitrarySkipProbability) {
+                            break;
+                        }
+                    }
+
                     const t = f.parameters[j].type;
                     const currentType = t
                         ? checker.getTypeAtLocation(t)

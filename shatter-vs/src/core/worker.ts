@@ -32,11 +32,11 @@ export function work(activeModule: any, workerNumber: number, message: any) {
 
         //  wrap in an async function to ensure that the result is a promise as a lowest common denominator thing
         const p = Promise.resolve((async () => {
-            console.log(`worker ${workerNumber} executing ${functionName} for ${specimenId}`);
+            // console.log(`worker ${workerNumber} executing ${functionName} for ${specimenId}`);
             try {
                 return f.call(null, ...resolvedParameters);
             } finally {
-                console.log(`worker ${workerNumber} executed ${functionName} for ${specimenId}`);
+                // console.log(`worker ${workerNumber} executed ${functionName} for ${specimenId}`);
             }
         })());
 

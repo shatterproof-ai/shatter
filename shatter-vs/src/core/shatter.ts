@@ -229,7 +229,7 @@ async function shatterAutotestt(modulePaths: string[],
 
     */
 
-    const runtimeContext:RuntimeContext = {
+    const runtimeContext: RuntimeContext = {
         activeModule: undefined
     };
     // const generator = new CombinatorialTestCaseSource(program.getTypeChecker(), functionDeclarationNode.parameters);
@@ -252,9 +252,10 @@ async function shatterAutotestt(modulePaths: string[],
             parameterListsAttempted.add(serialized);
 
             const specimenId = newId(basimen.type);
+            const sequence = count++;
             const newSpecimen: Specimen = {
                 id: specimenId,
-                sequence: count++,
+                sequence,
                 sequenceInType: typeCounts[basimen.type]++,
                 ...basimen,
             };
@@ -275,29 +276,37 @@ async function shatterAutotestt(modulePaths: string[],
     try {
         //  TODO: prioritize variation in simpler types, e.g. numbers, over variation in more complex types, e.g. Maps
         while (count < maxIterations && Date.now() - startTime < maxTime) {
-            const toSeed = Math.max(introspectionContext.instrumentedLines.size - allExecutedLines.size, 5) * seedsPerUnexecutedLine;
+            const toSeed = Math.max(Math.max(introspectionContext.instrumentedLines.size - allExecutedLines.size, 5) * seedsPerUnexecutedLine, 75);
+
+            console.log(`Seeding ${toSeed} ${count} done so far`);
             const seedStart = Date.now();
             await seed(toSeed, generator, evaluateSpecimen);
             await supervisor.drain();
             const seedEnd = Date.now();
-
+            
             //  WEED
+            const toWeed = Math.ceil(count * 0.1 + 10);
+            console.log(`Weeding ${toWeed} ${count} done so far`);
             const weedStart = Date.now();
-            await weed(evaluateSpecimen, maxShrinkGenerations, clustersByKey, functionDeclarationNode.parameters, specimensById, supervisor);
+            await weed(evaluateSpecimen, maxShrinkGenerations, clustersByKey, functionDeclarationNode.parameters, specimensById, toWeed);
             await supervisor.drain();
             const weedEnd = Date.now();
-
+            
             //  BREED
+            const toBreed = Math.ceil(count * 0.1 + 10);
+            console.log(`Breeding ${toBreed} ${count} done so far`);
             const breedStart = Date.now();
-            await breed(evaluateSpecimen, introspectionContext.instrumentedLines, allExecutedLines, clusters);
+            await breed(evaluateSpecimen, introspectionContext.instrumentedLines, allExecutedLines, clusters, toBreed);
             await supervisor.drain();
             const breedEnd = Date.now();
-
+            
             //  KNEAD
             //  only do clusters that have distance > 1 from neighbors
             //  and if they've gotten closer recently
+            const toKnead = functionDeclarationNode.parameters.length * (1 + clusters.length);
+            console.log(`Kneading ${toKnead} ${count} done so far`);
             const kneadStart = Date.now();
-            await knead(evaluateSpecimen, clustersByKey, functionDeclarationNode.parameters, specimensById);
+            await knead(evaluateSpecimen, clustersByKey, functionDeclarationNode.parameters, specimensById, toKnead);
             await supervisor.drain();
             const kneadEnd = Date.now();
 
@@ -333,11 +342,13 @@ const seed = wrapAsync("seeeeed", async function (maxSeeds: number, generator: I
     for (let i = 0; i < maxSeeds; i++) {
         const g = generator.next();
         if (g.done) {
+            return i;
             break;
         }
 
         await evaluateSpecimen(g.value);
     }
+    return maxSeeds;
 });
 
 const findFirstHole = (c: ResultCluster, instrumentedLines: number[]) => {
@@ -353,7 +364,7 @@ const findFirstHole = (c: ResultCluster, instrumentedLines: number[]) => {
 /*
     foreach specimen that got to a given line, find the minimal version of that specimen that still gets to that line
 */
-const breed = wrapAsync("breeeed", async function (evaluateSpecimen: (b: BaseSpecimen) => Promise<string | undefined>, allInstrumentedLines: Set<number>, allExecutedLines: Set<number>, _clusters: ResultCluster[]) {
+const breed = wrapAsync("breeeed", async function (evaluateSpecimen: (b: BaseSpecimen) => Promise<string | undefined>, allInstrumentedLines: Set<number>, allExecutedLines: Set<number>, _clusters: ResultCluster[], maxIterations:number) {
 
 
     function breedForClusters(baseClusters: ResultCluster[], overshootClusters: ResultCluster[]) {
@@ -573,6 +584,8 @@ const breed = wrapAsync("breeeed", async function (evaluateSpecimen: (b: BaseSpe
             }
         }
     }
+
+    return 0;
 });
 
 /*
@@ -583,7 +596,7 @@ bisection - find two parameter lists that are very similar to each other but lea
     //  for each pair of outermosts across all cluster, bisect
 */
 const knead = wrapAsync("knead", async function (evaluateSpecimen: (b: BaseSpecimen) => Promise<string | undefined>, clustersByKey: Map<string, ResultCluster>, parameterDeclarations: ts.NodeArray<ts.ParameterDeclaration>,
-    specimens: Map<string, Specimen>) {
+    specimens: Map<string, Specimen>, maxIterations: number) {
 
     if (clustersByKey.size === 0) {
         throw new Error(`No clusters to breed`);
@@ -592,168 +605,176 @@ const knead = wrapAsync("knead", async function (evaluateSpecimen: (b: BaseSpeci
     const clusters = Array.from(clustersByKey.values())
         //  don't bother to hybridize errors, timeouts, or failures; the most we want to do there is bisect
         .filter(c => c.outcome === 'completed');
-    for (let index = 0; index < parameterDeclarations.length; index++) {
+    function* kneader() {
+        for (let index = 0; index < parameterDeclarations.length; index++) {
+            for (let i = 0; i < clusters.length - 1; i++) {
+                const a = clusters[i];
+                const b = clusters[i + 1];
 
-        const required = !parameterDeclarations[index].questionToken;
+                a.results.sort(comparameters);
+                b.results.sort(comparameters);
 
-        for (let i = 0; i < clusters.length - 1; i++) {
-            const a = clusters[i];
-            const b = clusters[i + 1];
+                const alast = a.results[a.results.length - 1];
+                const bfirst = b.results[0];
 
-            a.results.sort(comparameters);
-            b.results.sort(comparameters);
+                const specimenA = specimens.get(alast.specimenId)!;
+                const specimenB = specimens.get(bfirst.specimenId)!;
 
-            const alast = a.results[a.results.length - 1];
-            const bfirst = b.results[0];
+                const distance = computeDistance(specimenA.parameters[index], specimenB.parameters[index]);
 
-            const specimenA = specimens.get(alast.specimenId)!;
-            const specimenB = specimens.get(bfirst.specimenId)!;
-
-            const distance = computeDistance(specimenA.parameters[index], specimenB.parameters[index]);
-
-            const aToB = a.distancesToClusters[index].get(b.key) ?? Infinity;
-            if (distance < aToB) {
-                a.distancesToClusters[index].set(b.key, distance);
-                b.distancesToClusters[index].set(a.key, distance);
-            }
-
-            if (distance <= 1) {
-                //  found the edges or close enough
-                // console.log(`found edges ${distance} between ${JSON.stringify(alast.parameters[index])} and ${JSON.stringify(bfirst.parameters[index])}`);
-                continue;
-            }
-            // console.log(`distance ${distance} between ${JSON.stringify(alast.parameters[index])} and ${JSON.stringify(bfirst.parameters[index])}`);
-
-            const arbitraryListLimit = 5;
-            const arbitraryParameterVariationLimit = 4;
-            for (let i = 0; i < arbitraryListLimit; i++) {
-                const parameters: GeneratedParameter[] = [];
-                for (let j = 0; j < specimenA.parameters.length; j++) {
-                    const paramA = specimenA.parameters[j];
-                    const paramB = specimenB.parameters[j];
-                    const hybridized = hybridize(paramA, paramB);
-                    let k = 0;
-
-                    const backupValue = (i % 2 === 0) ? paramA : paramB;
-                    const p: GeneratedParameter = skip(hybridized, i + j) ?? backupValue;
-                    parameters.push(p);
+                const aToB = a.distancesToClusters[index].get(b.key) ?? Infinity;
+                if (distance < aToB) {
+                    a.distancesToClusters[index].set(b.key, distance);
+                    b.distancesToClusters[index].set(a.key, distance);
                 }
 
-                //  the parameter list may be a repeat, but that'll get dealt with downstream
-                evaluateSpecimen({
-                    type: 'hybrid',
-                    parameters,
-                    parents: [specimenA.id, specimenB.id],
-                });
-            }
+                if (distance <= 1) {
+                    //  found the edges or close enough
+                    // console.log(`found edges ${distance} between ${JSON.stringify(alast.parameters[index])} and ${JSON.stringify(bfirst.parameters[index])}`);
+                    continue;
+                }
+                // console.log(`distance ${distance} between ${JSON.stringify(alast.parameters[index])} and ${JSON.stringify(bfirst.parameters[index])}`);
 
+                const arbitraryListLimit = 5;
+                const arbitraryParameterVariationLimit = 4;
+                for (let i = 0; i < arbitraryListLimit; i++) {
+                    const parameters: GeneratedParameter[] = [];
+                    for (let j = 0; j < specimenA.parameters.length; j++) {
+                        const paramA = specimenA.parameters[j];
+                        const paramB = specimenB.parameters[j];
+                        const hybridized = hybridize(paramA, paramB);
+                        let k = 0;
+
+                        const backupValue = (i % 2 === 0) ? paramA : paramB;
+                        const p: GeneratedParameter = skip(hybridized, i + j) ?? backupValue;
+                        parameters.push(p);
+                    }
+
+                    //  the parameter list may be a repeat, but that'll get dealt with downstream
+                    const specimen: BaseSpecimen = {
+                        type: 'hybrid',
+                        parameters,
+                        parents: [specimenA.id, specimenB.id],
+                    };
+                    yield specimen;
+                }
+            }
         }
     }
+
+    let i = 0;
+    for (const specimen of kneader()) {
+        await evaluateSpecimen(specimen);
+        if (i++ > maxIterations) {
+            break;
+        }
+    }
+    return i;
 });
 
-const weed = wrapAsync("weeeeeed", async function (evaluateSpecimen: (b: BaseSpecimen) => Promise<string | undefined>, maxShrinkGenerations: number, clustersByKey: Map<string, ResultCluster>, parameterDeclarations: ts.NodeArray<ts.ParameterDeclaration>, specimensById: Map<string, Specimen>, supervisor: Supervisor) {
-    const pendingShrinkings = new Set<string>();
-    const enshrinken = wrapAsync("enshrinken", async function (baseParameters: GeneratedParameter[], toShrinkParameterIndex: number, baseSpecimenId: string) {
-        const specimenIds: string[] = [];
-        for (const thisParameterValues of shrink(baseParameters[toShrinkParameterIndex])) {
-            const parameters = [...baseParameters];
-            parameters[toShrinkParameterIndex] = thisParameterValues;
+const weed = wrapAsync("weeeeeed", async function (evaluateSpecimen: (b: BaseSpecimen) => Promise<string | undefined>, maxShrinkGenerations: number, clustersByKey: Map<string, ResultCluster>, parameterDeclarations: ts.NodeArray<ts.ParameterDeclaration>, specimensById: Map<string, Specimen>, maxIterations: number) {
+    function* weeder() {
+        for (let i = 0; i < maxShrinkGenerations; i++) {
+            for (const cluster of clustersByKey.values()) {
+                //  start us off
+                let batch = 0;
+                for (let i = 0; i < parameterDeclarations.length; i++) {
+                    cluster.results.sort((a, b) => {
+                        //  sort by the key parameter first
+                        const specimenA = specimensById.get(a.specimenId)!;
+                        const specimenB = specimensById.get(b.specimenId)!;
 
-            const specimenId = await evaluateSpecimen({
-                type: 'reduction',
-                parameters,
-                parent: baseSpecimenId,
-            });
-            if (specimenId) {
-                specimenIds.push(specimenId);
-            }
-        }
-        return specimenIds;
-    });
-
-    for (let i = 0; i < maxShrinkGenerations; i++) {
-        for (const cluster of clustersByKey.values()) {
-            //  start us off
-            let batch = 0;
-            for (let i = 0; i < parameterDeclarations.length; i++) {
-                cluster.results.sort((a, b) => {
-                    //  sort by the key parameter first
-                    const specimenA = specimensById.get(a.specimenId)!;
-                    const specimenB = specimensById.get(b.specimenId)!;
-
-                    const avalue = specimenA.parameters[i];
-                    const bvalue = specimenB.parameters[i];
-                    const core = comparameters(avalue, bvalue);
-                    if (core !== 0) {
-                        return core;
-                    }
-                    //  then all the rest if necessary
-                    for (let j = 0; j < specimenA.parameters.length && j < specimenB.parameters.length; j++) {
-                        if (i === j) {
-                            continue;
+                        const avalue = specimenA.parameters[i];
+                        const bvalue = specimenB.parameters[i];
+                        const core = comparameters(avalue, bvalue);
+                        if (core !== 0) {
+                            return core;
                         }
-                        const avalue = specimenA.parameters[j];
-                        const bvalue = specimenB.parameters[j];
-                        const sub = comparameters(avalue, bvalue);
-                        if (sub !== 0) {
-                            return sub;
+                        //  then all the rest if necessary
+                        for (let j = 0; j < specimenA.parameters.length && j < specimenB.parameters.length; j++) {
+                            if (i === j) {
+                                continue;
+                            }
+                            const avalue = specimenA.parameters[j];
+                            const bvalue = specimenB.parameters[j];
+                            const sub = comparameters(avalue, bvalue);
+                            if (sub !== 0) {
+                                return sub;
+                            }
                         }
-                    }
-                    return 0;
-                });
+                        return 0;
+                    });
 
-                const top = cluster.results[0];
-                const topSpecimen = specimensById.get(top.specimenId)!;
-                cluster.mosts[i] = topSpecimen;
-                const allToShrink = [topSpecimen];
+                    const top = cluster.results[0];
+                    const topSpecimen = specimensById.get(top.specimenId)!;
+                    cluster.mosts[i] = topSpecimen;
+                    const allToShrink = [topSpecimen];
 
-                //  find the minimal least by climbing from the bottom until
-                //  hitting a value that is not a strict extension of the previous
-                if (cluster.results.length > 1) {
-                    let minimalLeastIndex = cluster.results.length - 1;
-                    let specimenMinimalLeast = specimensById.get(cluster.results[minimalLeastIndex].specimenId)!;
-                    for (let j = minimalLeastIndex - 1; j >= 0; j--) {
-                        const current = cluster.results[j];
-                        const specimenCurrent = specimensById.get(current.specimenId)!;
+                    //  find the minimal least by climbing from the bottom until
+                    //  hitting a value that is not a strict extension of the previous
+                    if (cluster.results.length > 1) {
+                        let minimalLeastIndex = cluster.results.length - 1;
+                        let specimenMinimalLeast = specimensById.get(cluster.results[minimalLeastIndex].specimenId)!;
+                        for (let j = minimalLeastIndex - 1; j >= 0; j--) {
+                            const current = cluster.results[j];
+                            const specimenCurrent = specimensById.get(current.specimenId)!;
 
-                        if (!isStrictExtension(specimenCurrent.parameters[i], specimenMinimalLeast.parameters[i])) {
-                            break;
+                            if (!isStrictExtension(specimenCurrent.parameters[i], specimenMinimalLeast.parameters[i])) {
+                                break;
+                            }
                         }
+
+                        const bottomResult = cluster.results[minimalLeastIndex];
+                        const bottomSpecimen = specimensById.get(bottomResult.specimenId)!;
+                        allToShrink.push(bottomSpecimen);
+                        cluster.leasts[i] = bottomSpecimen;
                     }
 
-                    const bottomResult = cluster.results[minimalLeastIndex];
-                    const bottomSpecimen = specimensById.get(bottomResult.specimenId)!;
-                    allToShrink.push(bottomSpecimen);
-                    cluster.leasts[i] = bottomSpecimen;
+                    for (const toShrink of allToShrink) {
+                        const baseParameters = toShrink.parameters;
+                        const toShrinkParameterIndex = i;
+                        const baseSpecimenId = toShrink.id;
+                        const specimenIds: string[] = [];
+                        for (const thisParameterValues of shrink(baseParameters[toShrinkParameterIndex])) {
+                            const parameters = [...baseParameters];
+                            parameters[toShrinkParameterIndex] = thisParameterValues;
+
+                            const r:BaseSpecimen = {
+                                type: 'reduction',
+                                parameters,
+                                parent: baseSpecimenId,
+                            };
+                            yield r;
+                        }
+
+                    }
                 }
 
-                for (const toShrink of allToShrink) {
-                    const specimenIds = await enshrinken(toShrink.parameters, i, toShrink.id);
-                    specimenIds.forEach(id => pendingShrinkings.add(id));
-                }
-            }
+                const h1:BaseSpecimen = {
+                    type: 'hybrid',
+                    parameters: cluster.leasts.map((s, i) => s.parameters[i]),
+                    parents: cluster.leasts.map(s => s.id),
+                };
+                yield h1;
 
-            const mvpLeastSpecimenId = await evaluateSpecimen({
-                type: 'hybrid',
-                parameters: cluster.leasts.map((s, i) => s.parameters[i]),
-                parents: cluster.leasts.map(s => s.id),
-            });
-
-            if (mvpLeastSpecimenId) {
-                pendingShrinkings.add(mvpLeastSpecimenId);
+                const h2:BaseSpecimen = {
+                    type: 'hybrid',
+                    parameters: cluster.mosts.map((s, i) => s.parameters[i]),
+                    parents: cluster.mosts.map(s => s.id),
+                };
+                yield h2;
             }
-            const mvpMostSpecimenId = await evaluateSpecimen({
-                type: 'hybrid',
-                parameters: cluster.mosts.map((s, i) => s.parameters[i]),
-                parents: cluster.mosts.map(s => s.id),
-            });
-            if (mvpMostSpecimenId) {
-                pendingShrinkings.add(mvpMostSpecimenId);
-            }
-
         }
-        await supervisor.drain();
     }
+
+    let i = 0;
+    for (const specimen of weeder()) {
+        await evaluateSpecimen(specimen);
+        if (i++ > maxIterations) {
+            break;
+        }
+    }
+    return i;
 });
 
 /*

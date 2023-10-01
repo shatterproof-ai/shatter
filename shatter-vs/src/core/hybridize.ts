@@ -293,9 +293,9 @@ function* hybridizeArrays(a: ArrayGeneratedParameter, b: ArrayGeneratedParameter
 function* hybridizeObjects(a: ObjectGeneratedParameter, b: ObjectGeneratedParameter, intervals: number[]): Generator<ObjectGeneratedParameter, void, unknown> {
     const numberToGenerate = intervals.length;
 
-    const commonKeys = Object.keys(a).filter(k => b.hasOwnProperty(k));
-    const distinctKeysA = Object.keys(a).filter(k => !b.hasOwnProperty(k));
-    const distinctKeysB = Object.keys(b).filter(k => !a.hasOwnProperty(k));
+    const commonKeys = Object.keys(a.properties).filter(k => b.properties.hasOwnProperty(k));
+    const distinctKeysA = Object.keys(a.properties).filter(k => !b.properties.hasOwnProperty(k));
+    const distinctKeysB = Object.keys(b.properties).filter(k => !a.properties.hasOwnProperty(k));
 
     for (const interval of intervals) {
         const base: any = {};
@@ -321,17 +321,24 @@ function* hybridizeObjects(a: ObjectGeneratedParameter, b: ObjectGeneratedParame
         for (let i = 0; i < numberToGenerate; i++) {
             const candidate: Record<string | number, any> = { ...base };
             for (const key of commonKeys) {
-                candidate[key] = pickHybrid(a.properties[key], b.properties[key], interval);
+                if (a.properties[key] != null && b.properties[key] != null) {
+                    const hybrid = pickHybrid(a.properties[key], b.properties[key], interval);
+                    if (hybrid !== undefined) {
+                        candidate[key] = hybrid;
+                    }
+                }
             }
-            const gp: ObjectGeneratedParameter = {
-                id: newId('hybrid-object'),
-                type: 'object',
-                generator: 'hybridize',
-                properties: candidate,
-                required: a.required,
-                declaredType: a.declaredType,
-            };
-            yield gp;
+            if (Object.keys(candidate).length > 0) {
+                const gp: ObjectGeneratedParameter = {
+                    id: newId('hybrid-object'),
+                    type: 'object',
+                    generator: 'hybridize',
+                    properties: candidate,
+                    required: a.required,
+                    declaredType: a.declaredType,
+                };
+                yield gp;
+            }
         }
     }
 }
