@@ -263,14 +263,14 @@ async function shatterAutotestt(modulePaths: string[],
     }
 
     //  SEED
-    const maxSeeds = 10;
+    const seedsPerUnexecutedLine = 10;
     const maxShrinkGenerations = 10;
     const minResultsPerCluster = 4;
 
     try {
         //  TODO: prioritize variation in simpler types, e.g. numbers, over variation in more complex types, e.g. Maps
         while (count < maxIterations && Date.now() - startTime < maxTime) {
-            const toSeed = Math.max(introspectionContext.instrumentedLines.size - allExecutedLines.size, 5) * maxSeeds;
+            const toSeed = Math.max(introspectionContext.instrumentedLines.size - allExecutedLines.size, 5) * seedsPerUnexecutedLine;
             const seedStart = Date.now();
             await seed(toSeed, generator, evaluateSpecimen);
             await supervisor.drain();
