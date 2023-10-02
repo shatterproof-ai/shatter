@@ -1,13 +1,12 @@
 // import * as ts from 'typescript';
 
+import { pick } from 'lodash';
 import { ResultCluster } from '../core/shatter';
 import { RunResult } from '../core/supervisor';
+import { GeneratedParameter, ObjectPathSegment, ValueGeneratedParameter, isValueSubtype, mergePath, newId, rehydrateGeneratedParameterValue } from './common';
 import { Literals, edgyAny, edgyBooleans, edgyNumberRanges, edgyNumbers, edgyStrings } from './seed';
-import { keys, pick, set } from 'lodash';
-import { GeneratedParameter, extractGeneratedParameterValue, isValueSubtype, newId, rehydrateGeneratedParameterValue, valueSubtypes } from './common';
-import { type } from 'os';
 import ts = require('typescript');
-import { wrapAsync } from './util';
+
 
 export type Mutation = {
     path: string[],
@@ -36,10 +35,17 @@ export type BaseSpecimen = {
     parents: string[],
 });
 
+export interface LeafParameter {
+    mergedPath: string,
+    path: ObjectPathSegment[],
+    value: ValueGeneratedParameter['value'],
+}
+
 export type Specimen = BaseSpecimen & {
     id: string,
     sequenceInType: number,
     sequence: number,
+    leaves: LeafParameter[],
 };
 
 export interface GeneratedParameterList {
@@ -85,7 +91,7 @@ export class RetestCaseSource implements TestCaseSource {
 //  TODO: an allow list for potentially self-referential types
 interface GeneratorConfiguration {
     depthLimit: number; //  INCLUDSIVE; <= depth limit is a-okay
-    weirdness: number;
+    // weirdness: number;
     literals?: Literals;
 }
 
@@ -109,7 +115,7 @@ const isAnonymousType = (type: ts.Type): boolean => {
         && ((type.objectFlags & ts.ObjectFlags.Anonymous) !== 0);
 };
 
-const isEnumType = (type: ts.Type): type is ts.EnumType => {
+export const isEnumType = (type: ts.Type): type is ts.EnumType => {
     //  TODO: when will this be Enum and when EnumLiteral?
     return ((type.flags & ts.TypeFlags.Enum) !== 0
         || (type.flags & ts.TypeFlags.EnumLiteral) !== 0);
@@ -121,14 +127,10 @@ type ElementPicker = (max: number) => Generator<number, any, any>;
 
 export type G = Generator<GeneratedParameter, any, any>;
 
-interface PathSegment {
-    type: ts.Type,
-    //  TODO: change this to an enum of union|intersection|object|literal|array|map|set|date|regexp|function|class|etc.
-    specifier: GeneratedParameter['generator'],
-}
-
 export interface RuntimeContext {
     activeModule: any;
+    weirdness: number;
+    leafPeeping: Map<string, LeafParameter['value'][]>;
 }
 
 //  Critically important: the GeneratorWrapper is constructed upfront at analysis time,
@@ -136,17 +138,17 @@ export interface RuntimeContext {
 //      its generator executes at runtime immediately before and possibly in a different thread or process
 //  TODO: make this generic around its GeneratedParameter type?
 interface GeneratorFactory {
-    path: PathSegment[];
+    path: ObjectPathSegment[];
     shortest: number;
     longest: number;
     type: ts.Type,
     generator: (rc: RuntimeContext) => G,
 }
 
-type ValueGenerator = (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: PathSegment[]) => GeneratorFactory | undefined;
+type ValueGenerator = (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: ObjectPathSegment[]) => GeneratorFactory | undefined;
 
-const fixedValueGeneratorFactory = function* (generator: string, value: any): G {
-
+//  cannot get weirder
+const fixedValueGeneratorFactory = function* (generator: string, path: ObjectPathSegment[], value: any): G {
     const subtype = typeof value;
     if (!isValueSubtype(subtype)) {
         throw new Error(`Unexpected value type ${subtype}`);
@@ -157,6 +159,7 @@ const fixedValueGeneratorFactory = function* (generator: string, value: any): G 
         yield {
             id,
             generator,
+            path,
             type: 'value',
             subtype,
             value,
@@ -164,14 +167,15 @@ const fixedValueGeneratorFactory = function* (generator: string, value: any): G 
     }
 };
 
-const literalValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: PathSegment[]) {
+//  cannot get weirder
+const literalValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: ObjectPathSegment[]) {
     if (type.isLiteral()) {
         const gw: GeneratorFactory = {
             path,
             type,
             shortest: 0,
             longest: 0,
-            generator: (_: any) => fixedValueGeneratorFactory('literalValueGeneratorFactory', type.value),
+            generator: (_: any) => fixedValueGeneratorFactory('literalValueGeneratorFactory', path, type.value),
         };
         return gw;
     }
@@ -187,7 +191,7 @@ const literalValueGeneratorFactory: ValueGenerator = function (configuration: Ge
             type,
             shortest: 0,
             longest: 0,
-            generator: (_: any) => fixedValueGeneratorFactory('literalValueGeneratorFactory', boolvalue),
+            generator: (_: any) => fixedValueGeneratorFactory('literalValueGeneratorFactory', path, boolvalue),
         };
         return gw;
     }
@@ -205,24 +209,25 @@ const simpleTypeFlags = [
     ts.TypeFlags.BooleanLike
 ];
 
-const simpleValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: PathSegment[]) {
+const simpleValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: ObjectPathSegment[]) {
     if (simpleTypeFlags.includes(type.flags)) { //  TODO: is this a bitmask?
+        const mergedPath = mergePath(path);
         //  I think this wrapping is necessary to keep Javascript from being confused about whether there's a generator here; returning immediately from a generator defined with function* without ever yielding still returns a Generator object
-        const gSimpleValue = function* () {
+        const gSimpleValue = function* (rc: RuntimeContext) {
             while (true) {
                 switch (type.flags) {
                     case ts.TypeFlags.Any:
                     case ts.TypeFlags.Unknown:
-                        yield* edgyAny(configuration.literals);
+                        yield* edgyAny(path, configuration.literals);
                         break;
                     case ts.TypeFlags.String:
-                        yield* edgyStrings(configuration.literals);
+                        yield* edgyStrings(rc, path, configuration.literals);
                         break;
                     case ts.TypeFlags.Number:
-                        yield* edgyNumbers(configuration.literals);
+                        yield* edgyNumbers(rc, path, configuration.literals);
                         break;
                     case ts.TypeFlags.Boolean:
-                        yield* edgyBooleans(configuration.literals);
+                        yield* edgyBooleans(path, configuration.literals);
                         break;
                     default:
                         throw new Error(`Unexpected type ${type.flags}`);
@@ -241,19 +246,28 @@ const simpleValueGeneratorFactory: ValueGenerator = function (configuration: Gen
     return undefined;
 };
 
-const enumValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: PathSegment[]): GeneratorFactory | undefined {
+//  cannot get weirder
+const enumValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: ObjectPathSegment[]): GeneratorFactory | undefined {
     if (isEnumType(type)) {
-        const enumValues = type.symbol.members;
-        if (enumValues) {
+        if (type.symbol.valueDeclaration && ts.isEnumDeclaration(type.symbol.valueDeclaration)) {
+            const actualEnumValues: (string | number)[] = [];
+            for (const enumMember of type.symbol.valueDeclaration.members.values()) {
+                const vv = checker.getConstantValue(enumMember);
+                if (vv) {
+                    actualEnumValues.push(vv);
+                }
+            }
+
             const gEnumValue = function* () {
                 while (true) {
-                    for (const v of enumValues) {
+                    for (const v of actualEnumValues) {
                         const gp: GeneratedParameter = {
                             id: newId('enum'),
                             generator: 'enumValueGeneratorFactory',
                             type: 'value',
+                            path,
                             subtype: 'enum',
-                            value: v,
+                            value: 'noooooooooooooooooooo',
                         };
                         yield gp;
                     }
@@ -282,7 +296,7 @@ OR throw an error
 replace direct access to generators with a wrapper that knows shortest and longest
 */
 
-const arrayValueGenerator: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: PathSegment[]) {
+const arrayValueGenerator: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: ObjectPathSegment[]) {
     if (!checker.isArrayType(type)) {
         return;
     }
@@ -295,6 +309,7 @@ const arrayValueGenerator: ValueGenerator = function (configuration: GeneratorCo
             const gp: GeneratedParameter = {
                 id: newId('empty-array'),
                 generator: 'arrayValueGenerator',
+                path,
                 type: 'array',
                 elements: [],
             };
@@ -322,7 +337,7 @@ const arrayValueGenerator: ValueGenerator = function (configuration: GeneratorCo
             type,
             shortest: 1,
             longest: 1,
-            generator: (_: any) => edgyNumberRanges(configuration.literals),
+            generator: (_: RuntimeContext) => edgyNumberRanges(checker, path, configuration.literals),
         };
         return numberRangyGw;
     }
@@ -333,10 +348,13 @@ const arrayValueGenerator: ValueGenerator = function (configuration: GeneratorCo
         numberOfLevelsAvailable: newNumberOfLevelsAvailable,
     };
 
-    const elementGenerator = generatorator(configuration, checker, newState, elementType, path.concat({
-        type: elementType,
-        specifier: '[]',
-    }));
+    const newPath = path.concat({
+        typeString: checker.typeToString(elementType),
+        segment: '[]',
+        generator: 'arrayValueGenerator',
+    });
+
+    const elementGenerator = generatorator(configuration, checker, newState, elementType, newPath);
 
     if (!elementGenerator || elementGenerator.shortest > newNumberOfLevelsAvailable) {
         const emptyGw: GeneratorFactory = {
@@ -348,7 +366,6 @@ const arrayValueGenerator: ValueGenerator = function (configuration: GeneratorCo
         };
         return emptyGw;
     }
-
 
     const sizer = stupidSizer;
     const gArray = function* (rc: RuntimeContext): G {
@@ -368,6 +385,7 @@ const arrayValueGenerator: ValueGenerator = function (configuration: GeneratorCo
                     id: newId('array'),
                     generator: 'arrayValueGenerator',
                     type: 'array',
+                    path,
                     elements: a,
                 };
             }
@@ -386,7 +404,7 @@ const arrayValueGenerator: ValueGenerator = function (configuration: GeneratorCo
 
 //  TODO: IntersectionGenerator;
 //  intersections are just objects
-const intersectionValueGeneratorFactory: ValueGenerator = (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: PathSegment[]) => {
+const intersectionValueGeneratorFactory: ValueGenerator = (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: ObjectPathSegment[]) => {
     if (!type.isIntersection()) {
         return undefined;
     }
@@ -398,8 +416,9 @@ const intersectionValueGeneratorFactory: ValueGenerator = (configuration: Genera
     };
 
     const newPath = path.concat({
-        type,
-        specifier: ' & ',
+        typeString: checker.typeToString(type),
+        segment: '&',
+        generator: 'intersectionValueGeneratorFactory',
     });
 
     let shortest = 0;
@@ -440,7 +459,7 @@ const intersectionValueGeneratorFactory: ValueGenerator = (configuration: Genera
                 if (o.type !== 'object') {
                     throw new Error(`Unexpected type ${o.type} in intersection`);
                 }
-                Object.assign(combined, o.properties)
+                Object.assign(combined, o.properties);
                 for (const k of o.required) {
                     required.add(k);
                 }
@@ -452,6 +471,7 @@ const intersectionValueGeneratorFactory: ValueGenerator = (configuration: Genera
                 type: 'object',
                 properties: combined,
                 required: Array.from(required),
+                path,
                 declaredType: checker.typeToString(type),
             };
 
@@ -473,18 +493,13 @@ const intersectionValueGeneratorFactory: ValueGenerator = (configuration: Genera
     return gw;
 };
 
-const unionValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: PathSegment[]) {
+const unionValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: ObjectPathSegment[]) {
     if (!type.isUnion()) {
         return undefined;
     }
 
     const bastttes = checker.typeToString(type);
     const newNumberOfLevelsAvailable = state.numberOfLevelsAvailable;   //  do NOT subtract 1
-
-    const newPath: PathSegment[] = path.concat({
-        type,
-        specifier: ' | ',
-    });
 
     const newState = state;
 
@@ -493,7 +508,7 @@ const unionValueGeneratorFactory: ValueGenerator = function (configuration: Gene
     const generappers: GeneratorFactory[] = [];
     for (let i = 0; i < type.types.length; i++) {
         const tts = checker.typeToString(type.types[i]);
-        const gw = generatorator(configuration, checker, newState, type.types[i], newPath);
+        const gw = generatorator(configuration, checker, newState, type.types[i], path);
         if (gw && gw.shortest <= newNumberOfLevelsAvailable) {
             generappers.push(gw);
             if (gw.shortest < shortest) {
@@ -536,12 +551,12 @@ const unionValueGeneratorFactory: ValueGenerator = function (configuration: Gene
     return gw;
 };
 
-function pathToString(checker: ts.TypeChecker, path: PathSegment[]) {
-    return path.map(p => `${p.specifier}${checker.typeToString(p.type)}`).join('');
+function pathToString(checker: ts.TypeChecker, path: ObjectPathSegment[]) {
+    return path.map(p => `${p.segment}`).join('');
 }
 
 //  does NOT validate its argument
-const mapValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: PathSegment[]) {
+const mapValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: ObjectPathSegment[]) {
     if (!isTypeReference(type)) {
         throw new Error(`Unexpected type not a reference ${checker.typeToString(type)}`);
     }
@@ -552,6 +567,7 @@ const mapValueGeneratorFactory: ValueGenerator = function (configuration: Genera
         const empty: GeneratedParameter = {
             id: newId('empty-map'),
             generator: 'mapValueGenerator',
+            path,
             type: 'map',
             entries: [],
         };
@@ -575,14 +591,16 @@ const mapValueGeneratorFactory: ValueGenerator = function (configuration: Genera
     };
 
     const newKeyPath = path.concat({
-        type,
-        specifier: '.key',
+        typeString: checker.typeToString(type),
+        segment: '.key',
+        generator: 'mapValueGenerator',
     });
     const keyGeneratorFactory = generatorator(configuration, checker, newState, keyType, newKeyPath);
 
     const newValuePath = path.concat({
-        type,
-        specifier: '.value',
+        typeString: checker.typeToString(type),
+        segment: '.value',
+        generator: 'mapValueGenerator',
     });
     const valueGeneratorFactory = generatorator(configuration, checker, newState, valueType, newValuePath);
 
@@ -621,6 +639,7 @@ const mapValueGeneratorFactory: ValueGenerator = function (configuration: Genera
                     id: newId('map'),
                     generator: 'mapValueGenerator',
                     type: 'map',
+                    path,
                     entries,
                 };
             }
@@ -641,7 +660,7 @@ const mapValueGeneratorFactory: ValueGenerator = function (configuration: Genera
     return gw;
 };
 
-const setValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: PathSegment[]) {
+const setValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: ObjectPathSegment[]) {
     if (!isTypeReference(type)) {
         throw new Error(`Unexpected type not a reference ${checker.typeToString(type)}`);
     }
@@ -654,6 +673,7 @@ const setValueGeneratorFactory: ValueGenerator = function (configuration: Genera
             id: newId('empty-set'),
             generator: 'setValueGenerator',
             type: 'set',
+            path,
             entries: [],
         };
 
@@ -663,8 +683,9 @@ const setValueGeneratorFactory: ValueGenerator = function (configuration: Genera
     }
 
     const newPath = path.concat({
-        type,
-        specifier: '.element',
+        typeString: checker.typeToString(type),
+        segment: '.element',
+        generator: 'setValueGenerator',
     });
 
     const newNumberOfLevelsAvailable = state.numberOfLevelsAvailable - 1;
@@ -702,6 +723,7 @@ const setValueGeneratorFactory: ValueGenerator = function (configuration: Genera
                     id: newId('set'),
                     generator: 'setValueGeneratorFactory',
                     type: 'set',
+                    path,
                     entries,
                 };
             }
@@ -719,7 +741,7 @@ const setValueGeneratorFactory: ValueGenerator = function (configuration: Genera
     return gw;
 };
 
-const dateValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: PathSegment[]) {
+const dateValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: ObjectPathSegment[]) {
 
     const ms1 = 1;
     const ms10 = 10;
@@ -781,7 +803,8 @@ const dateValueGeneratorFactory: ValueGenerator = function (configuration: Gener
         2,
     ];
 
-    function* gDate(_: RuntimeContext): G {
+    function* gDate(rc: RuntimeContext): G {
+        rc.weirdness;
         for (const neighborOffset of neighbors) {
             for (const perturbationMultiplier of [0, 1, -1, 2, -2]) {
                 for (const perturbation of perturbations) {
@@ -791,6 +814,7 @@ const dateValueGeneratorFactory: ValueGenerator = function (configuration: Gener
                             id: newId('date'),
                             generator: 'dateValueGeneratorFactory',
                             type: 'date',
+                            path,
                             epochMs,
                         };
                     }
@@ -809,7 +833,7 @@ const dateValueGeneratorFactory: ValueGenerator = function (configuration: Gener
     return gw;
 };
 
-const regexpValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: PathSegment[]) {
+const regexpValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: ObjectPathSegment[]) {
     const patterns = [/^$/, /.*/,
         //  from https://blog.robertelder.org/regular-expression-test-cases/
         /^([a-z0-9_\.\-]+)@([\da-z\.\-]+)\.([a-z\.]{2,5})$/,
@@ -893,13 +917,15 @@ const regexpValueGeneratorFactory: ValueGenerator = function (configuration: Gen
         /"><img src="x:x" onerror="alert(XSS)">/,
     ];
 
-    function* gRegexp(_: RuntimeContext): G {
+    function* gRegexp(rc: RuntimeContext): G {
+        rc.weirdness;
         while (true) {
             for (const pattern of patterns) {
                 yield {
                     id: newId('pattern'),
                     generator: 'regexpValueGeneratorFactory',
                     type: 'regexp',
+                    path,
                     pattern: pattern.toString(),
                 };
             }
@@ -916,7 +942,7 @@ const regexpValueGeneratorFactory: ValueGenerator = function (configuration: Gen
     return gw;
 };
 
-const basicObjectValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: PathSegment[]) {
+const basicObjectValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: ObjectPathSegment[]) {
     //  in theory this can be a parameter in the future
     const picker = stupidPropertyPicker;
 
@@ -938,8 +964,9 @@ const basicObjectValueGeneratorFactory: ValueGenerator = function (configuration
         if (declaration) {
             const propertyType = checker.getTypeOfSymbolAtLocation(p, declaration);
             const pgw = generatorator(configuration, checker, newState, propertyType, path.concat({
-                type,
-                specifier: `.${p.name}`,
+                typeString: checker.typeToString(type),
+                segment: `["${p.name}"]`,
+                generator: 'basicObjectValueGeneratorFactory',
             }));
 
             const tts = checker.typeToString(propertyType);
@@ -1017,6 +1044,7 @@ const basicObjectValueGeneratorFactory: ValueGenerator = function (configuration
                     id: newId('object'),
                     generator: 'basicObjectValueGeneratorFactory',
                     type: 'object',
+                    path,
                     properties: o,
                     required: Array.from(required),
                     declaredType,
@@ -1036,7 +1064,7 @@ const basicObjectValueGeneratorFactory: ValueGenerator = function (configuration
     return gw;
 };
 
-const functionValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: PathSegment[]) {
+const functionValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: ObjectPathSegment[]) {
     const callSignatures = checker.getSignaturesOfType(type, ts.SignatureKind.Call);
 
     if (callSignatures.length !== 1) {
@@ -1050,8 +1078,9 @@ const functionValueGeneratorFactory: ValueGenerator = function (configuration: G
     };
 
     const g = generatorator(configuration, checker, newState, returnType, path.concat({
-        type,
-        specifier: '()',
+        typeString: checker.typeToString(type),
+        segment: '()=>',
+        generator: 'functionValueGeneratorFactory',
     }));
 
     if (!g) {
@@ -1072,6 +1101,7 @@ const functionValueGeneratorFactory: ValueGenerator = function (configuration: G
                     id: newId('function'),
                     generator: 'functionValueGeneratorFactory',
                     type: 'callable',
+                    path,
                     returnValue,
                 };
             }
@@ -1235,7 +1265,7 @@ const isDefaultGlobalType = (checker: ts.TypeChecker, type: ts.Type): boolean =>
     return false;
 };
 
-const objectValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: PathSegment[]) {
+const objectValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: ObjectPathSegment[]) {
     if (!(type.flags & ts.TypeFlags.Object)) {
         return;
     };
@@ -1302,7 +1332,7 @@ function construct(type: ts.InterfaceType, constructor: ts.Signature, args: any[
 
 
 
-const classValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: PathSegment[]) {
+const classValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: ObjectPathSegment[]) {
     if (!type.isClass()) {
         return;
     }
@@ -1333,8 +1363,9 @@ const classValueGeneratorFactory: ValueGenerator = function (configuration: Gene
     const newNumberOfLevelsAvailable = state.numberOfLevelsAvailable - 1;
 
     const newPath = path.concat({
-        type,
-        specifier: '.new()',
+        typeString: checker.typeToString(type),
+        segment: '.new()=>',
+        generator: 'classValueGeneratorFactory',
     });
 
     let overallShortest = 0;
@@ -1397,6 +1428,7 @@ const classValueGeneratorFactory: ValueGenerator = function (configuration: Gene
                         id: newId('class'),
                         generator: 'classValueGeneratorFactory',
                         type: 'class',
+                        path,
                         fullyQualifiedName: fqn,
                         parameters: args,
                     };
@@ -1526,7 +1558,7 @@ const getDeclaration = (symbol: ts.Symbol) => {
 };
 
 //  returns null if there is insufficient depth to generate a value
-function generatorator(configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: PathSegment[]): GeneratorFactory | undefined {
+function generatorator(configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: ObjectPathSegment[]): GeneratorFactory | undefined {
     if (state.numberOfLevelsAvailable < 0) {
         return undefined;
     }
@@ -1578,7 +1610,7 @@ function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclarati
 
             const configuration: GeneratorConfiguration = {
                 depthLimit: currentDepthLimit,
-                weirdness: 1,
+                // weirdness: runtimeContext.weirdness,
                 literals,
             };
 
@@ -1725,7 +1757,7 @@ export class CombinatorialTestCaseSource /* implements TestCaseSource */ {
         }
     }
 
-    increaseWeirdness(): void {
-        this.weirdness++;
+    increaseWeirdness(increment = 1): void {
+        this.weirdness += increment;
     }
 }

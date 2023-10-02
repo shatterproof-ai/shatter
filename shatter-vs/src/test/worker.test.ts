@@ -15,6 +15,7 @@ describe('worker', () => {
             id: '1',
             type: 'value',
             subtype: 'number',
+            path: [],
             generator: 'tizzest',
             value: 4
         }];

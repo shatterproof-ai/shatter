@@ -3,10 +3,32 @@
 
 import { createId } from "@paralleldrive/cuid2";
 
+import { Type } from 'typescript';
+
+//  NOT using `[${number}]` for arrays because we don't care about the position of a given value in the array
+//  but we DO care about which key a given value is associated with.  TODO: re-examine the decision
+//  to ignore array element position
+//  include intersections because they actually create a new object; unions just pick
+export type Segment = '()=>' | '.new()=>' | `["${string}"]` | '[]' | '&' | '.key' | '.value' | '.element';
+
+//  the sequence of generators can be different in unions
+export interface ObjectPathSegment {
+    // type: Type,
+    typeString: string,
+    //  TODO: change this to an enum of union|intersection|object|literal|array|map|set|date|regexp|function|class|etc.
+    generator: GeneratedParameter['generator'],
+    segment: Segment,
+}
+
+export function mergePath(path: ObjectPathSegment[]): string {
+    return path.map(p => p.segment).join('');
+}
+
 //  NOTE: all value objects must be serializable
 interface BaseGeneratedParameter {
     id: string,
     generator: string,
+    path: ObjectPathSegment[],
     options?: Record<string, any>,
 }
 
@@ -50,7 +72,7 @@ export interface NullGeneratedParameter extends BaseValueGeneratedParameter {
 
 export interface EnumGeneratedParameter extends BaseValueGeneratedParameter {
     subtype: 'enum',
-    value: any;
+    value: string | number;   //  internal representation of enum values is always string or number
 }
 
 export type ValueGeneratedParameter = (StringGeneratedParameter | NumberGeneratedParameter | BooleanGeneratedParameter | UndefinedGeneratedParameter | NullGeneratedParameter | EnumGeneratedParameter);
@@ -240,80 +262,64 @@ export const newId = (type: string): string => {
     return `${type}-${createId()}`;
 };
 
-//  TODO: fix this name; it's a path + value
-interface FieldExtract {
-    path: string[],
-    value: any,
-}
-
-export const vectorizeParameter = (gp: GeneratedParameter, path: string[]): FieldExtract[] => {
+export function* findLeaves(gp: GeneratedParameter): Generator<GeneratedParameter, any, any> {
     if (gp.type === 'terminal') {
-        return [];
+        return;
     }
 
-    if (gp.type === 'value') {
-        return [{
-            path,
-            value: gp.value,
-        }];
-    }
-
-    if (gp.type === 'date') {
-        return [{
-            path,
-            value: gp.epochMs,
-        }];
-    }
-
-    if (gp.type === 'regexp') {
-        return [{
-            path,
-            value: gp.pattern,
-        }];
+    if (gp.type === 'value' || gp.type === 'date' || gp.type === 'regexp') {
+        yield gp;
+        return;
     }
 
     if (gp.type === 'array') {
         if (gp.elements) {
-            const vv = gp.elements.flatMap((e, i) => vectorizeParameter(e, [...path, `${i}`]));
-            return vv;
+            for (const e of gp.elements) {
+                yield* findLeaves(e);
+            }
         }
-        return [];
+        return;
     }
 
     if (gp.type === 'object') {
-        const vv = Object.entries(gp.properties).flatMap(([k, v]) => vectorizeParameter(v, [...path, `["${k}"]`]));
-        return vv;
+        for (const v of Object.values(gp.properties)) {
+            yield* findLeaves(v);
+        }
+        return;
     }
 
     if (gp.type === 'map') {
-        const vv = gp.entries.flatMap(([k, v]) => {
-            const key = vectorizeParameter(k, [...path, '.key']);
-            const value = vectorizeParameter(v, [...path, '.value']);
-            return [...key, ...value];
-        });
-        return vv;
+        for (const [k, v] of gp.entries) {
+            yield* findLeaves(k);
+            yield* findLeaves(v);
+        }
+        return;
     }
 
     if (gp.type === 'set') {
-        const vv = gp.entries.flatMap(e => vectorizeParameter(e, [...path, '.element']));
-        return vv;
+        for (const v of gp.entries) {
+            yield* findLeaves(v);
+        }
+        return;
     }
 
     if (gp.type === 'class') {
-        const vv = gp.parameters.flatMap((p, i) => vectorizeParameter(p, [...path, `.${i}`]));
-        return vv;
+        for (const p of gp.parameters) {
+            yield* findLeaves(p);
+        }
+        return;
     }
 
     if (gp.type === 'tuple') {
-        const vv = gp.values.flatMap((p, i) => vectorizeParameter(p, [...path, `.${i}`]));
-        return vv;
+        for (const p of gp.values) {
+            yield* findLeaves(p);
+        }
+        return;
     }
 
     if (gp.type === 'callable') {
-        return [{
-            path: [...path, '.()'],
-            value: gp.returnValue,
-        }];
+        yield* findLeaves(gp.returnValue);
+        return;
     }
 
     throw new Error(`Unexpected type ${gp['type']}`);

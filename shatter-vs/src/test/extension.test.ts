@@ -8,6 +8,7 @@ import { shatterAutotest } from "../core/shatter";
 import { stringFakerses, optionVariantsMedium } from '../core/seed';
 import { GeneratedParameter, extractGeneratedParameterValue } from '../core/common';
 import { asyncs, finished, started } from '../core/util';
+import { isEnumType } from '../core/generator';
 namespace Nomen {
     export type Z = {
         a: number,
@@ -105,7 +106,6 @@ describe('scratch space', () => {
                         if (ts.isStringLiteralLike(typeNode)) {
                             console.log(`STRING LITERAL NODE: ${typeNode.text}`);
                         }
-
                     };
 
                     dumpTypeNode(typeNode);
@@ -124,6 +124,64 @@ describe('scratch space', () => {
         };
         ts.visitNode(source, visitor);
 
+    });
+});
+
+
+describe('enum scratch space', () => {
+    it('does', () => {
+        const sourceCode = `
+        enum X {
+            A=1,
+            B,
+            C='see?',
+        }
+
+        function (x:X) {
+        }
+        `;
+
+        const tempdir = mkdtempSync(join(tmpdir(), "shatter-test-"));
+        const sourceFilePath = join(tempdir, 'numpty.ts');
+        writeFileSync(sourceFilePath, sourceCode);
+
+        const program = ts.createProgram([sourceFilePath], {});
+
+        const checker = program.getTypeChecker();
+
+        const source = program.getSourceFile(sourceFilePath);
+
+        const visitor = (node: ts.Node) => {
+            if (ts.isFunctionLike(node)) {
+                node.parameters.forEach((param) => {
+                    const typeNode = param.type;
+                    if (!typeNode) {
+                        return;
+                    }
+
+                    const ptype = checker.getTypeFromTypeNode(typeNode);
+                    if (isEnumType(ptype)) {
+                        const enumDeclaration = ptype.symbol.valueDeclaration;
+                        if (enumDeclaration && ts.isEnumDeclaration(enumDeclaration)) {
+                            enumDeclaration.members.forEach((member) => {
+                                if (ts.isEnumMember(member)) {
+                                    ts.isEnumMember(member);
+                                    console.log(`ENUM MEMBER: ${member.name.getText()}; value is maybe ${checker.getConstantValue(member)}`);
+                                }
+                            });
+                        }
+                        const memberses = Array.from(ptype.symbol.members?.entries() ?? []).map(([k, v]) => [k, v.getName()]);
+                        console.log(JSON.stringify(memberses, null, 2));
+                    }
+                });
+                return;
+            }
+            node.getChildren().forEach((child) => {
+                ts.visitNode(child, visitor);
+            });
+            return node;
+        };
+        ts.visitNode(source, visitor);
     });
 });
 
@@ -495,7 +553,7 @@ async function testThisFile(testfile: string, functionName: string, options: Tes
     clusters.forEach((cluster) => {
         [...cluster.leasts, ...cluster.mosts].forEach((specimen) => {
             if (seenSpecimens.has(specimen.id)) {
-                return
+                return;
             }
             seenSpecimens.add(specimen.id);
             const resolvedParameters: any[] = [];

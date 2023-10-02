@@ -13,8 +13,7 @@ export function* hybridize(a: GeneratedParameter, b: GeneratedParameter): G {
         throw new Error(`Attempting unnatural hybridization of ${a.type} with ${b.type}`);
     }
 
-    if (a.type === 'callable' || a.type === 'intersection'
-        || a.type === 'regexp' || a.type === 'tuple') {
+    if (a.type === 'callable' || a.type === 'regexp' || a.type === 'tuple') {
         //  in theory regexps, classes, and tuples can be hybridized... later
         return;
     }
@@ -51,6 +50,7 @@ export function* hybridize(a: GeneratedParameter, b: GeneratedParameter): G {
             yield {
                 id: newId('hybrid-date'),
                 type: 'date',
+                path: a.path,
                 generator: 'hybridize',
                 epochMs: Math.floor((a.epochMs + b.epochMs) / 2),
             };
@@ -98,6 +98,7 @@ export function* hybridize(a: GeneratedParameter, b: GeneratedParameter): G {
                 id: newId('hybrid-class'),
                 type: 'class',
                 generator: 'hybridize',
+                path: a.path,
                 fullyQualifiedName: a.fullyQualifiedName,
                 parameters: newParameters,
             };
@@ -137,6 +138,7 @@ function* hybridizeNumbers(a: NumberGeneratedParameter, b: NumberGeneratedParame
                     id: newId('hybrid-number'),
                     type: 'value',
                     subtype: 'number',
+                    path: a.path,
                     generator: 'hybridize',
                     value,
                 };
@@ -163,6 +165,7 @@ function* hybridizeStrings(a: StringGeneratedParameter, b: StringGeneratedParame
                 id: newId('hybrid-string'),
                 type: 'value',
                 subtype: 'string',
+                path: a.path,
                 generator: 'hybridize',
                 value: longerBeginning,
             };
@@ -175,6 +178,7 @@ function* hybridizeStrings(a: StringGeneratedParameter, b: StringGeneratedParame
                 id: newId('hybrid-string'),
                 type: 'value',
                 subtype: 'string',
+                path: a.path,
                 generator: 'hybridize',
                 value: andAgain,
             };
@@ -207,6 +211,7 @@ function* hybridizeStrings(a: StringGeneratedParameter, b: StringGeneratedParame
                     id: newId('hybrid-string'),
                     type: 'value',
                     subtype: 'string',
+                    path: a.path,
                     generator: 'hybridize',
                     value,
                 };
@@ -226,6 +231,7 @@ function* hybridizeStrings(a: StringGeneratedParameter, b: StringGeneratedParame
                 id: newId('hybrid-string'),
                 type: 'value',
                 subtype: 'string',
+                path: a.path,
                 generator: 'hybridize',
                 value,
             };
@@ -240,6 +246,7 @@ function* hybridizeStrings(a: StringGeneratedParameter, b: StringGeneratedParame
                     id: newId('hybrid-string'),
                     type: 'value',
                     subtype: 'string',
+                    path: a.path,
                     generator: 'hybridize',
                     value: otherValue,
                 };
@@ -285,6 +292,7 @@ function* hybridizeArrays(a: ArrayGeneratedParameter, b: ArrayGeneratedParameter
             id: newId('hybrid-array'),
             type: 'array',
             generator: 'hybridize',
+            path: a.path,
             elements,
         };
     }
@@ -333,6 +341,7 @@ function* hybridizeObjects(a: ObjectGeneratedParameter, b: ObjectGeneratedParame
                     id: newId('hybrid-object'),
                     type: 'object',
                     generator: 'hybridize',
+                    path: a.path,
                     properties: candidate,
                     required: a.required,
                     declaredType: a.declaredType,
@@ -348,6 +357,7 @@ function* hybridizeSets(a: SetGeneratedParameter, b: SetGeneratedParameter, inte
         yield {
             id: newId('hybrid-set'),
             type: 'set',
+            path: a.path,
             generator: 'hybridize',
             entries: elements,
         };
@@ -377,6 +387,7 @@ function* hybridizeMaps(a: MapGeneratedParameter, b: MapGeneratedParameter, inte
         const gp: MapGeneratedParameter = {
             id: newId('hybrid-map'),
             type: 'map',
+            path: a.path,
             generator: 'hybridize',
             entries: arr,
         };
@@ -567,20 +578,6 @@ export function* shrink(gp: GeneratedParameter): G {
         return;
     }
 
-    if (gp.type === "intersection") {
-        for (const part of gp.parts) {
-            let i = 0;
-            for (const shrunk of shrink(part)) {
-                yield shrunk;
-                //  arbitrary cutoff
-                if (i++ > 3) {
-                    break;
-                }
-            }
-        }
-        return;
-    }
-
     if (gp.type === 'map') {
         if (gp.entries.length === 0) {
             return;
@@ -636,6 +633,7 @@ export function* shrink(gp: GeneratedParameter): G {
             yield {
                 id: newId('shrink-set'),
                 generator: 'shrinker',
+                path: gp.path,
                 type: 'set',
                 entries: variation,
             };
@@ -659,6 +657,7 @@ export function* shrink(gp: GeneratedParameter): G {
             yield {
                 id: newId('shrink-tuple'),
                 generator: 'shrinker',
+                path: gp.path,
                 type: 'tuple',
                 values,
             };
@@ -692,6 +691,7 @@ export function* shrink(gp: GeneratedParameter): G {
                     id: newId('shrink-number'),
                     generator: 'shrinker',
                     type: 'value',
+                    path: gp.path,
                     subtype: 'number',
                     value: v,
                 };
@@ -706,6 +706,7 @@ export function* shrink(gp: GeneratedParameter): G {
                     id: newId('shrink-string'),
                     generator: 'shrinker',
                     type: 'value',
+                    path: gp.path,
                     subtype: 'string',
                     value: gp.value.substring(0, gp.value.length / 2),
                 };
@@ -722,6 +723,7 @@ export function* shrink(gp: GeneratedParameter): G {
                 id: newId('shrink-array'),
                 generator: 'shrinker',
                 type: 'array',
+                path: gp.path,
                 elements: array,
             };
         }

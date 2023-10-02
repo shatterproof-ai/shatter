@@ -1,45 +1,49 @@
 import { faker } from '@faker-js/faker';
-import { ArrayGeneratedParameter, BooleanGeneratedParameter, GeneratedParameter, NumberGeneratedParameter, ObjectGeneratedParameter, StringGeneratedParameter, ValueGeneratedParameter, ValueSubtype, newId } from './common';
+import { ArrayGeneratedParameter, BooleanGeneratedParameter, GeneratedParameter, NumberGeneratedParameter, ObjectGeneratedParameter, ObjectPathSegment, StringGeneratedParameter, ValueGeneratedParameter, ValueSubtype, newId } from './common';
 import { reverse } from 'lodash';
+import ts = require('typescript');
+import { RuntimeContext } from './generator';
 
 export interface Literals {
     numbers: Set<number>,
     strings: Set<string>,
 }
 
-const gpvs = (value: string, generator: string, options?: Record<string, any>): StringGeneratedParameter & {
+const gpvs = (path: ObjectPathSegment[], value: string, generator: string, options?: Record<string, any>): StringGeneratedParameter & {
     type: 'value'
 } => ({
     id: newId('value'),
     generator,
+    path,
     type: 'value',
     subtype: 'string',
     value,
     options,
 });
 
-const gpvb = (value: boolean, generator: string, options?: Record<string, any>): BooleanGeneratedParameter & {
+const gpvb = (path: ObjectPathSegment[], value: boolean, generator: string, options?: Record<string, any>): BooleanGeneratedParameter & {
     type: 'value'
 } => ({
     id: newId('value'),
     generator,
+    path,
     type: 'value',
     subtype: 'boolean',
     value,
     options,
 });
 
-const gpvn = (value: number, generator: string, options?: Record<string, any>): NumberGeneratedParameter & {
+const gpvn = (path: ObjectPathSegment[], value: number, generator: string, options?: Record<string, any>): NumberGeneratedParameter & {
     type: 'value'
 } => ({
     id: newId('value'),
     generator,
+    path,
     type: 'value',
     subtype: 'number',
     value,
     options,
 });
-
 
 const numberNeighbors = [-2, -1, 0, 1, 2];
 
@@ -255,20 +259,20 @@ const breedStrings = ["#3eabef", "repurpose web-enabled e-commerce", "blob", "73
     "wlo1", "wws1", "4.8.2", "Gasoline", "Tesla", "7VYK47S021A328481"
 ];
 
-export function* edgyNumbers(literals?: Literals): Generator<GeneratedParameter, void, unknown> {
+export function* edgyNumbers(rc:RuntimeContext, path: ObjectPathSegment[], literals?: Literals): Generator<GeneratedParameter, void, unknown> {
     while (true) {
         for (const m of [1, -1, 2, -2]) {
             for (const base of literals?.numbers ?? []) {
                 for (const n of neighboringNumbers(base * m)) {
-                    yield gpvn(n, 'literals.numbers');
+                    yield gpvn(path, n, 'literals.numbers');
                 }
             }
         }
         for (const n of seedNumbers) {
-            yield gpvn(n, 'seedNumbers');
+            yield gpvn(path, n, 'seedNumbers');
         }
         for (const n of breedNumbers) {
-            yield gpvn(n, 'breedNumbers');
+            yield gpvn(path, n, 'breedNumbers');
         }
     }
 }
@@ -415,10 +419,16 @@ const _notSpecialEnoughNumberRanges = [
     [-111, 93.872878218907, -131, 87.5793543185275, 100, 57.659421572738, -24, 55.89106850879004, -42, 20.477776436872794, 68, 42.857431988066196, -114, 13.370383869929155, -112],
 ];
 
-export function* edgyNumberRanges(literals?: Literals): Generator<GeneratedParameter, void, unknown> {
+export function* edgyNumberRanges(checker: ts.TypeChecker, path: ObjectPathSegment[], literals?: Literals): Generator<GeneratedParameter, void, unknown> {
     const combinedNumberRanges = literals?.numbers
         ? [Array.from(literals?.numbers)].concat(specialNumberRanges)
         : specialNumberRanges;
+
+    const elementPath = path.concat({
+        generator: 'arrayValueGenerator-specialNumber',
+        typeString: 'number',
+        segment: '[]',
+    });
 
     for (const range of combinedNumberRanges) {
         const gp: ArrayGeneratedParameter = {
@@ -429,18 +439,20 @@ export function* edgyNumberRanges(literals?: Literals): Generator<GeneratedParam
                 id: newId('edgy-range-element'),
                 generator: 'arrayValueGenerator-specialNumber',
                 type: 'value',
+                path: elementPath,
                 subtype: 'number',
                 value: n,
             })),
+            path,
         };
         yield gp;
     }
 }
 
-export function* edgyBooleans(literals?: Literals): Generator<GeneratedParameter, void, unknown> {
+export function* edgyBooleans(path: ObjectPathSegment[], literals?: Literals): Generator<GeneratedParameter, void, unknown> {
     while (true) {
-        yield gpvb(true, 'edgyBooleans');
-        yield gpvb(false, 'edgyBooleans');
+        yield gpvb(path, true, 'edgyBooleans');
+        yield gpvb(path, false, 'edgyBooleans');
     }
 }
 
@@ -482,19 +494,20 @@ Object.entries(stringFakerses).forEach(([domain, generators]) => {
 
 faker.seed(10481);
 
-export function* edgyAny(literals?: Literals): Generator<GeneratedParameter, void, unknown> {
+export function* edgyAny(path: ObjectPathSegment[], literals?: Literals): Generator<GeneratedParameter, void, unknown> {
     while (true) {
         for (const n of literals?.numbers ?? []) {
-            yield gpvn(n, 'literals.numbers');
+            yield gpvn(path, n, 'literals.numbers');
         }
 
         for (const s of literals?.strings ?? []) {
-            yield gpvs(s, 'literals.strings');
+            yield gpvs(path, s, 'literals.strings');
         }
 
         const ogp: ObjectGeneratedParameter = {
             id: newId('edgy-any'),
             generator: 'edgyAny',
+            path,
             declaredType: 'any',
             type: 'object',
             properties: {},
@@ -648,11 +661,13 @@ export const optionVariantsExtensive: Record<string, Record<string, any>> = {
 };
 
 //  TODO: apply options
-export function* edgyStrings(literals?: Literals): Generator<GeneratedParameter, void, unknown> {
+export function* edgyStrings(rc:RuntimeContext, path: ObjectPathSegment[], literals?: Literals): Generator<GeneratedParameter, void, unknown> {
     const seen = new Set<string>();
 
+    rc.weirdness;
+
     for (const s of literals?.strings ?? []) {
-        const sn = gpvs(s, 'literals.strings');
+        const sn = gpvs(path, s, 'literals.strings');
         if (!seen.has(sn.value)) {
             yield sn;
             seen.add(sn.value);
@@ -667,6 +682,7 @@ export function* edgyStrings(literals?: Literals): Generator<GeneratedParameter,
                     id: newId('edgy-strings'),
                     generator: 'seedStrings',
                     type: 'value',
+                    path,
                     subtype: 'string',
                     value,
                 };
@@ -681,6 +697,7 @@ export function* edgyStrings(literals?: Literals): Generator<GeneratedParameter,
                 id: newId('edgy-strings'),
                 generator: 'seedStrings',
                 type: 'value',
+                path,
                 subtype: 'string',
                 value,
             };
@@ -734,7 +751,7 @@ export function* edgyStrings(literals?: Literals): Generator<GeneratedParameter,
                 }
 
                 for (const options of optionate(fakerName)) {
-                    yield gpvs(fakerFunction(options), `${fakerCategoryName}.${fakerName}`);
+                    yield gpvs(path, fakerFunction(options), `${fakerCategoryName}.${fakerName}`);
                 }
             }
         }

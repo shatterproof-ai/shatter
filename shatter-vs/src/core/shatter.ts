@@ -3,8 +3,8 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from
 import { tmpdir } from 'os';
 import { join } from 'path';
 import * as ts from 'typescript';
-import { GeneratedParameter, extractGeneratedParameterValue, newId, skip, vectorizeParameter } from './common';
-import { BaseSpecimen, CombinatorialTestCaseSource, RetestCaseSource, RuntimeContext, Specimen } from './generator';
+import { GeneratedParameter, extractGeneratedParameterValue, findLeaves, mergePath, newId, skip } from './common';
+import { BaseSpecimen, CombinatorialTestCaseSource, LeafParameter, RetestCaseSource, RuntimeContext, Specimen } from './generator';
 import { hybridize, isStrictExtension, shrink } from './hybridize';
 import { Outcome, RunResult, Supervisor } from './supervisor';
 import { IntrospectionContext, createInstrumenter } from './transform';
@@ -82,6 +82,24 @@ async function shatterRetestt(modulePaths: string[],
 }
 
 export const shatterRetest = wrapAsync("shatterRetestt", shatterRetestt);
+
+/*
+    Weirdnessing
+    * weirder numbers ???
+    * weirder strings ???
+
+    weirdness = 0
+    * default
+
+    weirdness = 1
+    * don't repeat any exact object or array values
+
+    weirdness = 2
+    * don't repeat any leaf values
+
+    TODO: how does weirdness apply to breeding and mutations?
+*/
+
 
 //  operate on the source file instead of editor objects for generality and also to avoid having to duplicate imports
 //  TODO: make sure the source file is saved before running
@@ -229,7 +247,9 @@ async function shatterAutotestt(modulePaths: string[],
     */
 
     const runtimeContext: RuntimeContext = {
-        activeModule: undefined
+        activeModule: undefined,
+        weirdness: 0,
+        leafPeeping: new Map(),
     };
     // const generator = new CombinatorialTestCaseSource(program.getTypeChecker(), functionDeclarationNode.parameters);
     const source = new CombinatorialTestCaseSource(program.getTypeChecker(), functionDeclarationNode);
@@ -244,21 +264,6 @@ async function shatterAutotestt(modulePaths: string[],
     };
 
     let count = 0;
-    async function evaluateSpecimen(basimen: BaseSpecimen) {
-        const specimenId = newId(basimen.type);
-        const sequence = count++;
-        const newSpecimen: Specimen = {
-            id: specimenId,
-            sequence,
-            sequenceInType: typeCounts[basimen.type]++,
-            ...basimen,
-        };
-        specimensById.set(specimenId, newSpecimen);
-        // console.log(`Evaluating specimen ${JSON.stringify(newSpecimen)}`);
-        return supervisor.execute(functionName, newSpecimen, (invocation: Invocation, result: RunResult) => {
-            onResult(result);
-        }).then(_ => specimenId);
-    }
 
     //  SEED
     const seedsPerUnexecutedLine = 4;
@@ -288,30 +293,56 @@ async function shatterAutotestt(modulePaths: string[],
     }
 
     //  TODO: make this part of the specimen generation
-    const vectorizeSpecimen = (specimen: BaseSpecimen) => specimen.parameters.flatMap((p, i) => vectorizeParameter(p, [`${i}`]));
-    function scoreByDepth(specimen: BaseSpecimen) {
-        const vectorized = vectorizeSpecimen(specimen);
-        return Math.max(...vectorized.map(v => v.path.length));
+    function scoreByDepth(specimen: Specimen) {
+        return specimen.leaves.reduce((maxSeen, leaf) => leaf.path.length > maxSeen ? leaf.path.length : maxSeen, 0);
     }
 
     const maxSpecimensToConsider = 10_000;
 
-    let specimens: BaseSpecimen[] = [];
-    async function executeStage(name: string, take: number, g: Generator<BaseSpecimen, any, any>, scoringFunction: (specimen: BaseSpecimen) => number) {
+    let specimens: Specimen[] = [];
+    async function executeStage(name: string, take: number, g: Generator<BaseSpecimen, any, any>, scoringFunction: (specimen: Specimen) => number) {
         // console.log(`${name} ${take}; ${count} done so far`);
         const start = Date.now();
 
         let i = 0;
         let discarded = 0;
-        for (const specimen of g) {
-            const parameters = specimen.parameters.map(extractGeneratedParameterValue);
+        for (const baseSpecimen of g) {
+            const leafGPs = baseSpecimen.parameters.flatMap(p => Array.from(findLeaves(p)));
+
             // console.log(`parameters ${i}/${discarded} ${JSON.stringify(parameters)}`);
             //  TODO: will this have false positive matches on function members?
             //  the alternative is to use serialize-javascript, but that does not
             //  seem to produce a canonical ordering
-            const strung = canonicallyStringify(parameters);
+            const leafValues = baseSpecimen.parameters.flatMap(p => {
+                const leaves: LeafParameter[] = [];
+                for (const leafGP of findLeaves(p)) {
+                    leaves.push({
+                        ...leafGP,
+                        mergedPath: mergePath(leafGP.path),
+                        value: extractGeneratedParameterValue(leafGP),
+                    });
+                }
+                return leaves;
+            });
+
+            //  TODO: perhaps in some cases we want to sort by other things,
+            //  like depth or length or aggregate size
+            leafValues.sort((a, b) => a.mergedPath.localeCompare(b.mergedPath));
+            const strung = JSON.stringify(leafValues);
+            // const strung = canonicallyStringify(parameters);
             if (strung && !seen.has(strung)) {
                 seen.add(strung);
+
+                const specimenId = newId(baseSpecimen.type);
+                const sequence = count++;
+
+                const specimen: Specimen = {
+                    id: specimenId,
+                    sequence,
+                    sequenceInType: typeCounts[baseSpecimen.type]++,
+                    leaves: leafValues,
+                    ...baseSpecimen,
+                };
                 specimens.push(specimen);
             } else {
                 discarded++;
@@ -327,8 +358,18 @@ async function shatterAutotestt(modulePaths: string[],
             .map(ss => ss.specimen);
 
         const toRun = scoredSpecimens.slice(0, take);
+
         const betweenGenerationAndExecution = Date.now();
-        const evaluations = toRun.map(specimen => evaluateSpecimen(specimen));
+
+        const evaluations: Promise<string>[] = [];
+        for (const newSpecimen of toRun) {
+            specimensById.set(newSpecimen.id, newSpecimen);
+            // console.log(`Evaluating specimen ${JSON.stringify(newSpecimen)}`);
+            const p = supervisor.execute(functionName, newSpecimen, (invocation: Invocation, result: RunResult) => {
+                onResult(result);
+            }).then(_ => newSpecimen.id);
+            evaluations.push(p);
+        }
 
         specimens = scoredSpecimens.slice(take, take + maxSpecimensToConsider);
 
@@ -343,11 +384,28 @@ async function shatterAutotestt(modulePaths: string[],
             });
     }
 
+    const linesRemainingPerPass: number[] = [];
     try {
         //  TODO: prioritize variation in simpler types, e.g. numbers, over variation in more complex types, e.g. Maps
         while (count < maxIterations && Date.now() - startTime < maxTime) {
             //  generate at least one specimen per unexecuted line
-            const toSeed = Math.min(maxIterations, (introspectionContext.instrumentedLines.size - allExecutedLines.size, 5) * seedsPerUnexecutedLine);
+
+            const linesRemaining = introspectionContext.instrumentedLines.size - allExecutedLines.size;
+
+            const oneLineBack = linesRemainingPerPass?.[linesRemainingPerPass.length - 1] ?? introspectionContext.instrumentedLines.size;
+            const progress = oneLineBack - linesRemaining;
+            const fiveLinesBack = linesRemainingPerPass?.[linesRemainingPerPass.length - 5] ?? introspectionContext.instrumentedLines.size;
+            const progress5 = fiveLinesBack - linesRemaining;
+
+            if (progress5 === 0) {
+                runtimeContext.weirdness += 2;
+            } else if (progress === 0) {
+                runtimeContext.weirdness++;
+            }
+
+            linesRemainingPerPass.push(linesRemaining);
+            //  TODO: if we're not making progress, increase weirdness (HOW??? more unique individual values?)
+            const toSeed = Math.min(maxIterations, Math.min(linesRemaining, 5) * seedsPerUnexecutedLine);
             await executeStage("seed", toSeed, seeder, scorePerParameterUniqueness);
 
             //  WEED - find the smaller ones
@@ -357,7 +415,7 @@ async function shatterAutotestt(modulePaths: string[],
 
             //  BREED
             const toBreed = Math.min(maxIterations - count, Math.ceil(count * 0.2 + 20));
-            const breeder = breed(evaluateSpecimen, introspectionContext.instrumentedLines, allExecutedLines, clusters);
+            const breeder = breed(introspectionContext.instrumentedLines, allExecutedLines, clusters);
             await executeStage("breed", toBreed, breeder, scorePerParameterUniqueness);   //  TODO: breed-specific score - some kind of holistic uniqueness?  individual parameters are likely to overlap
 
             //  KNEAD
@@ -405,7 +463,7 @@ const findFirstHole = (c: ResultCluster, instrumentedLines: number[]) => {
 /*
     foreach specimen that got to a given line, find the minimal version of that specimen that still gets to that line
 */
-function* breed(evaluateSpecimen: (b: BaseSpecimen) => Promise<string | undefined>, allInstrumentedLines: Set<number>, allExecutedLines: Set<number>, _clusters: ResultCluster[]): Generator<Specimen, any, any> {
+function* breed(allInstrumentedLines: Set<number>, allExecutedLines: Set<number>, _clusters: ResultCluster[]): Generator<Specimen, any, any> {
 
 
     function breedForClusters(baseClusters: ResultCluster[], overshootClusters: ResultCluster[]) {
