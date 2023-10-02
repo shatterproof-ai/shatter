@@ -65,11 +65,6 @@ export interface TupleGeneratedParameter extends BaseGeneratedParameter {
     values: GeneratedParameter[],
 }
 
-export interface IntersectionGeneratedParameter extends BaseGeneratedParameter {
-    type: 'intersection',
-    parts: GeneratedParameter[],
-}
-
 export interface ClassGeneratedParameter extends BaseGeneratedParameter {
     type: 'class',
     fullyQualifiedName: string,
@@ -113,9 +108,9 @@ export interface ObjectGeneratedParameter extends BaseGeneratedParameter {
     declaredType: string,
 }
 
-export type GeneratedParameter = ValueGeneratedParameter | ArrayGeneratedParameter | TupleGeneratedParameter | IntersectionGeneratedParameter | ClassGeneratedParameter | MapGeneratedParameter | SetGeneratedParameter | DateGeneratedParameter | RegExpGeneratedParameter | CallableGeneratedParameter | TerminalGeneratedParameter | ObjectGeneratedParameter;
+export type GeneratedParameter = ValueGeneratedParameter | ArrayGeneratedParameter | TupleGeneratedParameter | ClassGeneratedParameter | MapGeneratedParameter | SetGeneratedParameter | DateGeneratedParameter | RegExpGeneratedParameter | CallableGeneratedParameter | TerminalGeneratedParameter | ObjectGeneratedParameter;
 
-const resolveGeneratedParameterValue = (gp: GeneratedParameter, rehydrate:boolean, activeModule: any): any => {
+const resolveGeneratedParameterValue = (gp: GeneratedParameter, rehydrate: boolean, activeModule: any): any => {
     function extractor(gp: GeneratedParameter): any {
         return resolveGeneratedParameterValue(gp, rehydrate, activeModule);
     }
@@ -183,7 +178,7 @@ const resolveGeneratedParameterValue = (gp: GeneratedParameter, rehydrate:boolea
                 parameters: gp.parameters.map(extractor),
             };
         }
-        
+
         const classRef = (activeModule as any)[gp.fullyQualifiedName];
         if (!classRef) {
             const keyses = Object.keys(activeModule);
@@ -210,21 +205,14 @@ const resolveGeneratedParameterValue = (gp: GeneratedParameter, rehydrate:boolea
             return v;
         };
     }
-    if (gp.type === 'intersection') {
-        const merged: any = {};
-        for (const part of gp.parts) {
-            const o = extractor(part);
-            Object.assign(merged, o);
-        }
-        return merged;
-    }
+
     throw new Error(`Unexpected type ${gp['type']}`);
 };
 
-export const extractGeneratedParameterValue = (gp: GeneratedParameter): any => 
-     resolveGeneratedParameterValue(gp, false, {});
-    
-export const rehydrateGeneratedParameterValue = (gp: GeneratedParameter, activeModule:any): any =>
+export const extractGeneratedParameterValue = (gp: GeneratedParameter): any =>
+    resolveGeneratedParameterValue(gp, false, {});
+
+export const rehydrateGeneratedParameterValue = (gp: GeneratedParameter, activeModule: any): any =>
     resolveGeneratedParameterValue(gp, true, activeModule);
 
 export const compressRanges = (lines: number[]) => {
@@ -259,4 +247,83 @@ export const skip = <T, U, V>(g: Iterator<T, U, V>, n: number): T | undefined =>
 
 export const newId = (type: string): string => {
     return `${type}-${createId()}`;
+};
+
+//  TODO: fix this name; it's a path + value
+interface FieldExtract {
+    path: string[],
+    value: any,
+}
+
+export const vectorizeParameter = (gp: GeneratedParameter, path: string[]): FieldExtract[] => {
+    if (gp.type === 'terminal') {
+        return [];
+    }
+
+    if (gp.type === 'value') {
+        return [{
+            path,
+            value: gp.value,
+        }]
+    }
+
+    if (gp.type === 'date') {
+        return [{
+            path,
+            value: gp.epochMs,
+        }]
+    }
+
+    if (gp.type === 'regexp') {
+        return [{
+            path,
+            value: gp.pattern,
+        }]
+    }
+
+    if (gp.type === 'array') {
+        if (gp.elements) {
+            const vv = gp.elements.flatMap((e, i) => vectorizeParameter(e, [...path, `${i}`]));
+            return vv;
+        }
+        return [];
+    }
+
+    if (gp.type === 'object') {
+        const vv = Object.entries(gp.properties).flatMap(([k, v]) => vectorizeParameter(v, [...path, `["${k}"]`]));
+        return vv;
+    }
+
+    if (gp.type === 'map') {
+        const vv = gp.entries.flatMap(([k, v]) => {
+            const key = vectorizeParameter(k, [...path, '.key']);
+            const value = vectorizeParameter(v, [...path, '.value']);
+            return [...key, ...value];
+        })
+        return vv;
+    }
+
+    if (gp.type === 'set') {
+        const vv = gp.entries.flatMap(e => vectorizeParameter(e, [...path, '.element']));
+        return vv;
+    }
+
+    if (gp.type === 'class') {
+        const vv = gp.parameters.flatMap((p, i) => vectorizeParameter(p, [...path, `.${i}`]));
+        return vv;
+    }
+
+    if (gp.type === 'tuple') {
+        const vv = gp.values.flatMap((p, i) => vectorizeParameter(p, [...path, `.${i}`]));
+        return vv;
+    }
+
+    if (gp.type === 'callable') {
+        return [{
+            path: [...path, '.()'],
+            value: gp.returnValue,
+        }];
+    }
+
+    throw new Error(`Unexpected type ${gp['type']}`);
 };

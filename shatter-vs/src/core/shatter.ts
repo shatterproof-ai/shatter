@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from
 import { tmpdir } from 'os';
 import { join } from 'path';
 import * as ts from 'typescript';
-import { GeneratedParameter, extractGeneratedParameterValue, newId, skip } from './common';
+import { GeneratedParameter, extractGeneratedParameterValue, newId, skip, vectorizeParameter } from './common';
 import { BaseSpecimen, CombinatorialTestCaseSource, RetestCaseSource, RuntimeContext, Specimen } from './generator';
 import { hybridize, isStrictExtension, shrink } from './hybridize';
 import { Outcome, RunResult, Supervisor } from './supervisor';
@@ -277,11 +277,18 @@ async function shatterAutotestt(modulePaths: string[],
             if (!seen.has(strung)) {
                 seen.add(strung);
                 //  TODO: compute cosine similarity against all others seen in this slot and return 1-max(similarity)
-                score++;
+                //  go negative so that more similar is higher in the list
+                score--;
             }
         }
 
         return score;
+    }
+
+    const vectorizeSpecimen = (specimen: BaseSpecimen) => specimen.parameters.flatMap((p, i) => vectorizeParameter(p, [`${i}`]));
+    function scoreByDepth(specimen: BaseSpecimen) {
+        const vectorized = vectorizeSpecimen(specimen);
+        return Math.max(...vectorized.map(v => v.path.length));
     }
 
     const maxSpecimensToConsider = 10_000;
@@ -334,7 +341,7 @@ async function shatterAutotestt(modulePaths: string[],
             //  WEED - find the smaller ones
             const toWeed = Math.ceil(count * 0.1 + 10);
             const weeder = weed(maxShrinkGenerations, clustersByKey, functionDeclarationNode.parameters, specimensById);
-            executeStage("weed", toWeed, weeder, scorePerParameterUniqueness);      //  TODO: weed-specific score - estimate size of input in some fashion; smaller is better
+            executeStage("weed", toWeed, weeder, scoreByDepth);      //  TODO: weed-specific score - estimate size of input in some fashion; smaller is better
 
             //  BREED
             const toBreed = Math.ceil(count * 0.1 + 10);
