@@ -1709,7 +1709,7 @@ export class CombinatorialTestCaseSource /* implements TestCaseSource */ {
         private f: ts.FunctionDeclaration) {
     }
 
-    *seed(runtimeContext:RuntimeContext, literals?: Literals): Iterator<BaseSpecimen> {
+    *seeder(runtimeContext:RuntimeContext, literals?: Literals): Generator<BaseSpecimen, any, any> {
         const f = this.f;
         const checker = this.checker;
 

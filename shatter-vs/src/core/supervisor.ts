@@ -1,13 +1,13 @@
-import { Worker } from 'worker_threads';
-import { Invocation, InvocationMeta, InvocationResult, WorkerSetup } from './worker-protocol';
-import { GeneratedParameter, extractGeneratedParameterValue } from './common';
-
-import serializeJavascript = require("serialize-javascript");
-import { execute, work } from './worker';
-import { basename, dirname, join } from 'path';
 import { symlinkSync } from 'fs';
+import { dirname, join } from 'path';
+import { Worker } from 'worker_threads';
+import { extractGeneratedParameterValue } from './common';
 import { Specimen } from './generator';
 import { wrapAsync, wrapAsyncMethod } from './util';
+import { work } from './worker';
+import { Invocation, InvocationMeta, InvocationResult, WorkerSetup } from './worker-protocol';
+
+import serializeJavascript = require("serialize-javascript");
 
 // eslint-disable-next-line @typescript-eslint/naming-convention
 export const Outcomes = ['completed', 'error', 'timeout', 'failed'] as const;
@@ -38,16 +38,6 @@ interface WorkerMeta extends WorkerSetup {
     timeoutId?: NodeJS.Timeout
 }
 
-const canonicalizeInvocation = (meta: InvocationMeta) => {
-    const resolvedParameters = meta.generatedParameters.map(extractGeneratedParameterValue);
-    const canonicalized = serializeJavascript({
-        functionName: meta.invocation.functionName,
-        resolvedParameters
-    });
-
-    return canonicalized;
-};
-
 export class Supervisor {
     private busyWorkers = new Map<number, string>();
     private availableWorkers = new Set<number>();
@@ -59,8 +49,6 @@ export class Supervisor {
     private count = 0;
 
     private resultBySpecimen = new Map<string, RunResult>();
-    //  TODO: this may not be the place to prevent reruns; perhaps the caller?
-    private attemptedInvocations = new Set<string>();
 
     private invocationMetaSpecimen = new Map<string, InvocationMeta>();
 
@@ -194,12 +182,6 @@ export class Supervisor {
             generatedParameters: specimen.parameters,
             launched: Date.now(),
         };
-
-        const canonicalizedInvocation = canonicalizeInvocation(meta);
-        if (this.attemptedInvocations.has(canonicalizedInvocation)) {
-            return;
-        }
-        this.attemptedInvocations.add(canonicalizedInvocation);
 
         //  store metadata in a map because workers get reused, so we can't capture the metadata
         //  from the surrounding scope in a closure for the out-of-band version; that only works

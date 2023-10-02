@@ -115,9 +115,9 @@ export interface ObjectGeneratedParameter extends BaseGeneratedParameter {
 
 export type GeneratedParameter = ValueGeneratedParameter | ArrayGeneratedParameter | TupleGeneratedParameter | IntersectionGeneratedParameter | ClassGeneratedParameter | MapGeneratedParameter | SetGeneratedParameter | DateGeneratedParameter | RegExpGeneratedParameter | CallableGeneratedParameter | TerminalGeneratedParameter | ObjectGeneratedParameter;
 
-const extractGeneratedParameterValues = (gp: GeneratedParameter, rehydrate:boolean, activeModule: any): any => {
+const resolveGeneratedParameterValue = (gp: GeneratedParameter, rehydrate:boolean, activeModule: any): any => {
     function extractor(gp: GeneratedParameter): any {
-        return extractGeneratedParameterValues(gp, rehydrate, activeModule);
+        return resolveGeneratedParameterValue(gp, rehydrate, activeModule);
     }
 
     if (gp.type === 'terminal') {
@@ -222,10 +222,10 @@ const extractGeneratedParameterValues = (gp: GeneratedParameter, rehydrate:boole
 };
 
 export const extractGeneratedParameterValue = (gp: GeneratedParameter): any => 
-     extractGeneratedParameterValues(gp, false, {});
+     resolveGeneratedParameterValue(gp, false, {});
     
 export const rehydrateGeneratedParameterValue = (gp: GeneratedParameter, activeModule:any): any =>
-    extractGeneratedParameterValues(gp, true, activeModule);
+    resolveGeneratedParameterValue(gp, true, activeModule);
 
 export const compressRanges = (lines: number[]) => {
     let currentRangeStart = lines[0];
