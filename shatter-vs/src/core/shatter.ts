@@ -261,9 +261,9 @@ async function shatterAutotestt(modulePaths: string[],
     }
 
     //  SEED
-    const seedsPerUnexecutedLine = 10;
-    const maxShrinkGenerations = 10;
-    const minResultsPerCluster = 4;
+    const seedsPerUnexecutedLine = 4;
+    const maxShrinkGenerations = 4;
+    const minResultsPerCluster = 3;
 
     const seen = new Set<string>();
 
@@ -298,7 +298,7 @@ async function shatterAutotestt(modulePaths: string[],
 
     let specimens: BaseSpecimen[] = [];
     async function executeStage(name: string, take: number, g: Generator<BaseSpecimen, any, any>, scoringFunction: (specimen: BaseSpecimen) => number) {
-        console.log(`${name} ${take}; ${count} done so far`);
+        // console.log(`${name} ${take}; ${count} done so far`);
         const start = Date.now();
 
         let i = 0;
@@ -338,7 +338,7 @@ async function shatterAutotestt(modulePaths: string[],
                 const end = Date.now();
                 const generation = end - betweenGenerationAndExecution;
                 const execution = betweenGenerationAndExecution - start;
-                console.log(`${name} ${take} took ${generation}ms to generate and ${execution}ms to execute for ${toRun.length} specimens with ${specimens.length} left over; discarded ${discarded} repeats`);
+                console.log(`${name} ${toRun.length}/${take} specimens of ${count} total so far took ${generation}ms to generate and ${execution}ms to execute with ${specimens.length} left over; discarded ${discarded} repeats`);
                 return [generation, execution];
             });
     }
@@ -351,12 +351,12 @@ async function shatterAutotestt(modulePaths: string[],
             await executeStage("seed", toSeed, seeder, scorePerParameterUniqueness);
 
             //  WEED - find the smaller ones
-            const toWeed = Math.min(maxIterations - count, Math.ceil(count * 0.1 + 10));
+            const toWeed = Math.min(maxIterations - count, Math.ceil(count * 0.2 + 20));
             const weeder = weed(maxShrinkGenerations, clustersByKey, functionDeclarationNode.parameters, specimensById);
             await executeStage("weed", toWeed, weeder, scoreByDepth);      //  TODO: weed-specific score - estimate size of input in some fashion; smaller is better
 
             //  BREED
-            const toBreed = Math.min(maxIterations - count, Math.ceil(count * 0.1 + 10));
+            const toBreed = Math.min(maxIterations - count, Math.ceil(count * 0.2 + 20));
             const breeder = breed(evaluateSpecimen, introspectionContext.instrumentedLines, allExecutedLines, clusters);
             await executeStage("breed", toBreed, breeder, scorePerParameterUniqueness);   //  TODO: breed-specific score - some kind of holistic uniqueness?  individual parameters are likely to overlap
 

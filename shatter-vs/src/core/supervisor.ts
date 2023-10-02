@@ -360,7 +360,7 @@ export class Supervisor {
         //  TODO: determine appropriate semantics of exit; does it interrupt execution or is it graceful?
         for (const workerMeta of this.allWorkersEver.values()) {
             if (!this.exited.has(workerMeta)) {
-                console.log(`Terminating worker ${workerMeta.workerNumber}`);
+                // console.log(`Terminating worker ${workerMeta.workerNumber}`);
                 this.purgeWorker(workerMeta);
             }
         }
@@ -369,6 +369,6 @@ export class Supervisor {
         const waitDuration = 100;
         await waitSome(waitDuration, timeout / waitDuration);
         // console.log("finishied draining");
-        console.log(`Purged ${this.purged.size}; exited ${this.exited.size}`);
+        // console.log(`Purged ${this.purged.size}; exited ${this.exited.size}`);
     }
 }
