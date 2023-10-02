@@ -1561,8 +1561,6 @@ function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclarati
 
     const MAXIMUM_DEPTH = 6;
 
-    let previousValuesByType: Map<ts.Type, any>[] = [];
-
     //  save the generators by depth to resume at previous point in stream instead of restarting
     //  TODO: this can probably itself be put into generator state
     let generappersByTypeByDepth = new Map<number, Map<ts.Type, GeneratorFactory>>();
@@ -1605,6 +1603,7 @@ function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclarati
                     let generapper = generappersByType.get(currentType);
                     if (!generapper) {
                         generapper = generatorator(configuration, checker, state, currentType, []);
+                        // console.log(`generapper for ${checker.typeToString(currentType)} is ${generapper?.shortest} to ${generapper?.longest}`);
                         if (generapper) {
                             const t = checker.typeToString(currentType);
                             generappersByType.set(currentType, generapper);
@@ -1630,78 +1629,69 @@ function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclarati
 
             while (valuesYieldedAtThisDepth < maxValuesAtThisDepth) {
                 //  generate exactly one (1) value for each parameter type; this guarantees that we sometimes pass in identical values
-                //  variations 
-                const valuesByType = new Map<ts.Type, any>();
+                //  variations
+
+                const numberOfValuesPerType = Math.max(4, f.parameters.length);
+                const valuesByType = new Map<ts.Type, GeneratedParameter[]>();
                 for (const [type, generator] of generatorsByType.entries()) {
-                    const next = generator.next();
-                    if (next.done) {
-                        throw new Error(`Generator for ${checker.typeToString(type)} is done`);
+                    //  get multiple values for each parameter type for blending below
+                    const parameterValues: GeneratedParameter[] = [];
+                    for (let j = 0; j < numberOfValuesPerType; j++) {
+                        const next = generator.next();
+                        if (next.done) {
+                            throw new Error(`Generator for ${checker.typeToString(type)} is done`);
+                        }
+                        parameterValues.push(next.value);
                     }
-                    valuesByType.set(type, next.value);
+                    valuesByType.set(type, parameterValues);
                 };
 
                 const arbitrarySkipProbability = 0.1;
-                const newValues: any[] = [];
-                for (let j = 0; j < f.parameters.length; j++) {
-                    //  if this parameter is optional, sometimes skip it and the rest
-                    if (f.parameters[j].questionToken) {
-                        if (Math.random() < arbitrarySkipProbability) {
-                            break;
-                        }
-                    }
-
-                    const t = f.parameters[j].type;
-                    const currentType = t
-                        ? checker.getTypeAtLocation(t)
-                        : checker.getAnyType();
-
-                    const v = valuesByType.get(currentType);
-                    newValues.push(v);
-                }
-
-                yield newValues;
-
-                //  no cross blending lists with past lists if there's only one value
-                if (newValues.length === 1) {
-                    continue;
-                }
-
-                //  this ensures when different parameters have identical values
-                //  we have lists where the values are equal
-                //  and lists where they are different
-                //  we both want and don't want test cases where the same value is used for multiple parameters
-                //  always blend with the last one and then a deterministic subset of the remaining;
-                //  this is where we want generators with high variance between successive values
-                // for (let i = previousValuesByType.length - 1; i >= 0; i = i * 0.9 - 2) {
-                for (let i = previousValuesByType.length - 1; i >= 0 && valuesYieldedAtThisDepth < maxValuesAtThisDepth; i = i * 0.9 - 2) {
-                    for (const mod of [2, 3, 5]) {
-                        const values: any[] = [];
-                        for (let j = 0; j < f.parameters.length; j++) {
-                            const t = f.parameters[j].type;
-                            const currentType = t
-                                ? checker.getTypeAtLocation(t)
-                                : checker.getAnyType();
-
-                            //  use both i and j so that we don't always blend the same parameters
-                            if ((i + j) % mod === 0) {
-                                values.push(previousValuesByType[i].get(currentType));
-                            } else {
-                                values.push(newValues[j]);
+                for (let k = 0; k < f.parameters.length; k++) {
+                    const newValues: any[] = [];
+                    for (let j = 0; j < f.parameters.length; j++) {
+                        //  if this parameter is optional, sometimes skip it and the rest
+                        if (f.parameters[j].questionToken) {
+                            if (Math.random() < arbitrarySkipProbability) {
+                                break;
                             }
                         }
 
-                        yield values;
-                        if (valuesYieldedAtThisDepth++ >= maxValuesAtThisDepth) {
-                            break;
-                        }
-                    }
-                }
+                        const t = f.parameters[j].type;
+                        const currentType = t
+                            ? checker.getTypeAtLocation(t)
+                            : checker.getAnyType();
 
-                previousValuesByType.push(valuesByType);
-                //  keep a decent number of past rounds to blend with
-                if (previousValuesByType.length > Math.min(5, f.parameters.length)) {
-                    //  TODO: deterministically vary which one gets dropped
-                    previousValuesByType = previousValuesByType.slice(1);
+                        /*
+                            we should get parameter lists (the number for % p is the index into the per-type value list)
+                            k = 0
+                            j =         1   2   3   4
+                            j + k =     1   2   3   4
+                            % p =       1   2   3   0
+
+                            k = 1
+                            j =         1   2   3   4
+                            j + k =     2   3   4   5
+                            %p =        2   3   0   1
+
+                            k = 2
+                            j =         1   2   3   4
+                            j + k =     3   4   5   6
+                            %p =        3   0   1   2
+                            
+                            k = 3
+                            j =         1   2   3   4
+                            j + k =     4   5   6   7
+                            %p =        0   1   2   3
+
+                            this does not get a complete Cartesian product of all values, but that's okay; we have hybridization happening later
+                        */
+                        const valueIndex = (k + j) % numberOfValuesPerType;
+                        const v = valuesByType.get(currentType)?.[valueIndex];
+                        newValues.push(v);
+                    }
+
+                    yield newValues;
                 }
             }
         }

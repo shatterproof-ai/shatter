@@ -102,8 +102,8 @@ export function* hybridize(a: GeneratedParameter, b: GeneratedParameter): G {
                 parameters: newParameters,
             };
             yield gp;
-
         }
+        return;
     }
 
     throw new Error(`Unhandled input types ${a.type} from ${a.generator}:${a.id} and ${b.type} from ${b.generator}:${b.id}`);

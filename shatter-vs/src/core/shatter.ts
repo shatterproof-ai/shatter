@@ -133,7 +133,6 @@ async function shatterAutotestt(modulePaths: string[],
         throw new Error(`Could not find function body`);
     }
 
-    let count = 0;
     const maxIterations = options?.maxIterations ?? 200;
     const maxTime = options?.maxTime ?? 15_000;
     const startTime = Date.now();
@@ -180,7 +179,7 @@ async function shatterAutotestt(modulePaths: string[],
                 lines: runResult.lines,
                 linesInOrder: runResult.linesInOrder,
                 outcome,
-                specimens: [specimen],
+                specimens: [],
                 results: [],
                 //  the single specimen has the values that are the least and the most for all parameters
                 //  iniitally the only existing specimen is least and most in all cases
@@ -194,6 +193,7 @@ async function shatterAutotestt(modulePaths: string[],
         }
 
         clustersBySpecimenId.set(runResult.specimenId, cluster);
+        cluster.specimens.push(specimen);
 
         cluster.results.push(runResult);
         cluster.totalTime += runResult.duration;
@@ -242,6 +242,8 @@ async function shatterAutotestt(modulePaths: string[],
         'hybrid': 0,
         'edgication': 0,
     };
+
+    let count = 0;
     async function evaluateSpecimen(basimen: BaseSpecimen) {
         const specimenId = newId(basimen.type);
         const sequence = count++;
@@ -255,7 +257,7 @@ async function shatterAutotestt(modulePaths: string[],
         // console.log(`Evaluating specimen ${JSON.stringify(newSpecimen)}`);
         return supervisor.execute(functionName, newSpecimen, (invocation: Invocation, result: RunResult) => {
             onResult(result);
-        }).then(_ =>specimenId);
+        }).then(_ => specimenId);
     }
 
     //  SEED
@@ -267,6 +269,7 @@ async function shatterAutotestt(modulePaths: string[],
 
     const seenParameters: Set<any>[] = functionDeclarationNode.parameters.map(_ => new Set());
 
+    //  TODO: this only looks at uniqueness relative to what's been executed and ignores overlapping values in this cohort
     function scorePerParameterUniqueness(specimen: BaseSpecimen) {
         let score = 0;
         for (let index = 0; index < specimen.parameters.length; index++) {
@@ -299,8 +302,10 @@ async function shatterAutotestt(modulePaths: string[],
         const start = Date.now();
 
         let i = 0;
+        let discarded = 0;
         for (const specimen of g) {
             const parameters = specimen.parameters.map(extractGeneratedParameterValue);
+            // console.log(`parameters ${i}/${discarded} ${JSON.stringify(parameters)}`);
             //  TODO: will this have false positive matches on function members?
             //  the alternative is to use serialize-javascript, but that does not
             //  seem to produce a canonical ordering
@@ -308,6 +313,8 @@ async function shatterAutotestt(modulePaths: string[],
             if (strung && !seen.has(strung)) {
                 seen.add(strung);
                 specimens.push(specimen);
+            } else {
+                discarded++;
             }
 
             if (specimens.length > 10 * take || i++ > 50 * take) {
@@ -319,38 +326,44 @@ async function shatterAutotestt(modulePaths: string[],
             .sort((a, b) => a.score - b.score)
             .map(ss => ss.specimen);
 
-        const evaluations = scoredSpecimens.slice(0, take).map(specimen => evaluateSpecimen(specimen));
+        const toRun = scoredSpecimens.slice(0, take);
+        const betweenGenerationAndExecution = Date.now();
+        const evaluations = toRun.map(specimen => evaluateSpecimen(specimen));
 
         specimens = scoredSpecimens.slice(take, take + maxSpecimensToConsider);
 
         return Promise.all(evaluations)
-        .then(_ => supervisor.drain())
-        .then(_ => {
-            const end = Date.now();
-            return end - start;
-        });
+            .then(_ => supervisor.drain())
+            .then(_ => {
+                const end = Date.now();
+                const generation = end - betweenGenerationAndExecution;
+                const execution = betweenGenerationAndExecution - start;
+                console.log(`${name} ${take} took ${generation}ms to generate and ${execution}ms to execute for ${toRun.length} specimens with ${specimens.length} left over; discarded ${discarded} repeats`);
+                return [generation, execution];
+            });
     }
 
     try {
         //  TODO: prioritize variation in simpler types, e.g. numbers, over variation in more complex types, e.g. Maps
         while (count < maxIterations && Date.now() - startTime < maxTime) {
-            const toSeed = Math.max(Math.max(introspectionContext.instrumentedLines.size - allExecutedLines.size, 5) * seedsPerUnexecutedLine, 75);
+            //  generate at least one specimen per unexecuted line
+            const toSeed = Math.min(maxIterations, (introspectionContext.instrumentedLines.size - allExecutedLines.size, 5) * seedsPerUnexecutedLine);
             await executeStage("seed", toSeed, seeder, scorePerParameterUniqueness);
 
             //  WEED - find the smaller ones
-            const toWeed = Math.ceil(count * 0.1 + 10);
+            const toWeed = Math.min(maxIterations - count, Math.ceil(count * 0.1 + 10));
             const weeder = weed(maxShrinkGenerations, clustersByKey, functionDeclarationNode.parameters, specimensById);
             await executeStage("weed", toWeed, weeder, scoreByDepth);      //  TODO: weed-specific score - estimate size of input in some fashion; smaller is better
 
             //  BREED
-            const toBreed = Math.ceil(count * 0.1 + 10);
+            const toBreed = Math.min(maxIterations - count, Math.ceil(count * 0.1 + 10));
             const breeder = breed(evaluateSpecimen, introspectionContext.instrumentedLines, allExecutedLines, clusters);
             await executeStage("breed", toBreed, breeder, scorePerParameterUniqueness);   //  TODO: breed-specific score - some kind of holistic uniqueness?  individual parameters are likely to overlap
 
             //  KNEAD
             //  only do clusters that have distance > 1 from neighbors
             //  and if they've gotten closer recently
-            const toKnead = functionDeclarationNode.parameters.length * (1 + clusters.length);
+            const toKnead = Math.min(maxIterations - count, functionDeclarationNode.parameters.length * (1 + clusters.length));
             const kneader = knead(clustersByKey, functionDeclarationNode.parameters, specimensById);
             await executeStage("knead", toKnead, kneader, scorePerParameterUniqueness);   //  TODO: knead-specific score - distance from centroid of cluster?
 
@@ -631,64 +644,61 @@ function* knead(clustersByKey: Map<string, ResultCluster>, parameterDeclarations
     const clusters = Array.from(clustersByKey.values())
         //  don't bother to hybridize errors, timeouts, or failures; the most we want to do there is bisect
         .filter(c => c.outcome === 'completed');
-    function* kneader() {
-        for (let index = 0; index < parameterDeclarations.length; index++) {
-            for (let i = 0; i < clusters.length - 1; i++) {
-                const a = clusters[i];
-                const b = clusters[i + 1];
+    for (let index = 0; index < parameterDeclarations.length; index++) {
+        for (let i = 0; i < clusters.length - 1; i++) {
+            const a = clusters[i];
+            const b = clusters[i + 1];
 
-                a.results.sort(comparameters);
-                b.results.sort(comparameters);
+            a.results.sort(comparameters);
+            b.results.sort(comparameters);
 
-                const alast = a.results[a.results.length - 1];
-                const bfirst = b.results[0];
+            const alast = a.results[a.results.length - 1];
+            const bfirst = b.results[0];
 
-                const specimenA = specimens.get(alast.specimenId)!;
-                const specimenB = specimens.get(bfirst.specimenId)!;
+            const specimenA = specimens.get(alast.specimenId)!;
+            const specimenB = specimens.get(bfirst.specimenId)!;
 
-                const distance = computeDistance(specimenA.parameters[index], specimenB.parameters[index]);
+            const distance = computeDistance(specimenA.parameters[index], specimenB.parameters[index]);
 
-                const aToB = a.distancesToClusters[index].get(b.key) ?? Infinity;
-                if (distance < aToB) {
-                    a.distancesToClusters[index].set(b.key, distance);
-                    b.distancesToClusters[index].set(a.key, distance);
+            const aToB = a.distancesToClusters[index].get(b.key) ?? Infinity;
+            if (distance < aToB) {
+                a.distancesToClusters[index].set(b.key, distance);
+                b.distancesToClusters[index].set(a.key, distance);
+            }
+
+            if (distance <= 1) {
+                //  found the edges or close enough
+                // console.log(`found edges ${distance} between ${JSON.stringify(alast.parameters[index])} and ${JSON.stringify(bfirst.parameters[index])}`);
+                continue;
+            }
+            // console.log(`distance ${distance} between ${JSON.stringify(alast.parameters[index])} and ${JSON.stringify(bfirst.parameters[index])}`);
+
+            const arbitraryListLimit = 5;
+            const arbitraryParameterVariationLimit = 4;
+            for (let i = 0; i < arbitraryListLimit; i++) {
+                const parameters: GeneratedParameter[] = [];
+                for (let j = 0; j < specimenA.parameters.length; j++) {
+                    const paramA = specimenA.parameters[j];
+                    const paramB = specimenB.parameters[j];
+                    const hybridized = hybridize(paramA, paramB);
+                    let k = 0;
+
+                    const backupValue = (i % 2 === 0) ? paramA : paramB;
+                    const p: GeneratedParameter = skip(hybridized, i + j) ?? backupValue;
+                    parameters.push(p);
                 }
 
-                if (distance <= 1) {
-                    //  found the edges or close enough
-                    // console.log(`found edges ${distance} between ${JSON.stringify(alast.parameters[index])} and ${JSON.stringify(bfirst.parameters[index])}`);
-                    continue;
-                }
-                // console.log(`distance ${distance} between ${JSON.stringify(alast.parameters[index])} and ${JSON.stringify(bfirst.parameters[index])}`);
-
-                const arbitraryListLimit = 5;
-                const arbitraryParameterVariationLimit = 4;
-                for (let i = 0; i < arbitraryListLimit; i++) {
-                    const parameters: GeneratedParameter[] = [];
-                    for (let j = 0; j < specimenA.parameters.length; j++) {
-                        const paramA = specimenA.parameters[j];
-                        const paramB = specimenB.parameters[j];
-                        const hybridized = hybridize(paramA, paramB);
-                        let k = 0;
-
-                        const backupValue = (i % 2 === 0) ? paramA : paramB;
-                        const p: GeneratedParameter = skip(hybridized, i + j) ?? backupValue;
-                        parameters.push(p);
-                    }
-
-                    //  the parameter list may be a repeat, but that'll get dealt with downstream
-                    const specimen: BaseSpecimen = {
-                        type: 'hybrid',
-                        parameters,
-                        parents: [specimenA.id, specimenB.id],
-                    };
-                    yield specimen;
-                }
+                //  the parameter list may be a repeat, but that'll get dealt with downstream
+                const specimen: BaseSpecimen = {
+                    type: 'hybrid',
+                    parameters,
+                    parents: [specimenA.id, specimenB.id],
+                };
+                yield specimen;
             }
         }
     }
 }
-
 
 function* weed(maxShrinkGenerations: number, clustersByKey: Map<string, ResultCluster>, parameterDeclarations: ts.NodeArray<ts.ParameterDeclaration>, specimensById: Map<string, Specimen>) {
     for (let i = 0; i < maxShrinkGenerations; i++) {

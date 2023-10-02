@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from 'fs';
+import { mkdtempSync, open, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -468,12 +468,62 @@ describe('scratch space 2', () => {
     });
 });
 
+interface TestOptions {
+    maxTime?: number,
+    maxIterations?: number,
+    inBand?: false,
+};
+
+async function testThisCode(functionName: string, sourceCode: string, options: TestOptions = { maxTime: 30_000, maxIterations: 1000, inBand: false }) {
+    const tempdir = mkdtempSync(join(tmpdir(), `shatter-test-${functionName}`));
+    const testfile = join(tempdir, 'index.ts');
+    writeFileSync(testfile, sourceCode);
+    return testThisFile(testfile, functionName, options, tempdir);
+}
+
+async function testThisFile(testfile: string, functionName: string, options: TestOptions, tempdir?: string) {
+    const modulePaths = process.env.NODE_ENV?.split(':') ?? [];
+
+    const shatterproofModuleOverride = "/home/ketan/project/shatter/shatter-vs/src";
+    const { executed, instrumented, clusters } = await shatterAutotest(modulePaths, testfile, tempdir, functionName, (clusters) => {
+        // console.log(`Received clusters ${JSON.stringify(clusters, null, 2)}`);
+    }, { shatterproofModuleOverride, ...options });
+
+    const edgeCases: GeneratedParameter[][] = [];
+    const resolvedEdgeCases: any[][] = [];
+    const seenSpecimens = new Set<string>();
+    clusters.forEach((cluster) => {
+        [...cluster.leasts, ...cluster.mosts].forEach((specimen) => {
+            if (seenSpecimens.has(specimen.id)) {
+                return
+            }
+            seenSpecimens.add(specimen.id);
+            const resolvedParameters: any[] = [];
+            edgeCases.push(specimen.parameters);
+            for (const p of specimen.parameters) {
+                const resolved = extractGeneratedParameterValue(p);
+                resolvedParameters.push(resolved);
+            }
+            resolvedEdgeCases.push(resolvedParameters);
+        });
+    });
+
+    const unexecuted = instrumented.filter((i) => !executed.includes(i));
+    console.log(`Executed     ${executed}`);
+    console.log(`Instrumented ${instrumented}`);
+    console.log(`Missed       ${unexecuted}`);
+    // console.log(`${edgeCases.length} edge cases: ${JSON.stringify(edgeCases, null, 2)}`);
+    console.log(`Resolved edge cases: ${JSON.stringify(resolvedEdgeCases)}`);
+    if (asyncs.size > 0) {
+        console.log(`open asyncs = ${Array.from(asyncs)}`);
+        console.log(`started = ${Array.from(started)}`);
+        console.log(`finished = ${Array.from(finished)}`);
+    }
+}
 
 describe('extension', () => {
     it('should pass', async () => {
-        console.log("exjjeectuing");
         const sourceCode = `
-
         class Numbererer {
             constructor(public n:number) { }
         }
@@ -529,41 +579,12 @@ describe('extension', () => {
         }
         `;
 
-        const tempdir = mkdtempSync(join(tmpdir(), "shatter-test-"));
-        const testfile = join(tempdir, 'hello.ts');
-        writeFileSync(testfile, sourceCode);
-
-        const functionName = "hello";
-
-        const modulePaths = process.env.NODE_ENV?.split(':') ?? [];
-
-        const shatterproofModuleOverride = "/home/ketan/project/shatter/shatter-vs/src";
-        const maxIterations = 500;
-        // const maxTime = 120_000;
-        const maxTime = 10_000;
-        const inBand = true;
-        const { executed, instrumented, clusters } = await shatterAutotest(modulePaths, testfile, tempdir, functionName, (clusters) => {
-            // console.log(`Received clusters ${JSON.stringify(clusters, null, 2)}`);
-        }, { shatterproofModuleOverride, maxIterations, maxTime, inBand, });
-        const unexecuted = instrumented.filter((i) => !executed.includes(i));
-        console.log(`Executed     ${executed}`);
-        console.log(`Instrumented ${instrumented}`);
-        console.log(`Missed       ${unexecuted}`);
-
-        const testCases: GeneratedParameter[][] = [];
-        clusters.forEach((cluster) => {
-            cluster.specimens.forEach((specimen) => {
-                testCases.push(specimen.parameters.map(extractGeneratedParameterValue));
-            });
-        });
-
-        console.log(`Test cases: ${JSON.stringify(testCases)}`);
+        await testThisCode("hello", sourceCode, { maxIterations: 2000, maxTime: 30_000 });
     });
 });
 
 describe('extinction ', () => {
     it('should should pass', async () => {
-        console.log("fdkljliasdfas");
         const sourceCode = `
         function timeDifference(targetDate: Date, baseDate: Date): string {
             let difference = targetDate.getTime() - baseDate.getTime();
@@ -612,43 +633,12 @@ describe('extinction ', () => {
         }
         `;
 
-        const tempdir = mkdtempSync(join(tmpdir(), "shatter-test-"));
-        const testfile = join(tempdir, 'dadatata.ts');
-        writeFileSync(testfile, sourceCode);
-
-        const functionName = "timeDifference";
-
-        const modulePaths = process.env.NODE_ENV?.split(':') ?? [];
-
-        const shatterproofModuleOverride = "/home/ketan/project/shatter/shatter-vs/src";
-        const maxIterations = 500;
-        // const maxTime = 120_000;
-        const maxTime = 10_000;
-        const { executed, instrumented, clusters } = await shatterAutotest(modulePaths, testfile, tempdir, functionName, (clusters) => {
-            // console.log(`Received clusters ${ JSON.stringify(clusters, null, 2) }`);
-        }, { shatterproofModuleOverride, maxIterations, maxTime });
-        const unexecuted = instrumented.filter((i) => !executed.includes(i));
-        console.log(`Executed     ${executed}`);
-        console.log(`Instrumented ${instrumented}`);
-        console.log(`Missed       ${unexecuted}`);
-
-        const testCases: GeneratedParameter[][] = [];
-        clusters.forEach((cluster) => {
-            cluster.specimens.forEach((specimen) => {
-                testCases.push(specimen.parameters.map(extractGeneratedParameterValue));
-            });
-        });
-
-        console.log(`Test cases: ${JSON.stringify(testCases)}`);
-        console.log(`open asyncs = ${Array.from(asyncs)}`);
-        console.log(`started = ${Array.from(started)}`);
-        console.log(`finished = ${Array.from(finished)}`);
+        await testThisCode("timeDifference", sourceCode, { maxIterations: 500, maxTime: 10_000 });
     });
 });
 
 describe('distinction', () => {
     it('should should pass pass', async () => {
-        console.log("6398dfshkjh32");
         const sourceCode = `
         class C { }
 
@@ -710,39 +700,7 @@ describe('distinction', () => {
         }
         `;
 
-        const tempdir = mkdtempSync(join(tmpdir(), "shatter-test-"));
-        const testfile = join(tempdir, 'roro.ts');
-        writeFileSync(testfile, sourceCode);
-
-        const functionName = "romannumeral";
-
-        const modulePaths = process.env.NODE_ENV?.split(':') ?? [];
-
-        const shatterproofModuleOverride = "/home/ketan/project/shatter/shatter-vs/src";
-        const maxIterations = 500;
-        // const maxTime = 120_000;
-        const maxTime = 10_000;
-        const { executed, instrumented, clusters } = await shatterAutotest(modulePaths, testfile, tempdir, functionName, (clusters) => {
-            // console.log(`Received clusters ${JSON.stringify(clusters, null, 2)}`);
-        }, { shatterproofModuleOverride, maxIterations, maxTime });
-        const unexecuted = instrumented.filter((i) => !executed.includes(i));
-        console.log(`Executed     ${executed}`);
-        console.log(`Instrumented ${instrumented}`);
-        console.log(`Missed       ${unexecuted}`);
-
-        const testCases: any[] = [];
-        clusters.forEach((cluster) => {
-            cluster.specimens.forEach((specimen) => {
-                testCases.push(specimen.parameters.map(extractGeneratedParameterValue));
-            });
-        });
-
-        console.log(`Test cases: ${JSON.stringify(testCases)}`);
-        console.log(`open asyncs = ${Array.from(asyncs)}`);
-
-        const startedButNotFinished = Array.from(started).filter((s) => !finished.has(s));
-
-        console.log(`startedButNotFinished = ${Array.from(startedButNotFinished)}`);
+        await testThisCode("romannumeral", sourceCode, { maxIterations: 500, maxTime: 10_000 });
     });
 });
 
@@ -847,7 +805,7 @@ describe('class scratch fever', () => {
                 console.log(`parent = ${node.parent.getText()}`);
                 const type = checker.getTypeAtLocation(node);
                 console.log(`basic type ${checker.typeToString(type)} type flags = ${type.flags}`);
-                
+
                 const tttt = checker.getTypeOfSymbol(type.symbol);
                 const constructors = checker.getSignaturesOfType(tttt, ts.SignatureKind.Construct);
                 const callables = checker.getSignaturesOfType(tttt, ts.SignatureKind.Call);
@@ -905,7 +863,7 @@ describe('class scratch fever', () => {
                 if (ts.isFunctionDeclaration(node)) {
                     node.parameters.forEach((p) => {
                         const ptype = checker.getTypeAtLocation(p);
-                        const pctors = checker.getSignaturesOfType(ptype, ts.SignatureKind.Construct)
+                        const pctors = checker.getSignaturesOfType(ptype, ts.SignatureKind.Construct);
                         console.log(`ptype = ${checker.typeToString(ptype)} => ${pctors.length} constructors`);
                     });
                 }
@@ -953,33 +911,13 @@ describe('infinitue', () => {
 
 describe('complicated', () => {
     it('should pass', async () => {
-        console.log("gv90gf9y453hjvd");
-
         //  TODO: duh
         const testfile = "/home/ketan/project/shatter/examples/typescript/src/query-creator.ts";
         // const testfile = "/home/ketan/project/shatter/examples/typescript/src/query-creator-short.ts";
-
         const functionName = "constructSearchQuery";
-
-        const modulePaths = ["/home/ketan/project/shatter/examples/typescript/node_modules"];
-
-        const shatterproofModuleOverride = "/home/ketan/project/shatter/shatter-vs/src";
-        const maxIterations = 500;
-        // const maxTime = 120_000;
-        const maxTime = 10_000;
-
-        const tempdir = mkdtempSync(join(tmpdir(), "shatter-test-"));
-
-        const { executed, instrumented } = await shatterAutotest(modulePaths, testfile, tempdir, functionName, (clusters) => {
-            // console.log(`Received clusters ${JSON.stringify(clusters, null, 2)}`);
-        }, { shatterproofModuleOverride, maxIterations, maxTime, inBand: true });
-        const unexecuted = instrumented.filter((i) => !executed.includes(i));
-        console.log(`Executed     ${executed}`);
-        console.log(`Instrumented ${instrumented}`);
-        console.log(`Missed       ${unexecuted}`);
+        await testThisFile(testfile, functionName, { maxIterations: 500, maxTime: 10_000 });
     });
 });
-
 
 const permute = function* (first: [string, (string | number)[]], rest: [string, (string | number)[]][], opts: any = {}): Generator<any, void, unknown> {
     const [optionKey, optionValues] = first;

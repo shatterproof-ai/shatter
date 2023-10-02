@@ -331,10 +331,10 @@ export class Supervisor {
             }
         });
 
-        console.log(`Draining with ${this.activeWorkers.size} workers`);
+        // console.log(`Draining with ${this.activeWorkers.size} workers`);
         const waitDuration = 100;
         await waitSome(waitDuration, timeout / waitDuration);
-        console.log(`Finished draining after ${Date.now() - start} ms with ${this.activeWorkers.size}`);
+        // console.log(`Finished draining after ${Date.now() - start} ms with ${this.activeWorkers.size}`);
     }
 
     @wrapAsyncMethod
@@ -369,7 +369,6 @@ export class Supervisor {
         const waitDuration = 100;
         await waitSome(waitDuration, timeout / waitDuration);
         // console.log("finishied draining");
-        console.log(`Purged ${this.purged.size} = ${Array.from(this.purged).join(", ")}`);
-        console.log(`Exited ${this.exited.size} = ${Array.from(this.exited).join(", ")}`);
+        console.log(`Purged ${this.purged.size}; exited ${this.exited.size}`);
     }
 }

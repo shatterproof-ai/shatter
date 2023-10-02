@@ -122,39 +122,30 @@ const resolveGeneratedParameterValue = (gp: GeneratedParameter, rehydrate: boole
         return gp.value;
     }
     if (gp.type === 'array') {
-        if (gp.elements) {
-            return gp.elements.map(extractor);
-        }
-        throw new Error(`Unexpected missing elements in array gp ${JSON.stringify(gp)}`);
+        return gp.elements.map(extractor);
     }
     if (gp.type === 'object') {
         const o: Record<string, any> = {};
         Object.entries(gp.properties).forEach(([k, v]) => {
             o[k] = extractor(v);
+            console.log(`extracted ${k} = ${JSON.stringify(o[k])}`);
         });
         return o;
     }
     if (gp.type === 'map') {
+        const resolved = gp.entries.map(([k, v]): [unknown, unknown] => [extractor(k), extractor(v)]);
         if (!rehydrate) {
-            return gp.entries;
+            return resolved;
         }
-        const m = new Map();
-        gp.entries.forEach(([k, v]) => {
-            const key = extractor(k);
-            const value = extractor(v);
-            m.set(key, value);
-        });
+        const m = new Map(resolved);
         return m;
     }
     if (gp.type === 'set') {
+        const resolved = gp.entries.map(extractor);
         if (!rehydrate) {
-            return gp.entries;
+            return resolved;
         }
-        const s = new Set();
-        gp.entries.forEach((v) => {
-            const value = extractor(v);
-            s.add(value);
-        });
+        const s = new Set(resolved);
         return s;
     }
     if (gp.type === 'date') {
@@ -264,21 +255,21 @@ export const vectorizeParameter = (gp: GeneratedParameter, path: string[]): Fiel
         return [{
             path,
             value: gp.value,
-        }]
+        }];
     }
 
     if (gp.type === 'date') {
         return [{
             path,
             value: gp.epochMs,
-        }]
+        }];
     }
 
     if (gp.type === 'regexp') {
         return [{
             path,
             value: gp.pattern,
-        }]
+        }];
     }
 
     if (gp.type === 'array') {
@@ -299,7 +290,7 @@ export const vectorizeParameter = (gp: GeneratedParameter, path: string[]): Fiel
             const key = vectorizeParameter(k, [...path, '.key']);
             const value = vectorizeParameter(v, [...path, '.value']);
             return [...key, ...value];
-        })
+        });
         return vv;
     }
 
