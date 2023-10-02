@@ -1314,7 +1314,7 @@ const classValueGeneratorFactory: ValueGenerator = function (configuration: Gene
     const constructors = checker.getSignaturesOfType(stype, ts.SignatureKind.Construct);
     // const constructors = checker.getSignaturesOfType(type, ts.SignatureKind.Construct);
 
-    console.log(`type = ${checker.typeToString(type)}; symbol type = ${checker.typeToString(stype)} with ${constructors.length}`);
+    // console.log(`type = ${checker.typeToString(type)}; symbol type = ${checker.typeToString(stype)} with ${constructors.length}`);
     // console.log(`type = ${checker.typeToString(type)} with ${constructors.length}; symbol type = ${checker.typeToString(stype)} with ${sconstructors.length}`);
 
     // const constructors = type.getConstructSignatures();

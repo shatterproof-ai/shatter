@@ -233,7 +233,7 @@ async function shatterAutotestt(modulePaths: string[],
     };
     // const generator = new CombinatorialTestCaseSource(program.getTypeChecker(), functionDeclarationNode.parameters);
     const source = new CombinatorialTestCaseSource(program.getTypeChecker(), functionDeclarationNode);
-    const seeder = source.seed(runtimeContext, { numbers: introspectionContext.numbers, strings: introspectionContext.strings });
+    const seeder = source.seeder(runtimeContext, { numbers: introspectionContext.numbers, strings: introspectionContext.strings });
 
     const typeCounts: Record<Specimen['type'], number> = {
         'seed': 0,
@@ -253,10 +253,9 @@ async function shatterAutotestt(modulePaths: string[],
         };
         specimensById.set(specimenId, newSpecimen);
         // console.log(`Evaluating specimen ${JSON.stringify(newSpecimen)}`);
-        await supervisor.execute(functionName, newSpecimen, (invocation: Invocation, result: RunResult) => {
+        return supervisor.execute(functionName, newSpecimen, (invocation: Invocation, result: RunResult) => {
             onResult(result);
-        });
-        return specimenId;
+        }).then(_ =>specimenId);
     }
 
     //  SEED
@@ -285,6 +284,7 @@ async function shatterAutotestt(modulePaths: string[],
         return score;
     }
 
+    //  TODO: make this part of the specimen generation
     const vectorizeSpecimen = (specimen: BaseSpecimen) => specimen.parameters.flatMap((p, i) => vectorizeParameter(p, [`${i}`]));
     function scoreByDepth(specimen: BaseSpecimen) {
         const vectorized = vectorizeSpecimen(specimen);
@@ -323,37 +323,36 @@ async function shatterAutotestt(modulePaths: string[],
 
         specimens = scoredSpecimens.slice(take, take + maxSpecimensToConsider);
 
-        await Promise.all(evaluations);
-
-        await supervisor.drain();
-
-        const end = Date.now();
-
-        return end - start;
+        return Promise.all(evaluations)
+        .then(_ => supervisor.drain())
+        .then(_ => {
+            const end = Date.now();
+            return end - start;
+        });
     }
 
     try {
         //  TODO: prioritize variation in simpler types, e.g. numbers, over variation in more complex types, e.g. Maps
         while (count < maxIterations && Date.now() - startTime < maxTime) {
             const toSeed = Math.max(Math.max(introspectionContext.instrumentedLines.size - allExecutedLines.size, 5) * seedsPerUnexecutedLine, 75);
-            executeStage("seed", toSeed, seeder, scorePerParameterUniqueness);
+            await executeStage("seed", toSeed, seeder, scorePerParameterUniqueness);
 
             //  WEED - find the smaller ones
             const toWeed = Math.ceil(count * 0.1 + 10);
             const weeder = weed(maxShrinkGenerations, clustersByKey, functionDeclarationNode.parameters, specimensById);
-            executeStage("weed", toWeed, weeder, scoreByDepth);      //  TODO: weed-specific score - estimate size of input in some fashion; smaller is better
+            await executeStage("weed", toWeed, weeder, scoreByDepth);      //  TODO: weed-specific score - estimate size of input in some fashion; smaller is better
 
             //  BREED
             const toBreed = Math.ceil(count * 0.1 + 10);
             const breeder = breed(evaluateSpecimen, introspectionContext.instrumentedLines, allExecutedLines, clusters);
-            executeStage("breed", toBreed, breeder, scorePerParameterUniqueness);   //  TODO: breed-specific score - some kind of holistic uniqueness?  individual parameters are likely to overlap
+            await executeStage("breed", toBreed, breeder, scorePerParameterUniqueness);   //  TODO: breed-specific score - some kind of holistic uniqueness?  individual parameters are likely to overlap
 
             //  KNEAD
             //  only do clusters that have distance > 1 from neighbors
             //  and if they've gotten closer recently
             const toKnead = functionDeclarationNode.parameters.length * (1 + clusters.length);
             const kneader = knead(clustersByKey, functionDeclarationNode.parameters, specimensById);
-            executeStage("knead", toKnead, kneader, scorePerParameterUniqueness);   //  TODO: knead-specific score - distance from centroid of cluster?
+            await executeStage("knead", toKnead, kneader, scorePerParameterUniqueness);   //  TODO: knead-specific score - distance from centroid of cluster?
 
             if (introspectionContext.instrumentedLines.size - allExecutedLines.size === 0) {
                 //  TODO: continue until at least N examples in each cluster
@@ -376,7 +375,6 @@ async function shatterAutotestt(modulePaths: string[],
 
         return { count, executed, instrumented, clusters };
     }
-
 }
 
 export const shatterAutotest = wrapAsync("shatterAutotestt", shatterAutotestt);
