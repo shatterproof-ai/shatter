@@ -710,6 +710,13 @@ export function activate(context: vscode.ExtensionContext) {
 		const modulePaths = [...allWorkspaceFolders, ...allNodeModules];
 
 		console.log(`BEGIN THE AUTOTEST of ${functionName} in ${filename}`);
+
+		extensionState.activeCoverage = undefined;
+		extensionState.activeTestCase = undefined;
+		for (const provider of Object.values(providers)) {
+			provider.refresh([]);
+		}
+
 		vscode.commands.executeCommand("shatter-execution-paths.focus");
 		try {
 			extensionState.runningAutotestFunction = functionName;
