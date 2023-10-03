@@ -7,6 +7,19 @@ import { GeneratedParameter, ObjectPathSegment, ValueGeneratedParameter, isValue
 import { Literals, edgyAny, edgyBooleans, edgyNumberRanges, edgyNumbers, edgyStrings } from './seed';
 import ts = require('typescript');
 
+/*
+
+TODO:
+given the number of a line of code, find all conditionals before that line that must be passed in order to reach that line.
+extract each conditional into a unique variable.
+include all assignments to all variables that are incorporated into each conditional.
+//  TODO: simplify conditionals to remove redundant variables and clauses
+produce a final variable that is the conjunction of all conditionals.
+provide the function signature and these conditionals and ask the LLM for an input that will pass them.
+//  TODO: start with an input that has gotten closest to the target line
+
+
+*/
 
 export type Mutation = {
     path: string[],
@@ -33,6 +46,9 @@ export type BaseSpecimen = {
 } | {
     type: 'edgication',
     parents: string[],
+} | {
+    type: 'custom',
+    name: string,
 });
 
 export interface LeafParameter {
@@ -1563,6 +1579,7 @@ function generatorator(configuration: GeneratorConfiguration, checker: ts.TypeCh
         return undefined;
     }
 
+    // TODO: iterables and generators, regular expressions, promises, tagged templates, and more
     const factories: ValueGenerator[] = [
         literalValueGeneratorFactory,
         simpleValueGeneratorFactory,

@@ -52,11 +52,11 @@
         "icon": "resources/edit.svg"
       },
       {
-        "command": "extension.shatterAddTestcaseContext",
+        "command": "extension.shatterEditTestcaseContext",
         "title": "Edit test case"
       },
       {
-        "command": "extension.shatterEditTestcaseContext",
+        "command": "extension.shatterAddTestcaseContext",
         "title": "Add test case"
       }
     ],
@@ -76,9 +76,6 @@
         },
         {
           "command": "extension.shatterAddTestcaseContext"
-        },
-        {
-          "command": "extension.shatterEditTestcaseContext"
         }
       ],
       "view/item/context": [

@@ -1,7 +1,7 @@
 import { createHash } from 'crypto';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import * as ts from 'typescript';
 import { GeneratedParameter, extractGeneratedParameterValue, findLeaves, mergePath, newId, skip } from './common';
 import { BaseSpecimen, CombinatorialTestCaseSource, LeafParameter, RetestCaseSource, RuntimeContext, Specimen } from './generator';
@@ -66,30 +66,88 @@ function canonicalClusterKey(result: RunResult) {
     // console.log(`key ${key} => ${JSON.stringify(smashed)}`);
     return key;
 }
-// TODO: iterables and generators, regular expressions, promises, tagged templates, and more
 
-export function getClusterFile(functionName: string, clusterKey: string, baseDirectory?: string) {
-    const components: string[] = [functionName, clusterKey, 'cluster.json'];
+
+/*
+
+//  custom test cases must be assigned to a cluster
+
+//  intentionally does not use Specimen.id; perhaps that needs to go away entirely in favor of the sha1?
+
+//  where is test case persistence tracked?  this seems like an IDE-specific concern, either tracked entirely in the IDE or via working tree.
+
+autotest
+cluster.specimens => Specimen
+${storageBaseDirectory}/inputs/${path-to-source-file-relative-to-workspace-root}/${functionName}/${clusterKey}/custom/${testCaseName}.json
+${storageBaseDirectory}/inputs/${path-to-source-file-relative-to-workspace-root}/${functionName}/${clusterKey}/autotest/${parameterHash}.json
+
+cluster.results => BasicResultCluster
+${storageBaseDirectory}/results/${path-to-source-file-relative-to-workspace-root}/${functionName}/${clusterKey}.json
+
+    lines: number[]
+    outcome
+
+test.results => RunResult
+${storageBaseDirectory}/results/${path-to-source-file-relative-to-workspace-root}/${functionName}/${clusterKey}/custom/${testCaseName}.json
+${storageBaseDirectory}/results/${path-to-source-file-relative-to-workspace-root}/${functionName}/${clusterKey}/autotest/${testCaseName}.json
+
+linesInOrder: number[]
+    
+
+*/
+export function getClusterFile(sourceFilePath:string, functionName: string, clusterKey: string, testCaseType:'autotest'|'custom', baseDirectory?: string) {
+    const components: string[] = ["results", sourceFilePath, functionName, clusterKey, 'cluster.json'];
     if (baseDirectory) {
         components.unshift(baseDirectory);
     }
     return join(...components);
 }
 
-export function getInputsFile(functionName: string, clusterKey: string, testCaseName: string, baseDirectory?: string) {
-    const components: string[] = [functionName, clusterKey, 'inputs', `${testCaseName}.json`];
+export function getInputsFile(sourceFilePath:string, functionName: string, clusterKey: string, testCaseType:'autotest'|'custom', testCaseName: string, baseDirectory?: string) {
+    const components: string[] = ['inputs', sourceFilePath, functionName, clusterKey, `${testCaseName}.json`];
     if (baseDirectory) {
         components.unshift(baseDirectory);
     }
     return join(...components);
 }
 
-export function getResultsFile(functionName: string, clusterKey: string, testCaseName: string, baseDirectory?: string) {
-    const components: string[] = [functionName, clusterKey, 'results', `${testCaseName}.json`];
+export function getResultsFile(sourceFilePath:string, functionName: string, clusterKey: string, testCaseType:'autotest'|'custom', testCaseName: string, baseDirectory?: string) {
+    const components: string[] = ['results', sourceFilePath, functionName, clusterKey, `${testCaseName}.json`];
     if (baseDirectory) {
         components.unshift(baseDirectory);
     }
     return join(...components);
+}
+
+function loadTestCases(storageBaseDirectory: string) {
+
+}
+
+function saveTest(storageBaseDirectory: string, sourceFilePath:string, clusterKey: string, testCaseType:'autotest'|'custom', functionName: string, specimen: Specimen, result: RunResult) {
+    const testCaseName = (specimen.type === 'custom')
+        ? specimen.name
+        : sha1(JSON.stringify(specimen.leaves));
+
+    const inputsFile = getInputsFile(sourceFilePath, functionName, clusterKey, testCaseType, testCaseName, storageBaseDirectory);
+    const inputsDirectory = dirname(inputsFile);
+    mkdirSync(inputsDirectory, { recursive: true });
+    writeFileSync(inputsFile, JSON.stringify(specimen, undefined, 2));
+    
+    const resultsFile = getResultsFile(sourceFilePath, functionName, clusterKey, testCaseType, testCaseName, storageBaseDirectory);
+    //  TODO: WINDOWS needs the lastInde
+    const resultsDirectory = dirname(resultsFile);
+    mkdirSync(resultsDirectory, { recursive: true });
+    writeFileSync(resultsFile, JSON.stringify(result, undefined, 2));
+}
+
+function forkTest(storageBaseDirectory: string, clusterKey: string, functionName: string, specimen: Specimen, testCaseName:string, result: RunResult) {
+    const newSpecimen:Specimen = {
+        ...specimen,
+        type: 'custom',
+        id: testCaseName,
+        name: testCaseName,
+    };
+    saveTest(storageBaseDirectory, clusterKey, functionName, newSpecimen, result);
 }
 
 /*
@@ -101,16 +159,6 @@ export function getResultsFile(functionName: string, clusterKey: string, testCas
 //  introduce the concept of a suite?  all test cases in a suite share the same before/after hooks?
 //  introduce the concept of environments?  either implicit environment or explicit
 //  run all test cases in all environments?  if they error so what?
-
-
-cluster.specimens =>
-${storageBaseDirectory}/${path-to-source-file-relative-to-workspace-root}/${functionName}/${clusters}/inputs/${testCaseName}.json
-
-cluster.results =>
-${storageBaseDirectory}/${path-to-source-file-relative-to-workspace-root}/${functionName}/${clusters}/results/${testCaseName}.json
-
-everything else =>
-${storageBaseDirectory}/${path-to-source-file-relative-to-workspace-root}/${functionName}/${clusters}/cluster.json
 
 Don't store all ResultCluster contents, just BasicResultCluster
 interface ResultCluster {
@@ -416,8 +464,9 @@ async function shatterAutotestt(modulePaths: string[],
                 const specimenId = newId(baseSpecimen.type);
                 const sequence = count++;
 
+                //  TODO: in Autotest mode we're always creating a new specimen, but in Retest mode we are not
                 const specimen: Specimen = {
-                    id: specimenId,
+                    id: specimenId, //  TODO: this should be either the specimen name or a SHA1 of the specimen parameters (both?)
                     sequence,
                     sequenceInType: typeCounts[baseSpecimen.type]++,
                     leaves: leafValues,

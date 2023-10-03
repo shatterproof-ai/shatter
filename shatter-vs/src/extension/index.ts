@@ -3,7 +3,7 @@ import * as path from 'path';
 import { join } from 'path';
 import * as ts from 'typescript';
 import * as vscode from 'vscode';
-import { AutotestResults, ResultCluster, shatterAutotest } from '../core/shatter';
+import { AutotestResults, ResultCluster, getInputsFile, shatterAutotest } from '../core/shatter';
 import { Outcome, RunResult } from '../core/supervisor';
 import { FunctionMeta, findFunctions } from '../core/transform';
 import { Specimen } from '../core/generator';
@@ -72,14 +72,14 @@ type ExtensionState = {
 	activeFile?: string;
 	activeFunction?: string;
 	activeCoverage?: CoverageSelection;
-	activeTestCase?: string;
+	activeSpecimenId?: string;
 };
 
 interface Providers {
 	functionsListProvider: CommonTreeDataProvider,
 	clustersListProvider: CommonTreeDataProvider,
-	runResultProvider: CommonTreeDataProvider,
-	testCaseProvider: CommonTreeDataProvider,
+	testCaseListProvider: CommonTreeDataProvider,
+	testCaseDetailProvider: CommonTreeDataProvider,
 }
 
 const coveredDecorationType = vscode.window.createTextEditorDecorationType({
@@ -110,7 +110,7 @@ function resetDecorations(editor: vscode.TextEditor) {
 }
 
 const refresh = (editor: vscode.TextEditor | undefined, extensionState: ExtensionState, providers: Providers) => {
-	const { functionsListProvider, clustersListProvider, runResultProvider, testCaseProvider } = providers;
+	const { functionsListProvider, clustersListProvider, testCaseListProvider, testCaseDetailProvider } = providers;
 
 	const filename = extensionState.activeFile;
 	if (!filename) {
@@ -293,8 +293,8 @@ const refresh = (editor: vscode.TextEditor | undefined, extensionState: Extensio
 	};
 
 	if (extensionState.activeCoverage === 'missed') {
-		runResultProvider.refresh([]);
-		testCaseProvider.refresh([]);
+		testCaseListProvider.refresh([]);
+		testCaseDetailProvider.refresh([]);
 		return;
 	}
 
@@ -304,32 +304,32 @@ const refresh = (editor: vscode.TextEditor | undefined, extensionState: Extensio
 	const runResultNodes: CommonDisplayNode[] = clusters.flatMap(c => c.results.map((result, i) => {
 		const parametersNode = {
 			label: shortString(result.serializedParameterValues),
-			key: `parameters://${c.key}/${i}`,
+			key: `parameters://${c.key}/${result.specimenId}`,
 			state: i % 2 === 0 ? 'pinned' : 'unpinned',
 		};
 		return parametersNode;
 	}));
-	runResultProvider.refresh(runResultNodes);
+	testCaseListProvider.refresh(runResultNodes);
 
-	if (!extensionState.activeTestCase) {
+	if (!extensionState.activeSpecimenId) {
 		return;
 	}
-	const rr = /(?<which>parameters|result):\/\/(?<clusterKey>[^/]+)\/(?<caseNumber>[0-9]+)/;
-	const match = rr.exec(extensionState.activeTestCase);
+	const rr = /(?<which>parameters|result):\/\/(?<clusterKey>[^/]+)\/(?<specimenId>+)/;
+	const match = rr.exec(extensionState.activeSpecimenId);
 	if (!match || !match.groups) {
 		return;
 	}
 
 	const which = match.groups.which;
 	const clusterKey = match.groups.clusterKey;
-	const caseNumber = parseInt(match.groups.caseNumber);
+	const specimenId = match.groups.specimenId;
 
 	const cluster = functionState.autotest.clusters.find((c) => c.key === clusterKey);
-	if (!cluster) {
+	if (!cluster || !specimenId) {
 		return;
 	}
 
-	const result = cluster.results[caseNumber];
+	const result = cluster.results.find((r) => r.specimenId === specimenId);
 	if (!result) {
 		return;
 	}
@@ -353,7 +353,7 @@ const refresh = (editor: vscode.TextEditor | undefined, extensionState: Extensio
 		resultNode,
 	];
 
-	testCaseProvider.refresh(testCaseNodes);
+	testCaseDetailProvider.refresh(testCaseNodes);
 };
 
 const doSelectFunction = (editor: vscode.TextEditor, extensionState: ExtensionState, providers: Providers, functionName: string) => {
@@ -414,7 +414,7 @@ const doSelectCluster = (editor: vscode.TextEditor, extensionState: ExtensionSta
 };
 
 const doSelectTestCase = (editor: vscode.TextEditor, extensionState: ExtensionState, providers: Providers,
-	testCase: string) => {
+	specimenId: string) => {
 	if (!extensionState.activeFile) {
 		return;
 	}
@@ -443,7 +443,7 @@ const doSelectTestCase = (editor: vscode.TextEditor, extensionState: ExtensionSt
 		return;
 	}
 
-	extensionState.activeTestCase = testCase;
+	extensionState.activeSpecimenId = specimenId;
 	refresh(editor, extensionState, providers);
 };
 
@@ -546,32 +546,32 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.window.registerTreeDataProvider("shatter-execution-paths", clustersListProvider));
 
-	const runResultProvider = new CommonTreeDataProvider({
+	const testCaseListProvider = new CommonTreeDataProvider({
 		command: {
 			command: 'extension.shatterSelectTestCase',
 			title: 'Test Case Detail',
 		},
 		stateIcons: {
-			'pinned': 'resources/pin.svg',
-			'unpinned': 'resources/unpin.svg',
+			'pinned': '../../resources/pin.svg',
+			'unpinned': '../../../resources/unpin.svg',
 		}
 	});
 	context.subscriptions.push(
-		vscode.window.registerTreeDataProvider("shatter-run-results", runResultProvider));
+		vscode.window.registerTreeDataProvider("shatter-list-testcases", testCaseListProvider));
 
-	const testCaseProvider = new CommonTreeDataProvider({
+	const testCaseDetailProvider = new CommonTreeDataProvider({
 		stateIcons: {
 			persistent: 'media/pin.svg',
 		}
 	});
 	context.subscriptions.push(
-		vscode.window.registerTreeDataProvider("shatter-test-case", testCaseProvider));
+		vscode.window.registerTreeDataProvider("shatter-testcase-detail", testCaseDetailProvider));
 
 	const providers = {
 		functionsListProvider,
 		clustersListProvider,
-		runResultProvider,
-		testCaseProvider,
+		testCaseListProvider,
+		testCaseDetailProvider,
 	};
 
 	const updateSelectedFile = () => {
@@ -617,8 +617,8 @@ export function activate(context: vscode.ExtensionContext) {
 
 	const doSelectTestCaseCommand = (node: CommonDisplayNode) => {
 		if (vscode.window.activeTextEditor) {
-			const testCase: string = node.key || "";
-			doSelectTestCase(vscode.window.activeTextEditor, extensionState, providers, testCase);
+			const specimenId: string = node.key || "";
+			doSelectTestCase(vscode.window.activeTextEditor, extensionState, providers, specimenId);
 		}
 	};
 
@@ -634,13 +634,101 @@ export function activate(context: vscode.ExtensionContext) {
 	const selectTestCaseCommand = vscode.commands.registerCommand('extension.shatterSelectTestCase', doSelectTestCaseCommand);
 	context.subscriptions.push(selectTestCaseCommand);
 
+	/*
+	
+	generated test case:
+	* user clicks pin - saves it to specified location (TODO: add it to the working tree)
+	* user clicks unpin - deletes it from the specified location (TODO: remove it from the working tree)
+	* user clicks edit - IF a non-custom test case, ask for a name, save it to the specified location, and open an editor for that file
+	* user clicks add - ask for a name, create an empty file, open an editor
+	
+	TODO: Editor should be able to match parameter type structure with autocomplete and validation.  Custom language server based on function and signature?
+	
+	//	where to track test case persistence?
+	
+	*/
+
+
+
+	const makeTestCasePersistentCommand = vscode.commands.registerCommand('extension.shatterMakeTestcasePersistentViewContainer', (item) => {
+
+	});
+
+	const editTestCaseCommand = vscode.commands.registerCommand('extension.shatterEditTestcaseViewContainer', (node: CommonDisplayNode) => {
+		if (extensionState.activeCoverage === undefined || extensionState.activeCoverage === 'missed') {
+			//	no test cases to look at
+			return;
+		}
+
+		//	TODO: lots of code deuplicated from refresh
+		const filename = extensionState.activeFile;
+		if (!filename) {
+			return;
+		}
+
+		const fileState = extensionState.fileStates[filename];
+		if (!fileState || !fileState.functions) {
+			return;
+		}
+
+		if (!extensionState.activeFunction) {
+			return;
+		}
+
+		const func = fileState.functions.find((f) => f.name === extensionState.activeFunction);
+		if (!func) {
+			return;
+		}
+
+		const functionState = fileState.functionStates[extensionState.activeFunction];
+		if (!functionState) {
+			return;
+		};
+
+		const results = functionState?.autotest;
+		if (!results) {
+			return;
+		}
+
+		const aco = extensionState.activeCoverage;
+		if (aco === 'all') {
+
+		} else {
+			results.clusters.forEach((cluster) => {
+				if (aco.clusterKeys.includes(cluster.key)) {
+					cluster.specimens.forEach((specimen) => {
+						if (specimen.id === node.key) {
+							editTestCase(filename, extensionState.activeFunction, specimen.id);
+						}
+					});
+				}
+			});
+			extensionState.activeCoverage.clusterKeys?.forEach((clusterKey) => {
+			});
+		}
+
+		const clusterKey = extensionState.activeCoverage?.[0];
+
+		getInputsFile(extensionState.activeFile, extensionState.activeFunction, extensionState.activeCoverage?.clusterKeys?.[0], testCaseType, testCaseName, baseDirectory);
+
+		if (vscode.window.activeTextEditor) {
+			const testCase: string = node.key || "";
+			const testCasePath = getTestCasePath(testCase);
+			if (fs.existsSync(testCasePath)) {
+				vscode.workspace.openTextDocument(testCasePath).then((doc) => {
+					vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
+				});
+			} else {
+				vscode.window.showErrorMessage(`Test case ${testCase} does not exist.`);
+			}
+		}
+	});
 
 	["extension.shatterAddTestcaseViewContainer",
 		"extension.shatterEditTestcaseViewContainer",
 		"extension.shatterAddTestcaseContext",
 		"extension.shatterEditTestcaseContext",
 		"extension.shatterMakeTestcaseNonPersistentViewContainer",
-		"extension.shatterMakeTestcasePersistentViewContainer"
 	].forEach((command) => {
 		const cmd = vscode.commands.registerCommand(command, (item) => { });
 		context.subscriptions.push(cmd);
@@ -792,7 +880,7 @@ export function activate(context: vscode.ExtensionContext) {
 		console.log(`BEGIN THE AUTOTEST of ${functionName} in ${filename}`);
 
 		extensionState.activeCoverage = undefined;
-		extensionState.activeTestCase = undefined;
+		extensionState.activeSpecimenId = undefined;
 		for (const provider of Object.values(providers)) {
 			provider.refresh([]);
 		}
