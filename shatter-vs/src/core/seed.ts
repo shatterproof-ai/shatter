@@ -1,5 +1,5 @@
 import { faker } from '@faker-js/faker';
-import { ArrayGeneratedParameter, BooleanGeneratedParameter, GeneratedParameter, NumberGeneratedParameter, ObjectGeneratedParameter, ObjectPathSegment, StringGeneratedParameter, ValueGeneratedParameter, ValueSubtype, newId } from './common';
+import { ArrayGeneratedParameter, BooleanGeneratedParameter, GeneratedParameter, NumberGeneratedParameter, ObjectGeneratedParameter, ObjectPathSegment, StringGeneratedParameter, ValueGeneratedParameter, ValueSubtype, mergePath, newId } from './common';
 import { reverse } from 'lodash';
 import ts = require('typescript');
 import { RuntimeContext } from './generator';
@@ -259,21 +259,40 @@ const breedStrings = ["#3eabef", "repurpose web-enabled e-commerce", "blob", "73
     "wlo1", "wws1", "4.8.2", "Gasoline", "Tesla", "7VYK47S021A328481"
 ];
 
-export function* edgyNumbers(rc:RuntimeContext, path: ObjectPathSegment[], literals?: Literals): Generator<GeneratedParameter, void, unknown> {
+function getPastValues(rc: RuntimeContext, path: ObjectPathSegment[]) {
+    const merged = mergePath(path);
+    const pastValues = rc.leafPeeping.get(merged);
+    return pastValues ?? [];
+}
+
+export function* edgyNumbers(rc: RuntimeContext, path: ObjectPathSegment[], literals?: Literals): Generator<GeneratedParameter, void, unknown> {
+    let lastYielded = 0;
     while (true) {
+        let yielded = 0;
         for (const m of [1, -1, 2, -2]) {
             for (const base of literals?.numbers ?? []) {
                 for (const n of neighboringNumbers(base * m)) {
-                    yield gpvn(path, n, 'literals.numbers');
+                    if (lastYielded === 0 || rc.weirdness < 2 || !getPastValues(rc, path)?.includes(n)) {
+                        yield gpvn(path, n, 'literals.numbers');
+                        yielded++;
+                    }
                 }
             }
         }
         for (const n of seedNumbers) {
-            yield gpvn(path, n, 'seedNumbers');
+            if (lastYielded === 0 || rc.weirdness < 2 || !getPastValues(rc, path)?.includes(n)) {
+                yield gpvn(path, n, 'seedNumbers');
+                yielded++;
+            }
         }
         for (const n of breedNumbers) {
-            yield gpvn(path, n, 'breedNumbers');
+            if (lastYielded === 0 || rc.weirdness < 2 || !getPastValues(rc, path)?.includes(n)) {
+                yield gpvn(path, n, 'breedNumbers');
+                yielded++;
+            }
         }
+        //  if everything has been seen before, then don't be selective
+        lastYielded = yielded;
     }
 }
 
@@ -661,7 +680,7 @@ export const optionVariantsExtensive: Record<string, Record<string, any>> = {
 };
 
 //  TODO: apply options
-export function* edgyStrings(rc:RuntimeContext, path: ObjectPathSegment[], literals?: Literals): Generator<GeneratedParameter, void, unknown> {
+export function* edgyStrings(rc: RuntimeContext, path: ObjectPathSegment[], literals?: Literals): Generator<GeneratedParameter, void, unknown> {
     const seen = new Set<string>();
 
     rc.weirdness;

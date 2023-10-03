@@ -262,6 +262,12 @@ async function shatterAutotestt(modulePaths: string[],
         'hybrid': 0,
         'edgication': 0,
     };
+    const linesImprovedByOperation: Record<'seed' | 'weed' | 'breed' | 'knead', number> = {
+        seed: 0,
+        weed: 0,
+        breed: 0,
+        knead: 0
+    };
 
     let count = 0;
 
@@ -298,14 +304,16 @@ async function shatterAutotestt(modulePaths: string[],
     }
 
     const maxSpecimensToConsider = 10_000;
+    const linesRemainingPerPass: number[] = [];
 
     let specimens: Specimen[] = [];
-    async function executeStage(name: string, take: number, g: Generator<BaseSpecimen, any, any>, scoringFunction: (specimen: Specimen) => number) {
+    async function executeStage(name: keyof typeof linesImprovedByOperation, take: number, g: Generator<BaseSpecimen, any, any>, scoringFunction: (specimen: Specimen) => number) {
         // console.log(`${name} ${take}; ${count} done so far`);
         const start = Date.now();
 
         let i = 0;
         let discarded = 0;
+        const beforeLines = allExecutedLines.size;
         for (const baseSpecimen of g) {
             const leafGPs = baseSpecimen.parameters.flatMap(p => Array.from(findLeaves(p)));
 
@@ -371,6 +379,7 @@ async function shatterAutotestt(modulePaths: string[],
             evaluations.push(p);
         }
 
+        console.log(`specimens was ${specimens.length} now ${toRun.length} of ${scoredSpecimens.length} scored with max ${maxSpecimensToConsider}`);
         specimens = scoredSpecimens.slice(take, take + maxSpecimensToConsider);
 
         return Promise.all(evaluations)
@@ -379,19 +388,20 @@ async function shatterAutotestt(modulePaths: string[],
                 const end = Date.now();
                 const generation = end - betweenGenerationAndExecution;
                 const execution = betweenGenerationAndExecution - start;
-                console.log(`${name} ${toRun.length}/${take} specimens of ${count} total so far took ${generation}ms to generate and ${execution}ms to execute with ${specimens.length} left over; discarded ${discarded} repeats`);
+                const netLines = beforeLines - allExecutedLines.size;
+                linesImprovedByOperation[name] += netLines;
+                console.log(`Round ${linesRemainingPerPass.length} coverage ${allExecutedLines.size}/${introspectionContext.instrumentedLines.size}: ${name} ${toRun.length}/${take} specimens of ${count} total so far took ${generation}ms to generate and ${execution}ms to execute with ${specimens.length} left over; discarded ${discarded} repeats`);
                 return [generation, execution];
             });
     }
 
-    const linesRemainingPerPass: number[] = [];
     try {
         //  TODO: prioritize variation in simpler types, e.g. numbers, over variation in more complex types, e.g. Maps
         while (count < maxIterations && Date.now() - startTime < maxTime) {
             //  generate at least one specimen per unexecuted line
 
             const linesRemaining = introspectionContext.instrumentedLines.size - allExecutedLines.size;
-
+            //  TODO: keep track of which method has most recently been successful
             const oneLineBack = linesRemainingPerPass?.[linesRemainingPerPass.length - 1] ?? introspectionContext.instrumentedLines.size;
             const progress = oneLineBack - linesRemaining;
             const fiveLinesBack = linesRemainingPerPass?.[linesRemainingPerPass.length - 5] ?? introspectionContext.instrumentedLines.size;
@@ -405,23 +415,24 @@ async function shatterAutotestt(modulePaths: string[],
 
             linesRemainingPerPass.push(linesRemaining);
             //  TODO: if we're not making progress, increase weirdness (HOW??? more unique individual values?)
-            const toSeed = Math.min(maxIterations, Math.min(linesRemaining, 5) * seedsPerUnexecutedLine);
+            const toSeed = Math.min(maxIterations, Math.min(linesRemaining, 10) * seedsPerUnexecutedLine);
             await executeStage("seed", toSeed, seeder, scorePerParameterUniqueness);
 
-            //  WEED - find the smaller ones
-            const toWeed = Math.min(maxIterations - count, Math.ceil(count * 0.2 + 20));
+            //  WEED - find the smaller ones - this matters less if we have low coverage
+            const toWeed = Math.min(maxIterations - count, Math.ceil(allExecutedLines.size * 0.1 + 10));
             const weeder = weed(maxShrinkGenerations, clustersByKey, functionDeclarationNode.parameters, specimensById);
             await executeStage("weed", toWeed, weeder, scoreByDepth);      //  TODO: weed-specific score - estimate size of input in some fashion; smaller is better
 
-            //  BREED
+            //  BREED - we want more of these if we have holes in our coverage
             const toBreed = Math.min(maxIterations - count, Math.ceil(count * 0.2 + 20));
             const breeder = breed(introspectionContext.instrumentedLines, allExecutedLines, clusters);
             await executeStage("breed", toBreed, breeder, scorePerParameterUniqueness);   //  TODO: breed-specific score - some kind of holistic uniqueness?  individual parameters are likely to overlap
 
-            //  KNEAD
+            //  KNEAD - find the boundary cases
             //  only do clusters that have distance > 1 from neighbors
             //  and if they've gotten closer recently
-            const toKnead = Math.min(maxIterations - count, functionDeclarationNode.parameters.length * (1 + clusters.length));
+            const preKneadRatio = allExecutedLines.size / introspectionContext.instrumentedLines.size;
+            const toKnead = Math.min(maxIterations - count, functionDeclarationNode.parameters.length * (1 + clusters.length) * allExecutedLines.size * (preKneadRatio + 0.01));
             const kneader = knead(clustersByKey, functionDeclarationNode.parameters, specimensById);
             await executeStage("knead", toKnead, kneader, scorePerParameterUniqueness);   //  TODO: knead-specific score - distance from centroid of cluster?
 
@@ -442,7 +453,7 @@ async function shatterAutotestt(modulePaths: string[],
         const executed = Array.from(allExecutedLines).sort((a, b) => a - b);
         const instrumented = Array.from(introspectionContext.instrumentedLines).sort((a, b) => a - b);
 
-        console.log(`Finished after ${count} iterations and ${Date.now() - startTime}ms with ${allExecutedLines.size}/${introspectionContext.instrumentedLines.size} lines executed`);
+        console.log(`Finished after ${count} iterations and ${Date.now() - startTime}ms with ${allExecutedLines.size}/${introspectionContext.instrumentedLines.size} lines executed; ${JSON.stringify(linesImprovedByOperation)}`);
 
         return { count, executed, instrumented, clusters };
     }
@@ -491,7 +502,6 @@ function* breed(allInstrumentedLines: Set<number>, allExecutedLines: Set<number>
     });
 
     const clustersByLine = new Map<number, ResultCluster[]>();
-
 
     //  track which clusters got closest to a given line
     const lastBefore = new Map<number, ResultCluster[]>();

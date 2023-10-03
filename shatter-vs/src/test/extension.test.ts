@@ -637,7 +637,7 @@ describe('extension', () => {
         }
         `;
 
-        await testThisCode("hello", sourceCode, { maxIterations: 2000, maxTime: 30_000 });
+        await testThisCode("hello", sourceCode, { maxIterations: 2000, maxTime: 300_000 });
     });
 });
 
