@@ -600,18 +600,13 @@ export function activate(context: vscode.ExtensionContext) {
 			const cursorPosition = selection.active;
 			const document = editor.document;
 
-			if (isCursorInFunctionName(cursorPosition, document, editor)) {
-				const functionMeta = getFunctionNodeAtCursor(cursorPosition, document);
-
-				if (functionMeta) {
-					const functionName = functionMeta.name;
-					if (!functionName) {
-						throw new Error(`Top level anonymous functions are not supported`);
-					}
-					await autotestFunction(document.fileName, functionName);
-				} else {
-					console.log(`function node not found`);
+			const functionMeta = getFunctionNodeAtCursor(cursorPosition, document);
+			if (functionMeta) {
+				const functionName = functionMeta.name;
+				if (!functionName) {
+					throw new Error(`Top level anonymous functions are not supported`);
 				}
+				await autotestFunction(document.fileName, functionName);
 			} else {
 				vscode.window.showErrorMessage('Select a function or place the cursor inside a function.');
 			}
@@ -781,25 +776,17 @@ function doSelectFile(editor: vscode.TextEditor | undefined, extensionState: Ext
 	refresh(editor, extensionState, providers);
 }
 
-function isCursorInFunctionName(
-	cursorPosition: vscode.Position,
-	document: vscode.TextDocument,
-	editor: vscode.TextEditor
-): boolean {
-	const line = document.lineAt(cursorPosition.line).text;
-	return line.includes('function');
-}
-
 //	TODO: consolidate with findFunctions in transform.ts
 function getFunctionNodeAtCursor(cursorPosition: vscode.Position, document: vscode.TextDocument): FunctionMeta | undefined {
 	const sourceCode = document.getText();
 	const sourceFile = ts.createSourceFile(document.fileName, sourceCode, ts.ScriptTarget.Latest, true);
 
-	function findFunction(node: ts.Node): ts.Node | undefined {
-		if (node.kind === ts.SyntaxKind.FunctionDeclaration || node.kind === ts.SyntaxKind.MethodDeclaration) {
-			const functionNode = node as ts.FunctionDeclaration | ts.MethodDeclaration;
-			const functionStartPos = functionNode.name?.getStart(sourceFile);
-			const functionEndPos = functionNode.getEnd();
+	function findFunction(node: ts.Node): ts.FunctionDeclaration | ts.MethodDeclaration | undefined {
+		if (ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node)) {
+			const functionStartPos = node.pos;
+			const functionStartLC = ts.getLineAndCharacterOfPosition(sourceFile, node.pos);
+			const functionEndPos = node.body?.end ?? node.end;
+			const functionEndLC = ts.getLineAndCharacterOfPosition(sourceFile, functionEndPos);
 
 			if (functionStartPos !== undefined && functionEndPos !== undefined) {
 				const functionRange = new vscode.Range(
@@ -807,7 +794,7 @@ function getFunctionNodeAtCursor(cursorPosition: vscode.Position, document: vsco
 					document.positionAt(functionEndPos)
 				);
 				if (functionRange.contains(cursorPosition)) {
-					return functionNode;
+					return node;
 				}
 			}
 		}
