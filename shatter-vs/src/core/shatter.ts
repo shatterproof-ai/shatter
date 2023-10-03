@@ -16,20 +16,27 @@ export interface AutotestResults {
     instrumentedLines: Set<number>;
 }
 
-//  TODO: for error cases add the file and line of where it was thrown and also
-//  the file and line of the first line in the instrumented code
-export interface ResultCluster {
+export interface BasicResultCluster {
     key: string
     lines: number[]
+    outcome: Outcome
+}
+
+interface ResultClusterData {
     //  includes potential duplicates if the same line is hit twice
-    linesInOrder: number[]
     specimens: Specimen[]
     results: RunResult[]
+}
+
+//  TODO: for error cases add the file and line of where it was thrown and also
+//  the file and line of the first line in the instrumented code
+export interface ResultCluster extends ResultClusterData, BasicResultCluster {
+    //  TODO: this could vary by test case
+    linesInOrder: number[]
     //  one to one with parameter list
     leasts: Specimen[]
     //  one to one with parameter list
     mosts: Specimen[]
-    outcome: Outcome
     totalTime: number
     distancesToClusters: Map<string, number>[]
 }
@@ -60,6 +67,71 @@ function canonicalClusterKey(result: RunResult) {
     return key;
 }
 // TODO: iterables and generators, regular expressions, promises, tagged templates, and more
+
+export function getClusterFile(functionName: string, clusterKey: string, baseDirectory?: string) {
+    const components: string[] = [functionName, clusterKey, 'cluster.json'];
+    if (baseDirectory) {
+        components.unshift(baseDirectory);
+    }
+    return join(...components);
+}
+
+export function getInputsFile(functionName: string, clusterKey: string, testCaseName: string, baseDirectory?: string) {
+    const components: string[] = [functionName, clusterKey, 'inputs', `${testCaseName}.json`];
+    if (baseDirectory) {
+        components.unshift(baseDirectory);
+    }
+    return join(...components);
+}
+
+export function getResultsFile(functionName: string, clusterKey: string, testCaseName: string, baseDirectory?: string) {
+    const components: string[] = [functionName, clusterKey, 'results', `${testCaseName}.json`];
+    if (baseDirectory) {
+        components.unshift(baseDirectory);
+    }
+    return join(...components);
+}
+
+/*
+//  TODO: should /inputs and /results be near the end or near the beginning of the path?  or in the middle?
+
+
+//  before, beforeEach, after, afterEach - need some kind of selector to match against file, function, cluster, and test case name
+//  look for all *.ts files in the tree at or above the test case inputs file name
+//  introduce the concept of a suite?  all test cases in a suite share the same before/after hooks?
+//  introduce the concept of environments?  either implicit environment or explicit
+//  run all test cases in all environments?  if they error so what?
+
+
+cluster.specimens =>
+${storageBaseDirectory}/${path-to-source-file-relative-to-workspace-root}/${functionName}/${clusters}/inputs/${testCaseName}.json
+
+cluster.results =>
+${storageBaseDirectory}/${path-to-source-file-relative-to-workspace-root}/${functionName}/${clusters}/results/${testCaseName}.json
+
+everything else =>
+${storageBaseDirectory}/${path-to-source-file-relative-to-workspace-root}/${functionName}/${clusters}/cluster.json
+
+Don't store all ResultCluster contents, just BasicResultCluster
+interface ResultCluster {
+    key: string
+    lines: number[]
+    //  includes potential duplicates if the same line is hit twice
+    linesInOrder: number[]
+    //  one to one with parameter list
+//    leasts: Specimen[]    //  ignore for now; also store as IDs
+    //  one to one with parameter list
+//    mosts: Specimen[]     //  ignore for now also store as IDs
+    outcome: Outcome
+//    totalTime: number     //  ignore for now
+//    distancesToClusters: Map<string, number>[]    //  ignore for now, perhaps forever
+}
+
+    testCaseName default = ${sha1(contents)} OR just a number?  something descriptive for simple cases?  or just random cuid?
+        //  do we need to use filenames to enforce uniqueness?  maybe but ignore for now.
+
+
+*/
 
 async function shatterRetestt(modulePaths: string[],
     inputFile: string,

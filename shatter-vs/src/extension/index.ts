@@ -12,6 +12,7 @@ interface CommonDisplayNode {
 	label: string;
 	children?: CommonDisplayNode[];
 	key?: string,
+	state?: string,
 }
 
 function visit(k: string | number, o: any, depth = 0): CommonDisplayNode {
@@ -303,7 +304,8 @@ const refresh = (editor: vscode.TextEditor | undefined, extensionState: Extensio
 	const runResultNodes: CommonDisplayNode[] = clusters.flatMap(c => c.results.map((result, i) => {
 		const parametersNode = {
 			label: shortString(result.serializedParameterValues),
-			key: `parameters://${c.key}/${i}`
+			key: `parameters://${c.key}/${i}`,
+			state: i % 2 === 0 ? 'pinned' : 'unpinned',
 		};
 		return parametersNode;
 	}));
@@ -468,35 +470,100 @@ function highlightLinesInEditor(editor: vscode.TextEditor | undefined, decoratio
 	editor.setDecorations(decorationType, decorationsArray);
 }
 
+
+interface ProjectConfiguration {
+	testsDirectory: string;
+}
+
+function readProjectConfiguration() {
+	return vscode.workspace.fs.readFile(vscode.Uri.file('shatterproof.json'))
+		.then((contentsInts) => {
+			const contents = Buffer.from(contentsInts).toString('utf8');
+			try {
+				const pc = JSON.parse(contents);
+				if ('testsDirectory' in pc) {
+					return pc as ProjectConfiguration;
+				}
+			} catch (e) {
+
+			}
+
+		});
+}
+
+function editTestCase(filename: string, functionName: string, testCase: string) {
+	const uri = vscode.Uri.file(filename);
+	vscode.workspace.openTextDocument(uri)
+		.then((doc) => {
+			vscode.window.showTextDocument(doc)
+				.then((editor) => {
+					const functions = findFunctions(filename);
+					const selectedFunction = functions.find((f) => f.name === functionName);
+					if (!selectedFunction) {
+						return;
+					}
+				});
+		});
+
+}
+/*
+Operations:
+* open test case
+* save test case
+* add test case
+
+Provide context menu for running a test case from a file
+
+TODO: convert the test case tree view into a test case  manager
+
+How to select test cases?  Per function, per cluster, per test case
+
+*/
+
+const autotestStorageStateKey = "autotestState";
 export function activate(context: vscode.ExtensionContext) {
 	//	TODO: if there's an open editor when the extension is activated, select that file
-	const extensionState: ExtensionState = {
+	const extensionState: ExtensionState = context.workspaceState.get(autotestStorageStateKey) ?? {
 		fileStates: {},
 	};
 
 	//	TODO: Refresh functions list view contents on change of editor
 	const functionsListProvider = new CommonTreeDataProvider({
-		command: 'extension.shatterSelectFunction',
-		title: 'Functions',
+		command: {
+			command: 'extension.shatterSelectFunction',
+			title: 'Functions',
+		}
 	});
 	context.subscriptions.push(
 		vscode.window.registerTreeDataProvider("shatter-functions-list", functionsListProvider));
 
 	const clustersListProvider = new CommonTreeDataProvider({
-		command: 'extension.shatterSelectCluster',
-		title: 'Execution Paths',
+		command: {
+			command: 'extension.shatterSelectCluster',
+			title: 'Execution Paths',
+		}
 	});
 	context.subscriptions.push(
 		vscode.window.registerTreeDataProvider("shatter-execution-paths", clustersListProvider));
 
 	const runResultProvider = new CommonTreeDataProvider({
-		command: 'extension.shatterSelectTestCase',
-		title: 'Test Case Detail',
+		command: {
+			command: 'extension.shatterSelectTestCase',
+			title: 'Test Case Detail',
+		},
+		stateIcons: {
+			'pinned': 'resources/pin.svg',
+			'unpinned': 'resources/unpin.svg',
+		}
 	});
 	context.subscriptions.push(
 		vscode.window.registerTreeDataProvider("shatter-run-results", runResultProvider));
 
-	const testCaseProvider = new CommonTreeDataProvider();
+	const testCaseProvider = new CommonTreeDataProvider({
+		stateIcons: {
+			persistent: 'media/pin.svg',
+		}
+	});
 	context.subscriptions.push(
 		vscode.window.registerTreeDataProvider("shatter-test-case", testCaseProvider));
 
@@ -566,6 +633,19 @@ export function activate(context: vscode.ExtensionContext) {
 	//	needs to be registered as a command because TreeView needs a command to dispatch to
 	const selectTestCaseCommand = vscode.commands.registerCommand('extension.shatterSelectTestCase', doSelectTestCaseCommand);
 	context.subscriptions.push(selectTestCaseCommand);
+
+
+	["extension.shatterAddTestcaseViewContainer",
+		"extension.shatterEditTestcaseViewContainer",
+		"extension.shatterAddTestcaseContext",
+		"extension.shatterEditTestcaseContext",
+		"extension.shatterMakeTestcaseNonPersistentViewContainer",
+		"extension.shatterMakeTestcasePersistentViewContainer"
+	].forEach((command) => {
+		const cmd = vscode.commands.registerCommand(command, (item) => { });
+		context.subscriptions.push(cmd);
+	});
+
 
 	context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(editor => {
 		if (editor?.document.fileName) {
@@ -751,6 +831,7 @@ export function activate(context: vscode.ExtensionContext) {
 					});
 				}, { shatterproofModuleOverride: extensionSource });
 			console.log("END THE AUTOTEST");
+			context.workspaceState.update(autotestStorageStateKey, extensionState);
 			refresh(editor, extensionState, providers);
 		} finally {
 			extensionState.runningAutotestFunction = undefined;
@@ -834,7 +915,10 @@ class CommonTreeDataProvider implements vscode.TreeDataProvider<CommonDisplayNod
 	private roots: CommonDisplayNode[] | undefined;
 
 	// Initialize empty
-	constructor(private command?: Pick<vscode.Command, 'command' | 'title'>) {
+	constructor(private options?: {
+		command?: Pick<vscode.Command, 'command' | 'title'>,
+		stateIcons?: Record<string, string>
+	}) {
 		this.roots = undefined;
 	}
 
@@ -871,11 +955,14 @@ class CommonTreeDataProvider implements vscode.TreeDataProvider<CommonDisplayNod
 		treeItem.collapsibleState = element.children ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None;
 		//	TODO: tooltip should be expanded (but still bounded) parameter list
 		treeItem.tooltip = element.label;
-		if (this.command) {
+		if (this.options?.command) {
 			treeItem.command = {
-				...this.command,
+				...this?.options.command,
 				arguments: [element],
 			};
+		}
+		if (this.options?.stateIcons && element.state) {
+			treeItem.iconPath = this.options.stateIcons[element.state];
 		}
 		return treeItem;
 	}

@@ -30,6 +30,34 @@
       {
         "command": "extension.shatterRetestFunctionViewContainer",
         "title": "Regression test"
+      },
+      {
+        "command": "extension.shatterAddTestcaseViewContainer",
+        "title": "Add test case (view)",
+        "icon": "resources/add.svg"
+      },
+      {
+        "command": "extension.shatterMakeTestcaseNonPersistentViewContainer",
+        "title": "Don't retain test case (view)",
+        "icon": "resources/unpin.svg"
+      },
+      {
+        "command": "extension.shatterMakeTestcasePersistentViewContainer",
+        "title": "Retain test case (view)",
+        "icon": "resources/pin.svg"
+      },
+      {
+        "command": "extension.shatterEditTestcaseViewContainer",
+        "title": "Edit test case (view)",
+        "icon": "resources/edit.svg"
+      },
+      {
+        "command": "extension.shatterAddTestcaseContext",
+        "title": "Edit test case"
+      },
+      {
+        "command": "extension.shatterEditTestcaseContext",
+        "title": "Add test case"
       }
     ],
     "menus": {
@@ -45,16 +73,54 @@
         },
         {
           "command": "extension.shatterRetestContext"
+        },
+        {
+          "command": "extension.shatterAddTestcaseContext"
+        },
+        {
+          "command": "extension.shatterEditTestcaseContext"
         }
       ],
       "view/item/context": [
         {
           "command": "extension.shatterAutotestFunctionViewContainer",
+          "when": "view == shatter-functions-list",
           "group": "navigation@0"
         },
         {
           "command": "extension.shatterRetestFunctionViewContainer",
+          "when": "view == shatter-functions-list",
           "group": "navigation@1"
+        },
+        {
+          "command": "extension.shatterAddTestcaseViewContainer",
+          "when": "view == shatter-run-results",
+          "group": "navigation@2"
+        },
+        {
+          "command": "extension.shatterEditTestcaseViewContainer",
+          "when": "view == shatter-run-results",
+          "group": "navigation@3"
+        },
+        {
+          "command": "extension.shatterAddTestcaseViewContainer",
+          "when": "view == shatter-run-results",
+          "group": "inline"
+        },
+        {
+          "command": "extension.shatterEditTestcaseViewContainer",
+          "when": "view == shatter-run-results",
+          "group": "inline"
+        },
+        {
+          "command": "extension.shatterMakeTestcaseNonPersistentViewContainer",
+          "when": "view == shatter-run-results && extension.selectedTestcaseIsPersistent",
+          "group": "inline"
+        },
+        {
+          "command": "extension.shatterMakeTestcasePersistentViewContainer",
+          "when": "view == shatter-run-results && !extension.selectedTestcaseIsPersistent",
+          "group": "inline"
         }
       ]
     },
@@ -81,7 +147,7 @@
         {
           "id": "shatter-detail-view",
           "title": "Shatter Details",
-          "icon": "hammer-308841.svg"
+          "icon": "resources/hammer.svg"
         }
       ]
     },
