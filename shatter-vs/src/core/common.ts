@@ -150,7 +150,6 @@ const resolveGeneratedParameterValue = (gp: GeneratedParameter, rehydrate: boole
         const o: Record<string, any> = {};
         Object.entries(gp.properties).forEach(([k, v]) => {
             o[k] = extractor(v);
-            console.log(`extracted ${k} = ${JSON.stringify(o[k])}`);
         });
         return o;
     }
