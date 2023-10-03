@@ -459,7 +459,7 @@ function highlightLinesInEditor(editor: vscode.TextEditor | undefined, decoratio
 		//	line numbers are ZERO based or ONE based?
 		const line = editor.document.lineAt(lineNumber);
 		//	TODO: collapse contiguous line numbers into a range
-		const decoration = { range: line.range, hoverMessage: `Line ${lineNumber}: ${line.text}` };
+		const decoration = { range: line.range, hoverMessage: `Line ${lineNumber + 1}: ${line.text}` };
 		decorationsArray.push(decoration);
 		lines.push(lineNumber);
 	};
