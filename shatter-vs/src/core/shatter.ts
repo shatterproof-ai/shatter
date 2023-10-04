@@ -1,10 +1,10 @@
 import { createHash } from 'crypto';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import * as ts from 'typescript';
 import { GeneratedParameter, extractGeneratedParameterValue, findLeaves, mergePath, newId, skip } from './common';
-import { BaseSpecimen, CombinatorialTestCaseSource, LeafParameter, RetestCaseSource, RuntimeContext, Specimen } from './generator';
+import { BaseSpecimen, CombinatorialTestCaseSource, LeafParameter, RetestCaseSource, RuntimeContext, Specimen, SpecimenId, isSpecimenId } from './generator';
 import { hybridize, isStrictExtension, shrink } from './hybridize';
 import { Outcome, RunResult, Supervisor } from './supervisor';
 import { IntrospectionContext, createInstrumenter } from './transform';
@@ -79,7 +79,7 @@ function canonicalClusterKey(result: RunResult) {
 autotest
 cluster.specimens => Specimen
 ${storageBaseDirectory}/inputs/${path-to-source-file-relative-to-workspace-root}/${functionName}/${clusterKey}/custom/${testCaseName}.json
-${storageBaseDirectory}/inputs/${path-to-source-file-relative-to-workspace-root}/${functionName}/${clusterKey}/autotest/${parameterHash}.json
+${storageBaseDirectory}/specimens/${path-to-source-file-relative-to-workspace-root}/${functionName}/${clusterKey}/autotest/${parameterHash}.json
 
 cluster.results => BasicResultCluster
 ${storageBaseDirectory}/results/${path-to-source-file-relative-to-workspace-root}/${functionName}/${clusterKey}.json
@@ -95,7 +95,7 @@ linesInOrder: number[]
     
 
 */
-export function getClusterFile(sourceFilePath:string, functionName: string, clusterKey: string, testCaseType:'autotest'|'custom', baseDirectory?: string) {
+export function getClusterFile(sourceFilePath: string, functionName: string, clusterKey: string, testCaseType: 'autotest' | 'custom', baseDirectory?: string) {
     const components: string[] = ["results", sourceFilePath, functionName, clusterKey, 'cluster.json'];
     if (baseDirectory) {
         components.unshift(baseDirectory);
@@ -103,15 +103,15 @@ export function getClusterFile(sourceFilePath:string, functionName: string, clus
     return join(...components);
 }
 
-export function getInputsFile(sourceFilePath:string, functionName: string, clusterKey: string, testCaseType:'autotest'|'custom', testCaseName: string, baseDirectory?: string) {
-    const components: string[] = ['inputs', sourceFilePath, functionName, clusterKey, `${testCaseName}.json`];
+export function getInputsFile(sourceFilePath: string, functionName: string, clusterKey: string, testCaseType: 'autotest' | 'custom', testCaseName: string, baseDirectory?: string) {
+    const components: string[] = ['specimens', sourceFilePath, functionName, clusterKey, `${testCaseName}.json`];
     if (baseDirectory) {
         components.unshift(baseDirectory);
     }
     return join(...components);
 }
 
-export function getResultsFile(sourceFilePath:string, functionName: string, clusterKey: string, testCaseType:'autotest'|'custom', testCaseName: string, baseDirectory?: string) {
+export function getResultsFile(sourceFilePath: string, functionName: string, clusterKey: string, testCaseType: 'autotest' | 'custom', testCaseName: string, baseDirectory?: string) {
     const components: string[] = ['results', sourceFilePath, functionName, clusterKey, `${testCaseName}.json`];
     if (baseDirectory) {
         components.unshift(baseDirectory);
@@ -119,11 +119,44 @@ export function getResultsFile(sourceFilePath:string, functionName: string, clus
     return join(...components);
 }
 
+export function listPersistedSpecimens(baseDirectory: string) {
+    const suffix = '.json';
+    const targetSubdirName = 'custom';
+    const specimens: Map<SpecimenId, string> = new Map();
+
+    function traverseDirectory(directory: string) {
+        const files = readdirSync(directory);
+        for (const file of files) {
+            const fullPath = join(directory, file);
+            const stats = statSync(fullPath);
+            if (stats.isDirectory()) {
+                if (file === targetSubdirName) {
+                    const targetSubdirContents = readdirSync(fullPath);
+                    for (const leafFile of targetSubdirContents) {
+                        if (leafFile.endsWith(suffix)) {
+                            const specimenId = leafFile.slice(0, -suffix.length);
+                            if (isSpecimenId(specimenId)) {
+                                const specimenPath = join(fullPath, leafFile);
+                                specimens.set(specimenId, specimenPath);
+                            }
+                        }
+                    }
+                } else {
+                    traverseDirectory(fullPath);
+                }
+            }
+        }
+    }
+
+    traverseDirectory(baseDirectory);
+    return specimens;
+}
+
 function loadTestCases(storageBaseDirectory: string) {
 
 }
 
-function saveTest(storageBaseDirectory: string, sourceFilePath:string, clusterKey: string, testCaseType:'autotest'|'custom', functionName: string, specimen: Specimen, result: RunResult) {
+function saveTest(storageBaseDirectory: string, sourceFilePath: string, clusterKey: string, testCaseType: 'autotest' | 'custom', functionName: string, specimen: Specimen, result: RunResult) {
     const testCaseName = (specimen.type === 'custom')
         ? specimen.name
         : sha1(JSON.stringify(specimen.leaves));
@@ -132,7 +165,7 @@ function saveTest(storageBaseDirectory: string, sourceFilePath:string, clusterKe
     const inputsDirectory = dirname(inputsFile);
     mkdirSync(inputsDirectory, { recursive: true });
     writeFileSync(inputsFile, JSON.stringify(specimen, undefined, 2));
-    
+
     const resultsFile = getResultsFile(sourceFilePath, functionName, clusterKey, testCaseType, testCaseName, storageBaseDirectory);
     //  TODO: WINDOWS needs the lastInde
     const resultsDirectory = dirname(resultsFile);
@@ -140,8 +173,8 @@ function saveTest(storageBaseDirectory: string, sourceFilePath:string, clusterKe
     writeFileSync(resultsFile, JSON.stringify(result, undefined, 2));
 }
 
-function forkTest(storageBaseDirectory: string, clusterKey: string, functionName: string, specimen: Specimen, testCaseName:string, result: RunResult) {
-    const newSpecimen:Specimen = {
+function forkTest(storageBaseDirectory: string, clusterKey: string, functionName: string, specimen: Specimen, testCaseName: SpecimenId, result: RunResult) {
+    const newSpecimen: Specimen = {
         ...specimen,
         type: 'custom',
         id: testCaseName,
@@ -151,7 +184,7 @@ function forkTest(storageBaseDirectory: string, clusterKey: string, functionName
 }
 
 /*
-//  TODO: should /inputs and /results be near the end or near the beginning of the path?  or in the middle?
+//  TODO: should /specimens and /results be near the end or near the beginning of the path?  or in the middle?
 
 
 //  before, beforeEach, after, afterEach - need some kind of selector to match against file, function, cluster, and test case name

@@ -6,7 +6,8 @@ import * as vscode from 'vscode';
 import { AutotestResults, ResultCluster, getInputsFile, shatterAutotest } from '../core/shatter';
 import { Outcome, RunResult } from '../core/supervisor';
 import { FunctionMeta, findFunctions } from '../core/transform';
-import { Specimen } from '../core/generator';
+import { Specimen, SpecimenId } from '../core/generator';
+import cluster from 'cluster';
 
 interface CommonDisplayNode {
 	label: string;
@@ -66,13 +67,23 @@ type CoverageSelection = 'all'
 	| 'missed'
 	| { clusterKeys: string[] };
 
-type ExtensionState = {
+
+interface Specimental {
+	filename: string;
+	functionName: string;
+	clusterKey: string;
+	specimen: Specimen;
+}
+
+interface ExtensionState {
 	runningAutotestFunction?: string;
 	fileStates: Record<string, FileState>
 	activeFile?: string;
 	activeFunction?: string;
 	activeCoverage?: CoverageSelection;
 	activeSpecimenId?: string;
+
+	specimens: Map<string, Specimental>;
 };
 
 interface Providers {
@@ -470,7 +481,6 @@ function highlightLinesInEditor(editor: vscode.TextEditor | undefined, decoratio
 	editor.setDecorations(decorationType, decorationsArray);
 }
 
-
 interface ProjectConfiguration {
 	testsDirectory: string;
 }
@@ -504,7 +514,6 @@ function editTestCase(filename: string, functionName: string, testCase: string) 
 					}
 				});
 		});
-
 }
 /*
 Operations:
@@ -522,9 +531,13 @@ How to select test cases?  Per function, per cluster, per test case
 
 const autotestStorageStateKey = "autotestState";
 export function activate(context: vscode.ExtensionContext) {
+
+	const persistentSpecimens = new Set<SpecimenId>();	//	specimen ID
+
 	//	TODO: if there's an open editor when the extension is activated, select that file
 	const extensionState: ExtensionState = context.workspaceState.get(autotestStorageStateKey) ?? {
 		fileStates: {},
+		specimens: new Map(),
 	};
 
 	//	TODO: Refresh functions list view contents on change of editor
@@ -655,6 +668,7 @@ export function activate(context: vscode.ExtensionContext) {
 	});
 
 	const editTestCaseCommand = vscode.commands.registerCommand('extension.shatterEditTestcaseViewContainer', (node: CommonDisplayNode) => {
+		const specimenId = node.key;
 		if (extensionState.activeCoverage === undefined || extensionState.activeCoverage === 'missed') {
 			//	no test cases to look at
 			return;
@@ -671,16 +685,17 @@ export function activate(context: vscode.ExtensionContext) {
 			return;
 		}
 
-		if (!extensionState.activeFunction) {
+		const activeFile = extensionState.activeFunction;
+		if (!activeFile) {
 			return;
 		}
 
-		const func = fileState.functions.find((f) => f.name === extensionState.activeFunction);
+		const func = fileState.functions.find((f) => f.name === activeFile);
 		if (!func) {
 			return;
 		}
 
-		const functionState = fileState.functionStates[extensionState.activeFunction];
+		const functionState = fileState.functionStates[activeFile];
 		if (!functionState) {
 			return;
 		};
@@ -690,26 +705,23 @@ export function activate(context: vscode.ExtensionContext) {
 			return;
 		}
 
-		const aco = extensionState.activeCoverage;
-		if (aco === 'all') {
+		const activeCoverage = extensionState.activeCoverage;
+		const searchClusters = activeCoverage === 'all' ? results.clusters : results.clusters.filter((cluster) => activeCoverage.clusterKeys.includes(cluster.key));
 
-		} else {
-			results.clusters.forEach((cluster) => {
-				if (aco.clusterKeys.includes(cluster.key)) {
-					cluster.specimens.forEach((specimen) => {
-						if (specimen.id === node.key) {
-							editTestCase(filename, extensionState.activeFunction, specimen.id);
-						}
-					});
+		const clusterKey = searchClusters.find((cluster) => {
+			cluster.specimens.forEach((specimen) => {
+				if (specimen.id === node.key) {
+					return cluster.key;
 				}
 			});
-			extensionState.activeCoverage.clusterKeys?.forEach((clusterKey) => {
-			});
+		});
+
+		if (!clusterKey) {
+			return;
 		}
 
-		const clusterKey = extensionState.activeCoverage?.[0];
-
-		getInputsFile(extensionState.activeFile, extensionState.activeFunction, extensionState.activeCoverage?.clusterKeys?.[0], testCaseType, testCaseName, baseDirectory);
+		getInputsFile(filename, activeFile, cluster, testCaseType, testCaseName, baseDirectory);
+		editTestCase(filename, activeFile, specimen.id);
 
 		if (vscode.window.activeTextEditor) {
 			const testCase: string = node.key || "";
@@ -916,6 +928,17 @@ export function activate(context: vscode.ExtensionContext) {
 					doSelectFunctionCommand({
 						key: functionName,
 						label: ''
+					});
+
+					results.clusters.forEach((cluster) => {
+						cluster.specimens.forEach((specimen) => {
+							extensionState.specimens.set(specimen.id, {
+								clusterKey: cluster.key,
+								filename,
+								functionName,
+								specimen,
+							});
+						});
 					});
 				}, { shatterproofModuleOverride: extensionSource });
 			console.log("END THE AUTOTEST");

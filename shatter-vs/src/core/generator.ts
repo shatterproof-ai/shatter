@@ -57,8 +57,22 @@ export interface LeafParameter {
     value: ValueGeneratedParameter['value'],
 }
 
+const specimenIdPrefixes = ['auto', 'custom'] as const
+export type SpecimenId = `${typeof specimenIdPrefixes[number]}-${string}`
+
+export function isSpecimenId(s:string):s is SpecimenId {
+    const strimmed = s.trim();
+    for (const prefix of specimenIdPrefixes) {
+        if (s.startsWith(prefix) && strimmed.length > prefix.length) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 export type Specimen = BaseSpecimen & {
-    id: string,
+    id: SpecimenId,
     sequenceInType: number,
     sequence: number,
     leaves: LeafParameter[],
