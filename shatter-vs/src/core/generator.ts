@@ -3,7 +3,7 @@
 import { pick } from 'lodash';
 import { ResultCluster } from '../core/shatter';
 import { RunResult } from '../core/supervisor';
-import { GeneratedParameter, ObjectPathSegment, ValueGeneratedParameter, isValueSubtype, mergePath, newId, rehydrateGeneratedParameterValue } from './common';
+import { BaseSpecimen, GeneratedParameter, LeafParameter, ObjectPathSegment, SpecimenId, ValueGeneratedParameter, isValueSubtype, mergePath, newId, rehydrateGeneratedParameterValue, specimenTypes } from './common';
 import { Literals, edgyAny, edgyBooleans, edgyNumberRanges, edgyNumbers, edgyStrings } from './seed';
 import ts = require('typescript');
 
@@ -18,65 +18,7 @@ produce a final variable that is the conjunction of all conditionals.
 provide the function signature and these conditionals and ask the LLM for an input that will pass them.
 //  TODO: start with an input that has gotten closest to the target line
 
-
 */
-
-export type Mutation = {
-    path: string[],
-    before: any,
-    after: any,
-    type: 'scramble' | 'lengthen' | 'shorten' | 'replace'
-};
-
-export type BaseSpecimen = {
-    parameters: GeneratedParameter[],
-} & ({
-    type: 'seed',
-    // generator: string,
-} | {
-    type: 'reduction',
-    parent: string,
-} | {
-    type: 'mutation',
-    mutations: Mutation[],
-    parent: string,
-} | {
-    type: 'hybrid',
-    parents: string[],
-} | {
-    type: 'edgication',
-    parents: string[],
-} | {
-    type: 'custom',
-    name: string,
-});
-
-export interface LeafParameter {
-    mergedPath: string,
-    path: ObjectPathSegment[],
-    value: ValueGeneratedParameter['value'],
-}
-
-const specimenIdPrefixes = ['auto', 'custom'] as const
-export type SpecimenId = `${typeof specimenIdPrefixes[number]}-${string}`
-
-export function isSpecimenId(s:string):s is SpecimenId {
-    const strimmed = s.trim();
-    for (const prefix of specimenIdPrefixes) {
-        if (s.startsWith(prefix) && strimmed.length > prefix.length) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-export type Specimen = BaseSpecimen & {
-    id: SpecimenId,
-    sequenceInType: number,
-    sequence: number,
-    leaves: LeafParameter[],
-};
 
 export interface GeneratedParameterList {
     id: string,

@@ -3,6 +3,8 @@
 
 import { createId } from "@paralleldrive/cuid2";
 
+export type SpecimenId = `${typeof specimenTypes[number]}-${string}`;
+
 import { Type } from 'typescript';
 
 //  NOT using `[${number}]` for arrays because we don't care about the position of a given value in the array
@@ -132,6 +134,70 @@ export interface ObjectGeneratedParameter extends BaseGeneratedParameter {
 
 export type GeneratedParameter = ValueGeneratedParameter | ArrayGeneratedParameter | TupleGeneratedParameter | ClassGeneratedParameter | MapGeneratedParameter | SetGeneratedParameter | DateGeneratedParameter | RegExpGeneratedParameter | CallableGeneratedParameter | TerminalGeneratedParameter | ObjectGeneratedParameter;
 
+export interface LeafParameter {
+    mergedPath: string,
+    path: ObjectPathSegment[],
+    value: ValueGeneratedParameter['value'],
+}
+
+export function isSpecimenId(s?: string): s is SpecimenId {
+    if (s === undefined) {
+        return false;
+    }
+    const strimmed = s.trim();
+    for (const prefix of specimenTypes) {
+        if (s.startsWith(prefix) && strimmed.length > prefix.length) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+export type Mutation = {
+    path: string[],
+    before: any,
+    after: any,
+    type: 'scramble' | 'lengthen' | 'shorten' | 'replace'
+};
+
+export const specimenTypes = ['seed', 'reduction', 'hybrid', 'mutation', 'edgication', 'custom'] as const;
+export type SpecimenType = typeof specimenTypes[number];
+
+export type BaseSpecimen = {
+    parameters: GeneratedParameter[],
+} & {
+    type: SpecimenType
+} & ({
+    type: 'seed',
+    // generator: string,
+} | {
+    type: 'reduction',
+    parent: string,
+} | {
+    type: 'mutation',
+    mutations: Mutation[],
+    parent: string,
+} | {
+    type: 'hybrid',
+    parents: string[],
+} | {
+    type: 'edgication',
+    parents: string[],
+} | {
+    type: 'custom',
+    name: string,
+});
+
+export type Specimen = BaseSpecimen & {
+    id: SpecimenId,
+
+	fileUnderTest: string;
+	functionName: string;
+
+    leaves: LeafParameter[],
+};
+
 const resolveGeneratedParameterValue = (gp: GeneratedParameter, rehydrate: boolean, activeModule: any): any => {
     function extractor(gp: GeneratedParameter): any {
         return resolveGeneratedParameterValue(gp, rehydrate, activeModule);
@@ -257,7 +323,7 @@ export const skip = <T, U, V>(g: Iterator<T, U, V>, n: number): T | undefined =>
     return latest;
 };
 
-export const newId = (type: string): string => {
+export const newId = <T extends string>(type: T): `${T}-${string}` => {
     return `${type}-${createId()}`;
 };
 

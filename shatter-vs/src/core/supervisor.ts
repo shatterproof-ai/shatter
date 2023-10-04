@@ -1,8 +1,7 @@
 import { symlinkSync } from 'fs';
 import { dirname, join } from 'path';
 import { Worker } from 'worker_threads';
-import { extractGeneratedParameterValue } from './common';
-import { Specimen } from './generator';
+import { Specimen, SpecimenId, extractGeneratedParameterValue } from './common';
 import { wrapAsync, wrapAsyncMethod } from './util';
 import { work } from './worker';
 import { Invocation, InvocationMeta, InvocationResult, WorkerSetup } from './worker-protocol';
@@ -14,7 +13,7 @@ export const Outcomes = ['completed', 'error', 'timeout', 'failed'] as const;
 export type Outcome = typeof Outcomes[number];
 
 export interface RunResult {
-    specimenId: string
+    specimenId: SpecimenId
     functionName: string
     serializedParameterValues: string
     executedBranches: string[]
@@ -39,7 +38,7 @@ interface WorkerMeta extends WorkerSetup {
 }
 
 export class Supervisor {
-    private busyWorkers = new Map<number, string>();
+    private busyWorkers = new Map<number, SpecimenId>();
     private availableWorkers = new Set<number>();
     private activeWorkers = new Map<number, WorkerMeta>();
     //  TODO: worker accounting is broken somewhere and there are leaks; this is a blunt force attempt to clean up better

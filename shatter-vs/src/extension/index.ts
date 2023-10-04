@@ -3,11 +3,10 @@ import * as path from 'path';
 import { join } from 'path';
 import * as ts from 'typescript';
 import * as vscode from 'vscode';
-import { AutotestResults, ResultCluster, getInputsFile, shatterAutotest } from '../core/shatter';
-import { Outcome, RunResult } from '../core/supervisor';
+import { Specimen, SpecimenId, isSpecimenId } from '../core/common';
+import { AutotestResults, Specimental, forkTest, loadPersistedSpecimens, saveTest, shatterAutotest } from '../core/shatter';
+import { Outcome } from '../core/supervisor';
 import { FunctionMeta, findFunctions } from '../core/transform';
-import { Specimen, SpecimenId } from '../core/generator';
-import cluster from 'cluster';
 
 interface CommonDisplayNode {
 	label: string;
@@ -67,17 +66,10 @@ type CoverageSelection = 'all'
 	| 'missed'
 	| { clusterKeys: string[] };
 
-
-interface Specimental {
-	filename: string;
-	functionName: string;
-	clusterKey: string;
-	specimen: Specimen;
-}
-
 interface ExtensionState {
 	runningAutotestFunction?: string;
-	fileStates: Record<string, FileState>
+	fileStates: Record<string, FileState>;
+	//	this overlaps some with specimens, but it doesn't load the contents
 	activeFile?: string;
 	activeFunction?: string;
 	activeCoverage?: CoverageSelection;
@@ -316,7 +308,7 @@ const refresh = (editor: vscode.TextEditor | undefined, extensionState: Extensio
 		const parametersNode = {
 			label: shortString(result.serializedParameterValues),
 			key: `parameters://${c.key}/${result.specimenId}`,
-			state: i % 2 === 0 ? 'pinned' : 'unpinned',
+			state: extensionState.specimens.get(result.specimenId)?.path ? 'pinned' : 'unpinned',
 		};
 		return parametersNode;
 	}));
@@ -497,7 +489,6 @@ function readProjectConfiguration() {
 			} catch (e) {
 
 			}
-
 		});
 }
 
@@ -530,9 +521,46 @@ How to select test cases?  Per function, per cluster, per test case
 */
 
 const autotestStorageStateKey = "autotestState";
-export function activate(context: vscode.ExtensionContext) {
+export async function activate(context: vscode.ExtensionContext) {
 
-	const persistentSpecimens = new Set<SpecimenId>();	//	specimen ID
+	const specimenClusters = new Map<SpecimenId, string>();
+	const conf = await readProjectConfiguration();
+	if (conf) {
+		//	NOTE: this watcher is using a different API than listPersistedSpecimens because
+		//	the latter is meant to be independent of VS Code
+		const ignoreCreate = false;
+		const ignoreChange = true;
+		const ignoreDelete = false;
+		const watcher = vscode.workspace.createFileSystemWatcher(`${conf.testsDirectory}/**/*.json`, ignoreCreate, ignoreChange, ignoreDelete);
+		watcher.onDidCreate((e) => {
+			const filepath = e.fsPath;
+			const maybeSpecimenId = path.basename(filepath).substring(0, '.json'.length);
+			if (isSpecimenId(maybeSpecimenId)) {
+				const existing = extensionState.specimens.get(maybeSpecimenId);
+				if (existing) {
+					throw new Error(`Specimen ${maybeSpecimenId} already exists so why are we creating file ${filepath}?`);
+				} else {
+
+				}
+			}
+		});
+
+		watcher.onDidDelete((e) => {
+			const filepath = e.fsPath;
+			const maybeSpecimenId = path.basename(filepath).substring(0, '.json'.length);
+			if (isSpecimenId(maybeSpecimenId)) {
+				//	TODO: does deleting the file mean we should delete the specimen?  or just mark it not persistent?
+				extensionState.specimens.delete(maybeSpecimenId);
+			}
+		});
+
+		//	do this *after* the watcher is set up to avoid missing any additions
+		//	TODO: might miss some deletions
+		const initialPersistentSpecimens = loadPersistedSpecimens(conf?.testsDirectory);
+		initialPersistentSpecimens.forEach((specimental, id) => {
+			extensionState.specimens.set(id, specimental);
+		});
+	}
 
 	//	TODO: if there's an open editor when the extension is activated, select that file
 	const extensionState: ExtensionState = context.workspaceState.get(autotestStorageStateKey) ?? {
@@ -661,77 +689,90 @@ export function activate(context: vscode.ExtensionContext) {
 	
 	*/
 
+	const makeTestCasePersistentCommand = vscode.commands.registerCommand('extension.shatterMakeTestcasePersistentViewContainer', async (node: CommonDisplayNode) => {
+		//	if the test case is not persistent, save it to the location specified in the configuration
+		const specimenId = node.key;
+		if (!isSpecimenId(specimenId)) {
+			return;
+		}
 
+		const specimental = extensionState.specimens.get(specimenId);
+		if (!specimental || specimental.path) {	//	already persisted
+			return;
+		}
 
-	const makeTestCasePersistentCommand = vscode.commands.registerCommand('extension.shatterMakeTestcasePersistentViewContainer', (item) => {
+		const conf = await readProjectConfiguration();
+		if (conf) {
 
+			const testCaseType = specimental.specimen.id.startsWith('custom') ? 'custom' : 'autotest';
+
+			saveTest(conf?.testsDirectory, specimental.specimen.fileUnderTest, testCaseType, specimental.specimen.functionName, specimental.specimen);
+		}
 	});
 
-	const editTestCaseCommand = vscode.commands.registerCommand('extension.shatterEditTestcaseViewContainer', (node: CommonDisplayNode) => {
+	const makeTestcaseNotPersistentCommand = vscode.commands.registerCommand('extension.shatterMakeTestcaseNonPersistentViewContainer', async (node: CommonDisplayNode) => {
 		const specimenId = node.key;
-		if (extensionState.activeCoverage === undefined || extensionState.activeCoverage === 'missed') {
-			//	no test cases to look at
+		if (!isSpecimenId(specimenId)) {
 			return;
 		}
 
-		//	TODO: lots of code deuplicated from refresh
-		const filename = extensionState.activeFile;
-		if (!filename) {
+		const specimental = extensionState.specimens.get(specimenId);
+		if (!specimental || !specimental.path) {	//	already persisted
 			return;
 		}
 
-		const fileState = extensionState.fileStates[filename];
-		if (!fileState || !fileState.functions) {
+		await vscode.workspace.fs.delete(vscode.Uri.file(specimental.path));
+	});
+
+	const editTestCaseCommand = vscode.commands.registerCommand('extension.shatterEditTestcaseViewContainer', async (node: CommonDisplayNode) => {
+		const specimenId = node.key;
+		if (!specimenId) {
 			return;
 		}
 
-		const activeFile = extensionState.activeFunction;
-		if (!activeFile) {
-			return;
-		}
-
-		const func = fileState.functions.find((f) => f.name === activeFile);
-		if (!func) {
-			return;
-		}
-
-		const functionState = fileState.functionStates[activeFile];
-		if (!functionState) {
-			return;
-		};
-
-		const results = functionState?.autotest;
-		if (!results) {
-			return;
-		}
-
-		const activeCoverage = extensionState.activeCoverage;
-		const searchClusters = activeCoverage === 'all' ? results.clusters : results.clusters.filter((cluster) => activeCoverage.clusterKeys.includes(cluster.key));
-
-		const clusterKey = searchClusters.find((cluster) => {
-			cluster.specimens.forEach((specimen) => {
-				if (specimen.id === node.key) {
-					return cluster.key;
-				}
+		const filepath = await (async () => {
+			//	if it's a generated specimen, fork to a custom specimen
+			const specimental = extensionState.specimens.get(specimenId);
+			if (!specimental) {
+				return;
+			}
+			if (specimenId.startsWith('custom')) {
+				return specimental.specimen.fileUnderTest;
+			}
+			//	ask for a name
+			//	copy to that name
+			const testCaseName = await vscode.window.showInputBox({
+				prompt: 'Enter a name for the test case',
+				placeHolder: 'Custom test case name',
+				//	TODO: make sure it's a valid filename; limit the possible values?
+				validateInput: (value) => value !== undefined && value.trim().length > 0 ? undefined : 'Please enter a name for the test case',
 			});
-		});
 
-		if (!clusterKey) {
-			return;
-		}
+			if (!testCaseName) {
+				return;
+			}
+			const newId:SpecimenId = `custom-${testCaseName}`;
+			if (extensionState.specimens.has(newId)) {
+				return;
+			}
 
-		getInputsFile(filename, activeFile, cluster, testCaseType, testCaseName, baseDirectory);
-		editTestCase(filename, activeFile, specimen.id);
+			if (conf) {
+				const forkedPath = forkTest(conf?.testsDirectory, specimental.specimen.fileUnderTest, specimental.specimen.functionName, specimental.specimen, `custom-${testCaseName}`);
+				extensionState.specimens.set(newId, {
+					clusterKey: specimental.clusterKey,
+					path: forkedPath,
+					specimen: specimental.specimen,
+				});
+			}
+		})();
 
-		if (vscode.window.activeTextEditor) {
-			const testCase: string = node.key || "";
-			const testCasePath = getTestCasePath(testCase);
-			if (fs.existsSync(testCasePath)) {
-				vscode.workspace.openTextDocument(testCasePath).then((doc) => {
+		if (filepath && vscode.window.activeTextEditor) {
+			if (fs.existsSync(filepath)) {
+				vscode.workspace.openTextDocument(filepath).then((doc) => {
 					vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
 				});
 			} else {
-				vscode.window.showErrorMessage(`Test case ${testCase} does not exist.`);
+				vscode.window.showErrorMessage(`Test case ${filepath} does not exist.`);
 			}
 		}
 	});
@@ -932,10 +973,10 @@ export function activate(context: vscode.ExtensionContext) {
 
 					results.clusters.forEach((cluster) => {
 						cluster.specimens.forEach((specimen) => {
+							const existing = extensionState.specimens.get(specimen.id);
 							extensionState.specimens.set(specimen.id, {
+								...existing,
 								clusterKey: cluster.key,
-								filename,
-								functionName,
 								specimen,
 							});
 						});

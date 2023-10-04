@@ -3,13 +3,14 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileS
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import * as ts from 'typescript';
-import { GeneratedParameter, extractGeneratedParameterValue, findLeaves, mergePath, newId, skip } from './common';
-import { BaseSpecimen, CombinatorialTestCaseSource, LeafParameter, RetestCaseSource, RuntimeContext, Specimen, SpecimenId, isSpecimenId } from './generator';
+import { BaseSpecimen, GeneratedParameter, LeafParameter, Specimen, SpecimenId, extractGeneratedParameterValue, findLeaves, isSpecimenId, mergePath, newId, skip } from './common';
 import { hybridize, isStrictExtension, shrink } from './hybridize';
 import { Outcome, RunResult, Supervisor } from './supervisor';
 import { IntrospectionContext, createInstrumenter } from './transform';
 import { canonicallyStringify, comparameters, computeDistance, wrapAsync } from './util';
 import { Invocation } from './worker-protocol';
+import { result } from 'lodash';
+import { RetestCaseSource, RuntimeContext, CombinatorialTestCaseSource } from './generator';
 
 export interface AutotestResults {
     clusters: ResultCluster[];
@@ -39,6 +40,12 @@ export interface ResultCluster extends ResultClusterData, BasicResultCluster {
     mosts: Specimen[]
     totalTime: number
     distancesToClusters: Map<string, number>[]
+}
+
+export interface Specimental {
+	path?: string,			//	empty if not persisted
+	clusterKey?: string,	//	empty if never run
+	specimen: Specimen,
 }
 
 function sha1(value: string, options?: { salt?: string, maxLength?: number }): string {
@@ -78,53 +85,51 @@ function canonicalClusterKey(result: RunResult) {
 
 autotest
 cluster.specimens => Specimen
-${storageBaseDirectory}/inputs/${path-to-source-file-relative-to-workspace-root}/${functionName}/${clusterKey}/custom/${testCaseName}.json
-${storageBaseDirectory}/specimens/${path-to-source-file-relative-to-workspace-root}/${functionName}/${clusterKey}/autotest/${parameterHash}.json
+${storageBaseDirectory}/${path-to-source-file-relative-to-workspace-root}/${functionName}/specimens/custom/${specimenId}.json
+${storageBaseDirectory}/${path-to-source-file-relative-to-workspace-root}/${functionName}/specimens/autotest/${specimenId}.json
 
+// TODOTODO: does a cluster have to be a persistent thing?
 cluster.results => BasicResultCluster
-${storageBaseDirectory}/results/${path-to-source-file-relative-to-workspace-root}/${functionName}/${clusterKey}.json
+${storageBaseDirectory}/${path-to-source-file-relative-to-workspace-root}/${functionName}/clusters/${clusterKey}.json
 
     lines: number[]
     outcome
-
-test.results => RunResult
-${storageBaseDirectory}/results/${path-to-source-file-relative-to-workspace-root}/${functionName}/${clusterKey}/custom/${testCaseName}.json
-${storageBaseDirectory}/results/${path-to-source-file-relative-to-workspace-root}/${functionName}/${clusterKey}/autotest/${testCaseName}.json
-
-linesInOrder: number[]
     
-
+test.results => RunResult
+    ${storageBaseDirectory}/${path-to-source-file-relative-to-workspace-root}/${functionName}/results/${specimenId}.json
+    
+    linesInOrder: number[]
+    outcome
 */
-export function getClusterFile(sourceFilePath: string, functionName: string, clusterKey: string, testCaseType: 'autotest' | 'custom', baseDirectory?: string) {
-    const components: string[] = ["results", sourceFilePath, functionName, clusterKey, 'cluster.json'];
+
+export function getSpecimenFilename(sourceFilePath: string, functionName: string, testCaseType: 'autotest' | 'custom', specimenId: SpecimenId, baseDirectory?: string) {
+    const components: string[] = [sourceFilePath, functionName, 'specimens', testCaseType, `${specimenId}.json`];
     if (baseDirectory) {
         components.unshift(baseDirectory);
     }
     return join(...components);
 }
 
-export function getInputsFile(sourceFilePath: string, functionName: string, clusterKey: string, testCaseType: 'autotest' | 'custom', testCaseName: string, baseDirectory?: string) {
-    const components: string[] = ['specimens', sourceFilePath, functionName, clusterKey, `${testCaseName}.json`];
+export function getResultsFile(sourceFilePath: string, functionName: string, testCaseType: 'autotest' | 'custom', specimenId: SpecimenId, baseDirectory?: string) {
+    const components: string[] = ['results', sourceFilePath, functionName, testCaseType, `${specimenId}.json`];
     if (baseDirectory) {
         components.unshift(baseDirectory);
     }
     return join(...components);
 }
 
-export function getResultsFile(sourceFilePath: string, functionName: string, clusterKey: string, testCaseType: 'autotest' | 'custom', testCaseName: string, baseDirectory?: string) {
-    const components: string[] = ['results', sourceFilePath, functionName, clusterKey, `${testCaseName}.json`];
-    if (baseDirectory) {
-        components.unshift(baseDirectory);
-    }
-    return join(...components);
+export function loadPersistedSpecimen(filepath:string) {
+    const contents = readFileSync(filepath, 'utf8');
+    const specimen:Specimen = JSON.parse(contents);
+    return specimen;
 }
 
-export function listPersistedSpecimens(baseDirectory: string) {
+export function loadPersistedSpecimens(baseDirectory: string) {
     const suffix = '.json';
-    const targetSubdirName = 'custom';
-    const specimens: Map<SpecimenId, string> = new Map();
+    const targetSubdirNames = ['custom', 'autotest'];
+    const specimens: Map<SpecimenId, Specimental> = new Map();
 
-    function traverseDirectory(directory: string) {
+    function traverseDirectory(directory: string, targetSubdirName:string) {
         const files = readdirSync(directory);
         for (const file of files) {
             const fullPath = join(directory, file);
@@ -137,18 +142,24 @@ export function listPersistedSpecimens(baseDirectory: string) {
                             const specimenId = leafFile.slice(0, -suffix.length);
                             if (isSpecimenId(specimenId)) {
                                 const specimenPath = join(fullPath, leafFile);
-                                specimens.set(specimenId, specimenPath);
+                                const specimen = loadPersistedSpecimen(specimenPath);
+                                specimens.set(specimenId, {
+                                    path: specimenPath,
+                                    specimen,
+                                });
                             }
                         }
                     }
                 } else {
-                    traverseDirectory(fullPath);
+                    traverseDirectory(fullPath, targetSubdirName);
                 }
             }
         }
     }
 
-    traverseDirectory(baseDirectory);
+    for (const targetSubdirName of targetSubdirNames) {
+        traverseDirectory(baseDirectory, targetSubdirName);
+    }
     return specimens;
 }
 
@@ -156,31 +167,35 @@ function loadTestCases(storageBaseDirectory: string) {
 
 }
 
-function saveTest(storageBaseDirectory: string, sourceFilePath: string, clusterKey: string, testCaseType: 'autotest' | 'custom', functionName: string, specimen: Specimen, result: RunResult) {
+export function saveTest(storageBaseDirectory: string, sourceFileUnderTestPath: string, testCaseType: 'autotest' | 'custom', functionName: string, specimen: Specimen, result?: RunResult) {
     const testCaseName = (specimen.type === 'custom')
         ? specimen.name
         : sha1(JSON.stringify(specimen.leaves));
 
-    const inputsFile = getInputsFile(sourceFilePath, functionName, clusterKey, testCaseType, testCaseName, storageBaseDirectory);
+    const inputsFile = getSpecimenFilename(sourceFileUnderTestPath, functionName, testCaseType, specimen.id, storageBaseDirectory);
     const inputsDirectory = dirname(inputsFile);
     mkdirSync(inputsDirectory, { recursive: true });
     writeFileSync(inputsFile, JSON.stringify(specimen, undefined, 2));
 
-    const resultsFile = getResultsFile(sourceFilePath, functionName, clusterKey, testCaseType, testCaseName, storageBaseDirectory);
-    //  TODO: WINDOWS needs the lastInde
-    const resultsDirectory = dirname(resultsFile);
-    mkdirSync(resultsDirectory, { recursive: true });
-    writeFileSync(resultsFile, JSON.stringify(result, undefined, 2));
+    if (result) {
+        const resultsFile = getResultsFile(sourceFileUnderTestPath, functionName, testCaseType, specimen.id, storageBaseDirectory);
+        //  TODO: WINDOWS needs the lastInde
+        const resultsDirectory = dirname(resultsFile);
+        mkdirSync(resultsDirectory, { recursive: true });
+        writeFileSync(resultsFile, JSON.stringify(result, undefined, 2));
+    }
+
+    return inputsFile;
 }
 
-function forkTest(storageBaseDirectory: string, clusterKey: string, functionName: string, specimen: Specimen, testCaseName: SpecimenId, result: RunResult) {
+export function forkTest(storageBaseDirectory: string, sourceFileUnderTestPath: string, functionName: string, baseSpecimen: Specimen, testCaseName: SpecimenId) {
     const newSpecimen: Specimen = {
-        ...specimen,
+        ...baseSpecimen,
         type: 'custom',
         id: testCaseName,
         name: testCaseName,
     };
-    saveTest(storageBaseDirectory, clusterKey, functionName, newSpecimen, result);
+    return saveTest(storageBaseDirectory, sourceFileUnderTestPath, 'custom', functionName, newSpecimen);
 }
 
 /*
@@ -408,13 +423,6 @@ async function shatterAutotestt(modulePaths: string[],
     const source = new CombinatorialTestCaseSource(program.getTypeChecker(), functionDeclarationNode);
     const seeder = source.seeder(runtimeContext, { numbers: introspectionContext.numbers, strings: introspectionContext.strings });
 
-    const typeCounts: Record<Specimen['type'], number> = {
-        'seed': 0,
-        'reduction': 0,
-        'mutation': 0,
-        'hybrid': 0,
-        'edgication': 0,
-    };
     const linesImprovedByOperation: Record<'seed' | 'weed' | 'breed' | 'knead', number> = {
         seed: 0,
         weed: 0,
@@ -495,14 +503,13 @@ async function shatterAutotestt(modulePaths: string[],
                 seen.add(strung);
 
                 const specimenId = newId(baseSpecimen.type);
-                const sequence = count++;
 
                 //  TODO: in Autotest mode we're always creating a new specimen, but in Retest mode we are not
                 const specimen: Specimen = {
                     id: specimenId, //  TODO: this should be either the specimen name or a SHA1 of the specimen parameters (both?)
-                    sequence,
-                    sequenceInType: typeCounts[baseSpecimen.type]++,
                     leaves: leafValues,
+                    fileUnderTest: inputFile,
+                    functionName,
                     ...baseSpecimen,
                 };
                 specimens.push(specimen);

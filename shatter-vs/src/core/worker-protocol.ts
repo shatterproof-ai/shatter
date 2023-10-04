@@ -1,4 +1,4 @@
-import { GeneratedParameter } from "./common";
+import { GeneratedParameter, SpecimenId } from "./common";
 
 export interface WorkerSetup {
     filePath: string
@@ -18,7 +18,7 @@ export interface InvocationMeta {
 }
 
 export interface InvocationResult {
-    specimenId: string
+    specimenId: SpecimenId
     output?: any
     error?: { message: string, stack: any }
     duration: number

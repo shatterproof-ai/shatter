@@ -91,32 +91,32 @@
         },
         {
           "command": "extension.shatterAddTestcaseViewContainer",
-          "when": "view == shatter-run-results",
+          "when": "view == shatter-list-testcases",
           "group": "navigation@2"
         },
         {
           "command": "extension.shatterEditTestcaseViewContainer",
-          "when": "view == shatter-run-results",
+          "when": "view == shatter-list-testcases",
           "group": "navigation@3"
         },
         {
           "command": "extension.shatterAddTestcaseViewContainer",
-          "when": "view == shatter-run-results",
+          "when": "view == shatter-list-testcases",
           "group": "inline"
         },
         {
           "command": "extension.shatterEditTestcaseViewContainer",
-          "when": "view == shatter-run-results",
+          "when": "view == shatter-list-testcases",
           "group": "inline"
         },
         {
           "command": "extension.shatterMakeTestcaseNonPersistentViewContainer",
-          "when": "view == shatter-run-results && extension.selectedTestcaseIsPersistent",
+          "when": "view == shatter-list-testcases && extension.selectedTestcaseIsPersistent",
           "group": "inline"
         },
         {
           "command": "extension.shatterMakeTestcasePersistentViewContainer",
-          "when": "view == shatter-run-results && !extension.selectedTestcaseIsPersistent",
+          "when": "view == shatter-list-testcases && !extension.selectedTestcaseIsPersistent",
           "group": "inline"
         }
       ]
@@ -159,11 +159,11 @@
           "name": "Execution Paths"
         },
         {
-          "id": "shatter-run-results",
+          "id": "shatter-list-testcases",
           "name": "Test Cases"
         },
         {
-          "id": "shatter-test-case",
+          "id": "shatter-testcase-detail",
           "name": "Test Case Details"
         }
       ]
