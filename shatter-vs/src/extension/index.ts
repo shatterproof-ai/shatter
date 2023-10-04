@@ -307,7 +307,7 @@ const refresh = (editor: vscode.TextEditor | undefined, extensionState: Extensio
 	const runResultNodes: CommonDisplayNode[] = clusters.flatMap(c => c.results.map((result, i) => {
 		const parametersNode = {
 			label: shortString(result.serializedParameterValues),
-			key: `parameters://${c.key}/${result.specimenId}`,
+			key: `parameters://${result.specimenId}`,
 			state: extensionState.specimens.get(result.specimenId)?.path ? 'pinned' : 'unpinned',
 		};
 		return parametersNode;
@@ -317,7 +317,7 @@ const refresh = (editor: vscode.TextEditor | undefined, extensionState: Extensio
 	if (!extensionState.activeSpecimenId) {
 		return;
 	}
-	const rr = /(?<which>parameters|result):\/\/(?<clusterKey>[^/]+)\/(?<specimenId>+)/;
+	const rr = /(?<which>parameters|result):\/\/(?<specimenId>[a-z0-9]+)/;
 	const match = rr.exec(extensionState.activeSpecimenId);
 	if (!match || !match.groups) {
 		return;
@@ -477,19 +477,23 @@ interface ProjectConfiguration {
 	testsDirectory: string;
 }
 
-function readProjectConfiguration() {
-	return vscode.workspace.fs.readFile(vscode.Uri.file('shatterproof.json'))
-		.then((contentsInts) => {
-			const contents = Buffer.from(contentsInts).toString('utf8');
-			try {
-				const pc = JSON.parse(contents);
-				if ('testsDirectory' in pc) {
-					return pc as ProjectConfiguration;
-				}
-			} catch (e) {
+async function readProjectConfiguration() {
+	const fileUri = vscode.Uri.file('shatterproof.json');
+	const fileStat = await vscode.workspace.fs.stat(fileUri);
+	if (fileStat) {
+		return vscode.workspace.fs.readFile(fileUri)
+			.then((contentsInts) => {
+				const contents = Buffer.from(contentsInts).toString('utf8');
+				try {
+					const pc = JSON.parse(contents);
+					if ('testsDirectory' in pc) {
+						return pc as ProjectConfiguration;
+					}
+				} catch (e) {
 
-			}
-		});
+				}
+			});
+	}
 }
 
 function editTestCase(filename: string, functionName: string, testCase: string) {
@@ -689,7 +693,7 @@ export async function activate(context: vscode.ExtensionContext) {
 	
 	*/
 
-	const makeTestCasePersistentCommand = vscode.commands.registerCommand('extension.shatterMakeTestcasePersistentViewContainer', async (node: CommonDisplayNode) => {
+	const makeTestCasePersistentCommand = vscode.commands.registerCommand('extension.shatterMakeTestcasePersistent', async (node: CommonDisplayNode) => {
 		//	if the test case is not persistent, save it to the location specified in the configuration
 		const specimenId = node.key;
 		if (!isSpecimenId(specimenId)) {
@@ -709,8 +713,9 @@ export async function activate(context: vscode.ExtensionContext) {
 			saveTest(conf?.testsDirectory, specimental.specimen.fileUnderTest, testCaseType, specimental.specimen.functionName, specimental.specimen);
 		}
 	});
+	context.subscriptions.push(makeTestCasePersistentCommand);
 
-	const makeTestcaseNotPersistentCommand = vscode.commands.registerCommand('extension.shatterMakeTestcaseNonPersistentViewContainer', async (node: CommonDisplayNode) => {
+	const makeTestcaseNotPersistentCommand = vscode.commands.registerCommand('extension.shatterMakeTestcaseNonPersistent', async (node: CommonDisplayNode) => {
 		const specimenId = node.key;
 		if (!isSpecimenId(specimenId)) {
 			return;
@@ -723,8 +728,9 @@ export async function activate(context: vscode.ExtensionContext) {
 
 		await vscode.workspace.fs.delete(vscode.Uri.file(specimental.path));
 	});
+	context.subscriptions.push(makeTestcaseNotPersistentCommand);
 
-	const editTestCaseCommand = vscode.commands.registerCommand('extension.shatterEditTestcaseViewContainer', async (node: CommonDisplayNode) => {
+	const editTestCaseCommand = vscode.commands.registerCommand('extension.shatterEditTestcase', async (node: CommonDisplayNode) => {
 		const specimenId = node.key;
 		if (!specimenId) {
 			return;
@@ -751,7 +757,7 @@ export async function activate(context: vscode.ExtensionContext) {
 			if (!testCaseName) {
 				return;
 			}
-			const newId:SpecimenId = `custom-${testCaseName}`;
+			const newId: SpecimenId = `custom-${testCaseName}`;
 			if (extensionState.specimens.has(newId)) {
 				return;
 			}
@@ -776,17 +782,7 @@ export async function activate(context: vscode.ExtensionContext) {
 			}
 		}
 	});
-
-	["extension.shatterAddTestcaseViewContainer",
-		"extension.shatterEditTestcaseViewContainer",
-		"extension.shatterAddTestcaseContext",
-		"extension.shatterEditTestcaseContext",
-		"extension.shatterMakeTestcaseNonPersistentViewContainer",
-	].forEach((command) => {
-		const cmd = vscode.commands.registerCommand(command, (item) => { });
-		context.subscriptions.push(cmd);
-	});
-
+	context.subscriptions.push(editTestCaseCommand);
 
 	context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(editor => {
 		if (editor?.document.fileName) {
@@ -810,11 +806,8 @@ export async function activate(context: vscode.ExtensionContext) {
 	//	TODO: just make people import shatterproof module in their projects; don't try to be magical about it
 	//	shatterproof needs an existence outside VSCode anyway
 	const extensionSource = join(context.extensionPath, 'src');
-
-	const autotestCommand = vscode.commands.registerCommand('extension.shatterAutotest', async () => {
+	const autotestFromEditorContextMenu = vscode.commands.registerCommand('extension.shatterAutotestFromEditorContextMenu', async () => {
 		const editor = vscode.window.activeTextEditor;
-		ts.ScriptSnapshot.fromString('');
-		//	TODOTODO: initialize empty results sidebar
 
 		if (editor && editor.document.languageId === 'typescript') {
 			const selection = editor.selection;
@@ -833,72 +826,66 @@ export async function activate(context: vscode.ExtensionContext) {
 			}
 		}
 	});
+	context.subscriptions.push(autotestFromEditorContextMenu);
 
-	context.subscriptions.push(autotestCommand);
-
-	const autotestEditorContextMenu = vscode.commands.registerCommand('extension.shatterAutotestContext', () => {
-		vscode.commands.executeCommand('extension.shatterAutotest');
-	});
-	context.subscriptions.push(autotestEditorContextMenu);
-
-	const autotestFunctionViewContainerMenu = vscode.commands.registerCommand('extension.shatterAutotestFunctionViewContainer', (item) => {
-		const filename = vscode.window.activeTextEditor?.document.fileName;
+	const autotestFromFunctionViewContainerMenu = vscode.commands.registerCommand('extension.shatterAutotestFromFunctionViewContainer', (item) => {
+		const filename = vscode.window.activeTextEditor?.document.fileName ?? extensionState.activeFile;
 		if (!filename) {
 			//	TODO: is this a reasonable situation?
 			return;
 		}
+
 		autotestFunction(filename, item.key);
 	});
-	context.subscriptions.push(autotestFunctionViewContainerMenu);
+	context.subscriptions.push(autotestFromFunctionViewContainerMenu);
 
-	const retestFunctionViewContainerMenu = vscode.commands.registerCommand('extension.shatterRetestFunctionViewContainer', (item) => {
-		// console.log(`retestFunctionViewContainerMenu called with ${JSON.stringify(item)}`);
-	});
-	context.subscriptions.push(retestFunctionViewContainerMenu);
+	// vscode.languages.registerCodeActionsProvider(
+	// 	{ scheme: 'file', language: 'typescript' },
+	// 	{
+	// 		provideCodeActions: (document, range) => {
+	// 			console.log(`provideCodeActions called`);
+	// 			return [
+	// 				{
+	// 					command: 'extension.shatterAutotestContextFromEditor',
+	// 					title: 'Shatter Autotest',
+	// 					tooltip: 'Generate autotest for selected function',
+	// 				},
+	// 			];
+	// 		},
+	// 	}
+	// );
 
-	vscode.languages.registerCodeActionsProvider(
-		{ scheme: 'file', language: 'typescript' },
-		{
-			provideCodeActions: (document, range) => {
-				console.log(`provideCodeActions called`);
-				return [
-					{
-						command: 'extension.shatterAutotestContext',
-						title: 'Shatter Autotest',
-						tooltip: 'Generate autotest for selected function',
-					},
-				];
-			},
-		}
-	);
-
-	const retestCommand = vscode.commands.registerCommand('extension.shatterRetest', async () => {
+	const retestCommand = vscode.commands.registerCommand('extension.shatterRetestFromEditorContextMenu', async () => {
 		console.log(`there was an attempt`);
 	});
-
 	context.subscriptions.push(retestCommand);
 
-	const retestContextMenu = vscode.commands.registerCommand('extension.shatterRetestContext', () => {
-		vscode.commands.executeCommand('extension.shatterRetest');
+	const retestContextMenu = vscode.commands.registerCommand('extension.shatterRetestFromFunctionViewContainer', () => {
+		console.log(`there was an attempt`);
 	});
-
-	vscode.languages.registerCodeActionsProvider(
-		{ scheme: 'file', language: 'typescript' },
-		{
-			provideCodeActions: (document, range) => {
-				console.log(`provideCodeActions called`);
-				return [
-					{
-						command: 'extension.shatterRetestContext',
-						title: 'Shatter Retest',
-						tooltip: 'Retest selected function',
-					},
-				];
-			},
-		}
-	);
-
 	context.subscriptions.push(retestContextMenu);
+
+	const shatterAddTestcase = vscode.commands.registerCommand('extension.shatterAddTestcase', () => {
+		console.log(`there was an attempt`);
+	});
+	context.subscriptions.push(shatterAddTestcase);
+
+	// vscode.languages.registerCodeActionsProvider(
+	// 	{ scheme: 'file', language: 'typescript' },
+	// 	{
+	// 		provideCodeActions: (document, range) => {
+	// 			console.log(`provideCodeActions called`);
+	// 			return [
+	// 				{
+	// 					command: 'extension.shatterRetestContext',
+	// 					title: 'Shatter Retest',
+	// 					tooltip: 'Retest selected function',
+	// 				},
+	// 			];
+	// 		},
+	// 	}
+	// );
+
 
 	if (vscode.window.activeTextEditor) {
 		updateSelectedFile();

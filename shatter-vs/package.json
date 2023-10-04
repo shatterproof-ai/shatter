@@ -16,47 +16,38 @@
   "contributes": {
     "commands": [
       {
-        "command": "extension.shatterAutotestContext",
+        "command": "extension.shatterAutotestFromEditorContextMenu",
         "title": "Autotest"
       },
       {
-        "command": "extension.shatterRetestContext",
+        "command": "extension.shatterRetestFromEditorContextMenu",
         "title": "Regression test"
       },
       {
-        "command": "extension.shatterAutotestFunctionViewContainer",
+        "command": "extension.shatterAutotestFromFunctionViewContainer",
         "title": "Autotest"
       },
       {
-        "command": "extension.shatterRetestFunctionViewContainer",
+        "command": "extension.shatterRetestFromFunctionViewContainer",
         "title": "Regression test"
       },
       {
-        "command": "extension.shatterAddTestcaseViewContainer",
-        "title": "Add test case (view)",
-        "icon": "resources/add.svg"
-      },
-      {
-        "command": "extension.shatterMakeTestcaseNonPersistentViewContainer",
+        "command": "extension.shatterMakeTestcaseNonPersistent",
         "title": "Don't retain test case (view)",
         "icon": "resources/unpin.svg"
       },
       {
-        "command": "extension.shatterMakeTestcasePersistentViewContainer",
+        "command": "extension.shatterMakeTestcasePersistent",
         "title": "Retain test case (view)",
         "icon": "resources/pin.svg"
       },
       {
-        "command": "extension.shatterEditTestcaseViewContainer",
-        "title": "Edit test case (view)",
+        "command": "extension.shatterEditTestcase",
+        "title": "Edit test case",
         "icon": "resources/edit.svg"
       },
       {
-        "command": "extension.shatterEditTestcaseContext",
-        "title": "Edit test case"
-      },
-      {
-        "command": "extension.shatterAddTestcaseContext",
+        "command": "extension.shatterAddTestcase",
         "title": "Add test case"
       }
     ],
@@ -69,53 +60,50 @@
       ],
       "shatter.submenu": [
         {
-          "command": "extension.shatterAutotestContext"
+          "command": "extension.shatterAutotestFromEditorContextMenu"
         },
         {
-          "command": "extension.shatterRetestContext"
-        },
-        {
-          "command": "extension.shatterAddTestcaseContext"
+          "command": "extension.shatterRetestFromEditorContextMenu"
         }
       ],
       "view/item/context": [
         {
-          "command": "extension.shatterAutotestFunctionViewContainer",
+          "command": "extension.shatterAutotestFromFunctionViewContainer",
           "when": "view == shatter-functions-list",
           "group": "navigation@0"
         },
         {
-          "command": "extension.shatterRetestFunctionViewContainer",
+          "command": "extension.shatterRetestFromFunctionViewContainer",
           "when": "view == shatter-functions-list",
           "group": "navigation@1"
         },
         {
-          "command": "extension.shatterAddTestcaseViewContainer",
+          "command": "extension.shatterAddTestcase",
           "when": "view == shatter-list-testcases",
           "group": "navigation@2"
         },
         {
-          "command": "extension.shatterEditTestcaseViewContainer",
+          "command": "extension.shatterEditTestcase",
           "when": "view == shatter-list-testcases",
           "group": "navigation@3"
         },
         {
-          "command": "extension.shatterAddTestcaseViewContainer",
+          "command": "extension.shatterAddTestcase",
           "when": "view == shatter-list-testcases",
           "group": "inline"
         },
         {
-          "command": "extension.shatterEditTestcaseViewContainer",
+          "command": "extension.shatterEditTestcase",
           "when": "view == shatter-list-testcases",
           "group": "inline"
         },
         {
-          "command": "extension.shatterMakeTestcaseNonPersistentViewContainer",
+          "command": "extension.shatterMakeTestcaseNonPersistent",
           "when": "view == shatter-list-testcases && extension.selectedTestcaseIsPersistent",
           "group": "inline"
         },
         {
-          "command": "extension.shatterMakeTestcasePersistentViewContainer",
+          "command": "extension.shatterMakeTestcasePersistent",
           "when": "view == shatter-list-testcases && !extension.selectedTestcaseIsPersistent",
           "group": "inline"
         }

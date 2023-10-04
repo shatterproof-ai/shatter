@@ -24,7 +24,7 @@ describe('worker', () => {
 
         const serializedParameterValues = serializeJavascript(resolvedParameters);
         const message: InvocationMeta = {
-            specimenId: "12412",
+            specimenId: "seed-12412",
             launched: 0,
             generatedParameters,
             invocation: {

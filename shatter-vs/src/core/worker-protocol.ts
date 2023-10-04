@@ -11,7 +11,7 @@ export interface Invocation {
 }
 
 export interface InvocationMeta {
-    specimenId: string
+    specimenId: SpecimenId
     launched: number
     invocation: Invocation
     generatedParameters: GeneratedParameter[]
