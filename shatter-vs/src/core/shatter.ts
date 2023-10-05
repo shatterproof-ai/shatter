@@ -42,12 +42,6 @@ export interface ResultCluster extends ResultClusterData, BasicResultCluster {
     distancesToClusters: Record<string, number>[]
 }
 
-export interface Specimental {
-	relativePath?: string,			//	empty if not persisted
-	clusterKey?: string,	//	empty if never run
-	specimen: Specimen,
-}
-
 function sha1(value: string, options?: { salt?: string, maxLength?: number }): string {
     const shasum = createHash('sha1');
     shasum.update(value);
@@ -101,102 +95,6 @@ test.results => RunResult
     linesInOrder: number[]
     outcome
 */
-
-function joinRelativePath(base:RelativePath, ...components: string[]): RelativePath {
-    return join(base, ...components) as RelativePath;
-}
-
-export function getSpecimenFilename(sourceFilePath: RelativePath, functionName: string, testCaseType: 'autotest' | 'custom', specimenId: SpecimenId):RelativePath {
-    const components: string[] = [sourceFilePath, functionName, 'specimens', testCaseType, `${specimenId}.json`];
-    return joinRelativePath(sourceFilePath, ...components);
-}
-
-export function getResultsFile(sourceFilePath: RelativePath, functionName: string, testCaseType: 'autotest' | 'custom', specimenId: SpecimenId):RelativePath {
-    const components: string[] = ['results', sourceFilePath, functionName, testCaseType, `${specimenId}.json`];
-    return joinRelativePath(sourceFilePath, ...components);
-}
-
-export function loadPersistedSpecimen(filepath:AbsolutePath) {
-    const contents = readFileSync(filepath, 'utf8');
-    const specimen:Specimen = JSON.parse(contents);
-    return specimen;
-}
-
-export function loadPersistedSpecimens(baseDirectory: AbsolutePath) {
-    const suffix = '.json';
-    const targetSubdirNames = ['custom', 'autotest'];
-    const specimens: Map<SpecimenId, Specimental> = new Map();
-
-    function traverseDirectory(directory: AbsolutePath, targetSubdirName:string) {
-        if (!existsSync(directory)) {
-            return;
-        }
-
-        const files = readdirSync(directory);
-        for (const file of files) {
-            const fullPath = join(directory, file) as AbsolutePath;
-            const stats = statSync(fullPath);
-            if (stats.isDirectory()) {
-                if (file === targetSubdirName) {
-                    const targetSubdirContents = readdirSync(fullPath);
-                    for (const leafFile of targetSubdirContents) {
-                        if (leafFile.endsWith(suffix)) {
-                            const specimenId = leafFile.slice(0, -suffix.length);
-                            if (isSpecimenId(specimenId)) {
-                                const specimenPath = join(fullPath, leafFile) as AbsolutePath;
-                                const specimen = loadPersistedSpecimen(specimenPath);
-                                specimens.set(specimenId, {
-                                    relativePath: specimenPath,
-                                    specimen,
-                                });
-                            }
-                        }
-                    }
-                } else {
-                    traverseDirectory(fullPath, targetSubdirName);
-                }
-            }
-        }
-    }
-
-    for (const targetSubdirName of targetSubdirNames) {
-        traverseDirectory(baseDirectory, targetSubdirName);
-    }
-    return specimens;
-}
-
-function loadTestCases(storageBaseDirectory: string) {
-
-}
-
-export function saveTest(storageBaseDirectory: string, sourceFileUnderTestPath: RelativePath, testCaseType: 'autotest' | 'custom', functionName: string, specimen: Specimen, result?: RunResult) {
-    const inputsFileRelative = getSpecimenFilename(sourceFileUnderTestPath, functionName, testCaseType, specimen.id);
-    const inputsFileAbsolute = join(storageBaseDirectory, inputsFileRelative);
-    const inputsDirectory = dirname(inputsFileAbsolute);
-    mkdirSync(inputsDirectory, { recursive: true });
-    writeFileSync(inputsFileAbsolute, JSON.stringify(specimen, undefined, 2));
-
-    if (result) {
-        const resultsFileRelative = getResultsFile(sourceFileUnderTestPath, functionName, testCaseType, specimen.id);
-        //  TODO: WINDOWS needs the lastInde
-        const resultsFileAbsolute = join(storageBaseDirectory, resultsFileRelative);
-        const resultsDirectory = dirname(resultsFileAbsolute);
-        mkdirSync(resultsDirectory, { recursive: true });
-        writeFileSync(resultsFileAbsolute, JSON.stringify(result, undefined, 2));
-    }
-
-    return inputsFileAbsolute;
-}
-
-export function forkTest(storageBaseDirectory: AbsolutePath, sourceFileUnderTestPath: RelativePath, functionName: string, baseSpecimen: Specimen, testCaseName: SpecimenId) {
-    const newSpecimen: Specimen = {
-        ...baseSpecimen,
-        type: 'custom',
-        id: testCaseName,
-        name: testCaseName,
-    };
-    return saveTest(storageBaseDirectory, sourceFileUnderTestPath, 'custom', functionName, newSpecimen);
-}
 
 /*
 //  TODO: should /specimens and /results be near the end or near the beginning of the path?  or in the middle?
@@ -273,8 +171,7 @@ export const shatterRetest = wrapAsync("shatterRetestt", shatterRetestt);
 //  TODO: make sure the source file is saved before running
 //  TODO: collapse the abstract syntax tree into a tree of conditions and blocks
 async function shatterAutotestt(modulePaths: string[],
-    projectRoot: AbsolutePath,
-    relativeSourceInputFile: RelativePath,
+    absoluteSourceInputFile: AbsolutePath,
     functionName: string,
     onUpdate: (results: AutotestResults) => void,
     options?: {
@@ -286,7 +183,6 @@ async function shatterAutotestt(modulePaths: string[],
     }
 ) {
     // parse whole file into abstract syntax tree
-    const absoluteSourceInputFile = join(projectRoot, relativeSourceInputFile);
     const [program, sourceFile] = parse(absoluteSourceInputFile);
     const functionDeclarationNode = findFunctionNode(functionName, sourceFile);
     if (!functionDeclarationNode) {
@@ -499,9 +395,9 @@ async function shatterAutotestt(modulePaths: string[],
 
                 //  TODO: in Autotest mode we're always creating a new specimen, but in Retest mode we are not
                 const specimen: Specimen = {
+                    fileUnderTest: "...",
                     id: specimenId, //  TODO: this should be either the specimen name or a SHA1 of the specimen parameters (both?)
                     leaves: leafValues,
-                    fileUnderTest: relativeSourceInputFile,
                     functionName,
                     ...baseSpecimen,
                 };
