@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import * as ts from 'typescript';
@@ -14,7 +14,7 @@ import { RetestCaseSource, RuntimeContext, CombinatorialTestCaseSource } from '.
 
 export interface AutotestResults {
     clusters: ResultCluster[];
-    instrumentedLines: Set<number>;
+    instrumentedLines: number[];    //	number[] because Set is not serializable
 }
 
 export interface BasicResultCluster {
@@ -29,6 +29,16 @@ interface ResultClusterData {
     results: RunResult[]
 }
 
+export type AbsolutePath = `/${string}`;
+export type RelativePath = `./${string}`;
+
+export const isAbsolutePath = (path: string): path is AbsolutePath => path.startsWith('/');
+export const isRelativePath = (path: string): path is RelativePath => path.startsWith('./');
+
+
+const a1:AbsolutePath = "/dd";
+const r0:RelativePath = "./dd";
+
 //  TODO: for error cases add the file and line of where it was thrown and also
 //  the file and line of the first line in the instrumented code
 export interface ResultCluster extends ResultClusterData, BasicResultCluster {
@@ -39,11 +49,11 @@ export interface ResultCluster extends ResultClusterData, BasicResultCluster {
     //  one to one with parameter list
     mosts: Specimen[]
     totalTime: number
-    distancesToClusters: Map<string, number>[]
+    distancesToClusters: Record<string, number>[]
 }
 
 export interface Specimental {
-	path?: string,			//	empty if not persisted
+	relativePath?: string,			//	empty if not persisted
 	clusterKey?: string,	//	empty if never run
 	specimen: Specimen,
 }
@@ -102,37 +112,36 @@ test.results => RunResult
     outcome
 */
 
-export function getSpecimenFilename(sourceFilePath: string, functionName: string, testCaseType: 'autotest' | 'custom', specimenId: SpecimenId, baseDirectory?: string) {
+export function getSpecimenFilename(sourceFilePath: RelativePath, functionName: string, testCaseType: 'autotest' | 'custom', specimenId: SpecimenId):RelativePath {
     const components: string[] = [sourceFilePath, functionName, 'specimens', testCaseType, `${specimenId}.json`];
-    if (baseDirectory) {
-        components.unshift(baseDirectory);
-    }
     return join(...components);
 }
 
-export function getResultsFile(sourceFilePath: string, functionName: string, testCaseType: 'autotest' | 'custom', specimenId: SpecimenId, baseDirectory?: string) {
+export function getResultsFile(sourceFilePath: RelativePath, functionName: string, testCaseType: 'autotest' | 'custom', specimenId: SpecimenId):RelativePath {
     const components: string[] = ['results', sourceFilePath, functionName, testCaseType, `${specimenId}.json`];
-    if (baseDirectory) {
-        components.unshift(baseDirectory);
-    }
+    const r:RelativePath = "/this";
     return join(...components);
 }
 
-export function loadPersistedSpecimen(filepath:string) {
+export function loadPersistedSpecimen(filepath:AbsolutePath) {
     const contents = readFileSync(filepath, 'utf8');
     const specimen:Specimen = JSON.parse(contents);
     return specimen;
 }
 
-export function loadPersistedSpecimens(baseDirectory: string) {
+export function loadPersistedSpecimens(baseDirectory: AbsolutePath) {
     const suffix = '.json';
     const targetSubdirNames = ['custom', 'autotest'];
     const specimens: Map<SpecimenId, Specimental> = new Map();
 
-    function traverseDirectory(directory: string, targetSubdirName:string) {
+    function traverseDirectory(directory: AbsolutePath, targetSubdirName:string) {
+        if (!existsSync(directory)) {
+            return;
+        }
+
         const files = readdirSync(directory);
         for (const file of files) {
-            const fullPath = join(directory, file);
+            const fullPath = join(directory, file) as AbsolutePath;
             const stats = statSync(fullPath);
             if (stats.isDirectory()) {
                 if (file === targetSubdirName) {
@@ -141,10 +150,10 @@ export function loadPersistedSpecimens(baseDirectory: string) {
                         if (leafFile.endsWith(suffix)) {
                             const specimenId = leafFile.slice(0, -suffix.length);
                             if (isSpecimenId(specimenId)) {
-                                const specimenPath = join(fullPath, leafFile);
+                                const specimenPath = join(fullPath, leafFile) as AbsolutePath;
                                 const specimen = loadPersistedSpecimen(specimenPath);
                                 specimens.set(specimenId, {
-                                    path: specimenPath,
+                                    relativePath: specimenPath,
                                     specimen,
                                 });
                             }
@@ -273,8 +282,8 @@ export const shatterRetest = wrapAsync("shatterRetestt", shatterRetestt);
 //  TODO: make sure the source file is saved before running
 //  TODO: collapse the abstract syntax tree into a tree of conditions and blocks
 async function shatterAutotestt(modulePaths: string[],
-    inputFile: string,
-    storageBaseDirectory: string | undefined,
+    absoluteInputFile: string,
+    absoluteStorageBaseDirectory: string | undefined,
     functionName: string,
     onUpdate: (results: AutotestResults) => void,
     options?: {
@@ -286,7 +295,7 @@ async function shatterAutotestt(modulePaths: string[],
     }
 ) {
     // parse whole file into abstract syntax tree
-    const [program, sourceFile] = parse(inputFile);
+    const [program, sourceFile] = parse(absoluteInputFile);
     const functionDeclarationNode = findFunctionNode(functionName, sourceFile);
     if (!functionDeclarationNode) {
         throw new Error(`Could not find function ${functionName}`);
@@ -294,17 +303,8 @@ async function shatterAutotestt(modulePaths: string[],
 
     // rewrite code of given function (or everything if lazy) to add instrumentation
     const [instrumentedFile, executorScriptJs, introspectionContext] = writeInstrumented(sourceFile, options?.shatterproofModuleOverride);
-    const functionStartLine = ts.getLineAndCharacterOfPosition(sourceFile, functionDeclarationNode.pos).line;
-    const functionEndLine = ts.getLineAndCharacterOfPosition(sourceFile, functionDeclarationNode.end).line;
 
-    const instrumentedFunctionLines = new Set<number>();
-    for (let functionLine = functionStartLine; functionLine < functionEndLine; functionLine++) {
-        if (introspectionContext.instrumentedLines.has(functionLine)) {
-            instrumentedFunctionLines.add(functionLine);
-        }
-    }
-
-    console.log(`created ${instrumentedFile} compiled to ${executorScriptJs} with storageBaseDirectory = ${storageBaseDirectory}`);
+    console.log(`created ${instrumentedFile} compiled to ${executorScriptJs} with storageBaseDirectory = ${absoluteStorageBaseDirectory}`);
 
     let body = null;
     for (let i = 0; i < functionDeclarationNode.getChildCount(); i++) {
@@ -372,7 +372,7 @@ async function shatterAutotestt(modulePaths: string[],
                 leasts: specimen.parameters.map(_ => specimen),
                 mosts: specimen.parameters.map(_ => specimen),
                 totalTime: 0,
-                distancesToClusters: specimen.parameters.map(_ => new Map()),
+                distancesToClusters: specimen.parameters.map(_ => ({})),
             };
             clusters.push(cluster);
             clustersByKey.set(clusterKey, cluster);
@@ -388,7 +388,8 @@ async function shatterAutotestt(modulePaths: string[],
         sortClusters(clusters);
 
         //  update the caller
-        onUpdate({ clusters, instrumentedLines: introspectionContext.instrumentedLines });
+        const instrumentedLines = Array.from(introspectionContext.instrumentedLines).sort((a, b) => a - b);
+        onUpdate({ clusters, instrumentedLines });
         //  update the source
 
         runResult.lines.forEach(line => allExecutedLines.add(line));
@@ -508,7 +509,7 @@ async function shatterAutotestt(modulePaths: string[],
                 const specimen: Specimen = {
                     id: specimenId, //  TODO: this should be either the specimen name or a SHA1 of the specimen parameters (both?)
                     leaves: leafValues,
-                    fileUnderTest: inputFile,
+                    fileUnderTest: absoluteInputFile,
                     functionName,
                     ...baseSpecimen,
                 };
@@ -889,10 +890,10 @@ function* knead(clustersByKey: Map<string, ResultCluster>, parameterDeclarations
 
             const distance = computeDistance(specimenA.parameters[index], specimenB.parameters[index]);
 
-            const aToB = a.distancesToClusters[index].get(b.key) ?? Infinity;
+            const aToB = a.distancesToClusters[index][b.key] ?? Infinity;
             if (distance < aToB) {
-                a.distancesToClusters[index].set(b.key, distance);
-                b.distancesToClusters[index].set(a.key, distance);
+                a.distancesToClusters[index][b.key] = distance;
+                b.distancesToClusters[index][a.key] = distance;
             }
 
             if (distance <= 1) {

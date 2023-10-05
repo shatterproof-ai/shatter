@@ -13,6 +13,7 @@ interface CommonDisplayNode {
 	children?: CommonDisplayNode[];
 	key?: string,
 	state?: string,
+	contextValue?: string,
 }
 
 function visit(k: string | number, o: any, depth = 0): CommonDisplayNode {
@@ -59,7 +60,7 @@ type FunctionState = {
 
 type FileState = {
 	functions: FunctionMeta[];
-	functionStates: Record<string, FunctionState>;
+	functionStates: Record<string, FunctionState>;	//	Record because Map is not serializable
 };
 
 type CoverageSelection = 'all'
@@ -68,14 +69,14 @@ type CoverageSelection = 'all'
 
 interface ExtensionState {
 	runningAutotestFunction?: string;
-	fileStates: Record<string, FileState>;
-	//	this overlaps some with specimens, but it doesn't load the contents
+	fileStates: Record<string, FileState>;	//	Record because Map is not serializable
+	//	this overlaps some with specimens, but it doesn't load the contents	
 	activeFile?: string;
 	activeFunction?: string;
 	activeCoverage?: CoverageSelection;
 	activeSpecimenId?: string;
 
-	specimens: Map<string, Specimental>;
+	specimens: Record<string, Specimental>;	//	Record because Map is not serializable
 };
 
 interface Providers {
@@ -184,7 +185,7 @@ const refresh = (editor: vscode.TextEditor | undefined, extensionState: Extensio
 
 	const functionInstrumentedLines = new Set<number>();
 	for (let line = func.startLine; line <= func.endLine; line++) {
-		if (functionState.autotest.instrumentedLines.has(line)) {
+		if (functionState.autotest.instrumentedLines.includes(line)) {
 			functionInstrumentedLines.add(line);
 		}
 	}
@@ -304,15 +305,30 @@ const refresh = (editor: vscode.TextEditor | undefined, extensionState: Extensio
 	const specimEntries = clusters.flatMap(c =>
 		c.specimens.map((specimen): [string, Specimen] => [specimen.id, specimen])
 	);
-	const runResultNodes: CommonDisplayNode[] = clusters.flatMap(c => c.results.map((result, i) => {
+	const testCaseListNodes: CommonDisplayNode[] = clusters.flatMap(c => c.results.map((result, i) => {
+		const specimental = extensionState.specimens[result.specimenId];
+
+		const contextPieces: string[] = [];
+
+		if (specimental?.specimen?.id.startsWith('custom')) {
+			contextPieces.push('custom');
+		} else {
+			contextPieces.push('autotest');
+		}
+
+		if (specimental?.relativePath) {
+			contextPieces.push('persistent');
+		}
+
 		const parametersNode = {
 			label: shortString(result.serializedParameterValues),
-			key: `parameters://${result.specimenId}`,
-			state: extensionState.specimens.get(result.specimenId)?.path ? 'pinned' : 'unpinned',
+			key: result.specimenId,
+			state: specimental?.relativePath ? 'pinned' : 'unpinned',
+			contextValue: contextPieces.join(','),
 		};
 		return parametersNode;
 	}));
-	testCaseListProvider.refresh(runResultNodes);
+	testCaseListProvider.refresh(testCaseListNodes);
 
 	if (!extensionState.activeSpecimenId) {
 		return;
@@ -474,25 +490,44 @@ function highlightLinesInEditor(editor: vscode.TextEditor | undefined, decoratio
 }
 
 interface ProjectConfiguration {
-	testsDirectory: string;
+	testsDirectory: string;	//	RELATIVE to the project root
 }
 
 async function readProjectConfiguration() {
-	const fileUri = vscode.Uri.file('shatterproof.json');
-	const fileStat = await vscode.workspace.fs.stat(fileUri);
-	if (fileStat) {
-		return vscode.workspace.fs.readFile(fileUri)
-			.then((contentsInts) => {
-				const contents = Buffer.from(contentsInts).toString('utf8');
-				try {
-					const pc = JSON.parse(contents);
-					if ('testsDirectory' in pc) {
-						return pc as ProjectConfiguration;
-					}
-				} catch (e) {
+	const matches = await vscode.workspace.findFiles('shatterproof.json', '**/node_modules/**', 1);
 
-				}
-			});
+	for (const fileUri of matches) {
+		try {
+			const fileStat = await vscode.workspace.fs.stat(fileUri);
+			if (fileStat) {
+				return vscode.workspace.fs.readFile(fileUri)
+					.then((contentsInts) => {
+						const contents = Buffer.from(contentsInts).toString('utf8');
+						try {
+							const pc = JSON.parse(contents);
+							if ('testsDirectory' in pc) {
+								return pc as ProjectConfiguration;
+							}
+						} catch (e) {
+							//	TODO: handle error
+							const ee = e;
+						}
+					});
+			}
+		} catch (e) {
+			//	throws an error if the file doesn't exist; there's no simple existence check
+			/*
+	EntryNotFound (FileSystemError): Error: ENOENT: no such file or directory, stat '/shatterproof.json'
+		at k.e (/snap/code/141/usr/share/code/resources/app/out/vs/workbench/api/node/extensionHostProcess.js:109:26741)
+		at Object.stat (/snap/code/141/usr/share/code/resources/app/out/vs/workbench/api/node/extensionHostProcess.js:109:24556)
+		at async readProjectConfiguration (/home/ketan/project/shatter/shatter-vs/out/extension/index.js:382:26)
+		at async activate (/home/ketan/project/shatter/shatter-vs/out/extension/index.js:433:18)
+		at async E.n (/snap/code/141/usr/share/code/resources/app/out/vs/workbench/api/node/extensionHostProcess.js:107:6206)
+		at async E.m (/snap/code/141/usr/share/code/resources/app/out/vs/workbench/api/node/extensionHostProcess.js:107:6169)
+		at async E.l (/snap/code/141/usr/share/code/resources/app/out/vs/workbench/api/node/extensionHostProcess.js:107:5626) {code: 'FileNotFound', name: 'EntryNotFound (FileSystemError)', stack: 'EntryNotFound (FileSystemError): Error: ENOEN…ch/api/node/extensionHostProcess.js:107:5626)', message: 'Error: ENOENT: no such file or directory, stat '/shatterproof.json''}
+			*/
+			const ee = e;
+		}
 	}
 }
 
@@ -526,455 +561,503 @@ How to select test cases?  Per function, per cluster, per test case
 
 const autotestStorageStateKey = "autotestState";
 export async function activate(context: vscode.ExtensionContext) {
-
-	const specimenClusters = new Map<SpecimenId, string>();
-	const conf = await readProjectConfiguration();
-	if (conf) {
-		//	NOTE: this watcher is using a different API than listPersistedSpecimens because
-		//	the latter is meant to be independent of VS Code
-		const ignoreCreate = false;
-		const ignoreChange = true;
-		const ignoreDelete = false;
-		const watcher = vscode.workspace.createFileSystemWatcher(`${conf.testsDirectory}/**/*.json`, ignoreCreate, ignoreChange, ignoreDelete);
-		watcher.onDidCreate((e) => {
-			const filepath = e.fsPath;
-			const maybeSpecimenId = path.basename(filepath).substring(0, '.json'.length);
-			if (isSpecimenId(maybeSpecimenId)) {
-				const existing = extensionState.specimens.get(maybeSpecimenId);
-				if (existing) {
-					throw new Error(`Specimen ${maybeSpecimenId} already exists so why are we creating file ${filepath}?`);
-				} else {
-
-				}
-			}
-		});
-
-		watcher.onDidDelete((e) => {
-			const filepath = e.fsPath;
-			const maybeSpecimenId = path.basename(filepath).substring(0, '.json'.length);
-			if (isSpecimenId(maybeSpecimenId)) {
-				//	TODO: does deleting the file mean we should delete the specimen?  or just mark it not persistent?
-				extensionState.specimens.delete(maybeSpecimenId);
-			}
-		});
-
-		//	do this *after* the watcher is set up to avoid missing any additions
-		//	TODO: might miss some deletions
-		const initialPersistentSpecimens = loadPersistedSpecimens(conf?.testsDirectory);
-		initialPersistentSpecimens.forEach((specimental, id) => {
-			extensionState.specimens.set(id, specimental);
-		});
-	}
-
-	//	TODO: if there's an open editor when the extension is activated, select that file
-	const extensionState: ExtensionState = context.workspaceState.get(autotestStorageStateKey) ?? {
-		fileStates: {},
-		specimens: new Map(),
-	};
-
-	//	TODO: Refresh functions list view contents on change of editor
-	const functionsListProvider = new CommonTreeDataProvider({
-		command: {
-			command: 'extension.shatterSelectFunction',
-			title: 'Functions',
-		}
-	});
-	context.subscriptions.push(
-		vscode.window.registerTreeDataProvider("shatter-functions-list", functionsListProvider));
-
-	const clustersListProvider = new CommonTreeDataProvider({
-		command: {
-			command: 'extension.shatterSelectCluster',
-			title: 'Execution Paths',
-		}
-	});
-	context.subscriptions.push(
-		vscode.window.registerTreeDataProvider("shatter-execution-paths", clustersListProvider));
-
-	const testCaseListProvider = new CommonTreeDataProvider({
-		command: {
-			command: 'extension.shatterSelectTestCase',
-			title: 'Test Case Detail',
-		},
-		stateIcons: {
-			'pinned': '../../resources/pin.svg',
-			'unpinned': '../../../resources/unpin.svg',
-		}
-	});
-	context.subscriptions.push(
-		vscode.window.registerTreeDataProvider("shatter-list-testcases", testCaseListProvider));
-
-	const testCaseDetailProvider = new CommonTreeDataProvider({
-		stateIcons: {
-			persistent: 'media/pin.svg',
-		}
-	});
-	context.subscriptions.push(
-		vscode.window.registerTreeDataProvider("shatter-testcase-detail", testCaseDetailProvider));
-
-	const providers = {
-		functionsListProvider,
-		clustersListProvider,
-		testCaseListProvider,
-		testCaseDetailProvider,
-	};
-
-	const updateSelectedFile = () => {
-		//	_filename and filename should be the same
-		const filename = vscode.window.activeTextEditor?.document.fileName;
-		if (!filename) {
-			//	TODO: clear functions list
-			return;
-		}
-		doSelectFile(vscode.window.activeTextEditor, extensionState, filename, providers);
-	};
-
-	//	call after switching files, changing contents of the editor, or running tests
-	const doSelectFunctionCommand = (node: CommonDisplayNode) => {
-		if (vscode.window.activeTextEditor) {
-			const functionName: string = node.key || "";
-			doSelectFunction(vscode.window.activeTextEditor, extensionState, providers, functionName);
-		}
-	};
-
-	const doSelectClusterCommand = (node: CommonDisplayNode) => {
-		if (vscode.window.activeTextEditor) {
-			const selection: CoverageSelection | undefined = (() => {
-				if (node.key) {
-					if (node.key.startsWith('cluster://')) {
-						const clusterKey = node.key.substring('cluster://'.length);
-						return { clusterKeys: [clusterKey] };
-					}
-					if (node.key === 'covered://') {
-						return 'all';
-					}
-					if (node.key === 'missed://') {
-						return 'missed';
-					}
-					throw new Error(`unhandled key ${node.key}`);
-				}
-			})();
-			if (selection) {
-				doSelectCluster(vscode.window.activeTextEditor, extensionState, providers, selection);
-			}
-		}
-	};
-
-	const doSelectTestCaseCommand = (node: CommonDisplayNode) => {
-		if (vscode.window.activeTextEditor) {
-			const specimenId: string = node.key || "";
-			doSelectTestCase(vscode.window.activeTextEditor, extensionState, providers, specimenId);
-		}
-	};
-
-	//	needs to be registered as a command because TreeView needs a command to dispatch to
-	const selectFunctionCommand = vscode.commands.registerCommand('extension.shatterSelectFunction', doSelectFunctionCommand);
-	context.subscriptions.push(selectFunctionCommand);
-
-	//	needs to be registered as a command because TreeView needs a command to dispatch to
-	const selectClusterCommand = vscode.commands.registerCommand('extension.shatterSelectCluster', doSelectClusterCommand);
-	context.subscriptions.push(selectClusterCommand);
-
-	//	needs to be registered as a command because TreeView needs a command to dispatch to
-	const selectTestCaseCommand = vscode.commands.registerCommand('extension.shatterSelectTestCase', doSelectTestCaseCommand);
-	context.subscriptions.push(selectTestCaseCommand);
-
-	/*
-	
-	generated test case:
-	* user clicks pin - saves it to specified location (TODO: add it to the working tree)
-	* user clicks unpin - deletes it from the specified location (TODO: remove it from the working tree)
-	* user clicks edit - IF a non-custom test case, ask for a name, save it to the specified location, and open an editor for that file
-	* user clicks add - ask for a name, create an empty file, open an editor
-	
-	TODO: Editor should be able to match parameter type structure with autocomplete and validation.  Custom language server based on function and signature?
-	
-	//	where to track test case persistence?
-	
-	*/
-
-	const makeTestCasePersistentCommand = vscode.commands.registerCommand('extension.shatterMakeTestcasePersistent', async (node: CommonDisplayNode) => {
-		//	if the test case is not persistent, save it to the location specified in the configuration
-		const specimenId = node.key;
-		if (!isSpecimenId(specimenId)) {
-			return;
-		}
-
-		const specimental = extensionState.specimens.get(specimenId);
-		if (!specimental || specimental.path) {	//	already persisted
-			return;
-		}
-
+	try {
+		const specimenClusters = new Map<SpecimenId, string>();
 		const conf = await readProjectConfiguration();
 		if (conf) {
+			//	NOTE: this watcher is using a different API than listPersistedSpecimens because
+			//	the latter is meant to be independent of VS Code
+			const ignoreCreate = false;
+			const ignoreChange = true;
+			const ignoreDelete = false;
+			const watcher = vscode.workspace.createFileSystemWatcher(`${conf.testsDirectory}/**/*.json`, ignoreCreate, ignoreChange, ignoreDelete);
+			watcher.onDidCreate((e) => {
+				const filepath = e.fsPath;
+				const maybeSpecimenId = path.basename(filepath).substring(0, '.json'.length);
+				if (isSpecimenId(maybeSpecimenId)) {
+					const existing = extensionState.specimens[maybeSpecimenId];
+					if (existing) {
+						throw new Error(`Specimen ${maybeSpecimenId} already exists so why are we creating file ${filepath}?`);
+					} else {
 
-			const testCaseType = specimental.specimen.id.startsWith('custom') ? 'custom' : 'autotest';
-
-			saveTest(conf?.testsDirectory, specimental.specimen.fileUnderTest, testCaseType, specimental.specimen.functionName, specimental.specimen);
-		}
-	});
-	context.subscriptions.push(makeTestCasePersistentCommand);
-
-	const makeTestcaseNotPersistentCommand = vscode.commands.registerCommand('extension.shatterMakeTestcaseNonPersistent', async (node: CommonDisplayNode) => {
-		const specimenId = node.key;
-		if (!isSpecimenId(specimenId)) {
-			return;
-		}
-
-		const specimental = extensionState.specimens.get(specimenId);
-		if (!specimental || !specimental.path) {	//	already persisted
-			return;
-		}
-
-		await vscode.workspace.fs.delete(vscode.Uri.file(specimental.path));
-	});
-	context.subscriptions.push(makeTestcaseNotPersistentCommand);
-
-	const editTestCaseCommand = vscode.commands.registerCommand('extension.shatterEditTestcase', async (node: CommonDisplayNode) => {
-		const specimenId = node.key;
-		if (!specimenId) {
-			return;
-		}
-
-		const filepath = await (async () => {
-			//	if it's a generated specimen, fork to a custom specimen
-			const specimental = extensionState.specimens.get(specimenId);
-			if (!specimental) {
-				return;
-			}
-			if (specimenId.startsWith('custom')) {
-				return specimental.specimen.fileUnderTest;
-			}
-			//	ask for a name
-			//	copy to that name
-			const testCaseName = await vscode.window.showInputBox({
-				prompt: 'Enter a name for the test case',
-				placeHolder: 'Custom test case name',
-				//	TODO: make sure it's a valid filename; limit the possible values?
-				validateInput: (value) => value !== undefined && value.trim().length > 0 ? undefined : 'Please enter a name for the test case',
-			});
-
-			if (!testCaseName) {
-				return;
-			}
-			const newId: SpecimenId = `custom-${testCaseName}`;
-			if (extensionState.specimens.has(newId)) {
-				return;
-			}
-
-			if (conf) {
-				const forkedPath = forkTest(conf?.testsDirectory, specimental.specimen.fileUnderTest, specimental.specimen.functionName, specimental.specimen, `custom-${testCaseName}`);
-				extensionState.specimens.set(newId, {
-					clusterKey: specimental.clusterKey,
-					path: forkedPath,
-					specimen: specimental.specimen,
-				});
-			}
-		})();
-
-		if (filepath && vscode.window.activeTextEditor) {
-			if (fs.existsSync(filepath)) {
-				vscode.workspace.openTextDocument(filepath).then((doc) => {
-					vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
-				});
-			} else {
-				vscode.window.showErrorMessage(`Test case ${filepath} does not exist.`);
-			}
-		}
-	});
-	context.subscriptions.push(editTestCaseCommand);
-
-	context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(editor => {
-		if (editor?.document.fileName) {
-			updateSelectedFile();
-		}
-	}, null, context.subscriptions));
-
-	//	overkill to refresh on every change?  TODO: see if there's a performance hit; at least we want to regenerate the function list
-	context.subscriptions.push(vscode.workspace.onDidChangeTextDocument(event => {
-		const editor = vscode.window.activeTextEditor;
-		if (editor?.document.fileName) {
-			updateSelectedFile();
-		}
-	}, null, context.subscriptions));
-
-	//	TODO
-	vscode.workspace.onDidOpenTextDocument(document => { });
-	//	TODO: what to do when a document is closed?
-
-	//	TODO: fix the ugly hard-coding of 'src'; that can't be right for a standalone extension
-	//	TODO: just make people import shatterproof module in their projects; don't try to be magical about it
-	//	shatterproof needs an existence outside VSCode anyway
-	const extensionSource = join(context.extensionPath, 'src');
-	const autotestFromEditorContextMenu = vscode.commands.registerCommand('extension.shatterAutotestFromEditorContextMenu', async () => {
-		const editor = vscode.window.activeTextEditor;
-
-		if (editor && editor.document.languageId === 'typescript') {
-			const selection = editor.selection;
-			const cursorPosition = selection.active;
-			const document = editor.document;
-
-			const functionMeta = getFunctionNodeAtCursor(cursorPosition, document);
-			if (functionMeta) {
-				const functionName = functionMeta.name;
-				if (!functionName) {
-					throw new Error(`Top level anonymous functions are not supported`);
-				}
-				await autotestFunction(document.fileName, functionName);
-			} else {
-				vscode.window.showErrorMessage('Select a function or place the cursor inside a function.');
-			}
-		}
-	});
-	context.subscriptions.push(autotestFromEditorContextMenu);
-
-	const autotestFromFunctionViewContainerMenu = vscode.commands.registerCommand('extension.shatterAutotestFromFunctionViewContainer', (item) => {
-		const filename = vscode.window.activeTextEditor?.document.fileName ?? extensionState.activeFile;
-		if (!filename) {
-			//	TODO: is this a reasonable situation?
-			return;
-		}
-
-		autotestFunction(filename, item.key);
-	});
-	context.subscriptions.push(autotestFromFunctionViewContainerMenu);
-
-	// vscode.languages.registerCodeActionsProvider(
-	// 	{ scheme: 'file', language: 'typescript' },
-	// 	{
-	// 		provideCodeActions: (document, range) => {
-	// 			console.log(`provideCodeActions called`);
-	// 			return [
-	// 				{
-	// 					command: 'extension.shatterAutotestContextFromEditor',
-	// 					title: 'Shatter Autotest',
-	// 					tooltip: 'Generate autotest for selected function',
-	// 				},
-	// 			];
-	// 		},
-	// 	}
-	// );
-
-	const retestCommand = vscode.commands.registerCommand('extension.shatterRetestFromEditorContextMenu', async () => {
-		console.log(`there was an attempt`);
-	});
-	context.subscriptions.push(retestCommand);
-
-	const retestContextMenu = vscode.commands.registerCommand('extension.shatterRetestFromFunctionViewContainer', () => {
-		console.log(`there was an attempt`);
-	});
-	context.subscriptions.push(retestContextMenu);
-
-	const shatterAddTestcase = vscode.commands.registerCommand('extension.shatterAddTestcase', () => {
-		console.log(`there was an attempt`);
-	});
-	context.subscriptions.push(shatterAddTestcase);
-
-	// vscode.languages.registerCodeActionsProvider(
-	// 	{ scheme: 'file', language: 'typescript' },
-	// 	{
-	// 		provideCodeActions: (document, range) => {
-	// 			console.log(`provideCodeActions called`);
-	// 			return [
-	// 				{
-	// 					command: 'extension.shatterRetestContext',
-	// 					title: 'Shatter Retest',
-	// 					tooltip: 'Retest selected function',
-	// 				},
-	// 			];
-	// 		},
-	// 	}
-	// );
-
-
-	if (vscode.window.activeTextEditor) {
-		updateSelectedFile();
-	}
-
-	//	TODO: some sort of status display during execution
-	//	TODO: show the sidebar when running
-	async function autotestFunction(filename: string, functionName: string) {
-		const allTsConfigs: string[] = [];
-		const allPackageJsons: string[] = [];
-		const allNodeModules: string[] = [];
-		const allWorkspaceFolders: string[] = [];
-
-		const editor = vscode.window.activeTextEditor;
-		if (editor) {
-			vscode.workspace.workspaceFolders?.forEach((folder) => {
-				const found = findFilesInHierarchy(editor.document.fileName, vscode.workspace.rootPath || '', {
-					tsconfig: (filename, stat) => filename.endsWith('tsconfig.json') && stat.isFile(),
-					packageJson: (filename, stat) => filename.endsWith('package.json') && stat.isFile(),
-					nodeModules: (filename, stat) => filename.endsWith('node_modules') && stat.isDirectory(),
-				});
-
-				allTsConfigs.push(...(found.tsconfig || []));
-				allPackageJsons.push(...(found.packageJson || []));
-				allNodeModules.push(...(found.nodeModules || []));
-				allWorkspaceFolders.push(folder.uri.fsPath);
-			});
-		}
-
-		const modulePaths = [...allWorkspaceFolders, ...allNodeModules];
-
-		console.log(`BEGIN THE AUTOTEST of ${functionName} in ${filename}`);
-
-		extensionState.activeCoverage = undefined;
-		extensionState.activeSpecimenId = undefined;
-		for (const provider of Object.values(providers)) {
-			provider.refresh([]);
-		}
-
-		vscode.commands.executeCommand("shatter-execution-paths.focus");
-		try {
-			extensionState.runningAutotestFunction = functionName;
-
-			await shatterAutotest(modulePaths,
-				filename,
-				context.storageUri?.fsPath,
-				functionName, (results: AutotestResults) => {
-					extensionState.activeFile = filename;
-					let filestate: FileState | undefined = extensionState.fileStates[filename];
-					if (!filestate) {
-						const functions = findFunctions(filename);
-						filestate = {
-							functions,
-							functionStates: {},
-						};
-						extensionState.fileStates[filename] = filestate;
 					}
-					const functionState: FunctionState = {
-						autotest: results,
-					};
-					filestate.functionStates[functionName] = functionState;
+				}
+			});
 
-					// console.log(`refreshing function node to display = ${functionName} in ${filename}`);
-					// console.log(`keys ${JSON.stringify(Array.from(Object.keys(filestate.functionStates) ?? []))} => ${JSON.stringify(functionState)}`);
-					// console.log(`new functionStates entries ${JSON.stringify(filestate.functionStates)}`);
-					// console.log(`>>>>>>>>>>>>>>>>>>>  ${JSON.stringify(extensionState.fileStates[filename].functionStates)}`);
-					// console.log(`===================  ${JSON.stringify(extensionState.fileStates[filename].functionStates[functionName])}`);
-					doSelectFunctionCommand({
-						key: functionName,
-						label: ''
+			watcher.onDidDelete((e) => {
+				const filepath = e.fsPath;
+				const maybeSpecimenId = path.basename(filepath).substring(0, '.json'.length);
+				if (isSpecimenId(maybeSpecimenId)) {
+					//	TODO: does deleting the file mean we should delete the specimen?  or just mark it not persistent?
+					delete extensionState.specimens[maybeSpecimenId];
+				}
+			});
+
+			//	do this *after* the watcher is set up to avoid missing any additions
+			//	TODO: might miss some deletions
+			const initialPersistentSpecimens = loadPersistedSpecimens(conf?.testsDirectory);
+			initialPersistentSpecimens.forEach((specimental, id) => {
+				extensionState.specimens[id] = specimental;
+			});
+		}
+
+		//	TODO: if there's an open editor when the extension is activated, select that file
+		// const extensionState: ExtensionState = context.workspaceState.get(autotestStorageStateKey) ?? {
+		// 	fileStates: {},
+		// 	specimens: {},
+		// };
+		const extensionState: ExtensionState = {
+			fileStates: {},
+			specimens: {},
+		};
+		if (extensionState.specimens === undefined) {
+			//	TODO: this probably shouldn't happen; is this because Map doesn't stringify?
+			extensionState.specimens = {};
+		}
+
+		//	TODO: Refresh functions list view contents on change of editor
+		const functionsListProvider = new CommonTreeDataProvider({
+			command: {
+				command: 'extension.shatterSelectFunction',
+				title: 'Functions',
+			}
+		});
+		context.subscriptions.push(
+			vscode.window.registerTreeDataProvider("shatter-functions-list", functionsListProvider));
+
+		const clustersListProvider = new CommonTreeDataProvider({
+			command: {
+				command: 'extension.shatterSelectCluster',
+				title: 'Execution Paths',
+			}
+		});
+		context.subscriptions.push(
+			vscode.window.registerTreeDataProvider("shatter-execution-paths", clustersListProvider));
+
+		const testCaseListProvider = new CommonTreeDataProvider({
+			command: {
+				command: 'extension.shatterSelectTestCase',
+				title: 'Test Case Detail',
+			},
+			stateIcons: {
+				'pinned': '../../resources/pin.svg',
+				'unpinned': '../../../resources/unpin.svg',
+			}
+		});
+		context.subscriptions.push(
+			vscode.window.registerTreeDataProvider("shatter-list-testcases", testCaseListProvider));
+
+		const testCaseDetailProvider = new CommonTreeDataProvider({
+			stateIcons: {
+				persistent: 'media/pin.svg',
+			}
+		});
+		context.subscriptions.push(
+			vscode.window.registerTreeDataProvider("shatter-testcase-detail", testCaseDetailProvider));
+
+		const providers = {
+			functionsListProvider,
+			clustersListProvider,
+			testCaseListProvider,
+			testCaseDetailProvider,
+		};
+
+		const updateSelectedFile = () => {
+			//	_filename and filename should be the same
+			const filename = vscode.window.activeTextEditor?.document.fileName;
+			if (!filename) {
+				//	TODO: clear functions list
+				return;
+			}
+			doSelectFile(vscode.window.activeTextEditor, extensionState, filename, providers);
+		};
+
+		//	call after switching files, changing contents of the editor, or running tests
+		const doSelectFunctionCommand = (node: CommonDisplayNode) => {
+			if (vscode.window.activeTextEditor) {
+				const functionName: string = node.key || "";
+				doSelectFunction(vscode.window.activeTextEditor, extensionState, providers, functionName);
+			}
+		};
+
+		const doSelectClusterCommand = (node: CommonDisplayNode) => {
+			if (vscode.window.activeTextEditor) {
+				const selection: CoverageSelection | undefined = (() => {
+					if (node.key) {
+						if (node.key.startsWith('cluster://')) {
+							const clusterKey = node.key.substring('cluster://'.length);
+							return { clusterKeys: [clusterKey] };
+						}
+						if (node.key === 'covered://') {
+							return 'all';
+						}
+						if (node.key === 'missed://') {
+							return 'missed';
+						}
+						throw new Error(`unhandled key ${node.key}`);
+					}
+				})();
+				if (selection) {
+					doSelectCluster(vscode.window.activeTextEditor, extensionState, providers, selection);
+				}
+			}
+		};
+
+		const doSelectTestCaseCommand = (node: CommonDisplayNode) => {
+			if (vscode.window.activeTextEditor) {
+				const specimenId: string = node.key || "";
+				doSelectTestCase(vscode.window.activeTextEditor, extensionState, providers, specimenId);
+			}
+		};
+
+		//	needs to be registered as a command because TreeView needs a command to dispatch to
+		const selectFunctionCommand = vscode.commands.registerCommand('extension.shatterSelectFunction', doSelectFunctionCommand);
+		context.subscriptions.push(selectFunctionCommand);
+
+		//	needs to be registered as a command because TreeView needs a command to dispatch to
+		const selectClusterCommand = vscode.commands.registerCommand('extension.shatterSelectCluster', doSelectClusterCommand);
+		context.subscriptions.push(selectClusterCommand);
+
+		//	needs to be registered as a command because TreeView needs a command to dispatch to
+		const selectTestCaseCommand = vscode.commands.registerCommand('extension.shatterSelectTestCase', doSelectTestCaseCommand);
+		context.subscriptions.push(selectTestCaseCommand);
+
+		/*
+		
+		generated test case:
+		* user clicks pin - saves it to specified location (TODO: add it to the working tree)
+		* user clicks unpin - deletes it from the specified location (TODO: remove it from the working tree)
+		* user clicks edit - IF a non-custom test case, ask for a name, save it to the specified location, and open an editor for that file
+		* user clicks add - ask for a name, create an empty file, open an editor
+		
+		TODO: Editor should be able to match parameter type structure with autocomplete and validation.  Custom language server based on function and signature?
+		
+		//	where to track test case persistence?
+		
+		*/
+
+		const makeTestCasePersistentCommand = vscode.commands.registerCommand('extension.shatterMakeTestcasePersistent', async (node: CommonDisplayNode) => {
+			//	if the test case is not persistent, save it to the location specified in the configuration
+			const specimenId = node.key;
+			if (!isSpecimenId(specimenId)) {
+				return;
+			}
+
+			const specimental = extensionState.specimens[specimenId];
+			if (!specimental || specimental.relativePath) {	//	already persisted
+				return;
+			}
+
+			const conf = await readProjectConfiguration();
+			if (conf) {
+
+				const testCaseType = specimental.specimen.id.startsWith('custom') ? 'custom' : 'autotest';
+
+				saveTest(conf?.testsDirectory, specimental.specimen.fileUnderTest, testCaseType, specimental.specimen.functionName, specimental.specimen);
+			}
+		});
+		context.subscriptions.push(makeTestCasePersistentCommand);
+
+		const makeTestcaseNotPersistentCommand = vscode.commands.registerCommand('extension.shatterMakeTestcaseNonPersistent', async (node: CommonDisplayNode) => {
+			const specimenId = node.key;
+			if (!isSpecimenId(specimenId)) {
+				return;
+			}
+
+			const specimental = extensionState.specimens[specimenId];
+			if (!specimental || !specimental.relativePath) {	//	already persisted
+				return;
+			}
+
+			const fileUri =vscode.Uri.file(context.asAbsolutePath(specimental.relativePath));
+			await vscode.workspace.fs.delete(fileUri);
+		});
+		context.subscriptions.push(makeTestcaseNotPersistentCommand);
+
+		const editTestCaseCommand = vscode.commands.registerCommand('extension.shatterEditCustomTestcase', async (node: CommonDisplayNode) => {
+			const specimenId = node.key;
+			if (!specimenId) {
+				return;
+			}
+
+			const filepath = await (async () => {
+				//	if it's a generated specimen, fork to a custom specimen
+				const specimental = extensionState.specimens[specimenId];
+				if (!specimental) {
+					return;
+				}
+				if (specimenId.startsWith('custom')) {
+					return specimental.specimen.fileUnderTest;
+				}
+			})();
+
+			if (filepath && vscode.window.activeTextEditor) {
+				if (fs.existsSync(filepath)) {
+					vscode.workspace.openTextDocument(filepath).then((doc) => {
+						vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
+					});
+				} else {
+					vscode.window.showErrorMessage(`Test case ${filepath} does not exist.`);
+				}
+			}
+		});
+		context.subscriptions.push(editTestCaseCommand);
+
+		const forkTestCaseCommand = vscode.commands.registerCommand('extension.shatterForkAutoTestcase', async (node: CommonDisplayNode) => {
+			const specimenId = node.key;
+			if (!specimenId) {
+				return;
+			}
+
+			const filepath = await (async () => {
+				//	if it's a generated specimen, fork to a custom specimen
+				const specimental = extensionState.specimens[specimenId];
+				if (!specimental) {
+					return;
+				}
+				if (specimenId.startsWith('custom')) {
+					//	TODO: error
+					return;
+				}
+				//	ask for a name
+				//	copy to that name
+				const testCaseName = await vscode.window.showInputBox({
+					prompt: 'Enter a name for the test case',
+					placeHolder: 'Custom test case name',
+					//	TODO: make sure it's a valid filename; limit the possible values?
+					validateInput: (value) => value !== undefined && value.trim().length > 0 ? undefined : 'Please enter a name for the test case',
+				});
+
+				if (!testCaseName) {
+					return;
+				}
+				const newId: SpecimenId = `custom-${testCaseName}`;
+				if (newId in extensionState.specimens) {
+					return;
+				}
+
+				if (conf) {
+					const forkedPath = forkTest(conf?.testsDirectory, specimental.specimen.fileUnderTest, specimental.specimen.functionName, specimental.specimen, `custom-${testCaseName}`);
+					extensionState.specimens[newId] = {
+						clusterKey: specimental.clusterKey,
+						relativePath: forkedPath,
+						specimen: specimental.specimen,
+					};
+					return forkedPath;
+				}
+			})();
+
+			if (filepath && vscode.window.activeTextEditor) {
+				if (fs.existsSync(filepath)) {
+					vscode.workspace.openTextDocument(filepath).then((doc) => {
+						vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
+					});
+				} else {
+					vscode.window.showErrorMessage(`Test case ${filepath} does not exist.`);
+				}
+			}
+		});
+		context.subscriptions.push(forkTestCaseCommand);
+
+		context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(editor => {
+			if (editor?.document.fileName) {
+				updateSelectedFile();
+			}
+		}, null, context.subscriptions));
+
+		//	overkill to refresh on every change?  TODO: see if there's a performance hit; at least we want to regenerate the function list
+		context.subscriptions.push(vscode.workspace.onDidChangeTextDocument(event => {
+			const editor = vscode.window.activeTextEditor;
+			if (editor?.document.fileName) {
+				updateSelectedFile();
+			}
+		}, null, context.subscriptions));
+
+		//	TODO
+		vscode.workspace.onDidOpenTextDocument(document => { });
+		//	TODO: what to do when a document is closed?
+
+		//	TODO: fix the ugly hard-coding of 'src'; that can't be right for a standalone extension
+		//	TODO: just make people import shatterproof module in their projects; don't try to be magical about it
+		//	shatterproof needs an existence outside VSCode anyway
+		const extensionSource = join(context.extensionPath, 'src');
+		const autotestFromEditorContextMenu = await vscode.commands.registerCommand('extension.shatterAutotestFromEditorContextMenu', async () => {
+			const editor = vscode.window.activeTextEditor;
+
+			if (editor && editor.document.languageId === 'typescript') {
+				const selection = editor.selection;
+				const cursorPosition = selection.active;
+				const document = editor.document;
+
+				const functionMeta = getFunctionNodeAtCursor(cursorPosition, document);
+				if (functionMeta) {
+					const functionName = functionMeta.name;
+					if (!functionName) {
+						throw new Error(`Top level anonymous functions are not supported`);
+					}
+					const absoluteFilename = context.asAbsolutePath(document.fileName);
+					await autotestFunction(absoluteFilename, functionName);
+				} else {
+					vscode.window.showErrorMessage('Select a function or place the cursor inside a function.');
+				}
+			}
+		});
+		context.subscriptions.push(autotestFromEditorContextMenu);
+		
+		const autotestFromFunctionViewContainerMenu = vscode.commands.registerCommand('extension.shatterAutotestFromFunctionViewContainer', (item) => {
+			const filename = vscode.window.activeTextEditor?.document.fileName ?? extensionState.activeFile;
+			if (!filename) {
+				//	TODO: is this a reasonable situation?
+				return;
+			}
+			
+			const absoluteFilename = context.asAbsolutePath(filename);
+			autotestFunction(absoluteFilename, item.key);
+		});
+		context.subscriptions.push(autotestFromFunctionViewContainerMenu);
+
+		// vscode.languages.registerCodeActionsProvider(
+		// 	{ scheme: 'file', language: 'typescript' },
+		// 	{
+		// 		provideCodeActions: (document, range) => {
+		// 			console.log(`provideCodeActions called`);
+		// 			return [
+		// 				{
+		// 					command: 'extension.shatterAutotestContextFromEditor',
+		// 					title: 'Shatter Autotest',
+		// 					tooltip: 'Generate autotest for selected function',
+		// 				},
+		// 			];
+		// 		},
+		// 	}
+		// );
+
+		const retestCommand = await vscode.commands.registerCommand('extension.shatterRetestFromEditorContextMenu', async () => {
+			console.log(`there was an attempt`);
+		});
+		context.subscriptions.push(retestCommand);
+
+		const retestContextMenu = vscode.commands.registerCommand('extension.shatterRetestFromFunctionViewContainer', () => {
+			console.log(`there was an attempt`);
+		});
+		context.subscriptions.push(retestContextMenu);
+
+		const shatterAddTestcase = vscode.commands.registerCommand('extension.shatterAddTestcase', () => {
+			console.log(`there was an attempt`);
+		});
+		context.subscriptions.push(shatterAddTestcase);
+
+		// vscode.languages.registerCodeActionsProvider(
+		// 	{ scheme: 'file', language: 'typescript' },
+		// 	{
+		// 		provideCodeActions: (document, range) => {
+		// 			console.log(`provideCodeActions called`);
+		// 			return [
+		// 				{
+		// 					command: 'extension.shatterRetestContext',
+		// 					title: 'Shatter Retest',
+		// 					tooltip: 'Retest selected function',
+		// 				},
+		// 			];
+		// 		},
+		// 	}
+		// );
+
+
+		if (vscode.window.activeTextEditor) {
+			updateSelectedFile();
+		}
+
+		//	TODO: some sort of status display during execution
+		//	TODO: show the sidebar when running
+		async function autotestFunction(absoluteFilename: string, functionName: string) {
+			const allTsConfigs: string[] = [];
+			const allPackageJsons: string[] = [];
+			const allNodeModules: string[] = [];
+			const allWorkspaceFolders: string[] = [];
+
+			const editor = vscode.window.activeTextEditor;
+			if (editor) {
+				vscode.workspace.workspaceFolders?.forEach((folder) => {
+					//	TODO: do we know whether the path is already absolute always?
+					const absoluteFolderPath = context.asAbsolutePath(folder.uri.path);
+					const found = findFilesInHierarchy(editor.document.fileName, absoluteFolderPath, {
+						tsconfig: (absoluteFilename, stat) => absoluteFilename.endsWith('tsconfig.json') && stat.isFile(),
+						packageJson: (absoluteFilename, stat) => absoluteFilename.endsWith('package.json') && stat.isFile(),
+						nodeModules: (absoluteFilename, stat) => absoluteFilename.endsWith('node_modules') && stat.isDirectory(),
 					});
 
-					results.clusters.forEach((cluster) => {
-						cluster.specimens.forEach((specimen) => {
-							const existing = extensionState.specimens.get(specimen.id);
-							extensionState.specimens.set(specimen.id, {
-								...existing,
-								clusterKey: cluster.key,
-								specimen,
+					allTsConfigs.push(...(found.tsconfig || []));
+					allPackageJsons.push(...(found.packageJson || []));
+					allNodeModules.push(...(found.nodeModules || []));
+					allWorkspaceFolders.push(folder.uri.fsPath);
+				});
+			}
+
+			const modulePaths = [...allWorkspaceFolders, ...allNodeModules];
+
+			console.log(`BEGIN THE AUTOTEST of ${functionName} in ${absoluteFilename}`);
+
+			extensionState.activeCoverage = undefined;
+			extensionState.activeSpecimenId = undefined;
+			for (const provider of Object.values(providers)) {
+				provider.refresh([]);
+			}
+
+			vscode.commands.executeCommand("shatter-execution-paths.focus");
+			try {
+				extensionState.runningAutotestFunction = functionName;
+
+				const absoluteStorageBaseDirectory = context.storageUri?.fsPath ? context.asAbsolutePath(context.storageUri.fsPath) : undefined;
+				await shatterAutotest(modulePaths,
+					absoluteFilename,
+					absoluteStorageBaseDirectory,
+					functionName, (results: AutotestResults) => {
+						extensionState.activeFile = absoluteFilename;
+						let filestate: FileState | undefined = extensionState.fileStates[absoluteFilename];
+						if (!filestate) {
+							const functions = findFunctions(absoluteFilename);
+							filestate = {
+								functions,
+								functionStates: {},
+							};
+							extensionState.fileStates[absoluteFilename] = filestate;
+						}
+						const functionState: FunctionState = {
+							autotest: results,
+						};
+						filestate.functionStates[functionName] = functionState;
+
+						// console.log(`refreshing function node to display = ${functionName} in ${filename}`);
+						// console.log(`keys ${JSON.stringify(Array.from(Object.keys(filestate.functionStates) ?? []))} => ${JSON.stringify(functionState)}`);
+						// console.log(`new functionStates entries ${JSON.stringify(filestate.functionStates)}`);
+						// console.log(`>>>>>>>>>>>>>>>>>>>  ${JSON.stringify(extensionState.fileStates[filename].functionStates)}`);
+						// console.log(`===================  ${JSON.stringify(extensionState.fileStates[filename].functionStates[functionName])}`);
+						doSelectFunctionCommand({
+							key: functionName,
+							label: ''
+						});
+
+						results.clusters.forEach((cluster) => {
+							cluster.specimens.forEach((specimen) => {
+								const existing = extensionState.specimens[specimen.id];
+								extensionState.specimens[specimen.id] = {
+									...existing,
+									clusterKey: cluster.key,
+									specimen,
+								};
 							});
 						});
-					});
-				}, { shatterproofModuleOverride: extensionSource });
-			console.log("END THE AUTOTEST");
-			context.workspaceState.update(autotestStorageStateKey, extensionState);
-			refresh(editor, extensionState, providers);
-		} finally {
-			extensionState.runningAutotestFunction = undefined;
+					}, { shatterproofModuleOverride: extensionSource });
+				console.log("END THE AUTOTEST");
+				context.workspaceState.update(autotestStorageStateKey, extensionState);
+				refresh(editor, extensionState, providers);
+			} finally {
+				extensionState.runningAutotestFunction = undefined;
+			}
 		}
+	} catch (e) {
+		console.error(`Unable to load extension ${e}`);
 	}
 }
 
@@ -1037,7 +1120,6 @@ function getFunctionNodeAtCursor(cursorPosition: vscode.Position, document: vsco
 	if (name) {
 		return {
 			name,
-			node: f as ts.FunctionDeclaration,
 			startLine: f.getStart(),
 			endLine: f.getEnd(),
 		};
@@ -1103,42 +1185,45 @@ class CommonTreeDataProvider implements vscode.TreeDataProvider<CommonDisplayNod
 		if (this.options?.stateIcons && element.state) {
 			treeItem.iconPath = this.options.stateIcons[element.state];
 		}
+		treeItem.contextValue = element.contextValue;
 		return treeItem;
 	}
 }
 
 function findFilesInHierarchy<K extends string>(
-	filename: string,
-	rootDirectory: string,
+	absoluteFilename: string,
+	absoluteRootDirectory: string,
 	matchers: Record<K, (filename: string, stat: fs.Stats) => boolean>,
 ): Partial<Record<K, string[]>> {
 	const foundFiles: Partial<Record<K, string[]>> = {};
 
-	let currentDir = path.dirname(filename);
-	while (currentDir !== rootDirectory) {
-		fs.readdirSync(currentDir).forEach((file) => {
-			const fullPath = path.join(currentDir, file);
-			const stat = fs.statSync(fullPath);
+	let absoluteCurrentDir = path.dirname(absoluteFilename);
+	while (absoluteCurrentDir !== absoluteRootDirectory) {
+		fs.readdirSync(absoluteCurrentDir).forEach((file) => {
+			const absoluteFullPath = path.join(absoluteCurrentDir, file);
+			const stat = fs.statSync(absoluteFullPath);
 			for (const key of Object.keys(matchers)) {
 				const k: keyof typeof foundFiles = key as any;
 				const matcher = matchers[k];
 
-				const matches = matcher(fullPath, stat);
+				const matches = matcher(absoluteFullPath, stat);
 				if (matches) {
 					if (!(key in foundFiles)) {
 						foundFiles[k] = [];
 					}
-					foundFiles[k]?.push(fullPath);
+
+					const workspaceRelativePath = vscode.workspace.asRelativePath(absoluteFullPath);
+					foundFiles[k]?.push(workspaceRelativePath);
 				}
 			}
 		});
 
-		const parentDir = path.dirname(currentDir);
-		if (parentDir === currentDir) {
+		const parentDir = path.dirname(absoluteCurrentDir);
+		if (parentDir === absoluteCurrentDir) {
 			break;
 		}
 
-		currentDir = parentDir;
+		absoluteCurrentDir = parentDir;
 	}
 
 	return foundFiles;

@@ -42,13 +42,19 @@
         "icon": "resources/pin.svg"
       },
       {
-        "command": "extension.shatterEditTestcase",
+        "command": "extension.shatterForkAutoTestcase",
+        "title": "Fork test case",
+        "icon": "resources/fork.svg"
+      },
+      {
+        "command": "extension.shatterEditCustomTestcase",
         "title": "Edit test case",
         "icon": "resources/edit.svg"
       },
       {
         "command": "extension.shatterAddTestcase",
-        "title": "Add test case"
+        "title": "Add test case",
+        "icon": "resources/add.svg"
       }
     ],
     "menus": {
@@ -83,8 +89,13 @@
           "group": "navigation@2"
         },
         {
-          "command": "extension.shatterEditTestcase",
-          "when": "view == shatter-list-testcases",
+          "command": "extension.shatterEditCustomTestcase",
+          "when": "view == shatter-list-testcases && viewItem == custom",
+          "group": "navigation@3"
+        },
+        {
+          "command": "extension.shatterForkAutoTestcase",
+          "when": "view == shatter-list-testcases && viewItem == auto",
           "group": "navigation@3"
         },
         {
@@ -93,18 +104,23 @@
           "group": "inline"
         },
         {
-          "command": "extension.shatterEditTestcase",
-          "when": "view == shatter-list-testcases",
+          "command": "extension.shatterEditCustomTestcase",
+          "when": "view == shatter-list-testcases && viewItem =~ /\bcustom\b/",
+          "group": "inline"
+        },
+        {
+          "command": "extension.shatterForkAutoTestcase",
+          "when": "view == shatter-list-testcases && viewItem =~ /\bauto\b/",
           "group": "inline"
         },
         {
           "command": "extension.shatterMakeTestcaseNonPersistent",
-          "when": "view == shatter-list-testcases && extension.selectedTestcaseIsPersistent",
+          "when": "view == shatter-list-testcases && viewItem =~ /\bpersistent\b/",
           "group": "inline"
         },
         {
           "command": "extension.shatterMakeTestcasePersistent",
-          "when": "view == shatter-list-testcases && !extension.selectedTestcaseIsPersistent",
+          "when": "view == shatter-list-testcases && !(viewItem =~ /\bpersistent\b/)",
           "group": "inline"
         }
       ]

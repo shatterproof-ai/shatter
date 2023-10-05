@@ -194,6 +194,9 @@ export class Supervisor {
         const start = Date.now();
         process.env.MAIN_PROCESS = '1';
 
+        //  TODO: use NODE_V8_COVERAGE: https://nodejs.org/api/cli.html#node_v8_coveragedir
+        //  NODE_V8_COVERAGE may not have line level coverage: https://v8.dev/blog/javascript-code-coverage
+
         //  support in-band execution for simpler debugging and viewing of output
         //  (TODO: figure out how to capture worker stdout and stderr)
         if (this.inBand) {

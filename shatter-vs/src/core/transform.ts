@@ -54,7 +54,6 @@ const thenCanReturn = (node: ts.Statement | ts.Block): boolean => {
 
 export interface FunctionMeta {
     name: string;
-    node: ts.FunctionDeclaration;
     startLine: number;
     endLine: number;
 }
@@ -82,7 +81,6 @@ export const findFunctions = (sourceFileName: string): FunctionMeta[] => {
             }
             functions.push({
                 name: node.name.text,
-                node,
                 startLine: ts.getLineAndCharacterOfPosition(sourceFile, node.pos).line,
                 endLine: ts.getLineAndCharacterOfPosition(sourceFile, node.end).line,
             });
@@ -106,9 +104,11 @@ export const findFunctions = (sourceFileName: string): FunctionMeta[] => {
     return functions;
 };
 
+
 //  TODO: replace all of this with something off the shelf e.g. Istanbul or Babel
 //  https://github.com/istanbuljs/istanbuljs/tree/master/packages/istanbul-lib-instrument
 //  TODO: instrument every line because every line could throw an exception and thus be a branch
+//  TODO: take note of throws clauses in the tested code to distinguish between intentional error throwing (e.g. validation) and errors that may indicate bugs
 export const createInstrumenter = (introspectionContext: IntrospectionContext, shatterproofModuleOverride?: string) => {
     return (ctx: ts.TransformationContext) => (sourceFile: SourceFile): SourceFile => {
         var _uselessSourceMap = new SourceMapGenerator({
