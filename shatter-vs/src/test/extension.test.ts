@@ -1,12 +1,12 @@
 import { mkdtempSync, open, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { basename, dirname, join } from 'path';
 
 import { faker } from '@faker-js/faker';
 import * as ts from 'typescript';
 import { shatterAutotest } from "../core/shatter";
 import { stringFakerses, optionVariantsMedium } from '../core/seed';
-import { GeneratedParameter, extractGeneratedParameterValue } from '../core/common';
+import { AbsolutePath, GeneratedParameter, RelativePath, extractGeneratedParameterValue } from '../core/common';
 import { asyncs, finished, started } from '../core/util';
 import { isEnumType } from '../core/generator';
 namespace Nomen {
@@ -536,14 +536,34 @@ async function testThisCode(functionName: string, sourceCode: string, options: T
     const tempdir = mkdtempSync(join(tmpdir(), `shatter-test-${functionName}`));
     const testfile = join(tempdir, 'index.ts');
     writeFileSync(testfile, sourceCode);
-    return testThisFile(testfile, functionName, options, tempdir);
+    return testThisFile(testfile, functionName, options);
 }
 
-async function testThisFile(testfile: string, functionName: string, options: TestOptions, tempdir?: string) {
+async function testThisFile(testfile: string, functionName: string, options: TestOptions) {
     const modulePaths = process.env.NODE_ENV?.split(':') ?? [];
 
     const shatterproofModuleOverride = "/home/ketan/project/shatter/shatter-vs/src";
-    const { executed, instrumented, clusters } = await shatterAutotest(modulePaths, testfile, tempdir, functionName, (clusters) => {
+    /*
+async function shatterAutotestt(modulePaths: string[],
+    projectRoot: AbsolutePath,
+    relativeSourceInputFile: RelativePath,
+    functionName: string,
+    onUpdate: (results: AutotestResults) => void,
+    options?: {
+        shatterproofModuleOverride?: string,
+        maxIterations?: number,
+        maxTime?: number,
+        inBand?: boolean,
+        maxWorkers?: number,
+    }
+) {
+
+
+
+    */
+    const projectRoot = dirname(testfile) as AbsolutePath;
+    const relativeFile: RelativePath = basename(testfile) as RelativePath;
+    const { executed, instrumented, clusters } = await shatterAutotest(modulePaths, projectRoot, relativeFile, functionName, (clusters) => {
         // console.log(`Received clusters ${JSON.stringify(clusters, null, 2)}`);
     }, { shatterproofModuleOverride, ...options });
 
@@ -970,7 +990,7 @@ describe('infinitue', () => {
 describe('complicated', () => {
     it('should pass', async () => {
         //  TODO: duh
-        const testfile = "/home/ketan/project/shatter/examples/typescript/src/query-creator.ts";
+        const testfile: AbsolutePath = "/home/ketan/project/shatter/examples/typescript/src/query-creator.ts";
         // const testfile = "/home/ketan/project/shatter/examples/typescript/src/query-creator-short.ts";
         const functionName = "constructSearchQuery";
         await testThisFile(testfile, functionName, { maxIterations: 500, maxTime: 10_000 });

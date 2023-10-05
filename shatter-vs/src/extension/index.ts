@@ -3,7 +3,7 @@ import * as path from 'path';
 import { join } from 'path';
 import * as ts from 'typescript';
 import * as vscode from 'vscode';
-import { Specimen, SpecimenId, isSpecimenId } from '../core/common';
+import { AbsolutePath, RelativePath, Specimen, SpecimenId, isAbsolutePath, isRelativePath, isSpecimenId, joinAbsolute } from '../core/common';
 import { AutotestResults, Specimental, forkTest, loadPersistedSpecimens, saveTest, shatterAutotest } from '../core/shatter';
 import { Outcome } from '../core/supervisor';
 import { FunctionMeta, findFunctions } from '../core/transform';
@@ -69,9 +69,9 @@ type CoverageSelection = 'all'
 
 interface ExtensionState {
 	runningAutotestFunction?: string;
-	fileStates: Record<string, FileState>;	//	Record because Map is not serializable
+	fileStates: Record<AbsolutePath, FileState>;	//	Record because Map is not serializable
 	//	this overlaps some with specimens, but it doesn't load the contents	
-	activeFile?: string;
+	activeFile?: AbsolutePath;
 	activeFunction?: string;
 	activeCoverage?: CoverageSelection;
 	activeSpecimenId?: string;
@@ -113,7 +113,15 @@ function resetDecorations(editor: vscode.TextEditor) {
 	editor.setDecorations(missedDecorationType, []);
 }
 
-const refresh = (editor: vscode.TextEditor | undefined, extensionState: ExtensionState, providers: Providers) => {
+function asAbsolutePath(context: vscode.ExtensionContext, filename: RelativePath): AbsolutePath {
+	return context.asAbsolutePath(filename) as AbsolutePath;
+}
+
+function asRelativePath(filename: AbsolutePath): RelativePath {
+	return vscode.workspace.asRelativePath(filename) as RelativePath;
+}
+
+const refresh = (editor: vscode.TextEditor | undefined, extensionState: ExtensionState, providers: Providers, conf?: ProjectConfiguration) => {
 	const { functionsListProvider, clustersListProvider, testCaseListProvider, testCaseDetailProvider } = providers;
 
 	const filename = extensionState.activeFile;
@@ -323,7 +331,7 @@ const refresh = (editor: vscode.TextEditor | undefined, extensionState: Extensio
 		const parametersNode = {
 			label: shortString(result.serializedParameterValues),
 			key: result.specimenId,
-			state: specimental?.relativePath ? 'pinned' : 'unpinned',
+			state: specimental?.relativePath && conf?.testsDirectory ? 'pinned' : 'unpinned',
 			contextValue: contextPieces.join(','),
 		};
 		return parametersNode;
@@ -375,7 +383,7 @@ const refresh = (editor: vscode.TextEditor | undefined, extensionState: Extensio
 	testCaseDetailProvider.refresh(testCaseNodes);
 };
 
-const doSelectFunction = (editor: vscode.TextEditor, extensionState: ExtensionState, providers: Providers, functionName: string) => {
+const doSelectFunction = (editor: vscode.TextEditor, extensionState: ExtensionState, providers: Providers, functionName: string, conf?: ProjectConfiguration) => {
 	if (!extensionState.activeFile) {
 		//	TODO: shouldn't happen
 		return;
@@ -394,11 +402,11 @@ const doSelectFunction = (editor: vscode.TextEditor, extensionState: ExtensionSt
 		extensionState.activeCoverage = undefined;
 		extensionState.activeFunction = undefined;
 	}
-	refresh(editor, extensionState, providers);
+	refresh(editor, extensionState, providers, conf);
 };
 
-const doSelectCluster = (editor: vscode.TextEditor, extensionState: ExtensionState, providers: Providers,
-	coverage: CoverageSelection) => {
+const doSelectCluster = (editor: vscode.TextEditor, context: vscode.ExtensionContext, extensionState: ExtensionState, providers: Providers,
+	coverage: CoverageSelection, conf?: ProjectConfiguration) => {
 	if (!extensionState.activeFile) {
 		//	TODO: shouldn't happen
 		return;
@@ -429,11 +437,11 @@ const doSelectCluster = (editor: vscode.TextEditor, extensionState: ExtensionSta
 	}
 
 	extensionState.activeCoverage = coverage;
-	refresh(editor, extensionState, providers);
+	refresh(editor, extensionState, providers, conf);
 };
 
-const doSelectTestCase = (editor: vscode.TextEditor, extensionState: ExtensionState, providers: Providers,
-	specimenId: string) => {
+const doSelectTestCase = (editor: vscode.TextEditor, context: vscode.ExtensionContext, extensionState: ExtensionState, providers: Providers,
+	specimenId: string, conf?: ProjectConfiguration) => {
 	if (!extensionState.activeFile) {
 		return;
 	}
@@ -463,7 +471,7 @@ const doSelectTestCase = (editor: vscode.TextEditor, extensionState: ExtensionSt
 	}
 
 	extensionState.activeSpecimenId = specimenId;
-	refresh(editor, extensionState, providers);
+	refresh(editor, extensionState, providers, conf);
 };
 
 function highlightLinesInEditor(editor: vscode.TextEditor | undefined, decorationType: vscode.TextEditorDecorationType, liner: Generator<number, void, unknown>) {
@@ -490,29 +498,61 @@ function highlightLinesInEditor(editor: vscode.TextEditor | undefined, decoratio
 }
 
 interface ProjectConfiguration {
-	testsDirectory: string;	//	RELATIVE to the project root
+	testsDirectory?: RelativePath;	//	RELATIVE to the project root
 }
 
-async function readProjectConfiguration() {
+interface ProjectConfigurationHolder {
+	configuration?: ProjectConfiguration;
+}
+
+async function readProjectConfiguration(): Promise<ProjectConfigurationHolder> {
+
 	const matches = await vscode.workspace.findFiles('shatterproof.json', '**/node_modules/**', 1);
 
 	for (const fileUri of matches) {
 		try {
 			const fileStat = await vscode.workspace.fs.stat(fileUri);
 			if (fileStat) {
-				return vscode.workspace.fs.readFile(fileUri)
-					.then((contentsInts) => {
-						const contents = Buffer.from(contentsInts).toString('utf8');
-						try {
-							const pc = JSON.parse(contents);
-							if ('testsDirectory' in pc) {
-								return pc as ProjectConfiguration;
+				const relativePath = vscode.workspace.asRelativePath(fileUri);
+				const pattern = new vscode.RelativePattern(path.dirname(relativePath), 'shatterproof.json');
+
+				const holder: ProjectConfigurationHolder = {};
+				function loadConfiguration() {
+					return vscode.workspace.fs.readFile(fileUri)
+						.then((contentsInts) => {
+							const contents = Buffer.from(contentsInts).toString('utf8');
+							try {
+								const pc = JSON.parse(contents);
+								if ('testsDirectory' in pc) {
+									if (isRelativePath(pc.testsDirectory)) {
+										return {
+											configuration: {
+												testsDirectory: pc.testsDirectory,
+											}
+										};
+									}
+
+									return {
+										configuration: {
+											testsDirectory: vscode.workspace.asRelativePath(pc.testsDirectory),
+										}
+									};
+								}
+							} catch (e) {
+								//	TODO: handle error
+								const ee = e;
 							}
-						} catch (e) {
-							//	TODO: handle error
-							const ee = e;
-						}
-					});
+							return {};
+						});
+				}
+
+				const watcher = vscode.workspace.createFileSystemWatcher(pattern, false, false, false);
+
+				//	DO NOT want to support this file changing at least while it only has the path for the tests directory
+				// watcher.onDidChange(loadConfiguration);
+				// watcher.onDidDelete(_ => { holder.configuration = undefined; });
+
+				return loadConfiguration();
 			}
 		} catch (e) {
 			//	throws an error if the file doesn't exist; there's no simple existence check
@@ -529,15 +569,17 @@ async function readProjectConfiguration() {
 			const ee = e;
 		}
 	}
+
+	return {};
 }
 
-function editTestCase(filename: string, functionName: string, testCase: string) {
+function editTestCase(context: vscode.ExtensionContext, filename: RelativePath, functionName: string, testCase: string) {
 	const uri = vscode.Uri.file(filename);
 	vscode.workspace.openTextDocument(uri)
 		.then((doc) => {
 			vscode.window.showTextDocument(doc)
 				.then((editor) => {
-					const functions = findFunctions(filename);
+					const functions = findFunctions(asAbsolutePath(context, filename));
 					const selectedFunction = functions.find((f) => f.name === functionName);
 					if (!selectedFunction) {
 						return;
@@ -561,16 +603,18 @@ How to select test cases?  Per function, per cluster, per test case
 
 const autotestStorageStateKey = "autotestState";
 export async function activate(context: vscode.ExtensionContext) {
+	const workspaceRoots: AbsolutePath[] = vscode.workspace.workspaceFolders?.map((f) => context.asAbsolutePath(f.uri.fsPath) as AbsolutePath) ?? [];
+	const defaultWorkspaceRoot: AbsolutePath | undefined = workspaceRoots[0];
 	try {
 		const specimenClusters = new Map<SpecimenId, string>();
-		const conf = await readProjectConfiguration();
-		if (conf) {
+		const confHolder = await readProjectConfiguration();
+		if (confHolder.configuration) {
 			//	NOTE: this watcher is using a different API than listPersistedSpecimens because
 			//	the latter is meant to be independent of VS Code
 			const ignoreCreate = false;
 			const ignoreChange = true;
 			const ignoreDelete = false;
-			const watcher = vscode.workspace.createFileSystemWatcher(`${conf.testsDirectory}/**/*.json`, ignoreCreate, ignoreChange, ignoreDelete);
+			const watcher = vscode.workspace.createFileSystemWatcher(`${confHolder.configuration.testsDirectory}/**/*.json`, ignoreCreate, ignoreChange, ignoreDelete);
 			watcher.onDidCreate((e) => {
 				const filepath = e.fsPath;
 				const maybeSpecimenId = path.basename(filepath).substring(0, '.json'.length);
@@ -595,7 +639,8 @@ export async function activate(context: vscode.ExtensionContext) {
 
 			//	do this *after* the watcher is set up to avoid missing any additions
 			//	TODO: might miss some deletions
-			const initialPersistentSpecimens = loadPersistedSpecimens(conf?.testsDirectory);
+			const initialPersistentSpecimens = confHolder.configuration?.testsDirectory && workspaceRoots?.[0]
+				? loadPersistedSpecimens(joinAbsolute(defaultWorkspaceRoot, confHolder.configuration.testsDirectory)) : [];
 			initialPersistentSpecimens.forEach((specimental, id) => {
 				extensionState.specimens[id] = specimental;
 			});
@@ -669,14 +714,14 @@ export async function activate(context: vscode.ExtensionContext) {
 				//	TODO: clear functions list
 				return;
 			}
-			doSelectFile(vscode.window.activeTextEditor, extensionState, filename, providers);
+			doSelectFile(vscode.window.activeTextEditor, context, extensionState, asRelativePath(filename as AbsolutePath), providers);
 		};
 
 		//	call after switching files, changing contents of the editor, or running tests
 		const doSelectFunctionCommand = (node: CommonDisplayNode) => {
 			if (vscode.window.activeTextEditor) {
 				const functionName: string = node.key || "";
-				doSelectFunction(vscode.window.activeTextEditor, extensionState, providers, functionName);
+				doSelectFunction(vscode.window.activeTextEditor, extensionState, providers, functionName, confHolder.configuration);
 			}
 		};
 
@@ -698,7 +743,7 @@ export async function activate(context: vscode.ExtensionContext) {
 					}
 				})();
 				if (selection) {
-					doSelectCluster(vscode.window.activeTextEditor, extensionState, providers, selection);
+					doSelectCluster(vscode.window.activeTextEditor, context, extensionState, providers, selection, confHolder.configuration);
 				}
 			}
 		};
@@ -706,7 +751,7 @@ export async function activate(context: vscode.ExtensionContext) {
 		const doSelectTestCaseCommand = (node: CommonDisplayNode) => {
 			if (vscode.window.activeTextEditor) {
 				const specimenId: string = node.key || "";
-				doSelectTestCase(vscode.window.activeTextEditor, extensionState, providers, specimenId);
+				doSelectTestCase(vscode.window.activeTextEditor, context, extensionState, providers, specimenId, confHolder.configuration);
 			}
 		};
 
@@ -749,11 +794,11 @@ export async function activate(context: vscode.ExtensionContext) {
 			}
 
 			const conf = await readProjectConfiguration();
-			if (conf) {
+			if (confHolder.configuration?.testsDirectory) {
 
 				const testCaseType = specimental.specimen.id.startsWith('custom') ? 'custom' : 'autotest';
 
-				saveTest(conf?.testsDirectory, specimental.specimen.fileUnderTest, testCaseType, specimental.specimen.functionName, specimental.specimen);
+				saveTest(confHolder.configuration?.testsDirectory, specimental.specimen.fileUnderTest, testCaseType, specimental.specimen.functionName, specimental.specimen);
 			}
 		});
 		context.subscriptions.push(makeTestCasePersistentCommand);
@@ -769,7 +814,7 @@ export async function activate(context: vscode.ExtensionContext) {
 				return;
 			}
 
-			const fileUri =vscode.Uri.file(context.asAbsolutePath(specimental.relativePath));
+			const fileUri = vscode.Uri.file(context.asAbsolutePath(specimental.relativePath));
 			await vscode.workspace.fs.delete(fileUri);
 		});
 		context.subscriptions.push(makeTestcaseNotPersistentCommand);
@@ -836,8 +881,11 @@ export async function activate(context: vscode.ExtensionContext) {
 					return;
 				}
 
-				if (conf) {
-					const forkedPath = forkTest(conf?.testsDirectory, specimental.specimen.fileUnderTest, specimental.specimen.functionName, specimental.specimen, `custom-${testCaseName}`);
+				if (confHolder.configuration?.testsDirectory) {
+					//	    export function forkTest(storageBaseDirectory: AbsolutePath, sourceFileUnderTestPath: RelativePath, functionName: string, baseSpecimen: Specimen, testCaseName: SpecimenId) {
+
+					const testsAbsolutePath = joinAbsolute(defaultWorkspaceRoot, confHolder.configuration.testsDirectory);
+					const forkedPath = forkTest(testsAbsolutePath, specimental.specimen.fileUnderTest, specimental.specimen.functionName, specimental.specimen, `custom-${testCaseName}`);
 					extensionState.specimens[newId] = {
 						clusterKey: specimental.clusterKey,
 						relativePath: forkedPath,
@@ -895,24 +943,24 @@ export async function activate(context: vscode.ExtensionContext) {
 					if (!functionName) {
 						throw new Error(`Top level anonymous functions are not supported`);
 					}
-					const absoluteFilename = context.asAbsolutePath(document.fileName);
-					await autotestFunction(absoluteFilename, functionName);
+					const relativeFileUnderTest: RelativePath = `./${vscode.workspace.asRelativePath(document.fileName)}`;
+					await autotestFunction(relativeFileUnderTest, functionName);
 				} else {
 					vscode.window.showErrorMessage('Select a function or place the cursor inside a function.');
 				}
 			}
 		});
 		context.subscriptions.push(autotestFromEditorContextMenu);
-		
+
 		const autotestFromFunctionViewContainerMenu = vscode.commands.registerCommand('extension.shatterAutotestFromFunctionViewContainer', (item) => {
 			const filename = vscode.window.activeTextEditor?.document.fileName ?? extensionState.activeFile;
 			if (!filename) {
 				//	TODO: is this a reasonable situation?
 				return;
 			}
-			
-			const absoluteFilename = context.asAbsolutePath(filename);
-			autotestFunction(absoluteFilename, item.key);
+
+			const relativeFileUnderTest: RelativePath = `./${vscode.workspace.asRelativePath(filename)}`;
+			autotestFunction(relativeFileUnderTest, item.key);
 		});
 		context.subscriptions.push(autotestFromFunctionViewContainerMenu);
 
@@ -970,7 +1018,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
 		//	TODO: some sort of status display during execution
 		//	TODO: show the sidebar when running
-		async function autotestFunction(absoluteFilename: string, functionName: string) {
+		async function autotestFunction(relativeFilename: RelativePath, functionName: string) {
 			const allTsConfigs: string[] = [];
 			const allPackageJsons: string[] = [];
 			const allNodeModules: string[] = [];
@@ -996,7 +1044,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
 			const modulePaths = [...allWorkspaceFolders, ...allNodeModules];
 
-			console.log(`BEGIN THE AUTOTEST of ${functionName} in ${absoluteFilename}`);
+			console.log(`BEGIN THE AUTOTEST of ${functionName} in ${relativeFilename}`);
 
 			extensionState.activeCoverage = undefined;
 			extensionState.activeSpecimenId = undefined;
@@ -1004,24 +1052,28 @@ export async function activate(context: vscode.ExtensionContext) {
 				provider.refresh([]);
 			}
 
+			const projectRootAbsolute = vscode.workspace.rootPath;
+			if (!projectRootAbsolute || !isAbsolutePath(projectRootAbsolute)) {
+				return;
+			}
 			vscode.commands.executeCommand("shatter-execution-paths.focus");
 			try {
 				extensionState.runningAutotestFunction = functionName;
 
-				const absoluteStorageBaseDirectory = context.storageUri?.fsPath ? context.asAbsolutePath(context.storageUri.fsPath) : undefined;
 				await shatterAutotest(modulePaths,
-					absoluteFilename,
-					absoluteStorageBaseDirectory,
+					projectRootAbsolute,
+					relativeFilename,
 					functionName, (results: AutotestResults) => {
-						extensionState.activeFile = absoluteFilename;
-						let filestate: FileState | undefined = extensionState.fileStates[absoluteFilename];
+						extensionState.activeFile = relativeFilename;
+						let filestate: FileState | undefined = extensionState.fileStates[relativeFilename];
 						if (!filestate) {
+							const absoluteFilename = asAbsolutePath(context, relativeFilename);
 							const functions = findFunctions(absoluteFilename);
 							filestate = {
 								functions,
 								functionStates: {},
 							};
-							extensionState.fileStates[absoluteFilename] = filestate;
+							extensionState.fileStates[relativeFilename] = filestate;
 						}
 						const functionState: FunctionState = {
 							autotest: results,
@@ -1061,10 +1113,10 @@ export async function activate(context: vscode.ExtensionContext) {
 	}
 }
 
-function doSelectFile(editor: vscode.TextEditor | undefined, extensionState: ExtensionState, filename: string, providers: Providers) {
+function doSelectFile(editor: vscode.TextEditor | undefined, context: vscode.ExtensionContext, extensionState: ExtensionState, filename: RelativePath, providers: Providers) {
 	extensionState.activeFile = filename;
 
-	const functions = findFunctions(filename);
+	const functions = findFunctions(asAbsolutePath(context, filename));
 	/*
 	Typescript didn't like this spread
 		extensionState.fileStates[filename] = {
@@ -1200,7 +1252,7 @@ function findFilesInHierarchy<K extends string>(
 	let absoluteCurrentDir = path.dirname(absoluteFilename);
 	while (absoluteCurrentDir !== absoluteRootDirectory) {
 		fs.readdirSync(absoluteCurrentDir).forEach((file) => {
-			const absoluteFullPath = path.join(absoluteCurrentDir, file);
+			const absoluteFullPath = path.join(absoluteCurrentDir, file) as AbsolutePath;
 			const stat = fs.statSync(absoluteFullPath);
 			for (const key of Object.keys(matchers)) {
 				const k: keyof typeof foundFiles = key as any;
@@ -1212,7 +1264,7 @@ function findFilesInHierarchy<K extends string>(
 						foundFiles[k] = [];
 					}
 
-					const workspaceRelativePath = vscode.workspace.asRelativePath(absoluteFullPath);
+					const workspaceRelativePath = asRelativePath(absoluteFullPath);
 					foundFiles[k]?.push(workspaceRelativePath);
 				}
 			}

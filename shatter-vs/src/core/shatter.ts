@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import * as ts from 'typescript';
-import { BaseSpecimen, GeneratedParameter, LeafParameter, Specimen, SpecimenId, extractGeneratedParameterValue, findLeaves, isSpecimenId, mergePath, newId, skip } from './common';
+import { AbsolutePath, BaseSpecimen, GeneratedParameter, LeafParameter, RelativePath, Specimen, SpecimenId, extractGeneratedParameterValue, findLeaves, isSpecimenId, mergePath, newId, skip } from './common';
 import { hybridize, isStrictExtension, shrink } from './hybridize';
 import { Outcome, RunResult, Supervisor } from './supervisor';
 import { IntrospectionContext, createInstrumenter } from './transform';
@@ -28,16 +28,6 @@ interface ResultClusterData {
     specimens: Specimen[]
     results: RunResult[]
 }
-
-export type AbsolutePath = `/${string}`;
-export type RelativePath = `./${string}`;
-
-export const isAbsolutePath = (path: string): path is AbsolutePath => path.startsWith('/');
-export const isRelativePath = (path: string): path is RelativePath => path.startsWith('./');
-
-
-const a1:AbsolutePath = "/dd";
-const r0:RelativePath = "./dd";
 
 //  TODO: for error cases add the file and line of where it was thrown and also
 //  the file and line of the first line in the instrumented code
@@ -112,15 +102,18 @@ test.results => RunResult
     outcome
 */
 
+function joinRelativePath(base:RelativePath, ...components: string[]): RelativePath {
+    return join(base, ...components) as RelativePath;
+}
+
 export function getSpecimenFilename(sourceFilePath: RelativePath, functionName: string, testCaseType: 'autotest' | 'custom', specimenId: SpecimenId):RelativePath {
     const components: string[] = [sourceFilePath, functionName, 'specimens', testCaseType, `${specimenId}.json`];
-    return join(...components);
+    return joinRelativePath(sourceFilePath, ...components);
 }
 
 export function getResultsFile(sourceFilePath: RelativePath, functionName: string, testCaseType: 'autotest' | 'custom', specimenId: SpecimenId):RelativePath {
     const components: string[] = ['results', sourceFilePath, functionName, testCaseType, `${specimenId}.json`];
-    const r:RelativePath = "/this";
-    return join(...components);
+    return joinRelativePath(sourceFilePath, ...components);
 }
 
 export function loadPersistedSpecimen(filepath:AbsolutePath) {
@@ -176,28 +169,26 @@ function loadTestCases(storageBaseDirectory: string) {
 
 }
 
-export function saveTest(storageBaseDirectory: string, sourceFileUnderTestPath: string, testCaseType: 'autotest' | 'custom', functionName: string, specimen: Specimen, result?: RunResult) {
-    const testCaseName = (specimen.type === 'custom')
-        ? specimen.name
-        : sha1(JSON.stringify(specimen.leaves));
-
-    const inputsFile = getSpecimenFilename(sourceFileUnderTestPath, functionName, testCaseType, specimen.id, storageBaseDirectory);
-    const inputsDirectory = dirname(inputsFile);
+export function saveTest(storageBaseDirectory: string, sourceFileUnderTestPath: RelativePath, testCaseType: 'autotest' | 'custom', functionName: string, specimen: Specimen, result?: RunResult) {
+    const inputsFileRelative = getSpecimenFilename(sourceFileUnderTestPath, functionName, testCaseType, specimen.id);
+    const inputsFileAbsolute = join(storageBaseDirectory, inputsFileRelative);
+    const inputsDirectory = dirname(inputsFileAbsolute);
     mkdirSync(inputsDirectory, { recursive: true });
-    writeFileSync(inputsFile, JSON.stringify(specimen, undefined, 2));
+    writeFileSync(inputsFileAbsolute, JSON.stringify(specimen, undefined, 2));
 
     if (result) {
-        const resultsFile = getResultsFile(sourceFileUnderTestPath, functionName, testCaseType, specimen.id, storageBaseDirectory);
+        const resultsFileRelative = getResultsFile(sourceFileUnderTestPath, functionName, testCaseType, specimen.id);
         //  TODO: WINDOWS needs the lastInde
-        const resultsDirectory = dirname(resultsFile);
+        const resultsFileAbsolute = join(storageBaseDirectory, resultsFileRelative);
+        const resultsDirectory = dirname(resultsFileAbsolute);
         mkdirSync(resultsDirectory, { recursive: true });
-        writeFileSync(resultsFile, JSON.stringify(result, undefined, 2));
+        writeFileSync(resultsFileAbsolute, JSON.stringify(result, undefined, 2));
     }
 
-    return inputsFile;
+    return inputsFileAbsolute;
 }
 
-export function forkTest(storageBaseDirectory: string, sourceFileUnderTestPath: string, functionName: string, baseSpecimen: Specimen, testCaseName: SpecimenId) {
+export function forkTest(storageBaseDirectory: AbsolutePath, sourceFileUnderTestPath: RelativePath, functionName: string, baseSpecimen: Specimen, testCaseName: SpecimenId) {
     const newSpecimen: Specimen = {
         ...baseSpecimen,
         type: 'custom',
@@ -282,8 +273,8 @@ export const shatterRetest = wrapAsync("shatterRetestt", shatterRetestt);
 //  TODO: make sure the source file is saved before running
 //  TODO: collapse the abstract syntax tree into a tree of conditions and blocks
 async function shatterAutotestt(modulePaths: string[],
-    absoluteInputFile: string,
-    absoluteStorageBaseDirectory: string | undefined,
+    projectRoot: AbsolutePath,
+    relativeSourceInputFile: RelativePath,
     functionName: string,
     onUpdate: (results: AutotestResults) => void,
     options?: {
@@ -295,7 +286,8 @@ async function shatterAutotestt(modulePaths: string[],
     }
 ) {
     // parse whole file into abstract syntax tree
-    const [program, sourceFile] = parse(absoluteInputFile);
+    const absoluteSourceInputFile = join(projectRoot, relativeSourceInputFile);
+    const [program, sourceFile] = parse(absoluteSourceInputFile);
     const functionDeclarationNode = findFunctionNode(functionName, sourceFile);
     if (!functionDeclarationNode) {
         throw new Error(`Could not find function ${functionName}`);
@@ -304,7 +296,7 @@ async function shatterAutotestt(modulePaths: string[],
     // rewrite code of given function (or everything if lazy) to add instrumentation
     const [instrumentedFile, executorScriptJs, introspectionContext] = writeInstrumented(sourceFile, options?.shatterproofModuleOverride);
 
-    console.log(`created ${instrumentedFile} compiled to ${executorScriptJs} with storageBaseDirectory = ${absoluteStorageBaseDirectory}`);
+    console.log(`created ${instrumentedFile} compiled to ${executorScriptJs}`);
 
     let body = null;
     for (let i = 0; i < functionDeclarationNode.getChildCount(); i++) {
@@ -509,7 +501,7 @@ async function shatterAutotestt(modulePaths: string[],
                 const specimen: Specimen = {
                     id: specimenId, //  TODO: this should be either the specimen name or a SHA1 of the specimen parameters (both?)
                     leaves: leafValues,
-                    fileUnderTest: absoluteInputFile,
+                    fileUnderTest: relativeSourceInputFile,
                     functionName,
                     ...baseSpecimen,
                 };

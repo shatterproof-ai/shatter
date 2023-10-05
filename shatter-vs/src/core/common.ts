@@ -2,6 +2,7 @@
 //  TODO: generify value
 
 import { createId } from "@paralleldrive/cuid2";
+import { join } from "path";
 
 export type SpecimenId = `${typeof specimenTypes[number]}-${string}`;
 
@@ -189,10 +190,22 @@ export type BaseSpecimen = {
     name: string,
 });
 
+
+export type AbsolutePath = `/${string}`;
+//  TODO: figure out how to do RelativePath without anything BUT '/' as a prefix
+export type RelativePath = `./${string}`;
+
+export const isAbsolutePath = (path: string): path is AbsolutePath => path.startsWith('/');
+export const isRelativePath = (path: string): path is RelativePath => path.startsWith('./');
+
+export function joinAbsolute(base:AbsolutePath, relative:RelativePath):AbsolutePath {
+    return join(base, relative) as AbsolutePath;
+}
+
 export type Specimen = BaseSpecimen & {
     id: SpecimenId,
 
-	fileUnderTest: string;
+	fileUnderTest: RelativePath;
 	functionName: string;
 
     leaves: LeafParameter[],

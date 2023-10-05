@@ -3,6 +3,7 @@ import { Node, SourceFile } from 'typescript';
 
 import { FunctionDeclaration } from 'typescript';
 import { SourceMapGenerator } from 'source-map';
+import { AbsolutePath } from './common';
 
 const SP_FAKE_KEY = "__sp_fake";
 const SP_ORIGINAL_KEY = "__sp_original";
@@ -58,7 +59,7 @@ export interface FunctionMeta {
     endLine: number;
 }
 
-export const findFunctions = (sourceFileName: string): FunctionMeta[] => {
+export const findFunctions = (sourceFileName: AbsolutePath): FunctionMeta[] => {
     const functions: FunctionMeta[] = [];
     const exportedFunctions = new Set<string>();
 
