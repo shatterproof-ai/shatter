@@ -34,27 +34,42 @@
       {
         "command": "extension.shatterMakeTestcaseNonPersistent",
         "title": "Don't retain test case (view)",
-        "icon": "resources/unpin.svg"
+        "icon": {
+          "dark": "resources/dark/unpin.svg",
+          "light": "resources/light/unpin.svg"
+        }
       },
       {
         "command": "extension.shatterMakeTestcasePersistent",
         "title": "Retain test case (view)",
-        "icon": "resources/pin.svg"
+        "icon": {
+          "dark": "resources/dark/pin.svg",
+          "light": "resources/light/pin.svg"
+        }
       },
       {
         "command": "extension.shatterForkAutoTestcase",
         "title": "Fork test case",
-        "icon": "resources/fork.svg"
+        "icon": {
+          "dark": "resources/dark/fork.svg",
+          "light": "resources/light/fork.svg"
+        }
       },
       {
         "command": "extension.shatterEditCustomTestcase",
         "title": "Edit test case",
-        "icon": "resources/edit.svg"
+        "icon": {
+          "dark": "resources/dark/edit.svg",
+          "light": "resources/light/edit.svg"
+        }
       },
       {
         "command": "extension.shatterAddTestcase",
         "title": "Add test case",
-        "icon": "resources/add.svg"
+        "icon": {
+          "dark": "resources/dark/add.svg",
+          "light": "resources/light/add.svg"
+        }
       }
     ],
     "menus": {

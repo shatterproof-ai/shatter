@@ -790,23 +790,32 @@ export async function activate(context: vscode.ExtensionContext) {
 		context.subscriptions.push(
 			vscode.window.registerTreeDataProvider("shatter-execution-paths", clustersListProvider));
 
+		function iconPaths(baseSet: Record<string, string>) {
+			const expanded: Record<string, Record<'light' | 'dark', string>> = {};
+
+			for (const [status, baseIconPath] of Object.entries(baseSet)) {
+				const light = context.asAbsolutePath(`resources/light/${baseIconPath}`);
+				const dark = context.asAbsolutePath(`resources/dark/${baseIconPath}`);
+				expanded[status] = {
+					light,
+					dark,
+				};
+			}
+
+			return expanded;
+		}
 		const testCaseListProvider = new CommonTreeDataProvider({
 			command: {
 				command: 'extension.shatterSelectTestCase',
 				title: 'Test Case Detail',
 			},
-			stateIcons: {
-				'pinned': context.asAbsolutePath('resources/pin.svg'),
-				'unpinned': context.asAbsolutePath('resources/unpin.svg'),
-			}
+			stateIcons: iconPaths({ pinned: 'pin.svg', unpinned: 'unpin.svg' }),
 		});
 		context.subscriptions.push(
 			vscode.window.registerTreeDataProvider("shatter-list-testcases", testCaseListProvider));
 
 		const testCaseDetailProvider = new CommonTreeDataProvider({
-			stateIcons: {
-				persistent: context.asAbsolutePath('resources/pin.svg'),
-			}
+			stateIcons: iconPaths({ persistent: 'pin.svg' }),
 		});
 		context.subscriptions.push(
 			vscode.window.registerTreeDataProvider("shatter-testcase-detail", testCaseDetailProvider));
@@ -1294,7 +1303,7 @@ class CommonTreeDataProvider implements vscode.TreeDataProvider<CommonDisplayNod
 	// Initialize empty
 	constructor(private options?: {
 		command?: Pick<vscode.Command, 'command' | 'title'>,
-		stateIcons?: Record<string, string>
+		stateIcons?: Record<string, Record<'dark' | 'light', string>>
 	}) {
 		this.roots = undefined;
 	}
