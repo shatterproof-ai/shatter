@@ -188,6 +188,7 @@ export type BaseSpecimen = {
 } | {
     type: 'custom',
     name: string,
+    //  TODO: in theory it could have parents, but is that useful?
 });
 
 

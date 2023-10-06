@@ -67,16 +67,16 @@ function loadPersistedSpecimens(workspaceRoot: AbsolutePath, specimenDirectory: 
 	return specimens;
 }
 
-function saveTest(testBaseDirectory: AbsolutePath, specimental: Specimental, result?: RunResult) {
+function saveTest(specimenBaseDirectory: AbsolutePath, specimental: Specimental, result?: RunResult) {
 
 	const specimenSubdir = specimental.specimen.id.startsWith('custom') ? 'custom' : 'autotest';
-	const specimenFileAbsolutePath = join(testBaseDirectory, 'specimens', specimenSubdir, `${specimental.specimen.id}.json`) as AbsolutePath;
-	const specimenDirectory = path.dirname(specimenFileAbsolutePath);
-	fs.mkdirSync(specimenDirectory, { recursive: true });
+	const specimenFileAbsolutePath = join(specimenBaseDirectory, 'specimens', specimenSubdir, `${specimental.specimen.id}.json`) as AbsolutePath;
+	const specimenSubdirectory = path.dirname(specimenFileAbsolutePath);
+	fs.mkdirSync(specimenSubdirectory, { recursive: true });
 	fs.writeFileSync(specimenFileAbsolutePath, JSON.stringify(specimental.specimen, undefined, 2));
 
 	if (result) {
-		const resultsFileAbsolute = join(testBaseDirectory, 'results', specimenSubdir, `${specimental.specimen.id}.json`) as AbsolutePath;
+		const resultsFileAbsolute = join(specimenBaseDirectory, 'results', specimenSubdir, `${specimental.specimen.id}.json`) as AbsolutePath;
 		const resultsDirectory = path.dirname(resultsFileAbsolute);
 		fs.mkdirSync(resultsDirectory, { recursive: true });
 		fs.writeFileSync(resultsFileAbsolute, JSON.stringify(result, undefined, 2));
@@ -85,17 +85,21 @@ function saveTest(testBaseDirectory: AbsolutePath, specimental: Specimental, res
 	return specimenFileAbsolutePath;
 }
 
-function forkTest(storageBaseDirectory: AbsolutePath, specimental: Specimental, sourceFileUnderTestPath: RelativePath, testCaseName: SpecimenId) {
-	const newSpecimen: Specimen = {
-		...specimental.specimen,
+function forkTest(specimenBaseDirectory: AbsolutePath, original: Specimental, newId: SpecimenId, name: string,) {
+	const newSpeciment: Specimen = {
+		...original.specimen,
 		type: 'custom',
-		id: testCaseName,
-		name: testCaseName,
+		id: newId,
+		name,
 	};
-	return saveTest(storageBaseDirectory, {
-		...specimental,
-		specimen: newSpecimen,
-	});
+	const newSpecimental = {
+		...original,
+		specimen: newSpeciment,
+	};
+
+	const specimenFileAbsolutePath = saveTest(specimenBaseDirectory, newSpecimental);
+	newSpecimental.specimenPath = specimenFileAbsolutePath;
+	return newSpecimental;
 }
 
 function visit(k: string | number, o: any, depth = 0): CommonDisplayNode {
@@ -206,8 +210,18 @@ function asAbsolutePath(workspaceRoot: AbsolutePath, filename: RelativePath): Ab
 	return join(workspaceRoot, filename) as AbsolutePath;
 }
 
-function asRelativePath(filename: AbsolutePath): RelativePath {
-	return vscode.workspace.asRelativePath(filename) as RelativePath;
+function asRelativePath(filename: AbsolutePath): RelativePath | undefined {
+	if (!vscode.workspace.workspaceFolders) {
+		return;
+	}
+
+	const fileUri = vscode.Uri.from({ scheme: 'file', path: filename });
+	for (const wsf of vscode.workspace.workspaceFolders) {
+		if (fileUri.fsPath.startsWith(wsf.uri.fsPath)) {
+			return vscode.workspace.asRelativePath(filename) as RelativePath;
+		}
+	}
+	return;
 }
 
 const refresh = (editor: vscode.TextEditor | undefined, extensionState: ExtensionState, providers: Providers) => {
@@ -688,10 +702,15 @@ How to select test cases?  Per function, per cluster, per test case
 
 const autotestStorageStateKey = "autotestState";
 export async function activate(context: vscode.ExtensionContext) {
-	const workspaceRoots: AbsolutePath[] = vscode.workspace.workspaceFolders?.map((f) => context.asAbsolutePath(f.uri.fsPath) as AbsolutePath) ?? [];
+	//	TODO: this all needs to deal in URIs
+	const workspaceRoots: AbsolutePath[] = vscode.workspace.workspaceFolders?.map((f) => f.uri.fsPath as AbsolutePath) ?? [];
 	const defaultWorkspaceRoot: AbsolutePath | undefined = workspaceRoots[0];
 	let configuration: ProjectConfiguration = {};
-	let specimenDirectory: AbsolutePath | undefined = undefined;
+	let specimenBaseDirectory: AbsolutePath | undefined = undefined;
+	const extensionState: ExtensionState = {
+		fileStates: {},
+		specimens: {},
+	};
 	try {
 		if (defaultWorkspaceRoot) {
 			configuration = await readProjectConfiguration(defaultWorkspaceRoot);
@@ -726,27 +745,13 @@ export async function activate(context: vscode.ExtensionContext) {
 
 				//	do this *after* the watcher is set up to avoid missing any additions
 				//	TODO: might miss some deletions
-				specimenDirectory = asAbsolutePath(defaultWorkspaceRoot, configuration.testsDirectory);
-				const initialPersistentSpecimens = loadPersistedSpecimens(defaultWorkspaceRoot, specimenDirectory);
+				specimenBaseDirectory = asAbsolutePath(defaultWorkspaceRoot, configuration.testsDirectory);
+				const initialPersistentSpecimens = loadPersistedSpecimens(defaultWorkspaceRoot, specimenBaseDirectory);
 				initialPersistentSpecimens.forEach((specimental, id) => {
 					extensionState.specimens[id] = specimental;
 				});
 
 			}
-		}
-
-		//	TODO: if there's an open editor when the extension is activated, select that file
-		// const extensionState: ExtensionState = context.workspaceState.get(autotestStorageStateKey) ?? {
-		// 	fileStates: {},
-		// 	specimens: {},
-		// };
-		const extensionState: ExtensionState = {
-			fileStates: {},
-			specimens: {},
-		};
-		if (extensionState.specimens === undefined) {
-			//	TODO: this probably shouldn't happen; is this because Map doesn't stringify?
-			extensionState.specimens = {};
 		}
 
 		//	TODO: Refresh functions list view contents on change of editor
@@ -873,7 +878,7 @@ export async function activate(context: vscode.ExtensionContext) {
 		const makeTestCasePersistentCommand = vscode.commands.registerCommand('extension.shatterMakeTestcasePersistent', async (node: CommonDisplayNode) => {
 			//	if the test case is not persistent, save it to the location specified in the configuration
 			const specimenId = node.key;
-			if (!specimenDirectory || !isSpecimenId(specimenId)) {
+			if (!specimenBaseDirectory || !isSpecimenId(specimenId)) {
 				return;
 			}
 
@@ -882,13 +887,14 @@ export async function activate(context: vscode.ExtensionContext) {
 				return;
 			}
 
-			saveTest(specimenDirectory, specimental);
+			saveTest(specimenBaseDirectory, specimental);
+			refresh(vscode.window.activeTextEditor, extensionState, providers);
 		});
 		context.subscriptions.push(makeTestCasePersistentCommand);
 
 		const makeTestcaseNotPersistentCommand = vscode.commands.registerCommand('extension.shatterMakeTestcaseNonPersistent', async (node: CommonDisplayNode) => {
 			const specimenId = node.key;
-			if (!specimenDirectory || !isSpecimenId(specimenId)) {
+			if (!specimenBaseDirectory || !isSpecimenId(specimenId)) {
 				return;
 			}
 
@@ -899,12 +905,13 @@ export async function activate(context: vscode.ExtensionContext) {
 
 			const fileUri = vscode.Uri.file(specimental.specimenPath);
 			await vscode.workspace.fs.delete(fileUri);
+			refresh(vscode.window.activeTextEditor, extensionState, providers);
 		});
 		context.subscriptions.push(makeTestcaseNotPersistentCommand);
 
 		const editTestCaseCommand = vscode.commands.registerCommand('extension.shatterEditCustomTestcase', async (node: CommonDisplayNode) => {
 			const specimenId = node.key;
-			if (!specimenDirectory || !specimenId) {
+			if (!specimenBaseDirectory || !specimenId) {
 				return;
 			}
 
@@ -937,54 +944,48 @@ export async function activate(context: vscode.ExtensionContext) {
 				return;
 			}
 
-			const filepath = await (async () => {
-				//	if it's a generated specimen, fork to a custom specimen
-				const specimental = extensionState.specimens[specimenId];
-				if (!specimental) {
-					return;
-				}
-				if (specimenId.startsWith('custom')) {
-					//	TODO: error
-					return;
-				}
-				//	ask for a name
-				//	copy to that name
-				const testCaseName = await vscode.window.showInputBox({
-					prompt: 'Enter a name for the test case',
-					placeHolder: 'Custom test case name',
-					//	TODO: make sure it's a valid filename; limit the possible values?
-					validateInput: (value) => value !== undefined && value.trim().length > 0 ? undefined : 'Please enter a name for the test case',
-				});
+			const specimental = extensionState.specimens[specimenId];
+			if (!specimental) {
+				//TODO: error
+				return;
+			}
+			//	ask for a name
+			//	copy to that name
+			const newTestCaseName = await vscode.window.showInputBox({
+				prompt: 'Enter a name for the test case',
+				placeHolder: 'Custom test case name',
+				//	TODO: make sure it's a valid filename; limit the possible values?
+				validateInput: (value) => value !== undefined && value.trim().length > 0 ? undefined : 'Please enter a name for the test case',
+			});
 
-				if (!testCaseName) {
-					return;
-				}
-				const newId: SpecimenId = `custom-${testCaseName}`;
-				if (newId in extensionState.specimens) {
-					return;
-				}
+			if (!newTestCaseName) {
+				//TODO: error
+				return;
+			}
+			const newId: SpecimenId = `custom-${newTestCaseName}`;
+			if (newId in extensionState.specimens) {
+				//TODO: error
+				return;
+			}
 
-				if (configuration.testsDirectory && specimental.specimen.fileUnderTest) {
-					//	    export function forkTest(storageBaseDirectory: AbsolutePath, sourceFileUnderTestPath: RelativePath, functionName: string, baseSpecimen: Specimen, testCaseName: SpecimenId) {
+			//	if persistable and the base test is already persisted
+			if (specimenBaseDirectory && specimental.fileUnderTest) {
+				// function forkTest(storageBaseDirectory: AbsolutePath, specimental: Specimental, sourceFileUnderTestPath: RelativePath, testCaseName: SpecimenId) {
 
-					const absoluteFileUnderTest = joinAbsolute(testsAbsolutePath, specimental.specimen.fileUnderTest);
-					const forkedPath = forkTest(testsAbsolutePath, specimental.specimen.fileUnderTest, specimental.specimen.functionName, specimental.specimen, `custom-${testCaseName}`);
-					extensionState.specimens[newId] = {
-						clusterKey: specimental.clusterKey,
-						relativePath: forkedPath,
-						specimen: specimental.specimen,
-					};
-					return forkedPath;
-				}
-			})();
-
-			if (filepath && vscode.window.activeTextEditor) {
-				if (fs.existsSync(filepath)) {
-					vscode.workspace.openTextDocument(filepath).then((doc) => {
+				const newSpecimental = forkTest(specimenBaseDirectory, specimental, newId, newTestCaseName);
+				extensionState.specimens[newId] = {
+					...specimental,
+					clusterKey: specimental.clusterKey,
+					fileUnderTest: specimental.fileUnderTest,
+					specimen: specimental.specimen,
+				};
+				refresh(vscode.window.activeTextEditor, extensionState, providers);
+				if (vscode.window.activeTextEditor && newSpecimental.specimenPath && fs.existsSync(newSpecimental.specimenPath)) {
+					vscode.workspace.openTextDocument(newSpecimental.specimenPath).then((doc) => {
 						vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
 					});
 				} else {
-					vscode.window.showErrorMessage(`Test case ${filepath} does not exist.`);
+					vscode.window.showErrorMessage(`Test case ${newSpecimental.specimenPath} does not exist.`);
 				}
 			}
 		});
@@ -1101,7 +1102,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
 		//	TODO: some sort of status display during execution
 		//	TODO: show the sidebar when running
-		async function autotestFunction(absoluteFilename: AbsolutePath, functionName: string) {
+		async function autotestFunction(absoluteSourceFilename: AbsolutePath, functionName: string) {
 			const allTsConfigs: string[] = [];
 			const allPackageJsons: string[] = [];
 			const allNodeModules: string[] = [];
@@ -1109,9 +1110,8 @@ export async function activate(context: vscode.ExtensionContext) {
 
 			const editor = vscode.window.activeTextEditor;
 			if (editor) {
-				vscode.workspace.workspaceFolders?.forEach((folder) => {
+				workspaceRoots?.forEach((absoluteFolderPath) => {
 					//	TODO: do we know whether the path is already absolute always?
-					const absoluteFolderPath = context.asAbsolutePath(folder.uri.path);
 					const found = findFilesInHierarchy(editor.document.fileName, absoluteFolderPath, {
 						tsconfig: (absoluteFilename, stat) => absoluteFilename.endsWith('tsconfig.json') && stat.isFile(),
 						packageJson: (absoluteFilename, stat) => absoluteFilename.endsWith('package.json') && stat.isFile(),
@@ -1121,13 +1121,13 @@ export async function activate(context: vscode.ExtensionContext) {
 					allTsConfigs.push(...(found.tsconfig || []));
 					allPackageJsons.push(...(found.packageJson || []));
 					allNodeModules.push(...(found.nodeModules || []));
-					allWorkspaceFolders.push(folder.uri.fsPath);
+					allWorkspaceFolders.push(absoluteFolderPath);
 				});
 			}
 
 			const modulePaths = [...allWorkspaceFolders, ...allNodeModules];
 
-			console.log(`BEGIN THE AUTOTEST of ${functionName} in ${absoluteFilename}`);
+			console.log(`BEGIN THE AUTOTEST of ${functionName} in ${absoluteSourceFilename}`);
 
 			extensionState.activeCoverage = undefined;
 			extensionState.activeSpecimenId = undefined;
@@ -1138,19 +1138,29 @@ export async function activate(context: vscode.ExtensionContext) {
 			vscode.commands.executeCommand("shatter-execution-paths.focus");
 			try {
 				extensionState.runningAutotestFunction = functionName;
+				const relativeSourceFilename = (() => {
+					const inWorkspaceRelativePath = asRelativePath(absoluteSourceFilename);
+					if (inWorkspaceRelativePath) {
+						return inWorkspaceRelativePath as RelativePath;
+					}
+
+					const relativePath = path.relative(process.cwd(), absoluteSourceFilename);
+					return relativePath as RelativePath;
+				})();
 
 				await shatterAutotest(modulePaths,
-					absoluteFilename,
+					absoluteSourceFilename,
+					relativeSourceFilename,
 					functionName, (results: AutotestResults) => {
-						extensionState.activeFile = absoluteFilename;
-						let filestate: FileState | undefined = extensionState.fileStates[absoluteFilename];
+						extensionState.activeFile = absoluteSourceFilename;
+						let filestate: FileState | undefined = extensionState.fileStates[absoluteSourceFilename];
 						if (!filestate) {
-							const functions = findFunctions(absoluteFilename);
+							const functions = findFunctions(absoluteSourceFilename);
 							filestate = {
 								functions,
 								functionStates: {},
 							};
-							extensionState.fileStates[absoluteFilename] = filestate;
+							extensionState.fileStates[absoluteSourceFilename] = filestate;
 						}
 						const functionState: FunctionState = {
 							autotest: results,
@@ -1342,7 +1352,9 @@ function findFilesInHierarchy<K extends string>(
 					}
 
 					const workspaceRelativePath = asRelativePath(absoluteFullPath);
-					foundFiles[k]?.push(workspaceRelativePath);
+					if (workspaceRelativePath) {
+						foundFiles[k]?.push(workspaceRelativePath);
+					}
 				}
 			}
 		});

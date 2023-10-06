@@ -172,6 +172,7 @@ export const shatterRetest = wrapAsync("shatterRetestt", shatterRetestt);
 //  TODO: collapse the abstract syntax tree into a tree of conditions and blocks
 async function shatterAutotestt(modulePaths: string[],
     absoluteSourceInputFile: AbsolutePath,
+    relativeSourceInputFile: RelativePath,
     functionName: string,
     onUpdate: (results: AutotestResults) => void,
     options?: {
@@ -395,7 +396,7 @@ async function shatterAutotestt(modulePaths: string[],
 
                 //  TODO: in Autotest mode we're always creating a new specimen, but in Retest mode we are not
                 const specimen: Specimen = {
-                    fileUnderTest: "...",
+                    fileUnderTest: relativeSourceInputFile,
                     id: specimenId, //  TODO: this should be either the specimen name or a SHA1 of the specimen parameters (both?)
                     leaves: leafValues,
                     functionName,

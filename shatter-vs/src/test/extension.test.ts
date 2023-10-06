@@ -536,15 +536,15 @@ async function testThisCode(functionName: string, sourceCode: string, options: T
     const tempdir = mkdtempSync(join(tmpdir(), `shatter-test-${functionName}`));
     const testfile = join(tempdir, 'index.ts');
     writeFileSync(testfile, sourceCode);
-    return testThisFile(testfile, functionName, options);
+    return testThisFile(testfile, "./index.ts", functionName, options);
 }
 
-async function testThisFile(testfile: string, functionName: string, options: TestOptions) {
+async function testThisFile(sourceFileAbsolute: string, sourceFileRelative:RelativePath, functionName: string, options: TestOptions) {
     const modulePaths = process.env.NODE_ENV?.split(':') ?? [];
 
     const shatterproofModuleOverride = "/home/ketan/project/shatter/shatter-vs/src";
 
-    const { executed, instrumented, clusters } = await shatterAutotest(modulePaths, testfile as AbsolutePath, functionName, (clusters) => {
+    const { executed, instrumented, clusters } = await shatterAutotest(modulePaths, sourceFileAbsolute as AbsolutePath, sourceFileRelative, functionName, (clusters) => {
         // console.log(`Received clusters ${JSON.stringify(clusters, null, 2)}`);
     }, { shatterproofModuleOverride, ...options });
 
@@ -974,7 +974,7 @@ describe('complicated', () => {
         const testfile: AbsolutePath = "/home/ketan/project/shatter/examples/typescript/src/query-creator.ts";
         // const testfile = "/home/ketan/project/shatter/examples/typescript/src/query-creator-short.ts";
         const functionName = "constructSearchQuery";
-        await testThisFile(testfile, functionName, { maxIterations: 500, maxTime: 10_000 });
+        await testThisFile(testfile, "./query-creator.ts", functionName, { maxIterations: 500, maxTime: 10_000 });
     });
 });
 
