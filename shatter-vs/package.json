@@ -100,42 +100,42 @@
         },
         {
           "command": "extension.shatterAddTestcase",
-          "when": "view == shatter-list-testcases",
+          "when": "view == shatter-list-testcases && false",
           "group": "navigation@2"
         },
         {
           "command": "extension.shatterEditCustomTestcase",
-          "when": "view == shatter-list-testcases && viewItem == custom",
+          "when": "view == shatter-list-testcases && viewItem =~ /\bcustom\b/",
           "group": "navigation@3"
         },
         {
           "command": "extension.shatterForkAutoTestcase",
-          "when": "view == shatter-list-testcases && viewItem == auto",
+          "when": "view == shatter-list-testcases && viewItem =~ /\bautotest\b/",
           "group": "navigation@3"
         },
         {
           "command": "extension.shatterAddTestcase",
-          "when": "view == shatter-list-testcases",
+          "when": "view == shatter-list-testcases && false",
           "group": "inline"
         },
         {
           "command": "extension.shatterEditCustomTestcase",
-          "when": "view == shatter-list-testcases && viewItem =~ /\bcustom\b/",
+          "when": "view == shatter-list-testcases && viewItem =~ /\\bcustom\\b/",
           "group": "inline"
         },
         {
           "command": "extension.shatterForkAutoTestcase",
-          "when": "view == shatter-list-testcases && viewItem =~ /\bauto\b/",
+          "when": "view == shatter-list-testcases && viewItem =~ /\\bautotest\\b/",
           "group": "inline"
         },
         {
           "command": "extension.shatterMakeTestcaseNonPersistent",
-          "when": "view == shatter-list-testcases && viewItem =~ /\bpersistent\b/",
+          "when": "view == shatter-list-testcases && viewItem =~ /\\bpersistent\\b/",
           "group": "inline"
         },
         {
           "command": "extension.shatterMakeTestcasePersistent",
-          "when": "view == shatter-list-testcases && !(viewItem =~ /\bpersistent\b/)",
+          "when": "view == shatter-list-testcases && !(viewItem =~ /\\bpersistent\\b/)",
           "group": "inline"
         }
       ]

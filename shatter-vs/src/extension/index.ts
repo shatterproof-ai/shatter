@@ -68,7 +68,7 @@ function loadPersistedSpecimens(workspaceRoot: AbsolutePath, specimenDirectory: 
 }
 
 function saveTest(specimenBaseDirectory: AbsolutePath, specimental: Specimental, result?: RunResult) {
-
+	//	TODO: don't save everything from a specimen, notably omit the leaves and any parentage
 	const specimenSubdir = specimental.specimen.id.startsWith('custom') ? 'custom' : 'autotest';
 	const specimenFileAbsolutePath = join(specimenBaseDirectory, 'specimens', specimenSubdir, `${specimental.specimen.id}.json`) as AbsolutePath;
 	const specimenSubdirectory = path.dirname(specimenFileAbsolutePath);
@@ -828,25 +828,26 @@ export async function activate(context: vscode.ExtensionContext) {
 		};
 
 		const updateSelectedFile = () => {
-			//	_filename and filename should be the same
 			const filename = vscode.window.activeTextEditor?.document.fileName;
 			if (!filename) {
 				//	TODO: clear functions list
 				return;
 			}
-			doSelectFile(vscode.window.activeTextEditor, context, extensionState, filename as AbsolutePath, providers);
+			if (vscode.window.activeTextEditor?.document.languageId === 'typescript') {
+				doSelectFile(vscode.window.activeTextEditor, context, extensionState, filename as AbsolutePath, providers);
+			}
 		};
 
 		//	call after switching files, changing contents of the editor, or running tests
 		const doSelectFunctionCommand = (node: CommonDisplayNode) => {
-			if (vscode.window.activeTextEditor) {
+			if (vscode.window.activeTextEditor?.document.languageId === 'typescript') {
 				const functionName: string = node.key || "";
 				doSelectFunction(vscode.window.activeTextEditor, extensionState, providers, functionName);
 			}
 		};
 
 		const doSelectClusterCommand = (node: CommonDisplayNode) => {
-			if (vscode.window.activeTextEditor) {
+			if (vscode.window.activeTextEditor?.document.languageId === 'typescript') {
 				const selection: CoverageSelection | undefined = (() => {
 					if (node.key) {
 						if (node.key.startsWith('cluster://')) {
@@ -869,7 +870,7 @@ export async function activate(context: vscode.ExtensionContext) {
 		};
 
 		const doSelectTestCaseCommand = (node: CommonDisplayNode) => {
-			if (vscode.window.activeTextEditor) {
+			if (vscode.window.activeTextEditor?.document.languageId === 'typescript') {
 				const specimenId: string = node.key || "";
 				doSelectTestCase(vscode.window.activeTextEditor, context, extensionState, providers, specimenId);
 			}
@@ -913,7 +914,8 @@ export async function activate(context: vscode.ExtensionContext) {
 				return;
 			}
 
-			saveTest(specimenBaseDirectory, specimental);
+			const savePath = saveTest(specimenBaseDirectory, specimental);
+			specimental.specimenPath = savePath;
 			refresh(vscode.window.activeTextEditor, extensionState, providers);
 		});
 		context.subscriptions.push(makeTestCasePersistentCommand);
@@ -931,6 +933,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
 			const fileUri = vscode.Uri.file(specimental.specimenPath);
 			await vscode.workspace.fs.delete(fileUri);
+			specimental.specimenPath = undefined;
 			refresh(vscode.window.activeTextEditor, extensionState, providers);
 		});
 		context.subscriptions.push(makeTestcaseNotPersistentCommand);
@@ -952,7 +955,7 @@ export async function activate(context: vscode.ExtensionContext) {
 				}
 			})();
 
-			if (specimenPath && vscode.window.activeTextEditor) {
+			if (specimenPath && vscode.window.activeTextEditor?.document.languageId === 'typescript') {
 				if (fs.existsSync(specimenPath)) {
 					vscode.workspace.openTextDocument(specimenPath).then((doc) => {
 						vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
@@ -1005,13 +1008,15 @@ export async function activate(context: vscode.ExtensionContext) {
 					fileUnderTest: specimental.fileUnderTest,
 					specimen: specimental.specimen,
 				};
-				refresh(vscode.window.activeTextEditor, extensionState, providers);
-				if (vscode.window.activeTextEditor && newSpecimental.specimenPath && fs.existsSync(newSpecimental.specimenPath)) {
-					vscode.workspace.openTextDocument(newSpecimental.specimenPath).then((doc) => {
-						vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
-					});
-				} else {
-					vscode.window.showErrorMessage(`Test case ${newSpecimental.specimenPath} does not exist.`);
+				if (vscode.window.activeTextEditor?.document.languageId === 'typescript') {
+					refresh(vscode.window.activeTextEditor, extensionState, providers);
+					if (newSpecimental.specimenPath && fs.existsSync(newSpecimental.specimenPath)) {
+						vscode.workspace.openTextDocument(newSpecimental.specimenPath).then((doc) => {
+							vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
+						});
+					} else {
+						vscode.window.showErrorMessage(`Test case ${newSpecimental.specimenPath} does not exist.`);
+					}
 				}
 			}
 		});
@@ -1040,12 +1045,10 @@ export async function activate(context: vscode.ExtensionContext) {
 		//	shatterproof needs an existence outside VSCode anyway
 		const extensionSource = join(context.extensionPath, 'src');
 		const autotestFromEditorContextMenu = await vscode.commands.registerCommand('extension.shatterAutotestFromEditorContextMenu', async () => {
-			const editor = vscode.window.activeTextEditor;
-
-			if (editor && editor.document.languageId === 'typescript') {
-				const selection = editor.selection;
+			if (vscode.window.activeTextEditor?.document.languageId === 'typescript') {
+				const selection = vscode.window.activeTextEditor.selection;
 				const cursorPosition = selection.active;
-				const document = editor.document;
+				const document = vscode.window.activeTextEditor.document;
 
 				const functionMeta = getFunctionNodeAtCursor(cursorPosition, document);
 				if (functionMeta) {
@@ -1122,7 +1125,7 @@ export async function activate(context: vscode.ExtensionContext) {
 		// );
 
 
-		if (vscode.window.activeTextEditor) {
+		if (vscode.window.activeTextEditor?.document.languageId === 'typescript') {
 			updateSelectedFile();
 		}
 
@@ -1135,7 +1138,7 @@ export async function activate(context: vscode.ExtensionContext) {
 			const allWorkspaceFolders: string[] = [];
 
 			const editor = vscode.window.activeTextEditor;
-			if (editor) {
+			if (editor?.document.languageId === 'typescript') {
 				workspaceRoots?.forEach((absoluteFolderPath) => {
 					//	TODO: do we know whether the path is already absolute always?
 					const found = findFilesInHierarchy(editor.document.fileName, absoluteFolderPath, {
@@ -1227,7 +1230,12 @@ export async function activate(context: vscode.ExtensionContext) {
 }
 
 function doSelectFile(editor: vscode.TextEditor | undefined, context: vscode.ExtensionContext, extensionState: ExtensionState, absoluteSourceFilename: AbsolutePath, providers: Providers) {
-	extensionState.activeFile = absoluteSourceFilename;
+	if (extensionState.activeFile !== absoluteSourceFilename) {
+		extensionState.activeFile = absoluteSourceFilename;
+		extensionState.activeFunction = undefined;
+		extensionState.activeCoverage = undefined;
+		extensionState.activeSpecimenId = undefined;
+	}
 
 	const functions = findFunctions(absoluteSourceFilename);
 	/*
