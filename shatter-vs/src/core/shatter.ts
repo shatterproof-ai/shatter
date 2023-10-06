@@ -13,6 +13,7 @@ import { result } from 'lodash';
 import { RetestCaseSource, RuntimeContext, CombinatorialTestCaseSource } from './generator';
 
 export interface AutotestResults {
+    //  TODO: make clusters a Record<ClusterKey, SpecimenId[]> and results Record<SpecimenId, RunResult> (eventually to be RunResult[])
     clusters: ResultCluster[];
     instrumentedLines: number[];    //	number[] because Set is not serializable
 }

@@ -32,19 +32,19 @@
         "title": "Regression test"
       },
       {
-        "command": "extension.shatterMakeTestcaseNonPersistent",
-        "title": "Don't retain test case (view)",
-        "icon": {
-          "dark": "resources/dark/unpin.svg",
-          "light": "resources/light/unpin.svg"
-        }
-      },
-      {
         "command": "extension.shatterMakeTestcasePersistent",
         "title": "Retain test case (view)",
         "icon": {
           "dark": "resources/dark/pin.svg",
           "light": "resources/light/pin.svg"
+        }
+      },
+      {
+        "command": "extension.shatterMakeTestcaseNonPersistent",
+        "title": "Don't retain test case (view)",
+        "icon": {
+          "dark": "resources/dark/unpin.svg",
+          "light": "resources/light/unpin.svg"
         }
       },
       {
@@ -61,6 +61,22 @@
         "icon": {
           "dark": "resources/dark/edit.svg",
           "light": "resources/light/edit.svg"
+        }
+      },
+      {
+        "command": "extension.shatterRunTestcases",
+        "title": "Run test cases",
+        "icon": {
+          "dark": "resources/dark/run-all.svg",
+          "light": "resources/light/run-all.svg"
+        }
+      },
+      {
+        "command": "extension.shatterRunTestcase",
+        "title": "Run test case",
+        "icon": {
+          "dark": "resources/dark/play.svg",
+          "light": "resources/light/play.svg"
         }
       },
       {
@@ -114,31 +130,41 @@
           "group": "navigation@3"
         },
         {
+          "command": "extension.shatterRunTestcases",
+          "when": "view == shatter-execution-paths",
+          "group": "inline"
+        },
+        {
+          "command": "extension.shatterRunTestcase",
+          "when": "view == shatter-list-testcases",
+          "group": "inline@1"
+        },
+        {
           "command": "extension.shatterAddTestcase",
           "when": "view == shatter-list-testcases && false",
-          "group": "inline"
+          "group": "inline@2"
         },
         {
           "command": "extension.shatterEditCustomTestcase",
           "when": "view == shatter-list-testcases && viewItem =~ /\\bcustom\\b/",
-          "group": "inline"
+          "group": "inline@3"
         },
         {
           "command": "extension.shatterForkAutoTestcase",
           "when": "view == shatter-list-testcases && viewItem =~ /\\bautotest\\b/",
-          "group": "inline"
-        },
-        {
-          "command": "extension.shatterMakeTestcaseNonPersistent",
-          "when": "view == shatter-list-testcases && viewItem =~ /\\bpersistent\\b/",
-          "group": "inline"
+          "group": "inline@4"
         },
         {
           "command": "extension.shatterMakeTestcasePersistent",
           "when": "view == shatter-list-testcases && !(viewItem =~ /\\bpersistent\\b/)",
-          "group": "inline"
+          "group": "inline@5"
+        },
+        {
+          "command": "extension.shatterMakeTestcaseNonPersistent",
+          "when": "view == shatter-list-testcases && viewItem =~ /\\bpersistent\\b/",
+          "group": "inline@6"
         }
-      ]
+        ]
     },
     "submenus": [
       {

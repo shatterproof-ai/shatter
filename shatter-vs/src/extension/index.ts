@@ -142,6 +142,7 @@ function visit(k: string | number, o: any, depth = 0): CommonDisplayNode {
 
 type FunctionState = {
 	autotest: AutotestResults;
+	specimens: Record<string, Specimental>;	//	Record because Map is not serializable
 };
 
 type FileState = {
@@ -168,8 +169,6 @@ interface ExtensionState {
 	activeFunction?: string;
 	activeCoverage?: CoverageSelection;
 	activeSpecimenId?: string;
-
-	specimens: Record<string, Specimental>;	//	Record because Map is not serializable
 };
 
 interface Providers {
@@ -224,18 +223,60 @@ function asRelativePath(filename: AbsolutePath): RelativePath | undefined {
 	return;
 }
 
+function getActiveStates(extensionState: ExtensionState): {
+	fileState?: FileState,
+	functionState?: FunctionState,
+	functionMeta?: FunctionMeta,
+	specimental?: Specimental,
+} {
+	const activeFilename = extensionState.activeFile;
+	if (!activeFilename) {
+		//	TODO: clear functions list, clusters list, branches list, test cases list
+		return {};
+	}
+
+	const fileState = extensionState.fileStates[activeFilename];
+	if (!fileState || !fileState.functions) {
+		//	TODO: clear what needs clearing
+		return {};
+	}
+
+	const activeFunction = extensionState.activeFunction;
+	if (!activeFunction) {
+		return { fileState };
+	}
+
+	const functionMeta = fileState.functions.find((f) => f.name === activeFunction);
+	if (!functionMeta) {
+		//	this is not necessarily an error because the function may have been deleted
+		return { fileState };
+	}
+
+	const functionState = fileState.functionStates[activeFunction];
+
+	const activeSpecimenId = extensionState.activeSpecimenId;
+	if (!activeSpecimenId) {
+		return { fileState, functionState, functionMeta };
+	}
+
+	const specimental = functionState.specimens[activeSpecimenId];
+	if (!specimental) {
+		return { fileState, functionState, functionMeta };
+	}
+
+	return { fileState, functionState, functionMeta, specimental };
+}
+
 const refresh = (editor: vscode.TextEditor | undefined, extensionState: ExtensionState, providers: Providers) => {
 	const { functionsListProvider, clustersListProvider, testCaseListProvider, testCaseDetailProvider } = providers;
 
-	const filename = extensionState.activeFile;
-	if (!filename) {
-		//	TODO: clear functions list, clusters list, branches list, test cases list
-		return;
-	}
+	const { fileState, functionState, functionMeta, specimental } = getActiveStates(extensionState);
 
-	const fileState = extensionState.fileStates[filename];
-	if (!fileState || !fileState.functions) {
-		//	TODO: clear what needs clearing
+	if (!fileState) {
+		functionsListProvider.refresh([]);
+		clustersListProvider.refresh([]);
+		testCaseListProvider.refresh([]);
+		testCaseDetailProvider.refresh([]);
 		return;
 	}
 
@@ -250,23 +291,26 @@ const refresh = (editor: vscode.TextEditor | undefined, extensionState: Extensio
 
 	functionsListProvider.refresh(nodes);
 
-	if (!extensionState.activeFunction) {
-		return;
-	}
-
-	const func = fileState.functions.find((f) => f.name === extensionState.activeFunction);
-	if (!func) {
-		return;
-	}
-
-	const functionState = fileState.functionStates[extensionState.activeFunction];
 	// if (!functionState) {
 	// console.log(`nonono results for filename "${filename}" and function "${extensionState.activeFunction}" - ${JSON.stringify(fileState.functionStates)}`)
 	// return;
 	// };
 
-	const results = functionState?.autotest;
-	let clusters: ResultCluster[] = results.clusters ?? [];
+	if (!functionState || !functionMeta) {
+		clustersListProvider.refresh([]);
+		testCaseListProvider.refresh([]);
+		testCaseDetailProvider.refresh([]);
+		return;
+	}
+
+	const activeCoverage = extensionState.activeCoverage;
+
+	const results = functionState.autotest;
+	const selectedClusters: ResultCluster[] = (results.clusters ?? [])
+		.filter(c => activeCoverage === undefined
+			|| activeCoverage === 'all'
+			|| (activeCoverage !== 'missed' && activeCoverage.clusterKeys.includes(c.key)));
+
 	if (results) {
 		const nodesByOutcome: Record<Outcome, CommonDisplayNode[]> = {
 			completed: [],
@@ -290,7 +334,7 @@ const refresh = (editor: vscode.TextEditor | undefined, extensionState: Extensio
 		};
 
 		const functionInstrumentedLines = new Set<number>();
-		for (let line = func.startLine; line <= func.endLine; line++) {
+		for (let line = functionMeta.startLine; line <= functionMeta.endLine; line++) {
 			if (functionState.autotest.instrumentedLines.includes(line)) {
 				functionInstrumentedLines.add(line);
 			}
@@ -298,7 +342,7 @@ const refresh = (editor: vscode.TextEditor | undefined, extensionState: Extensio
 
 		const formatter = Intl.NumberFormat("en-US", { style: "percent" });
 		//	TODO: sort by coverage
-		results.clusters.forEach((cluster) => {
+		selectedClusters.forEach((cluster) => {
 			const key = cluster.key.substring(0, 6);
 			countByOutcome[cluster.outcome] += cluster.results.length;
 			cluster.lines.forEach(line => linesByOutcome[cluster.outcome].add(line));
@@ -312,22 +356,6 @@ const refresh = (editor: vscode.TextEditor | undefined, extensionState: Extensio
 		const capitalize = (s: string) => {
 			return s.charAt(0).toUpperCase() + s.slice(1);
 		};
-
-		const coverage = extensionState.activeCoverage;
-		const clusters = (() => {
-			if (!coverage) {
-				return [];
-			}
-			if (coverage === 'all' || coverage === 'missed') {
-				return functionState.autotest.clusters;
-			}
-			if ('clusterKeys' in coverage) {
-				return functionState.autotest.clusters.filter((cluster) => coverage.clusterKeys.includes(cluster.key));
-			}
-			throw new Error(`unhandled coverage selection ${JSON.stringify(coverage)}`);
-		})();
-
-		const mode = coverage === 'missed' ? 'missed' : 'covered';
 
 		const clusterNodes: CommonDisplayNode[] = Object.entries(nodesByOutcome)
 			.map(([outcome, nodes]) => {
@@ -360,29 +388,27 @@ const refresh = (editor: vscode.TextEditor | undefined, extensionState: Extensio
 		clustersListProvider.refresh(clusterNodes);
 		if (editor) {
 			resetDecorations(editor);
-			if (clusters.length > 0) {
-				const covered = new Set(clusters.flatMap((cluster) => cluster.lines));
-				const lines = (() => {
-					if (mode === 'missed') {
-						const uncovered = Array.from(functionInstrumentedLines)
-							.filter((line) => !covered.has(line))
-							.sort((a, b) => a - b);
-						return uncovered;
-					}
-					return Array.from(covered).sort((a, b) => a - b);
-				})();
-
-				function* linerator() {
-					for (const line of lines ?? []) {
-						yield line;
-					}
+			const covered = new Set(selectedClusters.flatMap((cluster) => cluster.lines));
+			const lines = (() => {
+				if (activeCoverage === 'missed') {
+					const uncovered = Array.from(functionInstrumentedLines)
+						.filter((line) => !covered.has(line))
+						.sort((a, b) => a - b);
+					return uncovered;
 				}
+				return Array.from(covered).sort((a, b) => a - b);
+			})();
 
-				const decorationType = mode === 'covered' ? coveredDecorationType : missedDecorationType;
-
-				//	TODO: replace with function pointer or pubsub or something that doesn't require passing around the editor object
-				highlightLinesInEditor(editor, decorationType, linerator());
+			function* linerator() {
+				for (const line of lines ?? []) {
+					yield line;
+				}
 			}
+
+			const decorationType = activeCoverage === 'missed' ? missedDecorationType : coveredDecorationType;
+
+			//	TODO: replace with function pointer or pubsub or something that doesn't require passing around the editor object
+			highlightLinesInEditor(editor, decorationType, linerator());
 		}
 	}
 
@@ -402,19 +428,18 @@ const refresh = (editor: vscode.TextEditor | undefined, extensionState: Extensio
 		return strung;
 	};
 
-	const activeCoverage = extensionState.activeCoverage;
 	if (activeCoverage === 'missed') {
 		testCaseListProvider.refresh([]);
 		testCaseDetailProvider.refresh([]);
 		return;
 	}
 
-	const testCaseListNodes: CommonDisplayNode[] = clusters
+	const testCaseListNodes: CommonDisplayNode[] = selectedClusters
 		.filter(c => activeCoverage === undefined
 			|| activeCoverage === 'all'
 			|| activeCoverage.clusterKeys.includes(c.key))
 		.flatMap(c => c.results.map((result, i): CommonDisplayNode => {
-			const specimental = extensionState.specimens[result.specimenId];
+			const specimental = functionState.specimens[result.specimenId];
 
 			const contextPieces: string[] = [];
 
@@ -439,25 +464,19 @@ const refresh = (editor: vscode.TextEditor | undefined, extensionState: Extensio
 		}));
 	testCaseListProvider.refresh(testCaseListNodes);
 
-	if (!extensionState.activeSpecimenId) {
-		return;
-	}
-	const rr = /(?<which>parameters|result):\/\/(?<specimenId>[a-z0-9]+)/;
-	const match = rr.exec(extensionState.activeSpecimenId);
-	if (!match || !match.groups) {
+	if (!specimental) {
 		return;
 	}
 
-	const which = match.groups.which;
-	const clusterKey = match.groups.clusterKey;
-	const specimenId = match.groups.specimenId;
+	const result = (() => {
+		for (const cluster of selectedClusters) {
+			const result = cluster.results.find(c => c.specimenId === specimental.specimen.id);
+			if (result) {
+				return result;
+			}
+		}
+	})();
 
-	const cluster = functionState.autotest.clusters.find((c) => c.key === clusterKey);
-	if (!cluster || !specimenId) {
-		return;
-	}
-
-	const result = cluster.results.find((r) => r.specimenId === specimenId);
 	if (!result) {
 		return;
 	}
@@ -468,13 +487,12 @@ const refresh = (editor: vscode.TextEditor | undefined, extensionState: Extensio
 	};
 	const resultNode = visit('Result', result.output ?? result.error, 3);
 
-	const specimen = cluster.specimens.find(s => s.id === result.specimenId);
-	if (!specimen) {
+	if (!specimental.specimen) {
 		console.error(`Unable to find specimen ${result.specimenId}`);
 		return;
 	}
 
-	const parametersNode = visit('Parameters', specimen.parameters, 3);
+	const parametersNode = visit('Parameters', specimental.specimen.parameters, 3);
 	const testCaseNodes: CommonDisplayNode[] = [
 		metadataNode,
 		parametersNode,
@@ -703,7 +721,6 @@ How to select test cases?  Per function, per cluster, per test case
 function cleanUpExtensionState(initial: Partial<ExtensionState>) {
 	const fullExtensionState: ExtensionState = {
 		fileStates: {},
-		specimens: {},
 		...initial,
 	};
 
@@ -711,14 +728,59 @@ function cleanUpExtensionState(initial: Partial<ExtensionState>) {
 		fullExtensionState.fileStates = {};
 	}
 
-	if (!fullExtensionState.specimens) {
-		fullExtensionState.specimens = {};
+	for (const [filename, fileState] of Object.entries(fullExtensionState.fileStates)) {
+		if (! fileState.functions) {
+			fileState.functions = [];
+		}
+		if (! fileState.functionStates) {
+			fileState.functionStates = {};
+		}
+		for (const [functionName, functionState] of Object.entries(fileState.functionStates)) {
+			if (!functionState.specimens) {
+				//	at least once there was a failed serialization and the specimens property wasn't present
+				functionState.specimens = {};
+			}
+		}
 	}
 
 	return fullExtensionState;
 }
 
-const autotestStorageStateKey = "autotestState";
+function onPersistedSpecimenLoad(defaultWorkspaceRoot: AbsolutePath, extensionState: ExtensionState, specimen: Specimen, maybeSpecimenId: string, absoluteSpecimenFilepath: AbsolutePath | undefined) {
+	const absoluteSourceFilepath = asAbsolutePath(defaultWorkspaceRoot, specimen.fileUnderTest);
+	if (!extensionState.fileStates[absoluteSourceFilepath]) {
+		extensionState.fileStates[absoluteSourceFilepath] = {
+			functions: [],
+			functionStates: {},
+		};
+	}
+
+	const fileState = extensionState.fileStates[absoluteSourceFilepath];
+	if (!fileState.functionStates[specimen.functionName]) {
+		fileState.functionStates[specimen.functionName] = {
+			autotest: {
+				clusters: [],
+				instrumentedLines: [],
+			},
+			specimens: {},
+		};
+	}
+
+	const functionState = fileState.functionStates[specimen.functionName];
+	const existing = functionState.specimens[maybeSpecimenId];
+	if (existing) {
+		console.log(`Unexpectedly (?) found existing specimen ${maybeSpecimenId} for ${specimen.functionName} in ${absoluteSourceFilepath}`);
+	}
+
+	functionState.specimens[specimen.id] = {
+		fileUnderTest: absoluteSourceFilepath,
+		specimenPath: absoluteSpecimenFilepath,
+		clusterKey: undefined,
+		specimen,
+	};
+}
+
+const autotestStorageStateKey = "autotestState_0";
 export async function activate(context: vscode.ExtensionContext) {
 	//	TODO: this all needs to deal in URIs
 	const workspaceRoots: AbsolutePath[] = vscode.workspace.workspaceFolders?.map((f) => f.uri.fsPath as AbsolutePath) ?? [];
@@ -738,16 +800,18 @@ export async function activate(context: vscode.ExtensionContext) {
 				const ignoreChange = true;
 				const ignoreDelete = false;
 				const watcher = vscode.workspace.createFileSystemWatcher(`${configuration.testsDirectory}/**/*.json`, ignoreCreate, ignoreChange, ignoreDelete);
-				watcher.onDidCreate((e) => {
-					const filepath = e.fsPath;
-					const maybeSpecimenId = path.basename(filepath).substring(0, '.json'.length);
-					if (isSpecimenId(maybeSpecimenId)) {
-						const existing = extensionState.specimens[maybeSpecimenId];
-						if (existing) {
-							throw new Error(`Specimen ${maybeSpecimenId} already exists so why are we creating file ${filepath}?`);
-						} else {
 
+				watcher.onDidCreate((e) => {
+					const absoluteSpecimenFilepath = e.fsPath as AbsolutePath;
+					const maybeSpecimenId = path.basename(absoluteSpecimenFilepath).substring(0, '.json'.length);
+					if (isSpecimenId(maybeSpecimenId)) {
+						const specimen = loadPersistedSpecimen(absoluteSpecimenFilepath as AbsolutePath);
+
+						if (!defaultWorkspaceRoot) {
+							throw new Error(`Unexpectedly no workspace root for ${absoluteSpecimenFilepath}`);
 						}
+
+						onPersistedSpecimenLoad(defaultWorkspaceRoot, extensionState, specimen, maybeSpecimenId, absoluteSpecimenFilepath);
 					}
 				});
 
@@ -755,8 +819,16 @@ export async function activate(context: vscode.ExtensionContext) {
 					const filepath = e.fsPath;
 					const maybeSpecimenId = path.basename(filepath).substring(0, '.json'.length);
 					if (isSpecimenId(maybeSpecimenId)) {
-						//	TODO: does deleting the file mean we should delete the specimen?  or just mark it not persistent?
-						delete extensionState.specimens[maybeSpecimenId];
+						//	deleting the file means we should mark it not persistent
+						for (const [absoluteFileName, fileState] of Object.entries(extensionState.fileStates)) {
+							for (const [functionName, functionState] of Object.entries(fileState.functionStates)) {
+								const specimen = functionState.specimens[maybeSpecimenId];
+								if (specimen?.specimenPath === filepath) {
+									delete functionState.specimens[maybeSpecimenId];
+									return;
+								}
+							}
+						}
 					}
 				});
 
@@ -765,9 +837,8 @@ export async function activate(context: vscode.ExtensionContext) {
 				specimenBaseDirectory = asAbsolutePath(defaultWorkspaceRoot, configuration.testsDirectory);
 				const initialPersistentSpecimens = loadPersistedSpecimens(defaultWorkspaceRoot, specimenBaseDirectory);
 				initialPersistentSpecimens.forEach((specimental, id) => {
-					extensionState.specimens[id] = specimental;
+					onPersistedSpecimenLoad(defaultWorkspaceRoot, extensionState, specimental.specimen, id, specimental.specimenPath);
 				});
-
 			}
 		}
 
@@ -909,7 +980,7 @@ export async function activate(context: vscode.ExtensionContext) {
 				return;
 			}
 
-			const specimental = extensionState.specimens[specimenId];
+			const { specimental } = getActiveStates(extensionState);
 			if (!specimental || specimental.specimenPath) {	//	already persisted
 				return;
 			}
@@ -926,7 +997,7 @@ export async function activate(context: vscode.ExtensionContext) {
 				return;
 			}
 
-			const specimental = extensionState.specimens[specimenId];
+			const { specimental } = getActiveStates(extensionState);
 			if (!specimental || !specimental.specimenPath) {	//	already persisted
 				return;
 			}
@@ -946,7 +1017,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
 			const specimenPath = ((): AbsolutePath | undefined => {
 				//	if it's a generated specimen, fork to a custom specimen
-				const specimental = extensionState.specimens[specimenId];
+				const { specimental } = getActiveStates(extensionState);
 				if (!specimental) {
 					return;
 				}
@@ -973,8 +1044,8 @@ export async function activate(context: vscode.ExtensionContext) {
 				return;
 			}
 
-			const specimental = extensionState.specimens[specimenId];
-			if (!specimental) {
+			const { specimental, functionState } = getActiveStates(extensionState);
+			if (!specimental || !functionState) {
 				//TODO: error
 				return;
 			}
@@ -992,7 +1063,7 @@ export async function activate(context: vscode.ExtensionContext) {
 				return;
 			}
 			const newId: SpecimenId = `custom-${newTestCaseName}`;
-			if (newId in extensionState.specimens) {
+			if (newId in functionState.specimens) {
 				//TODO: error
 				return;
 			}
@@ -1002,7 +1073,7 @@ export async function activate(context: vscode.ExtensionContext) {
 				// function forkTest(storageBaseDirectory: AbsolutePath, specimental: Specimental, sourceFileUnderTestPath: RelativePath, testCaseName: SpecimenId) {
 
 				const newSpecimental = forkTest(specimenBaseDirectory, specimental, newId, newTestCaseName);
-				extensionState.specimens[newId] = {
+				functionState.specimens[newId] = {
 					...specimental,
 					clusterKey: specimental.clusterKey,
 					fileUnderTest: specimental.fileUnderTest,
@@ -1021,23 +1092,36 @@ export async function activate(context: vscode.ExtensionContext) {
 			}
 		});
 		context.subscriptions.push(forkTestCaseCommand);
+		
+		const runTestCaseCommand = vscode.commands.registerCommand('extension.shatterRunTestcase', async (node: CommonDisplayNode) => {
+		});
+		context.subscriptions.push(runTestCaseCommand);
+		
+		const runTestCasesCommand = vscode.commands.registerCommand('extension.shatterRunTestcases', async (node: CommonDisplayNode) => {
+		});
+		context.subscriptions.push(runTestCasesCommand);
 
-		context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(editor => {
+		vscode.window.onDidChangeActiveTextEditor(editor => {
 			if (editor?.document.fileName) {
 				updateSelectedFile();
 			}
-		}, null, context.subscriptions));
+		}, null, context.subscriptions);
 
 		//	overkill to refresh on every change?  TODO: see if there's a performance hit; at least we want to regenerate the function list
-		context.subscriptions.push(vscode.workspace.onDidChangeTextDocument(event => {
+		vscode.workspace.onDidChangeTextDocument(event => {
 			const editor = vscode.window.activeTextEditor;
 			if (editor?.document.fileName) {
 				updateSelectedFile();
 			}
-		}, null, context.subscriptions));
+		}, null, context.subscriptions);
 
 		//	TODO
-		vscode.workspace.onDidOpenTextDocument(document => { });
+		vscode.workspace.onDidOpenTextDocument(document => {
+			const editor = vscode.window.activeTextEditor;
+			if (editor?.document.fileName) {
+				updateSelectedFile();
+			}
+		}, null, context.subscriptions);
 		//	TODO: what to do when a document is closed?
 
 		//	TODO: fix the ugly hard-coding of 'src'; that can't be right for a standalone extension
@@ -1181,20 +1265,10 @@ export async function activate(context: vscode.ExtensionContext) {
 					absoluteSourceFilename,
 					relativeSourceFilename,
 					functionName, (results: AutotestResults) => {
-						extensionState.activeFile = absoluteSourceFilename;
-						let filestate: FileState | undefined = extensionState.fileStates[absoluteSourceFilename];
-						if (!filestate) {
-							const functions = findFunctions(absoluteSourceFilename);
-							filestate = {
-								functions,
-								functionStates: {},
-							};
-							extensionState.fileStates[absoluteSourceFilename] = filestate;
+						const { fileState, functionState } = getActiveStates(extensionState);
+						if (!fileState || !functionState) {
+							return;
 						}
-						const functionState: FunctionState = {
-							autotest: results,
-						};
-						filestate.functionStates[functionName] = functionState;
 
 						// console.log(`refreshing function node to display = ${functionName} in ${filename}`);
 						// console.log(`keys ${JSON.stringify(Array.from(Object.keys(filestate.functionStates) ?? []))} => ${JSON.stringify(functionState)}`);
@@ -1208,8 +1282,8 @@ export async function activate(context: vscode.ExtensionContext) {
 
 						results.clusters.forEach((cluster) => {
 							cluster.specimens.forEach((specimen) => {
-								const existing = extensionState.specimens[specimen.id];
-								extensionState.specimens[specimen.id] = {
+								const existing = functionState.specimens[specimen.id];
+								functionState.specimens[specimen.id] = {
 									...existing,
 									clusterKey: cluster.key,
 									specimen,
@@ -1224,8 +1298,8 @@ export async function activate(context: vscode.ExtensionContext) {
 				extensionState.runningAutotestFunction = undefined;
 			}
 		}
-	} catch (e) {
-		console.error(`Unable to load extension ${e}`);
+	} catch (e: any) {
+		console.error(`Unable to load extension ${e}: ${e.stack}`);
 	}
 }
 
