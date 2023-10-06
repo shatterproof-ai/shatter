@@ -4,7 +4,7 @@ import { join } from 'path';
 import * as ts from 'typescript';
 import * as vscode from 'vscode';
 import { AbsolutePath, RelativePath, Specimen, SpecimenId, isRelativePath, isSpecimenId, joinAbsolute } from '../core/common';
-import { AutotestResults, shatterAutotest } from '../core/shatter';
+import { AutotestResults, ResultCluster, shatterAutotest } from '../core/shatter';
 import { Outcome, RunResult } from '../core/supervisor';
 import { FunctionMeta, findFunctions } from '../core/transform';
 
@@ -260,134 +260,129 @@ const refresh = (editor: vscode.TextEditor | undefined, extensionState: Extensio
 	}
 
 	const functionState = fileState.functionStates[extensionState.activeFunction];
-	if (!functionState) {
-		// console.log(`nonono results for filename "${filename}" and function "${extensionState.activeFunction}" - ${JSON.stringify(fileState.functionStates)}`)
-		return;
-	};
+	// if (!functionState) {
+	// console.log(`nonono results for filename "${filename}" and function "${extensionState.activeFunction}" - ${JSON.stringify(fileState.functionStates)}`)
+	// return;
+	// };
 
 	const results = functionState?.autotest;
-	if (!results) {
-		// console.log(`function state keys ${JSON.stringify(Object.keys(fileState.functionStates))}`)
-		// console.log(`function states ${JSON.stringify(fileState.functionStates)}`)
-		// console.log(`file states ${JSON.stringify(extensionState.fileStates)}`)
-		return;
-	}
+	let clusters: ResultCluster[] = results.clusters ?? [];
+	if (results) {
+		const nodesByOutcome: Record<Outcome, CommonDisplayNode[]> = {
+			completed: [],
+			error: [],
+			timeout: [],
+			failed: []
+		};
 
-	const nodesByOutcome: Record<Outcome, CommonDisplayNode[]> = {
-		completed: [],
-		error: [],
-		timeout: [],
-		failed: []
-	};
+		const countByOutcome: Record<Outcome, number> = {
+			completed: 0,
+			error: 0,
+			timeout: 0,
+			failed: 0
+		};
 
-	const countByOutcome: Record<Outcome, number> = {
-		completed: 0,
-		error: 0,
-		timeout: 0,
-		failed: 0
-	};
+		const linesByOutcome: Record<Outcome, Set<number>> = {
+			error: new Set(),
+			completed: new Set(),
+			timeout: new Set(),
+			failed: new Set(),
+		};
 
-	const linesByOutcome: Record<Outcome, Set<number>> = {
-		error: new Set(),
-		completed: new Set(),
-		timeout: new Set(),
-		failed: new Set(),
-	};
-
-	const functionInstrumentedLines = new Set<number>();
-	for (let line = func.startLine; line <= func.endLine; line++) {
-		if (functionState.autotest.instrumentedLines.includes(line)) {
-			functionInstrumentedLines.add(line);
-		}
-	}
-
-	const formatter = Intl.NumberFormat("en-US", { style: "percent" });
-	//	TODO: sort by coverage
-	results.clusters.forEach((cluster) => {
-		const key = cluster.key.substring(0, 6);
-		countByOutcome[cluster.outcome] += cluster.results.length;
-		cluster.lines.forEach(line => linesByOutcome[cluster.outcome].add(line));
-		nodesByOutcome[cluster.outcome].push({
-			//	TODO: skip coverage for timeouts and failures
-			label: `${key} - ${formatter.format(cluster.lines.length / functionInstrumentedLines.size)} coverage (${cluster.results.length} test cases)`,
-			key: `cluster://${cluster.key}`,
-		});
-	});
-
-	const capitalize = (s: string) => {
-		return s.charAt(0).toUpperCase() + s.slice(1);
-	};
-
-	const coverage = extensionState.activeCoverage;
-	const clusters = (() => {
-		if (!coverage) {
-			return [];
-		}
-		if (coverage === 'all' || coverage === 'missed') {
-			return functionState.autotest.clusters;
-		}
-		if ('clusterKeys' in coverage) {
-			return functionState.autotest.clusters.filter((cluster) => coverage.clusterKeys.includes(cluster.key));
-		}
-		throw new Error(`unhandled coverage selection ${JSON.stringify(coverage)}`);
-	})();
-
-	const mode = coverage === 'missed' ? 'missed' : 'covered';
-
-	const clusterNodes: CommonDisplayNode[] = Object.entries(nodesByOutcome)
-		.map(([outcome, nodes]) => {
-			const baseLabel = capitalize(outcome);
-			const coverageText = (() => {
-				if (outcome === 'timeout' || outcome === 'failed') {
-					return "";
-				}
-				const coverage = linesByOutcome[outcome as Outcome].size / functionInstrumentedLines.size;
-				return `- ${formatter.format(coverage)} coverage `;
-			})();
-
-			return {
-				label: `${baseLabel} ${coverageText}(${countByOutcome[outcome as Outcome] ?? 0} test case(s))`,
-				children: nodes,
-			};
-		});
-
-	const allCoveredLines = new Set<number>();
-	Object.values(linesByOutcome).forEach((lines) => {
-		lines.forEach((line) => allCoveredLines.add(line));
-	});
-	const totalCoverageFraction = allCoveredLines.size / functionInstrumentedLines.size;
-	const uncoveredFraction = 1 - totalCoverageFraction;
-	clusterNodes.push({
-		label: `Not covered ${formatter.format(uncoveredFraction)} (${functionInstrumentedLines.size - allCoveredLines.size} lines)`,
-		key: "missed://",
-	});
-
-	clustersListProvider.refresh(clusterNodes);
-
-	if (editor) {
-		resetDecorations(editor);
-		if (clusters.length > 0) {
-			const covered = new Set(clusters.flatMap((cluster) => cluster.lines));
-			const lines = (() => {
-				if (mode === 'missed') {
-					const uncovered = Array.from(functionInstrumentedLines)
-						.filter((line) => !covered.has(line))
-						.sort((a, b) => a - b);
-					return uncovered;
-				}
-				return Array.from(covered).sort((a, b) => a - b);
-			})();
-
-			function* linerator() {
-				for (const line of lines ?? []) {
-					yield line;
-				}
+		const functionInstrumentedLines = new Set<number>();
+		for (let line = func.startLine; line <= func.endLine; line++) {
+			if (functionState.autotest.instrumentedLines.includes(line)) {
+				functionInstrumentedLines.add(line);
 			}
+		}
 
-			const decorationType = mode === 'covered' ? coveredDecorationType : missedDecorationType;
+		const formatter = Intl.NumberFormat("en-US", { style: "percent" });
+		//	TODO: sort by coverage
+		results.clusters.forEach((cluster) => {
+			const key = cluster.key.substring(0, 6);
+			countByOutcome[cluster.outcome] += cluster.results.length;
+			cluster.lines.forEach(line => linesByOutcome[cluster.outcome].add(line));
+			nodesByOutcome[cluster.outcome].push({
+				//	TODO: skip coverage for timeouts and failures
+				label: `${key} - ${formatter.format(cluster.lines.length / functionInstrumentedLines.size)} coverage (${cluster.results.length} test cases)`,
+				key: `cluster://${cluster.key}`,
+			});
+		});
 
-			//	TODO: replace with function pointer or pubsub or something that doesn't require passing around the editor object
-			highlightLinesInEditor(editor, decorationType, linerator());
+		const capitalize = (s: string) => {
+			return s.charAt(0).toUpperCase() + s.slice(1);
+		};
+
+		const coverage = extensionState.activeCoverage;
+		const clusters = (() => {
+			if (!coverage) {
+				return [];
+			}
+			if (coverage === 'all' || coverage === 'missed') {
+				return functionState.autotest.clusters;
+			}
+			if ('clusterKeys' in coverage) {
+				return functionState.autotest.clusters.filter((cluster) => coverage.clusterKeys.includes(cluster.key));
+			}
+			throw new Error(`unhandled coverage selection ${JSON.stringify(coverage)}`);
+		})();
+
+		const mode = coverage === 'missed' ? 'missed' : 'covered';
+
+		const clusterNodes: CommonDisplayNode[] = Object.entries(nodesByOutcome)
+			.map(([outcome, nodes]) => {
+				const baseLabel = capitalize(outcome);
+				const coverageText = (() => {
+					if (outcome === 'timeout' || outcome === 'failed') {
+						return "";
+					}
+					const coverage = linesByOutcome[outcome as Outcome].size / functionInstrumentedLines.size;
+					return `- ${formatter.format(coverage)} coverage `;
+				})();
+
+				return {
+					label: `${baseLabel} ${coverageText}(${countByOutcome[outcome as Outcome] ?? 0} test case(s))`,
+					children: nodes,
+				};
+			});
+
+		const allCoveredLines = new Set<number>();
+		Object.values(linesByOutcome).forEach((lines) => {
+			lines.forEach((line) => allCoveredLines.add(line));
+		});
+		const totalCoverageFraction = allCoveredLines.size / functionInstrumentedLines.size;
+		const uncoveredFraction = 1 - totalCoverageFraction;
+		clusterNodes.push({
+			label: `Not covered ${formatter.format(uncoveredFraction)} (${functionInstrumentedLines.size - allCoveredLines.size} lines)`,
+			key: "missed://",
+		});
+
+		clustersListProvider.refresh(clusterNodes);
+		if (editor) {
+			resetDecorations(editor);
+			if (clusters.length > 0) {
+				const covered = new Set(clusters.flatMap((cluster) => cluster.lines));
+				const lines = (() => {
+					if (mode === 'missed') {
+						const uncovered = Array.from(functionInstrumentedLines)
+							.filter((line) => !covered.has(line))
+							.sort((a, b) => a - b);
+						return uncovered;
+					}
+					return Array.from(covered).sort((a, b) => a - b);
+				})();
+
+				function* linerator() {
+					for (const line of lines ?? []) {
+						yield line;
+					}
+				}
+
+				const decorationType = mode === 'covered' ? coveredDecorationType : missedDecorationType;
+
+				//	TODO: replace with function pointer or pubsub or something that doesn't require passing around the editor object
+				highlightLinesInEditor(editor, decorationType, linerator());
+			}
 		}
 	}
 
@@ -407,38 +402,41 @@ const refresh = (editor: vscode.TextEditor | undefined, extensionState: Extensio
 		return strung;
 	};
 
-	if (extensionState.activeCoverage === 'missed') {
+	const activeCoverage = extensionState.activeCoverage;
+	if (activeCoverage === 'missed') {
 		testCaseListProvider.refresh([]);
 		testCaseDetailProvider.refresh([]);
 		return;
 	}
 
-	const specimEntries = clusters.flatMap(c =>
-		c.specimens.map((specimen): [string, Specimen] => [specimen.id, specimen])
-	);
-	const testCaseListNodes: CommonDisplayNode[] = clusters.flatMap(c => c.results.map((result, i) => {
-		const specimental = extensionState.specimens[result.specimenId];
+	const testCaseListNodes: CommonDisplayNode[] = clusters
+		.filter(c => activeCoverage === undefined
+			|| activeCoverage === 'all'
+			|| activeCoverage.clusterKeys.includes(c.key))
+		.flatMap(c => c.results.map((result, i): CommonDisplayNode => {
+			const specimental = extensionState.specimens[result.specimenId];
 
-		const contextPieces: string[] = [];
+			const contextPieces: string[] = [];
 
-		if (specimental?.specimen?.id.startsWith('custom')) {
-			contextPieces.push('custom');
-		} else {
-			contextPieces.push('autotest');
-		}
+			if (specimental?.specimen?.id.startsWith('custom')) {
+				contextPieces.push('custom');
+			} else {
+				contextPieces.push('autotest');
+			}
 
-		if (specimental?.specimenPath) {
-			contextPieces.push('persistent');
-		}
+			if (specimental?.specimenPath) {
+				contextPieces.push('persistent');
+			}
 
-		const parametersNode = {
-			label: shortString(result.serializedParameterValues),
-			key: result.specimenId,
-			state: specimental?.specimenPath ? 'pinned' : 'unpinned',
-			contextValue: contextPieces.join(','),
-		};
-		return parametersNode;
-	}));
+			const state = specimental?.specimenPath ? 'pinned' : 'unpinned';
+			const parametersNode = {
+				label: shortString(result.serializedParameterValues),
+				key: result.specimenId,
+				state,
+				contextValue: contextPieces.join(','),
+			};
+			return parametersNode;
+		}));
 	testCaseListProvider.refresh(testCaseListNodes);
 
 	if (!extensionState.activeSpecimenId) {
@@ -700,6 +698,26 @@ How to select test cases?  Per function, per cluster, per test case
 
 */
 
+//	this exists primarily for the situation where the ExtensionState that was
+//	persisted has a different structure than what the code uses now
+function cleanUpExtensionState(initial: Partial<ExtensionState>) {
+	const fullExtensionState: ExtensionState = {
+		fileStates: {},
+		specimens: {},
+		...initial,
+	};
+
+	if (!fullExtensionState.fileStates) {
+		fullExtensionState.fileStates = {};
+	}
+
+	if (!fullExtensionState.specimens) {
+		fullExtensionState.specimens = {};
+	}
+
+	return fullExtensionState;
+}
+
 const autotestStorageStateKey = "autotestState";
 export async function activate(context: vscode.ExtensionContext) {
 	//	TODO: this all needs to deal in URIs
@@ -707,10 +725,9 @@ export async function activate(context: vscode.ExtensionContext) {
 	const defaultWorkspaceRoot: AbsolutePath | undefined = workspaceRoots[0];
 	let configuration: ProjectConfiguration = {};
 	let specimenBaseDirectory: AbsolutePath | undefined = undefined;
-	const extensionState: ExtensionState = {
-		fileStates: {},
-		specimens: {},
-	};
+
+	const extensionState: ExtensionState = cleanUpExtensionState(context.workspaceState.get(autotestStorageStateKey, {}));
+
 	try {
 		if (defaultWorkspaceRoot) {
 			configuration = await readProjectConfiguration(defaultWorkspaceRoot);
@@ -779,8 +796,8 @@ export async function activate(context: vscode.ExtensionContext) {
 				title: 'Test Case Detail',
 			},
 			stateIcons: {
-				'pinned': '../../resources/pin.svg',
-				'unpinned': '../../../resources/unpin.svg',
+				'pinned': context.asAbsolutePath('resources/pin.svg'),
+				'unpinned': context.asAbsolutePath('resources/unpin.svg'),
 			}
 		});
 		context.subscriptions.push(
@@ -788,7 +805,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
 		const testCaseDetailProvider = new CommonTreeDataProvider({
 			stateIcons: {
-				persistent: 'media/pin.svg',
+				persistent: context.asAbsolutePath('resources/pin.svg'),
 			}
 		});
 		context.subscriptions.push(
