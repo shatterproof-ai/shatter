@@ -5,7 +5,7 @@ import * as ts from 'typescript';
 import * as vscode from 'vscode';
 import { AbsolutePath, RelativePath, SpecimenId, isRelativePath, isSpecimenId } from '../core/common';
 import { FunctionMeta } from '../core/transform';
-import { CoverageSelection, ExtensionState, cleanUpExtensionState, getActiveStates, onPersistedSpecimenLoad } from './common';
+import { CoverageSelection, ExtensionState, Specimental, cleanUpExtensionState, getActiveStates, onPersistedSpecimenLoad } from './common';
 import { CommonDisplayNode, DisplayProvider, Highlighter, doSelectCluster, doSelectFile, doSelectFunction, doSelectTestCase, refresh } from './display';
 import { forkTest, loadPersistedSpecimen, loadPersistedSpecimens, saveTest } from './persistence';
 import { TestLifecycle, autotestFunction } from './run';
@@ -468,13 +468,19 @@ export async function activate(context: vscode.ExtensionContext) {
 				//TODO: error
 				return;
 			}
+
+			const testCaseNamePattern = /^[a-z0-9_-.]+$/;
+			function isValidTestCaseName(s:string|undefined) {
+				return s?.match(testCaseNamePattern) !== null;
+			}
+
 			//	ask for a name
 			//	copy to that name
 			const newTestCaseName = await vscode.window.showInputBox({
-				prompt: 'Enter a name for the test case',
+				prompt: `Enter a name for the test case matching ${testCaseNamePattern}`,
 				placeHolder: 'Custom test case name',
 				//	TODO: make sure it's a valid filename; limit the possible values?
-				validateInput: (value) => value !== undefined && value.trim().length > 0 ? undefined : 'Please enter a name for the test case',
+				validateInput: (value) => isValidTestCaseName(value) ? undefined : 'Please enter a name for the test case',
 			});
 
 			if (!newTestCaseName) {
@@ -488,16 +494,37 @@ export async function activate(context: vscode.ExtensionContext) {
 			}
 
 			//	if persistable and the base test is already persisted
-			if (specimenBaseDirectory && specimental.fileUnderTest) {
+			if (specimenBaseDirectory) {
 				// function forkTest(storageBaseDirectory: AbsolutePath, specimental: Specimental, sourceFileUnderTestPath: RelativePath, testCaseName: SpecimenId) {
 
-				const newSpecimental = forkTest(specimenBaseDirectory, specimental, newId, newTestCaseName);
-				functionState.specimens[newId] = {
-					...specimental,
-					clusterKey: specimental.clusterKey,
-					fileUnderTest: specimental.fileUnderTest,
-					specimen: specimental.specimen,
-				};
+
+				let newSpecimental: Specimental | undefined = undefined;
+				if (specimental.fileUnderTest) {
+					//	forking a persistent test
+					newSpecimental = forkTest(specimenBaseDirectory, specimental, newId, newTestCaseName);
+					functionState.specimens[newId] = {
+						...specimental,
+						clusterKey: specimental.clusterKey,
+						fileUnderTest: specimental.fileUnderTest,
+						specimen: specimental.specimen,
+					};
+				} else {
+					//	forking a transient test
+					newSpecimental = {
+						...specimental,
+						specimen: {
+							...specimental.specimen,
+							id: newId,
+							type: 'custom',
+							name: newTestCaseName,
+						},
+						clusterKey: specimental.clusterKey,
+						fileUnderTest: specimental.fileUnderTest,
+					};
+					const specimenFileAbsolutePath = saveTest(specimenBaseDirectory, newSpecimental);
+					newSpecimental.specimenPath = specimenFileAbsolutePath;
+				}
+
 				if (vscode.window.activeTextEditor?.document.languageId === 'typescript') {
 					refresh(extensionState, providers, highlighter);
 					if (newSpecimental.specimenPath && fs.existsSync(newSpecimental.specimenPath)) {
