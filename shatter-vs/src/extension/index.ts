@@ -576,22 +576,6 @@ export async function activate(context: vscode.ExtensionContext) {
 		});
 		context.subscriptions.push(autotestFromFunctionViewContainerMenu);
 
-		// vscode.languages.registerCodeActionsProvider(
-		// 	{ scheme: 'file', language: 'typescript' },
-		// 	{
-		// 		provideCodeActions: (document, range) => {
-		// 			console.log(`provideCodeActions called`);
-		// 			return [
-		// 				{
-		// 					command: 'extension.shatterAutotestContextFromEditor',
-		// 					title: 'Shatter Autotest',
-		// 					tooltip: 'Generate autotest for selected function',
-		// 				},
-		// 			];
-		// 		},
-		// 	}
-		// );
-
 		const retestCommand = await vscode.commands.registerCommand('extension.shatterRetestFromEditorContextMenu', async () => {
 			console.log(`there was an attempt`);
 		});
@@ -606,23 +590,6 @@ export async function activate(context: vscode.ExtensionContext) {
 			console.log(`there was an attempt`);
 		});
 		context.subscriptions.push(shatterAddTestcase);
-
-		// vscode.languages.registerCodeActionsProvider(
-		// 	{ scheme: 'file', language: 'typescript' },
-		// 	{
-		// 		provideCodeActions: (document, range) => {
-		// 			console.log(`provideCodeActions called`);
-		// 			return [
-		// 				{
-		// 					command: 'extension.shatterRetestContext',
-		// 					title: 'Shatter Retest',
-		// 					tooltip: 'Retest selected function',
-		// 				},
-		// 			];
-		// 		},
-		// 	}
-		// );
-
 
 		if (vscode.window.activeTextEditor?.document.languageId === 'typescript') {
 			updateSelectedFile();

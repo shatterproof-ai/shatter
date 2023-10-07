@@ -1,3 +1,4 @@
+import { AbsolutePath } from "../core/common";
 import { ResultCluster } from "../core/shatter";
 import { Outcome } from "../core/supervisor";
 import { findFunctions } from "../core/transform";

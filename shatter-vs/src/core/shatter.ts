@@ -914,21 +914,6 @@ function* weed(maxShrinkGenerations: number, clustersByKey: Map<string, ResultCl
     }
 }
 
-/*
-if (options?.storageBaseDirectory) {
-    console.log(`Saving clusters to ${storageBaseDirectory}`);
-    saveClusters(inputFile, storageBaseDirectory, functionName, clusters);
-}
-
-console.log(`Finished after ${count} iterations and ${Date.now() - startTime}ms with ${allExecutedLines.size}/${introspectionContext.instrumentedLines.size} lines executed; ${JSON.stringify(source.stats())}`);
-
-const sortNums = (a: number, b: number) => a - b;
-return {
-    instrumented: Array.from(introspectionContext.instrumentedLines).sort(sortNums),
-    executed: Array.from(allExecutedLines).sort(sortNums),
-};
-*/
-
 function sortClusters(clusters: ResultCluster[]) {
     const preferredOutcomeOrder: Outcome[] = ['failed', 'error', 'timeout', 'completed'];
     clusters.sort((a, b) => {
@@ -1065,13 +1050,8 @@ export function writeInstrumented(sourceFile: ts.SourceFile,
         compilerOptions,
     });
 
-    // const sourceMap = transpilationOutput.sourceMapText;
-    // console.log(`sourceMap = ${sourceMap}`);
-
-    // const modifiedSourcefilePath2 = join(tempdir, 'temp2.js');
     const executorScriptJs = modifiedSourcefilePath.replace(/\.tsx?$/, '.js');
     const executorScriptJs2 = modifiedSourcefilePath.replace(/\.tsx?$/, '2.js');
-    // writeFileSync(executorScriptJs, transpilationOutput.outputText);
     writeFileSync(executorScriptJs2, transpilationOutput.outputText);
 
     const modifiedProgram = ts.createProgram([modifiedSourcefilePath], compilerOptions);
