@@ -267,7 +267,9 @@ function getActiveStates(extensionState: ExtensionState): {
 	return { fileState, functionState, functionMeta, specimental };
 }
 
-const refresh = (editor: vscode.TextEditor | undefined, extensionState: ExtensionState, providers: Providers) => {
+type Highlighter = (decoration: 'covered' | 'missed', liner: () => Generator<number, void, unknown>) => void;
+
+const refresh = (extensionState: ExtensionState, providers: Providers, highlighter: Highlighter) => {
 	const { functionsListProvider, clustersListProvider, testCaseListProvider, testCaseDetailProvider } = providers;
 
 	const { fileState, functionState, functionMeta, specimental } = getActiveStates(extensionState);
@@ -386,8 +388,8 @@ const refresh = (editor: vscode.TextEditor | undefined, extensionState: Extensio
 		});
 
 		clustersListProvider.refresh(clusterNodes);
-		if (editor) {
-			resetDecorations(editor);
+
+		function* linerator() {
 			const covered = new Set(selectedClusters.flatMap((cluster) => cluster.lines));
 			const lines = (() => {
 				if (activeCoverage === 'missed') {
@@ -399,17 +401,11 @@ const refresh = (editor: vscode.TextEditor | undefined, extensionState: Extensio
 				return Array.from(covered).sort((a, b) => a - b);
 			})();
 
-			function* linerator() {
-				for (const line of lines ?? []) {
-					yield line;
-				}
+			for (const line of lines ?? []) {
+				yield line;
 			}
-
-			const decorationType = activeCoverage === 'missed' ? missedDecorationType : coveredDecorationType;
-
-			//	TODO: replace with function pointer or pubsub or something that doesn't require passing around the editor object
-			highlightLinesInEditor(editor, decorationType, linerator());
 		}
+		highlighter(activeCoverage === 'missed' ? 'missed' : 'covered', linerator);
 	}
 
 	const shortString = (a: any) => {
@@ -502,7 +498,7 @@ const refresh = (editor: vscode.TextEditor | undefined, extensionState: Extensio
 	testCaseDetailProvider.refresh(testCaseNodes);
 };
 
-const doSelectFunction = (editor: vscode.TextEditor, extensionState: ExtensionState, providers: Providers, functionName: string) => {
+const doSelectFunction = (highlighter: Highlighter, extensionState: ExtensionState, providers: Providers, functionName: string) => {
 	if (!extensionState.activeFile) {
 		//	TODO: shouldn't happen
 		return;
@@ -521,10 +517,10 @@ const doSelectFunction = (editor: vscode.TextEditor, extensionState: ExtensionSt
 		extensionState.activeCoverage = undefined;
 		extensionState.activeFunction = undefined;
 	}
-	refresh(editor, extensionState, providers);
+	refresh(extensionState, providers, highlighter);
 };
 
-const doSelectCluster = (editor: vscode.TextEditor, extensionState: ExtensionState, providers: Providers,
+const doSelectCluster = (highlighter: Highlighter, extensionState: ExtensionState, providers: Providers,
 	coverage: CoverageSelection) => {
 	if (!extensionState.activeFile) {
 		//	TODO: shouldn't happen
@@ -556,10 +552,10 @@ const doSelectCluster = (editor: vscode.TextEditor, extensionState: ExtensionSta
 	}
 
 	extensionState.activeCoverage = coverage;
-	refresh(editor, extensionState, providers);
+	refresh(extensionState, providers, highlighter);
 };
 
-const doSelectTestCase = (editor: vscode.TextEditor, extensionState: ExtensionState, providers: Providers,
+const doSelectTestCase = (highlighter: Highlighter, extensionState: ExtensionState, providers: Providers,
 	specimenId: string) => {
 	if (!extensionState.activeFile) {
 		return;
@@ -590,7 +586,7 @@ const doSelectTestCase = (editor: vscode.TextEditor, extensionState: ExtensionSt
 	}
 
 	extensionState.activeSpecimenId = specimenId;
-	refresh(editor, extensionState, providers);
+	refresh(extensionState, providers, highlighter);
 };
 
 function highlightLinesInEditor(editor: vscode.TextEditor | undefined, decorationType: vscode.TextEditorDecorationType, liner: Generator<number, void, unknown>) {
@@ -715,10 +711,10 @@ function cleanUpExtensionState(initial: Partial<ExtensionState>) {
 	}
 
 	for (const [filename, fileState] of Object.entries(fullExtensionState.fileStates)) {
-		if (! fileState.functions) {
+		if (!fileState.functions) {
 			fileState.functions = [];
 		}
-		if (! fileState.functionStates) {
+		if (!fileState.functionStates) {
 			fileState.functionStates = {};
 		}
 		for (const [functionName, functionState] of Object.entries(fileState.functionStates)) {
@@ -766,6 +762,23 @@ function onPersistedSpecimenLoad(defaultWorkspaceRoot: AbsolutePath, extensionSt
 	};
 }
 
+function highlighterFromEditor(): Highlighter {
+	const editor = vscode.window.activeTextEditor;
+	if (editor) {
+		function doHighlighting(decoration: 'covered' | 'missed', linerator: () => Generator<number, void, unknown>) {
+
+			const decorationType = decoration === 'missed' ? missedDecorationType : coveredDecorationType;
+
+			//	TODO: replace with function pointer or pubsub or something that doesn't require passing around the editor object
+			highlightLinesInEditor(editor, decorationType, linerator());
+		}
+		return doHighlighting;
+	}
+
+	//	nothing to do
+	return () => { };
+}
+
 const autotestStorageStateKey = "autotestState_0";
 export async function activate(context: vscode.ExtensionContext) {
 	//	TODO: this all needs to deal in URIs
@@ -775,6 +788,8 @@ export async function activate(context: vscode.ExtensionContext) {
 	let specimenBaseDirectory: AbsolutePath | undefined = undefined;
 
 	const extensionState: ExtensionState = cleanUpExtensionState(context.workspaceState.get(autotestStorageStateKey, {}));
+
+	const highlighter = highlighterFromEditor();
 
 	try {
 		if (defaultWorkspaceRoot) {
@@ -891,7 +906,7 @@ export async function activate(context: vscode.ExtensionContext) {
 				return;
 			}
 			if (vscode.window.activeTextEditor?.document.languageId === 'typescript') {
-				doSelectFile(vscode.window.activeTextEditor, extensionState, filename as AbsolutePath, providers);
+				doSelectFile(highlighter, extensionState, filename as AbsolutePath, providers);
 			}
 		};
 
@@ -899,7 +914,7 @@ export async function activate(context: vscode.ExtensionContext) {
 		const doSelectFunctionCommand = (node: CommonDisplayNode) => {
 			if (vscode.window.activeTextEditor?.document.languageId === 'typescript') {
 				const functionName: string = node.key || "";
-				doSelectFunction(vscode.window.activeTextEditor, extensionState, providers, functionName);
+				doSelectFunction(highlighter, extensionState, providers, functionName);
 			}
 		};
 
@@ -921,7 +936,7 @@ export async function activate(context: vscode.ExtensionContext) {
 					}
 				})();
 				if (selection) {
-					doSelectCluster(vscode.window.activeTextEditor, extensionState, providers, selection);
+					doSelectCluster(highlighter, extensionState, providers, selection);
 				}
 			}
 		};
@@ -929,7 +944,7 @@ export async function activate(context: vscode.ExtensionContext) {
 		const doSelectTestCaseCommand = (node: CommonDisplayNode) => {
 			if (vscode.window.activeTextEditor?.document.languageId === 'typescript') {
 				const specimenId: string = node.key || "";
-				doSelectTestCase(vscode.window.activeTextEditor, extensionState, providers, specimenId);
+				doSelectTestCase(highlighter, extensionState, providers, specimenId);
 			}
 		};
 
@@ -973,7 +988,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
 			const savePath = saveTest(specimenBaseDirectory, specimental);
 			specimental.specimenPath = savePath;
-			refresh(vscode.window.activeTextEditor, extensionState, providers);
+			refresh(extensionState, providers, highlighter);
 		});
 		context.subscriptions.push(makeTestCasePersistentCommand);
 
@@ -991,7 +1006,7 @@ export async function activate(context: vscode.ExtensionContext) {
 			const fileUri = vscode.Uri.file(specimental.specimenPath);
 			await vscode.workspace.fs.delete(fileUri);
 			specimental.specimenPath = undefined;
-			refresh(vscode.window.activeTextEditor, extensionState, providers);
+			refresh(extensionState, providers, highlighter);
 		});
 		context.subscriptions.push(makeTestcaseNotPersistentCommand);
 
@@ -1066,7 +1081,7 @@ export async function activate(context: vscode.ExtensionContext) {
 					specimen: specimental.specimen,
 				};
 				if (vscode.window.activeTextEditor?.document.languageId === 'typescript') {
-					refresh(vscode.window.activeTextEditor, extensionState, providers);
+					refresh(extensionState, providers, highlighter);
 					if (newSpecimental.specimenPath && fs.existsSync(newSpecimental.specimenPath)) {
 						vscode.workspace.openTextDocument(newSpecimental.specimenPath).then((doc) => {
 							vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
@@ -1078,11 +1093,11 @@ export async function activate(context: vscode.ExtensionContext) {
 			}
 		});
 		context.subscriptions.push(forkTestCaseCommand);
-		
+
 		const runTestCaseCommand = vscode.commands.registerCommand('extension.shatterRunTestcase', async (node: CommonDisplayNode) => {
 		});
 		context.subscriptions.push(runTestCaseCommand);
-		
+
 		const runTestCasesCommand = vscode.commands.registerCommand('extension.shatterRunTestcases', async (node: CommonDisplayNode) => {
 		});
 		context.subscriptions.push(runTestCasesCommand);
@@ -1279,7 +1294,7 @@ export async function activate(context: vscode.ExtensionContext) {
 					}, { shatterproofModuleOverride: extensionSource });
 				console.log("END THE AUTOTEST");
 				context.workspaceState.update(autotestStorageStateKey, extensionState);
-				refresh(editor, extensionState, providers);
+				refresh(extensionState, providers, highlighter);
 			} finally {
 				extensionState.runningAutotestFunction = undefined;
 			}
@@ -1289,7 +1304,7 @@ export async function activate(context: vscode.ExtensionContext) {
 	}
 }
 
-function doSelectFile(editor: vscode.TextEditor | undefined, extensionState: ExtensionState, absoluteSourceFilename: AbsolutePath, providers: Providers) {
+function doSelectFile(highlighter: Highlighter, extensionState: ExtensionState, absoluteSourceFilename: AbsolutePath, providers: Providers) {
 	if (extensionState.activeFile !== absoluteSourceFilename) {
 		extensionState.activeFile = absoluteSourceFilename;
 		extensionState.activeFunction = undefined;
@@ -1316,7 +1331,7 @@ function doSelectFile(editor: vscode.TextEditor | undefined, extensionState: Ext
 		};
 	}
 
-	refresh(editor, extensionState, providers);
+	refresh(extensionState, providers, highlighter);
 }
 
 //	TODO: consolidate with findFunctions in transform.ts
