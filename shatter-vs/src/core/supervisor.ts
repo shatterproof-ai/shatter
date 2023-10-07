@@ -12,6 +12,8 @@ import serializeJavascript = require("serialize-javascript");
 export const Outcomes = ['completed', 'error', 'timeout', 'failed'] as const;
 export type Outcome = typeof Outcomes[number];
 
+export const isOutcome = (x: string): x is Outcome => Outcomes.includes(x as Outcome);
+
 export interface RunResult {
     specimenId: SpecimenId
     functionName: string

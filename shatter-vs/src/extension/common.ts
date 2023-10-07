@@ -1,5 +1,6 @@
 import { AbsolutePath, RelativePath, Specimen } from "../core/common";
 import { AutotestResults } from "../core/shatter";
+import { Outcome } from "../core/supervisor";
 import { FunctionMeta } from "../core/transform";
 
 export interface Specimental {
@@ -21,6 +22,7 @@ export type FileState = {
 
 export type CoverageSelection = 'all'
     | 'missed'
+    | Outcome
     | { clusterKeys: string[] };
 
 export interface ExtensionState {

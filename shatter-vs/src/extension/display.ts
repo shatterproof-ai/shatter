@@ -1,6 +1,7 @@
+import { filter } from "lodash";
 import { AbsolutePath } from "../core/common";
 import { ResultCluster } from "../core/shatter";
-import { Outcome } from "../core/supervisor";
+import { Outcome, Outcomes, isOutcome } from "../core/supervisor";
 import { findFunctions } from "../core/transform";
 import { CoverageSelection, ExtensionState, getActiveStates } from "./common";
 
@@ -63,10 +64,36 @@ function visit(k: string | number, o: any, depth = 0): CommonDisplayNode {
     };
 }
 
+function filterClustersForCoverage(coverage: CoverageSelection | undefined, clusters?: ResultCluster[]): ResultCluster[] {
+    if (clusters === undefined) {
+        return [];
+    }
+
+    if (coverage === undefined) {
+        return clusters;
+    }
+
+    if (typeof coverage === 'string') {
+        if (coverage === 'all') {
+            return clusters;
+        }
+
+        if (isOutcome(coverage)) {
+            return clusters.filter(c => c.outcome === coverage);
+        }
+
+        return [];
+    }
+
+    return clusters.filter(c => coverage.clusterKeys.includes(c.key));
+}
+
 export const refresh = (extensionState: ExtensionState, providers: DisplayProviders, highlighter: Highlighter) => {
     const { functionsListProvider, clustersListProvider, testCaseListProvider, testCaseDetailProvider } = providers;
 
     const { fileState, functionState, functionMeta, specimental } = getActiveStates(extensionState);
+
+    console.log(`${Object.keys(extensionState.fileStates).length} file states; ${functionState ? functionState.autotest.clusters.length : 0} clusters; ${specimental ? specimental.specimen.id : 'no specimen'}`);
 
     if (!fileState) {
         functionsListProvider.refresh([]);
@@ -102,10 +129,7 @@ export const refresh = (extensionState: ExtensionState, providers: DisplayProvid
     const activeCoverage = extensionState.activeCoverage;
 
     const results = functionState.autotest;
-    const selectedClusters: ResultCluster[] = (results.clusters ?? [])
-        .filter(c => activeCoverage === undefined
-            || activeCoverage === 'all'
-            || (activeCoverage !== 'missed' && activeCoverage.clusterKeys.includes(c.key)));
+    const selectedClusters: ResultCluster[] = filterClustersForCoverage(activeCoverage, results.clusters);
 
     if (results) {
         const nodesByOutcome: Record<Outcome, CommonDisplayNode[]> = {
@@ -142,9 +166,14 @@ export const refresh = (extensionState: ExtensionState, providers: DisplayProvid
             const key = cluster.key.substring(0, 6);
             countByOutcome[cluster.outcome] += cluster.results.length;
             cluster.lines.forEach(line => linesByOutcome[cluster.outcome].add(line));
+
+            const clusterStatus = functionInstrumentedLines.size > 0
+                ? `${formatter.format(cluster.lines.length / functionInstrumentedLines.size)} coverage (${cluster.results.length} test cases)`
+                : "Nothing yet";
+
             nodesByOutcome[cluster.outcome].push({
                 //	TODO: skip coverage for timeouts and failures
-                label: `${key} - ${formatter.format(cluster.lines.length / functionInstrumentedLines.size)} coverage (${cluster.results.length} test cases)`,
+                label: `${key} - ${clusterStatus}`,
                 key: `cluster://${cluster.key}`,
             });
         });
@@ -156,30 +185,41 @@ export const refresh = (extensionState: ExtensionState, providers: DisplayProvid
         const clusterNodes: CommonDisplayNode[] = Object.entries(nodesByOutcome)
             .map(([outcome, nodes]) => {
                 const baseLabel = capitalize(outcome);
-                const coverageText = (() => {
+                const label = (() => {
                     if (outcome === 'timeout' || outcome === 'failed') {
-                        return "";
+                        return baseLabel;
+                    }
+                    if (functionInstrumentedLines.size === 0) {
+                        return baseLabel;
                     }
                     const coverage = linesByOutcome[outcome as Outcome].size / functionInstrumentedLines.size;
-                    return `- ${formatter.format(coverage)} coverage `;
+                    return `${baseLabel} - ${formatter.format(coverage)} coverage (${countByOutcome[outcome as Outcome] ?? 0} test case(s))`;
                 })();
 
                 return {
-                    label: `${baseLabel} ${coverageText}(${countByOutcome[outcome as Outcome] ?? 0} test case(s))`,
+                    label,
                     children: nodes,
+                    key: outcome,
                 };
             });
 
-        const allCoveredLines = new Set<number>();
-        Object.values(linesByOutcome).forEach((lines) => {
-            lines.forEach((line) => allCoveredLines.add(line));
-        });
-        const totalCoverageFraction = allCoveredLines.size / functionInstrumentedLines.size;
-        const uncoveredFraction = 1 - totalCoverageFraction;
-        clusterNodes.push({
-            label: `Not covered ${formatter.format(uncoveredFraction)} (${functionInstrumentedLines.size - allCoveredLines.size} lines)`,
-            key: "missed://",
-        });
+        UNCOVERED: {
+            const allCoveredLines = new Set<number>();
+            Object.values(linesByOutcome).forEach((lines) => {
+                lines.forEach((line) => allCoveredLines.add(line));
+            });
+            const totalCoverageFraction = allCoveredLines.size / functionInstrumentedLines.size;
+            const uncoveredFraction = 1 - totalCoverageFraction;
+
+            const label = functionInstrumentedLines.size === 0
+                ? `Not covered `
+                : `Not covered ${formatter.format(uncoveredFraction)} (${functionInstrumentedLines.size - allCoveredLines.size} lines)`;
+
+            clusterNodes.push({
+                label,
+                key: "missed://",
+            });
+        }
 
         clustersListProvider.refresh(clusterNodes);
 
@@ -225,9 +265,6 @@ export const refresh = (extensionState: ExtensionState, providers: DisplayProvid
     }
 
     const testCaseListNodes: CommonDisplayNode[] = selectedClusters
-        .filter(c => activeCoverage === undefined
-            || activeCoverage === 'all'
-            || activeCoverage.clusterKeys.includes(c.key))
         .flatMap(c => c.results.map((result, i): CommonDisplayNode => {
             const specimental = functionState.specimens[result.specimenId];
 
@@ -315,7 +352,7 @@ export const doSelectFunction = (highlighter: Highlighter, extensionState: Exten
 };
 
 export const doSelectCluster = (highlighter: Highlighter, extensionState: ExtensionState, providers: DisplayProviders,
-    coverage: CoverageSelection) => {
+    coverage: CoverageSelection|undefined) => {
     if (!extensionState.activeFile) {
         //	TODO: shouldn't happen
         return;
@@ -383,32 +420,32 @@ export const doSelectTestCase = (highlighter: Highlighter, extensionState: Exten
     refresh(extensionState, providers, highlighter);
 };
 
-export function doSelectFile(highlighter: Highlighter, extensionState: ExtensionState, absoluteSourceFilename: AbsolutePath, providers: Providers) {
-	if (extensionState.activeFile !== absoluteSourceFilename) {
-		extensionState.activeFile = absoluteSourceFilename;
-		extensionState.activeFunction = undefined;
-		extensionState.activeCoverage = undefined;
-		extensionState.activeSpecimenId = undefined;
-	}
+export function doSelectFile(highlighter: Highlighter, extensionState: ExtensionState, absoluteSourceFilename: AbsolutePath, providers: DisplayProviders) {
+    if (extensionState.activeFile !== absoluteSourceFilename) {
+        extensionState.activeFile = absoluteSourceFilename;
+        extensionState.activeFunction = undefined;
+        extensionState.activeCoverage = undefined;
+        extensionState.activeSpecimenId = undefined;
+    }
 
-	const functions = findFunctions(absoluteSourceFilename);
-	/*
-	Typescript didn't like this spread
-		extensionState.fileStates[filename] = {
-			functionStates: {},
-			...extensionState.fileStates[filename],
-			functions,
-		};
+    const functions = findFunctions(absoluteSourceFilename);
+    /*
+    Typescript didn't like this spread
+        extensionState.fileStates[filename] = {
+            functionStates: {},
+            ...extensionState.fileStates[filename],
+            functions,
+        };
 
-	 */
-	if (extensionState.fileStates[absoluteSourceFilename]) {
-		extensionState.fileStates[absoluteSourceFilename].functions = functions;
-	} else {
-		extensionState.fileStates[absoluteSourceFilename] = {
-			functionStates: {},
-			functions,
-		};
-	}
+     */
+    if (extensionState.fileStates[absoluteSourceFilename]) {
+        extensionState.fileStates[absoluteSourceFilename].functions = functions;
+    } else {
+        extensionState.fileStates[absoluteSourceFilename] = {
+            functionStates: {},
+            functions,
+        };
+    }
 
-	refresh(extensionState, providers, highlighter);
+    refresh(extensionState, providers, highlighter);
 }

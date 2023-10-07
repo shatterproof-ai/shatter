@@ -4,12 +4,12 @@ import { join } from 'path';
 import * as ts from 'typescript';
 import * as vscode from 'vscode';
 import { AbsolutePath, RelativePath, SpecimenId, isRelativePath, isSpecimenId } from '../core/common';
-import { AutotestResults, shatterAutotest } from '../core/shatter';
-import { FunctionMeta, findFunctions } from '../core/transform';
+import { FunctionMeta } from '../core/transform';
 import { CoverageSelection, ExtensionState, cleanUpExtensionState, getActiveStates, onPersistedSpecimenLoad } from './common';
 import { CommonDisplayNode, DisplayProvider, Highlighter, doSelectCluster, doSelectFile, doSelectFunction, doSelectTestCase, refresh } from './display';
 import { forkTest, loadPersistedSpecimen, loadPersistedSpecimens, saveTest } from './persistence';
 import { TestLifecycle, autotestFunction } from './run';
+import { Outcome, Outcomes, isOutcome } from '../core/supervisor';
 
 interface Providers {
 	functionsListProvider: CommonTreeDataProvider,
@@ -346,6 +346,10 @@ export async function activate(context: vscode.ExtensionContext) {
 						if (node.key === 'missed://') {
 							return 'missed';
 						}
+						if (isOutcome(node.key)) {
+							return node.key;
+						}
+
 						throw new Error(`unhandled key ${node.key}`);
 					}
 				})();
@@ -609,6 +613,10 @@ export async function activate(context: vscode.ExtensionContext) {
 						key: functionName,
 						label: ''
 					});
+				},
+
+				onResult(absoluteFilename, functionName, result) {
+					refresh(extensionState, providers, highlighter);
 				},
 
 				onTestEnd(absoluteFilename: AbsolutePath, functionName: string) {

@@ -3,7 +3,7 @@ import * as fs from 'fs'; //TODO: use VSCode fs
 import { AbsolutePath, RelativePath } from "../core/common";
 import { AutotestResults, shatterAutotest } from "../core/shatter";
 import { ExtensionState, getActiveStates } from "./common";
-import { DisplayProviders } from "./display";
+import { DisplayProviders, refresh } from "./display";
 
 function findFilesInHierarchy<K extends string>(
     absoluteFilename: AbsolutePath,
@@ -45,6 +45,7 @@ function findFilesInHierarchy<K extends string>(
 
 export interface TestLifecycle {
     onTestStart: (absoluteFilename: AbsolutePath, functionName: string) => void;
+    onResult: (absoluteFilename: AbsolutePath, functionName: string, result: AutotestResults) => void;
     onTestEnd: (absoluteFilename: AbsolutePath, functionName: string) => void;
 }
 
@@ -100,7 +101,12 @@ export async function autotestFunction(extensionState: ExtensionState, workspace
                         };
                     });
                 });
-            }, { shatterproofModuleOverride });
+
+                functionState.autotest = results;
+                
+                lifeCycler.onResult(absoluteSourceFilename, functionName, results);
+
+            }, { shatterproofModuleOverride, maxIterations: 50, });
         console.log("END THE AUTOTEST");
     } finally {
         lifeCycler.onTestEnd(absoluteSourceFilename, functionName);
