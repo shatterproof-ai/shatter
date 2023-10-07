@@ -524,7 +524,7 @@ const doSelectFunction = (editor: vscode.TextEditor, extensionState: ExtensionSt
 	refresh(editor, extensionState, providers);
 };
 
-const doSelectCluster = (editor: vscode.TextEditor, context: vscode.ExtensionContext, extensionState: ExtensionState, providers: Providers,
+const doSelectCluster = (editor: vscode.TextEditor, extensionState: ExtensionState, providers: Providers,
 	coverage: CoverageSelection) => {
 	if (!extensionState.activeFile) {
 		//	TODO: shouldn't happen
@@ -559,8 +559,8 @@ const doSelectCluster = (editor: vscode.TextEditor, context: vscode.ExtensionCon
 	refresh(editor, extensionState, providers);
 };
 
-const doSelectTestCase = (editor: vscode.TextEditor, context: vscode.ExtensionContext, extensionState: ExtensionState, providers: Providers,
-	specimenId: string, conf?: ProjectConfiguration) => {
+const doSelectTestCase = (editor: vscode.TextEditor, extensionState: ExtensionState, providers: Providers,
+	specimenId: string) => {
 	if (!extensionState.activeFile) {
 		return;
 	}
@@ -688,20 +688,6 @@ async function readProjectConfiguration(workspaceRoot: AbsolutePath): Promise<Pr
 	return {};
 }
 
-function editTestCase(workspaceRoot: AbsolutePath, filename: RelativePath, functionName: string, testCase: string) {
-	const uri = vscode.Uri.file(filename);
-	vscode.workspace.openTextDocument(uri)
-		.then((doc) => {
-			vscode.window.showTextDocument(doc)
-				.then((editor) => {
-					const functions = findFunctions(asAbsolutePath(workspaceRoot, filename));
-					const selectedFunction = functions.find((f) => f.name === functionName);
-					if (!selectedFunction) {
-						return;
-					}
-				});
-		});
-}
 /*
 Operations:
 * open test case
@@ -905,7 +891,7 @@ export async function activate(context: vscode.ExtensionContext) {
 				return;
 			}
 			if (vscode.window.activeTextEditor?.document.languageId === 'typescript') {
-				doSelectFile(vscode.window.activeTextEditor, context, extensionState, filename as AbsolutePath, providers);
+				doSelectFile(vscode.window.activeTextEditor, extensionState, filename as AbsolutePath, providers);
 			}
 		};
 
@@ -935,7 +921,7 @@ export async function activate(context: vscode.ExtensionContext) {
 					}
 				})();
 				if (selection) {
-					doSelectCluster(vscode.window.activeTextEditor, context, extensionState, providers, selection);
+					doSelectCluster(vscode.window.activeTextEditor, extensionState, providers, selection);
 				}
 			}
 		};
@@ -943,7 +929,7 @@ export async function activate(context: vscode.ExtensionContext) {
 		const doSelectTestCaseCommand = (node: CommonDisplayNode) => {
 			if (vscode.window.activeTextEditor?.document.languageId === 'typescript') {
 				const specimenId: string = node.key || "";
-				doSelectTestCase(vscode.window.activeTextEditor, context, extensionState, providers, specimenId);
+				doSelectTestCase(vscode.window.activeTextEditor, extensionState, providers, specimenId);
 			}
 		};
 
@@ -1303,7 +1289,7 @@ export async function activate(context: vscode.ExtensionContext) {
 	}
 }
 
-function doSelectFile(editor: vscode.TextEditor | undefined, context: vscode.ExtensionContext, extensionState: ExtensionState, absoluteSourceFilename: AbsolutePath, providers: Providers) {
+function doSelectFile(editor: vscode.TextEditor | undefined, extensionState: ExtensionState, absoluteSourceFilename: AbsolutePath, providers: Providers) {
 	if (extensionState.activeFile !== absoluteSourceFilename) {
 		extensionState.activeFile = absoluteSourceFilename;
 		extensionState.activeFunction = undefined;
