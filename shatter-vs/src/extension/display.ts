@@ -1,4 +1,4 @@
-import { filter } from "lodash";
+import { capitalize, filter } from "lodash";
 import { AbsolutePath } from "../core/common";
 import { ResultCluster } from "../core/shatter";
 import { Outcome, Outcomes, isOutcome } from "../core/supervisor";
@@ -177,10 +177,6 @@ export const refresh = (extensionState: ExtensionState, providers: DisplayProvid
                 key: `cluster://${cluster.key}`,
             });
         });
-
-        const capitalize = (s: string) => {
-            return s.charAt(0).toUpperCase() + s.slice(1);
-        };
 
         const clusterNodes: CommonDisplayNode[] = Object.entries(nodesByOutcome)
             .map(([outcome, nodes]) => {
