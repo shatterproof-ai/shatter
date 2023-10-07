@@ -3,173 +3,13 @@ import * as path from 'path';
 import { join } from 'path';
 import * as ts from 'typescript';
 import * as vscode from 'vscode';
-import { AbsolutePath, RelativePath, Specimen, SpecimenId, isRelativePath, isSpecimenId, joinAbsolute } from '../core/common';
-import { AutotestResults, ResultCluster, shatterAutotest } from '../core/shatter';
-import { Outcome, RunResult } from '../core/supervisor';
+import { AbsolutePath, RelativePath, SpecimenId, isRelativePath, isSpecimenId } from '../core/common';
+import { AutotestResults, shatterAutotest } from '../core/shatter';
 import { FunctionMeta, findFunctions } from '../core/transform';
-
-interface CommonDisplayNode {
-	label: string;
-	children?: CommonDisplayNode[];
-	key?: string,
-	state?: string,
-	contextValue?: string,
-}
-
-function loadPersistedSpecimen(filepath: AbsolutePath) {
-	const contents = fs.readFileSync(filepath, 'utf8');
-	const specimen: Specimen = JSON.parse(contents);
-	return specimen;
-}
-
-function loadPersistedSpecimens(workspaceRoot: AbsolutePath, specimenDirectory: AbsolutePath) {
-	const suffix = '.json';
-	const targetSubdirNames = ['custom', 'autotest'];
-	const specimens: Map<SpecimenId, Specimental> = new Map();
-
-	function traverseDirectory(directory: AbsolutePath, targetSubdirName: string) {
-		if (!fs.existsSync(directory)) {
-			return;
-		}
-
-		const files = fs.readdirSync(directory);
-		for (const file of files) {
-			const fullPath = join(directory, file) as AbsolutePath;
-			const stats = fs.statSync(fullPath);
-			if (stats.isDirectory()) {
-				if (file === targetSubdirName) {
-					const targetSubdirContents = fs.readdirSync(fullPath);
-					for (const leafFile of targetSubdirContents) {
-						if (leafFile.endsWith(suffix)) {
-							const specimenId = leafFile.slice(0, -suffix.length);
-							if (isSpecimenId(specimenId)) {
-								const specimenPath = join(fullPath, leafFile) as AbsolutePath;
-								const specimen = loadPersistedSpecimen(specimenPath);
-								specimens.set(specimenId, {
-									fileUnderTest: asAbsolutePath(workspaceRoot, specimen.fileUnderTest),
-									specimenPath,
-									specimen,
-								});
-								//	TODO: load corresponding results
-							}
-						}
-					}
-				} else {
-					traverseDirectory(fullPath, targetSubdirName);
-				}
-			}
-		}
-	}
-
-	for (const targetSubdirName of targetSubdirNames) {
-		traverseDirectory(specimenDirectory, targetSubdirName);
-	}
-	return specimens;
-}
-
-function saveTest(specimenBaseDirectory: AbsolutePath, specimental: Specimental, result?: RunResult) {
-	//	TODO: don't save everything from a specimen, notably omit the leaves and any parentage
-	const specimenSubdir = specimental.specimen.id.startsWith('custom') ? 'custom' : 'autotest';
-	const specimenFileAbsolutePath = join(specimenBaseDirectory, 'specimens', specimenSubdir, `${specimental.specimen.id}.json`) as AbsolutePath;
-	const specimenSubdirectory = path.dirname(specimenFileAbsolutePath);
-	fs.mkdirSync(specimenSubdirectory, { recursive: true });
-	fs.writeFileSync(specimenFileAbsolutePath, JSON.stringify(specimental.specimen, undefined, 2));
-
-	if (result) {
-		const resultsFileAbsolute = join(specimenBaseDirectory, 'results', specimenSubdir, `${specimental.specimen.id}.json`) as AbsolutePath;
-		const resultsDirectory = path.dirname(resultsFileAbsolute);
-		fs.mkdirSync(resultsDirectory, { recursive: true });
-		fs.writeFileSync(resultsFileAbsolute, JSON.stringify(result, undefined, 2));
-	}
-
-	return specimenFileAbsolutePath;
-}
-
-function forkTest(specimenBaseDirectory: AbsolutePath, original: Specimental, newId: SpecimenId, name: string,) {
-	const newSpeciment: Specimen = {
-		...original.specimen,
-		type: 'custom',
-		id: newId,
-		name,
-	};
-	const newSpecimental = {
-		...original,
-		specimen: newSpeciment,
-	};
-
-	const specimenFileAbsolutePath = saveTest(specimenBaseDirectory, newSpecimental);
-	newSpecimental.specimenPath = specimenFileAbsolutePath;
-	return newSpecimental;
-}
-
-function visit(k: string | number, o: any, depth = 0): CommonDisplayNode {
-	if (depth === 0) {
-		return {
-			label: "...",
-		};
-	}
-
-	const key = typeof k === 'number' ? `[${k}]` : `"${k}"`;
-	if (o === null) {
-		return {
-			label: `${key}: null`,
-		};
-	}
-	if (o === undefined) {
-		return {
-			label: `${key}: undefined`,
-		};
-	}
-	if (typeof o === 'object') {
-		if (Array.isArray(o)) {
-			return {
-				label: key,
-				children: o.map((v, i) => visit(i, v, depth - 1)),
-			};
-		}
-		const keys = Object.keys(o);
-		const children = keys.map((k) => visit(k, o[k], depth - 1));
-		return {
-			label: key,
-			children,
-		};
-	}
-
-	return {
-		label: `${key}: ${JSON.stringify(o)}`,
-	};
-}
-
-type FunctionState = {
-	autotest: AutotestResults;
-	specimens: Record<string, Specimental>;	//	Record because Map is not serializable
-};
-
-type FileState = {
-	functions: FunctionMeta[];
-	functionStates: Record<string, FunctionState>;	//	Record because Map is not serializable
-};
-
-type CoverageSelection = 'all'
-	| 'missed'
-	| { clusterKeys: string[] };
-
-interface Specimental {
-	fileUnderTest: AbsolutePath,
-	specimenPath?: AbsolutePath,			//	empty if not persisted
-	clusterKey?: string,	//	empty if never run
-	specimen: Specimen,
-}
-
-interface ExtensionState {
-	runningAutotestFunction?: string;
-	fileStates: Record<AbsolutePath, FileState>;	//	Record because Map is not serializable
-	//	this overlaps some with specimens, but it doesn't load the contents	
-	activeFile?: AbsolutePath;
-	activeFunction?: string;
-	activeCoverage?: CoverageSelection;
-	activeSpecimenId?: string;
-};
+import { CoverageSelection, ExtensionState, cleanUpExtensionState, getActiveStates, onPersistedSpecimenLoad } from './common';
+import { CommonDisplayNode, DisplayProvider, Highlighter, doSelectCluster, doSelectFile, doSelectFunction, doSelectTestCase, refresh } from './display';
+import { forkTest, loadPersistedSpecimen, loadPersistedSpecimens, saveTest } from './persistence';
+import { TestLifecycle, autotestFunction } from './run';
 
 interface Providers {
 	functionsListProvider: CommonTreeDataProvider,
@@ -200,11 +40,6 @@ const missedDecorationType = vscode.window.createTextEditorDecorationType({
 	},
 });
 
-function resetDecorations(editor: vscode.TextEditor) {
-	editor.setDecorations(coveredDecorationType, []);
-	editor.setDecorations(missedDecorationType, []);
-}
-
 function asAbsolutePath(workspaceRoot: AbsolutePath, filename: RelativePath): AbsolutePath {
 	return join(workspaceRoot, filename) as AbsolutePath;
 }
@@ -222,372 +57,6 @@ function asRelativePath(filename: AbsolutePath): RelativePath | undefined {
 	}
 	return;
 }
-
-function getActiveStates(extensionState: ExtensionState): {
-	fileState?: FileState,
-	functionState?: FunctionState,
-	functionMeta?: FunctionMeta,
-	specimental?: Specimental,
-} {
-	const activeFilename = extensionState.activeFile;
-	if (!activeFilename) {
-		//	TODO: clear functions list, clusters list, branches list, test cases list
-		return {};
-	}
-
-	const fileState = extensionState.fileStates[activeFilename];
-	if (!fileState || !fileState.functions) {
-		//	TODO: clear what needs clearing
-		return {};
-	}
-
-	const activeFunction = extensionState.activeFunction;
-	if (!activeFunction) {
-		return { fileState };
-	}
-
-	const functionMeta = fileState.functions.find((f) => f.name === activeFunction);
-	if (!functionMeta) {
-		//	this is not necessarily an error because the function may have been deleted
-		return { fileState };
-	}
-
-	const functionState = fileState.functionStates[activeFunction];
-
-	const activeSpecimenId = extensionState.activeSpecimenId;
-	if (!activeSpecimenId) {
-		return { fileState, functionState, functionMeta };
-	}
-
-	const specimental = functionState.specimens[activeSpecimenId];
-	if (!specimental) {
-		return { fileState, functionState, functionMeta };
-	}
-
-	return { fileState, functionState, functionMeta, specimental };
-}
-
-type Highlighter = (decoration: 'covered' | 'missed', liner: () => Generator<number, void, unknown>) => void;
-
-const refresh = (extensionState: ExtensionState, providers: Providers, highlighter: Highlighter) => {
-	const { functionsListProvider, clustersListProvider, testCaseListProvider, testCaseDetailProvider } = providers;
-
-	const { fileState, functionState, functionMeta, specimental } = getActiveStates(extensionState);
-
-	if (!fileState) {
-		functionsListProvider.refresh([]);
-		clustersListProvider.refresh([]);
-		testCaseListProvider.refresh([]);
-		testCaseDetailProvider.refresh([]);
-		return;
-	}
-
-	const nodes: CommonDisplayNode[] = fileState.functions.map((f) => {
-		const runningTest = extensionState.runningAutotestFunction === f.name;
-		const runningTestLabel = runningTest ? " - testing now" : "";
-		return {
-			label: `${f.name}${runningTestLabel}` || "",
-			key: f.name || "",
-		};
-	});
-
-	functionsListProvider.refresh(nodes);
-
-	// if (!functionState) {
-	// console.log(`nonono results for filename "${filename}" and function "${extensionState.activeFunction}" - ${JSON.stringify(fileState.functionStates)}`)
-	// return;
-	// };
-
-	if (!functionState || !functionMeta) {
-		clustersListProvider.refresh([]);
-		testCaseListProvider.refresh([]);
-		testCaseDetailProvider.refresh([]);
-		return;
-	}
-
-	const activeCoverage = extensionState.activeCoverage;
-
-	const results = functionState.autotest;
-	const selectedClusters: ResultCluster[] = (results.clusters ?? [])
-		.filter(c => activeCoverage === undefined
-			|| activeCoverage === 'all'
-			|| (activeCoverage !== 'missed' && activeCoverage.clusterKeys.includes(c.key)));
-
-	if (results) {
-		const nodesByOutcome: Record<Outcome, CommonDisplayNode[]> = {
-			completed: [],
-			error: [],
-			timeout: [],
-			failed: []
-		};
-
-		const countByOutcome: Record<Outcome, number> = {
-			completed: 0,
-			error: 0,
-			timeout: 0,
-			failed: 0
-		};
-
-		const linesByOutcome: Record<Outcome, Set<number>> = {
-			error: new Set(),
-			completed: new Set(),
-			timeout: new Set(),
-			failed: new Set(),
-		};
-
-		const functionInstrumentedLines = new Set<number>();
-		for (let line = functionMeta.startLine; line <= functionMeta.endLine; line++) {
-			if (functionState.autotest.instrumentedLines.includes(line)) {
-				functionInstrumentedLines.add(line);
-			}
-		}
-
-		const formatter = Intl.NumberFormat("en-US", { style: "percent" });
-		//	TODO: sort by coverage
-		selectedClusters.forEach((cluster) => {
-			const key = cluster.key.substring(0, 6);
-			countByOutcome[cluster.outcome] += cluster.results.length;
-			cluster.lines.forEach(line => linesByOutcome[cluster.outcome].add(line));
-			nodesByOutcome[cluster.outcome].push({
-				//	TODO: skip coverage for timeouts and failures
-				label: `${key} - ${formatter.format(cluster.lines.length / functionInstrumentedLines.size)} coverage (${cluster.results.length} test cases)`,
-				key: `cluster://${cluster.key}`,
-			});
-		});
-
-		const capitalize = (s: string) => {
-			return s.charAt(0).toUpperCase() + s.slice(1);
-		};
-
-		const clusterNodes: CommonDisplayNode[] = Object.entries(nodesByOutcome)
-			.map(([outcome, nodes]) => {
-				const baseLabel = capitalize(outcome);
-				const coverageText = (() => {
-					if (outcome === 'timeout' || outcome === 'failed') {
-						return "";
-					}
-					const coverage = linesByOutcome[outcome as Outcome].size / functionInstrumentedLines.size;
-					return `- ${formatter.format(coverage)} coverage `;
-				})();
-
-				return {
-					label: `${baseLabel} ${coverageText}(${countByOutcome[outcome as Outcome] ?? 0} test case(s))`,
-					children: nodes,
-				};
-			});
-
-		const allCoveredLines = new Set<number>();
-		Object.values(linesByOutcome).forEach((lines) => {
-			lines.forEach((line) => allCoveredLines.add(line));
-		});
-		const totalCoverageFraction = allCoveredLines.size / functionInstrumentedLines.size;
-		const uncoveredFraction = 1 - totalCoverageFraction;
-		clusterNodes.push({
-			label: `Not covered ${formatter.format(uncoveredFraction)} (${functionInstrumentedLines.size - allCoveredLines.size} lines)`,
-			key: "missed://",
-		});
-
-		clustersListProvider.refresh(clusterNodes);
-
-		function* linerator() {
-			const covered = new Set(selectedClusters.flatMap((cluster) => cluster.lines));
-			const lines = (() => {
-				if (activeCoverage === 'missed') {
-					const uncovered = Array.from(functionInstrumentedLines)
-						.filter((line) => !covered.has(line))
-						.sort((a, b) => a - b);
-					return uncovered;
-				}
-				return Array.from(covered).sort((a, b) => a - b);
-			})();
-
-			for (const line of lines ?? []) {
-				yield line;
-			}
-		}
-		highlighter(activeCoverage === 'missed' ? 'missed' : 'covered', linerator);
-	}
-
-	const shortString = (a: any) => {
-		if (a === null) {
-			return 'null';
-		}
-		if (a === undefined) {
-			return 'undefined';
-		}
-		const s = typeof a === 'string' ? a : JSON.stringify(a);
-		const maxLength = 40;
-
-		const strung = (s.length > maxLength)
-			? s.substring(0, maxLength - 3) + '...'
-			: s;
-		return strung;
-	};
-
-	if (activeCoverage === 'missed') {
-		testCaseListProvider.refresh([]);
-		testCaseDetailProvider.refresh([]);
-		return;
-	}
-
-	const testCaseListNodes: CommonDisplayNode[] = selectedClusters
-		.filter(c => activeCoverage === undefined
-			|| activeCoverage === 'all'
-			|| activeCoverage.clusterKeys.includes(c.key))
-		.flatMap(c => c.results.map((result, i): CommonDisplayNode => {
-			const specimental = functionState.specimens[result.specimenId];
-
-			const contextPieces: string[] = [];
-
-			if (specimental?.specimen?.id.startsWith('custom')) {
-				contextPieces.push('custom');
-			} else {
-				contextPieces.push('autotest');
-			}
-
-			if (specimental?.specimenPath) {
-				contextPieces.push('persistent');
-			}
-
-			const state = specimental?.specimenPath ? 'pinned' : 'unpinned';
-			const parametersNode = {
-				label: shortString(result.serializedParameterValues),
-				key: result.specimenId,
-				state,
-				contextValue: contextPieces.join(','),
-			};
-			return parametersNode;
-		}));
-	testCaseListProvider.refresh(testCaseListNodes);
-
-	if (!specimental) {
-		return;
-	}
-
-	const result = (() => {
-		for (const cluster of selectedClusters) {
-			const result = cluster.results.find(c => c.specimenId === specimental.specimen.id);
-			if (result) {
-				return result;
-			}
-		}
-	})();
-
-	if (!result) {
-		return;
-	}
-
-	//	TODO: make this cleaner, ideally like JSON.stringify(...)
-	const metadataNode = {
-		label: `Duration ${result.duration}ms`
-	};
-	const resultNode = visit('Result', result.output ?? result.error, 3);
-
-	if (!specimental.specimen) {
-		console.error(`Unable to find specimen ${result.specimenId}`);
-		return;
-	}
-
-	const parametersNode = visit('Parameters', specimental.specimen.parameters, 3);
-	const testCaseNodes: CommonDisplayNode[] = [
-		metadataNode,
-		parametersNode,
-		resultNode,
-	];
-
-	testCaseDetailProvider.refresh(testCaseNodes);
-};
-
-const doSelectFunction = (highlighter: Highlighter, extensionState: ExtensionState, providers: Providers, functionName: string) => {
-	if (!extensionState.activeFile) {
-		//	TODO: shouldn't happen
-		return;
-	}
-	const filename = extensionState.activeFile;
-	const filestate = extensionState.fileStates[filename];
-	if (!filestate) {
-		//	TODO: shouldn't happen; TODO: can regenerate
-		return;
-	}
-
-	const selectedFunction = filestate.functions.find((f) => f.name === functionName);
-	if (selectedFunction) {
-		extensionState.activeFunction = functionName;
-	} else {
-		extensionState.activeCoverage = undefined;
-		extensionState.activeFunction = undefined;
-	}
-	refresh(extensionState, providers, highlighter);
-};
-
-const doSelectCluster = (highlighter: Highlighter, extensionState: ExtensionState, providers: Providers,
-	coverage: CoverageSelection) => {
-	if (!extensionState.activeFile) {
-		//	TODO: shouldn't happen
-		return;
-	}
-	const filename = extensionState.activeFile;
-	const filestate = extensionState.fileStates[filename];
-	if (!filestate) {
-		//	TODO: shouldn't happen
-		return;
-	}
-
-	if (!extensionState.activeFunction) {
-		return;
-	}
-
-	const functions = findFunctions(filename);
-
-	const selectedFunction = functions.find((f) => f.name === extensionState.activeFunction);
-	if (!selectedFunction) {
-		//	TODO: shouldn't happen
-		return;
-	}
-
-	const functionState = filestate.functionStates[extensionState.activeFunction];
-	if (!functionState) {
-		//	TODO: shouldn't happen
-		return;
-	}
-
-	extensionState.activeCoverage = coverage;
-	refresh(extensionState, providers, highlighter);
-};
-
-const doSelectTestCase = (highlighter: Highlighter, extensionState: ExtensionState, providers: Providers,
-	specimenId: string) => {
-	if (!extensionState.activeFile) {
-		return;
-	}
-
-	const filename = extensionState.activeFile;
-	const filestate = extensionState.fileStates[filename];
-	if (!filestate) {
-		return;
-	}
-
-	if (!extensionState.activeFunction) {
-		return;
-	}
-
-	const functions = findFunctions(filename);
-
-	const selectedFunction = functions.find((f) => f.name === extensionState.activeFunction);
-	if (!selectedFunction) {
-		//	TODO: shouldn't happen
-		return;
-	}
-
-	const functionState = filestate.functionStates[extensionState.activeFunction];
-	if (!functionState) {
-		//	TODO: shouldn't happen
-		return;
-	}
-
-	extensionState.activeSpecimenId = specimenId;
-	refresh(extensionState, providers, highlighter);
-};
 
 function highlightLinesInEditor(editor: vscode.TextEditor | undefined, decorationType: vscode.TextEditorDecorationType, liner: Generator<number, void, unknown>) {
 	if (!editor) {
@@ -698,73 +167,11 @@ How to select test cases?  Per function, per cluster, per test case
 
 */
 
-//	this exists primarily for the situation where the ExtensionState that was
-//	persisted has a different structure than what the code uses now
-function cleanUpExtensionState(initial: Partial<ExtensionState>) {
-	const fullExtensionState: ExtensionState = {
-		fileStates: {},
-		...initial,
-	};
-
-	if (!fullExtensionState.fileStates) {
-		fullExtensionState.fileStates = {};
-	}
-
-	for (const [filename, fileState] of Object.entries(fullExtensionState.fileStates)) {
-		if (!fileState.functions) {
-			fileState.functions = [];
-		}
-		if (!fileState.functionStates) {
-			fileState.functionStates = {};
-		}
-		for (const [functionName, functionState] of Object.entries(fileState.functionStates)) {
-			if (!functionState.specimens) {
-				//	at least once there was a failed serialization and the specimens property wasn't present
-				functionState.specimens = {};
-			}
-		}
-	}
-
-	return fullExtensionState;
-}
-
-function onPersistedSpecimenLoad(defaultWorkspaceRoot: AbsolutePath, extensionState: ExtensionState, specimen: Specimen, maybeSpecimenId: string, absoluteSpecimenFilepath: AbsolutePath | undefined) {
-	const absoluteSourceFilepath = asAbsolutePath(defaultWorkspaceRoot, specimen.fileUnderTest);
-	if (!extensionState.fileStates[absoluteSourceFilepath]) {
-		extensionState.fileStates[absoluteSourceFilepath] = {
-			functions: [],
-			functionStates: {},
-		};
-	}
-
-	const fileState = extensionState.fileStates[absoluteSourceFilepath];
-	if (!fileState.functionStates[specimen.functionName]) {
-		fileState.functionStates[specimen.functionName] = {
-			autotest: {
-				clusters: [],
-				instrumentedLines: [],
-			},
-			specimens: {},
-		};
-	}
-
-	const functionState = fileState.functionStates[specimen.functionName];
-	const existing = functionState.specimens[maybeSpecimenId];
-	if (existing) {
-		console.log(`Unexpectedly (?) found existing specimen ${maybeSpecimenId} for ${specimen.functionName} in ${absoluteSourceFilepath}`);
-	}
-
-	functionState.specimens[specimen.id] = {
-		fileUnderTest: absoluteSourceFilepath,
-		specimenPath: absoluteSpecimenFilepath,
-		clusterKey: undefined,
-		specimen,
-	};
-}
-
 function highlighterFromEditor(): Highlighter {
 	const editor = vscode.window.activeTextEditor;
 	if (editor) {
+		editor.setDecorations(coveredDecorationType, []);
+		editor.setDecorations(missedDecorationType, []);
 		function doHighlighting(decoration: 'covered' | 'missed', linerator: () => Generator<number, void, unknown>) {
 
 			const decorationType = decoration === 'missed' ? missedDecorationType : coveredDecorationType;
@@ -791,6 +198,13 @@ export async function activate(context: vscode.ExtensionContext) {
 
 	const highlighter = highlighterFromEditor();
 
+	const absolutist = (filename: RelativePath): AbsolutePath => {
+		if (!defaultWorkspaceRoot) {
+			throw new Error(`Unexpectedly no workspace root for ${filename}`);
+		}
+		return asAbsolutePath(defaultWorkspaceRoot, filename);
+	};
+
 	try {
 		if (defaultWorkspaceRoot) {
 			configuration = await readProjectConfiguration(defaultWorkspaceRoot);
@@ -812,7 +226,7 @@ export async function activate(context: vscode.ExtensionContext) {
 							throw new Error(`Unexpectedly no workspace root for ${absoluteSpecimenFilepath}`);
 						}
 
-						onPersistedSpecimenLoad(defaultWorkspaceRoot, extensionState, specimen, maybeSpecimenId, absoluteSpecimenFilepath);
+						onPersistedSpecimenLoad(absolutist, extensionState, specimen, maybeSpecimenId, absoluteSpecimenFilepath);
 					}
 				});
 
@@ -836,9 +250,9 @@ export async function activate(context: vscode.ExtensionContext) {
 				//	do this *after* the watcher is set up to avoid missing any additions
 				//	TODO: might miss some deletions
 				specimenBaseDirectory = asAbsolutePath(defaultWorkspaceRoot, configuration.testsDirectory);
-				const initialPersistentSpecimens = loadPersistedSpecimens(defaultWorkspaceRoot, specimenBaseDirectory);
+				const initialPersistentSpecimens = loadPersistedSpecimens(absolutist, specimenBaseDirectory);
 				initialPersistentSpecimens.forEach((specimental, id) => {
-					onPersistedSpecimenLoad(defaultWorkspaceRoot, extensionState, specimental.specimen, id, specimental.specimenPath);
+					onPersistedSpecimenLoad(absolutist, extensionState, specimental.specimen, id, specimental.specimenPath);
 				});
 			}
 		}
@@ -1143,7 +557,7 @@ export async function activate(context: vscode.ExtensionContext) {
 					}
 
 					const absoluteFileUnderTest = document.fileName as AbsolutePath;
-					await autotestFunction(absoluteFileUnderTest, functionName);
+					await doAutotest(absoluteFileUnderTest, functionName);
 				} else {
 					vscode.window.showErrorMessage('Select a function or place the cursor inside a function.');
 				}
@@ -1158,7 +572,7 @@ export async function activate(context: vscode.ExtensionContext) {
 				return;
 			}
 
-			autotestFunction(filename as AbsolutePath, item.key);
+			doAutotest(filename as AbsolutePath, item.key);
 		});
 		context.subscriptions.push(autotestFromFunctionViewContainerMenu);
 
@@ -1216,122 +630,42 @@ export async function activate(context: vscode.ExtensionContext) {
 
 		//	TODO: some sort of status display during execution
 		//	TODO: show the sidebar when running
-		async function autotestFunction(absoluteSourceFilename: AbsolutePath, functionName: string) {
-			const allTsConfigs: string[] = [];
-			const allPackageJsons: string[] = [];
-			const allNodeModules: string[] = [];
-			const allWorkspaceFolders: string[] = [];
-
+		async function doAutotest(absoluteSourceFilename: AbsolutePath, functionName: string) {
 			const editor = vscode.window.activeTextEditor;
-			if (editor?.document.languageId === 'typescript') {
-				workspaceRoots?.forEach((absoluteFolderPath) => {
-					//	TODO: do we know whether the path is already absolute always?
-					const found = findFilesInHierarchy(editor.document.fileName, absoluteFolderPath, {
-						tsconfig: (absoluteFilename, stat) => absoluteFilename.endsWith('tsconfig.json') && stat.isFile(),
-						packageJson: (absoluteFilename, stat) => absoluteFilename.endsWith('package.json') && stat.isFile(),
-						nodeModules: (absoluteFilename, stat) => absoluteFilename.endsWith('node_modules') && stat.isDirectory(),
+			if (editor?.document.languageId !== 'typescript') {
+				return;
+			}
+
+			const lifeCycler: TestLifecycle = {
+				onTestStart(absoluteFilename: AbsolutePath, functionName: string) {
+					doSelectFunctionCommand({
+						key: functionName,
+						label: ''
 					});
+				},
 
-					allTsConfigs.push(...(found.tsconfig || []));
-					allPackageJsons.push(...(found.packageJson || []));
-					allNodeModules.push(...(found.nodeModules || []));
-					allWorkspaceFolders.push(absoluteFolderPath);
-				});
-			}
+				onTestEnd(absoluteFilename: AbsolutePath, functionName: string) {
+					context.workspaceState.update(autotestStorageStateKey, extensionState);
+					extensionState.runningAutotestFunction = undefined;
+					refresh(extensionState, providers, highlighter);
+				},
+			};
 
-			const modulePaths = [...allWorkspaceFolders, ...allNodeModules];
+			const relativeSourceFilename = (() => {
+				const inWorkspaceRelativePath = asRelativePath(absoluteSourceFilename);
+				if (inWorkspaceRelativePath) {
+					return inWorkspaceRelativePath as RelativePath;
+				}
 
-			console.log(`BEGIN THE AUTOTEST of ${functionName} in ${absoluteSourceFilename}`);
+				const relativePath = path.relative(process.cwd(), absoluteSourceFilename);
+				return relativePath as RelativePath;
+			})();
 
-			extensionState.activeCoverage = undefined;
-			extensionState.activeSpecimenId = undefined;
-			for (const provider of Object.values(providers)) {
-				provider.refresh([]);
-			}
-
-			vscode.commands.executeCommand("shatter-execution-paths.focus");
-			try {
-				extensionState.runningAutotestFunction = functionName;
-				const relativeSourceFilename = (() => {
-					const inWorkspaceRelativePath = asRelativePath(absoluteSourceFilename);
-					if (inWorkspaceRelativePath) {
-						return inWorkspaceRelativePath as RelativePath;
-					}
-
-					const relativePath = path.relative(process.cwd(), absoluteSourceFilename);
-					return relativePath as RelativePath;
-				})();
-
-				await shatterAutotest(modulePaths,
-					absoluteSourceFilename,
-					relativeSourceFilename,
-					functionName, (results: AutotestResults) => {
-						const { fileState, functionState } = getActiveStates(extensionState);
-						if (!fileState || !functionState) {
-							return;
-						}
-
-						// console.log(`refreshing function node to display = ${functionName} in ${filename}`);
-						// console.log(`keys ${JSON.stringify(Array.from(Object.keys(filestate.functionStates) ?? []))} => ${JSON.stringify(functionState)}`);
-						// console.log(`new functionStates entries ${JSON.stringify(filestate.functionStates)}`);
-						// console.log(`>>>>>>>>>>>>>>>>>>>  ${JSON.stringify(extensionState.fileStates[filename].functionStates)}`);
-						// console.log(`===================  ${JSON.stringify(extensionState.fileStates[filename].functionStates[functionName])}`);
-						doSelectFunctionCommand({
-							key: functionName,
-							label: ''
-						});
-
-						results.clusters.forEach((cluster) => {
-							cluster.specimens.forEach((specimen) => {
-								const existing = functionState.specimens[specimen.id];
-								functionState.specimens[specimen.id] = {
-									...existing,
-									clusterKey: cluster.key,
-									specimen,
-								};
-							});
-						});
-					}, { shatterproofModuleOverride: extensionSource });
-				console.log("END THE AUTOTEST");
-				context.workspaceState.update(autotestStorageStateKey, extensionState);
-				refresh(extensionState, providers, highlighter);
-			} finally {
-				extensionState.runningAutotestFunction = undefined;
-			}
+			await autotestFunction(extensionState, workspaceRoots, absoluteSourceFilename, relativeSourceFilename, providers, functionName, lifeCycler, extensionSource);
 		}
 	} catch (e: any) {
 		console.error(`Unable to load extension ${e}: ${e.stack}`);
 	}
-}
-
-function doSelectFile(highlighter: Highlighter, extensionState: ExtensionState, absoluteSourceFilename: AbsolutePath, providers: Providers) {
-	if (extensionState.activeFile !== absoluteSourceFilename) {
-		extensionState.activeFile = absoluteSourceFilename;
-		extensionState.activeFunction = undefined;
-		extensionState.activeCoverage = undefined;
-		extensionState.activeSpecimenId = undefined;
-	}
-
-	const functions = findFunctions(absoluteSourceFilename);
-	/*
-	Typescript didn't like this spread
-		extensionState.fileStates[filename] = {
-			functionStates: {},
-			...extensionState.fileStates[filename],
-			functions,
-		};
-
-	 */
-	if (extensionState.fileStates[absoluteSourceFilename]) {
-		extensionState.fileStates[absoluteSourceFilename].functions = functions;
-	} else {
-		extensionState.fileStates[absoluteSourceFilename] = {
-			functionStates: {},
-			functions,
-		};
-	}
-
-	refresh(extensionState, providers, highlighter);
 }
 
 //	TODO: consolidate with findFunctions in transform.ts
@@ -1377,7 +711,7 @@ function getFunctionNodeAtCursor(cursorPosition: vscode.Position, document: vsco
 export function deactivate() { }
 
 // Define a custom TreeDataProvider for the result clusters
-class CommonTreeDataProvider implements vscode.TreeDataProvider<CommonDisplayNode> {
+class CommonTreeDataProvider implements vscode.TreeDataProvider<CommonDisplayNode>, DisplayProvider {
 	private _onDidChangeTreeData: vscode.EventEmitter<CommonDisplayNode | undefined | void> = new vscode.EventEmitter<CommonDisplayNode | undefined>();
 	readonly onDidChangeTreeData: vscode.Event<CommonDisplayNode | undefined | void> = this._onDidChangeTreeData.event;
 
@@ -1436,45 +770,4 @@ class CommonTreeDataProvider implements vscode.TreeDataProvider<CommonDisplayNod
 		treeItem.contextValue = element.contextValue;
 		return treeItem;
 	}
-}
-
-function findFilesInHierarchy<K extends string>(
-	absoluteFilename: string,
-	absoluteRootDirectory: string,
-	matchers: Record<K, (filename: string, stat: fs.Stats) => boolean>,
-): Partial<Record<K, string[]>> {
-	const foundFiles: Partial<Record<K, string[]>> = {};
-
-	let absoluteCurrentDir = path.dirname(absoluteFilename);
-	while (absoluteCurrentDir !== absoluteRootDirectory) {
-		fs.readdirSync(absoluteCurrentDir).forEach((file) => {
-			const absoluteFullPath = path.join(absoluteCurrentDir, file) as AbsolutePath;
-			const stat = fs.statSync(absoluteFullPath);
-			for (const key of Object.keys(matchers)) {
-				const k: keyof typeof foundFiles = key as any;
-				const matcher = matchers[k];
-
-				const matches = matcher(absoluteFullPath, stat);
-				if (matches) {
-					if (!(key in foundFiles)) {
-						foundFiles[k] = [];
-					}
-
-					const workspaceRelativePath = asRelativePath(absoluteFullPath);
-					if (workspaceRelativePath) {
-						foundFiles[k]?.push(workspaceRelativePath);
-					}
-				}
-			}
-		});
-
-		const parentDir = path.dirname(absoluteCurrentDir);
-		if (parentDir === absoluteCurrentDir) {
-			break;
-		}
-
-		absoluteCurrentDir = parentDir;
-	}
-
-	return foundFiles;
 }
