@@ -129,7 +129,8 @@ export const refresh = (extensionState: ExtensionState, providers: DisplayProvid
     const activeCoverage = extensionState.activeCoverage;
 
     const results = functionState.autotest;
-    const selectedClusters: ResultCluster[] = filterClustersForCoverage(activeCoverage, results.clusters);
+    const allClusters = results.clusters;
+    const selectedClusters: ResultCluster[] = filterClustersForCoverage(activeCoverage, allClusters);
 
     if (results) {
         const nodesByOutcome: Record<Outcome, CommonDisplayNode[]> = {
@@ -162,7 +163,7 @@ export const refresh = (extensionState: ExtensionState, providers: DisplayProvid
 
         const formatter = Intl.NumberFormat("en-US", { style: "percent" });
         //	TODO: sort by coverage
-        selectedClusters.forEach((cluster) => {
+        allClusters.forEach((cluster) => {
             const key = cluster.key.substring(0, 6);
             countByOutcome[cluster.outcome] += cluster.results.length;
             cluster.lines.forEach(line => linesByOutcome[cluster.outcome].add(line));
