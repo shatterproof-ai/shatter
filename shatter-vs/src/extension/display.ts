@@ -1,5 +1,5 @@
 import { capitalize, filter } from "lodash";
-import { AbsolutePath, SpecimenId } from "../core/common";
+import { AbsolutePath, Specimen, SpecimenId } from "../core/common";
 import { ResultCluster } from "../core/shatter";
 import { Outcome, Outcomes, isOutcome } from "../core/supervisor";
 import { findFunctions } from "../core/transform";
@@ -119,12 +119,34 @@ export const refresh = (extensionState: ExtensionState, providers: DisplayProvid
         return;
     }
 
+    const persistentSpecimensByFunction = new Map<string, Specimen[]>();
+    if (functionState?.specimens) {
+        for (const specimental of Object.values(functionState.specimens)) {
+            if (specimental.specimenPath) {
+                const specimens = persistentSpecimensByFunction.get(specimental.specimen.functionName) ?? [];
+                specimens.push(specimental.specimen);
+                persistentSpecimensByFunction.set(specimental.specimen.functionName, specimens);
+            }
+        }
+    }
+
     const nodes: CommonDisplayNode[] = fileState.functions.map((f) => {
         const runningTest = extensionState.runningTestFunction === f.name;
         const runningTestLabel = runningTest ? " - testing now" : "";
+        const children: undefined | CommonDisplayNode[] = persistentSpecimensByFunction.get(f.name)
+            ?.map((specimen) => {
+                const node: CommonDisplayNode = {
+                    label: specimen.id,
+                    key: specimen.id,
+                    contextValue: 'testcase',
+                };
+                return node;
+            });
         return {
             label: `${f.name}${runningTestLabel}` || "",
             key: f.name || "",
+            contextValue: 'function',
+            children,
         };
     });
 

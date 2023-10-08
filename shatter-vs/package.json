@@ -135,18 +135,23 @@
           "group": "inline"
         },
         {
+          "command": "extension.shatterRunFunctionTestcases",
+          "when": "(view == shatter-functions-list && viewItem =~ /\\bfunction\\b/)",
+          "group": "inline"
+        },
+        {
           "command": "extension.shatterRunTestcase",
-          "when": "view == shatter-list-testcases",
+          "when": "(view == shatter-list-testcases) || (view == shatter-functions-list && viewItem =~ /\\btestcase\\b/)",
           "group": "inline@1"
         },
         {
           "command": "extension.shatterAddTestcase",
-          "when": "view == shatter-list-testcases && false",
+          "when": "view == shatter-functions-list && viewItem =~ /\\bfunction\\b/",
           "group": "inline@2"
         },
         {
           "command": "extension.shatterEditCustomTestcase",
-          "when": "view == shatter-list-testcases && viewItem =~ /\\bcustom\\b/",
+          "when": "(view == shatter-list-testcases || view == shatter-functions-list) && viewItem =~ /\\btestcase\\b/",
           "group": "inline@3"
         },
         {
