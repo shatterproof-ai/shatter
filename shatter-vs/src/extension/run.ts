@@ -1,7 +1,7 @@
 import path = require("path");
 import * as fs from 'fs'; //TODO: use VSCode fs
 import { AbsolutePath, RelativePath, Specimen } from "../core/common";
-import { AutotestResults, shatterAutotest } from "../core/shatter";
+import { AutotestResults, shatterAutotest, shatterRetest } from "../core/shatter";
 import { ExtensionState, getActiveStates } from "./common";
 import { DisplayProviders, refresh } from "./display";
 
@@ -49,8 +49,62 @@ export interface TestLifecycle {
     onTestEnd: (absoluteFilename: AbsolutePath, functionName: string) => void;
 }
 
-export async function retestFunction(extensionState: ExtensionState, workspaceRoots: AbsolutePath[], absoluteSourceFilename: AbsolutePath, relativeSourceFilename: RelativePath, providers: DisplayProviders, functionName: string, specimens:Specimen[], lifeCycler: TestLifecycle, shatterproofModuleOverride: string) {
-    console.log(`retestFunction ${functionName} in ${absoluteSourceFilename} with specimens ${specimens.map(s => s.id)}`);
+export async function retestFunction(extensionState: ExtensionState, workspaceRoots: AbsolutePath[], absoluteSourceFilename: AbsolutePath, relativeSourceFilename: RelativePath, providers: DisplayProviders, functionName: string, specimens: Specimen[], lifeCycler: TestLifecycle, shatterproofModuleOverride: string) {
+    const _allTsConfigs: string[] = [];
+    const _allPackageJsons: string[] = [];
+    const allNodeModules: string[] = [];
+
+    workspaceRoots?.forEach((absoluteFolderPath) => {
+        //	TODO: do we know whether the path is already absolute always?
+        //  TODO: does this even matter?
+        const found = findFilesInHierarchy(absoluteSourceFilename, absoluteFolderPath, {
+            tsconfig: (absoluteFilename, stat) => absoluteFilename.endsWith('tsconfig.json') && stat.isFile(),
+            packageJson: (absoluteFilename, stat) => absoluteFilename.endsWith('package.json') && stat.isFile(),
+            nodeModules: (absoluteFilename, stat) => absoluteFilename.endsWith('node_modules') && stat.isDirectory(),
+        });
+
+        _allTsConfigs.push(...(found.tsconfig || []));
+        _allPackageJsons.push(...(found.packageJson || []));
+        allNodeModules.push(...(found.nodeModules || []));
+    });
+
+    const modulePaths = [...workspaceRoots, ...allNodeModules];
+
+    extensionState.activeCoverage = undefined;
+    extensionState.activeSpecimenId = undefined;
+
+    lifeCycler.onTestStart(absoluteSourceFilename, functionName);
+    try {
+        extensionState.runningTestFunction = functionName;
+
+        await shatterRetest(modulePaths,
+            absoluteSourceFilename,
+            functionName, specimens,
+            (results: AutotestResults) => {
+                const { fileState, functionState } = getActiveStates(extensionState);
+                if (!fileState || !functionState) {
+                    return;
+                }
+
+                results.clusters.forEach((cluster) => {
+                    cluster.specimens.forEach((specimen) => {
+                        const existing = functionState.specimens[specimen.id];
+                        functionState.specimens[specimen.id] = {
+                            ...existing,
+                            clusterKey: cluster.key,
+                            specimen,
+                        };
+                    });
+                });
+
+                functionState.autotest = results;
+
+                lifeCycler.onResult(absoluteSourceFilename, functionName, results);
+
+            }, { shatterproofModuleOverride });
+    } finally {
+        lifeCycler.onTestEnd(absoluteSourceFilename, functionName);
+    }
 }
 
 export async function autotestFunction(extensionState: ExtensionState, workspaceRoots: AbsolutePath[], absoluteSourceFilename: AbsolutePath, relativeSourceFilename: RelativePath, providers: DisplayProviders, functionName: string, lifeCycler: TestLifecycle, shatterproofModuleOverride: string) {
@@ -84,7 +138,7 @@ export async function autotestFunction(extensionState: ExtensionState, workspace
 
     lifeCycler.onTestStart(absoluteSourceFilename, functionName);
     try {
-        extensionState.runningAutotestFunction = functionName;
+        extensionState.runningTestFunction = functionName;
 
         await shatterAutotest(modulePaths,
             absoluteSourceFilename,
@@ -107,7 +161,7 @@ export async function autotestFunction(extensionState: ExtensionState, workspace
                 });
 
                 functionState.autotest = results;
-                
+
                 lifeCycler.onResult(absoluteSourceFilename, functionName, results);
 
             }, { shatterproofModuleOverride, maxIterations: 50, });

@@ -17,6 +17,7 @@ export interface CommonDisplayNode {
 
 export interface DisplayProvider {
     refresh(nodes: CommonDisplayNode[]): void;
+    select(key: string): void;
 }
 
 export interface DisplayProviders {
@@ -24,6 +25,21 @@ export interface DisplayProviders {
     clustersListProvider: DisplayProvider;
     testCaseListProvider: DisplayProvider;
     testCaseDetailProvider: DisplayProvider;
+}
+
+export function findNode(nodes: CommonDisplayNode[], key: string): CommonDisplayNode | undefined {
+    for (const node of nodes) {
+        if (node.key === key) {
+            return node;
+        }
+        if (node.children) {
+            const childNode = findNode(node.children, key);
+            if (childNode) {
+                return childNode;
+            }
+        }
+    }
+    return undefined;
 }
 
 function visit(k: string | number, o: any, depth = 0): CommonDisplayNode {
@@ -85,7 +101,7 @@ function filterClustersForCoverage(coverage: CoverageSelection | undefined, clus
         return [];
     }
 
-    return clusters.filter(c => coverage.clusterKeys.includes(c.key));
+    return clusters.filter(c => coverage.clusterKey === c.key);
 }
 
 export const refresh = (extensionState: ExtensionState, providers: DisplayProviders, highlighter: Highlighter) => {
@@ -104,7 +120,7 @@ export const refresh = (extensionState: ExtensionState, providers: DisplayProvid
     }
 
     const nodes: CommonDisplayNode[] = fileState.functions.map((f) => {
-        const runningTest = extensionState.runningAutotestFunction === f.name;
+        const runningTest = extensionState.runningTestFunction === f.name;
         const runningTestLabel = runningTest ? " - testing now" : "";
         return {
             label: `${f.name}${runningTestLabel}` || "",
@@ -124,6 +140,9 @@ export const refresh = (extensionState: ExtensionState, providers: DisplayProvid
         testCaseListProvider.refresh([]);
         testCaseDetailProvider.refresh([]);
         return;
+    }
+    if (extensionState.activeFunction) {
+        functionsListProvider.select(extensionState.activeFunction);
     }
 
     const activeCoverage = extensionState.activeCoverage;
@@ -219,6 +238,15 @@ export const refresh = (extensionState: ExtensionState, providers: DisplayProvid
         }
 
         clustersListProvider.refresh(clusterNodes);
+        if (activeCoverage) {
+            if (typeof activeCoverage !== 'string') {
+                //  TODO: what if clusterKeys.length > 1?
+                clustersListProvider.select(activeCoverage.clusterKey);
+            } else if (isOutcome(activeCoverage))
+                functionsListProvider.select(activeCoverage);
+        }
+
+
 
         function* linerator() {
             const covered = new Set(selectedClusters.flatMap((cluster) => cluster.lines));
@@ -363,7 +391,7 @@ export const doSelectFunction = (highlighter: Highlighter, extensionState: Exten
 };
 
 export const doSelectCluster = (highlighter: Highlighter, extensionState: ExtensionState, providers: DisplayProviders,
-    coverage: CoverageSelection|undefined) => {
+    coverage: CoverageSelection | undefined) => {
     if (!extensionState.activeFile) {
         //	TODO: shouldn't happen
         return;

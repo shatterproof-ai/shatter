@@ -7,7 +7,7 @@ import { AbsolutePath, RelativePath, Specimen, SpecimenId, isRelativePath, isSpe
 import { isOutcome } from '../core/supervisor';
 import { FunctionMeta } from '../core/transform';
 import { CoverageSelection, ExtensionState, Specimental, cleanUpExtensionState, getActiveStates, onPersistedSpecimenLoad } from './common';
-import { CommonDisplayNode, DisplayProvider, Highlighter, doSelectCluster, doSelectFile, doSelectFunction, doSelectTestCase, refresh } from './display';
+import { CommonDisplayNode, DisplayProvider, Highlighter, doSelectCluster, doSelectFile, doSelectFunction, doSelectTestCase, findNode, refresh } from './display';
 import { forkTest, loadPersistedSpecimen, loadPersistedSpecimens, saveTest } from './persistence';
 import { TestLifecycle, autotestFunction, retestFunction } from './run';
 
@@ -250,55 +250,32 @@ export async function activate(context: vscode.ExtensionContext) {
 			}
 		}
 
-		//	TODO: Refresh functions list view contents on change of editor
-		const functionsListProvider = new CommonTreeDataProvider({
+		const functionsListProvider = createTreeProvider('shatter-functions-list', context, {
 			command: {
 				command: 'extension.shatterSelectFunction',
 				title: 'Functions',
 			}
-		});
-		context.subscriptions.push(
-			vscode.window.registerTreeDataProvider("shatter-functions-list", functionsListProvider));
+		})
+		//	TODO: Refresh functions list view contents on change of editor
 
-		const clustersListProvider = new CommonTreeDataProvider({
+		const clustersListProvider = createTreeProvider('shatter-execution-paths', context, {
 			command: {
 				command: 'extension.shatterSelectCluster',
 				title: 'Execution Paths',
 			}
-		});
-		context.subscriptions.push(
-			vscode.window.registerTreeDataProvider("shatter-execution-paths", clustersListProvider));
+		})
 
-		function iconPaths(baseSet: Record<string, string>) {
-			const expanded: Record<string, Record<'light' | 'dark', string>> = {};
-
-			for (const [status, baseIconPath] of Object.entries(baseSet)) {
-				const light = context.asAbsolutePath(`resources/light/${baseIconPath}`);
-				const dark = context.asAbsolutePath(`resources/dark/${baseIconPath}`);
-				expanded[status] = {
-					light,
-					dark,
-				};
-			}
-
-			return expanded;
-		}
-		const testCaseListProvider = new CommonTreeDataProvider({
+		const testCaseListProvider = createTreeProvider('shatter-list-testcases', context, {
 			command: {
 				command: 'extension.shatterSelectTestCase',
 				title: 'Test Case Detail',
 			},
-			stateIcons: iconPaths({ pinned: 'pin.svg', unpinned: 'unpin.svg', edge: 'sparkle.svg' }),
+			stateIcons: iconPaths(context, { pinned: 'pin.svg', unpinned: 'unpin.svg', edge: 'sparkle.svg' }),
 		});
-		context.subscriptions.push(
-			vscode.window.registerTreeDataProvider("shatter-list-testcases", testCaseListProvider));
 
-		const testCaseDetailProvider = new CommonTreeDataProvider({
-			stateIcons: iconPaths({ persistent: 'pin.svg' }),
+		const testCaseDetailProvider = createTreeProvider("shatter-testcase-detail", context, {
+			stateIcons: iconPaths(context, { persistent: 'pin.svg' }),
 		});
-		// const treeView = vscode.window.createTreeView("exampleView", { treeDataProvider: testCaseDetailProvider });
-		context.subscriptions.push(
-			vscode.window.registerTreeDataProvider("shatter-testcase-detail", testCaseDetailProvider));
 
 		const providers = {
 			functionsListProvider,
@@ -332,7 +309,7 @@ export async function activate(context: vscode.ExtensionContext) {
 					if (node.key) {
 						if (node.key.startsWith('cluster://')) {
 							const clusterKey = node.key.substring('cluster://'.length);
-							return { clusterKeys: [clusterKey] };
+							return { clusterKey };
 						}
 						if (node.key === 'covered://') {
 							return 'all';
@@ -548,7 +525,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
 				onTestEnd(absoluteFilename: AbsolutePath, functionName: string) {
 					context.workspaceState.update(autotestStorageStateKey, extensionState);
-					extensionState.runningAutotestFunction = undefined;
+					extensionState.runningTestFunction = undefined;
 					refresh(extensionState, providers, highlighter);
 				},
 			};
@@ -728,7 +705,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
 				onTestEnd(absoluteFilename: AbsolutePath, functionName: string) {
 					context.workspaceState.update(autotestStorageStateKey, extensionState);
-					extensionState.runningAutotestFunction = undefined;
+					extensionState.runningTestFunction = undefined;
 					refresh(extensionState, providers, highlighter);
 				},
 			};
@@ -748,6 +725,21 @@ export async function activate(context: vscode.ExtensionContext) {
 	} catch (e: any) {
 		console.error(`Unable to load extension ${e}: ${e.stack}`);
 	}
+}
+
+function iconPaths(context: vscode.ExtensionContext, baseSet: Record<string, string>) {
+	const expanded: Record<string, Record<'light' | 'dark', string>> = {};
+
+	for (const [status, baseIconPath] of Object.entries(baseSet)) {
+		const light = context.asAbsolutePath(`resources/light/${baseIconPath}`);
+		const dark = context.asAbsolutePath(`resources/dark/${baseIconPath}`);
+		expanded[status] = {
+			light,
+			dark,
+		};
+	}
+
+	return expanded;
 }
 
 //	TODO: consolidate with findFunctions in transform.ts
@@ -790,6 +782,19 @@ function getFunctionNodeAtCursor(cursorPosition: vscode.Position, document: vsco
 	}
 }
 
+type CommonTreeDataProviderOptions = {
+	command?: Pick<vscode.Command, 'command' | 'title'>,
+	stateIcons?: Record<string, Record<'dark' | 'light', string>>
+};
+
+function createTreeProvider(viewName: string, context: vscode.ExtensionContext, options?: CommonTreeDataProviderOptions) {
+	const treeDataProvider = new CommonTreeDataProvider(options);
+	const treeView = vscode.window.createTreeView(viewName, { treeDataProvider });
+	treeDataProvider.treeView = treeView;
+	context.subscriptions.push(treeView);
+	return treeDataProvider;
+}
+
 export function deactivate() { }
 
 // Define a custom TreeDataProvider for the result clusters
@@ -798,12 +803,10 @@ class CommonTreeDataProvider implements vscode.TreeDataProvider<CommonDisplayNod
 	readonly onDidChangeTreeData: vscode.Event<CommonDisplayNode | undefined | void> = this._onDidChangeTreeData.event;
 
 	private roots: CommonDisplayNode[] | undefined;
+	treeView: vscode.TreeView<CommonDisplayNode> | undefined;
 
 	// Initialize empty
-	constructor(private options?: {
-		command?: Pick<vscode.Command, 'command' | 'title'>,
-		stateIcons?: Record<string, Record<'dark' | 'light', string>>
-	}) {
+	constructor(private options?: CommonTreeDataProviderOptions) {
 		this.roots = undefined;
 	}
 
@@ -821,7 +824,16 @@ class CommonTreeDataProvider implements vscode.TreeDataProvider<CommonDisplayNod
 			key: 'covered://',
 			label: 'Covered',
 		});
-		this.reveal(item, { focus: true, select: true });
+		// this.reveal(item, { focus: true, select: true });
+	}
+
+	select(key: string): void {
+		if (this.treeView && this.roots) {
+			const item = findNode(this.roots, key);
+			if (item) {
+				// this.treeView.reveal(item, { select: true });
+			}
+		}
 	}
 
 	// Get the children of a tree node.

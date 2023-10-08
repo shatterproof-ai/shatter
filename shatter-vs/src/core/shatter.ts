@@ -128,18 +128,151 @@ interface ResultCluster {
 
 */
 
+
+const updateBatchState = (batchState: BatchState, runResult: RunResult):BatchState => {
+    // console.log(`Received result ${JSON.stringify(runResult)}`);
+    // find the appropriate cluster or create it
+    if (!runResult.specimenId) {
+        throw new Error(`No specimenId in ${JSON.stringify(runResult)}`);
+    }
+
+    const specimen = batchState.specimensById.get(runResult.specimenId);
+    if (!specimen) {
+        throw new Error(`No specimen for ${runResult.specimenId}`);
+    }
+
+    runResult.lines.forEach(line => batchState.executedLines.add(line));
+
+    const clusterKey = canonicalClusterKey(runResult);
+    let cluster = batchState.clustersByKey.get(clusterKey);
+    if (!cluster) {
+        const outcome = ((): Outcome => {
+            if (runResult.completed) {
+                if (runResult.error) {
+                    return 'error';
+                }
+                return 'completed';
+            }
+            return 'timeout';
+        })();
+
+        cluster = {
+            key: clusterKey,
+            lines: runResult.lines,
+            linesInOrder: runResult.linesInOrder,
+            outcome,
+            specimens: [],
+            results: [],
+            //  the single specimen has the values that are the least and the most for all parameters
+            //  iniitally the only existing specimen is least and most in all cases
+            leasts: specimen.parameters.map(_ => specimen),
+            mosts: specimen.parameters.map(_ => specimen),
+            totalTime: 0,
+            distancesToClusters: specimen.parameters.map(_ => ({})),
+        };
+        batchState.clusters.push(cluster);
+        batchState.clustersByKey.set(clusterKey, cluster);
+    }
+
+    cluster.specimens.push(specimen);
+    cluster.results.push(runResult);
+    cluster.totalTime += runResult.duration;
+
+    //  TODO: don't do this on every change
+    sortClusters(batchState.clusters);
+
+    return batchState;
+};
+
+interface BatchState {
+    clusters: ResultCluster[];
+    clustersByKey:Map<string, ResultCluster>;
+    specimensById: Map<string, Specimen>;
+    instrumentedLines: Set<number>;
+    executedLines: Set<number>;
+}
+
 async function shatterRetestt(modulePaths: string[],
-    inputFile: string,
-    storageBaseDirectory: string,
+    absoluteSourceInputFile: AbsolutePath,
     functionName: string,
     specimens: Specimen[],
     onUpdate: (results: AutotestResults) => void,
-    shatterproofModuleOverride?: string) {
+    options?: {
+        shatterproofModuleOverride?: string,
+        maxIterations?: number,
+        maxTime?: number,
+        inBand?: boolean,
+        maxWorkers?: number,
+    }) {
 
-    const inputFileHash = sha1(inputFile);
+    const [program, sourceFile] = parse(absoluteSourceInputFile);
+    const functionDeclarationNode = findFunctionNode(functionName, sourceFile);
+    if (!functionDeclarationNode) {
+        throw new Error(`Could not find function ${functionName}`);
+    }
 
-    //  list all files
+    // rewrite code of given function (or everything if lazy) to add instrumentation
+    const [instrumentedFile, executorScriptJs, introspectionContext] = writeInstrumented(sourceFile, options?.shatterproofModuleOverride);
 
+    console.log(`created ${instrumentedFile} compiled to ${executorScriptJs}`);
+
+    let body = null;
+    for (let i = 0; i < functionDeclarationNode.getChildCount(); i++) {
+        const child = functionDeclarationNode.getChildAt(i);
+        if (ts.isBlock(child)) {
+            body = child;
+            break;
+        }
+    }
+
+    if (!body) {
+        throw new Error(`Could not find function body`);
+    }
+
+    const instrumentedLines = Array.from(introspectionContext.instrumentedLines).sort((a, b) => a - b);
+
+    let batchState:BatchState = {
+        clusters: [],
+        clustersByKey: new Map(),
+        specimensById: new Map(),
+        instrumentedLines: new Set(introspectionContext.instrumentedLines),
+        executedLines: new Set(),
+    };
+
+    const onResult = (runResult: RunResult) => {
+        batchState = updateBatchState(batchState, runResult);
+        onUpdate({ clusters:batchState.clusters, instrumentedLines });
+    };
+
+    const maxWorkers = options?.maxWorkers ?? 15;
+    const supervisor = new Supervisor(modulePaths, executorScriptJs, maxWorkers, !!options?.inBand);
+
+    const evaluations: Promise<number | undefined>[] = [];
+    const start = Date.now();
+    try {
+        //  TODO: prioritize variation in simpler types, e.g. numbers, over variation in more complex types, e.g. Maps
+        for (const specimen of specimens) {
+            batchState.specimensById.set(specimen.id, specimen);
+            const e = supervisor.execute(functionName, specimen, (invocation: Invocation, result: RunResult) => {
+                onResult(result)
+            });
+            evaluations.push(e);
+        }
+
+        await Promise.all(evaluations);
+    } catch (e) {
+        console.error(`Error in shatterRetestt: ${e} ${(e as any).stack}`);
+    } finally {
+        await supervisor.drain();
+        await supervisor.terminate();
+        const end = Date.now();
+        const execution = end - start;
+
+        const executed = Array.from(batchState.executedLines).sort((a, b) => a - b);
+        const instrumented = Array.from(introspectionContext.instrumentedLines).sort((a, b) => a - b);
+
+        return { executed, instrumented, clusters:batchState.clusters };
+    }
 }
 
 export const shatterRetest = wrapAsync("shatterRetestt", shatterRetestt);
@@ -208,75 +341,19 @@ async function shatterAutotestt(modulePaths: string[],
     const startTime = Date.now();
 
     const allExecutedBranches = new Set<string>();
-    const allExecutedLines = new Set<number>();
+    const instrumentedLines = Array.from(introspectionContext.instrumentedLines).sort((a, b) => a - b);
 
-    const clusters: ResultCluster[] = [];
-    const clustersByKey = new Map<string, ResultCluster>();
-    const clustersBySpecimenId = new Map<string, ResultCluster>();
-    const specimenResults = new Map<string, RunResult>();
-    const specimensById = new Map<string, Specimen>();
-    //  a set of canonicalized JSON serializations
-
-    new ts.OperationCanceledException();
+    let batchState:BatchState = {
+        clusters: [],
+        clustersByKey: new Map(),
+        specimensById: new Map(),
+        instrumentedLines: new Set(introspectionContext.instrumentedLines),
+        executedLines: new Set(),
+    };
 
     const onResult = (runResult: RunResult) => {
-        // console.log(`Received result ${JSON.stringify(runResult)}`);
-        // find the appropriate cluster or create it
-
-        if (!runResult.specimenId) {
-            throw new Error(`No specimenId in ${JSON.stringify(runResult)}`);
-        }
-        specimenResults.set(runResult.specimenId, runResult);
-        const specimen = specimensById.get(runResult.specimenId);
-        if (!specimen) {
-            throw new Error(`No specimen for ${runResult.specimenId}`);
-        }
-        const clusterKey = canonicalClusterKey(runResult);
-        let cluster = clustersByKey.get(clusterKey);
-        if (!cluster) {
-            const outcome = ((): Outcome => {
-                if (runResult.completed) {
-                    if (runResult.error) {
-                        return 'error';
-                    }
-                    return 'completed';
-                }
-                return 'timeout';
-            })();
-
-            cluster = {
-                key: clusterKey,
-                lines: runResult.lines,
-                linesInOrder: runResult.linesInOrder,
-                outcome,
-                specimens: [],
-                results: [],
-                //  the single specimen has the values that are the least and the most for all parameters
-                //  iniitally the only existing specimen is least and most in all cases
-                leasts: specimen.parameters.map(_ => specimen),
-                mosts: specimen.parameters.map(_ => specimen),
-                totalTime: 0,
-                distancesToClusters: specimen.parameters.map(_ => ({})),
-            };
-            clusters.push(cluster);
-            clustersByKey.set(clusterKey, cluster);
-        }
-
-        clustersBySpecimenId.set(runResult.specimenId, cluster);
-        cluster.specimens.push(specimen);
-
-        cluster.results.push(runResult);
-        cluster.totalTime += runResult.duration;
-
-        //  TODO: don't do this on every change
-        sortClusters(clusters);
-
-        //  update the caller
-        const instrumentedLines = Array.from(introspectionContext.instrumentedLines).sort((a, b) => a - b);
-        onUpdate({ clusters, instrumentedLines });
-        //  update the source
-
-        runResult.lines.forEach(line => allExecutedLines.add(line));
+        batchState = updateBatchState(batchState, runResult);
+        onUpdate({ clusters:batchState.clusters, instrumentedLines });
     };
 
     const maxWorkers = options?.maxWorkers ?? 15;
@@ -285,7 +362,6 @@ async function shatterAutotestt(modulePaths: string[],
         // }, introspectionContext.knownBranches.size = ${introspectionContext._knownBranches.size
         }, introspectionContext.instrumentedLines.size = ${introspectionContext.instrumentedLines.size
         }`);
-
 
     /*
 
@@ -359,7 +435,7 @@ async function shatterAutotestt(modulePaths: string[],
 
         let i = 0;
         let discarded = 0;
-        const beforeLines = allExecutedLines.size;
+        const beforeLines = batchState.executedLines.size;
         for (const baseSpecimen of g) {
             const leafGPs = baseSpecimen.parameters.flatMap(p => Array.from(findLeaves(p)));
 
@@ -417,7 +493,7 @@ async function shatterAutotestt(modulePaths: string[],
 
         const evaluations: Promise<string>[] = [];
         for (const newSpecimen of toRun) {
-            specimensById.set(newSpecimen.id, newSpecimen);
+            batchState.specimensById.set(newSpecimen.id, newSpecimen);
             // console.log(`Evaluating specimen ${JSON.stringify(newSpecimen)}`);
             const p = supervisor.execute(functionName, newSpecimen, (invocation: Invocation, result: RunResult) => {
                 onResult(result);
@@ -434,9 +510,9 @@ async function shatterAutotestt(modulePaths: string[],
                 const end = Date.now();
                 const generation = end - betweenGenerationAndExecution;
                 const execution = betweenGenerationAndExecution - start;
-                const netLines = beforeLines - allExecutedLines.size;
+                const netLines = beforeLines - batchState.executedLines.size;
                 linesImprovedByOperation[name] += netLines;
-                console.log(`Round ${linesRemainingPerPass.length} coverage ${allExecutedLines.size}/${introspectionContext.instrumentedLines.size}: ${name} ${toRun.length}/${take} specimens of ${count} total so far took ${generation}ms to generate and ${execution}ms to execute with ${specimens.length} left over; discarded ${discarded} repeats`);
+                console.log(`Round ${linesRemainingPerPass.length} coverage ${batchState.executedLines.size}/${introspectionContext.instrumentedLines.size}: ${name} ${toRun.length}/${take} specimens of ${count} total so far took ${generation}ms to generate and ${execution}ms to execute with ${specimens.length} left over; discarded ${discarded} repeats`);
                 return [generation, execution];
             });
     }
@@ -446,7 +522,7 @@ async function shatterAutotestt(modulePaths: string[],
         while (count < maxIterations && Date.now() - startTime < maxTime) {
             //  generate at least one specimen per unexecuted line
 
-            const linesRemaining = introspectionContext.instrumentedLines.size - allExecutedLines.size;
+            const linesRemaining = introspectionContext.instrumentedLines.size - batchState.executedLines.size;
             //  TODO: keep track of which method has most recently been successful
             const oneLineBack = linesRemainingPerPass?.[linesRemainingPerPass.length - 1] ?? introspectionContext.instrumentedLines.size;
             const progress = oneLineBack - linesRemaining;
@@ -465,26 +541,26 @@ async function shatterAutotestt(modulePaths: string[],
             await executeStage("seed", toSeed, seeder, scorePerParameterUniqueness);
 
             //  WEED - find the smaller ones - this matters less if we have low coverage
-            const toWeed = Math.min(maxIterations - count, Math.ceil(allExecutedLines.size * 0.1 + 10));
-            const weeder = weed(maxShrinkGenerations, clustersByKey, functionDeclarationNode.parameters, specimensById);
+            const toWeed = Math.min(maxIterations - count, Math.ceil(batchState.executedLines.size * 0.1 + 10));
+            const weeder = weed(maxShrinkGenerations, batchState.clustersByKey, functionDeclarationNode.parameters, batchState.specimensById);
             await executeStage("weed", toWeed, weeder, scoreByDepth);      //  TODO: weed-specific score - estimate size of input in some fashion; smaller is better
 
             //  BREED - we want more of these if we have holes in our coverage
             const toBreed = Math.min(maxIterations - count, Math.ceil(count * 0.2 + 20));
-            const breeder = breed(introspectionContext.instrumentedLines, allExecutedLines, clusters);
+            const breeder = breed(introspectionContext.instrumentedLines, batchState.executedLines, batchState.clusters);
             await executeStage("breed", toBreed, breeder, scorePerParameterUniqueness);   //  TODO: breed-specific score - some kind of holistic uniqueness?  individual parameters are likely to overlap
 
             //  KNEAD - find the boundary cases
             //  only do clusters that have distance > 1 from neighbors
             //  and if they've gotten closer recently
-            const preKneadRatio = allExecutedLines.size / introspectionContext.instrumentedLines.size;
-            const toKnead = Math.min(maxIterations - count, functionDeclarationNode.parameters.length * (1 + clusters.length) * allExecutedLines.size * (preKneadRatio + 0.01));
-            const kneader = knead(clustersByKey, functionDeclarationNode.parameters, specimensById);
+            const preKneadRatio = batchState.executedLines.size / introspectionContext.instrumentedLines.size;
+            const toKnead = Math.min(maxIterations - count, functionDeclarationNode.parameters.length * (1 + batchState.clusters.length) * batchState.executedLines.size * (preKneadRatio + 0.01));
+            const kneader = knead(batchState.clustersByKey, functionDeclarationNode.parameters, batchState.specimensById);
             await executeStage("knead", toKnead, kneader, scorePerParameterUniqueness);   //  TODO: knead-specific score - distance from centroid of cluster?
 
-            if (introspectionContext.instrumentedLines.size - allExecutedLines.size === 0) {
+            if (introspectionContext.instrumentedLines.size - batchState.executedLines.size === 0) {
                 //  TODO: continue until at least N examples in each cluster
-                const incompleteClusters = clusters.filter(c => c.results.length < minResultsPerCluster);
+                const incompleteClusters = batchState.clusters.filter(c => c.results.length < minResultsPerCluster);
                 if (incompleteClusters.length === 0) {
                     break;
                 }
@@ -496,12 +572,12 @@ async function shatterAutotestt(modulePaths: string[],
 
         await supervisor.terminate();
 
-        const executed = Array.from(allExecutedLines).sort((a, b) => a - b);
+        const executed = Array.from(batchState.executedLines).sort((a, b) => a - b);
         const instrumented = Array.from(introspectionContext.instrumentedLines).sort((a, b) => a - b);
 
-        console.log(`Finished after ${count} iterations and ${Date.now() - startTime}ms with ${allExecutedLines.size}/${introspectionContext.instrumentedLines.size} lines executed; ${JSON.stringify(linesImprovedByOperation)}`);
+        console.log(`Finished after ${count} iterations and ${Date.now() - startTime}ms with ${batchState.executedLines.size}/${introspectionContext.instrumentedLines.size} lines executed; ${JSON.stringify(linesImprovedByOperation)}`);
 
-        return { count, executed, instrumented, clusters };
+        return { count, executed, instrumented, clusters:batchState.clusters };
     }
 }
 

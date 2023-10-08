@@ -23,10 +23,10 @@ export type FileState = {
 export type CoverageSelection = 'all'
     | 'missed'
     | Outcome
-    | { clusterKeys: string[] };
+    | { clusterKey: string };
 
 export interface ExtensionState {
-    runningAutotestFunction?: string;
+    runningTestFunction?: string;
     fileStates: Record<AbsolutePath, FileState>;	//	Record because Map is not serializable
     //	this overlaps some with specimens, but it doesn't load the contents	
     activeFile?: AbsolutePath;

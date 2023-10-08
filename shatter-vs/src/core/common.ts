@@ -211,7 +211,7 @@ export type Specimen = BaseSpecimen & {
     leaves: LeafParameter[],
 };
 
-const resolveGeneratedParameterValue = (gp: GeneratedParameter, rehydrate: boolean, activeModule: any): any => {
+export const resolveGeneratedParameterValue = (gp: GeneratedParameter, rehydrate: boolean, activeModule: any): any => {
     function extractor(gp: GeneratedParameter): any {
         return resolveGeneratedParameterValue(gp, rehydrate, activeModule);
     }
