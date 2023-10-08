@@ -141,6 +141,7 @@ export const refresh = (extensionState: ExtensionState, providers: DisplayProvid
         testCaseDetailProvider.refresh([]);
         return;
     }
+
     if (extensionState.activeFunction) {
         functionsListProvider.select(extensionState.activeFunction);
     }
@@ -245,8 +246,6 @@ export const refresh = (extensionState: ExtensionState, providers: DisplayProvid
             } else if (isOutcome(activeCoverage))
                 functionsListProvider.select(activeCoverage);
         }
-
-
 
         function* linerator() {
             const covered = new Set(selectedClusters.flatMap((cluster) => cluster.lines));
