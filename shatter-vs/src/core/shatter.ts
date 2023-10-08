@@ -132,20 +132,14 @@ async function shatterRetestt(modulePaths: string[],
     inputFile: string,
     storageBaseDirectory: string,
     functionName: string,
+    specimens: Specimen[],
     onUpdate: (results: AutotestResults) => void,
     shatterproofModuleOverride?: string) {
 
     const inputFileHash = sha1(inputFile);
-    const clusterStorageDirectory = join(storageBaseDirectory, 'clusters', inputFileHash, functionName);
 
     //  list all files
-    const clusters: ResultCluster[] = [];
-    readdirSync(clusterStorageDirectory).forEach(clusterFile => {
-        const cluster = JSON.parse(clusterFile);
-        clusters.push(cluster);
-    });
 
-    const generator = new RetestCaseSource(clusters);
 }
 
 export const shatterRetest = wrapAsync("shatterRetestt", shatterRetestt);

@@ -12,7 +12,7 @@
   "activationEvents": [
     "onLanguage:typescript"
   ],
-  "main": "./out/extension/index.js",
+  "main": "./dist/extension/index.js",
   "contributes": {
     "commands": [
       {
@@ -64,7 +64,7 @@
         }
       },
       {
-        "command": "extension.shatterRunTestcases",
+        "command": "extension.shatterRunTestcaseClusters",
         "title": "Run test cases",
         "icon": {
           "dark": "resources/dark/run-all.svg",
@@ -130,7 +130,7 @@
           "group": "navigation@3"
         },
         {
-          "command": "extension.shatterRunTestcases",
+          "command": "extension.shatterRunTestcaseClusters",
           "when": "view == shatter-execution-paths",
           "group": "inline"
         },

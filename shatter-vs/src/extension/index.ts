@@ -3,20 +3,13 @@ import * as path from 'path';
 import { join } from 'path';
 import * as ts from 'typescript';
 import * as vscode from 'vscode';
-import { AbsolutePath, RelativePath, SpecimenId, isRelativePath, isSpecimenId } from '../core/common';
+import { AbsolutePath, RelativePath, Specimen, SpecimenId, isRelativePath, isSpecimenId } from '../core/common';
+import { isOutcome } from '../core/supervisor';
 import { FunctionMeta } from '../core/transform';
 import { CoverageSelection, ExtensionState, Specimental, cleanUpExtensionState, getActiveStates, onPersistedSpecimenLoad } from './common';
 import { CommonDisplayNode, DisplayProvider, Highlighter, doSelectCluster, doSelectFile, doSelectFunction, doSelectTestCase, refresh } from './display';
 import { forkTest, loadPersistedSpecimen, loadPersistedSpecimens, saveTest } from './persistence';
-import { TestLifecycle, autotestFunction } from './run';
-import { Outcome, Outcomes, isOutcome } from '../core/supervisor';
-
-interface Providers {
-	functionsListProvider: CommonTreeDataProvider,
-	clustersListProvider: CommonTreeDataProvider,
-	testCaseListProvider: CommonTreeDataProvider,
-	testCaseDetailProvider: CommonTreeDataProvider,
-}
+import { TestLifecycle, autotestFunction, retestFunction } from './run';
 
 const coveredDecorationType = vscode.window.createTextEditorDecorationType({
 	// gutterIconPath: context.asAbsolutePath('media/triangle.svg'),
@@ -295,7 +288,7 @@ export async function activate(context: vscode.ExtensionContext) {
 				command: 'extension.shatterSelectTestCase',
 				title: 'Test Case Detail',
 			},
-			stateIcons: iconPaths({ pinned: 'pin.svg', unpinned: 'unpin.svg' }),
+			stateIcons: iconPaths({ pinned: 'pin.svg', unpinned: 'unpin.svg', edge: 'sparkle.svg' }),
 		});
 		context.subscriptions.push(
 			vscode.window.registerTreeDataProvider("shatter-list-testcases", testCaseListProvider));
@@ -303,6 +296,7 @@ export async function activate(context: vscode.ExtensionContext) {
 		const testCaseDetailProvider = new CommonTreeDataProvider({
 			stateIcons: iconPaths({ persistent: 'pin.svg' }),
 		});
+		// const treeView = vscode.window.createTreeView("exampleView", { treeDataProvider: testCaseDetailProvider });
 		context.subscriptions.push(
 			vscode.window.registerTreeDataProvider("shatter-testcase-detail", testCaseDetailProvider));
 
@@ -469,8 +463,8 @@ export async function activate(context: vscode.ExtensionContext) {
 				return;
 			}
 
-			const testCaseNamePattern = /^[a-z0-9_-.]+$/;
-			function isValidTestCaseName(s:string|undefined) {
+			const testCaseNamePattern = /^[a-z0-9_.-]+$/;
+			function isValidTestCaseName(s: string | undefined) {
 				return s?.match(testCaseNamePattern) !== null;
 			}
 
@@ -539,11 +533,98 @@ export async function activate(context: vscode.ExtensionContext) {
 		});
 		context.subscriptions.push(forkTestCaseCommand);
 
-		const runTestCaseCommand = vscode.commands.registerCommand('extension.shatterRunTestcase', async (node: CommonDisplayNode) => {
+		function retest(specimens: Specimen[]) {
+			const lifeCycler: TestLifecycle = {
+				onTestStart(absoluteFilename: AbsolutePath, functionName: string) {
+					doSelectFunctionCommand({
+						key: functionName,
+						label: ''
+					});
+				},
+
+				onResult(absoluteFilename, functionName, result) {
+					refresh(extensionState, providers, highlighter);
+				},
+
+				onTestEnd(absoluteFilename: AbsolutePath, functionName: string) {
+					context.workspaceState.update(autotestStorageStateKey, extensionState);
+					extensionState.runningAutotestFunction = undefined;
+					refresh(extensionState, providers, highlighter);
+				},
+			};
+
+			const functionNames = new Set<string>(
+				specimens.map((specimen) => specimen.functionName)
+			);
+
+			if (functionNames.size !== 1) {
+				throw new Error(`Unexpectedly ${functionNames.size} functionNames ${specimens.length} specimens under test`);
+			}
+
+			const filesUnderTest = new Set<RelativePath>(
+				specimens.map((specimen) => specimen.fileUnderTest)
+			);
+
+			if (filesUnderTest.size !== 1) {
+				throw new Error(`Unexpectedly ${filesUnderTest.size} files from ${specimens.length} specimens under test`);
+			}
+
+			const functionName = specimens[0].functionName;
+			const relativeSourceFilename = specimens[0].fileUnderTest;
+			const absoluteSourceFilename = asAbsolutePath(defaultWorkspaceRoot as AbsolutePath, relativeSourceFilename);
+
+			/*
+			retestFunction(extensionState: ExtensionState,
+							workspaceRoots: AbsolutePath[],
+							absoluteSourceFilename: AbsolutePath,
+							relativeSourceFilename: RelativePath,
+							providers: DisplayProviders,
+							functionName: string,
+							specimens:Specimen[],
+							lifeCycler: TestLifecycle,
+							shatterproofModuleOverride: string) {
+			
+			*/
+
+			return retestFunction(extensionState, workspaceRoots, absoluteSourceFilename, relativeSourceFilename, providers, functionName, specimens, lifeCycler, extensionSource);
+		}
+
+		const runTestCaseCommand = vscode.commands.registerCommand('extension.shatterRunTestcaseClusters', async (node: CommonDisplayNode) => {
+			if (!node.key) {
+				return;
+			}
+			//	TODO: this can be run without selecting an item; need to look at all of the specimens to find the desired states
+			const { fileState, functionState } = getActiveStates(extensionState);
+			if (!fileState || !functionState) {
+				return;
+			}
+
+			const clusters = isOutcome(node.key)
+				? functionState.autotest.clusters.filter(c => c.outcome === node.key)
+				: functionState.autotest.clusters.filter((cluster) => cluster.key === node.key);
+
+			const specimens = clusters.flatMap((cluster) => cluster.specimens);
+
+			await retest(specimens);
 		});
 		context.subscriptions.push(runTestCaseCommand);
 
-		const runTestCasesCommand = vscode.commands.registerCommand('extension.shatterRunTestcases', async (node: CommonDisplayNode) => {
+		const runTestCasesCommand = vscode.commands.registerCommand('extension.shatterRunTestcase', async (node: CommonDisplayNode) => {
+			if (!node.key) {
+				return;
+			}
+
+			//	TODO: this can be run without selecting an item; need to look at all of the clusters to find the desired ones
+			const { fileState, functionState, specimental } = getActiveStates(extensionState);
+			if (!fileState || !functionState || !specimental) {
+				return;
+			}
+
+			if (specimental.specimen.id !== node.key) {
+				throw new Error(`Unexpectedly selected specimen ${node.key} is not current ${specimental.specimen.id}}`);
+			}
+
+			await retest([specimental.specimen]);
 		});
 		context.subscriptions.push(runTestCasesCommand);
 
@@ -570,10 +651,9 @@ export async function activate(context: vscode.ExtensionContext) {
 		}, null, context.subscriptions);
 		//	TODO: what to do when a document is closed?
 
-		//	TODO: fix the ugly hard-coding of 'src'; that can't be right for a standalone extension
-		//	TODO: just make people import shatterproof module in their projects; don't try to be magical about it
-		//	shatterproof needs an existence outside VSCode anyway
-		const extensionSource = join(context.extensionPath, 'src');
+		//	TODO: verify that dist works properly
+		const extensionSource = context.asAbsolutePath('dist');
+
 		const autotestFromEditorContextMenu = await vscode.commands.registerCommand('extension.shatterAutotestFromEditorContextMenu', async () => {
 			if (vscode.window.activeTextEditor?.document.languageId === 'typescript') {
 				const selection = vscode.window.activeTextEditor.selection;
@@ -736,6 +816,12 @@ class CommonTreeDataProvider implements vscode.TreeDataProvider<CommonDisplayNod
 		// console.log(`firing onchange with ${JSON.stringify(roots)}}`);
 
 		this._onDidChangeTreeData.fire();
+
+		const item = this.getTreeItem({
+			key: 'covered://',
+			label: 'Covered',
+		});
+		this.reveal(item, { focus: true, select: true });
 	}
 
 	// Get the children of a tree node.
@@ -770,6 +856,7 @@ class CommonTreeDataProvider implements vscode.TreeDataProvider<CommonDisplayNod
 			treeItem.iconPath = this.options.stateIcons[element.state];
 		}
 		treeItem.contextValue = element.contextValue;
+		treeItem.checkboxState = vscode.TreeItemCheckboxState.Checked;
 		return treeItem;
 	}
 }

@@ -1,6 +1,6 @@
 import path = require("path");
 import * as fs from 'fs'; //TODO: use VSCode fs
-import { AbsolutePath, RelativePath } from "../core/common";
+import { AbsolutePath, RelativePath, Specimen } from "../core/common";
 import { AutotestResults, shatterAutotest } from "../core/shatter";
 import { ExtensionState, getActiveStates } from "./common";
 import { DisplayProviders, refresh } from "./display";
@@ -47,6 +47,10 @@ export interface TestLifecycle {
     onTestStart: (absoluteFilename: AbsolutePath, functionName: string) => void;
     onResult: (absoluteFilename: AbsolutePath, functionName: string, result: AutotestResults) => void;
     onTestEnd: (absoluteFilename: AbsolutePath, functionName: string) => void;
+}
+
+export async function retestFunction(extensionState: ExtensionState, workspaceRoots: AbsolutePath[], absoluteSourceFilename: AbsolutePath, relativeSourceFilename: RelativePath, providers: DisplayProviders, functionName: string, specimens:Specimen[], lifeCycler: TestLifecycle, shatterproofModuleOverride: string) {
+    console.log(`retestFunction ${functionName} in ${absoluteSourceFilename} with specimens ${specimens.map(s => s.id)}`);
 }
 
 export async function autotestFunction(extensionState: ExtensionState, workspaceRoots: AbsolutePath[], absoluteSourceFilename: AbsolutePath, relativeSourceFilename: RelativePath, providers: DisplayProviders, functionName: string, lifeCycler: TestLifecycle, shatterproofModuleOverride: string) {

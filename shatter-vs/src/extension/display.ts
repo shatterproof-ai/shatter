@@ -1,5 +1,5 @@
 import { capitalize, filter } from "lodash";
-import { AbsolutePath } from "../core/common";
+import { AbsolutePath, SpecimenId } from "../core/common";
 import { ResultCluster } from "../core/shatter";
 import { Outcome, Outcomes, isOutcome } from "../core/supervisor";
 import { findFunctions } from "../core/transform";
@@ -261,6 +261,16 @@ export const refresh = (extensionState: ExtensionState, providers: DisplayProvid
         return;
     }
 
+    const edgeCaseSpecimens = new Set<SpecimenId>();
+    for (const cluster of allClusters) {
+        for (const specimen of cluster.leasts) {
+            edgeCaseSpecimens.add(specimen.id);
+        }
+        for (const specimen of cluster.mosts) {
+            edgeCaseSpecimens.add(specimen.id);
+        }
+    }
+
     const testCaseListNodes: CommonDisplayNode[] = selectedClusters
         .flatMap(c => c.results.map((result, i): CommonDisplayNode => {
             const specimental = functionState.specimens[result.specimenId];
@@ -275,6 +285,10 @@ export const refresh = (extensionState: ExtensionState, providers: DisplayProvid
 
             if (specimental?.specimenPath) {
                 contextPieces.push('persistent');
+            }
+
+            if (edgeCaseSpecimens.has(specimental.specimen.id)) {
+                contextPieces.push('edge');
             }
 
             const state = specimental?.specimenPath ? 'pinned' : 'unpinned';
