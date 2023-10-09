@@ -1,5 +1,5 @@
 import { capitalize } from "lodash";
-import { AbsolutePath, Specimen, SpecimenId } from "../core/common";
+import { AbsolutePath, Specimen, SpecimenId, extractGeneratedParameterValue, resolveGeneratedParameterValue } from "../core/common";
 import { ResultCluster } from "../core/shatter";
 import { Outcome, isOutcome } from "../core/supervisor";
 import { FunctionMeta, findFunctions } from "../core/transform";
@@ -42,42 +42,52 @@ export function findNode(nodes: CommonDisplayNode[], key: string): CommonDisplay
     return undefined;
 }
 
-function visit(k: string | number, o: any, depth = 0): CommonDisplayNode {
+function valueToNode(o: any, depth = 0): CommonDisplayNode[] {
     if (depth === 0) {
-        return {
+        return [{
             label: "...",
-        };
+        }];
     }
 
-    const key = typeof k === 'number' ? `[${k}]` : `"${k}"`;
     if (o === null) {
-        return {
-            label: `${key}: null`,
-        };
+        return [{
+            label: `null`,
+        }];
     }
     if (o === undefined) {
-        return {
-            label: `${key}: undefined`,
-        };
+        return [{
+            label: `undefined`,
+        }];
     }
     if (typeof o === 'object') {
         if (Array.isArray(o)) {
-            return {
-                label: key,
-                children: o.map((v, i) => visit(i, v, depth - 1)),
-            };
+            const children: CommonDisplayNode[] = [];
+            for (let i = 0; i < o.length; i++) {
+                const elementNodes = valueToNode(o[i], depth - 1);
+                children.push({
+                    label: `[${i}]`,
+                    children: elementNodes,
+                });
+            }
+
+            return children;
         }
-        const keys = Object.keys(o);
-        const children = keys.map((k) => visit(k, o[k], depth - 1));
-        return {
-            label: key,
-            children,
-        };
+
+        const children: CommonDisplayNode[] = [];
+        for (const [k, v] of Object.entries(o)) {
+            const elementNode = valueToNode(v, depth - 1);
+            children.push({
+                label: k,
+                children: elementNode,
+            });
+        }
+
+        return children;
     }
 
-    return {
-        label: `${key}: ${JSON.stringify(o)}`,
-    };
+    return [{
+        label: JSON.stringify(o),
+    }];
 }
 
 export function filterClustersForCoverage(coverage: CoverageSelection | undefined, clusters?: ResultCluster[]): ResultCluster[] {
@@ -105,18 +115,18 @@ export function filterClustersForCoverage(coverage: CoverageSelection | undefine
 }
 
 export const findClustersForCoverage = (extensionState: ExtensionState, coverage: Exclude<CoverageSelection, 'missing'>): ResultCluster[] => {
-	const allMatches: ResultCluster[] = [];
-	for (const fileState of Object.values(extensionState.fileStates)) {
-		for (const functionState of Object.values(fileState.functionStates)) {
-			const functionMatches = filterClustersForCoverage(coverage, functionState.autotest.clusters);
-			allMatches.push(...functionMatches);
-		}
-	}
-	return allMatches;
+    const allMatches: ResultCluster[] = [];
+    for (const fileState of Object.values(extensionState.fileStates)) {
+        for (const functionState of Object.values(fileState.functionStates)) {
+            const functionMatches = filterClustersForCoverage(coverage, functionState.autotest.clusters);
+            allMatches.push(...functionMatches);
+        }
+    }
+    return allMatches;
 };
 
-export const findFunction = (extensionState: ExtensionState, functionName: string): [FunctionMeta, FunctionState]|undefined => {
-	for (const fileState of Object.values(extensionState.fileStates)) {
+export const findFunction = (extensionState: ExtensionState, functionName: string): [FunctionMeta, FunctionState] | undefined => {
+    for (const fileState of Object.values(extensionState.fileStates)) {
         if (fileState.functionStates[functionName]) {
             for (const functionMeta of fileState.functions) {
                 if (functionMeta.name === functionName) {
@@ -124,18 +134,18 @@ export const findFunction = (extensionState: ExtensionState, functionName: strin
                 }
             }
         }
-	}
+    }
 };
 
 export const findSpecimen = (extensionState: ExtensionState, specimenId: SpecimenId): Specimental | undefined => {
-	for (const fileState of Object.values(extensionState.fileStates)) {
-		for (const functionState of Object.values(fileState.functionStates)) {
-			const maybeSpecimental = functionState.specimens[specimenId];
-			if (maybeSpecimental) {
-				return maybeSpecimental;
-			}
-		}
-	}
+    for (const fileState of Object.values(extensionState.fileStates)) {
+        for (const functionState of Object.values(fileState.functionStates)) {
+            const maybeSpecimental = functionState.specimens[specimenId];
+            if (maybeSpecimental) {
+                return maybeSpecimental;
+            }
+        }
+    }
 };
 
 export const refresh = (extensionState: ExtensionState, providers: DisplayProviders, highlighter: Highlighter) => {
@@ -403,23 +413,47 @@ export const refresh = (extensionState: ExtensionState, providers: DisplayProvid
         return;
     }
 
-    //	TODO: make this cleaner, ideally like JSON.stringify(...)
-    const metadataNode = {
-        label: `Duration ${result.duration}ms`
+    const resolvedParameters = specimental.specimen.parameters.map(extractGeneratedParameterValue);
+    const parametersValueNodes = valueToNode(resolvedParameters, 3);
+    const parametersNode: CommonDisplayNode = {
+        label: 'Parameters',
+        children: parametersValueNodes,
     };
-    const resultNode = visit('Result', result.output ?? result.error, 3);
 
-    if (!specimental.specimen) {
-        console.error(`Unable to find specimen ${result.specimenId}`);
-        return;
-    }
+    const metadataNode = {
+        label: `Result: ${capitalize(result.outcome)} in ${result.duration}ms`
+    };
 
-    const parametersNode = visit('Parameters', specimental.specimen.parameters, 3);
     const testCaseNodes: CommonDisplayNode[] = [
         metadataNode,
         parametersNode,
-        resultNode,
     ];
+
+    if (result.output) {
+        const outputValuesNodes = valueToNode(result.output, 3);
+        const outputNode: CommonDisplayNode = {
+            label: 'Return value',
+            children: outputValuesNodes,
+        };
+        testCaseNodes.push(outputNode);
+    } else if (result.error) {
+        const unstrungError = JSON.parse(result.error);
+        const errorNode: CommonDisplayNode = {
+            label: unstrungError.message,
+        };
+        const stack: string | undefined = unstrungError.stack;
+        if (stack) {
+            errorNode.children = stack.split('\n')
+                .filter((line: string, i: number) => i !== 0 || line !== unstrungError.message)
+                .map((frame: any): CommonDisplayNode => ({ label: frame }));
+        }
+        testCaseNodes.push(errorNode);
+    } else {
+        const noResultsNode: CommonDisplayNode = {
+            label: `No results`,
+        };
+        testCaseNodes.push(noResultsNode);
+    }
 
     testCaseDetailProvider.refresh(testCaseNodes);
 };

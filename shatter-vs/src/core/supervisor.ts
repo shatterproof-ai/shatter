@@ -24,7 +24,7 @@ export interface RunResult {
     completed: boolean
     outcome: Outcome
     output?: any
-    error?: any
+    error?: string
     duration: number
     stdout?: string
     stderr?: string
