@@ -314,23 +314,30 @@ export const refresh = (extensionState: ExtensionState, providers: DisplayProvid
             }
         }
 
-        function* linerator() {
-            const covered = new Set(selectedClusters.flatMap((cluster) => cluster.lines));
-            const lines = (() => {
-                if (activeCoverage === 'missed') {
-                    const uncovered = Array.from(functionInstrumentedLines)
-                        .filter((line) => !covered.has(line))
-                        .sort((a, b) => a - b);
-                    return uncovered;
+        if (activeCoverage === 'missed') {
+            function* missedLinerator() {
+                const allCovered = new Set(results.clusters.flatMap((cluster) => cluster.lines));
+                const uncovered = Array.from(functionInstrumentedLines)
+                    .filter((line) => !allCovered.has(line))
+                    .sort((a, b) => a - b);
+                for (const line of uncovered ?? []) {
+                    yield line;
                 }
-                return Array.from(covered).sort((a, b) => a - b);
-            })();
 
-            for (const line of lines ?? []) {
-                yield line;
             }
+
+            highlighter('missed', missedLinerator);
+        } else {
+            function* selectedCoveredLinerator() {
+                const selectedCovered = new Set(selectedClusters.flatMap((cluster) => cluster.lines));
+                const lines = Array.from(selectedCovered).sort((a, b) => a - b);
+                for (const line of lines ?? []) {
+                    yield line;
+                }
+            }
+
+            highlighter('covered', selectedCoveredLinerator);
         }
-        highlighter(activeCoverage === 'missed' ? 'missed' : 'covered', linerator);
     }
 
     const shortString = (a: any) => {

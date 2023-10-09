@@ -29,6 +29,8 @@ const COMMANDS = {
 	shatterSelectTestCase: 'extension.shatterSelectTestCase',
 };
 
+const autotestStorageStateKey = "autotestState_7";
+
 const coveredDecorationType = vscode.window.createTextEditorDecorationType({
 	// gutterIconPath: context.asAbsolutePath('media/triangle.svg'),
 	//	TODO: get colors from theme and/or IDE https://code.visualstudio.com/api/references/theme-color#text-colors
@@ -183,9 +185,9 @@ How to select test cases?  Per function, per cluster, per test case
 function highlighterFromEditor(): Highlighter {
 	const editor = vscode.window.activeTextEditor;
 	if (editor) {
-		editor.setDecorations(coveredDecorationType, []);
-		editor.setDecorations(missedDecorationType, []);
 		function doHighlighting(decoration: 'covered' | 'missed', linerator: () => Generator<number, void, unknown>) {
+			editor?.setDecorations(coveredDecorationType, []);
+			editor?.setDecorations(missedDecorationType, []);
 
 			const decorationType = decoration === 'missed' ? missedDecorationType : coveredDecorationType;
 
@@ -199,7 +201,6 @@ function highlighterFromEditor(): Highlighter {
 	return () => { };
 }
 
-const autotestStorageStateKey = "autotestState_0";
 export async function activate(context: vscode.ExtensionContext) {
 	//	TODO: this all needs to deal in URIs
 	const workspaceRoots: AbsolutePath[] = vscode.workspace.workspaceFolders?.map((f) => f.uri.fsPath as AbsolutePath) ?? [];
@@ -318,8 +319,13 @@ export async function activate(context: vscode.ExtensionContext) {
 		//	call after switching files, changing contents of the editor, or running tests
 		const doSelectFunctionCommand = (node: CommonDisplayNode) => {
 			if (vscode.window.activeTextEditor?.document.languageId === 'typescript') {
-				const functionName: string = node.key || "";
-				doSelectFunction(highlighter, extensionState, providers, functionName);
+				if (node.contextValue === 'function') {
+					//	TODO: check if this is a function name or a test case name
+					const functionName: string = node.key || "";
+					doSelectFunction(highlighter, extensionState, providers, functionName);
+				} else if (isSpecimenId(node.key)) {
+					doSelectTestCase(highlighter, extensionState, providers, node.key);
+				}
 			}
 		};
 
@@ -345,6 +351,7 @@ export async function activate(context: vscode.ExtensionContext) {
 					}
 				})();
 				if (selection) {
+					testCaseDetailProvider.refresh([]);
 					doSelectCluster(highlighter, extensionState, providers, selection);
 				}
 			}
@@ -451,7 +458,7 @@ export async function activate(context: vscode.ExtensionContext) {
 			}
 
 			const specimental = findSpecimen(extensionState, specimenId);
-			if (!specimental || specimental.specimenPath) {
+			if (!specimental) {
 				//TODO: error
 				return;
 			}
@@ -485,8 +492,8 @@ export async function activate(context: vscode.ExtensionContext) {
 			if (specimenBaseDirectory) {
 				// function forkTest(storageBaseDirectory: AbsolutePath, specimental: Specimental, sourceFileUnderTestPath: RelativePath, testCaseName: SpecimenId) {
 				let newSpecimental: Specimental | undefined = undefined;
-				if (specimental.fileUnderTest) {
-					//	forking a persistent test
+				if (specimental.specimenPath) {
+					//	forking an already persistent test
 					newSpecimental = forkTest(specimenBaseDirectory, specimental, newId, newTestCaseName);
 				} else {
 					//	forking a transient test
@@ -673,6 +680,8 @@ export async function activate(context: vscode.ExtensionContext) {
 					}
 
 					const absoluteFileUnderTest = document.fileName as AbsolutePath;
+					extensionState.activeFile = absoluteFileUnderTest;
+					extensionState.activeFunction = functionName;
 					await doAutotest(absoluteFileUnderTest, functionName);
 				} else {
 					vscode.window.showErrorMessage('Select a function or place the cursor inside a function.');
@@ -843,16 +852,7 @@ class CommonTreeDataProvider implements vscode.TreeDataProvider<CommonDisplayNod
 	//	then it should do the conversion also
 	refresh(roots: CommonDisplayNode[] | undefined) {
 		this.roots = roots;
-
-		// console.log(`firing onchange with ${JSON.stringify(roots)}}`);
-
 		this._onDidChangeTreeData.fire();
-
-		const item = this.getTreeItem({
-			key: 'covered://',
-			label: 'Covered',
-		});
-		// this.reveal(item, { focus: true, select: true });
 	}
 
 	select(key: string): void {
@@ -881,6 +881,7 @@ class CommonTreeDataProvider implements vscode.TreeDataProvider<CommonDisplayNod
 
 	// Get the tree item for a node.
 	getTreeItem(element: CommonDisplayNode): vscode.TreeItem {
+		//	TODO: creating a new TreeItem on every fetch blows away the collapsed state; need each CommonDisplayNode to have a unique ID and then cache the TreeItems
 		const treeItem = new vscode.TreeItem(element.label);
 
 		treeItem.collapsibleState = element.children && element.children.length > 0 ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.None;

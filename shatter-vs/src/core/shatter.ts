@@ -254,7 +254,7 @@ async function shatterRetestt(modulePaths: string[],
         for (const specimen of specimens) {
             batchState.specimensById.set(specimen.id, specimen);
             const e = supervisor.execute(functionName, specimen, (invocation: Invocation, result: RunResult) => {
-                onResult(result)
+                onResult(result);
             });
             evaluations.push(e);
         }
