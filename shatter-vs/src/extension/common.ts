@@ -1,6 +1,6 @@
 import { AbsolutePath, RelativePath, Specimen } from "../core/common";
 import { AutotestResults } from "../core/shatter";
-import { Outcome } from "../core/supervisor";
+import { Outcome, isOutcome } from "../core/supervisor";
 import { FunctionMeta } from "../core/transform";
 
 export interface Specimental {
@@ -24,6 +24,13 @@ export type CoverageSelection = 'all'
     | 'missed'
     | Outcome
     | { clusterKey: string };
+
+export function isCoverageSelection(s:any): s is CoverageSelection {
+    return (typeof s === 'object' && typeof s.clusterKey === 'string')
+    || s === 'missed'
+    || s === 'all'
+    || isOutcome(s);
+}
 
 export interface ExtensionState {
     runningTestFunction?: string;

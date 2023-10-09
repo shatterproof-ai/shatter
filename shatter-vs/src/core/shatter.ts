@@ -129,7 +129,7 @@ interface ResultCluster {
 */
 
 
-const updateBatchState = (batchState: BatchState, runResult: RunResult):BatchState => {
+const updateBatchState = (batchState: BatchState, runResult: RunResult): BatchState => {
     // console.log(`Received result ${JSON.stringify(runResult)}`);
     // find the appropriate cluster or create it
     if (!runResult.specimenId) {
@@ -186,7 +186,7 @@ const updateBatchState = (batchState: BatchState, runResult: RunResult):BatchSta
 
 interface BatchState {
     clusters: ResultCluster[];
-    clustersByKey:Map<string, ResultCluster>;
+    clustersByKey: Map<string, ResultCluster>;
     specimensById: Map<string, Specimen>;
     instrumentedLines: Set<number>;
     executedLines: Set<number>;
@@ -231,7 +231,7 @@ async function shatterRetestt(modulePaths: string[],
 
     const instrumentedLines = Array.from(introspectionContext.instrumentedLines).sort((a, b) => a - b);
 
-    let batchState:BatchState = {
+    let batchState: BatchState = {
         clusters: [],
         clustersByKey: new Map(),
         specimensById: new Map(),
@@ -241,7 +241,7 @@ async function shatterRetestt(modulePaths: string[],
 
     const onResult = (runResult: RunResult) => {
         batchState = updateBatchState(batchState, runResult);
-        onUpdate({ clusters:batchState.clusters, instrumentedLines });
+        onUpdate({ clusters: batchState.clusters, instrumentedLines });
     };
 
     const maxWorkers = options?.maxWorkers ?? 15;
@@ -271,7 +271,7 @@ async function shatterRetestt(modulePaths: string[],
         const executed = Array.from(batchState.executedLines).sort((a, b) => a - b);
         const instrumented = Array.from(introspectionContext.instrumentedLines).sort((a, b) => a - b);
 
-        return { executed, instrumented, clusters:batchState.clusters };
+        return { executed, instrumented, clusters: batchState.clusters };
     }
 }
 
@@ -343,7 +343,7 @@ async function shatterAutotestt(modulePaths: string[],
     const allExecutedBranches = new Set<string>();
     const instrumentedLines = Array.from(introspectionContext.instrumentedLines).sort((a, b) => a - b);
 
-    let batchState:BatchState = {
+    let batchState: BatchState = {
         clusters: [],
         clustersByKey: new Map(),
         specimensById: new Map(),
@@ -353,7 +353,7 @@ async function shatterAutotestt(modulePaths: string[],
 
     const onResult = (runResult: RunResult) => {
         batchState = updateBatchState(batchState, runResult);
-        onUpdate({ clusters:batchState.clusters, instrumentedLines });
+        onUpdate({ clusters: batchState.clusters, instrumentedLines });
     };
 
     const maxWorkers = options?.maxWorkers ?? 15;
@@ -577,7 +577,7 @@ async function shatterAutotestt(modulePaths: string[],
 
         console.log(`Finished after ${count} iterations and ${Date.now() - startTime}ms with ${batchState.executedLines.size}/${introspectionContext.instrumentedLines.size} lines executed; ${JSON.stringify(linesImprovedByOperation)}`);
 
-        return { count, executed, instrumented, clusters:batchState.clusters };
+        return { count, executed, instrumented, clusters: batchState.clusters };
     }
 }
 

@@ -64,7 +64,31 @@
         }
       },
       {
-        "command": "extension.shatterRunTestcaseClusters",
+        "command": "extension.shatterPersistTestcaseCluster",
+        "title": "Run test cases",
+        "icon": {
+          "dark": "resources/dark/unpin.svg",
+          "light": "resources/light/unpin.svg"
+        }
+      },
+      {
+        "command": "extension.shatterUnpersistTestcaseCluster",
+        "title": "Run test cases",
+        "icon": {
+          "dark": "resources/dark/pin.svg",
+          "light": "resources/light/pin.svg"
+        }
+      },
+      {
+        "command": "extension.shatterRunClustersTestcases",
+        "title": "Run test cases",
+        "icon": {
+          "dark": "resources/dark/run-all.svg",
+          "light": "resources/light/run-all.svg"
+        }
+      },
+      {
+        "command": "extension.shatterRunFunctionTestcases",
         "title": "Run test cases",
         "icon": {
           "dark": "resources/dark/run-all.svg",
@@ -130,8 +154,18 @@
           "group": "navigation@3"
         },
         {
-          "command": "extension.shatterRunTestcaseClusters",
+          "command": "extension.shatterRunClustersTestcases",
           "when": "view == shatter-execution-paths",
+          "group": "inline"
+        },
+        {
+          "command": "extension.shatterPersistTestcaseCluster",
+          "when": "view == shatter-execution-paths && false",
+          "group": "inline"
+        },
+        {
+          "command": "extension.shatterUnpersistTestcaseCluster",
+          "when": "view == shatter-execution-paths && false",
           "group": "inline"
         },
         {
