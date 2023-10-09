@@ -65,7 +65,9 @@ function highlightLinesInEditor(editor: vscode.TextEditor | undefined, decoratio
 		//	line numbers are ZERO based or ONE based?
 		const line = editor.document.lineAt(lineNumber);
 		//	TODO: collapse contiguous line numbers into a range
-		const decoration = { range: line.range, hoverMessage: `Line ${lineNumber + 1}: ${line.text}` };
+		const hoverMessage = undefined;
+		// const hoverMessage = `Line ${lineNumber + 1}: ${line.text}`;
+		const decoration = { range: line.range, hoverMessage };
 		decorationsArray.push(decoration);
 		lines.push(lineNumber);
 	};
@@ -854,8 +856,8 @@ class CommonTreeDataProvider implements vscode.TreeDataProvider<CommonDisplayNod
 	// Get the tree item for a node.
 	getTreeItem(element: CommonDisplayNode): vscode.TreeItem {
 		const treeItem = new vscode.TreeItem(element.label);
-		treeItem.collapsibleState = element.children ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.None;
-		treeItem.collapsibleState = element.children ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None;
+
+		treeItem.collapsibleState = element.children && element.children.length > 0 ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.None;
 		//	TODO: tooltip should be expanded (but still bounded) parameter list
 		treeItem.tooltip = element.label;
 		if (this.options?.command) {
@@ -868,7 +870,7 @@ class CommonTreeDataProvider implements vscode.TreeDataProvider<CommonDisplayNod
 			treeItem.iconPath = this.options.stateIcons[element.state];
 		}
 		treeItem.contextValue = element.contextValue;
-		treeItem.checkboxState = vscode.TreeItemCheckboxState.Checked;
+		// treeItem.checkboxState = vscode.TreeItemCheckboxState.Checked;
 		return treeItem;
 	}
 }
