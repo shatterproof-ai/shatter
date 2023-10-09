@@ -255,7 +255,7 @@ export async function activate(context: vscode.ExtensionContext) {
 				command: 'extension.shatterSelectFunction',
 				title: 'Functions',
 			}
-		})
+		});
 		//	TODO: Refresh functions list view contents on change of editor
 
 		const clustersListProvider = createTreeProvider('shatter-execution-paths', context, {
@@ -263,7 +263,7 @@ export async function activate(context: vscode.ExtensionContext) {
 				command: 'extension.shatterSelectCluster',
 				title: 'Execution Paths',
 			}
-		})
+		});
 
 		const testCaseListProvider = createTreeProvider('shatter-list-testcases', context, {
 			command: {

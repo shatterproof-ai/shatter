@@ -265,8 +265,9 @@ export const refresh = (extensionState: ExtensionState, providers: DisplayProvid
             if (typeof activeCoverage !== 'string') {
                 //  TODO: what if clusterKeys.length > 1?
                 clustersListProvider.select(activeCoverage.clusterKey);
-            } else if (isOutcome(activeCoverage))
+            } else if (isOutcome(activeCoverage)) {
                 functionsListProvider.select(activeCoverage);
+            }
         }
 
         function* linerator() {
