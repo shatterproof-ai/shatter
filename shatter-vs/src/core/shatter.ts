@@ -87,11 +87,12 @@ ${storageBaseDirectory}/${path-to-source-file-relative-to-workspace-root}/${func
 cluster.results => BasicResultCluster
 ${storageBaseDirectory}/${path-to-source-file-relative-to-workspace-root}/${functionName}/clusters/${clusterKey}.json
 
-    lines: number[]
-    outcome
-    
+lines: number[]
+outcome
+
 test.results => RunResult
-    ${storageBaseDirectory}/${path-to-source-file-relative-to-workspace-root}/${functionName}/results/${specimenId}.json
+${storageBaseDirectory}/${path-to-source-file-relative-to-workspace-root}/${functionName}/specimens/autotest/${specimenId}.json
+${storageBaseDirectory}/${path-to-source-file-relative-to-workspace-root}/${functionName}/results/${specimenId}.json
     
     linesInOrder: number[]
     outcome

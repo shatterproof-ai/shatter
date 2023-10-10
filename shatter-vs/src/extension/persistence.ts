@@ -41,7 +41,7 @@ export async function loadExpected(absoluteBaseDirectory: AbsolutePath) {
             result,
             expectedPath: expectedPath,
         };
-    })
+    });
 
     return expecteds;
 }
@@ -69,7 +69,7 @@ export async function loadPersistedSpecimens(absolutist: (r: RelativePath) => Ab
     return specimens;
 }
 
-export function saveTest(baseDirectory: AbsolutePath, specimental: Specimental, result?: RunResult) {
+export function saveSpecimen(baseDirectory: AbsolutePath, specimental: Specimental, result?: RunResult) {
     //	TODO: don't save everything from a specimen, notably omit the leaves and any parentage
     const specimenFileAbsolutePath = join(baseDirectory, SPECIMENS_SUBDIR, `${specimental.specimen.id}.json`) as AbsolutePath;
     const specimenSubdirectory = path.dirname(specimenFileAbsolutePath);
@@ -87,7 +87,7 @@ export function saveTest(baseDirectory: AbsolutePath, specimental: Specimental, 
     return specimenFileAbsolutePath;
 }
 
-export function forkTest(baseDirectory: AbsolutePath, original: Specimental, newId: SpecimenId, name: string,) {
+export function forkSpecimen(baseDirectory: AbsolutePath, original: Specimental, newId: SpecimenId, name: string,) {
     const newSpeciment: Specimen = {
         ...original.specimen,
         type: 'custom',
@@ -99,7 +99,7 @@ export function forkTest(baseDirectory: AbsolutePath, original: Specimental, new
         specimen: newSpeciment,
     };
 
-    const specimenFileAbsolutePath = saveTest(baseDirectory, newSpecimental);
+    const specimenFileAbsolutePath = saveSpecimen(baseDirectory, newSpecimental);
     newSpecimental.specimenPath = specimenFileAbsolutePath;
     return newSpecimental;
 }

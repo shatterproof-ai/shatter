@@ -45,7 +45,7 @@ export interface ExtensionState {
     activeFunction?: string;
     activeCoverage?: CoverageSelection;
     activeSpecimenId?: string;
-    expected: Record<SpecimenId, Expected>;
+    expected?: Record<SpecimenId, Expected>;
 };
 
 export function getActiveStates(extensionState: ExtensionState): {

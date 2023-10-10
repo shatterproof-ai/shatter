@@ -7,7 +7,7 @@ import { isOutcome } from '../core/supervisor';
 import { FunctionMeta } from '../core/transform';
 import { CoverageSelection, ExtensionState, Specimental, cleanUpExtensionState, isCoverageSelection, onPersistedSpecimenLoad } from './common';
 import { CommonDisplayNode, DisplayProvider, DisplayProviders, Highlighter, doSelectCluster, doSelectFile, doSelectFunction, doSelectTestCase, findClustersForCoverage, findFunction, findNode, findSpecimen, refresh } from './display';
-import { forkTest, loadExpected, loadPersistedSpecimen, loadPersistedSpecimens, saveTest } from './persistence';
+import { forkSpecimen, loadExpected, loadPersistedSpecimen, loadPersistedSpecimens, saveSpecimen } from './persistence';
 import { TestLifecycle, autotestFunction, retestFunction } from './run';
 
 const COMMANDS = {
@@ -389,7 +389,7 @@ const forkTestCase = async (extensionState: ExtensionState, baseDirectory: Absol
 	let newSpecimental: Specimental | undefined = undefined;
 	if (specimental.specimenPath) {
 		//	forking an already persistent test
-		newSpecimental = forkTest(baseDirectory, specimental, newId, newTestCaseName);
+		newSpecimental = forkSpecimen(baseDirectory, specimental, newId, newTestCaseName);
 	} else {
 		//	forking a transient test
 		newSpecimental = {
@@ -403,7 +403,7 @@ const forkTestCase = async (extensionState: ExtensionState, baseDirectory: Absol
 			clusterKey: specimental.clusterKey,
 			fileUnderTest: specimental.fileUnderTest,
 		};
-		const specimenFileAbsolutePath = saveTest(baseDirectory, newSpecimental);
+		const specimenFileAbsolutePath = saveSpecimen(baseDirectory, newSpecimental);
 		newSpecimental.specimenPath = specimenFileAbsolutePath;
 	}
 
@@ -698,7 +698,7 @@ async function makeTestCasePersistent(baseDirectory: AbsolutePath | undefined, e
 		return;
 	}
 
-	const savePath = saveTest(baseDirectory, specimental);
+	const savePath = saveSpecimen(baseDirectory, specimental);
 	specimental.specimenPath = savePath;
 
 	refresh(extensionState, providers, highlighter);
