@@ -32,6 +32,10 @@
         "title": "Regression test"
       },
       {
+        "command": "extension.shatterResetLocalFromFunctionViewContainer",
+        "title": "Regression test"
+      },
+      {
         "command": "extension.shatterMakeTestcasePersistent",
         "title": "Retain test case (view)",
         "icon": {

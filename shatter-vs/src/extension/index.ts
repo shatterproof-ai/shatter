@@ -7,7 +7,7 @@ import { AbsolutePath, RelativePath, Specimen, SpecimenId, isRelativePath, isSpe
 import { isOutcome } from '../core/supervisor';
 import { FunctionMeta } from '../core/transform';
 import { CoverageSelection, ExtensionState, Specimental, cleanUpExtensionState, isCoverageSelection, onPersistedSpecimenLoad } from './common';
-import { CommonDisplayNode, DisplayProvider, Highlighter, doSelectCluster, doSelectFile, doSelectFunction, doSelectTestCase, findClustersForCoverage, findFunction, findNode, findSpecimen, refresh } from './display';
+import { CommonDisplayNode, DisplayProvider, DisplayProviders, Highlighter, doSelectCluster, doSelectFile, doSelectFunction, doSelectTestCase, findClustersForCoverage, findFunction, findNode, findSpecimen, refresh } from './display';
 import { forkTest, loadPersistedSpecimen, loadPersistedSpecimens, saveTest } from './persistence';
 import { TestLifecycle, autotestFunction, retestFunction } from './run';
 
@@ -202,6 +202,121 @@ function highlighterFromEditor(): Highlighter {
 	return () => { };
 }
 
+const updateSelectedFile = (highlighter: Highlighter, extensionState: ExtensionState, providers: DisplayProviders) => {
+	const filename = vscode.window.activeTextEditor?.document.fileName;
+	if (!filename) {
+		//	TODO: clear functions list
+		return;
+	}
+	if (vscode.window.activeTextEditor?.document.languageId === 'typescript') {
+		doSelectFile(highlighter, extensionState, filename as AbsolutePath, providers);
+	}
+};
+
+//	call after switching files, changing contents of the editor, or running tests
+const doSelectFunctionCommand = (highlighter: Highlighter, extensionState: ExtensionState, providers: DisplayProviders, node: CommonDisplayNode) => {
+	if (vscode.window.activeTextEditor?.document.languageId === 'typescript') {
+		if (node.contextValue === 'function') {
+			//	TODO: check if this is a function name or a test case name
+			const functionName: string = node.key || "";
+			doSelectFunction(highlighter, extensionState, providers, functionName);
+		} else if (isSpecimenId(node.key)) {
+			doSelectTestCase(highlighter, extensionState, providers, node.key);
+		}
+	}
+};
+
+const doSelectClusterCommand = (highlighter: Highlighter, extensionState: ExtensionState, providers: DisplayProviders, node: CommonDisplayNode) => {
+	if (vscode.window.activeTextEditor?.document.languageId === 'typescript') {
+		const selection: CoverageSelection | undefined = (() => {
+			if (node.key) {
+				if (node.key.startsWith('cluster://')) {
+					const clusterKey = node.key.substring('cluster://'.length);
+					return { clusterKey };
+				}
+				if (node.key === 'covered://') {
+					return 'all';
+				}
+				if (node.key === 'missed://') {
+					return 'missed';
+				}
+				if (isOutcome(node.key)) {
+					return node.key;
+				}
+
+				throw new Error(`unhandled key ${node.key}`);
+			}
+		})();
+		if (selection) {
+			providers.testCaseDetailProvider.refresh([]);
+			doSelectCluster(highlighter, extensionState, providers, selection);
+		}
+	}
+};
+
+const doSelectTestCaseCommand = (highlighter: Highlighter, extensionState: ExtensionState, providers: DisplayProviders, node: CommonDisplayNode) => {
+	if (vscode.window.activeTextEditor?.document.languageId === 'typescript') {
+		const specimenId: string = node.key || "";
+		doSelectTestCase(highlighter, extensionState, providers, specimenId);
+	}
+};
+
+function retest(defaultWorkspaceRoot: AbsolutePath, workspaceRoots: AbsolutePath[], context: vscode.ExtensionContext, highlighter: Highlighter, extensionState: ExtensionState, providers: DisplayProviders, node: CommonDisplayNode, specimens: Specimen[], extensionSource: AbsolutePath) {
+	const lifeCycler: TestLifecycle = {
+		onTestStart(absoluteFilename: AbsolutePath, functionName: string) {
+			doSelectFunctionCommand(highlighter, extensionState, providers, {
+				key: functionName,
+				label: ''
+			});
+		},
+
+		onResult(absoluteFilename, functionName, result) {
+			refresh(extensionState, providers, highlighter);
+		},
+
+		onTestEnd(absoluteFilename: AbsolutePath, functionName: string) {
+			context.workspaceState.update(autotestStorageStateKey, extensionState);
+			extensionState.runningTestFunction = undefined;
+			refresh(extensionState, providers, highlighter);
+		},
+	};
+
+	const functionNames = new Set<string>(
+		specimens.map((specimen) => specimen.functionName)
+	);
+
+	if (functionNames.size !== 1) {
+		throw new Error(`Unexpectedly ${functionNames.size} functionNames ${specimens.length} specimens under test`);
+	}
+
+	const filesUnderTest = new Set<RelativePath>(
+		specimens.map((specimen) => specimen.fileUnderTest)
+	);
+
+	if (filesUnderTest.size !== 1) {
+		throw new Error(`Unexpectedly ${filesUnderTest.size} files from ${specimens.length} specimens under test`);
+	}
+
+	const functionName = specimens[0].functionName;
+	const relativeSourceFilename = specimens[0].fileUnderTest;
+	const absoluteSourceFilename = asAbsolutePath(defaultWorkspaceRoot as AbsolutePath, relativeSourceFilename);
+
+	/*
+	retestFunction(extensionState: ExtensionState,
+					workspaceRoots: AbsolutePath[],
+					absoluteSourceFilename: AbsolutePath,
+					relativeSourceFilename: RelativePath,
+					providers: DisplayProviders,
+					functionName: string,
+					specimens:Specimen[],
+					lifeCycler: TestLifecycle,
+					shatterproofModuleOverride: string) {
+	
+	*/
+
+	return retestFunction(extensionState, workspaceRoots, absoluteSourceFilename, relativeSourceFilename, providers, functionName, specimens, lifeCycler, extensionSource);
+}
+
 export async function activate(context: vscode.ExtensionContext) {
 	//	TODO: this all needs to deal in URIs
 	const workspaceRoots: AbsolutePath[] = vscode.workspace.workspaceFolders?.map((f) => f.uri.fsPath as AbsolutePath) ?? [];
@@ -255,64 +370,8 @@ export async function activate(context: vscode.ExtensionContext) {
 			testCaseDetailProvider,
 		};
 
-		const updateSelectedFile = () => {
-			const filename = vscode.window.activeTextEditor?.document.fileName;
-			if (!filename) {
-				//	TODO: clear functions list
-				return;
-			}
-			if (vscode.window.activeTextEditor?.document.languageId === 'typescript') {
-				doSelectFile(highlighter, extensionState, filename as AbsolutePath, providers);
-			}
-		};
-
-		//	call after switching files, changing contents of the editor, or running tests
-		const doSelectFunctionCommand = (node: CommonDisplayNode) => {
-			if (vscode.window.activeTextEditor?.document.languageId === 'typescript') {
-				if (node.contextValue === 'function') {
-					//	TODO: check if this is a function name or a test case name
-					const functionName: string = node.key || "";
-					doSelectFunction(highlighter, extensionState, providers, functionName);
-				} else if (isSpecimenId(node.key)) {
-					doSelectTestCase(highlighter, extensionState, providers, node.key);
-				}
-			}
-		};
-
-		const doSelectClusterCommand = (node: CommonDisplayNode) => {
-			if (vscode.window.activeTextEditor?.document.languageId === 'typescript') {
-				const selection: CoverageSelection | undefined = (() => {
-					if (node.key) {
-						if (node.key.startsWith('cluster://')) {
-							const clusterKey = node.key.substring('cluster://'.length);
-							return { clusterKey };
-						}
-						if (node.key === 'covered://') {
-							return 'all';
-						}
-						if (node.key === 'missed://') {
-							return 'missed';
-						}
-						if (isOutcome(node.key)) {
-							return node.key;
-						}
-
-						throw new Error(`unhandled key ${node.key}`);
-					}
-				})();
-				if (selection) {
-					testCaseDetailProvider.refresh([]);
-					doSelectCluster(highlighter, extensionState, providers, selection);
-				}
-			}
-		};
-
-		const doSelectTestCaseCommand = (node: CommonDisplayNode) => {
-			if (vscode.window.activeTextEditor?.document.languageId === 'typescript') {
-				const specimenId: string = node.key || "";
-				doSelectTestCase(highlighter, extensionState, providers, specimenId);
-			}
-		};
+		//	TODO: verify that dist works properly
+		const extensionSource = context.asAbsolutePath('dist') as AbsolutePath;
 
 		//	needs to be registered as a command because TreeView needs a command to dispatch to
 		const selectFunctionCommand = vscode.commands.registerCommand(COMMANDS.shatterSelectFunction, doSelectFunctionCommand);
@@ -488,62 +547,6 @@ export async function activate(context: vscode.ExtensionContext) {
 		});
 		context.subscriptions.push(forkTestCaseCommand);
 
-		function retest(specimens: Specimen[]) {
-			const lifeCycler: TestLifecycle = {
-				onTestStart(absoluteFilename: AbsolutePath, functionName: string) {
-					doSelectFunctionCommand({
-						key: functionName,
-						label: ''
-					});
-				},
-
-				onResult(absoluteFilename, functionName, result) {
-					refresh(extensionState, providers, highlighter);
-				},
-
-				onTestEnd(absoluteFilename: AbsolutePath, functionName: string) {
-					context.workspaceState.update(autotestStorageStateKey, extensionState);
-					extensionState.runningTestFunction = undefined;
-					refresh(extensionState, providers, highlighter);
-				},
-			};
-
-			const functionNames = new Set<string>(
-				specimens.map((specimen) => specimen.functionName)
-			);
-
-			if (functionNames.size !== 1) {
-				throw new Error(`Unexpectedly ${functionNames.size} functionNames ${specimens.length} specimens under test`);
-			}
-
-			const filesUnderTest = new Set<RelativePath>(
-				specimens.map((specimen) => specimen.fileUnderTest)
-			);
-
-			if (filesUnderTest.size !== 1) {
-				throw new Error(`Unexpectedly ${filesUnderTest.size} files from ${specimens.length} specimens under test`);
-			}
-
-			const functionName = specimens[0].functionName;
-			const relativeSourceFilename = specimens[0].fileUnderTest;
-			const absoluteSourceFilename = asAbsolutePath(defaultWorkspaceRoot as AbsolutePath, relativeSourceFilename);
-
-			/*
-			retestFunction(extensionState: ExtensionState,
-							workspaceRoots: AbsolutePath[],
-							absoluteSourceFilename: AbsolutePath,
-							relativeSourceFilename: RelativePath,
-							providers: DisplayProviders,
-							functionName: string,
-							specimens:Specimen[],
-							lifeCycler: TestLifecycle,
-							shatterproofModuleOverride: string) {
-			
-			*/
-
-			return retestFunction(extensionState, workspaceRoots, absoluteSourceFilename, relativeSourceFilename, providers, functionName, specimens, lifeCycler, extensionSource);
-		}
-
 		const runTestcaseClustersCommand = vscode.commands.registerCommand(COMMANDS.shatterRunClustersTestcases, async (node: CommonDisplayNode) => {
 			if (!isCoverageSelection(node.key)) {
 				//	TODO: error
@@ -552,7 +555,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
 			const clusters = findClustersForCoverage(extensionState, node.key);
 			const specimens = clusters.flatMap(c => c.specimens);
-			await retest(specimens);
+			await retest(defaultWorkspaceRoot, workspaceRoots, context, highlighter, extensionState, providers, node, specimens, extensionSource);
 		});
 		context.subscriptions.push(runTestcaseClustersCommand);
 
@@ -571,7 +574,7 @@ export async function activate(context: vscode.ExtensionContext) {
 			const [_functionMeta, functionState] = fffff;
 
 			const specimens = Object.values(functionState.specimens).map(s => s.specimen);
-			await retest(specimens);
+			await retest(defaultWorkspaceRoot, workspaceRoots, context, highlighter, extensionState, providers, node, specimens, extensionSource);
 		});
 		context.subscriptions.push(runFunctionTestcasesCommand);
 
@@ -586,13 +589,13 @@ export async function activate(context: vscode.ExtensionContext) {
 				return;
 			}
 
-			await retest([specimental.specimen]);
+			await retest(defaultWorkspaceRoot, workspaceRoots, context, highlighter, extensionState, providers, node, [specimental.specimen], extensionSource);
 		});
 		context.subscriptions.push(runTestCaseCommand);
 
 		vscode.window.onDidChangeActiveTextEditor(editor => {
 			if (editor?.document.fileName) {
-				updateSelectedFile();
+				updateSelectedFile(highlighter, extensionState, providers);
 			}
 		}, null, context.subscriptions);
 
@@ -600,7 +603,7 @@ export async function activate(context: vscode.ExtensionContext) {
 		vscode.workspace.onDidChangeTextDocument(event => {
 			const editor = vscode.window.activeTextEditor;
 			if (editor?.document.fileName) {
-				updateSelectedFile();
+				updateSelectedFile(highlighter, extensionState, providers);
 			}
 		}, null, context.subscriptions);
 
@@ -608,13 +611,10 @@ export async function activate(context: vscode.ExtensionContext) {
 		vscode.workspace.onDidOpenTextDocument(document => {
 			const editor = vscode.window.activeTextEditor;
 			if (editor?.document.fileName) {
-				updateSelectedFile();
+				updateSelectedFile(highlighter, extensionState, providers);
 			}
 		}, null, context.subscriptions);
 		//	TODO: what to do when a document is closed?
-
-		//	TODO: verify that dist works properly
-		const extensionSource = context.asAbsolutePath('dist');
 
 		const autotestFromEditorContextMenu = await vscode.commands.registerCommand(COMMANDS.shatterAutotestFromEditorContextMenu, async () => {
 			if (vscode.window.activeTextEditor?.document.languageId === 'typescript') {
@@ -665,14 +665,14 @@ export async function activate(context: vscode.ExtensionContext) {
 			console.log(`there was an attempt`);
 		});
 		context.subscriptions.push(shatterAddTestcase);
-		
+
 		const shatterResetLocalFromFunctionViewContainer = vscode.commands.registerCommand(COMMANDS.shatterResetLocalFromFunctionViewContainer, () => {
 			initializeWorkspace(defaultWorkspaceRoot, absolutist, extensionState, 'soft');
 		});
 		context.subscriptions.push(shatterResetLocalFromFunctionViewContainer);
 
 		if (vscode.window.activeTextEditor?.document.languageId === 'typescript') {
-			updateSelectedFile();
+			updateSelectedFile(highlighter, extensionState, providers);
 		}
 
 		//	TODO: some sort of status display during execution
@@ -685,7 +685,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
 			const lifeCycler: TestLifecycle = {
 				onTestStart(absoluteFilename: AbsolutePath, functionName: string) {
-					doSelectFunctionCommand({
+					doSelectFunctionCommand(highlighter, extensionState, providers, {
 						key: functionName,
 						label: ''
 					});
@@ -719,13 +719,13 @@ export async function activate(context: vscode.ExtensionContext) {
 	}
 }
 
-async function initializeWorkspace(defaultWorkspaceRoot: AbsolutePath, absolutist: (filename: RelativePath) => AbsolutePath, extensionState: ExtensionState, load:'hard'|'soft') {
+async function initializeWorkspace(defaultWorkspaceRoot: AbsolutePath, absolutist: (filename: RelativePath) => AbsolutePath, extensionState: ExtensionState, load: 'hard' | 'soft') {
 	if (!defaultWorkspaceRoot) {
 		return { configuration: {}, specimenBaseDirectory: undefined };
 	}
 
 	const configuration: ProjectConfiguration = await readProjectConfiguration(defaultWorkspaceRoot);
-	if (! configuration.testsDirectory) {
+	if (!configuration.testsDirectory) {
 		return { configuration, specimenBaseDirectory: undefined };
 	}
 
