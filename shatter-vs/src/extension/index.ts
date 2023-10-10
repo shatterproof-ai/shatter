@@ -722,14 +722,16 @@ function initializeTreeViews(context: vscode.ExtensionContext) {
 		command: {
 			command: COMMANDS.shatterSelectFunction,
 			title: 'Functions',
-		}
+		},
+		rootNodeDefaultCollapseState: 'collapsed',
 	});
 	//	TODO: Refresh functions list view contents on change of editor
 	const clustersListProvider = createTreeProvider('shatter-execution-paths', context, {
 		command: {
 			command: COMMANDS.shatterSelectCluster,
 			title: 'Execution Paths',
-		}
+		},
+		rootNodeDefaultCollapseState: 'collapsed',
 	});
 
 	const testCaseListProvider = createTreeProvider('shatter-list-testcases', context, {
@@ -876,7 +878,8 @@ function getFunctionNodeAtCursor(cursorPosition: vscode.Position, document: vsco
 
 type CommonTreeDataProviderOptions = {
 	command?: Pick<vscode.Command, 'command' | 'title'>,
-	stateIcons?: Record<string, Record<'dark' | 'light', string>>
+	stateIcons?: Record<string, Record<'dark' | 'light', string>>,
+	rootNodeDefaultCollapseState?: 'expanded' | 'collapsed',
 };
 
 function createTreeProvider(viewName: string, context: vscode.ExtensionContext, options?: CommonTreeDataProviderOptions) {
@@ -939,7 +942,12 @@ class CommonTreeDataProvider implements vscode.TreeDataProvider<CommonDisplayNod
 		//	TODO: creating a new TreeItem on every fetch blows away the collapsed state; need each CommonDisplayNode to have a unique ID and then cache the TreeItems
 		const treeItem = new vscode.TreeItem(element.label);
 
-		treeItem.collapsibleState = element.children && element.children.length > 0 ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.None;
+		const defaultCollapseState = this.options?.rootNodeDefaultCollapseState === 'collapsed'
+			? vscode.TreeItemCollapsibleState.Collapsed
+			: vscode.TreeItemCollapsibleState.Expanded;
+		treeItem.collapsibleState = element.children && element.children.length > 0
+			? defaultCollapseState
+			: vscode.TreeItemCollapsibleState.None;
 		//	TODO: tooltip should be expanded (but still bounded) parameter list
 		treeItem.tooltip = element.label;
 		if (this.options?.command) {
