@@ -11,7 +11,7 @@ export function loadPersistedSpecimen(filepath: AbsolutePath) {
     return specimen;
 }
 
-export function loadPersistedSpecimens(absolutist: (r:RelativePath) => AbsolutePath, specimenDirectory: AbsolutePath) {
+export function loadPersistedSpecimens(absolutist: (r: RelativePath) => AbsolutePath, specimenDirectory: AbsolutePath) {
     const suffix = '.json';
     const targetSubdirNames = ['custom', 'autotest'];
     const specimens: Map<SpecimenId, Specimental> = new Map();
@@ -63,6 +63,7 @@ export function saveTest(specimenBaseDirectory: AbsolutePath, specimental: Speci
     const specimenFileAbsolutePath = join(specimenBaseDirectory, 'specimens', specimenSubdir, `${specimental.specimen.id}.json`) as AbsolutePath;
     const specimenSubdirectory = path.dirname(specimenFileAbsolutePath);
     fs.mkdirSync(specimenSubdirectory, { recursive: true });
+
     fs.writeFileSync(specimenFileAbsolutePath, JSON.stringify(specimental.specimen, undefined, 2));
 
     if (result) {
