@@ -420,9 +420,10 @@ async function shatterAutotestt(modulePaths: string[],
         return score;
     }
 
+    const specimenLeaves:Record<SpecimenId, LeafParameter[]> = {};
     //  TODO: make this part of the specimen generation
     function scoreByDepth(specimen: Specimen) {
-        return specimen.leaves.reduce((maxSeen, leaf) => leaf.path.length > maxSeen ? leaf.path.length : maxSeen, 0);
+        return specimenLeaves[specimen.id].reduce((maxSeen, leaf) => leaf.path.length > maxSeen ? leaf.path.length : maxSeen, 0);
     }
 
     const maxSpecimensToConsider = 10_000;
@@ -437,8 +438,6 @@ async function shatterAutotestt(modulePaths: string[],
         let discarded = 0;
         const beforeLines = batchState.executedLines.size;
         for (const baseSpecimen of g) {
-            const leafGPs = baseSpecimen.parameters.flatMap(p => Array.from(findLeaves(p)));
-
             // console.log(`parameters ${i}/${discarded} ${JSON.stringify(parameters)}`);
             //  TODO: will this have false positive matches on function members?
             //  the alternative is to use serialize-javascript, but that does not
@@ -469,7 +468,6 @@ async function shatterAutotestt(modulePaths: string[],
                 const specimen: Specimen = {
                     fileUnderTest: relativeSourceInputFile,
                     id: specimenId, //  TODO: this should be either the specimen name or a SHA1 of the specimen parameters (both?)
-                    leaves: leafValues,
                     functionName,
                     ...baseSpecimen,
                 };

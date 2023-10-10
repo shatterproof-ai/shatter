@@ -207,8 +207,6 @@ export type Specimen = BaseSpecimen & {
 
 	fileUnderTest: RelativePath;
 	functionName: string;
-
-    leaves: LeafParameter[],
 };
 
 export const resolveGeneratedParameterValue = (gp: GeneratedParameter, rehydrate: boolean, activeModule: any): any => {
