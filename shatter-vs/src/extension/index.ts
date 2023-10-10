@@ -337,7 +337,7 @@ function retest(defaultWorkspaceRoot: AbsolutePath, workspaceRoots: AbsolutePath
 	
 	*/
 
-	return retestFunction(extensionState, workspaceRoots, absoluteSourceFilename, relativeSourceFilename, providers, functionName, specimens, lifeCycler, extensionSource);
+	return retestFunction(extensionState, workspaceRoots, absoluteSourceFilename, functionName, specimens, lifeCycler, extensionSource);
 }
 
 const forkTestCase = async (extensionState: ExtensionState, specimenBaseDirectory: AbsolutePath | undefined, providers: DisplayProviders, highlighter: Highlighter, node: CommonDisplayNode) => {
@@ -492,15 +492,15 @@ export async function activate(context: vscode.ExtensionContext) {
 		const extensionSource = context.asAbsolutePath('dist') as AbsolutePath;
 
 		//	needs to be registered as a command because TreeView needs a command to dispatch to
-		const selectFunctionCommand = vscode.commands.registerCommand(COMMANDS.shatterSelectFunction, doSelectFunctionCommand);
+		const selectFunctionCommand = vscode.commands.registerCommand(COMMANDS.shatterSelectFunction, (node) => doSelectFunctionCommand(highlighter, extensionState, providers, node));
 		context.subscriptions.push(selectFunctionCommand);
 
 		//	needs to be registered as a command because TreeView needs a command to dispatch to
-		const selectClusterCommand = vscode.commands.registerCommand(COMMANDS.shatterSelectCluster, doSelectClusterCommand);
+		const selectClusterCommand = vscode.commands.registerCommand(COMMANDS.shatterSelectCluster, (node) => doSelectClusterCommand(highlighter, extensionState, providers, node));
 		context.subscriptions.push(selectClusterCommand);
 
 		//	needs to be registered as a command because TreeView needs a command to dispatch to
-		const selectTestCaseCommand = vscode.commands.registerCommand(COMMANDS.shatterSelectTestCase, doSelectTestCaseCommand);
+		const selectTestCaseCommand = vscode.commands.registerCommand(COMMANDS.shatterSelectTestCase, (node) => doSelectTestCaseCommand(highlighter, extensionState, providers, node));
 		context.subscriptions.push(selectTestCaseCommand);
 
 		/*
@@ -614,22 +614,22 @@ export async function activate(context: vscode.ExtensionContext) {
 					const absoluteFileUnderTest = document.fileName as AbsolutePath;
 					extensionState.activeFile = absoluteFileUnderTest;
 					extensionState.activeFunction = functionName;
-					await doAutotest(context, extensionState, providers,highlighter, workspaceRoots, absoluteFileUnderTest, functionName, extensionSource);
+					await doAutotest(context, extensionState, providers, highlighter, workspaceRoots, absoluteFileUnderTest, functionName, extensionSource);
 				} else {
 					vscode.window.showErrorMessage('Select a function or place the cursor inside a function.');
 				}
 			}
 		});
 		context.subscriptions.push(autotestFromEditorContextMenu);
-		
+
 		const autotestFromFunctionViewContainerMenu = vscode.commands.registerCommand(COMMANDS.shatterAutotestFromFunctionViewContainer, (item) => {
 			const filename = (vscode.window.activeTextEditor?.document.fileName ?? extensionState.activeFile) as AbsolutePath;
 			if (!filename) {
 				//	TODO: is this a reasonable situation?
 				return;
 			}
-			
-			return doAutotest(context, extensionState, providers,highlighter, workspaceRoots, filename, item.key, extensionSource);
+
+			return doAutotest(context, extensionState, providers, highlighter, workspaceRoots, filename, item.key, extensionSource);
 		});
 		context.subscriptions.push(autotestFromFunctionViewContainerMenu);
 
@@ -649,7 +649,28 @@ export async function activate(context: vscode.ExtensionContext) {
 		context.subscriptions.push(shatterAddTestcase);
 
 		const shatterResetLocalFromFunctionViewContainer = vscode.commands.registerCommand(COMMANDS.shatterResetLocalFromFunctionViewContainer, () => {
+			context.workspaceState.update(autotestStorageStateKey, undefined);
+
+			const resetKeys = [
+				'runningTestFunction',
+				'activeFile',
+				'activeFunction',
+				'activeCoverage',
+				'activeSpecimenId',
+			] as const satisfies readonly (keyof ExtensionState)[];
+
+			for (const k of resetKeys) {
+				extensionState[k] = undefined;
+			}
+
+			extensionState.fileStates = {};
+
 			initializeWorkspace(defaultWorkspaceRoot, absolutist, extensionState, 'soft');
+			if (vscode.window.activeTextEditor?.document.languageId === 'typescript') {
+				updateSelectedFile(highlighter, extensionState, providers);
+			} else {
+				refresh(extensionState, providers, highlighter);
+			}
 		});
 		context.subscriptions.push(shatterResetLocalFromFunctionViewContainer);
 

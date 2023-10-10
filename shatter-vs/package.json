@@ -33,7 +33,7 @@
       },
       {
         "command": "extension.shatterResetLocalFromFunctionViewContainer",
-        "title": "Regression test"
+        "title": "Reset Shatter workspace"
       },
       {
         "command": "extension.shatterMakeTestcasePersistent",
@@ -139,6 +139,11 @@
         },
         {
           "command": "extension.shatterRetestFromFunctionViewContainer",
+          "when": "view == shatter-functions-list",
+          "group": "navigation@1"
+        },
+        {
+          "command": "extension.shatterResetLocalFromFunctionViewContainer",
           "when": "view == shatter-functions-list",
           "group": "navigation@1"
         },

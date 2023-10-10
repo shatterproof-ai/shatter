@@ -127,9 +127,13 @@ interface ResultCluster {
 
 
 */
+export interface RunUpdate {
+    batchState: BatchState,
+    cluster: ResultCluster,
+    specimen: Specimen,
+}
 
-
-const updateBatchState = (batchState: BatchState, runResult: RunResult): BatchState => {
+const updateBatchState = (batchState: BatchState, runResult: RunResult): RunUpdate => {
     // console.log(`Received result ${JSON.stringify(runResult)}`);
     // find the appropriate cluster or create it
     if (!runResult.specimenId) {
@@ -181,7 +185,7 @@ const updateBatchState = (batchState: BatchState, runResult: RunResult): BatchSt
     //  TODO: don't do this on every change
     sortClusters(batchState.clusters);
 
-    return batchState;
+    return { batchState, cluster, specimen };
 };
 
 interface BatchState {
@@ -196,7 +200,7 @@ async function shatterRetestt(modulePaths: string[],
     absoluteSourceInputFile: AbsolutePath,
     functionName: string,
     specimens: Specimen[],
-    onUpdate: (results: AutotestResults) => void,
+    onUpdate: (update:RunUpdate, results: AutotestResults) => void,
     options?: {
         shatterproofModuleOverride?: string,
         maxIterations?: number,
@@ -240,8 +244,9 @@ async function shatterRetestt(modulePaths: string[],
     };
 
     const onResult = (runResult: RunResult) => {
-        batchState = updateBatchState(batchState, runResult);
-        onUpdate({ clusters: batchState.clusters, instrumentedLines });
+        const update = updateBatchState(batchState, runResult);
+        batchState = update.batchState;
+        onUpdate(update, { clusters: batchState.clusters, instrumentedLines });
     };
 
     const maxWorkers = options?.maxWorkers ?? 15;
@@ -302,7 +307,7 @@ async function shatterAutotestt(modulePaths: string[],
     absoluteSourceInputFile: AbsolutePath,
     relativeSourceInputFile: RelativePath,
     functionName: string,
-    onUpdate: (results: AutotestResults) => void,
+    onUpdate: (update:RunUpdate, results: AutotestResults) => void,
     options?: {
         shatterproofModuleOverride?: string,
         maxIterations?: number,
@@ -352,8 +357,9 @@ async function shatterAutotestt(modulePaths: string[],
     };
 
     const onResult = (runResult: RunResult) => {
-        batchState = updateBatchState(batchState, runResult);
-        onUpdate({ clusters: batchState.clusters, instrumentedLines });
+        const update = updateBatchState(batchState, runResult);
+        batchState = update.batchState;
+        onUpdate(update, { clusters: batchState.clusters, instrumentedLines });
     };
 
     const maxWorkers = options?.maxWorkers ?? 15;

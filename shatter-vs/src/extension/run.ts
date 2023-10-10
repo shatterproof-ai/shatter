@@ -1,7 +1,7 @@
 import path = require("path");
 import * as fs from 'fs'; //TODO: use VSCode fs
 import { AbsolutePath, RelativePath, Specimen } from "../core/common";
-import { AutotestResults, shatterAutotest, shatterRetest } from "../core/shatter";
+import { AutotestResults, RunUpdate, shatterAutotest, shatterRetest } from "../core/shatter";
 import { ExtensionState, getActiveStates } from "./common";
 import { DisplayProviders, refresh } from "./display";
 
@@ -49,7 +49,7 @@ export interface TestLifecycle {
     onTestEnd: (absoluteFilename: AbsolutePath, functionName: string) => void;
 }
 
-export async function retestFunction(extensionState: ExtensionState, workspaceRoots: AbsolutePath[], absoluteSourceFilename: AbsolutePath, relativeSourceFilename: RelativePath, providers: DisplayProviders, functionName: string, specimens: Specimen[], lifeCycler: TestLifecycle, shatterproofModuleOverride: string) {
+export async function retestFunction(extensionState: ExtensionState, workspaceRoots: AbsolutePath[], absoluteSourceFilename: AbsolutePath, functionName: string, specimens: Specimen[], lifeCycler: TestLifecycle, shatterproofModuleOverride: string) {
     const _allTsConfigs: string[] = [];
     const _allPackageJsons: string[] = [];
     const allNodeModules: string[] = [];
@@ -80,12 +80,13 @@ export async function retestFunction(extensionState: ExtensionState, workspaceRo
         await shatterRetest(modulePaths,
             absoluteSourceFilename,
             functionName, specimens,
-            (results: AutotestResults) => {
+            (update: RunUpdate, results: AutotestResults) => {
                 const { fileState, functionState } = getActiveStates(extensionState);
                 if (!fileState || !functionState) {
                     return;
                 }
 
+                //  copy everything over to functionState
                 results.clusters.forEach((cluster) => {
                     cluster.specimens.forEach((specimen) => {
                         const existing = functionState.specimens[specimen.id];
@@ -97,7 +98,13 @@ export async function retestFunction(extensionState: ExtensionState, workspaceRo
                     });
                 });
 
-                functionState.autotest = results;
+                //  do not overwrite functionState.autotest on retest
+                functionState.autotest.instrumentedLines = results.instrumentedLines;
+                const existingCluster = functionState.autotest.clusters.find((c) => c.key === update.cluster.key);
+                if (!existingCluster) {
+                    //  haven't previously seen the relevant cluster
+                    functionState.autotest.clusters.push(update.cluster);
+                }
 
                 lifeCycler.onResult(absoluteSourceFilename, functionName, results);
 
@@ -143,7 +150,7 @@ export async function autotestFunction(extensionState: ExtensionState, workspace
         await shatterAutotest(modulePaths,
             absoluteSourceFilename,
             relativeSourceFilename,
-            functionName, (results: AutotestResults) => {
+            functionName, (update: RunUpdate, results: AutotestResults) => {
                 const { fileState, functionState } = getActiveStates(extensionState);
                 if (!fileState || !functionState) {
                     return;
