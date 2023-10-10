@@ -27,6 +27,7 @@ const COMMANDS = {
 	shatterSelectCluster: 'extension.shatterSelectCluster',
 	shatterSelectFunction: 'extension.shatterSelectFunction',
 	shatterSelectTestCase: 'extension.shatterSelectTestCase',
+	shatterResetLocalFromFunctionViewContainer: 'extension.shatterResetLocalFromFunctionViewContainer',
 };
 
 const autotestStorageStateKey = "autotestState_7";
@@ -205,8 +206,6 @@ export async function activate(context: vscode.ExtensionContext) {
 	//	TODO: this all needs to deal in URIs
 	const workspaceRoots: AbsolutePath[] = vscode.workspace.workspaceFolders?.map((f) => f.uri.fsPath as AbsolutePath) ?? [];
 	const defaultWorkspaceRoot: AbsolutePath | undefined = workspaceRoots[0];
-	let configuration: ProjectConfiguration = {};
-	let specimenBaseDirectory: AbsolutePath | undefined = undefined;
 
 	const extensionState: ExtensionState = cleanUpExtensionState(context.workspaceState.get(autotestStorageStateKey, {}));
 
@@ -220,56 +219,7 @@ export async function activate(context: vscode.ExtensionContext) {
 	};
 
 	try {
-		if (defaultWorkspaceRoot) {
-			configuration = await readProjectConfiguration(defaultWorkspaceRoot);
-			if (configuration.testsDirectory) {
-				//	NOTE: this watcher is using a different API than listPersistedSpecimens because
-				//	the latter is meant to be independent of VS Code
-				const ignoreCreate = false;
-				const ignoreChange = true;
-				const ignoreDelete = false;
-				const watcher = vscode.workspace.createFileSystemWatcher(`${configuration.testsDirectory}/**/*.json`, ignoreCreate, ignoreChange, ignoreDelete);
-
-				watcher.onDidCreate((e) => {
-					const absoluteSpecimenFilepath = e.fsPath as AbsolutePath;
-					const maybeSpecimenId = path.basename(absoluteSpecimenFilepath).substring(0, '.json'.length);
-					if (isSpecimenId(maybeSpecimenId)) {
-						const specimen = loadPersistedSpecimen(absoluteSpecimenFilepath as AbsolutePath);
-
-						if (!defaultWorkspaceRoot) {
-							throw new Error(`Unexpectedly no workspace root for ${absoluteSpecimenFilepath}`);
-						}
-
-						onPersistedSpecimenLoad(absolutist, extensionState, specimen, maybeSpecimenId, absoluteSpecimenFilepath);
-					}
-				});
-
-				watcher.onDidDelete((e) => {
-					const filepath = e.fsPath;
-					const maybeSpecimenId = path.basename(filepath).substring(0, '.json'.length);
-					if (isSpecimenId(maybeSpecimenId)) {
-						//	deleting the file means we should mark it not persistent
-						for (const [absoluteFileName, fileState] of Object.entries(extensionState.fileStates)) {
-							for (const [functionName, functionState] of Object.entries(fileState.functionStates)) {
-								const specimen = functionState.specimens[maybeSpecimenId];
-								if (specimen?.specimenPath === filepath) {
-									delete functionState.specimens[maybeSpecimenId];
-									return;
-								}
-							}
-						}
-					}
-				});
-
-				//	do this *after* the watcher is set up to avoid missing any additions
-				//	TODO: might miss some deletions
-				specimenBaseDirectory = asAbsolutePath(defaultWorkspaceRoot, configuration.testsDirectory);
-				const initialPersistentSpecimens = loadPersistedSpecimens(absolutist, specimenBaseDirectory);
-				initialPersistentSpecimens.forEach((specimental, id) => {
-					onPersistedSpecimenLoad(absolutist, extensionState, specimental.specimen, id, specimental.specimenPath);
-				});
-			}
-		}
+		const { configuration, specimenBaseDirectory } = await initializeWorkspace(defaultWorkspaceRoot, absolutist, extensionState, 'hard');
 
 		const functionsListProvider = createTreeProvider('shatter-functions-list', context, {
 			command: {
@@ -715,6 +665,11 @@ export async function activate(context: vscode.ExtensionContext) {
 			console.log(`there was an attempt`);
 		});
 		context.subscriptions.push(shatterAddTestcase);
+		
+		const shatterResetLocalFromFunctionViewContainer = vscode.commands.registerCommand(COMMANDS.shatterResetLocalFromFunctionViewContainer, () => {
+			initializeWorkspace(defaultWorkspaceRoot, absolutist, extensionState, 'soft');
+		});
+		context.subscriptions.push(shatterResetLocalFromFunctionViewContainer);
 
 		if (vscode.window.activeTextEditor?.document.languageId === 'typescript') {
 			updateSelectedFile();
@@ -762,6 +717,72 @@ export async function activate(context: vscode.ExtensionContext) {
 	} catch (e: any) {
 		console.error(`Unable to load extension ${e}: ${e.stack}`);
 	}
+}
+
+async function initializeWorkspace(defaultWorkspaceRoot: AbsolutePath, absolutist: (filename: RelativePath) => AbsolutePath, extensionState: ExtensionState, load:'hard'|'soft') {
+	if (!defaultWorkspaceRoot) {
+		return { configuration: {}, specimenBaseDirectory: undefined };
+	}
+
+	const configuration: ProjectConfiguration = await readProjectConfiguration(defaultWorkspaceRoot);
+	if (! configuration.testsDirectory) {
+		return { configuration, specimenBaseDirectory: undefined };
+	}
+
+	if (load === 'hard') {
+		initializeWorkspaceWatchers(configuration, defaultWorkspaceRoot, absolutist, extensionState);
+	}
+
+	//	do this *after* the watcher is set up to avoid missing any additions
+	//	TODO: might miss some deletions
+	const specimenBaseDirectory = asAbsolutePath(defaultWorkspaceRoot, configuration.testsDirectory);
+	const initialPersistentSpecimens = loadPersistedSpecimens(absolutist, specimenBaseDirectory);
+	initialPersistentSpecimens.forEach((specimental, id) => {
+		onPersistedSpecimenLoad(absolutist, extensionState, specimental.specimen, id, specimental.specimenPath);
+	});
+
+	return { configuration, specimenBaseDirectory };
+}
+
+function initializeWorkspaceWatchers(configuration: ProjectConfiguration, defaultWorkspaceRoot: string, absolutist: (filename: RelativePath) => AbsolutePath, extensionState: ExtensionState) {
+	const ignoreCreate = false;
+	const ignoreChange = true;
+	const ignoreDelete = false;
+
+	//	NOTE: this watcher is using a different API than listPersistedSpecimens because
+	//	the latter is meant to be independent of VS Code
+	const watcher = vscode.workspace.createFileSystemWatcher(`${configuration.testsDirectory}/**/*.json`, ignoreCreate, ignoreChange, ignoreDelete);
+
+	watcher.onDidCreate((e) => {
+		const absoluteSpecimenFilepath = e.fsPath as AbsolutePath;
+		const maybeSpecimenId = path.basename(absoluteSpecimenFilepath).substring(0, '.json'.length);
+		if (isSpecimenId(maybeSpecimenId)) {
+			const specimen = loadPersistedSpecimen(absoluteSpecimenFilepath as AbsolutePath);
+
+			if (!defaultWorkspaceRoot) {
+				throw new Error(`Unexpectedly no workspace root for ${absoluteSpecimenFilepath}`);
+			}
+
+			onPersistedSpecimenLoad(absolutist, extensionState, specimen, maybeSpecimenId, absoluteSpecimenFilepath);
+		}
+	});
+
+	watcher.onDidDelete((e) => {
+		const filepath = e.fsPath;
+		const maybeSpecimenId = path.basename(filepath).substring(0, '.json'.length);
+		if (isSpecimenId(maybeSpecimenId)) {
+			//	deleting the file means we should mark it not persistent
+			for (const [absoluteFileName, fileState] of Object.entries(extensionState.fileStates)) {
+				for (const [functionName, functionState] of Object.entries(fileState.functionStates)) {
+					const specimen = functionState.specimens[maybeSpecimenId];
+					if (specimen?.specimenPath === filepath) {
+						delete functionState.specimens[maybeSpecimenId];
+						return;
+					}
+				}
+			}
+		}
+	});
 }
 
 function iconPaths(context: vscode.ExtensionContext, baseSet: Record<string, string>) {
