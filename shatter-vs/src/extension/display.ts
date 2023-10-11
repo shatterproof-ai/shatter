@@ -576,6 +576,9 @@ export function doSelectFile(highlighter: Highlighter, extensionState: Extension
      */
     if (extensionState.fileStates[absoluteSourceFilename]) {
         extensionState.fileStates[absoluteSourceFilename].functions = functions;
+        extensionState.fileStates[absoluteSourceFilename].functionStates = Object.fromEntries(
+            functions.map((f):[string, FunctionState] => [f.name, { specimens: {}, autotest: {clusters: [], instrumentedLines:[]} }])
+        );
     } else {
         extensionState.fileStates[absoluteSourceFilename] = {
             functionStates: {},

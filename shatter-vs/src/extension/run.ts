@@ -53,8 +53,13 @@ export async function retestFunction(extensionState: ExtensionState, workspaceRo
             absoluteSourceFilename,
             functionName, specimens,
             (update: RunUpdate, results: AutotestResults) => {
-                const { fileState, functionState } = getActiveStates(extensionState);
-                if (!fileState || !functionState) {
+                const fileState = extensionState.fileStates[absoluteSourceFilename];
+                if (!fileState) {
+                    return;
+                }
+
+                const functionState = fileState.functionStates[functionName];
+                if (!functionState) {
                     return;
                 }
 
@@ -112,6 +117,7 @@ function findKeyFiles(workspaceRoots: `/${string}`[], absoluteSourceFilename: st
 export async function autotestFunction(extensionState: ExtensionState, workspaceRoots: AbsolutePath[], absoluteSourceFilename: AbsolutePath, relativeSourceFilename: RelativePath, providers: DisplayProviders, functionName: string, lifeCycler: TestLifecycle, shatterproofModuleOverride: string) {
     const allNodeModules: string[] = findKeyFiles(workspaceRoots, absoluteSourceFilename);
 
+    process.chdir(path.dirname(absoluteSourceFilename));
     const modulePaths = [...workspaceRoots, ...allNodeModules];
 
     console.log(`BEGIN THE AUTOTEST of ${functionName} in ${absoluteSourceFilename}`);
@@ -130,8 +136,13 @@ export async function autotestFunction(extensionState: ExtensionState, workspace
             absoluteSourceFilename,
             relativeSourceFilename,
             functionName, (update: RunUpdate, results: AutotestResults) => {
-                const { fileState, functionState } = getActiveStates(extensionState);
-                if (!fileState || !functionState) {
+                const fileState = extensionState.fileStates[absoluteSourceFilename];
+                if (!fileState) {
+                    return;
+                }
+
+                const functionState = fileState.functionStates[functionName];
+                if (!functionState) {
                     return;
                 }
 

@@ -67,9 +67,14 @@ export class Supervisor {
             if (this.nodePath.length !== 1) {
                 throw new Error(`In-band execution can only have one directory in node path but got ${this.nodePath}`);
             }
-            const realNodeModulesPath = this.nodePath[0];
-            const linkedNodeModulesPath = join(dirname(this.executorScriptJS), 'node_modules');
-            symlinkSync(realNodeModulesPath, linkedNodeModulesPath);
+        }
+        //  TODO: suuuuuper gross hack to make sure that the worker has access to the node modules it needs
+        for (const maybeModulePath of this.nodePath) {
+            if (maybeModulePath.endsWith('node_modules')) {
+                const linkedNodeModulesPath = join(dirname(this.executorScriptJS), 'node_modules');
+                symlinkSync(maybeModulePath, linkedNodeModulesPath);
+                break;
+            }
         }
     }
 
