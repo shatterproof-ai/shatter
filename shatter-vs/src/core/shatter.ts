@@ -427,9 +427,12 @@ async function shatterAutotestt(modulePaths: string[],
         return score;
     }
 
-    const specimenLeaves:Record<SpecimenId, LeafParameter[]> = {};
+    const specimenLeaves: Record<SpecimenId, LeafParameter[]> = {};
     //  TODO: make this part of the specimen generation
     function scoreByDepth(specimen: Specimen) {
+        if (!specimenLeaves[specimen.id]) {
+            return 0;
+        }
         return specimenLeaves[specimen.id].reduce((maxSeen, leaf) => leaf.path.length > maxSeen ? leaf.path.length : maxSeen, 0);
     }
 
@@ -470,6 +473,7 @@ async function shatterAutotestt(modulePaths: string[],
                 seen.add(strung);
 
                 const specimenId = newId(baseSpecimen.type);
+                specimenLeaves[specimenId] = leafValues;
 
                 //  TODO: in Autotest mode we're always creating a new specimen, but in Retest mode we are not
                 const specimen: Specimen = {
