@@ -4,41 +4,29 @@ import { AbsolutePath, RelativePath, Specimen } from "../core/common";
 import { AutotestResults, RunUpdate, shatterAutotest, shatterRetest } from "../core/shatter";
 import { ExtensionState, getActiveStates } from "./common";
 import { DisplayProviders, refresh } from "./display";
+import { traverseDirectory } from "./persistence";
 
 function findFilesInHierarchy<K extends string>(
-    absoluteFilename: AbsolutePath,
     absoluteRootDirectory: AbsolutePath,
     matchers: Record<K, (filename: string, stat: fs.Stats) => boolean>,
 ): Partial<Record<K, string[]>> {
     const foundFiles: Partial<Record<K, AbsolutePath[]>> = {};
 
-    let absoluteCurrentDir = path.dirname(absoluteFilename);
-    while (absoluteCurrentDir !== absoluteRootDirectory) {
-        fs.readdirSync(absoluteCurrentDir).forEach((file) => {
-            const absoluteFullPath = path.join(absoluteCurrentDir, file) as AbsolutePath;
-            const stat = fs.statSync(absoluteFullPath);
-            for (const key of Object.keys(matchers)) {
-                const k: keyof typeof foundFiles = key as any;
-                const matcher = matchers[k];
+    traverseDirectory(absoluteRootDirectory, (absoluteFullPath, stat) => {
+        for (const key of Object.keys(matchers)) {
+            const k: keyof typeof foundFiles = key as any;
+            const matcher = matchers[k];
 
-                const matches = matcher(absoluteFullPath, stat);
-                if (matches) {
-                    if (!(key in foundFiles)) {
-                        foundFiles[k] = [];
-                    }
-
-                    foundFiles[k]?.push(absoluteFullPath);
+            const matches = matcher(absoluteFullPath, stat);
+            if (matches) {
+                if (!(key in foundFiles)) {
+                    foundFiles[k] = [];
                 }
+
+                foundFiles[k]?.push(absoluteFullPath);
             }
-        });
-
-        const parentDir = path.dirname(absoluteCurrentDir);
-        if (parentDir === absoluteCurrentDir) {
-            break;
         }
-
-        absoluteCurrentDir = parentDir;
-    }
+    });
 
     return foundFiles;
 }
@@ -50,23 +38,7 @@ export interface TestLifecycle {
 }
 
 export async function retestFunction(extensionState: ExtensionState, workspaceRoots: AbsolutePath[], absoluteSourceFilename: AbsolutePath, functionName: string, specimens: Specimen[], lifeCycler: TestLifecycle, shatterproofModuleOverride: string) {
-    const _allTsConfigs: string[] = [];
-    const _allPackageJsons: string[] = [];
-    const allNodeModules: string[] = [];
-
-    workspaceRoots?.forEach((absoluteFolderPath) => {
-        //	TODO: do we know whether the path is already absolute always?
-        //  TODO: does this even matter?
-        const found = findFilesInHierarchy(absoluteSourceFilename, absoluteFolderPath, {
-            tsconfig: (absoluteFilename, stat) => absoluteFilename.endsWith('tsconfig.json') && stat.isFile(),
-            packageJson: (absoluteFilename, stat) => absoluteFilename.endsWith('package.json') && stat.isFile(),
-            nodeModules: (absoluteFilename, stat) => absoluteFilename.endsWith('node_modules') && stat.isDirectory(),
-        });
-
-        _allTsConfigs.push(...(found.tsconfig || []));
-        _allPackageJsons.push(...(found.packageJson || []));
-        allNodeModules.push(...(found.nodeModules || []));
-    });
+    const allNodeModules: string[] = findKeyFiles(workspaceRoots, absoluteSourceFilename);
 
     const modulePaths = [...workspaceRoots, ...allNodeModules];
 
@@ -114,24 +86,31 @@ export async function retestFunction(extensionState: ExtensionState, workspaceRo
     }
 }
 
-export async function autotestFunction(extensionState: ExtensionState, workspaceRoots: AbsolutePath[], absoluteSourceFilename: AbsolutePath, relativeSourceFilename: RelativePath, providers: DisplayProviders, functionName: string, lifeCycler: TestLifecycle, shatterproofModuleOverride: string) {
+function findKeyFiles(workspaceRoots: `/${string}`[], absoluteSourceFilename: string) {
     const _allTsConfigs: string[] = [];
     const _allPackageJsons: string[] = [];
     const allNodeModules: string[] = [];
 
+    //  TODO: this is a crude guess at the resolution path that will almost certainly break
+    //  in more complex cases
     workspaceRoots?.forEach((absoluteFolderPath) => {
         //	TODO: do we know whether the path is already absolute always?
         //  TODO: does this even matter?
-        const found = findFilesInHierarchy(absoluteSourceFilename, absoluteFolderPath, {
-            tsconfig: (absoluteFilename, stat) => absoluteFilename.endsWith('tsconfig.json') && stat.isFile(),
-            packageJson: (absoluteFilename, stat) => absoluteFilename.endsWith('package.json') && stat.isFile(),
-            nodeModules: (absoluteFilename, stat) => absoluteFilename.endsWith('node_modules') && stat.isDirectory(),
+        const found = findFilesInHierarchy(absoluteFolderPath, {
+            tsconfig: (absoluteFilename, stat) => path.basename(absoluteFilename) === 'tsconfig.json' && stat.isFile(),
+            packageJson: (absoluteFilename, stat) => path.basename(absoluteFilename) === 'package.json' && stat.isFile(),
+            nodeModules: (absoluteFilename, stat) => path.basename(absoluteFilename) === 'node_modules' && stat.isDirectory(),
         });
 
         _allTsConfigs.push(...(found.tsconfig || []));
         _allPackageJsons.push(...(found.packageJson || []));
         allNodeModules.push(...(found.nodeModules || []));
     });
+    return allNodeModules;
+}
+
+export async function autotestFunction(extensionState: ExtensionState, workspaceRoots: AbsolutePath[], absoluteSourceFilename: AbsolutePath, relativeSourceFilename: RelativePath, providers: DisplayProviders, functionName: string, lifeCycler: TestLifecycle, shatterproofModuleOverride: string) {
+    const allNodeModules: string[] = findKeyFiles(workspaceRoots, absoluteSourceFilename);
 
     const modulePaths = [...workspaceRoots, ...allNodeModules];
 

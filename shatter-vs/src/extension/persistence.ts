@@ -14,7 +14,7 @@ function loadExpectedResult(filepath: AbsolutePath) {
     return expectedResult;
 }
 
-function traverseDirectory(directory: AbsolutePath, onFile: (p: AbsolutePath) => void) {
+export function traverseDirectory(directory: AbsolutePath, onFile: (p: AbsolutePath, stats:fs.Stats) => void) {
     if (!fs.existsSync(directory)) {
         return;
     }
@@ -22,11 +22,10 @@ function traverseDirectory(directory: AbsolutePath, onFile: (p: AbsolutePath) =>
     const files = fs.readdirSync(directory);
     for (const file of files) {
         const fullPath = join(directory, file) as AbsolutePath;
-        const stats = fs.statSync(fullPath);
-        if (stats.isDirectory()) {
+        const stat = fs.statSync(fullPath);
+        onFile(fullPath, stat);
+        if (stat.isDirectory()) {
             traverseDirectory(fullPath, onFile);
-        } else {
-            onFile(fullPath);
         }
     }
 }
@@ -35,7 +34,7 @@ function traverseDirectory(directory: AbsolutePath, onFile: (p: AbsolutePath) =>
 export async function loadExpected(absoluteBaseDirectory: AbsolutePath) {
     const expecteds: Record<SpecimenId, Expected> = {};
 
-    traverseDirectory(joinAbsolute(absoluteBaseDirectory, EXPECTED_SUBDIR), expectedPath => {
+    traverseDirectory(joinAbsolute(absoluteBaseDirectory, EXPECTED_SUBDIR), (expectedPath, _stat) => {
         const result = loadExpectedResult(expectedPath);
         expecteds[result.specimenId] = {
             result,
@@ -57,7 +56,7 @@ export function loadPersistedSpecimen(filepath: AbsolutePath) {
 export async function loadPersistedSpecimens(absolutist: (r: RelativePath) => AbsolutePath, absoluteBaseDirectory: AbsolutePath) {
     const specimens: Map<SpecimenId, Specimental> = new Map();
 
-    traverseDirectory(joinAbsolute(absoluteBaseDirectory, SPECIMENS_SUBDIR), specimenPath => {
+    traverseDirectory(joinAbsolute(absoluteBaseDirectory, SPECIMENS_SUBDIR), (specimenPath, _stat) => {
         const specimen = loadPersistedSpecimen(specimenPath);
         specimens.set(specimen.id, {
             fileUnderTest: absolutist(specimen.fileUnderTest),
