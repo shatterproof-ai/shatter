@@ -39,6 +39,7 @@ interface WorkerMeta extends WorkerSetup {
     timeoutId?: NodeJS.Timeout
 }
 
+//  TODO: switch to using jest-worker
 export class Supervisor {
     private busyWorkers = new Map<number, SpecimenId>();
     private availableWorkers = new Set<number>();

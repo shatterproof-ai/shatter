@@ -1,9 +1,10 @@
 import { capitalize } from "lodash";
-import { AbsolutePath, Specimen, SpecimenId, extractGeneratedParameterValue, resolveGeneratedParameterValue } from "../core/common";
+import * as vscode from 'vscode';
+import { AbsolutePath, Specimen, SpecimenId, extractGeneratedParameterValue, isSpecimenId, resolveGeneratedParameterValue } from "../core/common";
 import { ResultCluster } from "../core/shatter";
 import { Outcome, isOutcome } from "../core/supervisor";
 import { FunctionMeta, findFunctions } from "../core/transform";
-import { CoverageSelection, ExtensionState, FunctionState, Specimental, getActiveStates } from "./common";
+import { CoverageSelection, ExtensionState, FileState, FunctionState, Specimental, isCoverageSelection } from "./common";
 
 export type Highlighter = (decoration: 'covered' | 'missed', liner: () => Generator<number, void, unknown>) => void;
 
@@ -18,6 +19,7 @@ export interface CommonDisplayNode {
 export interface DisplayProvider {
     refresh(nodes: CommonDisplayNode[]): void;
     select(key: string): void;
+    getSelected(): readonly CommonDisplayNode[];
 }
 
 export interface DisplayProviders {
@@ -25,6 +27,131 @@ export interface DisplayProviders {
     clustersListProvider: DisplayProvider;
     testCaseListProvider: DisplayProvider;
     testCaseDetailProvider: DisplayProvider;
+}
+
+export interface SelectedElements {
+    selectedFile?: {
+        filename: AbsolutePath;
+        state: FileState;
+    }
+
+    selectedFunction?: {
+        name:
+        string;
+        state: FunctionState;
+    }
+
+    coverage?: {
+        selectedCoverage?: CoverageSelection;
+        clusters?: ResultCluster[];
+    }
+
+    specimental?: Specimental;
+}
+
+//  TODO: keep track of separate active states for each editor
+export class GetSelectedElements {
+    constructor(private providers: DisplayProviders,
+        private extensionState: ExtensionState) { }
+
+    getActive(): SelectedElements {
+        const selected: SelectedElements = {};
+        selected.selectedFile = this.getSelectedFile();
+        if (selected.selectedFile) {
+            selected.selectedFunction = this.getSelectedFunction(selected.selectedFile);
+            if (selected.selectedFunction) {
+                selected.coverage = this.getSelectedCoverage(selected.selectedFunction);
+                selected.specimental = this.getSelectedSpecimenId(selected.selectedFunction);
+            }
+        }
+
+        return selected;
+    }
+
+    getSelectedFile(): SelectedElements['selectedFile'] {
+        const filename = vscode.window.activeTextEditor?.document.fileName as AbsolutePath | undefined;
+        if (!filename) {
+            return undefined;
+        }
+
+        const state = this.extensionState.fileStates[filename];
+        if (!state) {
+            //  TODO: error
+            return undefined;
+        }
+        return {
+            filename,
+            state,
+        };
+    }
+
+    getSelectedFunction(selectedFile: SelectedElements['selectedFile']): SelectedElements['selectedFunction'] {
+        const selected = this.providers.functionsListProvider.getSelected();
+        if (!selected || selected.length === 0) {
+            return undefined;
+        }
+
+        if (selected.length > 1) {
+            console.error(`Unexpected multiple selected functions: ${JSON.stringify(selected.map(s => [s.key, s.label]))}`);
+        }
+
+        const name = selected[0].key;
+        if (typeof name !== 'string') {
+            return undefined;
+        }
+
+        const state = selectedFile?.state.functionStates[name];
+        if (!state) {
+            console.error(`Unexpectedly missing function state for ${name} in ${selectedFile?.filename}`);
+            return undefined;
+        }
+
+        return {
+            name,
+            state,
+        };
+    }
+
+    getSelectedCoverage(selectedFunction: SelectedElements['selectedFunction']): SelectedElements['coverage'] {
+        const selected = this.providers.clustersListProvider.getSelected();
+        if (!selected || selected.length === 0) {
+            return undefined;
+        }
+
+        if (selected.length > 1) {
+            console.error(`Unexpected multiple selected clusters: ${JSON.stringify(selected.map(s => [s.key, s.label]))}`);
+        }
+
+        const selectedCoverage = selected[0].key;
+        if (!isCoverageSelection(selectedCoverage)) {
+            //  TODO: error
+            return undefined;
+        }
+
+        const clusters = filterClustersForCoverage(selectedCoverage, selectedFunction?.state.autotest.clusters);
+        return {
+            selectedCoverage,
+            clusters,
+        };
+    }
+
+    getSelectedSpecimenId(selectedFunction: SelectedElements['selectedFunction']): Specimental | undefined {
+        const selected = this.providers.testCaseListProvider.getSelected();
+        if (!selected || selected.length === 0) {
+            return undefined;
+        }
+
+        if (selected.length > 1) {
+            console.error(`Unexpected multiple selected test cases: ${JSON.stringify(selected.map(s => [s.key, s.label]))}`);
+        }
+
+        const key = selected[0].key;
+        if (!isSpecimenId(key)) {
+            return undefined;
+        }
+
+        return selectedFunction?.state.specimens[key];
+    }
 }
 
 export function findNode(nodes: CommonDisplayNode[], key: string): CommonDisplayNode | undefined {
@@ -148,10 +275,13 @@ export const findSpecimen = (extensionState: ExtensionState, specimenId: Specime
     }
 };
 
-export const refresh = (extensionState: ExtensionState, providers: DisplayProviders, highlighter: Highlighter) => {
+export const refresh = (selectedElements: SelectedElements, extensionState: ExtensionState, providers: DisplayProviders, highlighters: Record<AbsolutePath, Highlighter>) => {
     const { functionsListProvider, clustersListProvider, testCaseListProvider, testCaseDetailProvider } = providers;
 
-    const { fileState, functionState, functionMeta, specimental } = getActiveStates(extensionState);
+    const fileState = selectedElements.selectedFile?.state;
+    const functionState = selectedElements.selectedFunction?.state;
+    const functionMeta = fileState?.functions.find(f => f.name === selectedElements.selectedFunction?.name);
+    const specimental = selectedElements.specimental;
 
     console.log(`${Object.keys(extensionState.fileStates).length} file states; ${functionState ? functionState.autotest.clusters.length : 0} clusters; ${specimental ? specimental.specimen.id : 'no specimen'}`);
 
@@ -208,11 +338,11 @@ export const refresh = (extensionState: ExtensionState, providers: DisplayProvid
         return;
     }
 
-    if (extensionState.activeFunction) {
-        functionsListProvider.select(extensionState.activeFunction);
+    if (selectedElements.selectedFunction) {
+        functionsListProvider.select(selectedElements.selectedFunction.name);
     }
 
-    const activeCoverage = extensionState.activeCoverage;
+    const activeCoverage = selectedElements.coverage?.selectedCoverage;
 
     const results = functionState.autotest;
     const allClusters = results.clusters;
@@ -314,6 +444,7 @@ export const refresh = (extensionState: ExtensionState, providers: DisplayProvid
             }
         }
 
+        const highlighter = highlighters[selectedElements.selectedFile?.filename!];
         if (activeCoverage === 'missed') {
             function* missedLinerator() {
                 const allCovered = new Set(results.clusters.flatMap((cluster) => cluster.lines));
@@ -465,126 +596,31 @@ export const refresh = (extensionState: ExtensionState, providers: DisplayProvid
     testCaseDetailProvider.refresh(testCaseNodes);
 };
 
-export const doSelectFunction = (highlighter: Highlighter, extensionState: ExtensionState, providers: DisplayProviders, functionName: string) => {
-    if (!extensionState.activeFile) {
+export const doSelectFunction = (highlighters: Record<AbsolutePath, Highlighter>, extensionState: ExtensionState, providers: DisplayProviders, selectedElements: SelectedElements) => {
+    if (!selectedElements.selectedFile || !selectedElements.selectedFunction) {
         //	TODO: shouldn't happen
         return;
     }
-    const filename = extensionState.activeFile;
-    const filestate = extensionState.fileStates[filename];
-    if (!filestate) {
-        //	TODO: shouldn't happen; TODO: can regenerate
-        return;
-    }
 
-    const selectedFunction = filestate.functions.find((f) => f.name === functionName);
-    if (selectedFunction) {
-        extensionState.activeFunction = functionName;
-    } else {
-        extensionState.activeCoverage = undefined;
-        extensionState.activeFunction = undefined;
-    }
-    refresh(extensionState, providers, highlighter);
+    refresh(selectedElements, extensionState, providers, highlighters);
 };
 
-export const doSelectCluster = (highlighter: Highlighter, extensionState: ExtensionState, providers: DisplayProviders,
-    coverage: CoverageSelection | undefined) => {
-    if (!extensionState.activeFile) {
+export const doSelectCluster = (highlighters: Record<AbsolutePath, Highlighter>, extensionState: ExtensionState, providers: DisplayProviders, selectedElements: SelectedElements) => {
+    if (!selectedElements.selectedFile || !selectedElements.selectedFunction || !selectedElements.coverage) {
         //	TODO: shouldn't happen
         return;
     }
-    const filename = extensionState.activeFile;
-    const filestate = extensionState.fileStates[filename];
-    if (!filestate) {
-        //	TODO: shouldn't happen
-        return;
-    }
-
-    if (!extensionState.activeFunction) {
-        return;
-    }
-
-    const functions = findFunctions(filename);
-
-    const selectedFunction = functions.find((f) => f.name === extensionState.activeFunction);
-    if (!selectedFunction) {
-        //	TODO: shouldn't happen
-        return;
-    }
-
-    const functionState = filestate.functionStates[extensionState.activeFunction];
-    if (!functionState) {
-        //	TODO: shouldn't happen
-        return;
-    }
-
-    extensionState.activeCoverage = coverage;
-    refresh(extensionState, providers, highlighter);
+    refresh(selectedElements, extensionState, providers, highlighters);
 };
 
-export const doSelectTestCase = (highlighter: Highlighter, extensionState: ExtensionState, providers: DisplayProviders,
-    specimenId: string) => {
-    if (!extensionState.activeFile) {
+export const doSelectTestCase = (highlighters: Record<AbsolutePath, Highlighter>, extensionState: ExtensionState, providers: DisplayProviders, selectedElements: SelectedElements) => {
+    if (!selectedElements.selectedFile || !selectedElements.selectedFunction || !selectedElements.coverage) {
         return;
     }
 
-    const filename = extensionState.activeFile;
-    const filestate = extensionState.fileStates[filename];
-    if (!filestate) {
-        return;
-    }
-
-    if (!extensionState.activeFunction) {
-        return;
-    }
-
-    const functions = findFunctions(filename);
-
-    const selectedFunction = functions.find((f) => f.name === extensionState.activeFunction);
-    if (!selectedFunction) {
-        //	TODO: shouldn't happen
-        return;
-    }
-
-    const functionState = filestate.functionStates[extensionState.activeFunction];
-    if (!functionState) {
-        //	TODO: shouldn't happen
-        return;
-    }
-
-    extensionState.activeSpecimenId = specimenId;
-    refresh(extensionState, providers, highlighter);
+    refresh(selectedElements, extensionState, providers, highlighters);
 };
 
-export function doSelectFile(highlighter: Highlighter, extensionState: ExtensionState, absoluteSourceFilename: AbsolutePath, providers: DisplayProviders) {
-    if (extensionState.activeFile !== absoluteSourceFilename) {
-        extensionState.activeFile = absoluteSourceFilename;
-        extensionState.activeFunction = undefined;
-        extensionState.activeCoverage = undefined;
-        extensionState.activeSpecimenId = undefined;
-    }
-
-    const functions = findFunctions(absoluteSourceFilename);
-    /*
-    Typescript didn't like this spread
-        extensionState.fileStates[filename] = {
-            functionStates: {},
-            ...extensionState.fileStates[filename],
-            functions,
-        };
-
-     */
-    if (extensionState.fileStates[absoluteSourceFilename]) {
-        extensionState.fileStates[absoluteSourceFilename].functions = functions;
-        extensionState.fileStates[absoluteSourceFilename].functionStates = Object.fromEntries(
-            functions.map((f):[string, FunctionState] => [f.name, { specimens: {}, autotest: {clusters: [], instrumentedLines:[]} }])
-        );
-    } else {
-        extensionState.fileStates[absoluteSourceFilename] = {
-            functionStates: {},
-            functions,
-        };
-    }
-
-    refresh(extensionState, providers, highlighter);
+export function doSelectFile(highlighters: Record<AbsolutePath, Highlighter>, extensionState: ExtensionState, absoluteSourceFilename: AbsolutePath, providers: DisplayProviders, selectedElements: SelectedElements) {
+    refresh(selectedElements, extensionState, providers, highlighters);
 }

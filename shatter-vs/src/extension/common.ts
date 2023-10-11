@@ -41,56 +41,8 @@ export interface ExtensionState {
     runningTestFunction?: string;
     fileStates: Record<AbsolutePath, FileState>;	//	Record because Map is not serializable
     //	this overlaps some with specimens, but it doesn't load the contents	
-    activeFile?: AbsolutePath;
-    activeFunction?: string;
-    activeCoverage?: CoverageSelection;
-    activeSpecimenId?: string;
     expected?: Record<SpecimenId, Expected>;
 };
-
-export function getActiveStates(extensionState: ExtensionState): {
-    fileState?: FileState,
-    functionState?: FunctionState,
-    functionMeta?: FunctionMeta,
-    specimental?: Specimental,
-} {
-    const activeFilename = extensionState.activeFile;
-    if (!activeFilename) {
-        //	TODO: clear functions list, clusters list, branches list, test cases list
-        return {};
-    }
-
-    const fileState = extensionState.fileStates[activeFilename];
-    if (!fileState || !fileState.functions) {
-        //	TODO: clear what needs clearing
-        return {};
-    }
-
-    const activeFunction = extensionState.activeFunction;
-    if (!activeFunction) {
-        return { fileState };
-    }
-
-    const functionMeta = fileState.functions.find((f) => f.name === activeFunction);
-    if (!functionMeta) {
-        //	this is not necessarily an error because the function may have been deleted
-        return { fileState };
-    }
-
-    const functionState = fileState.functionStates[activeFunction];
-
-    const activeSpecimenId = extensionState.activeSpecimenId;
-    if (!activeSpecimenId) {
-        return { fileState, functionState, functionMeta };
-    }
-
-    const specimental = functionState.specimens[activeSpecimenId];
-    if (!specimental) {
-        return { fileState, functionState, functionMeta };
-    }
-
-    return { fileState, functionState, functionMeta, specimental };
-}
 
 //	this exists primarily for the situation where the ExtensionState that was
 //	persisted has a different structure than what the code uses now
