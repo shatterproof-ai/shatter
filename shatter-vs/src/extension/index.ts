@@ -1,14 +1,13 @@
 import * as fs from 'fs'; //TODO: use VSCode fs
 import * as path from 'path';
-import { join } from 'path';
 import * as ts from 'typescript';
 import * as vscode from 'vscode';
-import { AbsolutePath, RelativePath, Specimen, SpecimenId, isRelativePath, isSpecimenId } from '../core/common';
+import { AbsolutePath, RelativePath, Specimen, SpecimenId, isRelativePath, isSpecimenId, joinAbsolute } from '../core/common';
 import { isOutcome } from '../core/supervisor';
 import { FunctionMeta } from '../core/transform';
 import { CoverageSelection, ExtensionState, Specimental, cleanUpExtensionState, isCoverageSelection, onPersistedSpecimenLoad } from './common';
 import { CommonDisplayNode, DisplayProvider, DisplayProviders, Highlighter, doSelectCluster, doSelectFile, doSelectFunction, doSelectTestCase, findClustersForCoverage, findFunction, findNode, findSpecimen, refresh } from './display';
-import { forkTest, loadPersistedSpecimen, loadPersistedSpecimens, saveTest } from './persistence';
+import { forkTest, loadExpected, loadPersistedSpecimen, loadPersistedSpecimens, saveTest } from './persistence';
 import { TestLifecycle, autotestFunction, retestFunction } from './run';
 
 const COMMANDS = {
@@ -54,8 +53,12 @@ const missedDecorationType = vscode.window.createTextEditorDecorationType({
 	},
 });
 
-function asAbsolutePath(workspaceRoot: AbsolutePath, filename: RelativePath): AbsolutePath {
-	return join(workspaceRoot, filename) as AbsolutePath;
+/**
+ *
+ * @deprecated
+ */
+function asAbsolutePath(workspaceRoot: AbsolutePath, ...pieces: RelativePath[]): AbsolutePath {
+	return joinAbsolute(workspaceRoot, ...pieces);
 }
 
 function asRelativePath(filename: AbsolutePath): RelativePath | undefined {
@@ -100,7 +103,8 @@ function highlightLinesInEditor(editor: vscode.TextEditor | undefined, decoratio
 //	We never write this; it's populated only by reading, and it doesn't exactly
 //	match the format on disk
 interface ProjectConfiguration {
-	testsDirectory?: RelativePath;	//	RELATIVE to the project root
+	baseDirectory?: RelativePath;	//	RELATIVE to the project root
+	resultsReferenceDirectory?: RelativePath;	//	RELATIVE to the project root
 	projectRootDirectory?: RelativePath;	//	RELATIVE to the project root
 }
 
@@ -125,13 +129,13 @@ async function readProjectConfiguration(workspaceRoot: AbsolutePath): Promise<Pr
 									if (isRelativePath(pc.testsDirectory)) {
 										return {
 											configuration: {
-												testsDirectory: asAbsolutePath(workspaceRoot, pc.testsDirectory),
+												baseDirectory: asAbsolutePath(workspaceRoot, pc.testsDirectory),
 											}
 										};
 									}
 
 									return {
-										testsDirectory: pc.testsDirectory,
+										baseDirectory: pc.testsDirectory,
 									};
 								}
 							} catch (e) {
@@ -261,9 +265,9 @@ const doSelectTestCaseCommand = (highlighter: Highlighter, extensionState: Exten
 	}
 };
 
-const editTestCase = async (extensionState: ExtensionState, specimenBaseDirectory: AbsolutePath | undefined, node: CommonDisplayNode) => {
+const editTestCase = async (extensionState: ExtensionState, baseDirectory: AbsolutePath | undefined, node: CommonDisplayNode) => {
 	const specimenId = node.key;
-	if (!specimenBaseDirectory || !isSpecimenId(specimenId)) {
+	if (!baseDirectory || !isSpecimenId(specimenId)) {
 		return;
 	}
 
@@ -340,7 +344,7 @@ function retest(defaultWorkspaceRoot: AbsolutePath, workspaceRoots: AbsolutePath
 	return retestFunction(extensionState, workspaceRoots, absoluteSourceFilename, functionName, specimens, lifeCycler, extensionSource);
 }
 
-const forkTestCase = async (extensionState: ExtensionState, specimenBaseDirectory: AbsolutePath | undefined, providers: DisplayProviders, highlighter: Highlighter, node: CommonDisplayNode) => {
+const forkTestCase = async (extensionState: ExtensionState, baseDirectory: AbsolutePath | undefined, providers: DisplayProviders, highlighter: Highlighter, node: CommonDisplayNode) => {
 	const specimenId = node.key;
 	if (!isSpecimenId(specimenId)) {
 		return;
@@ -378,14 +382,14 @@ const forkTestCase = async (extensionState: ExtensionState, specimenBaseDirector
 	}
 
 	//	if persistable and the base test is already persisted
-	if (!specimenBaseDirectory) {
+	if (!baseDirectory) {
 		return;
 	}
 	// function forkTest(storageBaseDirectory: AbsolutePath, specimental: Specimental, sourceFileUnderTestPath: RelativePath, testCaseName: SpecimenId) {
 	let newSpecimental: Specimental | undefined = undefined;
 	if (specimental.specimenPath) {
 		//	forking an already persistent test
-		newSpecimental = forkTest(specimenBaseDirectory, specimental, newId, newTestCaseName);
+		newSpecimental = forkTest(baseDirectory, specimental, newId, newTestCaseName);
 	} else {
 		//	forking a transient test
 		newSpecimental = {
@@ -399,7 +403,7 @@ const forkTestCase = async (extensionState: ExtensionState, specimenBaseDirector
 			clusterKey: specimental.clusterKey,
 			fileUnderTest: specimental.fileUnderTest,
 		};
-		const specimenFileAbsolutePath = saveTest(specimenBaseDirectory, newSpecimental);
+		const specimenFileAbsolutePath = saveTest(baseDirectory, newSpecimental);
 		newSpecimental.specimenPath = specimenFileAbsolutePath;
 	}
 
@@ -484,7 +488,7 @@ export async function activate(context: vscode.ExtensionContext) {
 	};
 
 	try {
-		const { configuration, specimenBaseDirectory } = await initializeWorkspace(defaultWorkspaceRoot, absolutist, extensionState, 'hard');
+		const { configuration, baseDirectory } = await initializeWorkspace(defaultWorkspaceRoot, absolutist, extensionState, 'hard');
 
 		const providers = initializeTreeViews(context);
 
@@ -517,16 +521,16 @@ export async function activate(context: vscode.ExtensionContext) {
 		
 		*/
 
-		const makeTestCasePersistentCommand = vscode.commands.registerCommand(COMMANDS.shatterMakeTestcasePersistent, (node) => makeTestCasePersistent(specimenBaseDirectory, extensionState, providers, highlighter, node));
+		const makeTestCasePersistentCommand = vscode.commands.registerCommand(COMMANDS.shatterMakeTestcasePersistent, (node) => makeTestCasePersistent(baseDirectory, extensionState, providers, highlighter, node));
 		context.subscriptions.push(makeTestCasePersistentCommand);
 
-		const makeTestcaseNotPersistentCommand = vscode.commands.registerCommand(COMMANDS.shatterMakeTestcaseNonPersistent, (node) => makeTestCaseNotPersistent(specimenBaseDirectory, extensionState, providers, highlighter, node));
+		const makeTestcaseNotPersistentCommand = vscode.commands.registerCommand(COMMANDS.shatterMakeTestcaseNonPersistent, (node) => makeTestCaseNotPersistent(baseDirectory, extensionState, providers, highlighter, node));
 		context.subscriptions.push(makeTestcaseNotPersistentCommand);
 
-		const editTestCaseCommand = vscode.commands.registerCommand(COMMANDS.shatterEditCustomTestcase, (node) => editTestCase(extensionState, specimenBaseDirectory, node));
+		const editTestCaseCommand = vscode.commands.registerCommand(COMMANDS.shatterEditCustomTestcase, (node) => editTestCase(extensionState, baseDirectory, node));
 		context.subscriptions.push(editTestCaseCommand);
 
-		const forkTestCaseCommand = vscode.commands.registerCommand(COMMANDS.shatterForkAutoTestcase, (node) => forkTestCase(extensionState, specimenBaseDirectory, providers, highlighter, node));
+		const forkTestCaseCommand = vscode.commands.registerCommand(COMMANDS.shatterForkAutoTestcase, (node) => forkTestCase(extensionState, baseDirectory, providers, highlighter, node));
 		context.subscriptions.push(forkTestCaseCommand);
 
 		const runTestcaseClustersCommand = vscode.commands.registerCommand(COMMANDS.shatterRunClustersTestcases, async (node: CommonDisplayNode) => {
@@ -682,10 +686,10 @@ export async function activate(context: vscode.ExtensionContext) {
 	}
 }
 
-async function makeTestCasePersistent(specimenBaseDirectory: AbsolutePath | undefined, extensionState: ExtensionState, providers: DisplayProviders, highlighter: Highlighter, node: CommonDisplayNode) {
+async function makeTestCasePersistent(baseDirectory: AbsolutePath | undefined, extensionState: ExtensionState, providers: DisplayProviders, highlighter: Highlighter, node: CommonDisplayNode) {
 	//	if the test case is not persistent, save it to the location specified in the configuration
 	const specimenId = node.key;
-	if (!specimenBaseDirectory || !isSpecimenId(specimenId)) {
+	if (!baseDirectory || !isSpecimenId(specimenId)) {
 		return;
 	}
 
@@ -694,15 +698,15 @@ async function makeTestCasePersistent(specimenBaseDirectory: AbsolutePath | unde
 		return;
 	}
 
-	const savePath = saveTest(specimenBaseDirectory, specimental);
+	const savePath = saveTest(baseDirectory, specimental);
 	specimental.specimenPath = savePath;
 
 	refresh(extensionState, providers, highlighter);
 };
 
-const makeTestCaseNotPersistent = async (specimenBaseDirectory: AbsolutePath | undefined, extensionState: ExtensionState, providers: DisplayProviders, highlighter: Highlighter, node: CommonDisplayNode) => {
+const makeTestCaseNotPersistent = async (baseDirectory: AbsolutePath | undefined, extensionState: ExtensionState, providers: DisplayProviders, highlighter: Highlighter, node: CommonDisplayNode) => {
 	const specimenId = node.key;
-	if (!specimenBaseDirectory || !isSpecimenId(specimenId)) {
+	if (!baseDirectory || !isSpecimenId(specimenId)) {
 		return;
 	}
 
@@ -761,7 +765,7 @@ async function initializeWorkspace(defaultWorkspaceRoot: AbsolutePath, absolutis
 	}
 
 	const configuration: ProjectConfiguration = await readProjectConfiguration(defaultWorkspaceRoot);
-	if (!configuration.testsDirectory) {
+	if (!configuration.baseDirectory) {
 		return { configuration, specimenBaseDirectory: undefined };
 	}
 
@@ -771,13 +775,16 @@ async function initializeWorkspace(defaultWorkspaceRoot: AbsolutePath, absolutis
 
 	//	do this *after* the watcher is set up to avoid missing any additions
 	//	TODO: might miss some deletions
-	const specimenBaseDirectory = asAbsolutePath(defaultWorkspaceRoot, configuration.testsDirectory);
-	const initialPersistentSpecimens = loadPersistedSpecimens(absolutist, specimenBaseDirectory);
+	const absoluteBaseDirectory = joinAbsolute(defaultWorkspaceRoot, configuration.baseDirectory);
+	const initialPersistentSpecimens = await loadPersistedSpecimens(absolutist, absoluteBaseDirectory);
 	initialPersistentSpecimens.forEach((specimental, id) => {
 		onPersistedSpecimenLoad(absolutist, extensionState, specimental.specimen, id, specimental.specimenPath);
 	});
 
-	return { configuration, specimenBaseDirectory };
+	const expected = await loadExpected(absoluteBaseDirectory);
+	extensionState.expected = expected;
+
+	return { configuration, baseDirectory: absoluteBaseDirectory };
 }
 
 function initializeWorkspaceWatchers(configuration: ProjectConfiguration, defaultWorkspaceRoot: string, absolutist: (filename: RelativePath) => AbsolutePath, extensionState: ExtensionState) {
@@ -787,7 +794,7 @@ function initializeWorkspaceWatchers(configuration: ProjectConfiguration, defaul
 
 	//	NOTE: this watcher is using a different API than listPersistedSpecimens because
 	//	the latter is meant to be independent of VS Code
-	const watcher = vscode.workspace.createFileSystemWatcher(`${configuration.testsDirectory}/**/*.json`, ignoreCreate, ignoreChange, ignoreDelete);
+	const watcher = vscode.workspace.createFileSystemWatcher(`${configuration.baseDirectory}/**/*.json`, ignoreCreate, ignoreChange, ignoreDelete);
 
 	watcher.onDidCreate((e) => {
 		const absoluteSpecimenFilepath = e.fsPath as AbsolutePath;

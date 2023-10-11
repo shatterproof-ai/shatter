@@ -1,6 +1,6 @@
-import { AbsolutePath, RelativePath, Specimen } from "../core/common";
+import { AbsolutePath, RelativePath, Specimen, SpecimenId } from "../core/common";
 import { AutotestResults } from "../core/shatter";
-import { Outcome, isOutcome } from "../core/supervisor";
+import { Outcome, RunResult, isOutcome } from "../core/supervisor";
 import { FunctionMeta } from "../core/transform";
 
 export interface Specimental {
@@ -8,6 +8,11 @@ export interface Specimental {
     specimenPath?: AbsolutePath,			//	empty if not persisted
     clusterKey?: string,	//	empty if never run
     specimen: Specimen,
+}
+
+export interface Expected {
+    expectedPath?: AbsolutePath,	//	empty if not persisted
+    result: RunResult,
 }
 
 export type FunctionState = {
@@ -40,6 +45,7 @@ export interface ExtensionState {
     activeFunction?: string;
     activeCoverage?: CoverageSelection;
     activeSpecimenId?: string;
+    expected: Record<SpecimenId, Expected>;
 };
 
 export function getActiveStates(extensionState: ExtensionState): {
