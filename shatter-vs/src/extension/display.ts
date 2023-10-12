@@ -462,8 +462,8 @@ export const refresh = (selectedElements: SelectedElements, extensionState: Exte
         parametersNode,
     ];
 
-    if (result.output) {
-        const outputValuesNodes = valueToNode(result.output, 3);
+    if (result.returnValue) {
+        const outputValuesNodes = valueToNode(result.returnValue, 3);
         const outputNode: CommonDisplayNode = {
             label: 'Return value',
             children: outputValuesNodes,

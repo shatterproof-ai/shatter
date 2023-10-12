@@ -37,6 +37,6 @@ describe('worker', () => {
         const result = await work(functions, 3, message);
         console.log(JSON.stringify(result));
         expect(result).toBeTruthy();
-        expect(result.output).toEqual(4);
+        expect(result.returnValue).toEqual(4);
     });
 });

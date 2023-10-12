@@ -19,7 +19,7 @@ export interface InvocationMeta {
 
 export interface InvocationResult {
     specimenId: SpecimenId
-    output?: any
+    returnValue?: any
     error?: { message: string, stack: any }
     duration: number
     executedBranches: string[]

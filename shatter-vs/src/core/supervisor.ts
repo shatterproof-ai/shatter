@@ -23,7 +23,7 @@ export interface RunResult {
     linesInOrder: number[]
     completed: boolean
     outcome: Outcome
-    output?: any
+    returnValue?: any
     error?: string
     duration: number
     stdout?: string
@@ -80,7 +80,7 @@ export class Supervisor {
     }
 
     processInvocationResult(invocationResult: InvocationResult, onCompletion: (_: Invocation, __: RunResult) => void) {
-        const { specimenId, output, error, duration, executedBranches, lines, linesInOrder }: InvocationResult = invocationResult;
+        const { specimenId, returnValue, error, duration, executedBranches, lines, linesInOrder }: InvocationResult = invocationResult;
 
         const meta = this.invocationMetaSpecimen.get(specimenId);
         if (!meta) {
@@ -97,7 +97,7 @@ export class Supervisor {
         const result: RunResult = {
             ...meta.invocation,
             specimenId,
-            output,
+            returnValue,
             error: strungError,
             completed: true,
             duration,

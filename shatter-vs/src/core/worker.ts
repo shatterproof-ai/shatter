@@ -40,7 +40,7 @@ export function work(activeModule: any, workerNumber: number, message: any) {
             }
         })());
 
-        const finishIt = (p: Partial<Pick<InvocationResult, 'output' | 'error'>>) => {
+        const finishIt = (p: Partial<Pick<InvocationResult, 'returnValue' | 'error'>>) => {
             const end = Date.now();
             const duration = end - start;
 
@@ -59,8 +59,8 @@ export function work(activeModule: any, workerNumber: number, message: any) {
             return result;
         };
 
-        return p.then((output) => {
-            return finishIt({ output });
+        return p.then((returnValue) => {
+            return finishIt({ returnValue });
         }).catch((error) => {
             /* 
             TODO: how to differentiate between types of error
