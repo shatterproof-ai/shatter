@@ -212,7 +212,7 @@
           "when": "view == shatter-list-testcases && viewItem =~ /\\bpersistent\\b/",
           "group": "inline@6"
         }
-        ]
+      ]
     },
     "submenus": [
       {
