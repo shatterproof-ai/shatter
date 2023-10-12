@@ -292,14 +292,16 @@ export const refresh = (selectedElements: SelectedElements, extensionState: Exte
             .map(([outcome, nodes]) => {
                 const baseLabel = capitalize(outcome);
                 const label = (() => {
+                    const count = countByOutcome[outcome as Outcome] ?? 0;
+                    const plural = count === 1 ? '' : 's';
                     if (outcome === 'timeout' || outcome === 'failed') {
-                        return baseLabel;
+                        return `${baseLabel} (${count} test case${plural})`;
                     }
                     if (functionInstrumentedLines.size === 0) {
-                        return baseLabel;
+                        return `${baseLabel} (${count} test case${plural})`;
                     }
                     const coverage = linesByOutcome[outcome as Outcome].size / functionInstrumentedLines.size;
-                    return `${baseLabel} - ${formatter.format(coverage)} coverage (${countByOutcome[outcome as Outcome] ?? 0} test case(s))`;
+                    return `${baseLabel} - ${formatter.format(coverage)} coverage (${count} test case${plural})`;
                 })();
 
                 return {
