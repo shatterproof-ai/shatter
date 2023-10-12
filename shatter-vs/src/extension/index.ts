@@ -374,6 +374,7 @@ const editTestCase = async (extensionState: ExtensionState, baseDirectory: Absol
 
 	const specimenPath = specimental.specimenPath;
 	if (specimenPath && vscode.window.activeTextEditor?.document.languageId === 'typescript') {
+		//	vscode FS does not support a nice existence check
 		if (fs.existsSync(specimenPath)) {
 			vscode.workspace.openTextDocument(specimenPath).then((doc) => {
 				vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
@@ -572,6 +573,7 @@ export async function activate(context: vscode.ExtensionContext) {
 	const workspaceRoots: AbsolutePath[] = vscode.workspace.workspaceFolders?.map((f) => f.uri.fsPath as AbsolutePath) ?? [];
 	const defaultWorkspaceRoot: AbsolutePath | undefined = workspaceRoots[0];
 
+	//	TODO: initialize extensionState in initializeWorkspace
 	const extensionState: ExtensionState = cleanUpExtensionState(context.workspaceState.get(autotestStorageStateKey, {}));
 
 	const highlighters: Record<AbsolutePath, Highlighter> = {};
