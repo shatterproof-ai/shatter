@@ -14,20 +14,15 @@ export type Outcome = typeof Outcomes[number];
 
 export const isOutcome = (x: string): x is Outcome => Outcomes.includes(x as Outcome);
 
-export interface RunResult {
-    specimenId: SpecimenId
-    functionName: string
-    serializedParameterValues: string
-    executedBranches: string[]
-    lines: number[]
-    linesInOrder: number[]
-    completed: boolean
-    outcome: Outcome
-    returnValue?: any
-    error?: string
-    duration: number
-    stdout?: string
-    stderr?: string
+export interface TestRun {
+    specimenId: SpecimenId;
+    invocation: Invocation;
+
+    runnerDuration: number;
+    completed: boolean;
+    outcome: Outcome;
+
+    result?: InvocationResult;
 }
 
 const maxWaitForWorkerTime = 10_000;
@@ -50,7 +45,7 @@ export class Supervisor {
     private purged = new Set<WorkerMeta>();
     private count = 0;
 
-    private resultBySpecimen = new Map<string, RunResult>();
+    private resultBySpecimen = new Map<string, TestRun>();
 
     private invocationMetaSpecimen = new Map<string, InvocationMeta>();
 
@@ -79,7 +74,7 @@ export class Supervisor {
         }
     }
 
-    processInvocationResult(invocationResult: InvocationResult, onCompletion: (_: Invocation, __: RunResult) => void) {
+    processInvocationResult(invocationResult: InvocationResult, onCompletion: (_: Invocation, __: TestRun) => void) {
         const { specimenId, returnValue, error, duration, executedBranches, lines, linesInOrder }: InvocationResult = invocationResult;
 
         const meta = this.invocationMetaSpecimen.get(specimenId);
@@ -92,19 +87,14 @@ export class Supervisor {
         }
         // console.log(`Worker ${worker.workerNumber} for ${meta.invocation.functionName} completed`);
 
-        // console.log(`And executed branches = `)
-        const strungError = error ? JSON.stringify(error) : undefined;
-        const result: RunResult = {
-            ...meta.invocation,
+        const now = Date.now();
+        const result: TestRun = {
             specimenId,
-            returnValue,
-            error: strungError,
+            invocation: meta.invocation,
+            runnerDuration: now - meta.launched,
             completed: true,
-            duration,
-            executedBranches,
             outcome: error ? 'error' : 'completed',
-            lines,
-            linesInOrder,
+            result: invocationResult,
         };
 
         this.resultBySpecimen.set(meta.specimenId, result);
@@ -118,7 +108,7 @@ export class Supervisor {
         this.purgeWorker(worker);
     }
 
-    onWorkerMessage(invocationResult: InvocationResult, worker: WorkerMeta, onCompletion: (_: Invocation, __: RunResult) => void) {
+    onWorkerMessage(invocationResult: InvocationResult, worker: WorkerMeta, onCompletion: (_: Invocation, __: TestRun) => void) {
         // console.log(`received message ${JSON.stringify(invocationResult)}`);
         // const invocationResult:InvocationResult = eval(msg);
         clearTimeout(worker.timeoutId);
@@ -142,7 +132,7 @@ export class Supervisor {
         this.purged.add(wm);
     }
 
-    stopWorker(wm: WorkerMeta, outcome: 'timeout' | 'error', onCompletion: (_: Invocation, __: RunResult) => void, error?: any) {
+    stopWorker(wm: WorkerMeta, outcome: 'timeout' | 'error', onCompletion: (_: Invocation, __: TestRun) => void, error?: any) {
         const specimenId = this.busyWorkers.get(wm.workerNumber)!;
         this.purgeWorker(wm);
 
@@ -155,19 +145,13 @@ export class Supervisor {
         }
         console.log(`Worker ${wm.workerNumber} for ${meta.invocation.functionName} ${outcome} ${error}...`);
 
-        const duration = Date.now() - meta.launched;
-        //  TODO: 
-        const strungError = error ? '' + error : undefined;
-        const result: RunResult = {
-            ...meta.invocation,
+        const now = Date.now();
+        const result: TestRun = {
             specimenId,
-            error: strungError,
+            invocation: meta.invocation,
+            runnerDuration: now - meta.launched,
             completed: false,
-            duration,
-            executedBranches: [],
             outcome,
-            lines: [],
-            linesInOrder: [],
         };
 
         this.resultBySpecimen.set(specimenId, result);
@@ -176,7 +160,7 @@ export class Supervisor {
     };
 
     @wrapAsyncMethod
-    async execute(functionName: string, specimen: Specimen, onCompletion: (_: Invocation, __: RunResult) => void) {
+    async execute(functionName: string, specimen: Specimen, onCompletion: (_: Invocation, __: TestRun) => void) {
         const resolvedParameters = specimen.parameters.map(extractGeneratedParameterValue);
         const serializedParameterValues = serializeJavascript(resolvedParameters);
         const invocation: Invocation = {

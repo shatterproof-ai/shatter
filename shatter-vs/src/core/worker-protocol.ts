@@ -19,10 +19,13 @@ export interface InvocationMeta {
 
 export interface InvocationResult {
     specimenId: SpecimenId
+    //  note: returnValue may be undefined, so distinguish between clean completion and error by checking for error
     returnValue?: any
     error?: { message: string, stack: any }
     duration: number
     executedBranches: string[]
     lines: number[]
     linesInOrder: number[]
+    stdout?: string
+    stderr?: string
 }

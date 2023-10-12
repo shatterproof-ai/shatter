@@ -5,7 +5,7 @@ import { dirname, join } from 'path';
 import * as ts from 'typescript';
 import { AbsolutePath, BaseSpecimen, GeneratedParameter, LeafParameter, RelativePath, Specimen, SpecimenId, extractGeneratedParameterValue, findLeaves, isSpecimenId, mergePath, newId, skip } from './common';
 import { hybridize, isStrictExtension, shrink } from './hybridize';
-import { Outcome, RunResult, Supervisor } from './supervisor';
+import { Outcome, TestRun, Supervisor } from './supervisor';
 import { IntrospectionContext, createInstrumenter } from './transform';
 import { canonicallyStringify, comparameters, computeDistance, wrapAsync } from './util';
 import { Invocation } from './worker-protocol';
@@ -27,7 +27,7 @@ export interface BasicResultCluster {
 interface ResultClusterData {
     //  includes potential duplicates if the same line is hit twice
     specimens: Specimen[]
-    results: RunResult[]
+    results: TestRun[]
 }
 
 //  TODO: for error cases add the file and line of where it was thrown and also
@@ -53,11 +53,11 @@ function sha1(value: string, options?: { salt?: string, maxLength?: number }): s
     return hexed.substring(0, options?.maxLength ?? 40);
 }
 
-function canonicalClusterKey(result: RunResult) {
+function canonicalClusterKey(testRun: TestRun) {
     const smashed = {
-        lines: Array.from(result.lines).sort(),
-        completed: result.completed,
-        error: !!result.error,
+        lines: Array.from(testRun.result?.lines ?? []).sort(),
+        completed: testRun.completed,
+        error: !!testRun.result?.error,
     };
 
     const shasum = createHash('sha1');
@@ -134,26 +134,26 @@ export interface RunUpdate {
     specimen: Specimen,
 }
 
-const updateBatchState = (batchState: BatchState, runResult: RunResult): RunUpdate => {
+const updateBatchState = (batchState: BatchState, testRun: TestRun): RunUpdate => {
     // console.log(`Received result ${JSON.stringify(runResult)}`);
     // find the appropriate cluster or create it
-    if (!runResult.specimenId) {
-        throw new Error(`No specimenId in ${JSON.stringify(runResult)}`);
+    if (!testRun.specimenId) {
+        throw new Error(`No specimenId in ${JSON.stringify(testRun)}`);
     }
 
-    const specimen = batchState.specimensById.get(runResult.specimenId);
+    const specimen = batchState.specimensById.get(testRun.specimenId);
     if (!specimen) {
-        throw new Error(`No specimen for ${runResult.specimenId}`);
+        throw new Error(`No specimen for ${testRun.specimenId}`);
     }
 
-    runResult.lines.forEach(line => batchState.executedLines.add(line));
+    testRun.result?.lines.forEach(line => batchState.executedLines.add(line));
 
-    const clusterKey = canonicalClusterKey(runResult);
+    const clusterKey = canonicalClusterKey(testRun);
     let cluster = batchState.clustersByKey.get(clusterKey);
     if (!cluster) {
         const outcome = ((): Outcome => {
-            if (runResult.completed) {
-                if (runResult.error) {
+            if (testRun.completed) {
+                if (testRun.result?.error) {
                     return 'error';
                 }
                 return 'completed';
@@ -163,8 +163,8 @@ const updateBatchState = (batchState: BatchState, runResult: RunResult): RunUpda
 
         cluster = {
             key: clusterKey,
-            lines: runResult.lines,
-            linesInOrder: runResult.linesInOrder,
+            lines: testRun.result?.lines ?? [],
+            linesInOrder: testRun.result?.linesInOrder ?? [],
             outcome,
             specimens: [],
             results: [],
@@ -180,8 +180,8 @@ const updateBatchState = (batchState: BatchState, runResult: RunResult): RunUpda
     }
 
     cluster.specimens.push(specimen);
-    cluster.results.push(runResult);
-    cluster.totalTime += runResult.duration;
+    cluster.results.push(testRun);
+    cluster.totalTime += testRun.result?.duration ?? 0;
 
     //  TODO: don't do this on every change
     sortClusters(batchState.clusters);
@@ -244,7 +244,7 @@ async function shatterRetestt(modulePaths: string[],
         executedLines: new Set(),
     };
 
-    const onResult = (runResult: RunResult) => {
+    const onResult = (runResult: TestRun) => {
         const update = updateBatchState(batchState, runResult);
         batchState = update.batchState;
         onUpdate(update, { clusters: batchState.clusters, instrumentedLines });
@@ -259,7 +259,7 @@ async function shatterRetestt(modulePaths: string[],
         //  TODO: prioritize variation in simpler types, e.g. numbers, over variation in more complex types, e.g. Maps
         for (const specimen of specimens) {
             batchState.specimensById.set(specimen.id, specimen);
-            const e = supervisor.execute(functionName, specimen, (invocation: Invocation, result: RunResult) => {
+            const e = supervisor.execute(functionName, specimen, (invocation: Invocation, result: TestRun) => {
                 onResult(result);
             });
             evaluations.push(e);
@@ -357,7 +357,7 @@ async function shatterAutotestt(modulePaths: string[],
         executedLines: new Set(),
     };
 
-    const onResult = (runResult: RunResult) => {
+    const onResult = (runResult: TestRun) => {
         const update = updateBatchState(batchState, runResult);
         batchState = update.batchState;
         onUpdate(update, { clusters: batchState.clusters, instrumentedLines });
@@ -504,7 +504,7 @@ async function shatterAutotestt(modulePaths: string[],
         for (const newSpecimen of toRun) {
             batchState.specimensById.set(newSpecimen.id, newSpecimen);
             // console.log(`Evaluating specimen ${JSON.stringify(newSpecimen)}`);
-            const p = supervisor.execute(functionName, newSpecimen, (invocation: Invocation, result: RunResult) => {
+            const p = supervisor.execute(functionName, newSpecimen, (invocation: Invocation, result: TestRun) => {
                 onResult(result);
             }).then(_ => newSpecimen.id);
             evaluations.push(p);
@@ -1009,7 +1009,7 @@ function sortClusters(clusters: ResultCluster[]) {
 
     clusters.forEach(cluster => {
         cluster.results.sort((a, b) =>
-            a.serializedParameterValues.localeCompare(b.serializedParameterValues)
+            a.invocation.serializedParameterValues.localeCompare(b.invocation.serializedParameterValues)
         );
     });
 }

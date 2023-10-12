@@ -420,7 +420,7 @@ export const refresh = (selectedElements: SelectedElements, extensionState: Exte
 
             const state = specimental?.specimenPath ? 'pinned' : 'unpinned';
             const parametersNode = {
-                label: shortString(result.serializedParameterValues),
+                label: shortString(result.invocation.serializedParameterValues),
                 key: result.specimenId,
                 state,
                 contextValue: contextPieces.join(','),
@@ -433,7 +433,7 @@ export const refresh = (selectedElements: SelectedElements, extensionState: Exte
         return;
     }
 
-    const result = (() => {
+    const testRun = (() => {
         for (const cluster of selectedClusters) {
             const result = cluster.results.find(c => c.specimenId === specimental.specimen.id);
             if (result) {
@@ -442,7 +442,7 @@ export const refresh = (selectedElements: SelectedElements, extensionState: Exte
         }
     })();
 
-    if (!result) {
+    if (!testRun) {
         return;
     }
 
@@ -454,7 +454,7 @@ export const refresh = (selectedElements: SelectedElements, extensionState: Exte
     };
 
     const metadataNode = {
-        label: `Result: ${capitalize(result.outcome)} in ${result.duration}ms`
+        label: `Result: ${capitalize(testRun.outcome)} in ${testRun.result?.duration ?? testRun.runnerDuration}ms`
     };
 
     const testCaseNodes: CommonDisplayNode[] = [
@@ -462,15 +462,8 @@ export const refresh = (selectedElements: SelectedElements, extensionState: Exte
         parametersNode,
     ];
 
-    if (result.returnValue) {
-        const outputValuesNodes = valueToNode(result.returnValue, 3);
-        const outputNode: CommonDisplayNode = {
-            label: 'Return value',
-            children: outputValuesNodes,
-        };
-        testCaseNodes.push(outputNode);
-    } else if (result.error) {
-        const unstrungError = JSON.parse(result.error);
+    if (testRun.result?.error) {
+        const unstrungError = testRun.result.error;
         const errorNode: CommonDisplayNode = {
             label: unstrungError.message,
         };
@@ -481,6 +474,13 @@ export const refresh = (selectedElements: SelectedElements, extensionState: Exte
                 .map((frame: any): CommonDisplayNode => ({ label: frame }));
         }
         testCaseNodes.push(errorNode);
+    } else if (testRun.result?.returnValue) {
+        const outputValuesNodes = valueToNode(testRun.result.returnValue, 3);
+        const outputNode: CommonDisplayNode = {
+            label: 'Return value',
+            children: outputValuesNodes,
+        };
+        testCaseNodes.push(outputNode);
     } else {
         const noResultsNode: CommonDisplayNode = {
             label: `No results`,

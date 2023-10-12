@@ -2,7 +2,7 @@
 
 import { pick } from 'lodash';
 import { ResultCluster } from '../core/shatter';
-import { RunResult } from '../core/supervisor';
+import { TestRun } from '../core/supervisor';
 import { BaseSpecimen, GeneratedParameter, LeafParameter, ObjectPathSegment, SpecimenId, ValueGeneratedParameter, isValueSubtype, mergePath, newId, rehydrateGeneratedParameterValue, specimenTypes } from './common';
 import { Literals, edgyAny, edgyBooleans, edgyNumberRanges, edgyNumbers, edgyStrings } from './seed';
 import ts = require('typescript');
@@ -29,7 +29,7 @@ export interface GeneratedParameterList {
 interface TestCaseSource {
     start(): Iterator<GeneratedParameterList>;
     increaseWeirdness?(): void;
-    update?(clusterMap: Map<string, ResultCluster>, r: RunResult): void;
+    update?(clusterMap: Map<string, ResultCluster>, r: TestRun): void;
 }
 
 export class RetestCaseSource implements TestCaseSource {

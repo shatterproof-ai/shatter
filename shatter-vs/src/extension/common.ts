@@ -1,6 +1,6 @@
 import { AbsolutePath, RelativePath, Specimen, SpecimenId } from "../core/common";
 import { AutotestResults } from "../core/shatter";
-import { Outcome, RunResult, isOutcome } from "../core/supervisor";
+import { Outcome, TestRun, isOutcome } from "../core/supervisor";
 import { FunctionMeta } from "../core/transform";
 
 export interface Specimental {
@@ -12,7 +12,7 @@ export interface Specimental {
 
 export interface Expected {
     expectedPath?: AbsolutePath,	//	empty if not persisted
-    result: RunResult,
+    result: TestRun,
 }
 
 export type FunctionState = {
