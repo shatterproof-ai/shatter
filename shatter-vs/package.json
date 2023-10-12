@@ -262,6 +262,12 @@
       ]
     }
   },
+  "capabilities": {
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "VSCode's FS APIs are too limited for Shatterproof to easily support virtual workspaces"
+    }
+  },
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
