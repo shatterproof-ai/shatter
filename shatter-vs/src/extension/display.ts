@@ -1,5 +1,4 @@
 import { capitalize } from "lodash";
-import * as vscode from 'vscode';
 import { AbsolutePath, Specimen, SpecimenId, extractGeneratedParameterValue, isSpecimenId, resolveGeneratedParameterValue } from "../core/common";
 import { ResultCluster } from "../core/shatter";
 import { Outcome, isOutcome } from "../core/supervisor";
@@ -47,111 +46,6 @@ export interface SelectedElements {
     }
 
     specimental?: Specimental;
-}
-
-//  TODO: keep track of separate active states for each editor
-export class GetSelectedElements {
-    constructor(private providers: DisplayProviders,
-        private extensionState: ExtensionState) { }
-
-    getActive(): SelectedElements {
-        const selected: SelectedElements = {};
-        selected.selectedFile = this.getSelectedFile();
-        if (selected.selectedFile) {
-            selected.selectedFunction = this.getSelectedFunction(selected.selectedFile);
-            if (selected.selectedFunction) {
-                selected.coverage = this.getSelectedCoverage(selected.selectedFunction);
-                selected.specimental = this.getSelectedSpecimenId(selected.selectedFunction);
-            }
-        }
-
-        return selected;
-    }
-
-    getSelectedFile(): SelectedElements['selectedFile'] {
-        const filename = vscode.window.activeTextEditor?.document.fileName as AbsolutePath | undefined;
-        if (!filename) {
-            return undefined;
-        }
-
-        const state = this.extensionState.fileStates[filename];
-        if (!state) {
-            //  TODO: error
-            return undefined;
-        }
-        return {
-            filename,
-            state,
-        };
-    }
-
-    getSelectedFunction(selectedFile: SelectedElements['selectedFile']): SelectedElements['selectedFunction'] {
-        const selected = this.providers.functionsListProvider.getSelected();
-        if (!selected || selected.length === 0) {
-            return undefined;
-        }
-
-        if (selected.length > 1) {
-            console.error(`Unexpected multiple selected functions: ${JSON.stringify(selected.map(s => [s.key, s.label]))}`);
-        }
-
-        const name = selected[0].key;
-        if (typeof name !== 'string') {
-            return undefined;
-        }
-
-        const state = selectedFile?.state.functionStates[name];
-        if (!state) {
-            console.error(`Unexpectedly missing function state for ${name} in ${selectedFile?.filename}`);
-            return undefined;
-        }
-
-        return {
-            name,
-            state,
-        };
-    }
-
-    getSelectedCoverage(selectedFunction: SelectedElements['selectedFunction']): SelectedElements['coverage'] {
-        const selected = this.providers.clustersListProvider.getSelected();
-        if (!selected || selected.length === 0) {
-            return undefined;
-        }
-
-        if (selected.length > 1) {
-            console.error(`Unexpected multiple selected clusters: ${JSON.stringify(selected.map(s => [s.key, s.label]))}`);
-        }
-
-        const selectedCoverage = selected[0].key;
-        if (!isCoverageSelection(selectedCoverage)) {
-            //  TODO: error
-            return undefined;
-        }
-
-        const clusters = filterClustersForCoverage(selectedCoverage, selectedFunction?.state.autotest.clusters);
-        return {
-            selectedCoverage,
-            clusters,
-        };
-    }
-
-    getSelectedSpecimenId(selectedFunction: SelectedElements['selectedFunction']): Specimental | undefined {
-        const selected = this.providers.testCaseListProvider.getSelected();
-        if (!selected || selected.length === 0) {
-            return undefined;
-        }
-
-        if (selected.length > 1) {
-            console.error(`Unexpected multiple selected test cases: ${JSON.stringify(selected.map(s => [s.key, s.label]))}`);
-        }
-
-        const key = selected[0].key;
-        if (!isSpecimenId(key)) {
-            return undefined;
-        }
-
-        return selectedFunction?.state.specimens[key];
-    }
 }
 
 export function findNode(nodes: CommonDisplayNode[], key: string): CommonDisplayNode | undefined {
@@ -621,6 +515,6 @@ export const doSelectTestCase = (highlighters: Record<AbsolutePath, Highlighter>
     refresh(selectedElements, extensionState, providers, highlighters);
 };
 
-export function doSelectFile(highlighters: Record<AbsolutePath, Highlighter>, extensionState: ExtensionState, absoluteSourceFilename: AbsolutePath, providers: DisplayProviders, selectedElements: SelectedElements) {
+export function doSelectFile(highlighters: Record<AbsolutePath, Highlighter>, extensionState: ExtensionState, providers: DisplayProviders, selectedElements: SelectedElements) {
     refresh(selectedElements, extensionState, providers, highlighters);
 }
