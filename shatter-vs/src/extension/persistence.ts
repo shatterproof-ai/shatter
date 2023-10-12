@@ -14,7 +14,7 @@ function loadExpectedResult(filepath: AbsolutePath) {
     return expectedResult;
 }
 
-export function traverseDirectory(directory: AbsolutePath, onFile: (p: AbsolutePath, stats:fs.Stats) => void) {
+export function traverseDirectory(directory: AbsolutePath, onFile: (p: AbsolutePath, stats: fs.Stats) => void) {
     if (!fs.existsSync(directory)) {
         return;
     }
@@ -56,13 +56,20 @@ export function loadPersistedSpecimen(filepath: AbsolutePath) {
 export async function loadPersistedSpecimens(absolutist: (r: RelativePath) => AbsolutePath, absoluteBaseDirectory: AbsolutePath) {
     const specimens: Map<SpecimenId, Specimental> = new Map();
 
-    traverseDirectory(joinAbsolute(absoluteBaseDirectory, SPECIMENS_SUBDIR), (specimenPath, _stat) => {
-        const specimen = loadPersistedSpecimen(specimenPath);
-        specimens.set(specimen.id, {
-            fileUnderTest: absolutist(specimen.fileUnderTest),
-            specimenPath,
-            specimen,
-        });
+    traverseDirectory(joinAbsolute(absoluteBaseDirectory, SPECIMENS_SUBDIR), (specimenPath, stat) => {
+        if (!stat.isFile()) {
+            return;
+        }
+        try {
+            const specimen = loadPersistedSpecimen(specimenPath);
+            specimens.set(specimen.id, {
+                fileUnderTest: absolutist(specimen.fileUnderTest),
+                specimenPath,
+                specimen,
+            });
+        } catch (e) {
+            console.error(`Error loading specimen ${specimenPath}: ${e}`);
+        }
     });
 
     return specimens;

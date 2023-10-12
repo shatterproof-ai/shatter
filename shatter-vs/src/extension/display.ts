@@ -35,8 +35,7 @@ export interface SelectedElements {
     }
 
     selectedFunction?: {
-        name:
-        string;
+        name: string;
         state: FunctionState;
     }
 

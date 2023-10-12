@@ -2,8 +2,8 @@ import path = require("path");
 import * as fs from 'fs'; //TODO: use VSCode fs
 import { AbsolutePath, RelativePath, Specimen } from "../core/common";
 import { AutotestResults, RunUpdate, shatterAutotest, shatterRetest } from "../core/shatter";
-import { ExtensionState, getActiveStates } from "./common";
-import { DisplayProviders, refresh } from "./display";
+import { ExtensionState } from "./common";
+import { DisplayProviders } from "./display";
 import { traverseDirectory } from "./persistence";
 
 function findFilesInHierarchy<K extends string>(
@@ -41,9 +41,6 @@ export async function retestFunction(extensionState: ExtensionState, workspaceRo
     const allNodeModules: string[] = findKeyFiles(workspaceRoots, absoluteSourceFilename);
 
     const modulePaths = [...workspaceRoots, ...allNodeModules];
-
-    extensionState.activeCoverage = undefined;
-    extensionState.activeSpecimenId = undefined;
 
     lifeCycler.onTestStart(absoluteSourceFilename, functionName);
     try {
@@ -122,8 +119,6 @@ export async function autotestFunction(extensionState: ExtensionState, workspace
 
     console.log(`BEGIN THE AUTOTEST of ${functionName} in ${absoluteSourceFilename}`);
 
-    extensionState.activeCoverage = undefined;
-    extensionState.activeSpecimenId = undefined;
     for (const provider of Object.values(providers)) {
         provider.refresh([]);
     }

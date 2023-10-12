@@ -228,23 +228,12 @@ async function readProjectConfiguration(workspaceRoot: AbsolutePath): Promise<Pr
 						.then((contentsInts) => {
 							const contents = Buffer.from(contentsInts).toString('utf8');
 							try {
-								const pc = JSON.parse(contents);
-								if (pc.testsDirectory) {
-									if (isRelativePath(pc.testsDirectory)) {
-										return {
-											configuration: {
-												baseDirectory: asAbsolutePath(workspaceRoot, pc.testsDirectory),
-											}
-										};
-									}
-
-									return {
-										baseDirectory: pc.testsDirectory,
-									};
-								}
+								const pc: ProjectConfiguration = JSON.parse(contents);
+								return pc;
 							} catch (e) {
 								//	TODO: handle error
 								const ee = e;
+								console.error(`Error parsing ${fileUri}: ${e}`);
 							}
 							return {};
 						});
@@ -599,7 +588,10 @@ export async function activate(context: vscode.ExtensionContext) {
 	};
 
 	try {
-		const { configuration, baseDirectory } = await initializeWorkspace(defaultWorkspaceRoot, absolutist, extensionState, 'hard');
+		const configuration = await initializeWorkspace(defaultWorkspaceRoot, absolutist, extensionState, 'hard');
+		const absoluteBaseDirectory = configuration.baseDirectory
+			? context.asAbsolutePath(configuration.baseDirectory) as AbsolutePath
+			: undefined;
 
 		const providers = initializeTreeViews(context);
 
@@ -634,16 +626,16 @@ export async function activate(context: vscode.ExtensionContext) {
 		
 		*/
 
-		const makeTestCasePersistentCommand = vscode.commands.registerCommand(COMMANDS.shatterMakeTestcasePersistent, (node) => makeTestCasePersistent(baseDirectory, extensionState, providers, highlighters, node));
+		const makeTestCasePersistentCommand = vscode.commands.registerCommand(COMMANDS.shatterMakeTestcasePersistent, (node) => makeTestCasePersistent(absoluteBaseDirectory, extensionState, providers, highlighters, node));
 		context.subscriptions.push(makeTestCasePersistentCommand);
 
-		const makeTestcaseNotPersistentCommand = vscode.commands.registerCommand(COMMANDS.shatterMakeTestcaseNonPersistent, (node) => makeTestCaseNotPersistent(baseDirectory, extensionState, providers, highlighters, node));
+		const makeTestcaseNotPersistentCommand = vscode.commands.registerCommand(COMMANDS.shatterMakeTestcaseNonPersistent, (node) => makeTestCaseNotPersistent(absoluteBaseDirectory, extensionState, providers, highlighters, node));
 		context.subscriptions.push(makeTestcaseNotPersistentCommand);
 
-		const editTestCaseCommand = vscode.commands.registerCommand(COMMANDS.shatterEditCustomTestcase, (node) => editTestCase(extensionState, baseDirectory, node));
+		const editTestCaseCommand = vscode.commands.registerCommand(COMMANDS.shatterEditCustomTestcase, (node) => editTestCase(extensionState, absoluteBaseDirectory, node));
 		context.subscriptions.push(editTestCaseCommand);
 
-		const forkTestCaseCommand = vscode.commands.registerCommand(COMMANDS.shatterForkAutoTestcase, (node) => forkTestCase(extensionState, baseDirectory, providers, highlighters, node));
+		const forkTestCaseCommand = vscode.commands.registerCommand(COMMANDS.shatterForkAutoTestcase, (node) => forkTestCase(extensionState, absoluteBaseDirectory, providers, highlighters, node));
 		context.subscriptions.push(forkTestCaseCommand);
 
 		const runTestcaseClustersCommand = vscode.commands.registerCommand(COMMANDS.shatterRunClustersTestcases, async (node: CommonDisplayNode) => {
@@ -740,8 +732,13 @@ export async function activate(context: vscode.ExtensionContext) {
 		context.subscriptions.push(autotestFromEditorContextMenu);
 
 		const autotestFromFunctionViewContainerMenu = vscode.commands.registerCommand(COMMANDS.shatterAutotestFromFunctionViewContainer, (item) => {
-			const editor = vscode.window.visibleTextEditors.find(editor => editor.document.fileName === extensionState.activeFile);
-			const filename = (editor?.document.fileName ?? extensionState.activeFile) as AbsolutePath;
+			const selectedElements = getSelectedElements(providers, extensionState);
+			if (!selectedElements.selectedFile) {
+				//	TODO: error
+				return;
+			}
+			const editor = vscode.window.visibleTextEditors.find(editor => editor.document.fileName === selectedElements.selectedFile?.filename);
+			const filename = (editor?.document.fileName ?? selectedElements.selectedFile?.filename) as AbsolutePath;
 			if (!filename) {
 				//	TODO: is this a reasonable situation?
 				return;
@@ -872,14 +869,14 @@ function initializeTreeViews(context: vscode.ExtensionContext) {
 	return providers;
 }
 
-async function initializeWorkspace(defaultWorkspaceRoot: AbsolutePath, absolutist: (filename: RelativePath) => AbsolutePath, extensionState: ExtensionState, load: 'hard' | 'soft') {
+async function initializeWorkspace(defaultWorkspaceRoot: AbsolutePath, absolutist: (filename: RelativePath) => AbsolutePath, extensionState: ExtensionState, load: 'hard' | 'soft'): Promise<ProjectConfiguration> {
 	if (!defaultWorkspaceRoot) {
-		return { configuration: {}, specimenBaseDirectory: undefined };
+		return {};
 	}
 
 	const configuration: ProjectConfiguration = await readProjectConfiguration(defaultWorkspaceRoot);
 	if (!configuration.baseDirectory) {
-		return { configuration, specimenBaseDirectory: undefined };
+		return configuration;;
 	}
 
 	if (load === 'hard') {
@@ -897,7 +894,7 @@ async function initializeWorkspace(defaultWorkspaceRoot: AbsolutePath, absolutis
 	const expected = await loadExpected(absoluteBaseDirectory);
 	extensionState.expected = expected;
 
-	return { configuration, baseDirectory: absoluteBaseDirectory };
+	return configuration;
 }
 
 function initializeWorkspaceWatchers(configuration: ProjectConfiguration, defaultWorkspaceRoot: string, absolutist: (filename: RelativePath) => AbsolutePath, extensionState: ExtensionState) {
