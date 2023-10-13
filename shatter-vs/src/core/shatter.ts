@@ -136,7 +136,7 @@ export interface RunUpdate {
     specimen: Specimen,
 }
 
-const updateBatchState = (batchState: BatchState, testRun: TestRun): RunUpdate => {
+const updateBatchState = (batchState: BatchState, testRun: TestRun, absoluteSourceInputFile:AbsolutePath): RunUpdate => {
     // console.log(`Received result ${JSON.stringify(runResult)}`);
     // find the appropriate cluster or create it
     if (!testRun.specimenId) {
@@ -176,6 +176,8 @@ const updateBatchState = (batchState: BatchState, testRun: TestRun): RunUpdate =
             mosts: specimen.parameters.map(_ => specimen),
             totalTime: 0,
             distancesToClusters: specimen.parameters.map(_ => ({})),
+            file: absoluteSourceInputFile,
+            functionName: testRun.invocation.functionName,
         };
         batchState.clusters.push(cluster);
         batchState.clustersByKey.set(clusterKey, cluster);
@@ -247,7 +249,7 @@ async function shatterRetestt(modulePaths: string[],
     };
 
     const onResult = (runResult: TestRun) => {
-        const update = updateBatchState(batchState, runResult);
+        const update = updateBatchState(batchState, runResult, absoluteSourceInputFile);
         batchState = update.batchState;
         onUpdate(update, { clusters: batchState.clusters, instrumentedLines });
     };
@@ -360,7 +362,7 @@ async function shatterAutotestt(modulePaths: string[],
     };
 
     const onResult = (runResult: TestRun) => {
-        const update = updateBatchState(batchState, runResult);
+        const update = updateBatchState(batchState, runResult, absoluteSourceInputFile);
         batchState = update.batchState;
         onUpdate(update, { clusters: batchState.clusters, instrumentedLines });
     };

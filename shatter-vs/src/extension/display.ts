@@ -110,7 +110,7 @@ function valueToNode(o: any, depth = 0): CommonDisplayNode[] {
     }];
 }
 
-export function filterClustersForCoverage(coverage: CoverageSelection | undefined, clusters?: ResultCluster[]): ResultCluster[] {
+export function filterClustersForCoverage(coverage: Exclude<CoverageSelection, 'missed'> | undefined, clusters?: ResultCluster[]): ResultCluster[] {
     if (clusters === undefined) {
         return [];
     }
@@ -134,7 +134,7 @@ export function filterClustersForCoverage(coverage: CoverageSelection | undefine
     return clusters.filter(c => coverage.clusterKey === c.key);
 }
 
-export const findClustersForCoverage = (extensionState: ExtensionState, coverage: Exclude<CoverageSelection, 'missing'>): ResultCluster[] => {
+export const findClustersForCoverage = (extensionState: ExtensionState, coverage: Exclude<CoverageSelection, 'missed'>): ResultCluster[] => {
     const allMatches: ResultCluster[] = [];
     for (const fileState of Object.values(extensionState.fileStates)) {
         for (const functionState of Object.values(fileState.functionStates)) {
@@ -275,7 +275,9 @@ export const refresh = (selectedElements: SelectedElements, extensionState: Exte
 
     const results = functionState.autotest;
     const allClusters = results.clusters;
-    const selectedClusters: ResultCluster[] = filterClustersForCoverage(activeCoverage, allClusters);
+    const selectedClusters = activeCoverage === 'missed'
+        ? []
+        : filterClustersForCoverage(activeCoverage, allClusters);
 
     if (results) {
         const nodesByOutcome: Record<Outcome, CommonDisplayNode[]> = {
@@ -526,11 +528,16 @@ export const refresh = (selectedElements: SelectedElements, extensionState: Exte
     testCaseDetailProvider.refresh(testCaseNodes);
 };
 
-export const doSelectFunction = (highlighters: Record<AbsolutePath, Highlighter>, extensionState: ExtensionState, providers: DisplayProviders, selectedElements: SelectedElements) => {
-    if (!selectedElements.selectedFile || !selectedElements.selectedFunction) {
+export const doSelectFunction = (highlighters: Record<AbsolutePath, Highlighter>, extensionState: ExtensionState, providers: DisplayProviders, selectedElements: SelectedElements, functionName:string) => {
+    if (!selectedElements.selectedFile) {
         //	TODO: shouldn't happen
         return;
     }
+
+    selectedElements.selectedFunction = {
+        name: functionName,
+        state: selectedElements.selectedFile.state.functionStates[functionName],
+    };
 
     refresh(selectedElements, extensionState, providers, highlighters);
 };
