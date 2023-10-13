@@ -145,36 +145,12 @@ async function readProjectConfiguration(workspaceRoot: AbsolutePath): Promise<Pr
 			}
 		} catch (e) {
 			//	throws an error if the file doesn't exist; there's no simple existence check
-			/*
-	EntryNotFound (FileSystemError): Error: ENOENT: no such file or directory, stat '/shatterproof.json'
-		at k.e (/snap/code/141/usr/share/code/resources/app/out/vs/workbench/api/node/extensionHostProcess.js:109:26741)
-		at Object.stat (/snap/code/141/usr/share/code/resources/app/out/vs/workbench/api/node/extensionHostProcess.js:109:24556)
-		at async readProjectConfiguration (/home/ketan/project/shatter/shatter-vs/out/extension/index.js:382:26)
-		at async activate (/home/ketan/project/shatter/shatter-vs/out/extension/index.js:433:18)
-		at async E.n (/snap/code/141/usr/share/code/resources/app/out/vs/workbench/api/node/extensionHostProcess.js:107:6206)
-		at async E.m (/snap/code/141/usr/share/code/resources/app/out/vs/workbench/api/node/extensionHostProcess.js:107:6169)
-		at async E.l (/snap/code/141/usr/share/code/resources/app/out/vs/workbench/api/node/extensionHostProcess.js:107:5626) {code: 'FileNotFound', name: 'EntryNotFound (FileSystemError)', stack: 'EntryNotFound (FileSystemError): Error: ENOEN…ch/api/node/extensionHostProcess.js:107:5626)', message: 'Error: ENOENT: no such file or directory, stat '/shatterproof.json''}
-			*/
 			const ee = e;
 		}
 	}
 
 	return {};
 }
-
-/*
-Operations:
-* open test case
-* save test case
-* add test case
-
-Provide context menu for running a test case from a file
-
-TODO: convert the test case tree view into a test case  manager
-
-How to select test cases?  Per function, per cluster, per test case
-
-*/
 
 function highlighterForEditor(editor: vscode.TextEditor): Highlighter {
 	function doHighlighting(decoration: 'covered' | 'missed', linerator: () => Generator<number, void, unknown>) {
@@ -505,20 +481,6 @@ export async function activate(context: vscode.ExtensionContext) {
 			refresh(selectedElements, extensionState, providers, highlighters);
 		});
 		context.subscriptions.push(selectTestCaseCommand);
-
-		/*
-		
-		generated test case:
-		* user clicks pin - saves it to specified location (TODO: add it to the working tree)
-		* user clicks unpin - deletes it from the specified location (TODO: remove it from the working tree)
-		* user clicks edit - IF a non-custom test case, ask for a name, save it to the specified location, and open an editor for that file
-		* user clicks add - ask for a name, create an empty file, open an editor
-		
-		TODO: Editor should be able to match parameter type structure with autocomplete and validation.  Custom language server based on function and signature?
-		
-		//	where to track test case persistence?
-		
-		*/
 
 		const makeTestCasePersistentCommand = vscode.commands.registerCommand(COMMANDS.shatterMakeTestcasePersistent, (node) => {
 			makeTestCasePersistent(absoluteBaseDirectory, extensionState, node);

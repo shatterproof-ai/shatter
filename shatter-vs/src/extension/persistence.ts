@@ -30,7 +30,6 @@ export function traverseDirectory(directory: AbsolutePath, onFile: (p: AbsoluteP
     }
 }
 
-//  ${storageBaseDirectory}/expected/${path-to-source-file-relative-to-workspace-root}/${functionName}/${specimenId}.json
 export async function loadExpected(absoluteBaseDirectory: AbsolutePath) {
     const expecteds: Record<SpecimenId, Expected> = {};
 
@@ -51,8 +50,6 @@ export function loadPersistedSpecimen(filepath: AbsolutePath) {
     return specimen;
 }
 
-//  ${storageBaseDirectory}/specimens/${path-to-source-file-relative-to-workspace-root}/${functionName}/${specimenId}.json
-//  ${storageBaseDirectory}/specimens/${path-to-source-file-relative-to-workspace-root}/${functionName}/${specimenId}.json
 export async function loadPersistedSpecimens(absolutist: (r: RelativePath) => AbsolutePath, absoluteBaseDirectory: AbsolutePath) {
     const specimens: Map<SpecimenId, Specimental> = new Map();
 
@@ -123,7 +120,6 @@ export function forkkTestCase(newTestCaseName: string, extensionState: Extension
 	if (!baseDirectory) {
 		return;
 	}
-	// function forkTest(storageBaseDirectory: AbsolutePath, specimental: Specimental, sourceFileUnderTestPath: RelativePath, testCaseName: SpecimenId) {
 	let newSpecimental: Specimental | undefined = undefined;
 	if (specimental.specimenPath) {
 		//	forking an already persistent test
