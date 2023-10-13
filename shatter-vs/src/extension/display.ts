@@ -1,9 +1,9 @@
-import { capitalize, isEqual } from "lodash";
+import { capitalize, isEqual, result } from "lodash";
 import { AbsolutePath, Specimen, SpecimenId, extractGeneratedParameterValue, isSpecimenId, resolveGeneratedParameterValue } from "../core/common";
 import { ResultCluster } from "../core/shatter";
 import { Outcome, TestRun, isOutcome } from "../core/supervisor";
 import { FunctionMeta, findFunctions } from "../core/transform";
-import { CoverageSelection, ExtensionState, FileState, FunctionState, Specimental, isCoverageSelection } from "./common";
+import { CoverageSelection, Expected, ExtensionState, FileState, FunctionState, Specimental, isCoverageSelection } from "./common";
 
 export type Highlighter = (decoration: 'covered' | 'missed', liner: () => Generator<number, void, unknown>) => void;
 
@@ -168,6 +168,79 @@ export const findSpecimen = (extensionState: ExtensionState, specimenId: Specime
     }
 };
 
+type TestStatus = 'pass' | 'fail' | 'running' | 'unknown';
+function speciminode(expectedResults: Record<SpecimenId, Expected> | undefined, functionState: FunctionState | undefined, specimental: Specimental) {
+    let actual: TestRun | undefined = undefined;
+    let cluster: ResultCluster | undefined = undefined;
+    for (const c of functionState?.autotest.clusters ?? []) {
+        actual = c.results.find(r => r.specimenId === specimental.specimen.id);
+        if (actual) {
+            cluster = c;
+            break;
+        }
+    }
+
+    const isEdgy = cluster?.leasts.findIndex(l => l.id === specimental.specimen.id) !== -1
+        || cluster?.mosts.findIndex(l => l.id === specimental.specimen.id) !== -1;
+
+    const expected = expectedResults?.[specimental.specimen.id];
+
+    const contextPieces: string[] = [];
+
+    if (specimental?.specimen?.id.startsWith('custom')) {
+        contextPieces.push('custom');
+    } else {
+        contextPieces.push('autotest');
+    }
+
+    if (specimental?.specimenPath) {
+        contextPieces.push('persistent');
+    }
+
+    if (isEdgy) {
+        contextPieces.push('edge');
+    }
+
+    const pinState = specimental?.specimenPath ? 'pinned' : 'unpinned';
+    contextPieces.push(pinState);
+
+    //  TODO: this is the most primitive acceptable approach
+    const testStatus: TestStatus | undefined = (() => {
+        if (actual === undefined) {
+            return undefined;
+        }
+
+        if (expected === undefined) {
+            return 'unknown';
+        }
+
+        if (expected.result.outcome !== actual.outcome) {
+            return 'fail';
+        }
+
+        if (expected.result.outcome === 'completed') {
+            if (!isEqual(expected.result.result?.returnValue, actual.result?.returnValue)) {
+                return 'fail';
+            }
+        }
+
+        return 'pass';
+    })();
+
+    if (testStatus) {
+        contextPieces.push(testStatus);
+    };
+
+    const node: CommonDisplayNode = {
+        label: specimental.specimen.id,
+        key: specimental.specimen.id,
+        contextValue: 'testcase',
+        state: testStatus,
+    };
+
+    return node;
+}
+
 export const refresh = (selectedElements: SelectedElements, extensionState: ExtensionState, providers: DisplayProviders, highlighters: Record<AbsolutePath, Highlighter>) => {
     const { functionsListProvider, clustersListProvider, testCaseListProvider, testCaseDetailProvider } = providers;
 
@@ -186,65 +259,22 @@ export const refresh = (selectedElements: SelectedElements, extensionState: Exte
         return;
     }
 
-    const persistentSpecimensByFunction = new Map<string, Specimen[]>();
+    const persistentSpecimensByFunction = new Map<string, Specimental[]>();
     if (functionState?.specimens) {
         for (const specimental of Object.values(functionState.specimens)) {
             if (specimental.specimenPath) {
                 const specimens = persistentSpecimensByFunction.get(specimental.specimen.functionName) ?? [];
-                specimens.push(specimental.specimen);
+                specimens.push(specimental);
                 persistentSpecimensByFunction.set(specimental.specimen.functionName, specimens);
             }
         }
     }
 
-    type TestStatus = 'pass' | 'fail' | 'running' | 'unknown';
-
     const nodes: CommonDisplayNode[] = fileState.functions.map((f) => {
         const runningTest = extensionState.runningTestFunction === f.name;
         const runningTestLabel = runningTest ? " - testing now" : "";
         const children: undefined | CommonDisplayNode[] = persistentSpecimensByFunction.get(f.name)
-            ?.map((specimen) => {
-                let actual: TestRun | undefined = undefined;
-                for (const cluster of functionState?.autotest.clusters ?? []) {
-                    actual = cluster.results.find(r => r.specimenId === specimen.id);
-                    if (actual) {
-                        break;
-                    }
-                }
-
-                const expected = extensionState.expected?.[specimen.id];
-
-                //  TODO: this is the most primitive acceptable approach
-                const testStatus: TestStatus | undefined = (() => {
-                    if (actual === undefined) {
-                        return undefined;
-                    }
-
-                    if (expected === undefined) {
-                        return 'unknown';
-                    }
-
-                    if (expected.result.outcome !== actual.outcome) {
-                        return 'fail';
-                    }
-
-                    if (expected.result.outcome === 'completed') {
-                        if (!isEqual(expected.result.result?.returnValue, actual.result?.returnValue)) {
-                            return 'fail';
-                        }
-                    }
-
-                    return 'pass';
-                })();
-
-                const node: CommonDisplayNode = {
-                    label: specimen.id,
-                    key: specimen.id,
-                    contextValue: 'testcase',
-                    state: testStatus,
-                };
-                return node;
-            });
+            ?.map(s => speciminode(extensionState.expected, functionState, s));
         return {
             label: `${f.name}${runningTestLabel}` || "",
             key: f.name || "",
@@ -425,44 +455,11 @@ export const refresh = (selectedElements: SelectedElements, extensionState: Exte
         return;
     }
 
-    const edgeCaseSpecimens = new Set<SpecimenId>();
-    for (const cluster of allClusters) {
-        for (const specimen of cluster.leasts) {
-            edgeCaseSpecimens.add(specimen.id);
-        }
-        for (const specimen of cluster.mosts) {
-            edgeCaseSpecimens.add(specimen.id);
-        }
-    }
-
     const testCaseListNodes: CommonDisplayNode[] = selectedClusters
         .flatMap(c => c.results.map((result, i): CommonDisplayNode => {
             const specimental = functionState.specimens[result.specimenId];
-
-            const contextPieces: string[] = [];
-
-            if (specimental?.specimen?.id.startsWith('custom')) {
-                contextPieces.push('custom');
-            } else {
-                contextPieces.push('autotest');
-            }
-
-            if (specimental?.specimenPath) {
-                contextPieces.push('persistent');
-            }
-
-            if (edgeCaseSpecimens.has(specimental.specimen.id)) {
-                contextPieces.push('edge');
-            }
-
-            const state = specimental?.specimenPath ? 'pinned' : 'unpinned';
-            const parametersNode = {
-                label: shortString(result.invocation.serializedParameterValues),
-                key: result.specimenId,
-                state,
-                contextValue: contextPieces.join(','),
-            };
-            return parametersNode;
+            const node = speciminode(extensionState.expected, functionState, specimental);
+            return node;
         }));
     testCaseListProvider.refresh(testCaseListNodes);
 
@@ -527,37 +524,3 @@ export const refresh = (selectedElements: SelectedElements, extensionState: Exte
 
     testCaseDetailProvider.refresh(testCaseNodes);
 };
-
-export const doSelectFunction = (highlighters: Record<AbsolutePath, Highlighter>, extensionState: ExtensionState, providers: DisplayProviders, selectedElements: SelectedElements, functionName:string) => {
-    if (!selectedElements.selectedFile) {
-        //	TODO: shouldn't happen
-        return;
-    }
-
-    selectedElements.selectedFunction = {
-        name: functionName,
-        state: selectedElements.selectedFile.state.functionStates[functionName],
-    };
-
-    refresh(selectedElements, extensionState, providers, highlighters);
-};
-
-export const doSelectCluster = (highlighters: Record<AbsolutePath, Highlighter>, extensionState: ExtensionState, providers: DisplayProviders, selectedElements: SelectedElements) => {
-    if (!selectedElements.selectedFile || !selectedElements.selectedFunction || !selectedElements.coverage) {
-        //	TODO: shouldn't happen
-        return;
-    }
-    refresh(selectedElements, extensionState, providers, highlighters);
-};
-
-export const doSelectTestCase = (highlighters: Record<AbsolutePath, Highlighter>, extensionState: ExtensionState, providers: DisplayProviders, selectedElements: SelectedElements) => {
-    if (!selectedElements.selectedFile || !selectedElements.selectedFunction || !selectedElements.coverage) {
-        return;
-    }
-
-    refresh(selectedElements, extensionState, providers, highlighters);
-};
-
-export function doSelectFile(highlighters: Record<AbsolutePath, Highlighter>, extensionState: ExtensionState, providers: DisplayProviders, selectedElements: SelectedElements) {
-    refresh(selectedElements, extensionState, providers, highlighters);
-}

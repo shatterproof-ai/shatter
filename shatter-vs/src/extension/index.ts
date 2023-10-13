@@ -2,14 +2,13 @@ import * as fs from 'fs'; //TODO: use VSCode fs
 import * as path from 'path';
 import * as ts from 'typescript';
 import * as vscode from 'vscode';
-import { AbsolutePath, RelativePath, Specimen, SpecimenId, isRelativePath, isSpecimenId, joinAbsolute } from '../core/common';
+import { AbsolutePath, RelativePath, Specimen, SpecimenId, isSpecimenId, joinAbsolute } from '../core/common';
 import { isOutcome } from '../core/supervisor';
 import { FunctionMeta } from '../core/transform';
 import { CoverageSelection, ExtensionState, Specimental, cleanUpExtensionState, isCoverageSelection, onPersistedSpecimenLoad } from './common';
-import { CommonDisplayNode, DisplayProvider, DisplayProviders, Highlighter, SelectedElements, doSelectCluster, doSelectFile, doSelectFunction, doSelectTestCase, filterClustersForCoverage, findClustersForCoverage, findFunction, findNode, findSpecimen, refresh } from './display';
+import { CommonDisplayNode, DisplayProvider, DisplayProviders, Highlighter, SelectedElements, filterClustersForCoverage, findClustersForCoverage, findFunction, findNode, findSpecimen, refresh } from './display';
 import { forkSpecimen, loadExpected, loadPersistedSpecimen, loadPersistedSpecimens, saveSpecimen } from './persistence';
 import { TestLifecycle, autotestFunction, retestFunction } from './run';
-import { ResultCluster } from '../core/shatter';
 
 const COMMANDS = {
 	shatterAddTestcase: 'extension.shatterAddTestcase',
@@ -302,29 +301,28 @@ function highlighterForEditor(editor: vscode.TextEditor): Highlighter {
 
 }
 
-const updateSelectedFile = (highlighters: Record<AbsolutePath, Highlighter>, extensionState: ExtensionState, providers: DisplayProviders, selectedElements: SelectedElements) => {
-	const filename = vscode.window.activeTextEditor?.document.fileName as AbsolutePath|undefined;
+const updateSelectedFileAndRefresh = (highlighters: Record<AbsolutePath, Highlighter>, extensionState: ExtensionState, providers: DisplayProviders, selectedElements: SelectedElements) => {
+	const filename = vscode.window.activeTextEditor?.document.fileName as AbsolutePath | undefined;
 	if (!filename) {
 		//	TODO: clear functions list
 		return;
 	}
 	if (vscode.window.activeTextEditor?.document.languageId === 'typescript') {
-		selectedElements.selectedFile =  {
+		selectedElements.selectedFile = {
 			filename,
 			state: extensionState.fileStates[filename],
 		};
-		doSelectFile(highlighters, extensionState, providers, selectedElements);
+		refresh(selectedElements, extensionState, providers, highlighters);
 	}
 };
 
 //	call after switching files, changing contents of the editor, or running tests
-const doSelectFunctionCommand = (highlighters: Record<AbsolutePath, Highlighter>, extensionState: ExtensionState, providers: DisplayProviders, node: CommonDisplayNode, selectedElements: SelectedElements) => {
-	if (! node.key) {
+const doSelectFunctionCommand = (highlighters: Record<AbsolutePath, Highlighter>, extensionState: ExtensionState, node: CommonDisplayNode, selectedElements: SelectedElements) => {
+	if (!node.key) {
 		return;
 	}
-	
-	const editor = vscode.window.activeTextEditor;
 
+	const editor = vscode.window.activeTextEditor;
 	if (editor?.document.languageId === 'typescript') {
 		const absoluteFilePath = editor.document.fileName as AbsolutePath;
 		let highlighter = highlighters[absoluteFilePath];
@@ -335,9 +333,25 @@ const doSelectFunctionCommand = (highlighters: Record<AbsolutePath, Highlighter>
 
 		if (node.contextValue === 'function') {
 			//	TODO: check if this is a function name or a test case name
-			doSelectFunction(highlighters, extensionState, providers, selectedElements, node.key);
+			const functionName = node.key;
+			if (extensionState.fileStates[absoluteFilePath]) {
+				const functionState = extensionState.fileStates[absoluteFilePath].functionStates[functionName];
+				if (functionState) {
+					selectedElements.selectedFunction = {
+						name: functionName,
+						state: functionState,
+					};
+				}	//	TODO: else error
+			}
+
 		} else if (isSpecimenId(node.key)) {
-			doSelectTestCase(highlighters, extensionState, providers, selectedElements);
+			const found = findSpecimen(extensionState, node.key);
+			if (found) {
+				selectedElements.specimental = found;
+			} //	TODO: else error
+		} else {
+			//	TODO: error
+			return;
 		}
 	}
 };
@@ -379,14 +393,7 @@ const doSelectClusterCommand = (highlighters: Record<AbsolutePath, Highlighter>,
 		})();
 		if (selection) {
 			selectedElements.coverage = selection;
-			doSelectCluster(highlighters, extensionState, providers, selectedElements);
 		}
-	}
-};
-
-const doSelectTestCaseCommand = (highlighters: Record<AbsolutePath, Highlighter>, extensionState: ExtensionState, providers: DisplayProviders, selectedElements: SelectedElements) => {
-	if (vscode.window.activeTextEditor?.document.languageId === 'typescript') {
-		doSelectTestCase(highlighters, extensionState, providers, selectedElements);
 	}
 };
 
@@ -417,10 +424,11 @@ const editTestCase = async (extensionState: ExtensionState, baseDirectory: Absol
 function retest(defaultWorkspaceRoot: AbsolutePath, workspaceRoots: AbsolutePath[], context: vscode.ExtensionContext, highlighters: Record<AbsolutePath, Highlighter>, extensionState: ExtensionState, providers: DisplayProviders, selectedElements: SelectedElements, specimens: Specimen[], extensionSource: AbsolutePath) {
 	const lifeCycler: TestLifecycle = {
 		onTestStart(absoluteFilename: AbsolutePath, functionName: string) {
-			doSelectFunctionCommand(highlighters, extensionState, providers, {
+			doSelectFunctionCommand(highlighters, extensionState, {
 				key: functionName,
 				label: ''
 			}, selectedElements);
+			refresh(selectedElements, extensionState, providers, highlighters);
 		},
 
 		onResult(absoluteFilename, functionName, result) {
@@ -545,15 +553,13 @@ const forkTestCase = async (extensionState: ExtensionState, baseDirectory: Absol
 		}
 	});
 
-	if (vscode.window.activeTextEditor?.document.languageId === 'typescript') {
-		refresh(selectedElements, extensionState, providers, highlighters);
-		if (newSpecimental.specimenPath && fs.existsSync(newSpecimental.specimenPath)) {
-			vscode.workspace.openTextDocument(newSpecimental.specimenPath).then((doc) => {
-				vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
-			});
-		} else {
-			vscode.window.showErrorMessage(`Test case ${newSpecimental.specimenPath} does not exist.`);
-		}
+	refresh(selectedElements, extensionState, providers, highlighters);
+	if (newSpecimental.specimenPath && fs.existsSync(newSpecimental.specimenPath)) {
+		vscode.workspace.openTextDocument(newSpecimental.specimenPath).then((doc) => {
+			vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
+		});
+	} else {
+		vscode.window.showErrorMessage(`Test case ${newSpecimental.specimenPath} does not exist.`);
 	}
 };
 
@@ -567,10 +573,11 @@ async function doAutotest(context: vscode.ExtensionContext, extensionState: Exte
 	const lifeCycler: TestLifecycle = {
 		onTestStart(absoluteFilename: AbsolutePath, functionName: string) {
 			focusExtensionView();
-			doSelectFunctionCommand(highlighters, extensionState, providers, {
+			doSelectFunctionCommand(highlighters, extensionState, {
 				key: functionName,
 				label: ''
 			}, selectedElements);
+			refresh(selectedElements, extensionState, providers, highlighters);
 		},
 
 		onResult(absoluteFilename, functionName, result) {
@@ -633,16 +640,32 @@ export async function activate(context: vscode.ExtensionContext) {
 
 		//	needs to be registered as a command because TreeView needs a command to dispatch to
 		const selectFunctionCommand = vscode.commands.registerCommand(COMMANDS.shatterSelectFunction, (node) => {
-			doSelectFunctionCommand(highlighters, extensionState, providers, node, selectedElements);
+			doSelectFunctionCommand(highlighters, extensionState, node, selectedElements);
+			refresh(selectedElements, extensionState, providers, highlighters);
 		});
 		context.subscriptions.push(selectFunctionCommand);
 
 		//	needs to be registered as a command because TreeView needs a command to dispatch to
-		const selectClusterCommand = vscode.commands.registerCommand(COMMANDS.shatterSelectCluster, (node) => doSelectClusterCommand(highlighters, extensionState, providers, selectedElements, node));
+		const selectClusterCommand = vscode.commands.registerCommand(COMMANDS.shatterSelectCluster, (node) => {
+			doSelectClusterCommand(highlighters, extensionState, providers, selectedElements, node);
+			refresh(selectedElements, extensionState, providers, highlighters);
+		});
 		context.subscriptions.push(selectClusterCommand);
 
 		//	needs to be registered as a command because TreeView needs a command to dispatch to
-		const selectTestCaseCommand = vscode.commands.registerCommand(COMMANDS.shatterSelectTestCase, (node) => doSelectTestCaseCommand(highlighters, extensionState, providers, node));
+		const selectTestCaseCommand = vscode.commands.registerCommand(COMMANDS.shatterSelectTestCase, (node) => {
+			if (!isSpecimenId(node.key)) {
+				return;
+			}
+
+			const specimental = findSpecimen(extensionState, node.key);
+			if (!specimental) {
+				//	TODO: error
+				return;
+			}
+
+			refresh(selectedElements, extensionState, providers, highlighters);
+		});
 		context.subscriptions.push(selectTestCaseCommand);
 
 		/*
@@ -659,10 +682,16 @@ export async function activate(context: vscode.ExtensionContext) {
 		
 		*/
 
-		const makeTestCasePersistentCommand = vscode.commands.registerCommand(COMMANDS.shatterMakeTestcasePersistent, (node) => makeTestCasePersistent(absoluteBaseDirectory, extensionState, providers, highlighters, node));
+		const makeTestCasePersistentCommand = vscode.commands.registerCommand(COMMANDS.shatterMakeTestcasePersistent, (node) => {
+			makeTestCasePersistent(absoluteBaseDirectory, extensionState, node);
+			refresh(selectedElements, extensionState, providers, highlighters);
+		});
 		context.subscriptions.push(makeTestCasePersistentCommand);
 
-		const makeTestcaseNotPersistentCommand = vscode.commands.registerCommand(COMMANDS.shatterMakeTestcaseNonPersistent, (node) => makeTestCaseNotPersistent(absoluteBaseDirectory, extensionState, providers, highlighters, node));
+		const makeTestcaseNotPersistentCommand = vscode.commands.registerCommand(COMMANDS.shatterMakeTestcaseNonPersistent, (node) => {
+			makeTestCaseNotPersistent(absoluteBaseDirectory, extensionState, node);
+			refresh(selectedElements, extensionState, providers, highlighters);
+		});
 		context.subscriptions.push(makeTestcaseNotPersistentCommand);
 
 		const editTestCaseCommand = vscode.commands.registerCommand(COMMANDS.shatterEditCustomTestcase, (node) => editTestCase(extensionState, absoluteBaseDirectory, node));
@@ -724,7 +753,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
 		vscode.window.onDidChangeActiveTextEditor(editor => {
 			if (editor?.document.fileName) {
-				updateSelectedFile(highlighters, extensionState, providers, selectedElements);
+				updateSelectedFileAndRefresh(highlighters, extensionState, providers, selectedElements);
 			}
 		}, null, context.subscriptions);
 
@@ -732,7 +761,7 @@ export async function activate(context: vscode.ExtensionContext) {
 		vscode.workspace.onDidChangeTextDocument(event => {
 			const editor = vscode.window.visibleTextEditors.find(editor => editor.document.fileName === event.document.fileName);
 			if (editor?.document.fileName) {
-				updateSelectedFile(highlighters, extensionState, providers, selectedElements);
+				updateSelectedFileAndRefresh(highlighters, extensionState, providers, selectedElements);
 			}
 		}, null, context.subscriptions);
 
@@ -740,7 +769,7 @@ export async function activate(context: vscode.ExtensionContext) {
 		vscode.workspace.onDidOpenTextDocument(document => {
 			const editor = vscode.window.visibleTextEditors.find(editor => editor.document.fileName === document.fileName);
 			if (editor?.document.fileName) {
-				updateSelectedFile(highlighters, extensionState, providers, selectedElements);
+				updateSelectedFileAndRefresh(highlighters, extensionState, providers, selectedElements);
 			}
 		}, null, context.subscriptions);
 		//	TODO: what to do when a document is closed?
@@ -818,7 +847,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
 			initializeWorkspace(defaultWorkspaceRoot, absolutist, extensionState, 'soft');
 			if (vscode.window.activeTextEditor?.document.languageId === 'typescript') {
-				updateSelectedFile(highlighters, extensionState, providers, selectedElements);
+				updateSelectedFileAndRefresh(highlighters, extensionState, providers, selectedElements);
 			} else {
 				refresh(selectedElements, extensionState, providers, highlighters);
 			}
@@ -826,16 +855,16 @@ export async function activate(context: vscode.ExtensionContext) {
 		context.subscriptions.push(shatterResetLocalFromFunctionViewContainer);
 
 		if (vscode.window.activeTextEditor?.document.languageId === 'typescript') {
-			updateSelectedFile(highlighters, extensionState, providers, selectedElements);
+			updateSelectedFileAndRefresh(highlighters, extensionState, providers, selectedElements);
 		}
 	} catch (e: any) {
 		console.error(`Unable to load extension ${e}: ${e.stack}`);
 	}
 }
 
-async function makeTestCasePersistent(baseDirectory: AbsolutePath | undefined, extensionState: ExtensionState, providers: DisplayProviders, highlighters: Record<AbsolutePath, Highlighter>, selectedElements: SelectedElements) {
+async function makeTestCasePersistent(baseDirectory: AbsolutePath | undefined, extensionState: ExtensionState, node: CommonDisplayNode) {
 	//	if the test case is not persistent, save it to the location specified in the configuration
-	const specimenId = selectedElements.specimental?.specimen.id;
+	const specimenId = node.key;
 	if (!baseDirectory || !isSpecimenId(specimenId)) {
 		return;
 	}
@@ -847,12 +876,10 @@ async function makeTestCasePersistent(baseDirectory: AbsolutePath | undefined, e
 
 	const savePath = saveSpecimen(baseDirectory, specimental);
 	specimental.specimenPath = savePath;
-
-	refresh(selectedElements, extensionState, providers, highlighters);
 };
 
-const makeTestCaseNotPersistent = async (baseDirectory: AbsolutePath | undefined, extensionState: ExtensionState, providers: DisplayProviders, highlighters: Record<AbsolutePath, Highlighter>, selectedElements: SelectedElements) => {
-	const specimenId = selectedElements.specimental?.specimen.id;
+const makeTestCaseNotPersistent = async (baseDirectory: AbsolutePath | undefined, extensionState: ExtensionState, node: CommonDisplayNode) => {
+	const specimenId = node.key;
 	if (!baseDirectory || !isSpecimenId(specimenId)) {
 		return;
 	}
@@ -865,7 +892,6 @@ const makeTestCaseNotPersistent = async (baseDirectory: AbsolutePath | undefined
 	const fileUri = vscode.Uri.file(specimental.specimenPath);
 	await vscode.workspace.fs.delete(fileUri);
 	specimental.specimenPath = undefined;
-	refresh(selectedElements, extensionState, providers, highlighters);
 };
 
 function initializeTreeViews(context: vscode.ExtensionContext) {
@@ -890,7 +916,7 @@ function initializeTreeViews(context: vscode.ExtensionContext) {
 			command: COMMANDS.shatterSelectTestCase,
 			title: 'Test Case Detail',
 		},
-		stateIcons: iconPaths(context, { pass: 'pin.svg', fail: 'unpin.svg', unknown: 'sparkle.svg', running: 'pin.svg' }),
+		stateIcons: iconPaths(context, { pass: 'check.svg', fail: 'error.svg' }),
 	});
 
 	const testCaseDetailProvider = createTreeProvider("shatter-testcase-detail", context, {
