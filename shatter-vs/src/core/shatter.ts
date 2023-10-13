@@ -33,6 +33,8 @@ interface ResultClusterData {
 //  TODO: for error cases add the file and line of where it was thrown and also
 //  the file and line of the first line in the instrumented code
 export interface ResultCluster extends ResultClusterData, BasicResultCluster {
+    file: AbsolutePath
+    functionName: string
     //  TODO: this could vary by test case
     linesInOrder: number[]
     //  one to one with parameter list

@@ -1,5 +1,5 @@
 import { AbsolutePath, RelativePath, Specimen, SpecimenId } from "../core/common";
-import { AutotestResults } from "../core/shatter";
+import { AutotestResults, ResultCluster } from "../core/shatter";
 import { Outcome, TestRun, isOutcome } from "../core/supervisor";
 import { FunctionMeta } from "../core/transform";
 
@@ -40,6 +40,7 @@ export function isCoverageSelection(s:any): s is CoverageSelection {
 export interface ExtensionState {
     runningTestFunction?: string;
     fileStates: Record<AbsolutePath, FileState>;	//	Record because Map is not serializable
+    resultClusters: Record<string, ResultCluster>;
     //	this overlaps some with specimens, but it doesn't load the contents	
     expected?: Record<SpecimenId, Expected>;
 };
