@@ -1,7 +1,7 @@
-import { capitalize } from "lodash";
+import { capitalize, isEqual } from "lodash";
 import { AbsolutePath, Specimen, SpecimenId, extractGeneratedParameterValue, isSpecimenId, resolveGeneratedParameterValue } from "../core/common";
 import { ResultCluster } from "../core/shatter";
-import { Outcome, isOutcome } from "../core/supervisor";
+import { Outcome, TestRun, isOutcome } from "../core/supervisor";
 import { FunctionMeta, findFunctions } from "../core/transform";
 import { CoverageSelection, ExtensionState, FileState, FunctionState, Specimental, isCoverageSelection } from "./common";
 
@@ -197,15 +197,51 @@ export const refresh = (selectedElements: SelectedElements, extensionState: Exte
         }
     }
 
+    type TestStatus = 'pass' | 'fail' | 'running' | 'unknown';
+
     const nodes: CommonDisplayNode[] = fileState.functions.map((f) => {
         const runningTest = extensionState.runningTestFunction === f.name;
         const runningTestLabel = runningTest ? " - testing now" : "";
         const children: undefined | CommonDisplayNode[] = persistentSpecimensByFunction.get(f.name)
             ?.map((specimen) => {
+                let actual: TestRun | undefined = undefined;
+                for (const cluster of functionState?.autotest.clusters ?? []) {
+                    actual = cluster.results.find(r => r.specimenId === specimen.id);
+                    if (actual) {
+                        break;
+                    }
+                }
+
+                const expected = extensionState.expected?.[specimen.id];
+
+                //  TODO: this is the most primitive acceptable approach
+                const testStatus: TestStatus | undefined = (() => {
+                    if (actual === undefined) {
+                        return undefined;
+                    }
+
+                    if (expected === undefined) {
+                        return 'unknown';
+                    }
+
+                    if (expected.result.outcome !== actual.outcome) {
+                        return 'fail';
+                    }
+
+                    if (expected.result.outcome === 'completed') {
+                        if (!isEqual(expected.result.result?.returnValue, actual.result?.returnValue)) {
+                            return 'fail';
+                        }
+                    }
+
+                    return 'pass';
+                })();
+
                 const node: CommonDisplayNode = {
                     label: specimen.id,
                     key: specimen.id,
                     contextValue: 'testcase',
+                    state: testStatus,
                 };
                 return node;
             });
@@ -349,7 +385,6 @@ export const refresh = (selectedElements: SelectedElements, extensionState: Exte
                 for (const line of uncovered ?? []) {
                     yield line;
                 }
-
             }
 
             highlighter('missed', missedLinerator);

@@ -895,7 +895,7 @@ function initializeTreeViews(context: vscode.ExtensionContext) {
 			command: COMMANDS.shatterSelectTestCase,
 			title: 'Test Case Detail',
 		},
-		stateIcons: iconPaths(context, { pinned: 'pin.svg', unpinned: 'unpin.svg', edge: 'sparkle.svg' }),
+		stateIcons: iconPaths(context, { pass: 'pin.svg', fail: 'unpin.svg', unknown: 'sparkle.svg', running: 'pin.svg' }),
 	});
 
 	const testCaseDetailProvider = createTreeProvider("shatter-testcase-detail", context, {
