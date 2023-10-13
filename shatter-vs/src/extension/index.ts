@@ -240,49 +240,13 @@ const doSelectFunctionCommand = (highlighters: Record<AbsolutePath, Highlighter>
 			} //	TODO: else error
 		} else {
 			//	TODO: error
-			return;
 		}
 	}
 };
 
 const doSelectClusterCommand = (highlighters: Record<AbsolutePath, Highlighter>, extensionState: ExtensionState, providers: DisplayProviders, selectedElements: SelectedElements, node: CommonDisplayNode) => {
 	if (vscode.window.activeTextEditor?.document.languageId === 'typescript') {
-		const nk = node.key;
-		const selection: SelectedElements['coverage'] = (() => {
-			if (nk) {
-				const selectedCoverage = ((): CoverageSelection => {
-					if (nk.startsWith('cluster://')) {
-						const clusterKey = nk.substring('cluster://'.length);
-						return { clusterKey };
-					}
-					if (node.key === 'covered://') {
-						return 'all';
-					}
-					if (node.key === 'missed://') {
-						return 'missed';
-
-					}
-					if (isOutcome(nk)) {
-						return nk;
-					}
-
-					throw new Error(`Unknown coverage ${node.key}`);
-				})();
-
-				if (selectedCoverage === 'missed') {
-					return { selectedCoverage };
-				}
-
-				const clusters = filterClustersForCoverage(selectedCoverage, selectedElements.selectedFunction?.state.autotest.clusters);
-				return {
-					selectedCoverage,
-					clusters,
-				};
-			}
-		})();
-		if (selection) {
-			selectedElements.coverage = selection;
-		}
+		updateCoverageSelection(node.key, node, selectedElements);
 	}
 };
 
@@ -309,6 +273,44 @@ const editTestCase = async (extensionState: ExtensionState, baseDirectory: Absol
 		}
 	}
 };
+
+function updateCoverageSelection(nk: string | undefined, node: CommonDisplayNode, selectedElements: SelectedElements) {
+	const selection: SelectedElements['coverage'] = (() => {
+		if (nk) {
+			const selectedCoverage = ((): CoverageSelection => {
+				if (nk.startsWith('cluster://')) {
+					const clusterKey = nk.substring('cluster://'.length);
+					return { clusterKey };
+				}
+				if (node.key === 'covered://') {
+					return 'all';
+				}
+				if (node.key === 'missed://') {
+					return 'missed';
+
+				}
+				if (isOutcome(nk)) {
+					return nk;
+				}
+
+				throw new Error(`Unknown coverage ${node.key}`);
+			})();
+
+			if (selectedCoverage === 'missed') {
+				return { selectedCoverage };
+			}
+
+			const clusters = filterClustersForCoverage(selectedCoverage, selectedElements.selectedFunction?.state.autotest.clusters);
+			return {
+				selectedCoverage,
+				clusters,
+			};
+		}
+	})();
+	if (selection) {
+		selectedElements.coverage = selection;
+	}
+}
 
 function retest(defaultWorkspaceRoot: AbsolutePath, workspaceRoots: AbsolutePath[], context: vscode.ExtensionContext, highlighters: Record<AbsolutePath, Highlighter>, extensionState: ExtensionState, providers: DisplayProviders, selectedElements: SelectedElements, specimens: Specimen[], extensionSource: AbsolutePath) {
 	const lifeCycler: TestLifecycle = {
