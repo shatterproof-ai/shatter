@@ -110,3 +110,61 @@ export function onPersistedSpecimenLoad(absolutist: (r: RelativePath) => Absolut
         specimen,
     };
 }
+
+export function filterClustersForCoverage(coverage: Exclude<CoverageSelection, 'missed'> | undefined, clusters?: ResultCluster[]): ResultCluster[] {
+    if (clusters === undefined) {
+        return [];
+    }
+
+    if (coverage === undefined) {
+        return clusters;
+    }
+
+    if (typeof coverage === 'string') {
+        if (coverage === 'all') {
+            return clusters;
+        }
+
+        if (isOutcome(coverage)) {
+            return clusters.filter(c => c.outcome === coverage);
+        }
+
+        return [];
+    }
+
+    return clusters.filter(c => coverage.clusterKey === c.key);
+}
+
+export const findClustersForCoverage = (extensionState: ExtensionState, coverage: Exclude<CoverageSelection, 'missed'>): ResultCluster[] => {
+    const allMatches: ResultCluster[] = [];
+    for (const fileState of Object.values(extensionState.fileStates)) {
+        for (const functionState of Object.values(fileState.functionStates)) {
+            const functionMatches = filterClustersForCoverage(coverage, functionState.autotest.clusters);
+            allMatches.push(...functionMatches);
+        }
+    }
+    return allMatches;
+};
+
+export const findFunction = (extensionState: ExtensionState, functionName: string): [FunctionMeta, FunctionState] | undefined => {
+    for (const fileState of Object.values(extensionState.fileStates)) {
+        if (fileState.functionStates[functionName]) {
+            for (const functionMeta of fileState.functions) {
+                if (functionMeta.name === functionName) {
+                    return [functionMeta, fileState.functionStates[functionName]];
+                }
+            }
+        }
+    }
+};
+
+export const findSpecimen = (extensionState: ExtensionState, specimenId: SpecimenId): Specimental | undefined => {
+    for (const fileState of Object.values(extensionState.fileStates)) {
+        for (const functionState of Object.values(fileState.functionStates)) {
+            const maybeSpecimental = functionState.specimens[specimenId];
+            if (maybeSpecimental) {
+                return maybeSpecimental;
+            }
+        }
+    }
+};

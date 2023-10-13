@@ -3,7 +3,7 @@ import * as path from 'path';
 import { join } from 'path';
 import { AbsolutePath, RelativePath, Specimen, SpecimenId, joinAbsolute } from '../core/common';
 import { TestRun } from '../core/supervisor';
-import { Expected, Specimental } from './common';
+import { Expected, ExtensionState, Specimental, findSpecimen } from './common';
 
 const SPECIMENS_SUBDIR = 'specimens';
 const EXPECTED_SUBDIR = 'expected';
@@ -108,4 +108,53 @@ export function forkSpecimen(baseDirectory: AbsolutePath, original: Specimental,
     const specimenFileAbsolutePath = saveSpecimen(baseDirectory, newSpecimental);
     newSpecimental.specimenPath = specimenFileAbsolutePath;
     return newSpecimental;
+}
+
+
+export function forkkTestCase(newTestCaseName: string, extensionState: ExtensionState, baseDirectory: AbsolutePath, specimental: Specimental) {
+	const newId: SpecimenId = `custom-${newTestCaseName}`;
+	const alreadyExisting = findSpecimen(extensionState, newId);
+	if (alreadyExisting) {
+		//	TODO: error
+		return;
+	}
+
+	//	if persistable and the base test is already persisted
+	if (!baseDirectory) {
+		return;
+	}
+	// function forkTest(storageBaseDirectory: AbsolutePath, specimental: Specimental, sourceFileUnderTestPath: RelativePath, testCaseName: SpecimenId) {
+	let newSpecimental: Specimental | undefined = undefined;
+	if (specimental.specimenPath) {
+		//	forking an already persistent test
+		newSpecimental = forkSpecimen(baseDirectory, specimental, newId, newTestCaseName);
+	} else {
+		//	forking a transient test
+		newSpecimental = {
+			...specimental,
+			specimen: {
+				...specimental.specimen,
+				id: newId,
+				type: 'custom',
+				name: newTestCaseName,
+			},
+			clusterKey: specimental.clusterKey,
+			fileUnderTest: specimental.fileUnderTest,
+		};
+		const specimenFileAbsolutePath = saveSpecimen(baseDirectory, newSpecimental);
+		newSpecimental.specimenPath = specimenFileAbsolutePath;
+	}
+
+	const nnewSpecimental = newSpecimental;
+	Object.entries(extensionState.fileStates).forEach(([absoluteFileName, fileState]) => {
+		if (absoluteFileName === nnewSpecimental.fileUnderTest) {
+			for (const [functionName, functionState] of Object.entries(fileState.functionStates)) {
+				if (functionName === specimental.specimen.functionName) {
+					functionState.specimens[newId] = nnewSpecimental;
+					// return;
+				}
+			}
+		}
+	});
+	return newSpecimental;
 }

@@ -2,12 +2,12 @@ import * as fs from 'fs'; //TODO: use VSCode fs
 import * as path from 'path';
 import * as ts from 'typescript';
 import * as vscode from 'vscode';
-import { AbsolutePath, RelativePath, Specimen, SpecimenId, isSpecimenId, joinAbsolute } from '../core/common';
+import { AbsolutePath, RelativePath, Specimen, isSpecimenId, joinAbsolute } from '../core/common';
 import { isOutcome } from '../core/supervisor';
 import { FunctionMeta } from '../core/transform';
-import { CoverageSelection, ExtensionState, Specimental, cleanUpExtensionState, isCoverageSelection, onPersistedSpecimenLoad } from './common';
-import { CommonDisplayNode, DisplayProvider, DisplayProviders, Highlighter, SelectedElements, filterClustersForCoverage, findClustersForCoverage, findFunction, findNode, findSpecimen, refresh } from './display';
-import { forkSpecimen, loadExpected, loadPersistedSpecimen, loadPersistedSpecimens, saveSpecimen } from './persistence';
+import { CoverageSelection, ExtensionState, Specimental, cleanUpExtensionState, filterClustersForCoverage, findClustersForCoverage, findFunction, findSpecimen, isCoverageSelection, onPersistedSpecimenLoad } from './common';
+import { CommonDisplayNode, DisplayProvider, DisplayProviders, Highlighter, SelectedElements, findNode, refresh } from './display';
+import { forkkTestCase, loadExpected, loadPersistedSpecimen, loadPersistedSpecimens, saveSpecimen } from './persistence';
 import { TestLifecycle, autotestFunction, retestFunction } from './run';
 
 const COMMANDS = {
@@ -327,8 +327,8 @@ function retest(defaultWorkspaceRoot: AbsolutePath, workspaceRoots: AbsolutePath
 		},
 
 		onTestEnd(absoluteFilename: AbsolutePath, functionName: string) {
-			context.workspaceState.update(autotestStorageStateKey, extensionState);
 			extensionState.runningTestFunction = undefined;
+			context.workspaceState.update(autotestStorageStateKey, extensionState);
 			refresh(selectedElements, extensionState, providers, highlighters);
 		},
 	};
@@ -351,27 +351,14 @@ function retest(defaultWorkspaceRoot: AbsolutePath, workspaceRoots: AbsolutePath
 
 	const functionName = specimens[0].functionName;
 	const relativeSourceFilename = specimens[0].fileUnderTest;
-	const absoluteSourceFilename = asAbsolutePath(defaultWorkspaceRoot as AbsolutePath, relativeSourceFilename);
-
-	/*
-	retestFunction(extensionState: ExtensionState,
-					workspaceRoots: AbsolutePath[],
-					absoluteSourceFilename: AbsolutePath,
-					relativeSourceFilename: RelativePath,
-					providers: DisplayProviders,
-					functionName: string,
-					specimens:Specimen[],
-					lifeCycler: TestLifecycle,
-					shatterproofModuleOverride: string) {
-	
-	*/
+	const absoluteSourceFilename = joinAbsolute(defaultWorkspaceRoot as AbsolutePath, relativeSourceFilename);
 
 	return retestFunction(extensionState, workspaceRoots, absoluteSourceFilename, functionName, specimens, lifeCycler, extensionSource);
 }
 
 const forkTestCase = async (extensionState: ExtensionState, baseDirectory: AbsolutePath | undefined, providers: DisplayProviders, highlighters: Record<AbsolutePath, Highlighter>, selectedElements: SelectedElements) => {
 	const specimenId = selectedElements.specimental?.specimen.id;
-	if (!isSpecimenId(specimenId)) {
+	if (!baseDirectory || !isSpecimenId(specimenId)) {
 		return;
 	}
 
@@ -399,58 +386,18 @@ const forkTestCase = async (extensionState: ExtensionState, baseDirectory: Absol
 		//TODO: error
 		return;
 	}
-	const newId: SpecimenId = `custom-${newTestCaseName}`;
-	const alreadyExisting = findSpecimen(extensionState, newId);
-	if (alreadyExisting) {
-		//	TODO: error
-		return;
-	}
+	
+	const newSpecimental: Specimental | undefined = forkkTestCase(newTestCaseName, extensionState, baseDirectory, specimental);
 
-	//	if persistable and the base test is already persisted
-	if (!baseDirectory) {
-		return;
-	}
-	// function forkTest(storageBaseDirectory: AbsolutePath, specimental: Specimental, sourceFileUnderTestPath: RelativePath, testCaseName: SpecimenId) {
-	let newSpecimental: Specimental | undefined = undefined;
-	if (specimental.specimenPath) {
-		//	forking an already persistent test
-		newSpecimental = forkSpecimen(baseDirectory, specimental, newId, newTestCaseName);
-	} else {
-		//	forking a transient test
-		newSpecimental = {
-			...specimental,
-			specimen: {
-				...specimental.specimen,
-				id: newId,
-				type: 'custom',
-				name: newTestCaseName,
-			},
-			clusterKey: specimental.clusterKey,
-			fileUnderTest: specimental.fileUnderTest,
-		};
-		const specimenFileAbsolutePath = saveSpecimen(baseDirectory, newSpecimental);
-		newSpecimental.specimenPath = specimenFileAbsolutePath;
-	}
-
-	const nnewSpecimental = newSpecimental;
-	Object.entries(extensionState.fileStates).forEach(([absoluteFileName, fileState]) => {
-		if (absoluteFileName === nnewSpecimental.fileUnderTest) {
-			for (const [functionName, functionState] of Object.entries(fileState.functionStates)) {
-				if (functionName === specimental.specimen.functionName) {
-					functionState.specimens[newId] = nnewSpecimental;
-					return;
-				}
-			}
+	if (newSpecimental) {
+		refresh(selectedElements, extensionState, providers, highlighters);
+		if (newSpecimental.specimenPath && fs.existsSync(newSpecimental.specimenPath)) {
+			vscode.workspace.openTextDocument(newSpecimental.specimenPath).then((doc) => {
+				vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
+			});
+		} else {
+			vscode.window.showErrorMessage(`Test case ${newSpecimental.specimenPath} does not exist.`);
 		}
-	});
-
-	refresh(selectedElements, extensionState, providers, highlighters);
-	if (newSpecimental.specimenPath && fs.existsSync(newSpecimental.specimenPath)) {
-		vscode.workspace.openTextDocument(newSpecimental.specimenPath).then((doc) => {
-			vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
-		});
-	} else {
-		vscode.window.showErrorMessage(`Test case ${newSpecimental.specimenPath} does not exist.`);
 	}
 };
 
