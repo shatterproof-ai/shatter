@@ -77,8 +77,7 @@ export function cleanUpExtensionState(initial: Partial<ExtensionState>) {
     return fullExtensionState;
 }
 
-export function onPersistedSpecimenLoad(absolutist: (r: RelativePath) => AbsolutePath, extensionState: ExtensionState, specimen: Specimen, maybeSpecimenId: string, absoluteSpecimenFilepath: AbsolutePath | undefined) {
-    const absoluteSourceFilepath = absolutist(specimen.fileUnderTest);
+export function onPersistedSpecimenLoad(absoluteSourceFilepath: AbsolutePath, extensionState: ExtensionState, specimen: Specimen, maybeSpecimenId: string, absoluteSpecimenFilepath: AbsolutePath | undefined) {
     if (!extensionState.fileStates[absoluteSourceFilepath]) {
         extensionState.fileStates[absoluteSourceFilepath] = {
             functions: [],
@@ -158,7 +157,7 @@ export const findFunction = (extensionState: ExtensionState, functionName: strin
     }
 };
 
-export const findSpecimen = (extensionState: ExtensionState, specimenId: SpecimenId): Specimental | undefined => {
+export const findSpecimen = (extensionState: Pick<ExtensionState, 'fileStates'>, specimenId: SpecimenId): Specimental | undefined => {
     for (const fileState of Object.values(extensionState.fileStates)) {
         for (const functionState of Object.values(fileState.functionStates)) {
             const maybeSpecimental = functionState.specimens[specimenId];

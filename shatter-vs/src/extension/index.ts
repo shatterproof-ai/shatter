@@ -432,17 +432,10 @@ export async function activate(context: vscode.ExtensionContext) {
 		highlighters[absoluteFilename] = highlighterForEditor(editor);
 	}
 
-	const absolutist = (filename: RelativePath): AbsolutePath => {
-		if (!defaultWorkspaceRoot) {
-			throw new Error(`Unexpectedly no workspace root for ${filename}`);
-		}
-		return asAbsolutePath(defaultWorkspaceRoot, filename);
-	};
-
 	const selectedElements: SelectedElements = {};
 
 	try {
-		const configuration = await initializeWorkspace(defaultWorkspaceRoot, absolutist, extensionState, 'hard');
+		const configuration = await initializeWorkspace(defaultWorkspaceRoot, extensionState, 'hard');
 		const absoluteBaseDirectory = configuration.baseDirectory
 			? context.asAbsolutePath(configuration.baseDirectory) as AbsolutePath
 			: undefined;
@@ -645,7 +638,7 @@ export async function activate(context: vscode.ExtensionContext) {
 				provider.select(undefined);
 			}
 
-			initializeWorkspace(defaultWorkspaceRoot, absolutist, extensionState, 'soft');
+			initializeWorkspace(defaultWorkspaceRoot, extensionState, 'soft');
 			if (vscode.window.activeTextEditor?.document.languageId === 'typescript') {
 				updateSelectedFileAndRefresh(highlighters, extensionState, providers, selectedElements);
 			} else {
@@ -732,10 +725,12 @@ function initializeTreeViews(context: vscode.ExtensionContext) {
 	return providers;
 }
 
-async function initializeWorkspace(defaultWorkspaceRoot: AbsolutePath, absolutist: (filename: RelativePath) => AbsolutePath, extensionState: ExtensionState, load: 'hard' | 'soft'): Promise<ProjectConfiguration> {
+async function initializeWorkspace(defaultWorkspaceRoot: AbsolutePath, extensionState: ExtensionState, load: 'hard' | 'soft'): Promise<ProjectConfiguration> {
 	if (!defaultWorkspaceRoot) {
 		return {};
 	}
+
+	const absolutist = (filename: RelativePath): AbsolutePath => 		 joinAbsolute(defaultWorkspaceRoot, filename);
 
 	const configuration: ProjectConfiguration = await readProjectConfiguration(defaultWorkspaceRoot);
 	if (!configuration.baseDirectory) {
@@ -751,7 +746,8 @@ async function initializeWorkspace(defaultWorkspaceRoot: AbsolutePath, absolutis
 	const absoluteBaseDirectory = joinAbsolute(defaultWorkspaceRoot, configuration.baseDirectory);
 	const initialPersistentSpecimens = await loadPersistedSpecimens(absolutist, absoluteBaseDirectory);
 	initialPersistentSpecimens.forEach((specimental, id) => {
-		onPersistedSpecimenLoad(absolutist, extensionState, specimental.specimen, id, specimental.specimenPath);
+		const absoluteSourceFilepath = absolutist(specimental.specimen.fileUnderTest);
+		onPersistedSpecimenLoad(absoluteSourceFilepath, extensionState, specimental.specimen, id, specimental.specimenPath);
 	});
 
 	const expected = await loadExpected(absoluteBaseDirectory);
@@ -779,7 +775,8 @@ function initializeWorkspaceWatchers(configuration: ProjectConfiguration, defaul
 				throw new Error(`Unexpectedly no workspace root for ${absoluteSpecimenFilepath}`);
 			}
 
-			onPersistedSpecimenLoad(absolutist, extensionState, specimen, maybeSpecimenId, absoluteSpecimenFilepath);
+			const absoluteSourceFilepath = absolutist(specimen.fileUnderTest);
+			onPersistedSpecimenLoad(absoluteSourceFilepath, extensionState, specimen, maybeSpecimenId, absoluteSpecimenFilepath);
 		}
 	});
 
