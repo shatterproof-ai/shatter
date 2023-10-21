@@ -36,6 +36,14 @@
         "title": "Reset Shatter workspace"
       },
       {
+        "command": "extension.shatterReviewTestcasesFromTreeView",
+        "title": "Reset Shatter workspace",
+        "icon": {
+          "dark": "resources/dark/open-preview.svg",
+          "light": "resources/light/open-preview.svg"
+        }
+      },
+      {
         "command": "extension.shatterMakeTestcasePersistent",
         "title": "Retain test case (view)",
         "icon": {
@@ -146,6 +154,11 @@
           "command": "extension.shatterResetLocalFromFunctionViewContainer",
           "when": "view == shatter-functions-list",
           "group": "navigation@1"
+        },
+        {
+          "command": "extension.shatterReviewTestcasesFromTreeView",
+          "when": "view == shatter-list-testcases",
+          "group": "inline"
         },
         {
           "command": "extension.shatterAddTestcase",

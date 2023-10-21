@@ -1,5 +1,5 @@
-import { Specimen, SpecimenId } from '../core/common';
-import { cleanUpExtensionState, onPersistedSpecimenLoad, filterClustersForCoverage, findClustersForCoverage, findFunction, findSpecimen, ExtensionState, Specimental } from './common';
+import { AbsolutePath, Specimen, SpecimenId, joinAbsolute } from '../core/common';
+import { ExtensionState, Specimental, cleanUpExtensionState, filterClustersForCoverage, findClustersForCoverage, findFunction, findSpecimen, onPersistedSpecimenLoad } from './common';
 
 
 const specimentals = (() => {
@@ -51,38 +51,72 @@ describe('cleanUpExtensionState', () => {
     });
 });
 
+import { writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { ResultCluster } from '../core/shatter';
+
 describe('onPersistedSpecimenLoad', () => {
     it('should return a function that logs the loaded specimen', () => {
-        const loadedSpecimen = {
-            id: 'specimen-id',
+        const s:Specimen = {
+            id: 'seed-specimen-id',
             parameters: [],
             type: 'seed',
+            fileUnderTest: 'file-under-test',
+            functionName: 'function-name',
         };
-        const logLoadedSpecimen = onPersistedSpecimenLoad
+
+        const filePath = joinAbsolute(tmpdir() as AbsolutePath, 'loadedSpecimen.json');
+        writeFileSync(filePath, JSON.stringify(s));
+
+        const extensionState:ExtensionState = {
+            fileStates: {},
+            resultClusters: {},
+        };
+        onPersistedSpecimenLoad('/doesnt/amtter', extensionState, s, s.id, filePath);
+
+        expect(extensionState.fileStates).toEqual({
+            '/doesnt/amtter': {
+                functionStates: {
+                    'function-name': {
+                        autotest: {
+                            clusters: [],
+                            instrumentedLines: [],
+                        },
+                        specimens: {
+                            'seed-specimen-id': {
+                                fileUnderTest: '/doesnt/amtter',
+                                specimenPath: filePath,
+                                clusterKey: undefined,
+                                specimen: s,
+                            },
+                        },
+                    },
+                },
+                functions: [],
+            },
+        });
     });
 });
+const clusters:ResultCluster[] = [
+    {
+        key: "akakakaka",
+        file: '/tmp/file1.js',
+        functionName: "flerp",
+        lines: [],
+        linesInOrder: [],
+        specimens: [],
+        outcome: 'completed',
+        results: [],
+        leasts: [],
+        mosts: [],
+        totalTime: 535,
+        distancesToClusters: [],
+    },
+];
 
 describe('filterClustersForCoverage', () => {
     it('should return an array of clusters that have at least one uncovered line', () => {
-        const clusters = [
-            {
-                filename: 'file1.js',
-                lines: [
-                    { line: 1, covered: true },
-                    { line: 2, covered: false },
-                    { line: 3, covered: true },
-                ],
-            },
-            {
-                filename: 'file2.js',
-                lines: [
-                    { line: 1, covered: true },
-                    { line: 2, covered: true },
-                    { line: 3, covered: true },
-                ],
-            },
-        ];
-        const uncoveredClusters = filterClustersForCoverage(clusters);
+        const uncoveredClusters = filterClustersForCoverage('completed', clusters);
         expect(uncoveredClusters).toEqual([
             {
                 filename: 'file1.js',
@@ -98,26 +132,8 @@ describe('filterClustersForCoverage', () => {
 
 describe('findClustersForCoverage', () => {
     it('should return an array of clusters for the given file paths', () => {
-        const clusters = [
-            {
-                filename: 'file1.js',
-                lines: [
-                    { line: 1, covered: true },
-                    { line: 2, covered: false },
-                    { line: 3, covered: true },
-                ],
-            },
-            {
-                filename: 'file2.js',
-                lines: [
-                    { line: 1, covered: true },
-                    { line: 2, covered: true },
-                    { line: 3, covered: true },
-                ],
-            },
-        ];
         const filePaths = ['file1.js'];
-        const matchingClusters = findClustersForCoverage(clusters, filePaths);
+        const matchingClusters = findClustersForCoverage(extensionState, {clusterKey:'aaaa'});
         expect(matchingClusters).toEqual([
             {
                 filename: 'file1.js',

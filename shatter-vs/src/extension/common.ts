@@ -41,7 +41,7 @@ export interface ExtensionState {
     runningTestFunction?: string;
     fileStates: Record<AbsolutePath, FileState>;	//	Record because Map is not serializable
     //  these are also in fileStates[...].functionStates[...].autotest.clusters but we want random access
-    resultClusters: Record<string, ResultCluster>;
+    resultClusters: Record<SpecimenId, ResultCluster>;
     //	this overlaps some with specimens
     expected?: Record<SpecimenId, Expected>;
 };

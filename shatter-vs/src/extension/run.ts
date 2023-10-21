@@ -150,6 +150,8 @@ export async function autotestFunction(extensionState: ExtensionState, workspace
                             specimen,
                         };
                     });
+
+                    extensionState.resultClusters[cluster.key] = cluster;
                 });
 
                 functionState.autotest = results;

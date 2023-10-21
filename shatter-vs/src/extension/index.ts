@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as ts from 'typescript';
 import * as vscode from 'vscode';
 import { AbsolutePath, RelativePath, Specimen, isSpecimenId, joinAbsolute } from '../core/common';
-import { isOutcome } from '../core/supervisor';
+import { TestRun, isOutcome } from '../core/supervisor';
 import { FunctionMeta } from '../core/transform';
 import { CoverageSelection, ExtensionState, Specimental, cleanUpExtensionState, filterClustersForCoverage, findClustersForCoverage, findFunction, findSpecimen, isCoverageSelection, onPersistedSpecimenLoad } from './common';
 import { CommonDisplayNode, DisplayProvider, DisplayProviders, Highlighter, SelectedElements, findNode, refresh } from './display';
@@ -27,6 +27,7 @@ const COMMANDS = {
 	shatterSelectFunction: 'extension.shatterSelectFunction',
 	shatterSelectTestCase: 'extension.shatterSelectTestCase',
 	shatterResetLocalFromFunctionViewContainer: 'extension.shatterResetLocalFromFunctionViewContainer',
+	shatterReviewTestcasesFromTreeView: 'extension.shatterReviewTestcasesFromTreeView',
 };
 
 const autotestStorageStateKey = "autotestState_7";
@@ -418,6 +419,86 @@ async function doAutotest(context: vscode.ExtensionContext, extensionState: Exte
 	await autotestFunction(extensionState, workspaceRoots, absoluteSourceFilename, relativeSourceFilename, providers, functionName, lifeCycler, extensionSource);
 }
 
+const createSpecimenView = (specimental:Specimental, result:TestRun) => {
+	// Create a new web view panel
+	const panel = vscode.window.createWebviewPanel(
+		'specimenView',
+		'Specimen View',
+		vscode.ViewColumn.Two,
+		{
+			enableScripts: true,
+			retainContextWhenHidden: true,
+		}
+	);
+
+	// Define the HTML template for the web view panel
+	const html = `
+		<html>
+			<head>
+				<style>
+					.column {
+						display: inline-block;
+						width: 50%;
+						vertical-align: top;
+					}
+				</style>
+			</head>
+			<body>
+				<div class="column">
+					<h2>Input Parameters</h2>
+					<pre>${JSON.stringify(specimental.specimen.parameters, null, 2)}</pre>
+				</div>
+				<div class="column">
+					<h2>Result</h2>
+					<pre>${JSON.stringify(result.result, null, 2)}</pre>
+				</div>
+				<div>
+					<button id="acceptButton">Accept</button>
+					<button id="rejectButton">Reject</button>
+					<button id="makePersistentButton">Make Persistent</button>
+				</div>
+				<script>
+					const vscode = acquireVsCodeApi();
+					const acceptButton = document.getElementById('acceptButton');
+					const rejectButton = document.getElementById('rejectButton');
+					const makePersistentButton = document.getElementById('makePersistentButton');
+
+					acceptButton.addEventListener('click', () => {
+						vscode.postMessage({ command: 'accept' });
+					});
+
+					rejectButton.addEventListener('click', () => {
+						vscode.postMessage({ command: 'reject' });
+					});
+
+					makePersistentButton.addEventListener('click', () => {
+						vscode.postMessage({ command: 'makePersistent' });
+					});
+				</script>
+			</body>
+		</html>
+	`;
+
+	// Set the web view panel's HTML content to the HTML template
+	panel.webview.html = html;
+
+	// Listen for messages from the web view panel
+	panel.webview.onDidReceiveMessage((message) => {
+		switch (message.command) {
+			case 'accept':
+				// Handle "accept" button click
+				break;
+			case 'reject':
+				// Handle "reject" button click
+				break;
+			case 'makePersistent':
+				// Handle "make persistent" button click
+				break;
+		}
+	});
+};
+
+
 export async function activate(context: vscode.ExtensionContext) {
 	//	TODO: this all needs to deal in URIs
 	const workspaceRoots: AbsolutePath[] = vscode.workspace.workspaceFolders?.map((f) => f.uri.fsPath as AbsolutePath) ?? [];
@@ -471,6 +552,7 @@ export async function activate(context: vscode.ExtensionContext) {
 				return;
 			}
 
+			selectedElements.specimental = specimental;
 			refresh(selectedElements, extensionState, providers, highlighters);
 		});
 		context.subscriptions.push(selectTestCaseCommand);
@@ -646,6 +728,31 @@ export async function activate(context: vscode.ExtensionContext) {
 			}
 		});
 		context.subscriptions.push(shatterResetLocalFromFunctionViewContainer);
+		
+		const shatterReviewTestcasesFromTreeView = vscode.commands.registerCommand(COMMANDS.shatterReviewTestcasesFromTreeView, (node:CommonDisplayNode) => {
+
+			if (! isSpecimenId(node.key)) {
+				return;
+			}
+
+			const specimen = findSpecimen(extensionState, node.key);
+			if (specimen) {
+				
+				const result = (() => {
+					for (const cluster of Object.values(extensionState.resultClusters)) {
+						const wanted = cluster.results.find(r => r.specimenId === node.key);
+						if (wanted) {
+							return wanted;
+						}
+					}
+				})();
+				
+				if (result) {
+					createSpecimenView(specimen, result);
+				}
+			}
+		});
+		context.subscriptions.push(shatterReviewTestcasesFromTreeView);
 
 		if (vscode.window.activeTextEditor?.document.languageId === 'typescript') {
 			updateSelectedFileAndRefresh(highlighters, extensionState, providers, selectedElements);
