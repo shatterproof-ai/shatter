@@ -189,6 +189,7 @@ const doSelectFunctionCommand = (highlighters: Record<AbsolutePath, Highlighter>
 	}
 
 	const editor = vscode.window.activeTextEditor;
+	//	TODO: need to get the filename etc. from other context not the editor, and remove the typescript language ID guard because we might not have the file in focus
 	if (editor?.document.languageId === 'typescript') {
 		const absoluteFilePath = editor.document.fileName as AbsolutePath;
 		let highlighter = highlighters[absoluteFilePath];
