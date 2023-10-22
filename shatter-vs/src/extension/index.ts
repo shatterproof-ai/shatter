@@ -2,7 +2,7 @@ import * as fs from 'fs'; //TODO: use VSCode fs
 import * as path from 'path';
 import * as ts from 'typescript';
 import * as vscode from 'vscode';
-import { AbsolutePath, RelativePath, Specimen, isSpecimenId, joinAbsolute } from '../core/common';
+import { AbsolutePath, RelativePath, Specimen, extractGeneratedParameterValue, isSpecimenId, joinAbsolute } from '../core/common';
 import { TestRun, isOutcome } from '../core/supervisor';
 import { FunctionMeta } from '../core/transform';
 import { CoverageSelection, ExtensionState, Specimental, cleanUpExtensionState, filterClustersForCoverage, findClustersForCoverage, findFunction, findSpecimen, isCoverageSelection, onPersistedSpecimenLoad } from './common';
@@ -222,9 +222,7 @@ const doSelectFunctionCommand = (highlighters: Record<AbsolutePath, Highlighter>
 };
 
 const doSelectClusterCommand = (highlighters: Record<AbsolutePath, Highlighter>, extensionState: ExtensionState, providers: DisplayProviders, selectedElements: SelectedElements, node: CommonDisplayNode) => {
-	if (vscode.window.activeTextEditor?.document.languageId === 'typescript') {
-		updateCoverageSelection(node.key, node, selectedElements);
-	}
+	updateCoverageSelection(node.key, node, selectedElements);
 };
 
 const editTestCase = async (extensionState: ExtensionState, baseDirectory: AbsolutePath | undefined, node: CommonDisplayNode) => {
@@ -239,7 +237,7 @@ const editTestCase = async (extensionState: ExtensionState, baseDirectory: Absol
 	}
 
 	const specimenPath = specimental.specimenPath;
-	if (specimenPath && vscode.window.activeTextEditor?.document.languageId === 'typescript') {
+	if (specimenPath) {
 		//	vscode FS does not support a nice existence check
 		if (fs.existsSync(specimenPath)) {
 			vscode.workspace.openTextDocument(specimenPath).then((doc) => {
@@ -431,6 +429,8 @@ const createSpecimenView = (specimental:Specimental, result:TestRun) => {
 		}
 	);
 
+	const resolvedParameters = specimental.specimen.parameters.map(extractGeneratedParameterValue);
+
 	// Define the HTML template for the web view panel
 	const html = `
 		<html>
@@ -444,9 +444,14 @@ const createSpecimenView = (specimental:Specimental, result:TestRun) => {
 				</style>
 			</head>
 			<body>
+				<div>
+					<button id="acceptButton">Accept</button>
+					<button id="rejectButton">Reject</button>
+					<button id="makePersistentButton">Make Persistent</button>
+				</div>
 				<div class="column">
 					<h2>Input Parameters</h2>
-					<pre>${JSON.stringify(specimental.specimen.parameters, null, 2)}</pre>
+					<pre>${JSON.stringify(resolvedParameters, null, 2)}</pre>
 				</div>
 				<div class="column">
 					<h2>Result</h2>
@@ -475,6 +480,10 @@ const createSpecimenView = (specimental:Specimental, result:TestRun) => {
 						vscode.postMessage({ command: 'makePersistent' });
 					});
 				</script>
+				<div class="raw">
+					<h2>Input Parameters</h2>
+					<pre>${JSON.stringify(specimental.specimen.parameters, null, 2)}</pre>
+				</div>
 			</body>
 		</html>
 	`;
@@ -754,9 +763,7 @@ export async function activate(context: vscode.ExtensionContext) {
 		});
 		context.subscriptions.push(shatterReviewTestcasesFromTreeView);
 
-		if (vscode.window.activeTextEditor?.document.languageId === 'typescript') {
-			updateSelectedFileAndRefresh(highlighters, extensionState, providers, selectedElements);
-		}
+		updateSelectedFileAndRefresh(highlighters, extensionState, providers, selectedElements);
 	} catch (e: any) {
 		console.error(`Unable to load extension ${e}: ${e.stack}`);
 	}
