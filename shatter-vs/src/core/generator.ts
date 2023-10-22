@@ -1683,7 +1683,7 @@ function* functionGeneratorator(checker: ts.TypeChecker, f: ts.FunctionDeclarati
     let generatorsByTypeByDepth = new Map<number, Map<ts.Type, G>>();
     //  do a batch at each depth level then start again from the lowest
     while (true) {
-        for (let currentDepthLimit = 0; currentDepthLimit < MAXIMUM_DEPTH; currentDepthLimit++) {
+        for (let currentDepthLimit = 2; currentDepthLimit < MAXIMUM_DEPTH; currentDepthLimit++) {
             //  1p, 4p, 9p, 16p, 25p
             const maxValuesAtThisDepth = f.parameters.length * 2 * ((1 + currentDepthLimit) ** 2);
             let valuesYieldedAtThisDepth = 0;
