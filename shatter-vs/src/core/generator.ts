@@ -528,6 +528,112 @@ function pathToString(checker: ts.TypeChecker, path: ObjectPathSegment[]) {
 }
 
 //  does NOT validate its argument
+const recordValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: ObjectPathSegment[]) {
+    if (!isTypeReference(type)) {
+        throw new Error(`Unexpected type not a reference ${checker.typeToString(type)}`);
+    }
+
+    const sizer = stupidSizer;
+
+    function* generateEmpty() {
+        const empty: GeneratedParameter = {
+            id: newId('empty-record'),
+            generator: 'recordValueGenerator',
+            path,
+            type: 'record',
+            entries: [],
+        };
+
+        while (true) {
+            yield empty;
+        }
+    }
+
+    const [keyType, valueType] = (() => {
+        if (type.typeArguments && type.typeArguments.length === 2) {
+            return type.typeArguments;
+        }
+        //  when types are not specified, just go string=>string
+        return [checker.getStringType(), checker.getStringType()];
+    })();
+
+    const newNumberOfLevelsAvailable = state.numberOfLevelsAvailable - 1;
+    const newState: GeneratorState = {
+        numberOfLevelsAvailable: newNumberOfLevelsAvailable,
+    };
+
+    const newKeyPath = path.concat({
+        typeString: checker.typeToString(type),
+        segment: '.key',
+        generator: 'recordValueGenerator',
+    });
+    const keyGeneratorFactory = generatorator(configuration, checker, newState, keyType, newKeyPath);
+
+    const newValuePath = path.concat({
+        typeString: checker.typeToString(type),
+        segment: '.value',
+        generator: 'recordValueGenerator',
+    });
+    const valueGeneratorFactory = generatorator(configuration, checker, newState, valueType, newValuePath);
+
+    if (!keyGeneratorFactory || keyGeneratorFactory.shortest > newNumberOfLevelsAvailable || !valueGeneratorFactory || valueGeneratorFactory.shortest > newNumberOfLevelsAvailable) {
+        const gw: GeneratorFactory = {
+            path,
+            type,
+            shortest: 0,
+            longest: 0,
+            generator: generateEmpty,
+        };
+        return gw;
+    }
+
+    const gRecord = function* (rc: RuntimeContext): G {
+        //  the newNumberOfLevelsAvailable <= 0 check seems like a band aid for an undiagnosed
+        //  level counting bug somewhere else
+
+        const keyGenerator = keyGeneratorFactory.generator(rc);
+        const valueGenerator = valueGeneratorFactory.generator(rc);
+        while (true) {
+            for (const count of sizer()) {
+                const entries: [GeneratedParameter, GeneratedParameter][] = [];
+                for (let i = 0; i < count; i++) {
+                    const key = keyGenerator.next();
+                    if (key.done) {
+                        throw new Error(`Key generator is done ${pathToString(checker, keyGeneratorFactory.path)}`);
+                    }
+                    const value = valueGenerator.next();
+                    if (value.done) {
+                        throw new Error(`Value generator is done ${pathToString(checker, valueGeneratorFactory.path)}`);
+                    }
+                    entries.push([key.value, value.value]);
+                }
+                yield {
+                    id: newId('record'),
+                    generator: 'recordValueGenerator',
+                    type: 'record',
+                    path,
+                    entries,
+                };
+            }
+        }
+    };
+
+    const shortestChild = Math.min(keyGeneratorFactory.shortest, valueGeneratorFactory.shortest);
+    const longestChild = Math.max(keyGeneratorFactory.longest, valueGeneratorFactory.longest);
+
+    const gw: GeneratorFactory = {
+        path,
+        type,
+        shortest: shortestChild + 1,
+        longest: longestChild + 1,
+        generator: gRecord,
+    };
+
+    return gw;
+};
+
+
+//  does NOT validate its argument
 const mapValueGeneratorFactory: ValueGenerator = function (configuration: GeneratorConfiguration, checker: ts.TypeChecker, state: GeneratorState, type: ts.Type, path: ObjectPathSegment[]) {
     if (!isTypeReference(type)) {
         throw new Error(`Unexpected type not a reference ${checker.typeToString(type)}`);
@@ -931,7 +1037,8 @@ const basicObjectValueGeneratorFactory: ValueGenerator = function (configuration
 
     let shortestChild = 0;
     let longestChild = 0;
-    for (const p of checker.getPropertiesOfType(type)) {
+    const typeProps = checker.getPropertiesOfType(type);
+    for (const p of typeProps) {
         const declaration = getDeclaration(p);
         if (declaration) {
             const propertyType = checker.getTypeOfSymbolAtLocation(p, declaration);
@@ -1282,6 +1389,10 @@ const objectValueGeneratorFactory: ValueGenerator = function (configuration: Gen
 
         if (typeName === 'RegExp') {
             return regexpValueGeneratorFactory(configuration, checker, state, type, path);
+        }
+        
+        if (typeName === 'Record') {
+            return recordValueGeneratorFactory(configuration, checker, state, type, path);
         }
 
         //  TODO: Symbol
