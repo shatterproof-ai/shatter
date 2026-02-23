@@ -59,6 +59,12 @@ This project demands clean structure, high quality code, and thorough automated 
 - Run `go vet` before every commit
 - Use table-driven tests
 
+## Demo Walkthrough
+
+`demo/walkthrough.sh` exercises shatter's full pipeline against example functions in `examples/typescript/src/`. It calls the CLI the same way a user would, so it serves as a living integration test. Steps that use unimplemented CLI commands will fail with an error until those commands are built — this is intentional.
+
+When adding a new CLI command or flag, update the walkthrough to exercise it. The walkthrough should always reflect the current capabilities of the CLI.
+
 ## Agent Workflow
 
 See `AGENTS.md` for issue tracking (beads), git workflow, and agent operational instructions.
