@@ -1,0 +1,3 @@
+[workspace]
+members = ["shatter-core", "shatter-cli"]
+resolver = "2"
