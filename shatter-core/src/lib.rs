@@ -1,9 +1,5 @@
-/// Shatter core engine: concolic execution and constraint solving.
+//! Shatter core engine: concolic execution and constraint solving.
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn placeholder() {
-        assert_eq!(2 + 2, 4);
-    }
-}
+pub mod execution_record;
+pub mod sym_expr;
+pub mod types;
