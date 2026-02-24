@@ -157,13 +157,45 @@ func TestAnalyzeWithoutFileReturnsError(t *testing.T) {
 	}
 }
 
-func TestInstrumentReturnsNotImplemented(t *testing.T) {
-	resp := sendRecv(t, `{"protocol_version":"0.1.0","id":3,"command":"instrument","file":"x.go","function":"F","mocks":[]}`)
+func TestInstrumentWithMissingFileReturnsError(t *testing.T) {
+	resp := sendRecv(t, `{"protocol_version":"0.1.0","id":3,"command":"instrument","file":"nonexistent.go"}`)
 	if resp.Status != "error" {
 		t.Errorf("status = %q, want error", resp.Status)
 	}
-	if resp.Code != "internal_error" {
-		t.Errorf("code = %q, want internal_error", resp.Code)
+	if resp.Code != "file_not_found" {
+		t.Errorf("code = %q, want file_not_found", resp.Code)
+	}
+}
+
+func TestInstrumentWithoutFileReturnsError(t *testing.T) {
+	resp := sendRecv(t, `{"protocol_version":"0.1.0","id":3,"command":"instrument"}`)
+	if resp.Status != "error" {
+		t.Errorf("status = %q, want error", resp.Status)
+	}
+	if resp.Code != "invalid_request" {
+		t.Errorf("code = %q, want invalid_request", resp.Code)
+	}
+}
+
+func TestInstrumentWithValidFileReturnsSuccess(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "test.go")
+	if err := os.WriteFile(tmp, []byte("package main\n\nfunc F(x int) int { if x > 0 { return 1 } ; return 0 }\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	req := `{"protocol_version":"0.1.0","id":3,"command":"instrument","file":"` + tmp + `"}`
+	resp := sendRecv(t, req)
+	if resp.Status != "instrument" {
+		t.Errorf("status = %q, want instrument (message: %s)", resp.Status, resp.Message)
+	}
+	if resp.Instrumented == nil || !*resp.Instrumented {
+		t.Error("instrumented should be true")
+	}
+	if resp.OutputFile == nil || *resp.OutputFile == "" {
+		t.Error("output_file should be set")
+	}
+	// Cleanup
+	if resp.OutputFile != nil {
+		os.RemoveAll(*resp.OutputFile)
 	}
 }
 

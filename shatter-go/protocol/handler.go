@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/shatter-dev/shatter/shatter-go/instrument"
 )
 
 const frontendVersion = "0.1.0"
@@ -132,10 +134,32 @@ func (h *Handler) handleAnalyze(resp Response, req Request) Response {
 }
 
 func (h *Handler) handleInstrument(resp Response, req Request) Response {
-	// Stub: real instrumentation will use go/ast rewriting.
-	resp.Status = "error"
-	resp.Code = "internal_error"
-	resp.Message = "instrument command not yet implemented"
+	if req.File == "" {
+		resp.Status = "error"
+		resp.Code = "invalid_request"
+		resp.Message = "instrument command requires a file path"
+		return resp
+	}
+
+	if _, err := os.Stat(req.File); err != nil {
+		resp.Status = "error"
+		resp.Code = "file_not_found"
+		resp.Message = fmt.Sprintf("file not found: %s", req.File)
+		return resp
+	}
+
+	outputDir, err := instrument.InstrumentFile(req.File, req.Function)
+	if err != nil {
+		resp.Status = "error"
+		resp.Code = "internal_error"
+		resp.Message = fmt.Sprintf("instrumentation failed: %v", err)
+		return resp
+	}
+
+	instrumented := true
+	resp.Status = "instrument"
+	resp.Instrumented = &instrumented
+	resp.OutputFile = &outputDir
 	return resp
 }
 
