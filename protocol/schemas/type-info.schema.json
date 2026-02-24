@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://shatter.dev/protocol/type-info.schema.json",
+  "title": "TypeInfo",
+  "description": "Describes the type of a value, as reported by a language frontend.",
+  "type": "object",
+  "required": ["kind"],
+  "properties": {
+    "kind": {
+      "type": "string",
+      "enum": ["int", "float", "str", "bool", "array", "object", "union", "nullable", "unknown"]
+    }
+  },
+  "oneOf": [
+    {
+      "properties": { "kind": { "const": "int" } },
+      "required": ["kind"]
+    },
+    {
+      "properties": { "kind": { "const": "float" } },
+      "required": ["kind"]
+    },
+    {
+      "properties": { "kind": { "const": "str" } },
+      "required": ["kind"]
+    },
+    {
+      "properties": { "kind": { "const": "bool" } },
+      "required": ["kind"]
+    },
+    {
+      "properties": {
+        "kind": { "const": "array" },
+        "element": { "$ref": "#", "description": "Element type." }
+      },
+      "required": ["kind", "element"]
+    },
+    {
+      "properties": {
+        "kind": { "const": "object" },
+        "fields": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "prefixItems": [
+              { "type": "string" },
+              { "$ref": "#" }
+            ],
+            "items": false,
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "description": "Field name and type pairs."
+        }
+      },
+      "required": ["kind", "fields"]
+    },
+    {
+      "properties": {
+        "kind": { "const": "union" },
+        "variants": {
+          "type": "array",
+          "items": { "$ref": "#" },
+          "description": "Possible type variants."
+        }
+      },
+      "required": ["kind", "variants"]
+    },
+    {
+      "properties": {
+        "kind": { "const": "nullable" },
+        "inner": { "$ref": "#", "description": "Non-null type." }
+      },
+      "required": ["kind", "inner"]
+    },
+    {
+      "properties": { "kind": { "const": "unknown" } },
+      "required": ["kind"]
+    }
+  ]
+}

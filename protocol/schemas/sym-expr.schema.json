@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://shatter.dev/protocol/sym-expr.schema.json",
+  "title": "SymExpr",
+  "description": "A symbolic expression representing a constraint on function inputs.",
+  "type": "object",
+  "required": ["kind"],
+  "properties": {
+    "kind": {
+      "type": "string",
+      "enum": ["param", "const", "bin_op", "un_op", "call", "unknown"]
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "kind": { "const": "param" },
+        "name": { "type": "string", "description": "Parameter name." },
+        "path": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Field access path (e.g., ['timeout'] for config.timeout)."
+        }
+      },
+      "required": ["kind", "name", "path"]
+    },
+    {
+      "description": "A literal constant value.",
+      "properties": {
+        "kind": { "const": "const" },
+        "type": {
+          "type": "string",
+          "enum": ["int", "float", "str", "bool", "null", "undefined"],
+          "description": "Constant value type."
+        },
+        "value": {
+          "description": "The constant value. Absent for null and undefined."
+        }
+      },
+      "required": ["kind", "type"]
+    },
+    {
+      "properties": {
+        "kind": { "const": "bin_op" },
+        "op": {
+          "type": "string",
+          "enum": [
+            "eq", "ne", "lt", "le", "gt", "ge",
+            "add", "sub", "mul", "div", "mod",
+            "and", "or",
+            "bitwise_and", "bitwise_or", "bitwise_xor",
+            "in", "instance_of"
+          ],
+          "description": "Binary operator."
+        },
+        "left": { "$ref": "#", "description": "Left operand." },
+        "right": { "$ref": "#", "description": "Right operand." }
+      },
+      "required": ["kind", "op", "left", "right"]
+    },
+    {
+      "properties": {
+        "kind": { "const": "un_op" },
+        "op": {
+          "type": "string",
+          "enum": ["not", "neg", "bitwise_not", "type_of"],
+          "description": "Unary operator."
+        },
+        "operand": { "$ref": "#", "description": "Operand." }
+      },
+      "required": ["kind", "op", "operand"]
+    },
+    {
+      "properties": {
+        "kind": { "const": "call" },
+        "name": { "type": "string", "description": "Function/method name." },
+        "receiver": {
+          "oneOf": [
+            { "$ref": "#" },
+            { "type": "null" }
+          ],
+          "description": "Receiver expression (for method calls)."
+        },
+        "args": {
+          "type": "array",
+          "items": { "$ref": "#" },
+          "description": "Arguments."
+        }
+      },
+      "required": ["kind", "name", "args"]
+    },
+    {
+      "properties": {
+        "kind": { "const": "unknown" }
+      },
+      "required": ["kind"]
+    }
+  ]
+}

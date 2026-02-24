@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://shatter.dev/protocol/request.schema.json",
+  "title": "Shatter Protocol Request",
+  "description": "A request message sent from the core engine to a language frontend.",
+  "type": "object",
+  "required": ["protocol_version", "id", "command"],
+  "properties": {
+    "protocol_version": {
+      "type": "string",
+      "description": "Protocol version for compatibility checking.",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "id": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Unique identifier for correlating responses to requests."
+    },
+    "command": {
+      "type": "string",
+      "enum": ["handshake", "analyze", "instrument", "execute", "shutdown"],
+      "description": "The command to execute."
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/handshake_request" },
+    { "$ref": "#/$defs/analyze_request" },
+    { "$ref": "#/$defs/instrument_request" },
+    { "$ref": "#/$defs/execute_request" },
+    { "$ref": "#/$defs/shutdown_request" }
+  ],
+  "$defs": {
+    "handshake_request": {
+      "type": "object",
+      "properties": {
+        "command": { "const": "handshake" },
+        "capabilities": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Capabilities supported by the core."
+        }
+      },
+      "required": ["command", "capabilities"]
+    },
+    "analyze_request": {
+      "type": "object",
+      "properties": {
+        "command": { "const": "analyze" },
+        "file": {
+          "type": "string",
+          "description": "Path to the source file."
+        },
+        "function": {
+          "type": ["string", "null"],
+          "description": "Name of the function to analyze. If null/absent, analyze all exported functions."
+        }
+      },
+      "required": ["command", "file"]
+    },
+    "instrument_request": {
+      "type": "object",
+      "properties": {
+        "command": { "const": "instrument" },
+        "file": {
+          "type": "string",
+          "description": "Path to the source file."
+        },
+        "function": {
+          "type": "string",
+          "description": "Name of the function to instrument."
+        },
+        "mocks": {
+          "type": "array",
+          "items": { "$ref": "mock-config.schema.json" },
+          "description": "Mock configurations for external dependencies."
+        }
+      },
+      "required": ["command", "file", "function", "mocks"]
+    },
+    "execute_request": {
+      "type": "object",
+      "properties": {
+        "command": { "const": "execute" },
+        "function": {
+          "type": "string",
+          "description": "Fully qualified function identifier."
+        },
+        "inputs": {
+          "type": "array",
+          "description": "Input values for the function parameters (JSON-encoded)."
+        },
+        "mocks": {
+          "type": "array",
+          "items": { "$ref": "mock-config.schema.json" },
+          "description": "Mock configurations for external dependencies."
+        }
+      },
+      "required": ["command", "function", "inputs", "mocks"]
+    },
+    "shutdown_request": {
+      "type": "object",
+      "properties": {
+        "command": { "const": "shutdown" }
+      },
+      "required": ["command"]
+    }
+  }
+}

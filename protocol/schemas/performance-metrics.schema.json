@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://shatter.dev/protocol/performance-metrics.schema.json",
+  "title": "PerformanceMetrics",
+  "description": "Performance metrics from a single execution.",
+  "type": "object",
+  "required": ["wall_time_ms", "cpu_time_us", "heap_used_bytes", "heap_allocated_bytes"],
+  "properties": {
+    "wall_time_ms": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Wall clock time in milliseconds."
+    },
+    "cpu_time_us": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "CPU time in microseconds."
+    },
+    "heap_used_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Heap memory used in bytes."
+    },
+    "heap_allocated_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Heap memory allocated in bytes."
+    }
+  }
+}

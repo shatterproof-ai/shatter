@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://shatter.dev/protocol/function-analysis.schema.json",
+  "title": "FunctionAnalysis",
+  "description": "Analysis result for a single function.",
+  "type": "object",
+  "required": ["name", "params", "branches", "dependencies", "return_type", "start_line", "end_line"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Fully qualified function name."
+    },
+    "params": {
+      "type": "array",
+      "items": { "$ref": "param-info.schema.json" },
+      "description": "Function parameters with type information."
+    },
+    "branches": {
+      "type": "array",
+      "items": { "$ref": "branch-info.schema.json" },
+      "description": "Branch points found in the function."
+    },
+    "dependencies": {
+      "type": "array",
+      "items": { "$ref": "external-dependency.schema.json" },
+      "description": "External dependencies detected."
+    },
+    "return_type": {
+      "$ref": "type-info.schema.json",
+      "description": "Return type of the function."
+    },
+    "start_line": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "First line of the function in source."
+    },
+    "end_line": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Last line of the function in source."
+    }
+  }
+}

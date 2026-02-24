@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://shatter.dev/protocol/external-call.schema.json",
+  "title": "ExternalCall",
+  "description": "A call to an external (mocked or observed) dependency during execution.",
+  "type": "object",
+  "required": ["symbol", "args", "return_value"],
+  "properties": {
+    "symbol": {
+      "type": "string",
+      "description": "Fully qualified name of the called symbol."
+    },
+    "args": {
+      "type": "array",
+      "description": "Arguments passed to the call."
+    },
+    "return_value": {
+      "description": "Return value from the call."
+    }
+  }
+}

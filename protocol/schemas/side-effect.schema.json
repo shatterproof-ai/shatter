@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://shatter.dev/protocol/side-effect.schema.json",
+  "title": "SideEffect",
+  "description": "A side effect observed during execution.",
+  "type": "object",
+  "required": ["kind"],
+  "properties": {
+    "kind": {
+      "type": "string",
+      "enum": ["console_output", "file_write", "network_request", "global_mutation"]
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "kind": { "const": "console_output" },
+        "level": { "type": "string", "description": "Log level (info, warn, error, etc.)." },
+        "message": { "type": "string", "description": "Log message." }
+      },
+      "required": ["kind", "level", "message"]
+    },
+    {
+      "properties": {
+        "kind": { "const": "file_write" },
+        "path": { "type": "string", "description": "File path written to." }
+      },
+      "required": ["kind", "path"]
+    },
+    {
+      "properties": {
+        "kind": { "const": "network_request" },
+        "method": { "type": "string", "description": "HTTP method." },
+        "url": { "type": "string", "description": "Request URL." }
+      },
+      "required": ["kind", "method", "url"]
+    },
+    {
+      "properties": {
+        "kind": { "const": "global_mutation" },
+        "name": { "type": "string", "description": "Name of the mutated global." }
+      },
+      "required": ["kind", "name"]
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://shatter.dev/protocol/branch-info.schema.json",
+  "title": "BranchInfo",
+  "description": "A branch point found during static analysis.",
+  "type": "object",
+  "required": ["id", "line", "condition_text", "branch_type"],
+  "properties": {
+    "id": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Unique identifier for this branch within the function."
+    },
+    "line": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Source line number."
+    },
+    "condition_text": {
+      "type": "string",
+      "description": "Source text of the condition (for display)."
+    },
+    "condition": {
+      "oneOf": [
+        { "$ref": "sym-expr.schema.json" },
+        { "type": "null" }
+      ],
+      "description": "Symbolic representation of the condition, if extractable."
+    },
+    "branch_type": {
+      "type": "string",
+      "enum": ["if", "else_if", "switch", "ternary", "logical_and", "logical_or", "while", "for"],
+      "description": "Type of branch construct."
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://shatter.dev/protocol/mock-config.schema.json",
+  "title": "MockConfig",
+  "description": "Configuration for mocking an external dependency during execution.",
+  "type": "object",
+  "required": ["symbol", "return_values", "should_track_calls", "default_behavior"],
+  "properties": {
+    "symbol": {
+      "type": "string",
+      "description": "Fully qualified symbol name of the dependency to mock."
+    },
+    "return_values": {
+      "type": "array",
+      "description": "Pre-configured return values to cycle through."
+    },
+    "should_track_calls": {
+      "type": "boolean",
+      "description": "Whether to record arguments passed to the mock."
+    },
+    "default_behavior": {
+      "type": "string",
+      "enum": ["return_generated", "repeat_last", "throw_error", "passthrough"],
+      "description": "Default behavior when return_values are exhausted."
+    }
+  }
+}

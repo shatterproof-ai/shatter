@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://shatter.dev/protocol/branch-decision.schema.json",
+  "title": "BranchDecision",
+  "description": "A single branch decision recorded during execution.",
+  "type": "object",
+  "required": ["branch_id", "line", "taken", "constraint"],
+  "properties": {
+    "branch_id": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Unique identifier for this branch point within the function."
+    },
+    "line": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Source line number of the branch."
+    },
+    "taken": {
+      "type": "boolean",
+      "description": "Whether the true branch was taken."
+    },
+    "constraint": {
+      "$ref": "sym-constraint.schema.json",
+      "description": "The symbolic constraint governing this branch."
+    }
+  }
+}

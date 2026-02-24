@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://shatter.dev/protocol/error-info.schema.json",
+  "title": "ErrorInfo",
+  "description": "Information about an error thrown during execution.",
+  "type": "object",
+  "required": ["error_type", "message"],
+  "properties": {
+    "error_type": {
+      "type": "string",
+      "description": "The error type or class name."
+    },
+    "message": {
+      "type": "string",
+      "description": "The error message."
+    },
+    "stack": {
+      "type": ["string", "null"],
+      "description": "Optional stack trace."
+    }
+  }
+}

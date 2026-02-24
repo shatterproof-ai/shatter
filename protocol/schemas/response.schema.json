@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://shatter.dev/protocol/response.schema.json",
+  "title": "Shatter Protocol Response",
+  "description": "A response message sent from a language frontend to the core engine.",
+  "type": "object",
+  "required": ["protocol_version", "id", "status"],
+  "properties": {
+    "protocol_version": {
+      "type": "string",
+      "description": "Protocol version for compatibility checking.",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "id": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Request ID this response corresponds to."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["handshake", "analyze", "instrument", "execute", "shutdown_ack", "error"],
+      "description": "The response type, matching the originating command."
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/handshake_response" },
+    { "$ref": "#/$defs/analyze_response" },
+    { "$ref": "#/$defs/instrument_response" },
+    { "$ref": "#/$defs/execute_response" },
+    { "$ref": "#/$defs/shutdown_ack_response" },
+    { "$ref": "#/$defs/error_response" }
+  ],
+  "$defs": {
+    "handshake_response": {
+      "type": "object",
+      "properties": {
+        "status": { "const": "handshake" },
+        "frontend_version": {
+          "type": "string",
+          "description": "Protocol version the frontend supports."
+        },
+        "language": {
+          "type": "string",
+          "description": "Language this frontend handles (e.g., 'typescript', 'go')."
+        },
+        "capabilities": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Capabilities supported by the frontend."
+        }
+      },
+      "required": ["status", "frontend_version", "language", "capabilities"]
+    },
+    "analyze_response": {
+      "type": "object",
+      "properties": {
+        "status": { "const": "analyze" },
+        "functions": {
+          "type": "array",
+          "items": { "$ref": "function-analysis.schema.json" },
+          "description": "Functions found and analyzed."
+        }
+      },
+      "required": ["status", "functions"]
+    },
+    "instrument_response": {
+      "type": "object",
+      "properties": {
+        "status": { "const": "instrument" },
+        "instrumented": {
+          "type": "boolean",
+          "description": "Whether instrumentation succeeded."
+        },
+        "output_file": {
+          "type": ["string", "null"],
+          "description": "Path to the instrumented output file, if applicable."
+        }
+      },
+      "required": ["status", "instrumented"]
+    },
+    "execute_response": {
+      "type": "object",
+      "properties": {
+        "status": { "const": "execute" },
+        "return_value": {
+          "description": "Return value from the function, if it returned normally."
+        },
+        "thrown_error": {
+          "oneOf": [
+            { "$ref": "error-info.schema.json" },
+            { "type": "null" }
+          ],
+          "description": "Error thrown during execution, if any."
+        },
+        "branch_path": {
+          "type": "array",
+          "items": { "$ref": "branch-decision.schema.json" },
+          "description": "Branch decisions recorded during execution."
+        },
+        "lines_executed": {
+          "type": "array",
+          "items": { "type": "integer" },
+          "description": "Source lines executed."
+        },
+        "calls_to_external": {
+          "type": "array",
+          "items": { "$ref": "external-call.schema.json" },
+          "description": "Calls to external dependencies observed."
+        },
+        "path_constraints": {
+          "type": "array",
+          "items": { "$ref": "sym-constraint.schema.json" },
+          "description": "Symbolic path constraints collected."
+        },
+        "side_effects": {
+          "type": "array",
+          "items": { "$ref": "side-effect.schema.json" },
+          "description": "Side effects observed during execution."
+        },
+        "performance": {
+          "$ref": "performance-metrics.schema.json",
+          "description": "Performance metrics."
+        }
+      },
+      "required": ["status", "branch_path", "lines_executed", "calls_to_external", "path_constraints", "side_effects", "performance"]
+    },
+    "shutdown_ack_response": {
+      "type": "object",
+      "properties": {
+        "status": { "const": "shutdown_ack" }
+      },
+      "required": ["status"]
+    },
+    "error_response": {
+      "type": "object",
+      "properties": {
+        "status": { "const": "error" },
+        "code": {
+          "type": "string",
+          "enum": [
+            "file_not_found", "function_not_found", "parse_error",
+            "instrumentation_failed", "execution_timeout", "execution_crash",
+            "version_mismatch", "invalid_request", "internal_error"
+          ],
+          "description": "Machine-readable error code."
+        },
+        "message": {
+          "type": "string",
+          "description": "Human-readable error message."
+        },
+        "details": {
+          "description": "Additional error details (e.g., stack trace, source location)."
+        }
+      },
+      "required": ["status", "code", "message"]
+    }
+  }
+}

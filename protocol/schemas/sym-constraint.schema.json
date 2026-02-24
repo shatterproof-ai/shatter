@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://shatter.dev/protocol/sym-constraint.schema.json",
+  "title": "SymConstraint",
+  "description": "A symbolic constraint captured at a branch point.",
+  "type": "object",
+  "required": ["kind"],
+  "properties": {
+    "kind": {
+      "type": "string",
+      "enum": ["expr", "unknown"]
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "kind": { "const": "expr" },
+        "expr": {
+          "$ref": "sym-expr.schema.json",
+          "description": "A fully symbolic expression that can be sent to Z3."
+        }
+      },
+      "required": ["kind", "expr"]
+    },
+    {
+      "properties": {
+        "kind": { "const": "unknown" },
+        "hint": {
+          "type": "string",
+          "description": "Describes the original source that could not be tracked symbolically."
+        }
+      },
+      "required": ["kind", "hint"]
+    }
+  ]
+}
