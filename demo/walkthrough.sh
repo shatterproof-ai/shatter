@@ -120,7 +120,7 @@ EXAMPLES=(
     "examples/typescript/src/04-errors.ts:safeDivide"
 )
 
-TOTAL=3
+TOTAL=4
 
 # ─── Walkthrough ──────────────────────────────────────────────────────
 
@@ -145,13 +145,18 @@ step 1 $TOTAL "Analyze Target Functions" \
     "Discover parameters, types, and branch conditions" \
     $SHATTER explore --analyze-only "${EXAMPLES[@]}"
 
-# Stage 2: Explore
-step 2 $TOTAL "Generate & Execute Inputs" \
+# Stage 2: Analyze with scope config
+step 2 $TOTAL "Analyze with Scope Config" \
+    "Load a scope config to control mocking and file inclusion" \
+    $SHATTER explore --analyze-only --scope shatter.scope.yaml.example "${EXAMPLES[@]}"
+
+# Stage 3: Explore
+step 3 $TOTAL "Generate & Execute Inputs" \
     "Concolic execution: generate inputs to cover all branches" \
     $SHATTER explore "${EXAMPLES[@]}"
 
-# Stage 3: Clusters
-step 3 $TOTAL "Show Behavior Clusters" \
+# Stage 4: Clusters
+step 4 $TOTAL "Show Behavior Clusters" \
     "Group executions by branch path into distinct behaviors" \
     $SHATTER explore --show-clusters "${EXAMPLES[@]}"
 

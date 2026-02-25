@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -6,6 +6,7 @@ use clap::{Parser, Subcommand};
 
 use shatter_core::frontend::{Frontend, FrontendConfig};
 use shatter_core::protocol::{Command as ProtoCommand, ResponseResult};
+use shatter_core::scope::{ScopeConfig, ScopeMatcher};
 
 /// Shatter: automatic exploratory testing via concolic execution.
 #[derive(Parser, Debug)]
@@ -31,6 +32,10 @@ enum CliCommand {
         /// Timeout in seconds for the entire exploration.
         #[arg(long, default_value_t = 60)]
         timeout: u64,
+
+        /// Path to a scope configuration YAML file (shatter.scope.yaml).
+        #[arg(long)]
+        scope: Option<PathBuf>,
 
         /// Only run the analyze phase (skip exploration).
         #[arg(long)]
@@ -123,9 +128,23 @@ async fn run_explore(
     targets: &[String],
     max_iterations: u32,
     timeout: u64,
+    scope_path: Option<&Path>,
     analyze_only: bool,
     _show_clusters: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let scope_config = match scope_path {
+        Some(path) => {
+            let config = ScopeConfig::from_file(path)
+                .map_err(|e| format!("failed to load scope config: {e}"))?;
+            println!("Loaded scope config from {}", path.display());
+            config
+        }
+        None => ScopeConfig::default(),
+    };
+
+    let _scope_matcher = ScopeMatcher::new(&scope_config)
+        .map_err(|e| format!("invalid scope config: {e}"))?;
+
     let parsed: Vec<Target> = targets
         .iter()
         .map(|t| parse_target(t))
@@ -220,10 +239,19 @@ async fn main() -> ExitCode {
             targets,
             max_iterations,
             timeout,
+            scope,
             analyze_only,
             show_clusters,
         } => {
-            run_explore(&targets, max_iterations, timeout, analyze_only, show_clusters).await
+            run_explore(
+                &targets,
+                max_iterations,
+                timeout,
+                scope.as_deref(),
+                analyze_only,
+                show_clusters,
+            )
+            .await
         }
     };
 
@@ -308,14 +336,31 @@ mod tests {
                 targets,
                 max_iterations,
                 timeout,
+                scope,
                 analyze_only,
                 show_clusters,
             } => {
                 assert_eq!(targets, vec!["test.ts:myFunc"]);
                 assert_eq!(max_iterations, 100);
                 assert_eq!(timeout, 60);
+                assert!(scope.is_none());
                 assert!(!analyze_only);
                 assert!(!show_clusters);
+            }
+        }
+    }
+
+    #[test]
+    fn cli_parses_explore_with_scope_flag() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "explore",
+            "--scope", "shatter.scope.yaml",
+            "test.ts:myFunc",
+        ]);
+        match cli.command {
+            CliCommand::Explore { scope, .. } => {
+                assert_eq!(scope, Some(PathBuf::from("shatter.scope.yaml")));
             }
         }
     }
@@ -336,12 +381,14 @@ mod tests {
                 targets,
                 max_iterations,
                 timeout,
+                scope,
                 analyze_only,
                 show_clusters,
             } => {
                 assert_eq!(targets, vec!["a.ts:fn1", "b.go:Fn2"]);
                 assert_eq!(max_iterations, 50);
                 assert_eq!(timeout, 120);
+                assert!(scope.is_none());
                 assert!(analyze_only);
                 assert!(!show_clusters);
             }

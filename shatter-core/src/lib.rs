@@ -4,6 +4,7 @@ pub mod behavior;
 pub mod execution_record;
 pub mod frontend;
 pub mod protocol;
+pub mod scope;
 pub mod solver;
 pub mod sym_expr;
 pub mod types;
