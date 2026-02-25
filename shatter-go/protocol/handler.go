@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 )
 
 const frontendVersion = "0.1.0"
@@ -125,10 +126,32 @@ func (h *Handler) handleAnalyze(resp Response, req Request) Response {
 		return resp
 	}
 
-	// Stub: real analysis will use go/types and go/ast.
+	var functionName string
+	if req.Function != nil {
+		functionName = *req.Function
+	}
+
+	functions, err := AnalyzeFile(req.File, functionName)
+	if err != nil {
+		if functionName != "" && isNotFound(err) {
+			resp.Status = "error"
+			resp.Code = "function_not_found"
+			resp.Message = fmt.Sprintf("function %q not found in %s", functionName, req.File)
+			return resp
+		}
+		resp.Status = "error"
+		resp.Code = "parse_error"
+		resp.Message = err.Error()
+		return resp
+	}
+
 	resp.Status = "analyze"
-	resp.Functions = []FunctionAnalysis{}
+	resp.Functions = functions
 	return resp
+}
+
+func isNotFound(err error) bool {
+	return err != nil && strings.HasPrefix(err.Error(), "function not found")
 }
 
 func (h *Handler) handleInstrument(resp Response, req Request) Response {

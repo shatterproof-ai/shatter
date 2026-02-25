@@ -147,6 +147,63 @@ func TestAnalyzeWithExistingFileReturnsEmptyFunctions(t *testing.T) {
 	}
 }
 
+func TestAnalyzeReturnsFunctionAnalysis(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "add.go")
+	src := "package main\n\nfunc Add(a, b int) int { return a + b }\n"
+	if err := os.WriteFile(tmp, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	req := `{"protocol_version":"0.1.0","id":3,"command":"analyze","file":"` + tmp + `"}`
+	resp := sendRecv(t, req)
+	if resp.Status != "analyze" {
+		t.Fatalf("status = %q, want analyze", resp.Status)
+	}
+	if len(resp.Functions) != 1 {
+		t.Fatalf("functions len = %d, want 1", len(resp.Functions))
+	}
+	fn := resp.Functions[0]
+	if fn.Name != "Add" {
+		t.Errorf("name = %q, want Add", fn.Name)
+	}
+	if len(fn.Params) != 2 {
+		t.Errorf("params len = %d, want 2", len(fn.Params))
+	}
+}
+
+func TestAnalyzeWithFunctionFilterReturnsOneFunction(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "multi.go")
+	src := "package main\n\nfunc Foo() {}\nfunc Bar() {}\n"
+	if err := os.WriteFile(tmp, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	req := `{"protocol_version":"0.1.0","id":3,"command":"analyze","file":"` + tmp + `","function":"Bar"}`
+	resp := sendRecv(t, req)
+	if resp.Status != "analyze" {
+		t.Fatalf("status = %q, want analyze", resp.Status)
+	}
+	if len(resp.Functions) != 1 {
+		t.Fatalf("functions len = %d, want 1", len(resp.Functions))
+	}
+	if resp.Functions[0].Name != "Bar" {
+		t.Errorf("name = %q, want Bar", resp.Functions[0].Name)
+	}
+}
+
+func TestAnalyzeWithMissingFunctionReturnsError(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "empty.go")
+	if err := os.WriteFile(tmp, []byte("package main\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	req := `{"protocol_version":"0.1.0","id":3,"command":"analyze","file":"` + tmp + `","function":"Missing"}`
+	resp := sendRecv(t, req)
+	if resp.Status != "error" {
+		t.Fatalf("status = %q, want error", resp.Status)
+	}
+	if resp.Code != "function_not_found" {
+		t.Errorf("code = %q, want function_not_found", resp.Code)
+	}
+}
+
 func TestAnalyzeWithoutFileReturnsError(t *testing.T) {
 	resp := sendRecv(t, `{"protocol_version":"0.1.0","id":2,"command":"analyze"}`)
 	if resp.Status != "error" {
