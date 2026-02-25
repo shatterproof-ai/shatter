@@ -1,0 +1,104 @@
+name: Build Release Binaries
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            build-tool: cargo
+            artifact-name: shatter-linux-x86_64
+            binary-path: target/x86_64-unknown-linux-gnu/release/shatter
+            can-test: true
+
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            build-tool: cross
+            artifact-name: shatter-linux-aarch64
+            binary-path: target/aarch64-unknown-linux-gnu/release/shatter
+            can-test: false
+
+          - target: x86_64-apple-darwin
+            os: macos-13
+            build-tool: cargo
+            artifact-name: shatter-macos-x86_64
+            binary-path: target/x86_64-apple-darwin/release/shatter
+            can-test: true
+
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            build-tool: cargo
+            artifact-name: shatter-macos-aarch64
+            binary-path: target/aarch64-apple-darwin/release/shatter
+            can-test: true
+
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            build-tool: cargo
+            artifact-name: shatter-windows-x86_64
+            binary-path: target/x86_64-pc-windows-msvc/release/shatter.exe
+            can-test: true
+
+    runs-on: ${{ matrix.os }}
+    name: Build (${{ matrix.target }})
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ matrix.target }}-cargo-
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux' && matrix.build-tool == 'cargo'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libclang-dev
+
+      - name: Install cross
+        if: matrix.build-tool == 'cross'
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew install z3
+
+      - name: Build with cargo
+        if: matrix.build-tool == 'cargo'
+        run: cargo build --release --target ${{ matrix.target }} -p shatter-cli
+
+      - name: Build with cross
+        if: matrix.build-tool == 'cross'
+        run: cross build --release --target ${{ matrix.target }} -p shatter-cli
+
+      - name: Verify binary
+        if: matrix.can-test
+        run: ${{ matrix.binary-path }} --help
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: ${{ matrix.binary-path }}
+          if-no-files-found: error
