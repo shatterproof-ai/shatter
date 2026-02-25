@@ -1,0 +1,41 @@
+---
+name: go-conventions
+description: Go coding standards for Shatter. Use when writing or reviewing Go code in shatter-go/.
+user-invocable: true
+---
+
+## Code Quality
+- `go vet ./...` must pass
+- `golangci-lint run` must pass
+- Follow effective Go and Go proverbs
+- `gofmt`/`goimports` for formatting
+
+## Error Handling
+- Return `error` as last return value
+- Wrap with `fmt.Errorf("context: %w", err)`
+- Check all errors — no ignored return values
+- Sentinel errors or custom types for matchable errors
+
+## Testing
+- **Table-driven tests** for all test functions
+- Files: `foo_test.go` alongside `foo.go`
+- Names: `TestHandler_RejectsUnknownMessageType`
+- Use `t.Run` for subtests
+- `testify` acceptable if already in use; otherwise stdlib
+
+## Protocol Handlers
+- JSON over stdio (newline-delimited)
+- Types in `protocol/types.go` mirror `shatter-core/src/protocol.rs`
+- `json.Decoder` for streaming input, `json.Encoder` for output
+- Dispatch by message type in handler
+
+## Module Layout
+- Module root: `shatter-go/` (`go.mod`)
+- Packages: `protocol/` (types + handler), `instrument/` (AST, recorder, sym extraction)
+- One responsibility per package
+- Unexport what you can
+
+## Struct & Interface
+- Accept interfaces, return structs
+- Small interfaces (1-3 methods)
+- Pointer receivers for state-modifying methods
