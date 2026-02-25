@@ -116,7 +116,9 @@ Do not leave stale branches. Merge and delete promptly.
 - Branch names should reference the issue: `str-<hash>-short-description`
 - Commits should be clean and atomic — one logical change per commit
 - Rebase feature branches onto `main` before merging
+- Merge to `main` directly — do NOT create pull requests
 - After merge, delete the feature branch both locally and remotely
+- Work is complete when changes are on `main` and pushed, not when a branch is pushed
 
 ### Commit messages and issue references
 
