@@ -59,12 +59,80 @@ This project demands clean structure, high quality code, and thorough automated 
 - Run `go vet` before every commit
 - Use table-driven tests
 
+### Test Tiers
+
+Pick the right tier for the moment:
+
+| Tier | Command | Time | Use when |
+|---|---|---|---|
+| Quick | `cargo test` | ~5-15s | During development — catches logic bugs and regressions |
+| Standard | `cargo test && cargo clippy -- -D warnings` | ~15-30s | Before committing — full Rust validation |
+| Full | Standard + `cd shatter-ts && npm test` + `cd shatter-go && go test ./...` | ~30-60s | Before merge — validates all frontends too |
+
+When working on a single frontend, run its tests alongside Rust tests. When
+touching protocol definitions, always run Full — changes ripple across all
+frontends.
+
+## What NOT to Do
+
+- **Never use `unwrap()`** in library code (`shatter-core`) — use `Result` and `?`
+- **Never use `any`** in TypeScript — use proper typing
+- **Never edit generated protocol bindings** manually — regenerate from the schema
+- **Never commit** `.env` or files containing secrets — only `.env.example`
+- **Never add** `node_modules/`, `dist/`, or `target/` to git
+- **Never bypass clippy warnings** with `#[allow(...)]` without a comment explaining why
+- **Never add a CLI command** without updating `demo/walkthrough.sh`
+
+## Common Task Recipes
+
+### Add a new protocol message type
+
+1. Define the message in `shatter-core/src/protocol/` (Rust types + serde)
+2. Add round-trip serialization tests in the same module
+3. Implement the handler in each frontend:
+   - TypeScript: `shatter-ts/src/protocol/`
+   - Go: `shatter-go/protocol/`
+4. Add round-trip tests in each frontend (serialize → deserialize → verify)
+
+### Add a new CLI command
+
+1. Add the clap subcommand in `shatter-cli/src/`
+2. Implement the handler, delegating to `shatter-core` for logic
+3. Add integration tests exercising the command
+4. Update `demo/walkthrough.sh` to exercise the new command
+
+### Add a new frontend language
+
+1. Create `shatter-<lang>/` with the language's standard project structure
+2. Implement the JSON-over-stdio protocol handler
+3. Add round-trip tests for all existing protocol messages
+4. Add the frontend to the Full test tier
+5. Update the Project Structure table in this file
+
+### Add an integration test with known-answer functions
+
+1. Write the target function in `examples/typescript/src/` (or the relevant language)
+2. Document the expected branches and triggering inputs in a comment
+3. Write the test in `shatter-core` that invokes the engine and asserts all branches are found
+4. Check in a regression snapshot of the output
+
 ## Demo Walkthrough
 
 `demo/walkthrough.sh` exercises shatter's full pipeline against example functions in `examples/typescript/src/`. It calls the CLI the same way a user would, so it serves as a living integration test. Steps that use unimplemented CLI commands will fail with an error until those commands are built — this is intentional.
 
 When adding a new CLI command or flag, update the walkthrough to exercise it. The walkthrough should always reflect the current capabilities of the CLI.
 
+## README.md
+
+`README.md` is the human-facing project documentation. **Keep it up to date**
+when making changes that affect how someone builds, runs, or configures the
+project (new prerequisites, new commands, changed project structure, etc.).
+
 ## Agent Workflow
 
 See `AGENTS.md` for issue tracking (beads), git workflow, and agent operational instructions.
+
+@shatter-core/CLAUDE.md
+@shatter-cli/CLAUDE.md
+@shatter-ts/CLAUDE.md
+@shatter-go/CLAUDE.md

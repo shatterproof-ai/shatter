@@ -12,6 +12,22 @@ bd close <id>         # Complete work
 bd sync               # Sync with git
 ```
 
+## Issue Title Guidelines
+
+Titles appear in `bd list`, `bd ready`, and terminal window titles where space
+is limited. The **first ~20 characters** must be meaningfully descriptive:
+
+| Bad | Good |
+|---|---|
+| `Add support for symbolic integers` | `Symbolic int support` |
+| `Implement the protocol message for branch data` | `Branch data protocol msg` |
+| `Fix bug where path constraints are dropped` | `Path constraints dropped` |
+| `Create new frontend handler for Go` | `Go frontend handler` |
+
+- **Lead with the noun or area** ("Protocol …", "Solver …", "CLI …"), not filler verbs
+- **Under 50 characters** — put detail in `--description`
+- Avoid prefixes like "Add support for", "Update the", "Implement new"
+
 ## Landing the Plane (Session Completion)
 
 **When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
@@ -101,3 +117,36 @@ Do not leave stale branches. Merge and delete promptly.
 - Commits should be clean and atomic — one logical change per commit
 - Rebase feature branches onto `main` before merging
 - After merge, delete the feature branch both locally and remotely
+
+### Commit messages and issue references
+
+When a commit includes changes to beads data (`.beads/` files), list all
+affected issue IDs in the commit message body. This makes it easy to trace
+which issues were created, updated, or closed in each push.
+
+Example:
+```
+Add symbolic integer support to concolic engine
+
+Implements concrete+symbolic tracking for i32/i64 values with
+path constraint generation for branch conditions.
+
+Issues: str-a1b, str-c2d, str-e3f
+```
+
+### Worktree workflow
+
+When working in a git worktree (e.g. started with `--worktree`), **always merge
+the branch back into `main` before ending the session.** Do not leave the
+worktree branch unmerged without asking.
+
+**Before merging a worktree branch:**
+- Preview conflicts first: `git merge --no-commit --no-ff <branch>` then `git merge --abort`
+- Rebase long-lived worktrees onto main before merging: `git rebase main` (from the worktree)
+
+**Worktree cleanup — do NOT do it manually:**
+Claude Code manages worktree lifecycle automatically when invoked with
+`--worktree`. **Never** run `git worktree remove` or delete the worktree
+directory yourself — the user is prompted to keep or remove it when the session
+ends. Manually removing the worktree mid-session can break the working directory
+and cause confusing errors.
