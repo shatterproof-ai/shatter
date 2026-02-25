@@ -1,0 +1,11 @@
+[env]
+# bindgen (used by z3-sys) needs clang builtin headers like stdbool.h.
+# When only libclang1-XX is installed (without libclang-dev), clang's own
+# resource directory is missing. This tells bindgen to fall back to GCC's
+# builtin headers instead.
+#
+# If your GCC version differs, update the path:
+#   gcc -print-file-name=include
+#
+# Not needed inside the devcontainer (libclang-dev provides clang's headers).
+BINDGEN_EXTRA_CLANG_ARGS = { value = "-I/usr/lib/gcc/x86_64-linux-gnu/13/include", force = false }

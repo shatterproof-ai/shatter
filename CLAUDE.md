@@ -5,6 +5,24 @@ Automatic exploratory testing via concolic execution. Rust core engine with lang
 See `PLAN.md` for the full architecture and implementation roadmap.
 See `LANGUAGE-EVALUATION.md` for the rationale behind choosing Rust for the core.
 
+## Prerequisites
+
+**Devcontainer** (recommended): Open in VS Code with the Dev Containers extension — all dependencies are included.
+
+**Local development** (Ubuntu/Debian):
+- Rust toolchain (`rustup`)
+- Node.js 22+
+- Go 1.24+
+- `libclang` — needed by `bindgen` to build Z3 bindings
+  ```
+  sudo apt install libclang1-18    # minimal (runtime .so only)
+  # or
+  sudo apt install libclang-dev    # full (includes clang headers)
+  ```
+  If you install only `libclang1-18`, the checked-in `.cargo/config.toml` provides
+  a fallback `BINDGEN_EXTRA_CLANG_ARGS` pointing to GCC's builtin headers. If your
+  GCC version isn't 13, update the path — run `gcc -print-file-name=include` to find it.
+
 ## Project Structure
 
 ```
