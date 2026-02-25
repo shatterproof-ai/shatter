@@ -3,6 +3,7 @@
 pub mod behavior;
 pub mod execution_record;
 pub mod frontend;
+pub mod orchestrator;
 pub mod protocol;
 pub mod scope;
 pub mod solver;
