@@ -131,14 +131,7 @@ if [[ "$DRY_RUN" == true ]]; then
     echo "${YELLOW}(dry-run mode: commands will not be executed)${RESET}"
 fi
 
-# Build the TypeScript frontend if needed
-if [[ ! -f shatter-ts/dist/main.js && "$DRY_RUN" != true ]]; then
-    echo ""
-    echo "${DIM}Building TypeScript frontend...${RESET}"
-    (cd shatter-ts && npm install --silent && npm run build --silent)
-    echo "${GREEN}TypeScript frontend built.${RESET}"
-    echo ""
-fi
+# TypeScript frontend is embedded in the shatter binary — no manual build needed.
 
 # Stage 1: Analyze
 step 1 $TOTAL "Analyze Target Functions" \

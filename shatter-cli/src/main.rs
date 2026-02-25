@@ -8,6 +8,8 @@ use shatter_core::frontend::{Frontend, FrontendConfig};
 use shatter_core::protocol::{Command as ProtoCommand, ResponseResult};
 use shatter_core::scope::{ScopeConfig, ScopeMatcher};
 
+mod embedded_frontend;
+
 /// Shatter: automatic exploratory testing via concolic execution.
 #[derive(Parser, Debug)]
 #[command(name = "shatter", version, about)]
@@ -105,12 +107,15 @@ fn parse_target(target: &str) -> Result<Target, String> {
 }
 
 /// Build a `FrontendConfig` for the given language.
-fn frontend_config(language: Language, timeout: Duration) -> FrontendConfig {
+fn frontend_config(language: Language, timeout: Duration) -> Result<FrontendConfig, String> {
     let (command, args) = match language {
-        Language::TypeScript => (
-            PathBuf::from("node"),
-            vec!["shatter-ts/dist/main.js".to_string()],
-        ),
+        Language::TypeScript => {
+            let bundle_path = embedded_frontend::ensure_extracted()?;
+            (
+                PathBuf::from("node"),
+                vec![bundle_path.to_string_lossy().into_owned()],
+            )
+        }
         Language::Go => (
             PathBuf::from("shatter-go/shatter-go"),
             vec![],
@@ -120,7 +125,7 @@ fn frontend_config(language: Language, timeout: Duration) -> FrontendConfig {
     let mut config = FrontendConfig::new(command);
     config.args = args;
     config.request_timeout = timeout;
-    config
+    Ok(config)
 }
 
 /// Run the explore command.
@@ -164,7 +169,7 @@ async fn run_explore(
             target.language.label()
         );
 
-        let config = frontend_config(target.language, request_timeout);
+        let config = frontend_config(target.language, request_timeout)?;
         let mut frontend = Frontend::spawn(&config).await.map_err(|e| {
             format!(
                 "failed to spawn {} frontend: {e}",
@@ -410,15 +415,22 @@ mod tests {
     }
 
     #[test]
-    fn frontend_config_typescript_defaults() {
-        let config = frontend_config(Language::TypeScript, Duration::from_secs(30));
+    fn frontend_config_typescript_uses_embedded_bundle() {
+        let config = frontend_config(Language::TypeScript, Duration::from_secs(30)).unwrap();
         assert_eq!(config.command, PathBuf::from("node"));
         assert_eq!(config.request_timeout, Duration::from_secs(30));
+        // The arg should point to the extracted bundle, not a relative dev path
+        assert_eq!(config.args.len(), 1);
+        assert!(
+            config.args[0].contains("frontend-"),
+            "expected embedded bundle path, got: {}",
+            config.args[0]
+        );
     }
 
     #[test]
     fn frontend_config_go_defaults() {
-        let config = frontend_config(Language::Go, Duration::from_secs(45));
+        let config = frontend_config(Language::Go, Duration::from_secs(45)).unwrap();
         assert_eq!(config.command, PathBuf::from("shatter-go/shatter-go"));
         assert_eq!(config.request_timeout, Duration::from_secs(45));
     }
