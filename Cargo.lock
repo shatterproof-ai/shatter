@@ -1354,6 +1354,7 @@ dependencies = [
  "clap",
  "serde_json",
  "shatter-core",
+ "tokio",
 ]
 
 [[package]]
