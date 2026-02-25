@@ -2,6 +2,7 @@
 
 pub mod execution_record;
 pub mod frontend;
+pub mod orchestrator;
 pub mod protocol;
 pub mod solver;
 pub mod sym_expr;
