@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 
+use shatter_core::explorer::{self, ExploreConfig};
 use shatter_core::frontend::{Frontend, FrontendConfig};
 use shatter_core::protocol::{Command as ProtoCommand, ResponseResult};
 use shatter_core::scope::{ScopeConfig, ScopeMatcher};
@@ -214,13 +215,34 @@ async fn run_explore(
             }
         }
 
+        let functions = match &analyze_response.result {
+            ResponseResult::Analyze { functions } => functions.clone(),
+            _ => unreachable!("already matched above"),
+        };
+
         if analyze_only {
             shutdown_frontend(frontend).await;
             continue;
         }
 
-        // Exploration phase (placeholder — will be wired to concolic loop later)
-        println!("  Exploration phase: not yet implemented (max_iterations={max_iterations})");
+        // Exploration phase: generate random inputs and execute
+        let explore_config = ExploreConfig {
+            max_iterations,
+            seed: None,
+        };
+
+        for func in &functions {
+            println!("\n  Exploring {}...", func.name);
+
+            match explorer::explore_function(&mut frontend, func, &explore_config).await {
+                Ok(result) => {
+                    print!("{}", explorer::format_exploration_report(&result));
+                }
+                Err(e) => {
+                    eprintln!("  Exploration error for {}: {e}", func.name);
+                }
+            }
+        }
 
         shutdown_frontend(frontend).await;
         println!();

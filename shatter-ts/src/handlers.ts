@@ -16,9 +16,13 @@ import {
   type ErrorResponse,
 } from "./protocol.js";
 import { analyzeFile } from "./analyzer.js";
+import { executeFunction, buildExecuteResponse } from "./executor.js";
 
 /** Supported capabilities for this frontend. */
 const SUPPORTED_CAPABILITIES = ["analyze", "execute", "instrument"];
+
+/** Track the last analyzed file so execute can resolve function references. */
+let lastAnalyzedFile: string | null = null;
 
 /**
  * Dispatch a parsed request to the appropriate handler.
@@ -57,6 +61,7 @@ export function handleRequest(request: Request): { response: Response; shutdown:
         };
       }
 
+      lastAnalyzedFile = request.file;
       const functions = analyzeFile(request.file, request.function);
 
       if (request.function != null && functions.length === 0) {
@@ -93,28 +98,39 @@ export function handleRequest(request: Request): { response: Response; shutdown:
         shutdown: false,
       };
 
-    case "execute":
-      return {
-        response: {
-          protocol_version: PROTOCOL_VERSION,
-          id: request.id,
-          status: "execute",
-          return_value: null,
-          thrown_error: null,
-          branch_path: [],
-          lines_executed: [],
-          calls_to_external: [],
-          path_constraints: [],
-          side_effects: [],
-          performance: {
-            wall_time_ms: 0,
-            cpu_time_us: 0,
-            heap_used_bytes: 0,
-            heap_allocated_bytes: 0,
-          },
-        },
-        shutdown: false,
-      };
+    case "execute": {
+      // The function field may be just a name (from analyze) or file:func format.
+      // We need the file path to load the module. The analyze phase sets up the
+      // function name; the core sends the file context via the function field.
+      // For now, we look for a file:function pattern or use the last analyzed file.
+      const funcRef = request.function;
+      const fileForExec = resolveFileForExecute(funcRef);
+
+      if (!fileForExec) {
+        return {
+          response: errorResponse(
+            request.id,
+            "function_not_found",
+            `Cannot resolve file for function: ${funcRef}. Use file:function format.`,
+          ),
+          shutdown: false,
+        };
+      }
+
+      try {
+        const rawResult = executeFunction(fileForExec, funcRef, request.inputs);
+        return {
+          response: buildExecuteResponse(request.id, PROTOCOL_VERSION, rawResult),
+          shutdown: false,
+        };
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return {
+          response: errorResponse(request.id, "internal_error", `Execute failed: ${msg}`),
+          shutdown: false,
+        };
+      }
+    }
 
     case "shutdown":
       return {
@@ -126,6 +142,26 @@ export function handleRequest(request: Request): { response: Response; shutdown:
         shutdown: true,
       };
   }
+}
+
+/**
+ * Resolve the file path for an execute request.
+ *
+ * The function reference can be in "file:function" format or just a function name.
+ * If just a name, falls back to the last analyzed file.
+ */
+function resolveFileForExecute(funcRef: string): string | null {
+  if (funcRef.includes(":")) {
+    // file:function format — extract the file part
+    const lastColon = funcRef.lastIndexOf(":");
+    const file = funcRef.substring(0, lastColon);
+    if (fs.existsSync(file)) {
+      return file;
+    }
+  }
+
+  // Fall back to last analyzed file
+  return lastAnalyzedFile;
 }
 
 function isVersionCompatible(version: string): boolean {

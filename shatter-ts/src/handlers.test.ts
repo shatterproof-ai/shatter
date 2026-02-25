@@ -1,3 +1,4 @@
+import * as path from "node:path";
 import { handleRequest, parseRequest } from "./handlers.js";
 import { PROTOCOL_VERSION, type Request, type Response } from "./protocol.js";
 
@@ -187,18 +188,41 @@ describe("handleRequest", () => {
   });
 
   describe("execute", () => {
-    it("returns empty execution stub", () => {
+    it("returns error when function cannot be resolved", () => {
       const { response, shutdown } = handleRequest(
         makeRequest({ command: "execute", function: "foo", inputs: [], mocks: [] })
       );
       expect(shutdown).toBe(false);
+      expect(response.status).toBe("error");
+    });
+
+    it("executes a real function after analyze", () => {
+      const exampleFile = path.resolve(__dirname, "../../examples/typescript/src/01-arithmetic.ts");
+
+      // First analyze so the handler knows the file
+      handleRequest(
+        makeRequest({
+          command: "analyze",
+          file: exampleFile,
+          function: "classifyNumber",
+        })
+      );
+
+      const { response, shutdown } = handleRequest(
+        makeRequest({
+          command: "execute",
+          function: "classifyNumber",
+          inputs: [-5],
+          mocks: [],
+        })
+      );
+      expect(shutdown).toBe(false);
       expect(response.status).toBe("execute");
       if (response.status === "execute") {
-        expect(response.return_value).toBeNull();
+        expect(response.return_value).toBe("negative");
         expect(response.thrown_error).toBeNull();
         expect(response.branch_path).toEqual([]);
-        expect(response.lines_executed).toEqual([]);
-        expect(response.performance.wall_time_ms).toBe(0);
+        expect(response.performance.wall_time_ms).toBeGreaterThanOrEqual(0);
       }
     });
   });

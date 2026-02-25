@@ -8,6 +8,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 globset = "0.4"
+rand = "0.9"
 thiserror = "2"
 tokio = { version = "1", features = ["process", "io-util", "time", "rt", "macros"] }
 z3 = { version = "0.19", features = ["gh-release"] }
