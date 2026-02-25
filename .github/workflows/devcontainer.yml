@@ -1,0 +1,25 @@
+name: Devcontainer CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".devcontainer/**"
+  schedule:
+    - cron: "0 9 * * 1" # Weekly on Monday at 09:00 UTC
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build devcontainer and run tests
+        uses: devcontainers/ci@v0.3
+        with:
+          runCmd: |
+            cargo test
+            cargo clippy -- -D warnings
+            cd shatter-ts && npm test
+            cd ../shatter-go && go test ./...
