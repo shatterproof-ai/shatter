@@ -13,9 +13,9 @@ describe("analyzeFile", () => {
       expect(fn.name).toBe("add");
       expect(fn.params).toHaveLength(2);
       expect(fn.params[0]!.name).toBe("a");
-      expect(fn.params[0]!.typ).toEqual({ kind: "float" });
+      expect(fn.params[0]!.type).toEqual({ kind: "float" });
       expect(fn.params[1]!.name).toBe("b");
-      expect(fn.params[1]!.typ).toEqual({ kind: "float" });
+      expect(fn.params[1]!.type).toEqual({ kind: "float" });
       expect(fn.return_type).toEqual({ kind: "float" });
     });
 
@@ -24,7 +24,7 @@ describe("analyzeFile", () => {
       expect(results).toHaveLength(1);
       const fn = results[0]!;
       expect(fn.params[0]!.name).toBe("name");
-      expect(fn.params[0]!.typ).toEqual({ kind: "str" });
+      expect(fn.params[0]!.type).toEqual({ kind: "str" });
       expect(fn.return_type).toEqual({ kind: "str" });
     });
 
@@ -32,7 +32,7 @@ describe("analyzeFile", () => {
       const results = analyzeFile(path.join(fixtures, "primitives.ts"), "isPositive");
       expect(results).toHaveLength(1);
       const fn = results[0]!;
-      expect(fn.params[0]!.typ).toEqual({ kind: "float" });
+      expect(fn.params[0]!.type).toEqual({ kind: "float" });
       expect(fn.return_type).toEqual({ kind: "bool" });
     });
 
@@ -40,7 +40,7 @@ describe("analyzeFile", () => {
       const results = analyzeFile(path.join(fixtures, "primitives.ts"), "identity");
       expect(results).toHaveLength(1);
       const fn = results[0]!;
-      expect(fn.params[0]!.typ).toEqual({ kind: "int" });
+      expect(fn.params[0]!.type).toEqual({ kind: "int" });
       expect(fn.return_type).toEqual({ kind: "int" });
     });
   });
@@ -50,7 +50,7 @@ describe("analyzeFile", () => {
       const results = analyzeFile(path.join(fixtures, "arrays.ts"), "sum");
       expect(results).toHaveLength(1);
       const fn = results[0]!;
-      expect(fn.params[0]!.typ).toEqual({ kind: "array", element: { kind: "float" } });
+      expect(fn.params[0]!.type).toEqual({ kind: "array", element: { kind: "float" } });
       expect(fn.return_type).toEqual({ kind: "float" });
     });
 
@@ -58,7 +58,7 @@ describe("analyzeFile", () => {
       const results = analyzeFile(path.join(fixtures, "arrays.ts"), "flatten");
       expect(results).toHaveLength(1);
       const fn = results[0]!;
-      expect(fn.params[0]!.typ).toEqual({
+      expect(fn.params[0]!.type).toEqual({
         kind: "array",
         element: { kind: "array", element: { kind: "str" } },
       });
@@ -75,8 +75,8 @@ describe("analyzeFile", () => {
         kind: "object",
         fields: [["x", { kind: "float" }], ["y", { kind: "float" }]],
       };
-      expect(fn.params[0]!.typ).toEqual(expectedPoint);
-      expect(fn.params[1]!.typ).toEqual(expectedPoint);
+      expect(fn.params[0]!.type).toEqual(expectedPoint);
+      expect(fn.params[1]!.type).toEqual(expectedPoint);
       expect(fn.return_type).toEqual({ kind: "float" });
     });
 
@@ -94,7 +94,7 @@ describe("analyzeFile", () => {
       const results = analyzeFile(path.join(fixtures, "objects.ts"), "getLabel");
       expect(results).toHaveLength(1);
       const fn = results[0]!;
-      expect(fn.params[0]!.typ).toEqual({
+      expect(fn.params[0]!.type).toEqual({
         kind: "object",
         fields: [["name", { kind: "str" }], ["count", { kind: "float" }]],
       });
@@ -106,7 +106,7 @@ describe("analyzeFile", () => {
       const results = analyzeFile(path.join(fixtures, "unions.ts"), "format");
       expect(results).toHaveLength(1);
       const fn = results[0]!;
-      expect(fn.params[0]!.typ).toEqual({
+      expect(fn.params[0]!.type).toEqual({
         kind: "union",
         variants: [{ kind: "str" }, { kind: "float" }],
       });
@@ -116,7 +116,7 @@ describe("analyzeFile", () => {
       const results = analyzeFile(path.join(fixtures, "unions.ts"), "nullable");
       expect(results).toHaveLength(1);
       const fn = results[0]!;
-      expect(fn.params[0]!.typ).toEqual({
+      expect(fn.params[0]!.type).toEqual({
         kind: "nullable",
         inner: { kind: "float" },
       });
@@ -126,7 +126,7 @@ describe("analyzeFile", () => {
       const results = analyzeFile(path.join(fixtures, "unions.ts"), "optional");
       expect(results).toHaveLength(1);
       const fn = results[0]!;
-      expect(fn.params[0]!.typ).toEqual({
+      expect(fn.params[0]!.type).toEqual({
         kind: "nullable",
         inner: { kind: "float" },
       });
@@ -136,7 +136,7 @@ describe("analyzeFile", () => {
       const results = analyzeFile(path.join(fixtures, "unions.ts"), "undefinable");
       expect(results).toHaveLength(1);
       const fn = results[0]!;
-      expect(fn.params[0]!.typ).toEqual({
+      expect(fn.params[0]!.type).toEqual({
         kind: "nullable",
         inner: { kind: "str" },
       });
@@ -146,7 +146,7 @@ describe("analyzeFile", () => {
       const results = analyzeFile(path.join(fixtures, "unions.ts"), "complex");
       expect(results).toHaveLength(1);
       const fn = results[0]!;
-      expect(fn.params[0]!.typ).toEqual({
+      expect(fn.params[0]!.type).toEqual({
         kind: "nullable",
         inner: { kind: "union", variants: [{ kind: "str" }, { kind: "float" }] },
       });
@@ -159,7 +159,7 @@ describe("analyzeFile", () => {
       expect(results).toHaveLength(1);
       const fn = results[0]!;
       expect(fn.name).toBe("double");
-      expect(fn.params[0]!.typ).toEqual({ kind: "float" });
+      expect(fn.params[0]!.type).toEqual({ kind: "float" });
       expect(fn.return_type).toEqual({ kind: "float" });
     });
 
@@ -168,8 +168,8 @@ describe("analyzeFile", () => {
       expect(results).toHaveLength(1);
       const fn = results[0]!;
       expect(fn.params).toHaveLength(2);
-      expect(fn.params[0]!.typ).toEqual({ kind: "str" });
-      expect(fn.params[1]!.typ).toEqual({ kind: "str" });
+      expect(fn.params[0]!.type).toEqual({ kind: "str" });
+      expect(fn.params[1]!.type).toEqual({ kind: "str" });
     });
   });
 

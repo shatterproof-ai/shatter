@@ -15,6 +15,11 @@ DELAY=2
 DRY_RUN=false
 SHATTER="cargo run --quiet --bin shatter --"
 
+# Ensure bindgen can find stdbool.h via GCC's include path (avoids requiring libclang-dev)
+if command -v gcc &>/dev/null; then
+    export BINDGEN_EXTRA_CLANG_ARGS="${BINDGEN_EXTRA_CLANG_ARGS:-} -I$(gcc -print-file-name=include)"
+fi
+
 # Color support (disabled if not a terminal)
 if [[ -t 1 ]]; then
     BOLD=$'\033[1m'
@@ -115,7 +120,7 @@ EXAMPLES=(
     "examples/typescript/src/04-errors.ts:safeDivide"
 )
 
-TOTAL=4
+TOTAL=3
 
 # ─── Walkthrough ──────────────────────────────────────────────────────
 
@@ -124,6 +129,15 @@ echo "${BOLD}${GREEN}Shatter Walkthrough${RESET}"
 echo "${DIM}Exercising shatter's pipeline against ${#EXAMPLES[@]} example functions${RESET}"
 if [[ "$DRY_RUN" == true ]]; then
     echo "${YELLOW}(dry-run mode: commands will not be executed)${RESET}"
+fi
+
+# Build the TypeScript frontend if needed
+if [[ ! -f shatter-ts/dist/main.js && "$DRY_RUN" != true ]]; then
+    echo ""
+    echo "${DIM}Building TypeScript frontend...${RESET}"
+    (cd shatter-ts && npm install --silent && npm run build --silent)
+    echo "${GREEN}TypeScript frontend built.${RESET}"
+    echo ""
 fi
 
 # Stage 1: Analyze
@@ -140,10 +154,5 @@ step 2 $TOTAL "Generate & Execute Inputs" \
 step 3 $TOTAL "Show Behavior Clusters" \
     "Group executions by branch path into distinct behaviors" \
     $SHATTER explore --show-clusters "${EXAMPLES[@]}"
-
-# Stage 4: Spec
-step 4 $TOTAL "Generate Specifications" \
-    "Produce behavior summaries and invariant reports" \
-    $SHATTER spec "${EXAMPLES[@]}"
 
 echo "${BOLD}${GREEN}Walkthrough complete.${RESET}"

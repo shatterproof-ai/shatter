@@ -133,7 +133,7 @@ function analyzeParameter(param: ts.ParameterDeclaration, checker: ts.TypeChecke
     typ = { kind: "nullable", inner: typ };
   }
 
-  return { name, typ };
+  return { name, type: typ };
 }
 
 /**

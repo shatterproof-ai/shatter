@@ -163,7 +163,7 @@ export interface FunctionAnalysis {
 
 export interface ParamInfo {
   name: string;
-  typ: TypeInfo;
+  type: TypeInfo;
 }
 
 export type TypeInfo =
