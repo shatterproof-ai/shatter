@@ -7,6 +7,7 @@
  * implemented in subsequent issues).
  */
 
+import * as fs from "node:fs";
 import {
   PROTOCOL_VERSION,
   FRONTEND_LANGUAGE,
@@ -14,6 +15,7 @@ import {
   type Response,
   type ErrorResponse,
 } from "./protocol.js";
+import { analyzeFile } from "./analyzer.js";
 
 /** Supported capabilities for this frontend. */
 const SUPPORTED_CAPABILITIES = ["analyze", "execute", "instrument"];
@@ -47,16 +49,37 @@ export function handleRequest(request: Request): { response: Response; shutdown:
         shutdown: false,
       };
 
-    case "analyze":
+    case "analyze": {
+      if (!fs.existsSync(request.file)) {
+        return {
+          response: errorResponse(request.id, "file_not_found", `File not found: ${request.file}`),
+          shutdown: false,
+        };
+      }
+
+      const functions = analyzeFile(request.file, request.function);
+
+      if (request.function != null && functions.length === 0) {
+        return {
+          response: errorResponse(
+            request.id,
+            "function_not_found",
+            `Function not found: ${request.function} in ${request.file}`,
+          ),
+          shutdown: false,
+        };
+      }
+
       return {
         response: {
           protocol_version: PROTOCOL_VERSION,
           id: request.id,
           status: "analyze",
-          functions: [],
+          functions,
         },
         shutdown: false,
       };
+    }
 
     case "instrument":
       return {

@@ -123,14 +123,51 @@ describe("handleRequest", () => {
   });
 
   describe("analyze", () => {
-    it("returns empty functions list (stub)", () => {
+    it("returns file_not_found error for missing file", () => {
       const { response, shutdown } = handleRequest(
-        makeRequest({ command: "analyze", file: "test.ts" })
+        makeRequest({ command: "analyze", file: "nonexistent.ts" })
+      );
+      expect(shutdown).toBe(false);
+      expect(response.status).toBe("error");
+      if (response.status === "error") {
+        expect(response.code).toBe("file_not_found");
+      }
+    });
+
+    it("returns function_not_found error for missing function in existing file", () => {
+      const fixtureFile = require("path").join(__dirname, "__fixtures__", "primitives.ts");
+      const { response, shutdown } = handleRequest(
+        makeRequest({ command: "analyze", file: fixtureFile, function: "nonexistent" })
+      );
+      expect(shutdown).toBe(false);
+      expect(response.status).toBe("error");
+      if (response.status === "error") {
+        expect(response.code).toBe("function_not_found");
+      }
+    });
+
+    it("returns function analysis for existing file and function", () => {
+      const fixtureFile = require("path").join(__dirname, "__fixtures__", "primitives.ts");
+      const { response, shutdown } = handleRequest(
+        makeRequest({ command: "analyze", file: fixtureFile, function: "add" })
       );
       expect(shutdown).toBe(false);
       expect(response.status).toBe("analyze");
       if (response.status === "analyze") {
-        expect(response.functions).toEqual([]);
+        expect(response.functions).toHaveLength(1);
+        expect(response.functions[0]!.name).toBe("add");
+        expect(response.functions[0]!.params).toHaveLength(2);
+      }
+    });
+
+    it("returns all functions when no function name specified", () => {
+      const fixtureFile = require("path").join(__dirname, "__fixtures__", "primitives.ts");
+      const { response } = handleRequest(
+        makeRequest({ command: "analyze", file: fixtureFile })
+      );
+      expect(response.status).toBe("analyze");
+      if (response.status === "analyze") {
+        expect(response.functions.length).toBeGreaterThan(1);
       }
     });
   });
