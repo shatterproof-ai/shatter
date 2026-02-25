@@ -31,6 +31,9 @@ RUN curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
+# Install Claude Code CLI
+RUN npm install -g @anthropic-ai/claude-code
+
 # Install Go
 RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" | tar -C /usr/local -xz
 ENV PATH="/usr/local/go/bin:/home/vscode/go/bin:${PATH}"
