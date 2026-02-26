@@ -1,1 +1,0 @@
-/home/ketan/project/shatter/.claude/worktrees/str-31j/shatter-rust/target/debug/shatter-rust: /home/ketan/project/shatter/.claude/worktrees/str-31j/shatter-rust/src/handler.rs /home/ketan/project/shatter/.claude/worktrees/str-31j/shatter-rust/src/main.rs /home/ketan/project/shatter/.claude/worktrees/str-31j/shatter-rust/src/protocol.rs
