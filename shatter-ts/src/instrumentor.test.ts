@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-non-null-assertion */
 import ts from "typescript";
-import { instrumentFunction, buildSymExpr, RECORD_FUNCTION, BRANCH_FUNCTION } from "./instrumentor";
-import type { SymExpr, BranchDecision, SymConstraint } from "./protocol";
+import { instrumentFunction, buildSymExpr, RECORD_FUNCTION, BRANCH_FUNCTION, MOCK_REGISTRY, MOCK_CALL_FUNCTION } from "./instrumentor";
+import type { SymExpr, BranchDecision, SymConstraint, MockConfig } from "./protocol";
 
 /** Transpile TypeScript to JavaScript so it can be executed with new Function(). */
 function transpileToJs(tsSource: string): string {
@@ -522,7 +522,7 @@ describe("symbolic branch instrumentation", () => {
     });
   });
 
-  it("produces unknown for unsupported expressions", () => {
+  it("resolves local variable data flow to symbolic expression", () => {
     const source = `function check(x: number): boolean {
   const y = x * 2;
   if (y > 10) {
@@ -534,13 +534,18 @@ describe("symbolic branch instrumentation", () => {
     if ("error" in result) throw new Error(result.error);
 
     const { branches } = executeAndCollect(result.instrumentedSource, "check", [20]);
-    // y is a local variable, not a parameter — left side is unknown
+    // y = x * 2, so y > 10 becomes (x * 2) > 10
     expect(branches[0]!.constraint).toEqual({
       kind: "expr",
       expr: {
         kind: "bin_op",
         op: "gt",
-        left: { kind: "unknown" },
+        left: {
+          kind: "bin_op",
+          op: "mul",
+          left: { kind: "param", name: "x", path: [] },
+          right: { kind: "const", type: "int", value: 2 },
+        },
         right: { kind: "const", type: "int", value: 10 },
       },
     });
@@ -796,5 +801,254 @@ describe("buildSymExpr", () => {
       const result = buildSymExpr(expr, new Set(["x", "y"]));
       expect(result).toHaveProperty("op", expectedOp);
     }
+  });
+
+  it("resolves local variable via data flow map", () => {
+    const expr = parseExpr("y > 10;");
+    const flowMap = new Map<string, SymExpr>([
+      ["y", { kind: "bin_op", op: "add", left: { kind: "param", name: "x", path: [] }, right: { kind: "const", type: "int", value: 1 } }],
+    ]);
+    expect(buildSymExpr(expr, new Set(["x"]), flowMap)).toEqual({
+      kind: "bin_op",
+      op: "gt",
+      left: {
+        kind: "bin_op",
+        op: "add",
+        left: { kind: "param", name: "x", path: [] },
+        right: { kind: "const", type: "int", value: 1 },
+      },
+      right: { kind: "const", type: "int", value: 10 },
+    });
+  });
+});
+
+describe("data flow tracking", () => {
+  it("tracks simple assignment from parameter expression", () => {
+    const source = `function check(x: number): boolean {
+  const y = x + 1;
+  if (y > 10) {
+    return true;
+  }
+  return false;
+}`;
+    const result = instrumentFunction(source, "check");
+    if ("error" in result) throw new Error(result.error);
+
+    const { branches } = executeAndCollect(result.instrumentedSource, "check", [20]);
+    expect(branches[0]!.constraint).toEqual({
+      kind: "expr",
+      expr: {
+        kind: "bin_op",
+        op: "gt",
+        left: {
+          kind: "bin_op",
+          op: "add",
+          left: { kind: "param", name: "x", path: [] },
+          right: { kind: "const", type: "int", value: 1 },
+        },
+        right: { kind: "const", type: "int", value: 10 },
+      },
+    });
+  });
+
+  it("tracks transitive data flow through multiple locals", () => {
+    const source = `function check(x: number): boolean {
+  const a = x + 1;
+  const b = a * 2;
+  if (b > 10) {
+    return true;
+  }
+  return false;
+}`;
+    const result = instrumentFunction(source, "check");
+    if ("error" in result) throw new Error(result.error);
+
+    const { branches } = executeAndCollect(result.instrumentedSource, "check", [20]);
+    // b = a * 2 = (x + 1) * 2
+    expect(branches[0]!.constraint).toEqual({
+      kind: "expr",
+      expr: {
+        kind: "bin_op",
+        op: "gt",
+        left: {
+          kind: "bin_op",
+          op: "mul",
+          left: {
+            kind: "bin_op",
+            op: "add",
+            left: { kind: "param", name: "x", path: [] },
+            right: { kind: "const", type: "int", value: 1 },
+          },
+          right: { kind: "const", type: "int", value: 2 },
+        },
+        right: { kind: "const", type: "int", value: 10 },
+      },
+    });
+  });
+
+  it("does not track variables with non-symbolic initializers", () => {
+    const source = `function check(x: number): boolean {
+  const y = Math.random();
+  if (y > 0.5) {
+    return true;
+  }
+  return false;
+}`;
+    const result = instrumentFunction(source, "check");
+    if ("error" in result) throw new Error(result.error);
+
+    const { branches } = executeAndCollect(result.instrumentedSource, "check", [1]);
+    // y is not derived from params, so constraint is unknown
+    expect(branches[0]!.constraint).toEqual({
+      kind: "expr",
+      expr: {
+        kind: "bin_op",
+        op: "gt",
+        left: { kind: "unknown" },
+        right: { kind: "const", type: "float", value: 0.5 },
+      },
+    });
+  });
+
+  it("tracks data flow through negation", () => {
+    const source = `function check(flag: boolean): boolean {
+  const notFlag = !flag;
+  if (notFlag) {
+    return true;
+  }
+  return false;
+}`;
+    const result = instrumentFunction(source, "check");
+    if ("error" in result) throw new Error(result.error);
+
+    const { branches } = executeAndCollect(result.instrumentedSource, "check", [false]);
+    expect(branches[0]!.constraint).toEqual({
+      kind: "expr",
+      expr: {
+        kind: "un_op",
+        op: "not",
+        operand: { kind: "param", name: "flag", path: [] },
+      },
+    });
+  });
+});
+
+describe("mock injection via import rewriting", () => {
+  it("rewrites import with mocked symbol to use mock registry", () => {
+    const source = `import { foo } from 'bar';
+function doStuff(x: number): number {
+  return foo(x);
+}`;
+    const mocks: MockConfig[] = [{
+      symbol: "bar:foo",
+      return_values: [42],
+      should_track_calls: true,
+      default_behavior: "return_generated",
+    }];
+    const result = instrumentFunction(source, "doStuff", "input.ts", mocks);
+    if ("error" in result) throw new Error(result.error);
+
+    // The import should be removed and replaced with a const using the mock registry
+    expect(result.instrumentedSource).not.toContain("import { foo }");
+    expect(result.instrumentedSource).toContain(MOCK_REGISTRY);
+    expect(result.instrumentedSource).toContain("bar:foo");
+  });
+
+  it("keeps non-mocked imports intact", () => {
+    const source = `import { foo, bar } from 'mymod';
+function doStuff(x: number): number {
+  return foo(x) + bar(x);
+}`;
+    const mocks: MockConfig[] = [{
+      symbol: "mymod:foo",
+      return_values: [42],
+      should_track_calls: true,
+      default_behavior: "return_generated",
+    }];
+    const result = instrumentFunction(source, "doStuff", "input.ts", mocks);
+    if ("error" in result) throw new Error(result.error);
+
+    // bar should still be imported normally
+    expect(result.instrumentedSource).toContain("bar");
+    expect(result.instrumentedSource).toContain(MOCK_REGISTRY);
+    expect(result.instrumentedSource).toContain("mymod:foo");
+    // bar should not reference mock registry
+    expect(result.instrumentedSource).not.toContain("mymod:bar");
+  });
+
+  it("generates mock call recording via __shatter_mock_call", () => {
+    const source = `import { compute } from 'math-lib';
+function doStuff(x: number): number {
+  return compute(x);
+}`;
+    const mocks: MockConfig[] = [{
+      symbol: "math-lib:compute",
+      return_values: [99],
+      should_track_calls: true,
+      default_behavior: "return_generated",
+    }];
+    const result = instrumentFunction(source, "doStuff", "input.ts", mocks);
+    if ("error" in result) throw new Error(result.error);
+
+    expect(result.instrumentedSource).toContain(MOCK_CALL_FUNCTION);
+    expect(result.instrumentedSource).toContain("math-lib");
+    expect(result.instrumentedSource).toContain("compute");
+  });
+
+  it("does not modify imports when no mocks provided", () => {
+    const source = `import { foo } from 'bar';
+function doStuff(x: number): number {
+  return foo(x);
+}`;
+    const result = instrumentFunction(source, "doStuff", "input.ts", []);
+    if ("error" in result) throw new Error(result.error);
+
+    expect(result.instrumentedSource).toContain("import { foo }");
+    expect(result.instrumentedSource).not.toContain(MOCK_REGISTRY);
+  });
+
+  it("executes mocked function through registry", () => {
+    const source = `import { getValue } from 'data';
+function doStuff(x: number): number {
+  return getValue(x) + 1;
+}`;
+    const mocks: MockConfig[] = [{
+      symbol: "data:getValue",
+      return_values: [100],
+      should_track_calls: true,
+      default_behavior: "return_generated",
+    }];
+    const result = instrumentFunction(source, "doStuff", "input.ts", mocks);
+    if ("error" in result) throw new Error(result.error);
+
+    // Execute the instrumented code with a mock registry
+    const jsSource = transpileToJs(result.instrumentedSource);
+    const mockCalls: Array<{ module: string; symbol: string; args: unknown[]; returnValue: unknown }> = [];
+
+    const mockRegistry: Record<string, (...args: unknown[]) => unknown> = {
+      "data:getValue": (_x: unknown) => 100,
+    };
+
+    const fn = new Function(
+      RECORD_FUNCTION,
+      BRANCH_FUNCTION,
+      MOCK_REGISTRY,
+      MOCK_CALL_FUNCTION,
+      `${jsSource}\nreturn doStuff(5);`,
+    );
+    const returnValue = fn(
+      () => {},
+      (_id: number, _line: number, cond: boolean) => cond,
+      mockRegistry,
+      (mod: string, sym: string, args: unknown[], ret: unknown) => {
+        mockCalls.push({ module: mod, symbol: sym, args: [...args], returnValue: ret });
+      },
+    );
+
+    expect(returnValue).toBe(101); // 100 + 1
+    expect(mockCalls).toHaveLength(1);
+    expect(mockCalls[0]!.module).toBe("data");
+    expect(mockCalls[0]!.symbol).toBe("getValue");
+    expect(mockCalls[0]!.returnValue).toBe(100);
   });
 });

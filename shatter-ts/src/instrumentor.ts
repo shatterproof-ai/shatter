@@ -12,7 +12,7 @@
  */
 
 import ts from "typescript";
-import type { SymExpr, BinOpKind, UnOpKind } from "./protocol.js";
+import type { SymExpr, BinOpKind, UnOpKind, MockConfig } from "./protocol.js";
 
 /** Result of instrumenting a source file. */
 export interface InstrumentResult {
@@ -25,6 +25,18 @@ export interface InstrumentResult {
   /** Total number of branch points instrumented. */
   branchCount: number;
 }
+
+/**
+ * The name of the mock call recording function inserted into instrumented code.
+ * Signature: __shatter_mock_call(module, symbol, args, returnValue) → void
+ */
+export const MOCK_CALL_FUNCTION = "__shatter_mock_call";
+
+/**
+ * The name of the global mock registry object.
+ * Maps "module:symbol" to mock functions.
+ */
+export const MOCK_REGISTRY = "__shatter_mocks";
 
 /**
  * The name of the line-recording function inserted into instrumented code.
@@ -44,6 +56,8 @@ interface InstrumentationContext {
   factory: ts.NodeFactory;
   paramNames: Set<string>;
   nextBranchId: number;
+  /** Maps local variable names to their symbolic expressions derived from parameters. */
+  dataFlowMap: Map<string, SymExpr>;
 }
 
 /**
@@ -53,12 +67,14 @@ interface InstrumentationContext {
  * @param source - The original TypeScript source text.
  * @param functionName - The name of the function to instrument.
  * @param fileName - The file name used for parsing (affects diagnostics only).
+ * @param mocks - Optional mock configurations for import rewriting.
  * @returns The instrumented source, or an error message.
  */
 export function instrumentFunction(
   source: string,
   functionName: string,
   fileName = "input.ts",
+  mocks: MockConfig[] = [],
 ): InstrumentResult | { error: string } {
   const sourceFile = ts.createSourceFile(
     fileName,
@@ -74,13 +90,17 @@ export function instrumentFunction(
   }
 
   const paramNames = extractParamNames(targetFunction, sourceFile);
+  const dataFlowMap = buildDataFlowMap(targetFunction, sourceFile, paramNames);
 
   // Shared mutable branch counter — captured by the transformer closure.
   const branchState = { nextBranchId: 0 };
 
+  // Build mock lookup for import rewriting
+  const mocksBySymbol = buildMockLookup(mocks);
+
   const printer = ts.createPrinter({ newLine: ts.NewLineKind.LineFeed });
   const transformed = ts.transform(sourceFile, [
-    createInstrumentationTransformer(functionName, paramNames, branchState),
+    createInstrumentationTransformer(functionName, paramNames, branchState, dataFlowMap, mocksBySymbol),
   ]);
   const result = printer.printFile(transformed.transformed[0] as ts.SourceFile);
   transformed.dispose();
@@ -157,6 +177,241 @@ function extractParamNames(
   return names;
 }
 
+// ---------------------------------------------------------------------------
+// Data flow analysis
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a map from local variable names to their symbolic expressions.
+ * Scans variable declarations in the function body where the initializer
+ * references parameters (directly or transitively through other locals).
+ */
+function buildDataFlowMap(
+  node: ts.FunctionDeclaration | ts.VariableStatement,
+  sourceFile: ts.SourceFile,
+  paramNames: Set<string>,
+): Map<string, SymExpr> {
+  const body = extractFunctionBody(node);
+  if (!body) {
+    return new Map();
+  }
+
+  const flowMap = new Map<string, SymExpr>();
+
+  // Create a combined lookup: params + already-resolved locals
+  const resolveName = (name: string): SymExpr | undefined => {
+    if (paramNames.has(name)) {
+      return { kind: "param", name, path: [] };
+    }
+    return flowMap.get(name);
+  };
+
+  visitStatementsForDataFlow(body.statements, resolveName, flowMap);
+  return flowMap;
+}
+
+/**
+ * Walk statements collecting variable declarations whose initializers
+ * can be resolved to symbolic expressions.
+ */
+function visitStatementsForDataFlow(
+  statements: ts.NodeArray<ts.Statement> | ReadonlyArray<ts.Statement>,
+  resolveName: (name: string) => SymExpr | undefined,
+  flowMap: Map<string, SymExpr>,
+): void {
+  for (const stmt of statements) {
+    if (ts.isVariableStatement(stmt)) {
+      for (const decl of stmt.declarationList.declarations) {
+        if (ts.isIdentifier(decl.name) && decl.initializer) {
+          const symExpr = buildSymExprWithFlow(decl.initializer, resolveName);
+          if (symExpr.kind !== "unknown") {
+            flowMap.set(decl.name.text, symExpr);
+          }
+        }
+      }
+    }
+    // Recurse into blocks for if/else, loops, etc.
+    if (ts.isIfStatement(stmt)) {
+      visitStatementsForDataFlow(
+        statementsFromBranch(stmt.thenStatement),
+        resolveName,
+        flowMap,
+      );
+      if (stmt.elseStatement) {
+        if (ts.isIfStatement(stmt.elseStatement)) {
+          visitStatementsForDataFlow([stmt.elseStatement], resolveName, flowMap);
+        } else {
+          visitStatementsForDataFlow(
+            statementsFromBranch(stmt.elseStatement),
+            resolveName,
+            flowMap,
+          );
+        }
+      }
+    }
+    if (ts.isBlock(stmt)) {
+      visitStatementsForDataFlow(stmt.statements, resolveName, flowMap);
+    }
+  }
+}
+
+function statementsFromBranch(stmt: ts.Statement): ReadonlyArray<ts.Statement> {
+  if (ts.isBlock(stmt)) {
+    return stmt.statements;
+  }
+  return [stmt];
+}
+
+/**
+ * Build a SymExpr from an expression, resolving local variables via the
+ * flow-sensitive resolveName lookup (which checks params and already-mapped locals).
+ */
+function buildSymExprWithFlow(
+  expr: ts.Expression,
+  resolveName: (name: string) => SymExpr | undefined,
+): SymExpr {
+  if (ts.isParenthesizedExpression(expr)) {
+    return buildSymExprWithFlow(expr.expression, resolveName);
+  }
+
+  if (ts.isIdentifier(expr)) {
+    const resolved = resolveName(expr.text);
+    if (resolved) {
+      return resolved;
+    }
+    return { kind: "unknown" };
+  }
+
+  if (ts.isNumericLiteral(expr)) {
+    const n = Number(expr.text);
+    if (Number.isInteger(n)) {
+      return { kind: "const", type: "int", value: n };
+    }
+    return { kind: "const", type: "float", value: n };
+  }
+
+  if (ts.isStringLiteral(expr)) {
+    return { kind: "const", type: "str", value: expr.text };
+  }
+
+  if (expr.kind === ts.SyntaxKind.TrueKeyword) {
+    return { kind: "const", type: "bool", value: true };
+  }
+
+  if (expr.kind === ts.SyntaxKind.FalseKeyword) {
+    return { kind: "const", type: "bool", value: false };
+  }
+
+  if (expr.kind === ts.SyntaxKind.NullKeyword) {
+    return { kind: "const", type: "null" };
+  }
+
+  if (ts.isBinaryExpression(expr)) {
+    const op = binaryTokenToOp(expr.operatorToken.kind);
+    if (op) {
+      const left = buildSymExprWithFlow(expr.left, resolveName);
+      const right = buildSymExprWithFlow(expr.right, resolveName);
+      // Only produce a symbolic bin_op if at least one side is non-unknown
+      if (left.kind !== "unknown" || right.kind !== "unknown") {
+        return { kind: "bin_op", op, left, right };
+      }
+    }
+    return { kind: "unknown" };
+  }
+
+  if (ts.isPrefixUnaryExpression(expr)) {
+    const op = unaryTokenToOp(expr.operator);
+    if (op) {
+      const operand = buildSymExprWithFlow(expr.operand, resolveName);
+      if (operand.kind !== "unknown") {
+        return { kind: "un_op", op, operand };
+      }
+    }
+    return { kind: "unknown" };
+  }
+
+  if (ts.isPropertyAccessExpression(expr)) {
+    // Check if this is a property chain starting from a known name
+    const chain = resolvePropertyChainWithFlow(expr, resolveName);
+    if (chain) {
+      return chain;
+    }
+    return { kind: "unknown" };
+  }
+
+  return { kind: "unknown" };
+}
+
+/**
+ * Resolve property access chains using flow-sensitive lookup.
+ */
+function resolvePropertyChainWithFlow(
+  expr: ts.PropertyAccessExpression,
+  resolveName: (name: string) => SymExpr | undefined,
+): SymExpr | null {
+  const path: string[] = [];
+  let current: ts.Expression = expr;
+
+  while (ts.isPropertyAccessExpression(current)) {
+    path.unshift(current.name.text);
+    current = current.expression;
+  }
+
+  if (ts.isIdentifier(current)) {
+    const resolved = resolveName(current.text);
+    if (resolved && resolved.kind === "param") {
+      return { kind: "param", name: resolved.name, path: [...resolved.path, ...path] };
+    }
+  }
+  return null;
+}
+
+/**
+ * Extract the function body from a function declaration or variable statement.
+ */
+function extractFunctionBody(
+  node: ts.FunctionDeclaration | ts.VariableStatement,
+): ts.Block | undefined {
+  if (ts.isFunctionDeclaration(node) && node.body) {
+    return node.body;
+  }
+
+  if (ts.isVariableStatement(node)) {
+    for (const decl of node.declarationList.declarations) {
+      if (decl.initializer) {
+        if (ts.isArrowFunction(decl.initializer) && ts.isBlock(decl.initializer.body)) {
+          return decl.initializer.body;
+        }
+        if (ts.isFunctionExpression(decl.initializer) && decl.initializer.body) {
+          return decl.initializer.body;
+        }
+      }
+    }
+  }
+
+  return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Mock support
+// ---------------------------------------------------------------------------
+
+/** Parsed mock lookup: maps "module:symbol" to the MockConfig. */
+type MockLookup = Map<string, MockConfig>;
+
+/**
+ * Build a lookup map from mock configs keyed by "module:symbol".
+ * The module is extracted from the symbol field if it contains a colon,
+ * otherwise the symbol is used as-is.
+ */
+function buildMockLookup(mocks: MockConfig[]): MockLookup {
+  const lookup = new Map<string, MockConfig>();
+  for (const mock of mocks) {
+    lookup.set(mock.symbol, mock);
+  }
+  return lookup;
+}
+
 /**
  * Create a TypeScript transformer that instruments a specific function
  * with __shatter_record() and __shatter_branch() calls.
@@ -165,6 +420,8 @@ function createInstrumentationTransformer(
   targetFunctionName: string,
   paramNames: Set<string>,
   branchState: { nextBranchId: number },
+  dataFlowMap: Map<string, SymExpr> = new Map(),
+  mockLookup: MockLookup = new Map(),
 ): ts.TransformerFactory<ts.SourceFile> {
   return (context) => {
     return (sourceFile) => {
@@ -173,6 +430,7 @@ function createInstrumentationTransformer(
         factory: context.factory,
         paramNames,
         nextBranchId: 0,
+        dataFlowMap,
       };
 
       const visitor = (node: ts.Node): ts.Node => {
@@ -260,7 +518,14 @@ function createInstrumentationTransformer(
         return ts.visitEachChild(node, visitor, context);
       };
 
-      return ts.visitNode(sourceFile, visitor) as ts.SourceFile;
+      let result = ts.visitNode(sourceFile, visitor) as ts.SourceFile;
+
+      // Rewrite imports for mocked symbols (post-pass to handle multi-node expansion)
+      if (mockLookup.size > 0) {
+        result = rewriteImportsInSourceFile(result, mockLookup, context.factory);
+      }
+
+      return result;
     };
   };
 }
@@ -429,7 +694,7 @@ function wrapBranchCondition(
   ctx: InstrumentationContext,
 ): ts.Expression {
   const branchId = ctx.nextBranchId++;
-  const symExpr = buildSymExpr(condition, ctx.paramNames);
+  const symExpr = buildSymExpr(condition, ctx.paramNames, ctx.dataFlowMap);
   const symExprLiteral = valueToAstLiteral(symExpr, ctx.factory);
 
   return ctx.factory.createCallExpression(
@@ -456,14 +721,19 @@ function wrapBranchCondition(
 export function buildSymExpr(
   expr: ts.Expression,
   paramNames: Set<string>,
+  dataFlowMap: Map<string, SymExpr> = new Map(),
 ): SymExpr {
   if (ts.isParenthesizedExpression(expr)) {
-    return buildSymExpr(expr.expression, paramNames);
+    return buildSymExpr(expr.expression, paramNames, dataFlowMap);
   }
 
   if (ts.isIdentifier(expr)) {
     if (paramNames.has(expr.text)) {
       return { kind: "param", name: expr.text, path: [] };
+    }
+    const flowExpr = dataFlowMap.get(expr.text);
+    if (flowExpr) {
+      return flowExpr;
     }
     return { kind: "unknown" };
   }
@@ -503,8 +773,8 @@ export function buildSymExpr(
   if (ts.isBinaryExpression(expr)) {
     const op = binaryTokenToOp(expr.operatorToken.kind);
     if (op) {
-      const left = buildSymExpr(expr.left, paramNames);
-      const right = buildSymExpr(expr.right, paramNames);
+      const left = buildSymExpr(expr.left, paramNames, dataFlowMap);
+      const right = buildSymExpr(expr.right, paramNames, dataFlowMap);
       return { kind: "bin_op", op, left, right };
     }
     return { kind: "unknown" };
@@ -513,26 +783,26 @@ export function buildSymExpr(
   if (ts.isPrefixUnaryExpression(expr)) {
     const op = unaryTokenToOp(expr.operator);
     if (op) {
-      const operand = buildSymExpr(expr.operand, paramNames);
+      const operand = buildSymExpr(expr.operand, paramNames, dataFlowMap);
       return { kind: "un_op", op, operand };
     }
     return { kind: "unknown" };
   }
 
   if (ts.isTypeOfExpression(expr)) {
-    const operand = buildSymExpr(expr.expression, paramNames);
+    const operand = buildSymExpr(expr.expression, paramNames, dataFlowMap);
     return { kind: "un_op", op: "typeof" as UnOpKind, operand };
   }
 
   if (ts.isCallExpression(expr)) {
     if (ts.isPropertyAccessExpression(expr.expression)) {
       const methodName = expr.expression.name.text;
-      const receiver = buildSymExpr(expr.expression.expression, paramNames);
-      const args = expr.arguments.map((a) => buildSymExpr(a, paramNames));
+      const receiver = buildSymExpr(expr.expression.expression, paramNames, dataFlowMap);
+      const args = expr.arguments.map((a) => buildSymExpr(a, paramNames, dataFlowMap));
       return { kind: "call", name: methodName, receiver, args };
     }
     if (ts.isIdentifier(expr.expression)) {
-      const args = expr.arguments.map((a) => buildSymExpr(a, paramNames));
+      const args = expr.arguments.map((a) => buildSymExpr(a, paramNames, dataFlowMap));
       return { kind: "call", name: expr.expression.text, receiver: null, args };
     }
     return { kind: "unknown" };
@@ -667,6 +937,183 @@ function valueToAstLiteral(value: unknown, factory: ts.NodeFactory): ts.Expressi
     );
   }
   return factory.createIdentifier("undefined");
+}
+
+// ---------------------------------------------------------------------------
+// Import rewriting for mocks
+// ---------------------------------------------------------------------------
+
+/**
+ * Rewrite all imports in a source file for mocked symbols.
+ * Expands each import declaration that contains mocked symbols into
+ * a (possibly smaller) import + const declarations for mock lookups.
+ */
+function rewriteImportsInSourceFile(
+  sourceFile: ts.SourceFile,
+  mockLookup: MockLookup,
+  factory: ts.NodeFactory,
+): ts.SourceFile {
+  const newStatements: ts.Statement[] = [];
+  let changed = false;
+
+  for (const stmt of sourceFile.statements) {
+    if (ts.isImportDeclaration(stmt)) {
+      const result = rewriteImportForMocks(stmt, mockLookup, factory);
+      if (Array.isArray(result)) {
+        newStatements.push(...result as ts.Statement[]);
+        changed = true;
+      } else {
+        newStatements.push(result as ts.Statement);
+      }
+    } else {
+      newStatements.push(stmt);
+    }
+  }
+
+  if (!changed) {
+    return sourceFile;
+  }
+
+  return factory.updateSourceFile(sourceFile, newStatements);
+}
+
+/**
+ * Rewrite an import declaration to use the mock registry for mocked symbols.
+ *
+ * For `import { foo, bar } from 'module'` where `module:foo` is mocked:
+ * - `foo` becomes: `const foo = __shatter_mocks['module:foo'] || original_foo`
+ * - `bar` remains unchanged (kept in the original import)
+ *
+ * Returns the original import if no symbols are mocked, or a mix of the
+ * original import (for non-mocked symbols) plus variable statements for
+ * mocked symbols.
+ */
+function rewriteImportForMocks(
+  node: ts.ImportDeclaration,
+  mockLookup: MockLookup,
+  factory: ts.NodeFactory,
+): ts.Node | ts.Node[] {
+  const moduleSpecifier = node.moduleSpecifier;
+  if (!ts.isStringLiteral(moduleSpecifier)) {
+    return node;
+  }
+  const moduleName = moduleSpecifier.text;
+
+  const namedBindings = node.importClause?.namedBindings;
+  if (!namedBindings || !ts.isNamedImports(namedBindings)) {
+    return node;
+  }
+
+  const mockedElements: ts.ImportSpecifier[] = [];
+  const unmockedElements: ts.ImportSpecifier[] = [];
+
+  for (const element of namedBindings.elements) {
+    const symbolKey = `${moduleName}:${element.name.text}`;
+    if (mockLookup.has(symbolKey)) {
+      mockedElements.push(element);
+    } else {
+      unmockedElements.push(element);
+    }
+  }
+
+  if (mockedElements.length === 0) {
+    return node;
+  }
+
+  const result: ts.Node[] = [];
+
+  // Keep the original import for unmocked symbols
+  if (unmockedElements.length > 0) {
+    const newBindings = factory.createNamedImports(unmockedElements);
+    const newClause = factory.createImportClause(false, undefined, newBindings);
+    result.push(
+      factory.createImportDeclaration(node.modifiers, newClause, node.moduleSpecifier),
+    );
+  }
+
+  // For each mocked symbol, generate a variable declaration that looks up the mock
+  for (const element of mockedElements) {
+    const symbolName = element.name.text;
+    const mockKey = `${moduleName}:${symbolName}`;
+
+    // const <symbol> = (() => { const _orig = <symbol>; const _mock = __shatter_mocks['module:symbol'];
+    //   return _mock ? (...args) => { const _r = _mock(...args); __shatter_mock_call('module', 'symbol', args, _r); return _r; } : _orig; })()
+    // Simplified: const <symbol> = __shatter_mocks['module:symbol']
+    // with call recording wrapper
+    const mockLookupExpr = factory.createElementAccessExpression(
+      factory.createIdentifier(MOCK_REGISTRY),
+      factory.createStringLiteral(mockKey),
+    );
+
+    // Create a wrapper that records mock calls:
+    // __shatter_mocks['module:symbol']
+    //   ? (...args) => { const r = __shatter_mocks['module:symbol'](...args); __shatter_mock_call('module', 'symbol', args, r); return r; }
+    //   : undefined
+    const argsParam = factory.createParameterDeclaration(
+      undefined, factory.createToken(ts.SyntaxKind.DotDotDotToken),
+      factory.createIdentifier("args"),
+    );
+
+    const callMock = factory.createCallExpression(
+      factory.createElementAccessExpression(
+        factory.createIdentifier(MOCK_REGISTRY),
+        factory.createStringLiteral(mockKey),
+      ),
+      undefined,
+      [factory.createSpreadElement(factory.createIdentifier("args"))],
+    );
+
+    const rDecl = factory.createVariableStatement(
+      undefined,
+      factory.createVariableDeclarationList(
+        [factory.createVariableDeclaration("_r", undefined, undefined, callMock)],
+        ts.NodeFlags.Const,
+      ),
+    );
+
+    const recordCall = factory.createExpressionStatement(
+      factory.createCallExpression(
+        factory.createIdentifier(MOCK_CALL_FUNCTION),
+        undefined,
+        [
+          factory.createStringLiteral(moduleName),
+          factory.createStringLiteral(symbolName),
+          factory.createIdentifier("args"),
+          factory.createIdentifier("_r"),
+        ],
+      ),
+    );
+
+    const returnR = factory.createReturnStatement(factory.createIdentifier("_r"));
+
+    const wrapperBody = factory.createBlock([rDecl, recordCall, returnR], true);
+    const wrapperArrow = factory.createArrowFunction(
+      undefined, undefined, [argsParam], undefined,
+      factory.createToken(ts.SyntaxKind.EqualsGreaterThanToken),
+      wrapperBody,
+    );
+
+    // Ternary: __shatter_mocks['key'] ? wrapper : undefined
+    const conditional = factory.createConditionalExpression(
+      mockLookupExpr,
+      factory.createToken(ts.SyntaxKind.QuestionToken),
+      wrapperArrow,
+      factory.createToken(ts.SyntaxKind.ColonToken),
+      factory.createIdentifier("undefined"),
+    );
+
+    const varDecl = factory.createVariableStatement(
+      undefined,
+      factory.createVariableDeclarationList(
+        [factory.createVariableDeclaration(symbolName, undefined, undefined, conditional)],
+        ts.NodeFlags.Const,
+      ),
+    );
+
+    result.push(varDecl);
+  }
+
+  return result;
 }
 
 // ---------------------------------------------------------------------------
