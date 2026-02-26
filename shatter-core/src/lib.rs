@@ -1,6 +1,7 @@
 //\! Shatter core engine: concolic execution and constraint solving.
 
 pub mod behavior;
+pub mod cache;
 pub mod execution_record;
 pub mod explorer;
 pub mod frontend;

@@ -63,6 +63,41 @@ impl BehaviorMap {
         }
     }
 
+    /// Build a behavior map from an [`ExplorationResult`](crate::explorer::ExplorationResult).
+    ///
+    /// Converts each [`ExecutionSummary`](crate::explorer::ExecutionSummary) that discovered
+    /// a new path into a [`Behavior`] entry.
+    pub fn from_exploration_result(
+        function_id: impl Into<String>,
+        result: &crate::explorer::ExplorationResult,
+    ) -> Self {
+        let behaviors = result
+            .new_path_executions
+            .iter()
+            .enumerate()
+            .map(|(i, exec)| {
+                let thrown_error = exec.thrown_error.as_ref().map(|msg| ErrorInfo {
+                    error_type: "Error".to_string(),
+                    message: msg.clone(),
+                    stack: None,
+                });
+                Behavior {
+                    id: i as u32,
+                    input_args: exec.inputs.clone(),
+                    return_value: exec.return_value.clone(),
+                    thrown_error,
+                    branch_path: vec![],
+                    side_effects: vec![],
+                }
+            })
+            .collect();
+
+        Self {
+            function_id: function_id.into(),
+            behaviors,
+        }
+    }
+
     /// Convert this behavior map into a [`MockConfig`] for use when testing callers.
     ///
     /// Each behavior's return value becomes an entry in `return_values`. Behaviors
@@ -292,6 +327,7 @@ mod tests {
 
     use super::*;
     use crate::execution_record::ExternalCall;
+    use crate::explorer::{ExecutionSummary, ExplorationResult};
     use crate::protocol::{DependencyKind, ExternalDependency, FunctionAnalysis};
     use crate::types::TypeInfo;
 
@@ -363,6 +399,47 @@ mod tests {
         assert_eq!(map.behaviors[0].id, 0);
         assert_eq!(map.behaviors[0].input_args, vec![json!(42)]);
         assert_eq!(map.behaviors[0].return_value, Some(json!(true)));
+    }
+
+    #[test]
+    fn behavior_map_from_exploration_result() {
+        let result = ExplorationResult {
+            function_name: "classify".to_string(),
+            iterations: 10,
+            unique_paths: 2,
+            lines_covered: 5,
+            total_lines: 10,
+            new_path_executions: vec![
+                ExecutionSummary {
+                    inputs: vec![json!(5)],
+                    return_value: Some(json!("positive")),
+                    thrown_error: None,
+                    lines_executed: vec![1, 2],
+                    is_new_path: true,
+                },
+                ExecutionSummary {
+                    inputs: vec![json!(-1)],
+                    return_value: None,
+                    thrown_error: Some("Error: negative input".to_string()),
+                    lines_executed: vec![1, 3],
+                    is_new_path: true,
+                },
+            ],
+        };
+
+        let map = BehaviorMap::from_exploration_result("classify", &result);
+        assert_eq!(map.function_id, "classify");
+        assert_eq!(map.behaviors.len(), 2);
+        assert_eq!(map.behaviors[0].id, 0);
+        assert_eq!(map.behaviors[0].input_args, vec![json!(5)]);
+        assert_eq!(map.behaviors[0].return_value, Some(json!("positive")));
+        assert!(map.behaviors[0].thrown_error.is_none());
+        assert_eq!(map.behaviors[1].id, 1);
+        assert!(map.behaviors[1].thrown_error.is_some());
+        assert_eq!(
+            map.behaviors[1].thrown_error.as_ref().unwrap().message,
+            "Error: negative input"
+        );
     }
 
     #[test]

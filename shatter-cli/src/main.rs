@@ -4,6 +4,8 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 
+use shatter_core::behavior::BehaviorMap;
+use shatter_core::cache::BehaviorMapCache;
 use shatter_core::explorer::{self, ExploreConfig};
 use shatter_core::frontend::{Frontend, FrontendConfig};
 use shatter_core::protocol::{Command as ProtoCommand, ResponseResult};
@@ -48,6 +50,11 @@ enum CliCommand {
         /// Show behavior clusters after exploration.
         #[arg(long)]
         show_clusters: bool,
+
+        /// Directory for caching behavior maps across runs.
+        /// Falls back to SHATTER_CACHE_DIR env var, then `.shatter/cache/`.
+        #[arg(long, env = "SHATTER_CACHE_DIR")]
+        cache_dir: Option<PathBuf>,
     },
 
     /// Scan multiple functions in dependency order, using behavior maps as mocks.
@@ -161,6 +168,7 @@ async fn run_explore(
     scope_path: Option<&Path>,
     analyze_only: bool,
     _show_clusters: bool,
+    cache_dir: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let scope_config = match scope_path {
         Some(path) => {
@@ -174,6 +182,14 @@ async fn run_explore(
 
     let _scope_matcher = ScopeMatcher::new(&scope_config)
         .map_err(|e| format!("invalid scope config: {e}"))?;
+
+    let cache = {
+        let dir = match cache_dir {
+            Some(p) => p.to_path_buf(),
+            None => BehaviorMapCache::default_dir(&std::env::current_dir()?),
+        };
+        BehaviorMapCache::new(dir).map_err(|e| format!("failed to initialize cache: {e}"))?
+    };
 
     let parsed: Vec<Target> = targets
         .iter()
@@ -262,6 +278,12 @@ async fn run_explore(
             match explorer::explore_function(&mut frontend, func, &explore_config).await {
                 Ok(result) => {
                     print!("{}", explorer::format_exploration_report(&result));
+
+                    let behavior_map =
+                        BehaviorMap::from_exploration_result(&func.name, &result);
+                    if let Err(e) = cache.store(&behavior_map) {
+                        eprintln!("  Warning: failed to cache behavior map for {}: {e}", func.name);
+                    }
                 }
                 Err(e) => {
                     eprintln!("  Exploration error for {}: {e}", func.name);
@@ -412,6 +434,7 @@ async fn main() -> ExitCode {
             scope,
             analyze_only,
             show_clusters,
+            cache_dir,
         } => {
             run_explore(
                 &targets,
@@ -420,6 +443,7 @@ async fn main() -> ExitCode {
                 scope.as_deref(),
                 analyze_only,
                 show_clusters,
+                cache_dir.as_deref(),
             )
             .await
         }
@@ -525,6 +549,7 @@ mod tests {
                 scope,
                 analyze_only,
                 show_clusters,
+                cache_dir,
             } => {
                 assert_eq!(targets, vec!["test.ts:myFunc"]);
                 assert_eq!(max_iterations, 100);
@@ -532,6 +557,7 @@ mod tests {
                 assert!(scope.is_none());
                 assert!(!analyze_only);
                 assert!(!show_clusters);
+                assert!(cache_dir.is_none());
             }
             _ => panic!("expected Explore command"),
         }
@@ -572,6 +598,7 @@ mod tests {
                 scope,
                 analyze_only,
                 show_clusters,
+                cache_dir,
             } => {
                 assert_eq!(targets, vec!["a.ts:fn1", "b.go:Fn2"]);
                 assert_eq!(max_iterations, 50);
@@ -579,6 +606,36 @@ mod tests {
                 assert!(scope.is_none());
                 assert!(analyze_only);
                 assert!(!show_clusters);
+                assert!(cache_dir.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn cli_parses_cache_dir_flag() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "explore",
+            "--cache-dir", "/tmp/foo",
+            "test.ts:myFunc",
+        ]);
+        match cli.command {
+            CliCommand::Explore { cache_dir, .. } => {
+                assert_eq!(cache_dir, Some(PathBuf::from("/tmp/foo")));
+            }
+        }
+    }
+
+    #[test]
+    fn cli_cache_dir_defaults_to_none() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "explore",
+            "test.ts:myFunc",
+        ]);
+        match cli.command {
+            CliCommand::Explore { cache_dir, .. } => {
+                assert!(cache_dir.is_none());
             }
             _ => panic!("expected Explore command"),
         }

@@ -120,7 +120,7 @@ EXAMPLES=(
     "examples/typescript/src/04-errors.ts:safeDivide"
 )
 
-TOTAL=5
+TOTAL=6
 
 # ─── Walkthrough ──────────────────────────────────────────────────────
 
@@ -157,5 +157,10 @@ step 4 $TOTAL "Show Behavior Clusters" \
 step 5 $TOTAL "Scan in Dependency Order" \
     "Test functions leaf-first, using behavior maps as mocks for callers" \
     $SHATTER scan examples/typescript/src/01-arithmetic.ts
+
+# Stage 6: Cache behavior maps
+step 6 $TOTAL "Explore with Disk Cache" \
+    "Persist behavior maps to disk for reuse across runs" \
+    $SHATTER explore --cache-dir /tmp/shatter-demo-cache "${EXAMPLES[@]}"
 
 echo "${BOLD}${GREEN}Walkthrough complete.${RESET}"
