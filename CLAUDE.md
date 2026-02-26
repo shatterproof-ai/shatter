@@ -1,6 +1,6 @@
 # Shatter v2
 
-Automatic exploratory testing via concolic execution. Rust core engine with language-specific frontends (TypeScript, Go) communicating via JSON-over-stdio protocol.
+Automatic exploratory testing via concolic execution. Rust core engine with language-specific frontends (TypeScript, Go, Rust) communicating via JSON-over-stdio protocol.
 
 See `PLAN.md` for the full architecture and implementation roadmap.
 See `LANGUAGE-EVALUATION.md` for the rationale behind choosing Rust for the core.
@@ -30,6 +30,7 @@ shatter-core/     Rust core engine (library crate)
 shatter-cli/      Rust CLI binary (clap)
 shatter-ts/       TypeScript frontend (Node.js subprocess)
 shatter-go/       Go frontend (Go binary subprocess)
+shatter-rust/     Rust frontend (Rust binary subprocess)
 ```
 
 ## Code Quality Standards
@@ -154,3 +155,4 @@ See `AGENTS.md` for issue tracking (beads), git workflow, and agent operational 
 @shatter-cli/CLAUDE.md
 @shatter-ts/CLAUDE.md
 @shatter-go/CLAUDE.md
+@shatter-rust/CLAUDE.md
