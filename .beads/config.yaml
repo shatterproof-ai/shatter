@@ -10,8 +10,10 @@
 
 # Use no-db mode: load from JSONL, write back after each command
 # When true, bd will use .beads/issues.jsonl as the source of truth
-# instead of the Dolt database
-# no-db: false
+# instead of the Dolt database.
+# Enabled to prevent Dolt crashes in worktrees (worktrees don't get
+# the dolt/ directory since it's gitignored, causing nil pointer panics).
+no-db: true
 
 # Enable JSON output by default
 # json: false
