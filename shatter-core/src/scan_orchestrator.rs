@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
-use crate::behavior::{BehaviorCoverage, BehaviorMap, CallGraph, CallGraphError};
+use crate::behavior::{BehaviorCoverage, BehaviorMap, CallGraph, CallGraphError, TestOrderEntry};
 use crate::execution_record::ExecutionRecord;
 use crate::explorer::{self, ExploreConfig, ExploreError, ExplorationResult};
 use crate::frontend::Frontend;
@@ -99,7 +99,17 @@ pub async fn scan(
     config: &ScanConfig,
 ) -> Result<ScanResult, ScanError> {
     let call_graph = CallGraph::from_analyses(analyses);
-    let test_order = call_graph.test_order()?;
+    let order_entries = call_graph.test_order()?;
+
+    // Flatten test order entries into function names for iteration.
+    // MutualGroup entries are flattened in order (handled as a group is future work).
+    let test_order: Vec<String> = order_entries
+        .iter()
+        .flat_map(|entry| match entry {
+            TestOrderEntry::Single { function_id, .. } => vec![function_id.clone()],
+            TestOrderEntry::MutualGroup { function_ids } => function_ids.clone(),
+        })
+        .collect();
 
     let analysis_map: HashMap<&str, &FunctionAnalysis> =
         analyses.iter().map(|a| (a.name.as_str(), a)).collect();
@@ -297,14 +307,15 @@ mod tests {
     }
 
     #[test]
-    fn scan_cycle_returns_error() {
+    fn scan_mutual_recursion_returns_group() {
         let analyses = vec![
             make_analysis("a", vec!["b"]),
             make_analysis("b", vec!["a"]),
         ];
         let call_graph = CallGraph::from_analyses(&analyses);
-        let result = call_graph.test_order();
-        assert!(result.is_err());
+        let result = call_graph.test_order().expect("mutual recursion should not error");
+        assert_eq!(result.len(), 1);
+        assert!(matches!(&result[0], TestOrderEntry::MutualGroup { function_ids } if function_ids.len() == 2));
     }
 
     #[test]

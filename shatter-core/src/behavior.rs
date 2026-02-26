@@ -500,6 +500,7 @@ mod tests {
                     is_new_path: true,
                 },
             ],
+            raw_results: vec![],
         };
 
         let map = BehaviorMap::from_exploration_result("classify", &result);
