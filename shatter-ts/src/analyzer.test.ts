@@ -210,11 +210,160 @@ describe("analyzeFile", () => {
     });
   });
 
-  describe("branches and dependencies are empty stubs", () => {
-    it("returns empty branches and dependencies", () => {
+  describe("functions without branches have empty branches", () => {
+    it("returns empty branches for simple function", () => {
       const results = analyzeFile(path.join(fixtures, "primitives.ts"), "add");
       const fn = results[0]!;
       expect(fn.branches).toEqual([]);
+    });
+  });
+
+  describe("branch extraction", () => {
+    it("extracts a single if branch", () => {
+      const results = analyzeFile(path.join(fixtures, "branches.ts"), "simpleIf");
+      const fn = results[0]!;
+      expect(fn.branches).toHaveLength(1);
+      expect(fn.branches[0]!.id).toBe(0);
+      expect(fn.branches[0]!.branch_type).toBe("if");
+      expect(fn.branches[0]!.condition_text).toBe("x > 0");
+      expect(fn.branches[0]!.condition).toEqual({
+        kind: "bin_op",
+        op: "gt",
+        left: { kind: "param", name: "x", path: [] },
+        right: { kind: "const", type: "int", value: 0 },
+      });
+    });
+
+    it("extracts if/else-if as separate branches", () => {
+      const results = analyzeFile(path.join(fixtures, "branches.ts"), "ifElseIf");
+      const fn = results[0]!;
+      expect(fn.branches).toHaveLength(2);
+      expect(fn.branches[0]!.branch_type).toBe("if");
+      expect(fn.branches[0]!.condition_text).toBe("x > 0");
+      expect(fn.branches[1]!.branch_type).toBe("else_if");
+      expect(fn.branches[1]!.condition_text).toBe("x < 0");
+    });
+
+    it("extracts switch cases", () => {
+      const results = analyzeFile(path.join(fixtures, "branches.ts"), "switchCase");
+      const fn = results[0]!;
+      // Two case clauses (default is not a case clause)
+      expect(fn.branches).toHaveLength(2);
+      expect(fn.branches[0]!.branch_type).toBe("switch");
+      expect(fn.branches[0]!.condition_text).toBe("x === 1");
+      expect(fn.branches[1]!.branch_type).toBe("switch");
+      expect(fn.branches[1]!.condition_text).toBe("x === 2");
+    });
+
+    it("extracts ternary expressions", () => {
+      const results = analyzeFile(path.join(fixtures, "branches.ts"), "ternary");
+      const fn = results[0]!;
+      expect(fn.branches).toHaveLength(1);
+      expect(fn.branches[0]!.branch_type).toBe("ternary");
+      expect(fn.branches[0]!.condition_text).toBe("x > 0");
+    });
+
+    it("extracts logical AND short-circuit", () => {
+      const results = analyzeFile(path.join(fixtures, "branches.ts"), "logicalAnd");
+      const fn = results[0]!;
+      expect(fn.branches).toHaveLength(1);
+      expect(fn.branches[0]!.branch_type).toBe("logical_and");
+      expect(fn.branches[0]!.condition_text).toContain("&&");
+    });
+
+    it("extracts logical OR short-circuit", () => {
+      const results = analyzeFile(path.join(fixtures, "branches.ts"), "logicalOr");
+      const fn = results[0]!;
+      expect(fn.branches).toHaveLength(1);
+      expect(fn.branches[0]!.branch_type).toBe("logical_or");
+      expect(fn.branches[0]!.condition_text).toContain("||");
+    });
+
+    it("extracts nested if branches", () => {
+      const results = analyzeFile(path.join(fixtures, "branches.ts"), "nestedBranches");
+      const fn = results[0]!;
+      expect(fn.branches).toHaveLength(2);
+      expect(fn.branches[0]!.condition_text).toBe("x > 0");
+      expect(fn.branches[1]!.condition_text).toBe("y > 0");
+    });
+
+    it("extracts while loop branches", () => {
+      const results = analyzeFile(path.join(fixtures, "branches.ts"), "whileLoop");
+      const fn = results[0]!;
+      expect(fn.branches).toHaveLength(1);
+      expect(fn.branches[0]!.branch_type).toBe("while");
+      expect(fn.branches[0]!.condition_text).toBe("i < x");
+    });
+
+    it("extracts for loop branches", () => {
+      const results = analyzeFile(path.join(fixtures, "branches.ts"), "forLoop");
+      const fn = results[0]!;
+      expect(fn.branches).toHaveLength(1);
+      expect(fn.branches[0]!.branch_type).toBe("for");
+      expect(fn.branches[0]!.condition_text).toBe("i < x");
+    });
+
+    it("assigns sequential IDs across mixed branch types", () => {
+      const results = analyzeFile(path.join(fixtures, "branches.ts"), "mixedBranches");
+      const fn = results[0]!;
+      // if, 2 switch cases, ternary = 4 branches
+      expect(fn.branches).toHaveLength(4);
+      const ids = fn.branches.map((b) => b.id);
+      expect(ids).toEqual([0, 1, 2, 3]);
+    });
+
+    it("includes symbolic condition for param-based conditions", () => {
+      const results = analyzeFile(path.join(fixtures, "branches.ts"), "simpleIf");
+      const fn = results[0]!;
+      expect(fn.branches[0]!.condition).not.toBeNull();
+      expect(fn.branches[0]!.condition!.kind).toBe("bin_op");
+    });
+  });
+
+  describe("dependency detection", () => {
+    it("returns empty dependencies for function without external calls", () => {
+      const results = analyzeFile(path.join(fixtures, "dependencies.ts"), "noExternalDeps");
+      const fn = results[0]!;
+      expect(fn.dependencies).toEqual([]);
+    });
+
+    it("detects imported function calls as external dependencies", () => {
+      const results = analyzeFile(path.join(fixtures, "dependencies.ts"), "usesExternal");
+      const fn = results[0]!;
+      expect(fn.dependencies.length).toBeGreaterThanOrEqual(2);
+      const symbols = fn.dependencies.map((d) => d.symbol);
+      expect(symbols).toContain("helperAdd");
+      expect(symbols).toContain("helperFormat");
+    });
+
+    it("groups multiple calls to same function into one dependency", () => {
+      const results = analyzeFile(path.join(fixtures, "dependencies.ts"), "usesExternalMultipleTimes");
+      const fn = results[0]!;
+      const helperAddDep = fn.dependencies.find((d) => d.symbol === "helperAdd");
+      expect(helperAddDep).toBeDefined();
+      expect(helperAddDep!.call_sites).toHaveLength(2);
+    });
+
+    it("includes source_module for external dependencies", () => {
+      const results = analyzeFile(path.join(fixtures, "dependencies.ts"), "usesExternal");
+      const fn = results[0]!;
+      const helperAddDep = fn.dependencies.find((d) => d.symbol === "helperAdd");
+      expect(helperAddDep).toBeDefined();
+      expect(helperAddDep!.source_module).toContain("deps-helper");
+    });
+
+    it("includes return type and param types for dependencies", () => {
+      const results = analyzeFile(path.join(fixtures, "dependencies.ts"), "usesExternal");
+      const fn = results[0]!;
+      const helperAddDep = fn.dependencies.find((d) => d.symbol === "helperAdd");
+      expect(helperAddDep).toBeDefined();
+      expect(helperAddDep!.return_type).toEqual({ kind: "float" });
+      expect(helperAddDep!.param_types).toEqual([{ kind: "float" }, { kind: "float" }]);
+    });
+
+    it("returns empty dependencies for simple arithmetic function", () => {
+      const results = analyzeFile(path.join(fixtures, "primitives.ts"), "add");
+      const fn = results[0]!;
       expect(fn.dependencies).toEqual([]);
     });
   });

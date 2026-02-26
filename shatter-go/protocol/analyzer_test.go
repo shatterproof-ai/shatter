@@ -312,47 +312,64 @@ func TestAnalyzeScaleSliceExtractsRangeBranch(t *testing.T) {
 
 // --- Select statement branch extraction ---
 
-func TestAnalyzeSelectExampleExtractsSelectBranches(t *testing.T) {
-	results, err := AnalyzeFile(testdataPath("select.go"), "SelectExample")
-	if err != nil {
-		t.Fatalf("AnalyzeFile: %v", err)
-	}
-	fn := results[0]
-	if len(fn.Branches) != 3 {
-		t.Fatalf("branches len = %d, want 3", len(fn.Branches))
-	}
-	for _, br := range fn.Branches {
-		if br.BranchType != "select" {
-			t.Errorf("branch_type = %q, want select", br.BranchType)
+func TestAnalyzeSelectBranches(t *testing.T) {
+	tests := []struct {
+		name       string
+		funcName   string
+		wantCount  int
+		wantCases  []struct {
+			conditionText string
+			branchType    string
 		}
+	}{
+		{
+			name:      "with default has three branches",
+			funcName:  "SelectExample",
+			wantCount: 3,
+			wantCases: []struct {
+				conditionText string
+				branchType    string
+			}{
+				{conditionText: "v := <-ch1", branchType: "select"},
+				{conditionText: `ch2 <- "hello"`, branchType: "select"},
+				{conditionText: "default", branchType: "select"},
+			},
+		},
+		{
+			name:      "without default has two branches",
+			funcName:  "SelectNoDefault",
+			wantCount: 2,
+			wantCases: []struct {
+				conditionText string
+				branchType    string
+			}{
+				{conditionText: "v := <-ch1", branchType: "select"},
+				{conditionText: "v := <-ch2", branchType: "select"},
+			},
+		},
 	}
-	// First case: receive from ch1
-	if fn.Branches[0].ConditionText != "v := <-ch1" {
-		t.Errorf("branch[0] condition_text = %q, want %q", fn.Branches[0].ConditionText, "v := <-ch1")
-	}
-	// Second case: send to ch2
-	if fn.Branches[1].ConditionText != `ch2 <- "hello"` {
-		t.Errorf("branch[1] condition_text = %q, want %q", fn.Branches[1].ConditionText, `ch2 <- "hello"`)
-	}
-	// Third case: default
-	if fn.Branches[2].ConditionText != "default" {
-		t.Errorf("branch[2] condition_text = %q, want %q", fn.Branches[2].ConditionText, "default")
-	}
-}
 
-func TestAnalyzeSelectNoDefaultExtractsTwoBranches(t *testing.T) {
-	results, err := AnalyzeFile(testdataPath("select.go"), "SelectNoDefault")
-	if err != nil {
-		t.Fatalf("AnalyzeFile: %v", err)
-	}
-	fn := results[0]
-	if len(fn.Branches) != 2 {
-		t.Fatalf("branches len = %d, want 2", len(fn.Branches))
-	}
-	for _, br := range fn.Branches {
-		if br.BranchType != "select" {
-			t.Errorf("branch_type = %q, want select", br.BranchType)
-		}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			results, err := AnalyzeFile(testdataPath("select.go"), tc.funcName)
+			if err != nil {
+				t.Fatalf("AnalyzeFile: %v", err)
+			}
+			fn := results[0]
+			if len(fn.Branches) != tc.wantCount {
+				t.Fatalf("branches len = %d, want %d", len(fn.Branches), tc.wantCount)
+			}
+			for i, want := range tc.wantCases {
+				t.Run(want.conditionText, func(t *testing.T) {
+					if fn.Branches[i].BranchType != want.branchType {
+						t.Errorf("branch_type = %q, want %q", fn.Branches[i].BranchType, want.branchType)
+					}
+					if fn.Branches[i].ConditionText != want.conditionText {
+						t.Errorf("condition_text = %q, want %q", fn.Branches[i].ConditionText, want.conditionText)
+					}
+				})
+			}
+		})
 	}
 }
 
