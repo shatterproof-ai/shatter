@@ -437,6 +437,7 @@ mod tests {
     fn make_analysis(name: &str, deps: Vec<&str>) -> FunctionAnalysis {
         FunctionAnalysis {
             name: name.to_string(),
+            exported: true,
             params: vec![],
             branches: vec![],
             dependencies: deps

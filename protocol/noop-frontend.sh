@@ -44,7 +44,7 @@ EOF
     analyze)
       file=$(echo "$line" | sed -n 's/.*"file":"\([^"]*\)".*/\1/p')
       response=$(cat <<EOF
-{"protocol_version":"$PROTOCOL_VERSION","id":$id,"status":"analyze","functions":[{"name":"stub","params":[],"branches":[],"dependencies":[],"return_type":{"kind":"unknown"},"start_line":1,"end_line":1}]}
+{"protocol_version":"$PROTOCOL_VERSION","id":$id,"status":"analyze","functions":[{"name":"stub","exported":true,"params":[],"branches":[],"dependencies":[],"return_type":{"kind":"unknown"},"start_line":1,"end_line":1}]}
 EOF
 )
       ;;

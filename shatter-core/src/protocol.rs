@@ -157,6 +157,9 @@ pub enum ResponseResult {
 pub struct FunctionAnalysis {
     /// Fully qualified function name.
     pub name: String,
+    /// Whether the function is exported (public) from its module.
+    #[serde(default)]
+    pub exported: bool,
     /// Function parameters with type information.
     pub params: Vec<ParamInfo>,
     /// Branch points found in the function.
@@ -412,6 +415,7 @@ mod tests {
             ResponseResult::Analyze {
                 functions: vec![FunctionAnalysis {
                     name: "calculateShipping".into(),
+                    exported: true,
                     params: vec![ParamInfo {
                         name: "order".into(),
                         typ: TypeInfo::Object {
@@ -688,6 +692,7 @@ mod tests {
     fn function_analysis_minimal_round_trips() {
         round_trip(&FunctionAnalysis {
             name: "identity".into(),
+            exported: false,
             params: vec![ParamInfo {
                 name: "x".into(),
                 typ: TypeInfo::Unknown,
@@ -858,6 +863,7 @@ mod tests {
                 functions: vec![
                     FunctionAnalysis {
                         name: "add".into(),
+                        exported: true,
                         params: vec![
                             ParamInfo { name: "a".into(), typ: TypeInfo::Int },
                             ParamInfo { name: "b".into(), typ: TypeInfo::Int },
@@ -870,6 +876,7 @@ mod tests {
                     },
                     FunctionAnalysis {
                         name: "divide".into(),
+                        exported: true,
                         params: vec![
                             ParamInfo { name: "a".into(), typ: TypeInfo::Float },
                             ParamInfo { name: "b".into(), typ: TypeInfo::Float },
