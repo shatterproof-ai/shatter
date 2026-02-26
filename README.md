@@ -107,8 +107,21 @@ shatter explore --max-iterations 200 --timeout 120 src/utils.go:ParseConfig
 - Node.js 22+
 - Go 1.24+
 - libclang (`sudo apt install libclang-dev` on Ubuntu/Debian)
+- [beads](https://github.com/steveyegge/beads) (`npm install -g @beads/bd`) — issue tracker
 
 Or use the **devcontainer** — open in VS Code with the Dev Containers extension and everything is pre-configured.
+
+### First-Time Setup
+
+After cloning, initialize the beads issue tracker:
+
+```bash
+bd init --prefix str --from-jsonl --quiet
+bd import -i .beads/issues.jsonl
+bd config set beads.role maintainer
+```
+
+This bootstraps the local database from the checked-in issue history and installs git hooks that keep it in sync. The devcontainer does this automatically.
 
 ### Project Structure
 

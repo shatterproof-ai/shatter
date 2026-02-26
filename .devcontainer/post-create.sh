@@ -43,6 +43,7 @@ fi
 echo "==> Initializing beads issue tracker..."
 if [ -f .beads/issues.jsonl ] && [ ! -d .beads/dolt/beads_str ]; then
   bd init --prefix str --from-jsonl --quiet
+  bd import -i .beads/issues.jsonl
   echo "  Bootstrapped Dolt database from issues.jsonl"
 else
   echo "  Beads database already exists or no JSONL found, skipping"
