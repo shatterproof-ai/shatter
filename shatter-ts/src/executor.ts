@@ -3,14 +3,22 @@
  *
  * Compiles TypeScript source to JavaScript, executes the target function
  * with provided inputs in a sandboxed context, and returns the result
- * with basic performance metrics.
+ * with performance metrics and (for instrumented code) branch decisions.
  */
 
 import * as ts from "typescript";
 import * as fs from "node:fs";
 import * as vm from "node:vm";
 import * as path from "node:path";
-import type { ExecuteResponse, ErrorInfo, PerformanceMetrics } from "./protocol.js";
+import type {
+  ExecuteResponse,
+  ErrorInfo,
+  PerformanceMetrics,
+  BranchDecision,
+  SymConstraint,
+  SymExpr,
+} from "./protocol.js";
+import { RECORD_FUNCTION, BRANCH_FUNCTION } from "./instrumentor.js";
 
 /** Cache of compiled modules to avoid re-transpiling on every execute call. */
 const compiledModuleCache = new Map<string, Record<string, unknown>>();
@@ -99,6 +107,9 @@ interface RawExecuteResult {
   return_value: unknown;
   thrown_error: ErrorInfo | null;
   performance: PerformanceMetrics;
+  branch_path: BranchDecision[];
+  path_constraints: SymConstraint[];
+  lines_executed: number[];
 }
 
 /**
@@ -134,6 +145,129 @@ export function executeFunction(
   return {
     return_value: returnValue ?? null,
     thrown_error: thrownError,
+    branch_path: [],
+    path_constraints: [],
+    lines_executed: [],
+    performance: {
+      wall_time_ms: endTime - startTime,
+      cpu_time_us: Math.round((endTime - startTime) * 1000),
+      heap_used_bytes: Math.max(0, endMem.heapUsed - startMem.heapUsed),
+      heap_allocated_bytes: Math.max(0, endMem.heapTotal - startMem.heapTotal),
+    },
+  };
+}
+
+/**
+ * Execute instrumented TypeScript source code with branch-recording callbacks.
+ *
+ * The instrumented source must contain __shatter_record() and __shatter_branch()
+ * calls inserted by the instrumentor. This function defines those callbacks,
+ * executes the code, and collects the branch decisions.
+ */
+export function executeInstrumented(
+  instrumentedSource: string,
+  functionName: string,
+  inputs: unknown[],
+): RawExecuteResult {
+  // Transpile instrumented TS to JS
+  const jsResult = ts.transpileModule(instrumentedSource, {
+    compilerOptions: {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.CommonJS,
+      esModuleInterop: true,
+      strict: true,
+    },
+  });
+
+  const linesExecuted: number[] = [];
+  const branchDecisions: BranchDecision[] = [];
+
+  // Define the runtime callbacks
+  const recordFn = (line: number): void => {
+    linesExecuted.push(line);
+  };
+
+  const branchFn = (
+    branchId: number,
+    line: number,
+    conditionResult: boolean,
+    symExpr: SymExpr,
+  ): boolean => {
+    const constraint: SymConstraint = symExpr.kind !== "unknown"
+      ? { kind: "expr", expr: symExpr }
+      : { kind: "unknown", hint: "unsupported expression" };
+
+    branchDecisions.push({
+      branch_id: branchId,
+      line,
+      taken: conditionResult,
+      constraint,
+    });
+
+    return conditionResult;
+  };
+
+  // Build the execution context
+  const moduleExports: Record<string, unknown> = {};
+  const moduleObj = { exports: moduleExports };
+
+  const sandbox = vm.createContext({
+    module: moduleObj,
+    exports: moduleExports,
+    require,
+    console,
+    process,
+    Buffer,
+    setTimeout,
+    clearTimeout,
+    setInterval,
+    clearInterval,
+    [RECORD_FUNCTION]: recordFn,
+    [BRANCH_FUNCTION]: branchFn,
+  });
+
+  vm.runInContext(jsResult.outputText, sandbox, { filename: "instrumented.js" });
+
+  // Resolve the function from the module exports
+  const finalExports = (sandbox as Record<string, unknown>)["module"] as { exports: Record<string, unknown> };
+  const fn = finalExports.exports[functionName];
+
+  if (typeof fn !== "function") {
+    throw new Error(
+      `Function "${functionName}" not found in instrumented module exports. ` +
+      `Available: ${Object.keys(finalExports.exports).join(", ")}`,
+    );
+  }
+
+  const startMem = process.memoryUsage();
+  const startTime = performance.now();
+
+  let returnValue: unknown = null;
+  let thrownError: ErrorInfo | null = null;
+
+  try {
+    returnValue = (fn as (...args: unknown[]) => unknown)(...inputs);
+  } catch (e: unknown) {
+    const err = e as { constructor?: { name?: string }; message?: string; stack?: string };
+    thrownError = {
+      error_type: err.constructor?.name ?? "Error",
+      message: String(err.message ?? e),
+      stack: err.stack ?? null,
+    };
+  }
+
+  const endTime = performance.now();
+  const endMem = process.memoryUsage();
+
+  // Build path_constraints: the conjunction of constraints along the taken path
+  const pathConstraints = branchDecisions.map((bd) => bd.constraint);
+
+  return {
+    return_value: returnValue ?? null,
+    thrown_error: thrownError,
+    branch_path: branchDecisions,
+    path_constraints: pathConstraints,
+    lines_executed: linesExecuted,
     performance: {
       wall_time_ms: endTime - startTime,
       cpu_time_us: Math.round((endTime - startTime) * 1000),
@@ -157,10 +291,10 @@ export function buildExecuteResponse(
     status: "execute",
     return_value: rawResult.return_value,
     thrown_error: rawResult.thrown_error,
-    branch_path: [],
-    lines_executed: [],
+    branch_path: rawResult.branch_path,
+    lines_executed: rawResult.lines_executed,
     calls_to_external: [],
-    path_constraints: [],
+    path_constraints: rawResult.path_constraints,
     side_effects: [],
     performance: rawResult.performance,
   };

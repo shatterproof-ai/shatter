@@ -2,9 +2,8 @@
  * Command handlers for the Shatter protocol.
  *
  * Each handler receives a typed request and returns a typed response.
- * Currently, handshake and shutdown are fully implemented. The analyze,
- * instrument, and execute commands return stub responses (these will be
- * implemented in subsequent issues).
+ * The instrument handler stores instrumented source in memory so the
+ * execute handler can use it for branch-recording execution.
  */
 
 import * as fs from "node:fs";
@@ -16,13 +15,24 @@ import {
   type ErrorResponse,
 } from "./protocol.js";
 import { analyzeFile } from "./analyzer.js";
-import { executeFunction, buildExecuteResponse } from "./executor.js";
+import { instrumentFunction } from "./instrumentor.js";
+import {
+  executeFunction,
+  executeInstrumented,
+  buildExecuteResponse,
+} from "./executor.js";
 
 /** Supported capabilities for this frontend. */
 const SUPPORTED_CAPABILITIES = ["analyze", "execute", "instrument"];
 
 /** Track the last analyzed file so execute can resolve function references. */
 let lastAnalyzedFile: string | null = null;
+
+/**
+ * Stored instrumented sources, keyed by "file:function".
+ * Set by the instrument handler, consumed by the execute handler.
+ */
+const instrumentedSources = new Map<string, string>();
 
 /**
  * Dispatch a parsed request to the appropriate handler.
@@ -86,23 +96,42 @@ export function handleRequest(request: Request): { response: Response; shutdown:
       };
     }
 
-    case "instrument":
+    case "instrument": {
+      if (!fs.existsSync(request.file)) {
+        return {
+          response: errorResponse(request.id, "file_not_found", `File not found: ${request.file}`),
+          shutdown: false,
+        };
+      }
+
+      const source = fs.readFileSync(request.file, "utf-8");
+      const result = instrumentFunction(source, request.function, request.file);
+
+      if ("error" in result) {
+        return {
+          response: errorResponse(request.id, "instrumentation_failed", result.error),
+          shutdown: false,
+        };
+      }
+
+      // Store the instrumented source for use by the execute handler
+      const key = `${request.file}:${request.function}`;
+      instrumentedSources.set(key, result.instrumentedSource);
+      lastAnalyzedFile = request.file;
+
       return {
         response: {
           protocol_version: PROTOCOL_VERSION,
           id: request.id,
           status: "instrument",
-          instrumented: false,
+          instrumented: true,
           output_file: null,
         },
         shutdown: false,
       };
+    }
 
     case "execute": {
-      // The function field may be just a name (from analyze) or file:func format.
-      // We need the file path to load the module. The analyze phase sets up the
-      // function name; the core sends the file context via the function field.
-      // For now, we look for a file:function pattern or use the last analyzed file.
       const funcRef = request.function;
       const fileForExec = resolveFileForExecute(funcRef);
 
@@ -118,7 +147,18 @@ export function handleRequest(request: Request): { response: Response; shutdown:
       }
 
       try {
-        const rawResult = executeFunction(fileForExec, funcRef, request.inputs);
+        // Check if we have instrumented source for this function
+        const funcName = funcRef.includes(":") ? funcRef.split(":").pop()! : funcRef;
+        const instrumentKey = `${fileForExec}:${funcName}`;
+        const instrumentedSource = instrumentedSources.get(instrumentKey);
+
+        let rawResult;
+        if (instrumentedSource) {
+          rawResult = executeInstrumented(instrumentedSource, funcName, request.inputs);
+        } else {
+          rawResult = executeFunction(fileForExec, funcRef, request.inputs);
+        }
+
         return {
           response: buildExecuteResponse(request.id, PROTOCOL_VERSION, rawResult),
           shutdown: false,
@@ -230,4 +270,11 @@ export function parseRequest(line: string): { request: Request } | { error: Erro
   }
 
   return { request: parsed as Request };
+}
+
+/**
+ * Clear stored instrumented sources. Useful for testing.
+ */
+export function clearInstrumentedSources(): void {
+  instrumentedSources.clear();
 }
