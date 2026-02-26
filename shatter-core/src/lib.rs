@@ -7,6 +7,7 @@ pub mod frontend;
 pub mod input_gen;
 pub mod orchestrator;
 pub mod protocol;
+pub mod recursive;
 pub mod scope;
 pub mod solver;
 pub mod sym_expr;

@@ -95,124 +95,199 @@ pub enum CallGraphError {
     Cycle(String),
 }
 
+/// An entry in the test order, representing either a single function or a
+/// mutually-recursive group that must be tested together.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TestOrderEntry {
+    /// A single function (possibly self-recursive).
+    Single {
+        function_id: String,
+        is_self_recursive: bool,
+    },
+    /// A group of mutually-recursive functions that must be tested together.
+    MutualGroup {
+        /// Function IDs in the group, sorted for determinism.
+        function_ids: Vec<String>,
+    },
+}
+
 /// Dependency graph built from [`FunctionAnalysis`] results.
 ///
 /// Used to compute test ordering so leaf functions are tested first.
+/// Self-recursive functions (functions that call themselves) are detected
+/// and annotated rather than rejected as cycles.
 pub struct CallGraph {
-    /// function_id → set of function_ids it calls.
+    /// function_id → set of function_ids it calls (excluding self-calls).
     edges: HashMap<String, HashSet<String>>,
+    /// Functions that call themselves.
+    self_recursive: HashSet<String>,
+}
+
+/// Internal state for Tarjan's SCC algorithm.
+#[derive(Default)]
+struct TarjanState<'a> {
+    index_counter: u32,
+    stack: Vec<&'a str>,
+    on_stack: HashSet<&'a str>,
+    indices: HashMap<&'a str, u32>,
+    lowlinks: HashMap<&'a str, u32>,
+    result: Vec<Vec<String>>,
 }
 
 impl CallGraph {
     /// Build a call graph from function analyses.
     ///
     /// Matches each function's `ExternalDependency.symbol` against the set of
-    /// known function names to build edges.
+    /// known function names to build edges. Self-calls are detected and stored
+    /// separately rather than as regular edges.
     pub fn from_analyses(analyses: &[crate::protocol::FunctionAnalysis]) -> Self {
         let known_names: HashSet<&str> = analyses.iter().map(|a| a.name.as_str()).collect();
         let mut edges = HashMap::new();
+        let mut self_recursive = HashSet::new();
 
         for analysis in analyses {
-            let callees: HashSet<String> = analysis
-                .dependencies
-                .iter()
-                .filter(|dep| known_names.contains(dep.symbol.as_str()))
-                .map(|dep| dep.symbol.clone())
-                .collect();
+            let mut callees: HashSet<String> = HashSet::new();
+            for dep in &analysis.dependencies {
+                if !known_names.contains(dep.symbol.as_str()) {
+                    continue;
+                }
+                if dep.symbol == analysis.name {
+                    self_recursive.insert(analysis.name.clone());
+                } else {
+                    callees.insert(dep.symbol.clone());
+                }
+            }
             edges.insert(analysis.name.clone(), callees);
         }
 
-        Self { edges }
+        Self {
+            edges,
+            self_recursive,
+        }
+    }
+
+    /// Compute strongly connected components using Tarjan's algorithm.
+    ///
+    /// Returns SCCs in reverse topological order (leaves first).
+    fn strongly_connected_components(&self) -> Vec<Vec<String>> {
+        // Collect all nodes (sorted for determinism)
+        let mut all_nodes: Vec<&str> = self.edges.keys().map(|s| s.as_str()).collect();
+        for callees in self.edges.values() {
+            for callee in callees {
+                all_nodes.push(callee.as_str());
+            }
+        }
+        all_nodes.sort();
+        all_nodes.dedup();
+
+        let mut state = TarjanState::default();
+
+        for &node in &all_nodes {
+            if !state.indices.contains_key(node) {
+                self.tarjan_visit(node, &mut state);
+            }
+        }
+
+        state.result
+    }
+
+    fn tarjan_visit<'a>(&'a self, node: &'a str, state: &mut TarjanState<'a>) {
+        state.indices.insert(node, state.index_counter);
+        state.lowlinks.insert(node, state.index_counter);
+        state.index_counter += 1;
+        state.stack.push(node);
+        state.on_stack.insert(node);
+
+        // Visit successors (sorted for determinism)
+        if let Some(callees) = self.edges.get(node) {
+            let mut sorted_callees: Vec<&str> = callees.iter().map(|s| s.as_str()).collect();
+            sorted_callees.sort();
+            for callee in sorted_callees {
+                if !state.indices.contains_key(callee) {
+                    self.tarjan_visit(callee, state);
+                    let callee_low = state.lowlinks[callee];
+                    let node_low = state.lowlinks.get_mut(node).expect("node in lowlinks");
+                    *node_low = (*node_low).min(callee_low);
+                } else if state.on_stack.contains(callee) {
+                    let callee_idx = state.indices[callee];
+                    let node_low = state.lowlinks.get_mut(node).expect("node in lowlinks");
+                    *node_low = (*node_low).min(callee_idx);
+                }
+            }
+        }
+
+        // If node is a root of an SCC
+        if state.lowlinks[node] == state.indices[node] {
+            let mut component = Vec::new();
+            loop {
+                let w = state.stack.pop().expect("stack not empty");
+                state.on_stack.remove(w);
+                component.push(w.to_string());
+                if w == node {
+                    break;
+                }
+            }
+            component.sort(); // Deterministic ordering within SCC
+            state.result.push(component);
+        }
     }
 
     /// Topological sort returning leaf functions first.
     ///
-    /// Returns an error if the graph contains a cycle.
-    pub fn test_order(&self) -> Result<Vec<String>, CallGraphError> {
-        // Kahn's algorithm
-        let mut in_degree: HashMap<&str, usize> = HashMap::new();
-        for (node, callees) in &self.edges {
-            in_degree.entry(node.as_str()).or_insert(0);
-            for callee in callees {
-                *in_degree.entry(callee.as_str()).or_insert(0) += 1;
-            }
-        }
-
-        // Note: in_degree counts how many functions *call* a node.
-        // We want leaves first, so we want nodes with in_degree 0 in a
-        // *reverse* dependency sense. Actually for test ordering we want
-        // functions with no *outgoing* edges (callees) first — i.e., leaves.
-        // Let's use a proper topological sort on the reversed graph.
-
-        // Reverse the graph: if A calls B, reversed has B → A.
-        let mut rev_edges: HashMap<&str, Vec<&str>> = HashMap::new();
-        let mut out_degree: HashMap<&str, usize> = HashMap::new();
-        for (node, callees) in &self.edges {
-            out_degree.entry(node.as_str()).or_insert(0);
-            rev_edges.entry(node.as_str()).or_default();
-            for callee in callees {
-                rev_edges.entry(callee.as_str()).or_default().push(node.as_str());
-                *out_degree.entry(node.as_str()).or_insert(0) += 1;
-            }
-        }
-
-        // Ensure all callee nodes appear in out_degree even if they have no entry in edges.
-        for callees in self.edges.values() {
-            for callee in callees {
-                out_degree.entry(callee.as_str()).or_insert(0);
-            }
-        }
-
-        let mut queue: std::collections::VecDeque<&str> = out_degree
-            .iter()
-            .filter(|&(_, &deg)| deg == 0)
-            .map(|(&node, _)| node)
-            .collect();
-
-        // Sort the initial queue for deterministic output.
-        let mut sorted_queue: Vec<&str> = queue.drain(..).collect();
-        sorted_queue.sort();
-        queue.extend(sorted_queue);
+    /// Self-recursive functions are returned as `Single` entries with
+    /// `is_self_recursive: true`. Mutually-recursive function groups are
+    /// returned as `MutualGroup` entries. Non-recursive functions are
+    /// returned as `Single` entries.
+    pub fn test_order(&self) -> Result<Vec<TestOrderEntry>, CallGraphError> {
+        // Tarjan's algorithm returns SCCs in reverse topological order,
+        // which is exactly what we want: leaves first.
+        let sccs = self.strongly_connected_components();
 
         let mut result = Vec::new();
-
-        while let Some(node) = queue.pop_front() {
-            result.push(node.to_string());
-            if let Some(dependents) = rev_edges.get(node) {
-                let mut next: Vec<&str> = Vec::new();
-                for &dep in dependents {
-                    if let Some(deg) = out_degree.get_mut(dep) {
-                        *deg -= 1;
-                        if *deg == 0 {
-                            next.push(dep);
-                        }
-                    }
-                }
-                next.sort();
-                queue.extend(next);
+        for scc in sccs {
+            if scc.len() == 1 {
+                let id = &scc[0];
+                result.push(TestOrderEntry::Single {
+                    function_id: id.clone(),
+                    is_self_recursive: self.self_recursive.contains(id),
+                });
+            } else {
+                result.push(TestOrderEntry::MutualGroup {
+                    function_ids: scc,
+                });
             }
-        }
-
-        let total_nodes = out_degree.len();
-        if result.len() != total_nodes {
-            // Find a node still with nonzero out_degree to report in the error.
-            let stuck = out_degree
-                .iter()
-                .find(|&(_, &deg)| deg > 0)
-                .map(|(&n, _)| n.to_string())
-                .unwrap_or_default();
-            return Err(CallGraphError::Cycle(stuck));
         }
 
         Ok(result)
     }
 
-    /// Direct callees of a function.
+    /// Direct callees of a function (excluding self-calls).
     pub fn callees(&self, function_id: &str) -> HashSet<String> {
         self.edges
             .get(function_id)
             .cloned()
             .unwrap_or_default()
+    }
+
+    /// Whether a function calls itself.
+    pub fn is_self_recursive(&self, function_id: &str) -> bool {
+        self.self_recursive.contains(function_id)
+    }
+
+    /// All functions detected as self-recursive.
+    pub fn self_recursive_functions(&self) -> &HashSet<String> {
+        &self.self_recursive
+    }
+
+    /// All nodes in the graph.
+    pub fn nodes(&self) -> HashSet<&str> {
+        let mut nodes: HashSet<&str> = self.edges.keys().map(|s| s.as_str()).collect();
+        for callees in self.edges.values() {
+            for callee in callees {
+                nodes.insert(callee.as_str());
+            }
+        }
+        nodes
     }
 }
 
@@ -407,6 +482,18 @@ mod tests {
         assert!(graph.callees("b").is_empty());
     }
 
+    /// Helper: extract function IDs from test order entries (flattening groups).
+    fn entry_ids(entries: &[TestOrderEntry]) -> Vec<String> {
+        let mut ids = Vec::new();
+        for entry in entries {
+            match entry {
+                TestOrderEntry::Single { function_id, .. } => ids.push(function_id.clone()),
+                TestOrderEntry::MutualGroup { function_ids } => ids.extend(function_ids.clone()),
+            }
+        }
+        ids
+    }
+
     #[test]
     fn call_graph_test_order_leaf_first() {
         let analyses = vec![
@@ -415,27 +502,121 @@ mod tests {
         ];
         let graph = CallGraph::from_analyses(&analyses);
         let order = graph.test_order().expect("no cycle");
+        let ids = entry_ids(&order);
 
-        let pos_discount = order.iter().position(|x| x == "getDiscount").unwrap();
-        let pos_total = order.iter().position(|x| x == "calculateTotal").unwrap();
+        let pos_discount = ids.iter().position(|x| x == "getDiscount").unwrap();
+        let pos_total = ids.iter().position(|x| x == "calculateTotal").unwrap();
         assert!(
             pos_discount < pos_total,
-            "getDiscount should come before calculateTotal, got: {order:?}"
+            "getDiscount should come before calculateTotal, got: {ids:?}"
         );
+        // Both should be Single, non-recursive
+        assert!(matches!(&order[0], TestOrderEntry::Single { is_self_recursive: false, .. }));
+        assert!(matches!(&order[1], TestOrderEntry::Single { is_self_recursive: false, .. }));
     }
 
     #[test]
-    fn call_graph_test_order_detects_cycle() {
+    fn call_graph_mutual_recursion_returns_group() {
         let analyses = vec![
             make_analysis("a", vec!["b"]),
             make_analysis("b", vec!["a"]),
         ];
         let graph = CallGraph::from_analyses(&analyses);
-        let result = graph.test_order();
+        let order = graph.test_order().expect("mutual recursion should not error");
 
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(matches!(err, CallGraphError::Cycle(_)));
+        assert_eq!(order.len(), 1);
+        match &order[0] {
+            TestOrderEntry::MutualGroup { function_ids } => {
+                assert_eq!(function_ids.len(), 2);
+                assert!(function_ids.contains(&"a".to_string()));
+                assert!(function_ids.contains(&"b".to_string()));
+            }
+            other => panic!("expected MutualGroup, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn call_graph_self_recursive_not_rejected_as_cycle() {
+        let analyses = vec![
+            make_analysis("factorial", vec!["factorial"]),
+        ];
+        let graph = CallGraph::from_analyses(&analyses);
+        let order = graph.test_order().expect("self-recursion should not be a cycle");
+
+        assert_eq!(order.len(), 1);
+        match &order[0] {
+            TestOrderEntry::Single { function_id, is_self_recursive } => {
+                assert_eq!(function_id, "factorial");
+                assert!(is_self_recursive);
+            }
+            other => panic!("expected Single, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn call_graph_self_recursive_with_dependency() {
+        // factorial calls itself AND helper; helper is a leaf
+        let analyses = vec![
+            make_analysis("factorial", vec!["factorial", "helper"]),
+            make_analysis("helper", vec![]),
+        ];
+        let graph = CallGraph::from_analyses(&analyses);
+        let order = graph.test_order().expect("no cycle");
+        let ids = entry_ids(&order);
+
+        // helper should come before factorial
+        let pos_helper = ids.iter().position(|x| x == "helper").unwrap();
+        let pos_factorial = ids.iter().position(|x| x == "factorial").unwrap();
+        assert!(pos_helper < pos_factorial);
+
+        // helper is non-recursive Single, factorial is self-recursive Single
+        assert!(matches!(&order[0], TestOrderEntry::Single { function_id, is_self_recursive: false } if function_id == "helper"));
+        assert!(matches!(&order[1], TestOrderEntry::Single { function_id, is_self_recursive: true } if function_id == "factorial"));
+    }
+
+    #[test]
+    fn call_graph_mutual_recursion_with_leaf_dependency() {
+        // is_even calls is_odd and helper; is_odd calls is_even; helper is a leaf
+        let analyses = vec![
+            make_analysis("is_even", vec!["is_odd", "helper"]),
+            make_analysis("is_odd", vec!["is_even"]),
+            make_analysis("helper", vec![]),
+        ];
+        let graph = CallGraph::from_analyses(&analyses);
+        let order = graph.test_order().expect("no error");
+        let ids = entry_ids(&order);
+
+        // helper should come before the mutual group
+        let pos_helper = ids.iter().position(|x| x == "helper").unwrap();
+        let pos_even = ids.iter().position(|x| x == "is_even").unwrap();
+        assert!(pos_helper < pos_even);
+
+        // The mutual group should contain is_even and is_odd
+        let group_entry = order.iter().find(|e| matches!(e, TestOrderEntry::MutualGroup { .. }));
+        assert!(group_entry.is_some());
+        match group_entry.unwrap() {
+            TestOrderEntry::MutualGroup { function_ids } => {
+                assert!(function_ids.contains(&"is_even".to_string()));
+                assert!(function_ids.contains(&"is_odd".to_string()));
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn call_graph_self_edges_excluded_from_callees() {
+        let analyses = vec![
+            make_analysis("factorial", vec!["factorial", "helper"]),
+            make_analysis("helper", vec![]),
+        ];
+        let graph = CallGraph::from_analyses(&analyses);
+
+        // callees() should not include self
+        let callees = graph.callees("factorial");
+        assert!(callees.contains("helper"));
+        assert!(!callees.contains("factorial"));
+        assert!(graph.is_self_recursive("factorial"));
+        assert!(!graph.is_self_recursive("helper"));
     }
 
     #[test]
@@ -535,7 +716,8 @@ mod tests {
 
         // Step 4: Verify test order
         let order = graph.test_order().expect("no cycle");
-        assert_eq!(order, vec!["getDiscount", "calculateTotal"]);
+        let ids = entry_ids(&order);
+        assert_eq!(ids, vec!["getDiscount", "calculateTotal"]);
 
         // Step 5: Convert BehaviorMap to MockConfig
         let mock = discount_map.to_mock_config();
