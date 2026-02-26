@@ -17,6 +17,7 @@ import type {
   BranchDecision,
   SymConstraint,
   SymExpr,
+  SideEffect,
 } from "./protocol.js";
 import { RECORD_FUNCTION, BRANCH_FUNCTION } from "./instrumentor.js";
 
@@ -102,6 +103,71 @@ function resolveFunction(
   return fn as (...args: unknown[]) => unknown;
 }
 
+/**
+ * Run garbage collection if --expose-gc is enabled.
+ * This gives more accurate heap measurements by clearing unreachable objects.
+ */
+function tryGc(): void {
+  if (typeof globalThis.gc === "function") {
+    globalThis.gc();
+  }
+}
+
+/** Result of measuring a function execution. */
+interface MeasuredExecution {
+  returnValue: unknown;
+  thrownError: ErrorInfo | null;
+  performance: PerformanceMetrics;
+}
+
+/**
+ * Execute a callback with full performance instrumentation.
+ *
+ * Measures wall time via process.hrtime.bigint(), CPU time via process.cpuUsage(),
+ * and heap delta via process.memoryUsage(). Optionally runs GC before measurement
+ * if --expose-gc is enabled.
+ */
+function measureExecution(fn: () => unknown): MeasuredExecution {
+  tryGc();
+
+  const startMem = process.memoryUsage();
+  const startCpu = process.cpuUsage();
+  const startTime = process.hrtime.bigint();
+
+  let returnValue: unknown = null;
+  let thrownError: ErrorInfo | null = null;
+
+  try {
+    returnValue = fn();
+  } catch (e: unknown) {
+    const err = e as { constructor?: { name?: string }; message?: string; stack?: string };
+    thrownError = {
+      error_type: err.constructor?.name ?? "Error",
+      message: String(err.message ?? e),
+      stack: err.stack ?? null,
+    };
+  }
+
+  const endTime = process.hrtime.bigint();
+  const endCpu = process.cpuUsage(startCpu);
+  const endMem = process.memoryUsage();
+
+  const wallTimeNs = endTime - startTime;
+  const wallTimeMs = Number(wallTimeNs) / 1_000_000;
+  const cpuTimeUs = endCpu.user + endCpu.system;
+
+  return {
+    returnValue,
+    thrownError,
+    performance: {
+      wall_time_ms: wallTimeMs,
+      cpu_time_us: cpuTimeUs,
+      heap_used_bytes: Math.max(0, endMem.heapUsed - startMem.heapUsed),
+      heap_allocated_bytes: Math.max(0, endMem.heapTotal - startMem.heapTotal),
+    },
+  };
+}
+
 /** Execution result before being wrapped in a protocol response. */
 interface RawExecuteResult {
   return_value: unknown;
@@ -110,6 +176,45 @@ interface RawExecuteResult {
   branch_path: BranchDecision[];
   path_constraints: SymConstraint[];
   lines_executed: number[];
+  side_effects: SideEffect[];
+}
+
+/**
+ * Create an intercepting console that records all output as side effects.
+ */
+function createCapturingConsole(sideEffects: SideEffect[]): Console {
+  const makeLogger = (level: string) => (...args: unknown[]): void => {
+    const message = args.map((a) =>
+      typeof a === "string" ? a : JSON.stringify(a) ?? String(a)
+    ).join(" ");
+    sideEffects.push({ kind: "console_output", level, message });
+  };
+
+  return {
+    log: makeLogger("log"),
+    warn: makeLogger("warn"),
+    error: makeLogger("error"),
+    info: makeLogger("info"),
+    debug: makeLogger("debug"),
+    dir: console.dir,
+    time: console.time,
+    timeEnd: console.timeEnd,
+    timeLog: console.timeLog,
+    trace: console.trace,
+    assert: console.assert,
+    clear: console.clear,
+    count: console.count,
+    countReset: console.countReset,
+    group: console.group,
+    groupCollapsed: console.groupCollapsed,
+    groupEnd: console.groupEnd,
+    table: console.table,
+    dirxml: console.dirxml,
+    profile: console.profile,
+    profileEnd: console.profileEnd,
+    timeStamp: console.timeStamp,
+    Console: console.Console,
+  } as unknown as Console;
 }
 
 /**
@@ -122,38 +227,34 @@ export function executeFunction(
 ): RawExecuteResult {
   const fn = resolveFunction(filePath, functionRef);
 
-  const startMem = process.memoryUsage();
-  const startTime = performance.now();
+  const sideEffects: SideEffect[] = [];
+  const originalConsole = globalThis.console;
+  globalThis.console = createCapturingConsole(sideEffects);
 
-  let returnValue: unknown = null;
-  let thrownError: ErrorInfo | null = null;
-
+  let metrics: MeasuredExecution;
   try {
-    returnValue = fn(...inputs);
-  } catch (e: unknown) {
-    const err = e as { constructor?: { name?: string }; message?: string; stack?: string };
-    thrownError = {
-      error_type: err.constructor?.name ?? "Error",
-      message: String(err.message ?? e),
-      stack: err.stack ?? null,
-    };
+    metrics = measureExecution(() => fn(...inputs));
+  } finally {
+    globalThis.console = originalConsole;
   }
 
-  const endTime = performance.now();
-  const endMem = process.memoryUsage();
+  if (metrics.thrownError) {
+    sideEffects.push({
+      kind: "thrown_error",
+      error_type: metrics.thrownError.error_type,
+      message: metrics.thrownError.message,
+      stack: metrics.thrownError.stack,
+    });
+  }
 
   return {
-    return_value: returnValue ?? null,
-    thrown_error: thrownError,
+    return_value: metrics.returnValue ?? null,
+    thrown_error: metrics.thrownError,
+    side_effects: sideEffects,
     branch_path: [],
     path_constraints: [],
     lines_executed: [],
-    performance: {
-      wall_time_ms: endTime - startTime,
-      cpu_time_us: Math.round((endTime - startTime) * 1000),
-      heap_used_bytes: Math.max(0, endMem.heapUsed - startMem.heapUsed),
-      heap_allocated_bytes: Math.max(0, endMem.heapTotal - startMem.heapTotal),
-    },
+    performance: metrics.performance,
   };
 }
 
@@ -181,6 +282,7 @@ export function executeInstrumented(
 
   const linesExecuted: number[] = [];
   const branchDecisions: BranchDecision[] = [];
+  const sideEffects: SideEffect[] = [];
 
   // Define the runtime callbacks
   const recordFn = (line: number): void => {
@@ -207,7 +309,8 @@ export function executeInstrumented(
     return conditionResult;
   };
 
-  // Build the execution context
+  // Build the execution context with capturing console
+  const capturingConsole = createCapturingConsole(sideEffects);
   const moduleExports: Record<string, unknown> = {};
   const moduleObj = { exports: moduleExports };
 
@@ -215,7 +318,7 @@ export function executeInstrumented(
     module: moduleObj,
     exports: moduleExports,
     require,
-    console,
+    console: capturingConsole,
     process,
     Buffer,
     setTimeout,
@@ -230,6 +333,16 @@ export function executeInstrumented(
 
   // Resolve the function from the module exports
   const finalExports = (sandbox as Record<string, unknown>)["module"] as { exports: Record<string, unknown> };
+
+  // Snapshot module-level variables before execution
+  const exportKeys = Object.keys(finalExports.exports).filter(
+    (k) => typeof finalExports.exports[k] !== "function",
+  );
+  const beforeSnapshot = new Map<string, unknown>();
+  for (const key of exportKeys) {
+    beforeSnapshot.set(key, structuredClone(finalExports.exports[key]));
+  }
+
   const fn = finalExports.exports[functionName];
 
   if (typeof fn !== "function") {
@@ -239,41 +352,44 @@ export function executeInstrumented(
     );
   }
 
-  const startMem = process.memoryUsage();
-  const startTime = performance.now();
+  const metrics = measureExecution(
+    () => (fn as (...args: unknown[]) => unknown)(...inputs),
+  );
 
-  let returnValue: unknown = null;
-  let thrownError: ErrorInfo | null = null;
-
-  try {
-    returnValue = (fn as (...args: unknown[]) => unknown)(...inputs);
-  } catch (e: unknown) {
-    const err = e as { constructor?: { name?: string }; message?: string; stack?: string };
-    thrownError = {
-      error_type: err.constructor?.name ?? "Error",
-      message: String(err.message ?? e),
-      stack: err.stack ?? null,
-    };
+  if (metrics.thrownError) {
+    sideEffects.push({
+      kind: "thrown_error",
+      error_type: metrics.thrownError.error_type,
+      message: metrics.thrownError.message,
+      stack: metrics.thrownError.stack,
+    });
   }
 
-  const endTime = performance.now();
-  const endMem = process.memoryUsage();
+  // Detect module-level variable changes after execution
+  for (const key of exportKeys) {
+    const before = beforeSnapshot.get(key);
+    const after = finalExports.exports[key];
+    if (JSON.stringify(before) !== JSON.stringify(after)) {
+      sideEffects.push({
+        kind: "global_state_change",
+        variable: key,
+        before,
+        after,
+      });
+    }
+  }
 
   // Build path_constraints: the conjunction of constraints along the taken path
   const pathConstraints = branchDecisions.map((bd) => bd.constraint);
 
   return {
-    return_value: returnValue ?? null,
-    thrown_error: thrownError,
+    return_value: metrics.returnValue ?? null,
+    thrown_error: metrics.thrownError,
+    side_effects: sideEffects,
     branch_path: branchDecisions,
     path_constraints: pathConstraints,
     lines_executed: linesExecuted,
-    performance: {
-      wall_time_ms: endTime - startTime,
-      cpu_time_us: Math.round((endTime - startTime) * 1000),
-      heap_used_bytes: Math.max(0, endMem.heapUsed - startMem.heapUsed),
-      heap_allocated_bytes: Math.max(0, endMem.heapTotal - startMem.heapTotal),
-    },
+    performance: metrics.performance,
   };
 }
 
@@ -295,7 +411,7 @@ export function buildExecuteResponse(
     lines_executed: rawResult.lines_executed,
     calls_to_external: [],
     path_constraints: rawResult.path_constraints,
-    side_effects: [],
+    side_effects: rawResult.side_effects,
     performance: rawResult.performance,
   };
 }
