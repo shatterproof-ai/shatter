@@ -136,7 +136,33 @@ path constraint generation for branch conditions.
 Issues: str-a1b, str-c2d, str-e3f
 ```
 
-### Worktree workflow
+### Parallel work with agent teams (preferred)
+
+For parallel work on multiple issues, use Claude Code's **agent teams** instead
+of manually running separate Claude instances in different worktrees. Teams
+coordinate through the Task tool and each teammate runs in an isolated worktree
+automatically (via `isolation: "worktree"` on the Task tool).
+
+**Why teams over manual worktrees:**
+- Claude manages concurrency — no Dolt database conflicts
+- Teammates coordinate via task lists and messages
+- Worktree lifecycle is fully automatic
+- The team lead merges results back to `main`
+
+**Supervision:** Always spawn teammates with `mode: "plan"`. Each teammate
+must write a plan and get approval from the team lead before implementing.
+This ensures the user can review proposed approaches before code is written.
+
+**Example: working on two independent issues in parallel:**
+```
+1. Create tasks for each issue (TaskCreate)
+2. Spawn teammates with isolation: "worktree", mode: "plan" (Task tool)
+3. Each teammate researches and proposes a plan
+4. Team lead reviews and approves/rejects each plan
+5. Approved teammates implement, team lead merges results
+```
+
+### Worktree workflow (single-agent)
 
 When working in a git worktree (e.g. started with `--worktree`), **always merge
 the branch back into `main` before ending the session.** Do not leave the
