@@ -11,8 +11,10 @@ use shatter_core::frontend::{Frontend, FrontendConfig};
 use shatter_core::protocol::{Command as ProtoCommand, ResponseResult};
 use shatter_core::scan_orchestrator::{self, ScanConfig};
 use shatter_core::scope::{ScopeConfig, ScopeMatcher};
+use shatter_core::snapshot;
 
 mod embedded_frontend;
+mod embedded_go_frontend;
 
 /// Shatter: automatic exploratory testing via concolic execution.
 #[derive(Parser, Debug)]
@@ -87,6 +89,23 @@ enum CliCommand {
         #[arg(long)]
         no_cache: bool,
     },
+
+    /// Compare current behaviors against a previous snapshot to detect regressions.
+    ///
+    /// Exit code is 0 when all behaviors match, nonzero when regressions are found.
+    Diff {
+        /// Path to the previous snapshot JSON file.
+        #[arg(required = true)]
+        snapshot: PathBuf,
+
+        /// Path to the current snapshot JSON file to compare against.
+        #[arg(required = true)]
+        current: PathBuf,
+
+        /// Output the diff result as JSON instead of human-readable text.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// A parsed `<file>:<function>` target.
@@ -156,10 +175,10 @@ fn frontend_config(language: Language, timeout: Duration) -> Result<FrontendConf
                 vec![bundle_path.to_string_lossy().into_owned()],
             )
         }
-        Language::Go => (
-            PathBuf::from("shatter-go/shatter-go"),
-            vec![],
-        ),
+        Language::Go => {
+            let binary_path = embedded_go_frontend::ensure_extracted()?;
+            (binary_path, vec![])
+        }
     };
 
     let mut config = FrontendConfig::new(command);
@@ -430,6 +449,32 @@ async fn run_scan(
 
     shutdown_frontend(frontend).await;
     Ok(())
+}
+
+/// Run the diff command: compare two snapshots and report regressions.
+///
+/// Returns `Ok(true)` if there are regressions (nonzero exit), `Ok(false)` if clean.
+fn run_diff(
+    snapshot_path: &Path,
+    current_path: &Path,
+    output_json: bool,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let previous = snapshot::Snapshot::read_from_file(snapshot_path)
+        .map_err(|e| format!("failed to read previous snapshot '{}': {e}", snapshot_path.display()))?;
+    let current = snapshot::Snapshot::read_from_file(current_path)
+        .map_err(|e| format!("failed to read current snapshot '{}': {e}", current_path.display()))?;
+
+    let result = snapshot::diff(&previous, &current);
+
+    if output_json {
+        let json = serde_json::to_string_pretty(&result)
+            .map_err(|e| format!("failed to serialize diff result: {e}"))?;
+        println!("{json}");
+    } else {
+        print!("{}", result.format_report());
+    }
+
+    Ok(result.has_regressions())
 }
 
 async fn shutdown_frontend(frontend: Frontend) {
@@ -760,10 +805,16 @@ mod tests {
     }
 
     #[test]
-    fn frontend_config_go_defaults() {
+    fn frontend_config_go_uses_embedded_binary() {
         let config = frontend_config(Language::Go, Duration::from_secs(45)).unwrap();
-        assert_eq!(config.command, PathBuf::from("shatter-go/shatter-go"));
         assert_eq!(config.request_timeout, Duration::from_secs(45));
+        assert!(config.args.is_empty());
+        // The command should point to the extracted binary, not a relative dev path
+        let cmd_str = config.command.to_string_lossy();
+        assert!(
+            cmd_str.contains("go-frontend-"),
+            "expected embedded binary path, got: {cmd_str}",
+        );
     }
 
     #[test]

@@ -3,9 +3,15 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() {
-    let ts_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap())
-        .join("..")
-        .join("shatter-ts");
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+
+    build_ts_frontend(&manifest_dir, &out_dir);
+    build_go_frontend(&manifest_dir, &out_dir);
+}
+
+fn build_ts_frontend(manifest_dir: &Path, out_dir: &Path) {
+    let ts_dir = manifest_dir.join("..").join("shatter-ts");
 
     let bundle_src = ts_dir.join("dist").join("bundle.js");
 
@@ -32,11 +38,44 @@ fn main() {
     let hash = sha256_hex(&bundle_bytes);
 
     // Copy bundle into OUT_DIR so include_bytes! can reference it
-    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let out_bundle = out_dir.join("frontend-bundle.js");
     std::fs::copy(&bundle_src, &out_bundle).expect("failed to copy bundle to OUT_DIR");
 
     println!("cargo:rustc-env=FRONTEND_BUNDLE_HASH={hash}");
+}
+
+fn build_go_frontend(manifest_dir: &Path, out_dir: &Path) {
+    let go_dir = manifest_dir.join("..").join("shatter-go");
+
+    // Re-run if any Go source files change
+    println!("cargo:rerun-if-changed={}", go_dir.join("main.go").display());
+    println!("cargo:rerun-if-changed={}", go_dir.join("protocol").display());
+    println!("cargo:rerun-if-changed={}", go_dir.join("instrument").display());
+    println!("cargo:rerun-if-changed={}", go_dir.join("go.mod").display());
+
+    let go_binary = out_dir.join("shatter-go");
+
+    let status = Command::new("go")
+        .args(["build", "-o"])
+        .arg(&go_binary)
+        .arg(".")
+        .current_dir(&go_dir)
+        .status()
+        .expect("failed to run go build — is Go installed?");
+
+    assert!(status.success(), "go build failed");
+
+    assert!(
+        go_binary.exists(),
+        "go binary not found at {}",
+        go_binary.display()
+    );
+
+    // Compute hash for cache-busting at runtime
+    let binary_bytes = std::fs::read(&go_binary).expect("failed to read shatter-go binary");
+    let hash = sha256_hex(&binary_bytes);
+
+    println!("cargo:rustc-env=GO_FRONTEND_HASH={hash}");
 }
 
 fn run_npm(dir: &Path, args: &[&str]) {
