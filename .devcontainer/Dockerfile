@@ -6,8 +6,7 @@ ARG GO_VERSION=1.24.4
 ARG GOLANGCI_LINT_VERSION=v1.64.8
 
 # Install OS dependencies (z3 solver libs needed by shatter-core)
-RUN add-apt-repository universe \
-    && apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     pkg-config \
     libz3-dev \
