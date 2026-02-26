@@ -527,6 +527,22 @@ async fn main() -> ExitCode {
             )
             .await
         }
+        CliCommand::Diff {
+            snapshot,
+            current,
+            json,
+        } => {
+            match run_diff(&snapshot, &current, json) {
+                Ok(has_regressions) => {
+                    return if has_regressions {
+                        ExitCode::FAILURE
+                    } else {
+                        ExitCode::SUCCESS
+                    };
+                }
+                Err(e) => Err(e),
+            }
+        }
     };
 
     match result {
@@ -877,5 +893,53 @@ mod tests {
             }
             _ => panic!("expected Scan command"),
         }
+    }
+
+    #[test]
+    fn cli_parses_diff_subcommand() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "diff",
+            "snapshots/old.json",
+            "snapshots/new.json",
+        ]);
+        match cli.command {
+            CliCommand::Diff {
+                snapshot,
+                current,
+                json,
+            } => {
+                assert_eq!(snapshot, PathBuf::from("snapshots/old.json"));
+                assert_eq!(current, PathBuf::from("snapshots/new.json"));
+                assert!(!json);
+            }
+            _ => panic!("expected Diff command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_diff_with_json_flag() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "diff",
+            "--json",
+            "old.json",
+            "new.json",
+        ]);
+        match cli.command {
+            CliCommand::Diff { json, .. } => {
+                assert!(json);
+            }
+            _ => panic!("expected Diff command"),
+        }
+    }
+
+    #[test]
+    fn cli_diff_requires_both_arguments() {
+        let result = Cli::try_parse_from(["shatter", "diff"]);
+        assert!(result.is_err());
+
+        let result = Cli::try_parse_from(["shatter", "diff", "only-one.json"]);
+        assert!(result.is_err());
     }
 }
