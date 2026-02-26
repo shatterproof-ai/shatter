@@ -197,19 +197,20 @@ export type BranchType =
 
 export type SymExpr =
   | { kind: "param"; name: string; path: string[] }
-  | { kind: "const"; value: ConstValue }
+  | SymExprConst
   | { kind: "bin_op"; op: BinOpKind; left: SymExpr; right: SymExpr }
   | { kind: "un_op"; op: UnOpKind; operand: SymExpr }
   | { kind: "call"; name: string; receiver: SymExpr | null; args: SymExpr[] }
   | { kind: "unknown" };
 
-export type ConstValue =
-  | { type: "int"; value: number }
-  | { type: "float"; value: number }
-  | { type: "str"; value: string }
-  | { type: "bool"; value: boolean }
-  | { type: "null" }
-  | { type: "undefined" };
+/** Const variant of SymExpr. Flattened to match Rust serde serialization. */
+export type SymExprConst =
+  | { kind: "const"; type: "int"; value: number }
+  | { kind: "const"; type: "float"; value: number }
+  | { kind: "const"; type: "str"; value: string }
+  | { kind: "const"; type: "bool"; value: boolean }
+  | { kind: "const"; type: "null" }
+  | { kind: "const"; type: "undefined" };
 
 export type BinOpKind =
   | "eq" | "ne" | "lt" | "le" | "gt" | "ge"
@@ -229,7 +230,7 @@ export interface BranchDecision {
 
 export type SymConstraint =
   | { kind: "expr"; expr: SymExpr }
-  | { kind: "unknown" };
+  | { kind: "unknown"; hint: string };
 
 export interface ExternalCall {
   symbol: string;

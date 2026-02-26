@@ -1,5 +1,6 @@
 import * as path from "node:path";
-import { handleRequest, parseRequest } from "./handlers.js";
+import { handleRequest, parseRequest, clearInstrumentedSources } from "./handlers.js";
+import { clearModuleCache } from "./executor.js";
 import { PROTOCOL_VERSION, type Request, type Response } from "./protocol.js";
 
 describe("parseRequest", () => {
@@ -76,6 +77,11 @@ describe("parseRequest", () => {
 });
 
 describe("handleRequest", () => {
+  beforeEach(() => {
+    clearInstrumentedSources();
+    clearModuleCache();
+  });
+
   function makeRequest(overrides: Partial<Request> & { command: Request["command"] }): Request {
     return {
       protocol_version: PROTOCOL_VERSION,
@@ -174,14 +180,38 @@ describe("handleRequest", () => {
   });
 
   describe("instrument", () => {
-    it("returns not-instrumented stub", () => {
+    it("returns file_not_found error for missing file", () => {
       const { response, shutdown } = handleRequest(
-        makeRequest({ command: "instrument", file: "test.ts", function: "foo", mocks: [] })
+        makeRequest({ command: "instrument", file: "nonexistent.ts", function: "foo", mocks: [] })
+      );
+      expect(shutdown).toBe(false);
+      expect(response.status).toBe("error");
+      if (response.status === "error") {
+        expect(response.code).toBe("file_not_found");
+      }
+    });
+
+    it("returns instrumentation_failed for missing function", () => {
+      const fixtureFile = path.resolve(__dirname, "__fixtures__", "primitives.ts");
+      const { response, shutdown } = handleRequest(
+        makeRequest({ command: "instrument", file: fixtureFile, function: "nonexistent", mocks: [] })
+      );
+      expect(shutdown).toBe(false);
+      expect(response.status).toBe("error");
+      if (response.status === "error") {
+        expect(response.code).toBe("instrumentation_failed");
+      }
+    });
+
+    it("instruments a real function successfully", () => {
+      const exampleFile = path.resolve(__dirname, "../../examples/typescript/src/01-arithmetic.ts");
+      const { response, shutdown } = handleRequest(
+        makeRequest({ command: "instrument", file: exampleFile, function: "classifyNumber", mocks: [] })
       );
       expect(shutdown).toBe(false);
       expect(response.status).toBe("instrument");
       if (response.status === "instrument") {
-        expect(response.instrumented).toBe(false);
+        expect(response.instrumented).toBe(true);
         expect(response.output_file).toBeNull();
       }
     });
