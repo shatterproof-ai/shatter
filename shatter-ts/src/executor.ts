@@ -25,6 +25,22 @@ import { RECORD_FUNCTION, BRANCH_FUNCTION } from "./instrumentor.js";
 const compiledModuleCache = new Map<string, Record<string, unknown>>();
 
 /**
+ * Proxy console used in VM sandboxes. Delegates all calls to `consoleTarget`,
+ * which can be swapped at execution time to capture output as side effects.
+ */
+let consoleTarget: Console = console;
+
+const consoleProxy = new Proxy(console, {
+  get(_target, prop, receiver) {
+    const value = Reflect.get(consoleTarget, prop, receiver);
+    if (typeof value === "function") {
+      return value.bind(consoleTarget);
+    }
+    return value;
+  },
+});
+
+/**
  * Transpile a TypeScript file to JavaScript and return the exports object.
  *
  * Results are cached by absolute file path.
@@ -52,7 +68,7 @@ function loadModule(filePath: string): Record<string, unknown> {
     module: moduleObj,
     exports: moduleExports,
     require,
-    console,
+    console: consoleProxy,
     process,
     Buffer,
     setTimeout,
@@ -228,14 +244,14 @@ export function executeFunction(
   const fn = resolveFunction(filePath, functionRef);
 
   const sideEffects: SideEffect[] = [];
-  const originalConsole = globalThis.console;
-  globalThis.console = createCapturingConsole(sideEffects);
+  const previousTarget = consoleTarget;
+  consoleTarget = createCapturingConsole(sideEffects);
 
   let metrics: MeasuredExecution;
   try {
     metrics = measureExecution(() => fn(...inputs));
   } finally {
-    globalThis.console = originalConsole;
+    consoleTarget = previousTarget;
   }
 
   if (metrics.thrownError) {

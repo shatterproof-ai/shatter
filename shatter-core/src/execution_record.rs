@@ -46,6 +46,16 @@ pub enum SideEffect {
     FileWrite { path: String },
     NetworkRequest { method: String, url: String },
     GlobalMutation { name: String },
+    ThrownError {
+        error_type: String,
+        message: String,
+        stack: Option<String>,
+    },
+    GlobalStateChange {
+        variable: String,
+        before: serde_json::Value,
+        after: serde_json::Value,
+    },
 }
 
 /// A call to an external (mocked or observed) dependency during execution.
@@ -177,6 +187,21 @@ mod tests {
         });
         round_trip(&SideEffect::GlobalMutation {
             name: "window.count".into(),
+        });
+        round_trip(&SideEffect::ThrownError {
+            error_type: "TypeError".into(),
+            message: "cannot read property of null".into(),
+            stack: Some("at foo (main.ts:10)".into()),
+        });
+        round_trip(&SideEffect::ThrownError {
+            error_type: "Error".into(),
+            message: "generic error".into(),
+            stack: None,
+        });
+        round_trip(&SideEffect::GlobalStateChange {
+            variable: "counter".into(),
+            before: serde_json::json!(0),
+            after: serde_json::json!(1),
         });
     }
 

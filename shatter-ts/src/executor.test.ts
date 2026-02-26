@@ -177,3 +177,203 @@ describe("buildExecuteResponse", () => {
     expect(parsed.performance.heap_allocated_bytes).toBe(response.performance.heap_allocated_bytes);
   });
 });
+
+const SIDE_EFFECTS_FIXTURE = path.resolve(FIXTURES_DIR, "side-effects.ts");
+
+describe("executeFunction side effect capture", () => {
+  it("captures console.log and console.warn output", () => {
+    const result = executeFunction(SIDE_EFFECTS_FIXTURE, "logsAndReturns", [42]);
+
+    expect(result.return_value).toBe("done: 42");
+    expect(result.thrown_error).toBeNull();
+
+    const consoleSideEffects = result.side_effects.filter(
+      (se: SideEffect) => se.kind === "console_output",
+    );
+    expect(consoleSideEffects).toHaveLength(2);
+    expect(consoleSideEffects[0]).toEqual({
+      kind: "console_output",
+      level: "log",
+      message: "processing 42",
+    });
+    expect(consoleSideEffects[1]).toEqual({
+      kind: "console_output",
+      level: "warn",
+      message: "watch out",
+    });
+  });
+
+  it("captures thrown error as both thrown_error and side effect", () => {
+    const result = executeFunction(SIDE_EFFECTS_FIXTURE, "throwsError", ["boom"]);
+
+    expect(result.thrown_error).not.toBeNull();
+    expect(result.thrown_error!.error_type).toBe("Error");
+    expect(result.thrown_error!.message).toBe("boom");
+
+    const errorSideEffects = result.side_effects.filter(
+      (se: SideEffect) => se.kind === "thrown_error",
+    );
+    expect(errorSideEffects).toHaveLength(1);
+    expect(errorSideEffects[0]).toMatchObject({
+      kind: "thrown_error",
+      error_type: "Error",
+      message: "boom",
+    });
+
+    // Also captures the console.error before the throw
+    const consoleSideEffects = result.side_effects.filter(
+      (se: SideEffect) => se.kind === "console_output",
+    );
+    expect(consoleSideEffects).toHaveLength(1);
+    expect(consoleSideEffects[0]).toEqual({
+      kind: "console_output",
+      level: "error",
+      message: "about to throw",
+    });
+  });
+
+  it("captures all console levels", () => {
+    const result = executeFunction(SIDE_EFFECTS_FIXTURE, "logsMultipleLevels", []);
+
+    const consoleSideEffects = result.side_effects.filter(
+      (se: SideEffect) => se.kind === "console_output",
+    );
+    expect(consoleSideEffects).toHaveLength(5);
+
+    const levels = consoleSideEffects.map((se: SideEffect) => {
+      if (se.kind === "console_output") return se.level;
+      return null;
+    });
+    expect(levels).toEqual(["log", "warn", "error", "info", "debug"]);
+  });
+
+  it("captures custom error types", () => {
+    const result = executeFunction(SIDE_EFFECTS_FIXTURE, "throwsCustomError", []);
+
+    expect(result.thrown_error!.error_type).toBe("TypeError");
+    expect(result.thrown_error!.message).toBe("custom type error");
+
+    const errorSideEffects = result.side_effects.filter(
+      (se: SideEffect) => se.kind === "thrown_error",
+    );
+    expect(errorSideEffects).toHaveLength(1);
+    expect(errorSideEffects[0]).toMatchObject({
+      kind: "thrown_error",
+      error_type: "TypeError",
+      message: "custom type error",
+    });
+  });
+
+  it("returns empty side_effects for pure functions", () => {
+    const result = executeFunction(SIDE_EFFECTS_FIXTURE, "noSideEffects", [1, 2]);
+
+    expect(result.return_value).toBe(3);
+    expect(result.thrown_error).toBeNull();
+    expect(result.side_effects).toEqual([]);
+  });
+
+  it("restores global console after execution", () => {
+    const originalConsole = globalThis.console;
+    executeFunction(SIDE_EFFECTS_FIXTURE, "logsAndReturns", [1]);
+    expect(globalThis.console).toBe(originalConsole);
+  });
+
+  it("restores global console even when function throws", () => {
+    const originalConsole = globalThis.console;
+    executeFunction(SIDE_EFFECTS_FIXTURE, "throwsError", ["test"]);
+    expect(globalThis.console).toBe(originalConsole);
+  });
+});
+
+describe("executeInstrumented side effect capture", () => {
+  function getInstrumentedSource(funcName: string): string {
+    const source = fs.readFileSync(SIDE_EFFECTS_FIXTURE, "utf-8");
+    const result = instrumentFunction(source, funcName, SIDE_EFFECTS_FIXTURE);
+    if ("error" in result) {
+      throw new Error(result.error);
+    }
+    return result.instrumentedSource;
+  }
+
+  it("captures console output in instrumented execution", () => {
+    const instrumentedSource = getInstrumentedSource("logsAndReturns");
+    const result = executeInstrumented(instrumentedSource, "logsAndReturns", [99]);
+
+    expect(result.return_value).toBe("done: 99");
+
+    const consoleSideEffects = result.side_effects.filter(
+      (se: SideEffect) => se.kind === "console_output",
+    );
+    expect(consoleSideEffects.length).toBeGreaterThanOrEqual(2);
+
+    const logEffect = consoleSideEffects.find(
+      (se: SideEffect) => se.kind === "console_output" && se.level === "log",
+    );
+    expect(logEffect).toBeDefined();
+    if (logEffect && logEffect.kind === "console_output") {
+      expect(logEffect.message).toContain("processing");
+      expect(logEffect.message).toContain("99");
+    }
+  });
+
+  it("captures thrown error and console output in instrumented execution", () => {
+    const instrumentedSource = getInstrumentedSource("throwsError");
+    const result = executeInstrumented(instrumentedSource, "throwsError", ["instrumented boom"]);
+
+    expect(result.thrown_error).not.toBeNull();
+    expect(result.thrown_error!.message).toBe("instrumented boom");
+
+    const errorSideEffects = result.side_effects.filter(
+      (se: SideEffect) => se.kind === "thrown_error",
+    );
+    expect(errorSideEffects).toHaveLength(1);
+
+    const consoleSideEffects = result.side_effects.filter(
+      (se: SideEffect) => se.kind === "console_output",
+    );
+    expect(consoleSideEffects.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("detects module-level variable changes", () => {
+    const instrumentedSource = getInstrumentedSource("incrementCounter");
+    const result = executeInstrumented(instrumentedSource, "incrementCounter", []);
+
+    expect(result.return_value).toBe(1);
+
+    const stateChanges = result.side_effects.filter(
+      (se: SideEffect) => se.kind === "global_state_change",
+    );
+    expect(stateChanges).toHaveLength(1);
+    expect(stateChanges[0]).toMatchObject({
+      kind: "global_state_change",
+      variable: "counter",
+      before: 0,
+      after: 1,
+    });
+  });
+});
+
+describe("buildExecuteResponse side effects", () => {
+  it("passes side_effects through to the response", () => {
+    const result = executeFunction(SIDE_EFFECTS_FIXTURE, "logsAndReturns", [7]);
+    const response = buildExecuteResponse(1, "0.1.0", result);
+
+    expect(response.side_effects.length).toBeGreaterThan(0);
+    expect(response.side_effects).toEqual(result.side_effects);
+  });
+
+  it("acceptance: function with console.log and thrown error has both recorded", () => {
+    const result = executeFunction(SIDE_EFFECTS_FIXTURE, "throwsError", ["fail"]);
+    const response = buildExecuteResponse(1, "0.1.0", result);
+
+    const hasConsoleOutput = response.side_effects.some(
+      (se: SideEffect) => se.kind === "console_output",
+    );
+    const hasThrownError = response.side_effects.some(
+      (se: SideEffect) => se.kind === "thrown_error",
+    );
+
+    expect(hasConsoleOutput).toBe(true);
+    expect(hasThrownError).toBe(true);
+  });
+});

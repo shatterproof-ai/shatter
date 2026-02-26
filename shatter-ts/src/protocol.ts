@@ -257,7 +257,9 @@ export type SideEffect =
   | { kind: "console_output"; level: string; message: string }
   | { kind: "file_write"; path: string; content: string }
   | { kind: "network_request"; method: string; url: string; body: unknown }
-  | { kind: "environment_read"; variable: string; value: string | null };
+  | { kind: "environment_read"; variable: string; value: string | null }
+  | { kind: "thrown_error"; error_type: string; message: string; stack: string | null }
+  | { kind: "global_state_change"; variable: string; before: unknown; after: unknown };
 
 export interface ErrorInfo {
   error_type: string;
