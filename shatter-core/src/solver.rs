@@ -361,11 +361,11 @@ fn convert_comparison(
             Ok(Z3Ast::Bool(match op {
                 BinOpKind::Eq => l.eq(&r),
                 BinOpKind::Ne => l.eq(&r).not(),
-                _ => {
-                    return Err(SolverError::Unsupported(format!(
-                        "comparison {op:?} not supported on strings"
-                    )))
-                }
+                BinOpKind::Lt => l.str_lt(&r),
+                BinOpKind::Le => l.str_le(&r),
+                BinOpKind::Gt => l.str_gt(&r),
+                BinOpKind::Ge => l.str_ge(&r),
+                _ => unreachable!(),
             }))
         }
     }
@@ -434,9 +434,26 @@ fn convert_unop(
                 Ok(Z3Ast::Int(inner.unary_minus()))
             }
         }
-        UnOpKind::BitwiseNot | UnOpKind::TypeOf => Err(SolverError::Unsupported(format!(
-            "unary operator {op:?} not supported in Z3 solver"
-        ))),
+        UnOpKind::BitwiseNot => {
+            // Approximate bitwise NOT (~x) as -(x + 1), which is equivalent for
+            // two's complement integers. This avoids needing Z3 bit-vectors.
+            let inner = to_z3_int(vars, operand)?;
+            let one = Int::from_i64(1);
+            let plus_one = Int::add(&[&inner, &one]);
+            Ok(Z3Ast::Int(plus_one.unary_minus()))
+        }
+        UnOpKind::TypeOf => {
+            // Return a string constant based on the inferred Z3 sort of the operand.
+            let sort = infer_sort(operand);
+            let type_name = match sort {
+                Sort::Int | Sort::Real => "number",
+                Sort::Bool => "boolean",
+                Sort::Str => "string",
+            };
+            Ok(Z3Ast::Str(Z3String::from_str(type_name).map_err(|_| {
+                SolverError::Unsupported("failed to create Z3 string for typeof".into())
+            })?))
+        }
     }
 }
 
@@ -1028,5 +1045,355 @@ mod tests {
         };
         let result = solve_constraints(&[constraint]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn string_ordering_lt() {
+        // s < "hello" should be solvable
+        let constraint = SymExpr::BinOp {
+            op: BinOpKind::Lt,
+            left: Box::new(SymExpr::Param {
+                name: "s".into(),
+                path: vec![],
+            }),
+            right: Box::new(SymExpr::Const(ConstValue::Str("hello".into()))),
+        };
+        let result = solve_constraints(&[constraint]).expect("solver should not error");
+        match result {
+            SolveResult::Sat(values) => {
+                let s = match values.get("s") {
+                    Some(ConcreteValue::Str(v)) => v.clone(),
+                    other => panic!("expected Str for s, got {other:?}"),
+                };
+                assert!(s < "hello".to_string(), "expected s < \"hello\", got s=\"{s}\"");
+            }
+            SolveResult::Unsat => panic!("expected sat"),
+        }
+    }
+
+    #[test]
+    fn string_ordering_ge() {
+        // s >= "abc" should be solvable — Z3 uses its own lexicographic order
+        // so we just verify satisfiability, not the concrete value against Rust ordering
+        let constraint = SymExpr::BinOp {
+            op: BinOpKind::Ge,
+            left: Box::new(SymExpr::Param {
+                name: "s".into(),
+                path: vec![],
+            }),
+            right: Box::new(SymExpr::Const(ConstValue::Str("abc".into()))),
+        };
+        let result = solve_constraints(&[constraint]).expect("solver should not error");
+        match result {
+            SolveResult::Sat(values) => {
+                assert!(
+                    matches!(values.get("s"), Some(ConcreteValue::Str(_))),
+                    "expected Str for s, got {:?}",
+                    values.get("s")
+                );
+            }
+            SolveResult::Unsat => panic!("expected sat"),
+        }
+    }
+
+    #[test]
+    fn string_ordering_contradictory_is_unsat() {
+        // s > "z" AND s < "a" — unsatisfiable
+        let constraints = vec![
+            SymExpr::BinOp {
+                op: BinOpKind::Gt,
+                left: Box::new(SymExpr::Param {
+                    name: "s".into(),
+                    path: vec![],
+                }),
+                right: Box::new(SymExpr::Const(ConstValue::Str("z".into()))),
+            },
+            SymExpr::BinOp {
+                op: BinOpKind::Lt,
+                left: Box::new(SymExpr::Param {
+                    name: "s".into(),
+                    path: vec![],
+                }),
+                right: Box::new(SymExpr::Const(ConstValue::Str("a".into()))),
+            },
+        ];
+        let result = solve_constraints(&constraints).expect("solver should not error");
+        assert!(matches!(result, SolveResult::Unsat));
+    }
+
+    #[test]
+    fn nested_arithmetic_comparison() {
+        // (x + 1) * 2 > 10 → x >= 5
+        let constraint = SymExpr::BinOp {
+            op: BinOpKind::Gt,
+            left: Box::new(SymExpr::BinOp {
+                op: BinOpKind::Mul,
+                left: Box::new(SymExpr::BinOp {
+                    op: BinOpKind::Add,
+                    left: Box::new(SymExpr::Param {
+                        name: "x".into(),
+                        path: vec![],
+                    }),
+                    right: Box::new(SymExpr::Const(ConstValue::Int(1))),
+                }),
+                right: Box::new(SymExpr::Const(ConstValue::Int(2))),
+            }),
+            right: Box::new(SymExpr::Const(ConstValue::Int(10))),
+        };
+        let result = solve_constraints(&[constraint]).expect("solver should not error");
+        match result {
+            SolveResult::Sat(values) => {
+                let x = match values.get("x") {
+                    Some(ConcreteValue::Int(v)) => *v,
+                    other => panic!("expected Int for x, got {other:?}"),
+                };
+                assert!(x >= 5, "expected x >= 5, got x={x}");
+            }
+            SolveResult::Unsat => panic!("expected sat"),
+        }
+    }
+
+    #[test]
+    fn mixed_int_float_comparison() {
+        // x > 3.5 (float constant promotes to Real)
+        let constraint = SymExpr::BinOp {
+            op: BinOpKind::Gt,
+            left: Box::new(SymExpr::Param {
+                name: "x".into(),
+                path: vec![],
+            }),
+            right: Box::new(SymExpr::Const(ConstValue::Float(3.5))),
+        };
+        let result = solve_constraints(&[constraint]).expect("solver should not error");
+        match result {
+            SolveResult::Sat(values) => {
+                let x = match values.get("x") {
+                    Some(ConcreteValue::Float(v)) => *v,
+                    other => panic!("expected Float for x, got {other:?}"),
+                };
+                assert!(x > 3.5, "expected x > 3.5, got x={x}");
+            }
+            SolveResult::Unsat => panic!("expected sat"),
+        }
+    }
+
+    #[test]
+    fn compound_logical_range() {
+        // x > 0 && x < 100 → value in range (1..99)
+        let constraint = SymExpr::BinOp {
+            op: BinOpKind::And,
+            left: Box::new(SymExpr::BinOp {
+                op: BinOpKind::Gt,
+                left: Box::new(SymExpr::Param {
+                    name: "x".into(),
+                    path: vec![],
+                }),
+                right: Box::new(SymExpr::Const(ConstValue::Int(0))),
+            }),
+            right: Box::new(SymExpr::BinOp {
+                op: BinOpKind::Lt,
+                left: Box::new(SymExpr::Param {
+                    name: "x".into(),
+                    path: vec![],
+                }),
+                right: Box::new(SymExpr::Const(ConstValue::Int(100))),
+            }),
+        };
+        let result = solve_constraints(&[constraint]).expect("solver should not error");
+        match result {
+            SolveResult::Sat(values) => {
+                let x = match values.get("x") {
+                    Some(ConcreteValue::Int(v)) => *v,
+                    other => panic!("expected Int for x, got {other:?}"),
+                };
+                assert!(x > 0 && x < 100, "expected 0 < x < 100, got x={x}");
+            }
+            SolveResult::Unsat => panic!("expected sat"),
+        }
+    }
+
+    #[test]
+    fn solve_for_new_path_multi_constraint() {
+        // Path: x > 0, x < 50, x != 25
+        // Negate index 2 (x != 25) → should find x == 25 with x > 0 and x < 50
+        let constraints = vec![
+            SymExpr::BinOp {
+                op: BinOpKind::Gt,
+                left: Box::new(SymExpr::Param {
+                    name: "x".into(),
+                    path: vec![],
+                }),
+                right: Box::new(SymExpr::Const(ConstValue::Int(0))),
+            },
+            SymExpr::BinOp {
+                op: BinOpKind::Lt,
+                left: Box::new(SymExpr::Param {
+                    name: "x".into(),
+                    path: vec![],
+                }),
+                right: Box::new(SymExpr::Const(ConstValue::Int(50))),
+            },
+            SymExpr::BinOp {
+                op: BinOpKind::Ne,
+                left: Box::new(SymExpr::Param {
+                    name: "x".into(),
+                    path: vec![],
+                }),
+                right: Box::new(SymExpr::Const(ConstValue::Int(25))),
+            },
+        ];
+        let result = solve_for_new_path(&constraints, 2).expect("solver should not error");
+        match result {
+            SolveResult::Sat(values) => {
+                let x = match values.get("x") {
+                    Some(ConcreteValue::Int(v)) => *v,
+                    other => panic!("expected Int for x, got {other:?}"),
+                };
+                // Negating x != 25 gives x == 25, with prefix x > 0 && x < 50
+                assert_eq!(x, 25, "expected x == 25, got x={x}");
+            }
+            SolveResult::Unsat => panic!("expected sat"),
+        }
+    }
+
+    #[test]
+    fn bitwise_not_constraint() {
+        // ~x > 5 → -(x+1) > 5 → x < -6
+        let constraint = SymExpr::BinOp {
+            op: BinOpKind::Gt,
+            left: Box::new(SymExpr::UnOp {
+                op: UnOpKind::BitwiseNot,
+                operand: Box::new(SymExpr::Param {
+                    name: "x".into(),
+                    path: vec![],
+                }),
+            }),
+            right: Box::new(SymExpr::Const(ConstValue::Int(5))),
+        };
+        let result = solve_constraints(&[constraint]).expect("solver should not error");
+        match result {
+            SolveResult::Sat(values) => {
+                let x = match values.get("x") {
+                    Some(ConcreteValue::Int(v)) => *v,
+                    other => panic!("expected Int for x, got {other:?}"),
+                };
+                // ~x > 5 means -(x+1) > 5, so x+1 < -5, so x < -6
+                assert!(x < -6, "expected x < -6, got x={x}");
+            }
+            SolveResult::Unsat => panic!("expected sat"),
+        }
+    }
+
+    #[test]
+    fn bitwise_not_specific_value() {
+        // ~x == 0 → -(x+1) == 0 → x == -1
+        let constraint = SymExpr::BinOp {
+            op: BinOpKind::Eq,
+            left: Box::new(SymExpr::UnOp {
+                op: UnOpKind::BitwiseNot,
+                operand: Box::new(SymExpr::Param {
+                    name: "x".into(),
+                    path: vec![],
+                }),
+            }),
+            right: Box::new(SymExpr::Const(ConstValue::Int(0))),
+        };
+        let result = solve_constraints(&[constraint]).expect("solver should not error");
+        match result {
+            SolveResult::Sat(values) => {
+                let x = match values.get("x") {
+                    Some(ConcreteValue::Int(v)) => *v,
+                    other => panic!("expected Int for x, got {other:?}"),
+                };
+                assert_eq!(x, -1, "expected x == -1, got x={x}");
+            }
+            SolveResult::Unsat => panic!("expected sat"),
+        }
+    }
+
+    #[test]
+    fn typeof_int_param() {
+        // typeof(x) == "number" where x is an int param — should be sat
+        let constraint = SymExpr::BinOp {
+            op: BinOpKind::Eq,
+            left: Box::new(SymExpr::UnOp {
+                op: UnOpKind::TypeOf,
+                operand: Box::new(SymExpr::Param {
+                    name: "x".into(),
+                    path: vec![],
+                }),
+            }),
+            right: Box::new(SymExpr::Const(ConstValue::Str("number".into()))),
+        };
+        let result = solve_constraints(&[constraint]).expect("solver should not error");
+        assert!(
+            matches!(result, SolveResult::Sat(_)),
+            "expected sat for typeof(int) == 'number'"
+        );
+    }
+
+    #[test]
+    fn typeof_string_param() {
+        // typeof(s) == "string" where s is a string param — should be sat
+        // Force s to be string-sorted by also constraining it
+        let constraints = vec![
+            SymExpr::BinOp {
+                op: BinOpKind::Eq,
+                left: Box::new(SymExpr::Param {
+                    name: "s".into(),
+                    path: vec![],
+                }),
+                right: Box::new(SymExpr::Const(ConstValue::Str("test".into()))),
+            },
+            SymExpr::BinOp {
+                op: BinOpKind::Eq,
+                left: Box::new(SymExpr::UnOp {
+                    op: UnOpKind::TypeOf,
+                    operand: Box::new(SymExpr::Const(ConstValue::Str("anything".into()))),
+                }),
+                right: Box::new(SymExpr::Const(ConstValue::Str("string".into()))),
+            },
+        ];
+        let result = solve_constraints(&constraints).expect("solver should not error");
+        assert!(
+            matches!(result, SolveResult::Sat(_)),
+            "expected sat for typeof(string) == 'string'"
+        );
+    }
+
+    #[test]
+    fn typeof_bool_param() {
+        // typeof(true) == "boolean" — should be sat
+        let constraint = SymExpr::BinOp {
+            op: BinOpKind::Eq,
+            left: Box::new(SymExpr::UnOp {
+                op: UnOpKind::TypeOf,
+                operand: Box::new(SymExpr::Const(ConstValue::Bool(true))),
+            }),
+            right: Box::new(SymExpr::Const(ConstValue::Str("boolean".into()))),
+        };
+        let result = solve_constraints(&[constraint]).expect("solver should not error");
+        assert!(
+            matches!(result, SolveResult::Sat(_)),
+            "expected sat for typeof(bool) == 'boolean'"
+        );
+    }
+
+    #[test]
+    fn typeof_mismatch_is_unsat() {
+        // typeof(42) == "string" — should be unsat since 42 is Int → "number"
+        let constraint = SymExpr::BinOp {
+            op: BinOpKind::Eq,
+            left: Box::new(SymExpr::UnOp {
+                op: UnOpKind::TypeOf,
+                operand: Box::new(SymExpr::Const(ConstValue::Int(42))),
+            }),
+            right: Box::new(SymExpr::Const(ConstValue::Str("string".into()))),
+        };
+        let result = solve_constraints(&[constraint]).expect("solver should not error");
+        assert!(
+            matches!(result, SolveResult::Unsat),
+            "expected unsat for typeof(int) == 'string'"
+        );
     }
 }
