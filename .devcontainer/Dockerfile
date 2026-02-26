@@ -6,12 +6,14 @@ ARG GO_VERSION=1.24.4
 ARG GOLANGCI_LINT_VERSION=v1.64.8
 
 # Install OS dependencies (z3 solver libs needed by shatter-core)
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN add-apt-repository universe \
+    && apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     pkg-config \
     libz3-dev \
     libclang-dev \
     cmake \
+    tmux \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Rust as vscode user
@@ -41,5 +43,14 @@ ENV PATH="/usr/local/go/bin:/home/vscode/go/bin:${PATH}"
 # Install golangci-lint
 RUN curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
     | sh -s -- -b /usr/local/bin ${GOLANGCI_LINT_VERSION}
+
+# Install Homebrew and beads (bd) issue tracker
+USER vscode
+RUN NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" \
+    && eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)" \
+    && brew install beads \
+    && echo 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"' >> ~/.bashrc
+
+ENV PATH="/home/linuxbrew/.linuxbrew/bin:${PATH}"
 
 USER vscode
