@@ -19,9 +19,13 @@ See `LANGUAGE-EVALUATION.md` for the rationale behind choosing Rust for the core
   # or
   sudo apt install libclang-dev    # full (includes clang headers)
   ```
-  If you install only `libclang1-18`, the checked-in `.cargo/config.toml` provides
-  a fallback `BINDGEN_EXTRA_CLANG_ARGS` pointing to GCC's builtin headers. If your
-  GCC version isn't 13, update the path — run `gcc -print-file-name=include` to find it.
+  If you install only `libclang1-18`, run the configure script to auto-detect
+  GCC's builtin headers path:
+  ```
+  ./scripts/configure-bindgen.sh
+  ```
+  This generates `.cargo/config.toml` with the correct `BINDGEN_EXTRA_CLANG_ARGS`
+  for your GCC version. Re-run it if you upgrade GCC.
 
 ## Project Structure
 
