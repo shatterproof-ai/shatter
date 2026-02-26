@@ -256,10 +256,88 @@ func TestInstrumentWithValidFileReturnsSuccess(t *testing.T) {
 	}
 }
 
-func TestExecuteReturnsNotImplemented(t *testing.T) {
+func TestExecuteWithoutFileReturnsError(t *testing.T) {
 	resp := sendRecv(t, `{"protocol_version":"0.1.0","id":4,"command":"execute","function":"F","inputs":[],"mocks":[]}`)
 	if resp.Status != "error" {
 		t.Errorf("status = %q, want error", resp.Status)
+	}
+	if resp.Code != "invalid_request" {
+		t.Errorf("code = %q, want invalid_request", resp.Code)
+	}
+}
+
+func TestExecuteWithoutFunctionReturnsError(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "test.go")
+	if err := os.WriteFile(tmp, []byte("package main\n\nfunc F(x int) int { return x }\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	req := `{"protocol_version":"0.1.0","id":4,"command":"execute","file":"` + tmp + `","inputs":[]}`
+	resp := sendRecv(t, req)
+	if resp.Status != "error" {
+		t.Errorf("status = %q, want error", resp.Status)
+	}
+	if resp.Code != "invalid_request" {
+		t.Errorf("code = %q, want invalid_request", resp.Code)
+	}
+}
+
+func TestExecuteWithMissingFileReturnsError(t *testing.T) {
+	resp := sendRecv(t, `{"protocol_version":"0.1.0","id":4,"command":"execute","file":"/nonexistent.go","function":"F","inputs":[]}`)
+	if resp.Status != "error" {
+		t.Errorf("status = %q, want error", resp.Status)
+	}
+	if resp.Code != "file_not_found" {
+		t.Errorf("code = %q, want file_not_found", resp.Code)
+	}
+}
+
+func TestExecuteRunsFunctionAndReturnsBranchData(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "target.go")
+	src := `package main
+
+func classify(x int) string {
+	if x > 0 {
+		return "positive"
+	}
+	return "nonpositive"
+}
+`
+	if err := os.WriteFile(tmp, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	req := `{"protocol_version":"0.1.0","id":4,"command":"execute","file":"` + tmp + `","function":"classify","inputs":[5]}`
+	resp := sendRecv(t, req)
+	if resp.Status != "execute" {
+		t.Fatalf("status = %q, want execute (message: %s)", resp.Status, resp.Message)
+	}
+
+	// Should have branch decisions
+	if len(resp.BranchPath) == 0 {
+		t.Error("expected branch_path to be populated")
+	}
+
+	// Should have lines executed
+	if len(resp.LinesExecuted) == 0 {
+		t.Error("expected lines_executed to be populated")
+	}
+
+	// Should have return value
+	var retVal string
+	if err := json.Unmarshal(resp.ReturnValue, &retVal); err != nil {
+		t.Fatalf("parsing return value: %v", err)
+	}
+	if retVal != "positive" {
+		t.Errorf("expected %q, got %q", "positive", retVal)
+	}
+
+	// Should have path constraints
+	if len(resp.PathConstraints) == 0 {
+		t.Error("expected path_constraints to be populated")
+	}
+
+	// Should have performance metrics
+	if resp.Performance == nil {
+		t.Error("expected performance metrics")
 	}
 }
 

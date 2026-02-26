@@ -187,11 +187,109 @@ func (h *Handler) handleInstrument(resp Response, req Request) Response {
 }
 
 func (h *Handler) handleExecute(resp Response, req Request) Response {
-	// Stub: real execution will compile and run instrumented code.
-	resp.Status = "error"
-	resp.Code = "internal_error"
-	resp.Message = "execute command not yet implemented"
+	if req.File == "" {
+		resp.Status = "error"
+		resp.Code = "invalid_request"
+		resp.Message = "execute command requires a file path"
+		return resp
+	}
+
+	if req.Function == nil || *req.Function == "" {
+		resp.Status = "error"
+		resp.Code = "invalid_request"
+		resp.Message = "execute command requires a function name"
+		return resp
+	}
+
+	if _, err := os.Stat(req.File); err != nil {
+		resp.Status = "error"
+		resp.Code = "file_not_found"
+		resp.Message = fmt.Sprintf("file not found: %s", req.File)
+		return resp
+	}
+
+	result, err := instrument.ExecuteFunction(req.File, *req.Function, req.Inputs)
+	if err != nil {
+		resp.Status = "error"
+		if strings.Contains(err.Error(), "function not found") {
+			resp.Code = "function_not_found"
+		} else if strings.Contains(err.Error(), "build failed") {
+			resp.Code = "instrumentation_failed"
+		} else if strings.Contains(err.Error(), "timed out") {
+			resp.Code = "execution_timeout"
+		} else {
+			resp.Code = "internal_error"
+		}
+		resp.Message = err.Error()
+		return resp
+	}
+
+	resp.Status = "execute"
+	resp.ReturnValue = result.ReturnValue
+	resp.ThrownError = convertErrorInfo(result.ThrownError)
+	resp.LinesExecuted = toIntSlice(result.LinesExecuted)
+	resp.BranchPath = convertBranchPath(result.BranchPath)
+	resp.PathConstraints = extractPathConstraints(result.BranchPath)
+	resp.Performance = &PerfMetrics{
+		WallTimeMs: result.Performance.WallTimeMs,
+	}
+
 	return resp
+}
+
+func convertErrorInfo(e *instrument.ErrorInfo) *ErrorInfo {
+	if e == nil {
+		return nil
+	}
+	return &ErrorInfo{
+		ErrorType: e.ErrorType,
+		Message:   e.Message,
+		Stack:     e.Stack,
+	}
+}
+
+func toIntSlice(ints []int) []int {
+	if ints == nil {
+		return []int{}
+	}
+	return ints
+}
+
+func convertBranchPath(branches []instrument.BranchDecision) []BranchDecision {
+	result := make([]BranchDecision, len(branches))
+	for i, b := range branches {
+		var constraint *SymConstraint
+		if b.ConstraintJSON != "" {
+			var sc SymConstraint
+			if err := json.Unmarshal([]byte(b.ConstraintJSON), &sc); err == nil {
+				constraint = &sc
+			}
+		}
+		result[i] = BranchDecision{
+			BranchID:   b.BranchID,
+			Line:       b.Line,
+			Taken:      b.Taken,
+			Constraint: constraint,
+		}
+	}
+	return result
+}
+
+func extractPathConstraints(branches []instrument.BranchDecision) []SymConstraint {
+	var constraints []SymConstraint
+	for _, b := range branches {
+		if b.ConstraintJSON == "" {
+			continue
+		}
+		var sc SymConstraint
+		if err := json.Unmarshal([]byte(b.ConstraintJSON), &sc); err == nil {
+			constraints = append(constraints, sc)
+		}
+	}
+	if constraints == nil {
+		return []SymConstraint{}
+	}
+	return constraints
 }
 
 func (h *Handler) handleShutdown(resp Response) Response {
