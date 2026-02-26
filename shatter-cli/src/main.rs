@@ -55,6 +55,10 @@ enum CliCommand {
         /// Falls back to SHATTER_CACHE_DIR env var, then `.shatter/cache/`.
         #[arg(long, env = "SHATTER_CACHE_DIR")]
         cache_dir: Option<PathBuf>,
+
+        /// Disable behavior map caching entirely.
+        #[arg(long)]
+        no_cache: bool,
     },
 
     /// Scan multiple functions in dependency order, using behavior maps as mocks.
@@ -78,6 +82,10 @@ enum CliCommand {
         /// Only run the analyze phase (skip exploration).
         #[arg(long)]
         analyze_only: bool,
+
+        /// Disable behavior map caching entirely.
+        #[arg(long)]
+        no_cache: bool,
     },
 }
 
@@ -161,6 +169,9 @@ fn frontend_config(language: Language, timeout: Duration) -> Result<FrontendConf
 }
 
 /// Run the explore command.
+// Each argument corresponds to a CLI flag; grouping into a struct would add indirection
+// without improving clarity since this is only called from one callsite.
+#[allow(clippy::too_many_arguments)]
 async fn run_explore(
     targets: &[String],
     max_iterations: u32,
@@ -169,6 +180,7 @@ async fn run_explore(
     analyze_only: bool,
     _show_clusters: bool,
     cache_dir: Option<&Path>,
+    no_cache: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let scope_config = match scope_path {
         Some(path) => {
@@ -183,12 +195,14 @@ async fn run_explore(
     let _scope_matcher = ScopeMatcher::new(&scope_config)
         .map_err(|e| format!("invalid scope config: {e}"))?;
 
-    let cache = {
+    let cache = if no_cache {
+        None
+    } else {
         let dir = match cache_dir {
             Some(p) => p.to_path_buf(),
             None => BehaviorMapCache::default_dir(&std::env::current_dir()?),
         };
-        BehaviorMapCache::new(dir).map_err(|e| format!("failed to initialize cache: {e}"))?
+        Some(BehaviorMapCache::new(dir).map_err(|e| format!("failed to initialize cache: {e}"))?)
     };
 
     let parsed: Vec<Target> = targets
@@ -281,7 +295,9 @@ async fn run_explore(
 
                     let behavior_map =
                         BehaviorMap::from_exploration_result(&func.name, &result);
-                    if let Err(e) = cache.store(&behavior_map) {
+                    if let Some(ref cache) = cache
+                        && let Err(e) = cache.store(&behavior_map)
+                    {
                         eprintln!("  Warning: failed to cache behavior map for {}: {e}", func.name);
                     }
                 }
@@ -435,6 +451,7 @@ async fn main() -> ExitCode {
             analyze_only,
             show_clusters,
             cache_dir,
+            no_cache,
         } => {
             run_explore(
                 &targets,
@@ -444,6 +461,7 @@ async fn main() -> ExitCode {
                 analyze_only,
                 show_clusters,
                 cache_dir.as_deref(),
+                no_cache,
             )
             .await
         }
@@ -453,6 +471,7 @@ async fn main() -> ExitCode {
             timeout,
             scope,
             analyze_only,
+            no_cache: _,
         } => {
             run_scan(
                 &targets,
@@ -550,6 +569,7 @@ mod tests {
                 analyze_only,
                 show_clusters,
                 cache_dir,
+                no_cache,
             } => {
                 assert_eq!(targets, vec!["test.ts:myFunc"]);
                 assert_eq!(max_iterations, 100);
@@ -558,6 +578,7 @@ mod tests {
                 assert!(!analyze_only);
                 assert!(!show_clusters);
                 assert!(cache_dir.is_none());
+                assert!(!no_cache);
             }
             _ => panic!("expected Explore command"),
         }
@@ -599,6 +620,7 @@ mod tests {
                 analyze_only,
                 show_clusters,
                 cache_dir,
+                no_cache,
             } => {
                 assert_eq!(targets, vec!["a.ts:fn1", "b.go:Fn2"]);
                 assert_eq!(max_iterations, 50);
@@ -607,7 +629,9 @@ mod tests {
                 assert!(analyze_only);
                 assert!(!show_clusters);
                 assert!(cache_dir.is_none());
+                assert!(!no_cache);
             }
+            _ => panic!("expected Explore command"),
         }
     }
 
@@ -623,6 +647,7 @@ mod tests {
             CliCommand::Explore { cache_dir, .. } => {
                 assert_eq!(cache_dir, Some(PathBuf::from("/tmp/foo")));
             }
+            _ => panic!("expected Explore command"),
         }
     }
 
@@ -669,12 +694,14 @@ mod tests {
                 timeout,
                 scope,
                 analyze_only,
+                no_cache,
             } => {
                 assert_eq!(targets, vec!["test.ts"]);
                 assert_eq!(max_iterations, 100);
                 assert_eq!(timeout, 120);
                 assert!(scope.is_none());
                 assert!(!analyze_only);
+                assert!(!no_cache);
             }
             _ => panic!("expected Scan command"),
         }
@@ -697,12 +724,14 @@ mod tests {
                 max_iterations,
                 timeout,
                 analyze_only,
+                no_cache,
                 ..
             } => {
                 assert_eq!(targets, vec!["a.ts", "b.ts:helperFn"]);
                 assert_eq!(max_iterations, 50);
                 assert_eq!(timeout, 300);
                 assert!(analyze_only);
+                assert!(!no_cache);
             }
             _ => panic!("expected Scan command"),
         }
@@ -735,5 +764,67 @@ mod tests {
         let config = frontend_config(Language::Go, Duration::from_secs(45)).unwrap();
         assert_eq!(config.command, PathBuf::from("shatter-go/shatter-go"));
         assert_eq!(config.request_timeout, Duration::from_secs(45));
+    }
+
+    #[test]
+    fn cli_parses_explore_with_no_cache() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "explore",
+            "--no-cache",
+            "test.ts:myFunc",
+        ]);
+        match cli.command {
+            CliCommand::Explore { no_cache, .. } => {
+                assert!(no_cache);
+            }
+            _ => panic!("expected Explore command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_scan_with_no_cache() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "scan",
+            "--no-cache",
+            "test.ts",
+        ]);
+        match cli.command {
+            CliCommand::Scan { no_cache, .. } => {
+                assert!(no_cache);
+            }
+            _ => panic!("expected Scan command"),
+        }
+    }
+
+    #[test]
+    fn cli_no_cache_defaults_to_false_for_explore() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "explore",
+            "test.ts:myFunc",
+        ]);
+        match cli.command {
+            CliCommand::Explore { no_cache, .. } => {
+                assert!(!no_cache);
+            }
+            _ => panic!("expected Explore command"),
+        }
+    }
+
+    #[test]
+    fn cli_no_cache_defaults_to_false_for_scan() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "scan",
+            "test.ts",
+        ]);
+        match cli.command {
+            CliCommand::Scan { no_cache, .. } => {
+                assert!(!no_cache);
+            }
+            _ => panic!("expected Scan command"),
+        }
     }
 }

@@ -2,8 +2,10 @@
 
 pub mod behavior;
 pub mod cache;
+pub mod discovery;
 pub mod execution_record;
 pub mod explorer;
+pub mod export;
 pub mod frontend;
 pub mod input_gen;
 pub mod orchestrator;
