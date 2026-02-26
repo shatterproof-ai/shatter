@@ -269,6 +269,8 @@ func extractBranches(fset *token.FileSet, body *ast.BlockStmt, params map[string
 			}
 		case *ast.RangeStmt:
 			branches = append(branches, rangeBranch(fset, stmt, params, &nextID))
+		case *ast.SelectStmt:
+			branches = append(branches, selectBranches(fset, stmt, &nextID)...)
 		}
 		return true
 	})
@@ -345,6 +347,37 @@ func rangeBranch(fset *token.FileSet, stmt *ast.RangeStmt, params map[string]boo
 		Condition:     buildSymExpr(stmt.X, params),
 		BranchType:    "for",
 	}
+}
+
+func selectBranches(fset *token.FileSet, stmt *ast.SelectStmt, nextID *int) []BranchInfo {
+	var branches []BranchInfo
+	for _, clause := range stmt.Body.List {
+		cc, ok := clause.(*ast.CommClause)
+		if !ok {
+			continue
+		}
+		id := *nextID
+		*nextID++
+		var condText string
+		if cc.Comm != nil {
+			condText = stmtText(fset, cc.Comm)
+		} else {
+			condText = "default"
+		}
+		branches = append(branches, BranchInfo{
+			ID:            id,
+			Line:          fset.Position(cc.Pos()).Line,
+			ConditionText: condText,
+			BranchType:    "select",
+		})
+	}
+	return branches
+}
+
+func stmtText(fset *token.FileSet, stmt ast.Stmt) string {
+	var buf strings.Builder
+	printer.Fprint(&buf, fset, stmt)
+	return buf.String()
 }
 
 // --- Symbolic Expression Building ---

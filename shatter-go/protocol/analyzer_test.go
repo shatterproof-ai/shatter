@@ -310,6 +310,52 @@ func TestAnalyzeScaleSliceExtractsRangeBranch(t *testing.T) {
 	}
 }
 
+// --- Select statement branch extraction ---
+
+func TestAnalyzeSelectExampleExtractsSelectBranches(t *testing.T) {
+	results, err := AnalyzeFile(testdataPath("select.go"), "SelectExample")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	fn := results[0]
+	if len(fn.Branches) != 3 {
+		t.Fatalf("branches len = %d, want 3", len(fn.Branches))
+	}
+	for _, br := range fn.Branches {
+		if br.BranchType != "select" {
+			t.Errorf("branch_type = %q, want select", br.BranchType)
+		}
+	}
+	// First case: receive from ch1
+	if fn.Branches[0].ConditionText != "v := <-ch1" {
+		t.Errorf("branch[0] condition_text = %q, want %q", fn.Branches[0].ConditionText, "v := <-ch1")
+	}
+	// Second case: send to ch2
+	if fn.Branches[1].ConditionText != `ch2 <- "hello"` {
+		t.Errorf("branch[1] condition_text = %q, want %q", fn.Branches[1].ConditionText, `ch2 <- "hello"`)
+	}
+	// Third case: default
+	if fn.Branches[2].ConditionText != "default" {
+		t.Errorf("branch[2] condition_text = %q, want %q", fn.Branches[2].ConditionText, "default")
+	}
+}
+
+func TestAnalyzeSelectNoDefaultExtractsTwoBranches(t *testing.T) {
+	results, err := AnalyzeFile(testdataPath("select.go"), "SelectNoDefault")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	fn := results[0]
+	if len(fn.Branches) != 2 {
+		t.Fatalf("branches len = %d, want 2", len(fn.Branches))
+	}
+	for _, br := range fn.Branches {
+		if br.BranchType != "select" {
+			t.Errorf("branch_type = %q, want select", br.BranchType)
+		}
+	}
+}
+
 // --- Symbolic expression construction ---
 
 func TestAnalyzeGreetBranchHasSymExpr(t *testing.T) {
