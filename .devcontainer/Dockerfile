@@ -44,13 +44,7 @@ ENV PATH="/usr/local/go/bin:/home/vscode/go/bin:${PATH}"
 RUN curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
     | sh -s -- -b /usr/local/bin ${GOLANGCI_LINT_VERSION}
 
-# Install Homebrew and beads (bd) issue tracker
-USER vscode
-RUN NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" \
-    && eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)" \
-    && brew install beads \
-    && echo 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"' >> ~/.bashrc
-
-ENV PATH="/home/linuxbrew/.linuxbrew/bin:${PATH}"
+# Install beads (bd) issue tracker
+RUN npm install -g @beads/bd
 
 USER vscode
