@@ -120,7 +120,7 @@ EXAMPLES=(
     "examples/typescript/src/04-errors.ts:safeDivide"
 )
 
-TOTAL=4
+TOTAL=5
 
 # ─── Walkthrough ──────────────────────────────────────────────────────
 
@@ -152,5 +152,10 @@ step 3 $TOTAL "Generate & Execute Inputs" \
 step 4 $TOTAL "Show Behavior Clusters" \
     "Group executions by branch path into distinct behaviors" \
     $SHATTER explore --show-clusters "${EXAMPLES[@]}"
+
+# Stage 5: Scan (dependency-ordered exploration)
+step 5 $TOTAL "Scan in Dependency Order" \
+    "Test functions leaf-first, using behavior maps as mocks for callers" \
+    $SHATTER scan examples/typescript/src/01-arithmetic.ts
 
 echo "${BOLD}${GREEN}Walkthrough complete.${RESET}"

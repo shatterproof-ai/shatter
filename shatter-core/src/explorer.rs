@@ -13,7 +13,7 @@ use rand::SeedableRng;
 
 use crate::frontend::{Frontend, FrontendError};
 use crate::input_gen::generate_random_inputs;
-use crate::protocol::{Command as ProtoCommand, FunctionAnalysis, ResponseResult};
+use crate::protocol::{Command as ProtoCommand, ExecuteResult, FunctionAnalysis, MockConfig, ResponseResult};
 
 /// Configuration for an exploration run.
 #[derive(Debug, Clone)]
@@ -22,6 +22,8 @@ pub struct ExploreConfig {
     pub max_iterations: u32,
     /// Random seed for reproducibility. If None, uses entropy.
     pub seed: Option<u64>,
+    /// Mock configurations to pass to Execute commands.
+    pub mocks: Vec<MockConfig>,
 }
 
 /// Summary of a single function execution during exploration.
@@ -54,6 +56,8 @@ pub struct ExplorationResult {
     pub total_lines: u32,
     /// Summary of each execution that discovered a new path.
     pub new_path_executions: Vec<ExecutionSummary>,
+    /// Raw execution results paired with their inputs, for building BehaviorMaps.
+    pub raw_results: Vec<(Vec<serde_json::Value>, ExecuteResult)>,
 }
 
 /// Errors that can occur during exploration.
@@ -110,6 +114,7 @@ pub async fn explore_function(
     let mut seen_paths: HashSet<u64> = HashSet::new();
     let mut all_lines: HashSet<u32> = HashSet::new();
     let mut new_path_executions: Vec<ExecutionSummary> = Vec::new();
+    let mut raw_results: Vec<(Vec<serde_json::Value>, ExecuteResult)> = Vec::new();
     let mut iterations: u32 = 0;
 
     // Track return value → count for the summary
@@ -124,7 +129,7 @@ pub async fn explore_function(
             .send(ProtoCommand::Execute {
                 function: analysis.name.clone(),
                 inputs: inputs.clone(),
-                mocks: vec![],
+                mocks: config.mocks.clone(),
             })
             .await?;
 
@@ -151,7 +156,7 @@ pub async fn explore_function(
 
         if is_new {
             new_path_executions.push(ExecutionSummary {
-                inputs,
+                inputs: inputs.clone(),
                 return_value: exec_result.return_value.clone(),
                 thrown_error: exec_result
                     .thrown_error
@@ -161,6 +166,8 @@ pub async fn explore_function(
                 is_new_path: true,
             });
         }
+
+        raw_results.push((inputs, exec_result));
     }
 
     let total_lines = analysis.end_line.saturating_sub(analysis.start_line) + 1;
@@ -172,6 +179,7 @@ pub async fn explore_function(
         lines_covered: all_lines.len(),
         total_lines,
         new_path_executions,
+        raw_results,
     })
 }
 
@@ -395,6 +403,7 @@ mod tests {
                     is_new_path: true,
                 },
             ],
+            raw_results: vec![],
         };
 
         let report = format_exploration_report(&result);
@@ -420,6 +429,7 @@ mod tests {
                 lines_executed: vec![],
                 is_new_path: true,
             }],
+            raw_results: vec![],
         };
 
         let report = format_exploration_report(&result);

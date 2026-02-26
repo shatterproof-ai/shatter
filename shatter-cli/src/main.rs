@@ -7,6 +7,7 @@ use clap::{Parser, Subcommand};
 use shatter_core::explorer::{self, ExploreConfig};
 use shatter_core::frontend::{Frontend, FrontendConfig};
 use shatter_core::protocol::{Command as ProtoCommand, ResponseResult};
+use shatter_core::scan_orchestrator::{self, ScanConfig};
 use shatter_core::scope::{ScopeConfig, ScopeMatcher};
 
 mod embedded_frontend;
@@ -47,6 +48,29 @@ enum CliCommand {
         /// Show behavior clusters after exploration.
         #[arg(long)]
         show_clusters: bool,
+    },
+
+    /// Scan multiple functions in dependency order, using behavior maps as mocks.
+    Scan {
+        /// Targets to scan, in <file>:<function> format or just <file> for all functions.
+        #[arg(required = true)]
+        targets: Vec<String>,
+
+        /// Maximum number of iterations per function.
+        #[arg(long, default_value_t = 100)]
+        max_iterations: u32,
+
+        /// Timeout in seconds for the entire scan.
+        #[arg(long, default_value_t = 120)]
+        timeout: u64,
+
+        /// Path to a scope configuration YAML file.
+        #[arg(long)]
+        scope: Option<PathBuf>,
+
+        /// Only run the analyze phase (skip exploration).
+        #[arg(long)]
+        analyze_only: bool,
     },
 }
 
@@ -229,6 +253,7 @@ async fn run_explore(
         let explore_config = ExploreConfig {
             max_iterations,
             seed: None,
+            mocks: vec![],
         };
 
         for func in &functions {
@@ -248,6 +273,124 @@ async fn run_explore(
         println!();
     }
 
+    Ok(())
+}
+
+/// Run the scan command: explore multiple functions in dependency order.
+async fn run_scan(
+    targets: &[String],
+    max_iterations: u32,
+    timeout: u64,
+    scope_path: Option<&Path>,
+    analyze_only: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let _scope_config = match scope_path {
+        Some(path) => {
+            let config = ScopeConfig::from_file(path)
+                .map_err(|e| format!("failed to load scope config: {e}"))?;
+            println!("Loaded scope config from {}", path.display());
+            config
+        }
+        None => ScopeConfig::default(),
+    };
+
+    let parsed: Vec<Target> = targets
+        .iter()
+        .map(|t| parse_target(t))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    // Group targets by language (scan operates on one frontend at a time).
+    let first_lang = parsed.first().map(|t| t.language).ok_or("no targets")?;
+    if parsed.iter().any(|t| t.language != first_lang) {
+        return Err("scan currently requires all targets to use the same language frontend".into());
+    }
+
+    let request_timeout = Duration::from_secs(timeout);
+    let config = frontend_config(first_lang, request_timeout)?;
+    let mut frontend = Frontend::spawn(&config).await.map_err(|e| {
+        format!(
+            "failed to spawn {} frontend: {e}",
+            first_lang.label()
+        )
+    })?;
+
+    println!(
+        "Frontend connected (language={})",
+        frontend.language().unwrap_or("unknown")
+    );
+
+    // Analyze all targets to collect FunctionAnalysis data.
+    let mut all_analyses = Vec::new();
+
+    for target in &parsed {
+        let file_str = target.file.to_string_lossy();
+        println!(
+            "Analyzing {file_str}:{}",
+            target.function.as_deref().unwrap_or("(all)")
+        );
+
+        let analyze_response = frontend
+            .send(ProtoCommand::Analyze {
+                file: file_str.to_string(),
+                function: target.function.clone(),
+            })
+            .await
+            .map_err(|e| format!("analyze failed: {e}"))?;
+
+        match analyze_response.result {
+            ResponseResult::Analyze { functions } => {
+                println!("  Found {} function(s):", functions.len());
+                for func in &functions {
+                    println!(
+                        "    - {} ({} params, {} branches, {} deps)",
+                        func.name,
+                        func.params.len(),
+                        func.branches.len(),
+                        func.dependencies.len(),
+                    );
+                }
+                all_analyses.extend(functions);
+            }
+            ResponseResult::Error { code, message, .. } => {
+                eprintln!("  Analyze error ({code:?}): {message}");
+            }
+            other => {
+                eprintln!("  Unexpected analyze response: {other:?}");
+            }
+        }
+    }
+
+    if analyze_only {
+        shutdown_frontend(frontend).await;
+        return Ok(());
+    }
+
+    if all_analyses.is_empty() {
+        eprintln!("No functions found to scan.");
+        shutdown_frontend(frontend).await;
+        return Ok(());
+    }
+
+    println!(
+        "\nScanning {} function(s) in dependency order...\n",
+        all_analyses.len()
+    );
+
+    let scan_config = ScanConfig {
+        max_iterations_per_function: max_iterations,
+        seed: None,
+    };
+
+    match scan_orchestrator::scan(&mut frontend, &all_analyses, &scan_config).await {
+        Ok(result) => {
+            print!("{}", scan_orchestrator::format_scan_report(&result));
+        }
+        Err(e) => {
+            eprintln!("Scan error: {e}");
+        }
+    }
+
+    shutdown_frontend(frontend).await;
     Ok(())
 }
 
@@ -277,6 +420,22 @@ async fn main() -> ExitCode {
                 scope.as_deref(),
                 analyze_only,
                 show_clusters,
+            )
+            .await
+        }
+        CliCommand::Scan {
+            targets,
+            max_iterations,
+            timeout,
+            scope,
+            analyze_only,
+        } => {
+            run_scan(
+                &targets,
+                max_iterations,
+                timeout,
+                scope.as_deref(),
+                analyze_only,
             )
             .await
         }
@@ -374,6 +533,7 @@ mod tests {
                 assert!(!analyze_only);
                 assert!(!show_clusters);
             }
+            _ => panic!("expected Explore command"),
         }
     }
 
@@ -389,6 +549,7 @@ mod tests {
             CliCommand::Explore { scope, .. } => {
                 assert_eq!(scope, Some(PathBuf::from("shatter.scope.yaml")));
             }
+            _ => panic!("expected Explore command"),
         }
     }
 
@@ -419,6 +580,7 @@ mod tests {
                 assert!(analyze_only);
                 assert!(!show_clusters);
             }
+            _ => panic!("expected Explore command"),
         }
     }
 
@@ -434,6 +596,67 @@ mod tests {
     fn cli_requires_subcommand() {
         let result = Cli::try_parse_from(["shatter"]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn cli_parses_scan_subcommand() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "scan",
+            "test.ts",
+        ]);
+        match cli.command {
+            CliCommand::Scan {
+                targets,
+                max_iterations,
+                timeout,
+                scope,
+                analyze_only,
+            } => {
+                assert_eq!(targets, vec!["test.ts"]);
+                assert_eq!(max_iterations, 100);
+                assert_eq!(timeout, 120);
+                assert!(scope.is_none());
+                assert!(!analyze_only);
+            }
+            _ => panic!("expected Scan command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_scan_with_flags() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "scan",
+            "--max-iterations", "50",
+            "--timeout", "300",
+            "--analyze-only",
+            "a.ts",
+            "b.ts:helperFn",
+        ]);
+        match cli.command {
+            CliCommand::Scan {
+                targets,
+                max_iterations,
+                timeout,
+                analyze_only,
+                ..
+            } => {
+                assert_eq!(targets, vec!["a.ts", "b.ts:helperFn"]);
+                assert_eq!(max_iterations, 50);
+                assert_eq!(timeout, 300);
+                assert!(analyze_only);
+            }
+            _ => panic!("expected Scan command"),
+        }
+    }
+
+    #[test]
+    fn cli_scan_requires_at_least_one_target() {
+        let result = Cli::try_parse_from(["shatter", "scan"]);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
     }
 
     #[test]
