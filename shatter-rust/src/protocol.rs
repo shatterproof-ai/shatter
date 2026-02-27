@@ -93,6 +93,26 @@ pub struct Request {
     #[allow(dead_code)] // will be used when execute/instrument is implemented
     #[serde(default)]
     pub mocks: Vec<serde_json::Value>,
+    /// Opaque context returned by a prior Setup command, if any.
+    #[allow(dead_code)] // will be used when execute is implemented
+    #[serde(default)]
+    pub setup_context: Option<serde_json::Value>,
+
+    // Setup fields
+    /// When to run setup relative to executions ("per_function" or "per_execution").
+    #[allow(dead_code)] // will be used when setup is implemented
+    #[serde(default)]
+    pub mode: Option<String>,
+
+    // Generate fields
+    /// Name of the type or parameter to generate a value for.
+    #[allow(dead_code)] // will be used when generate is implemented
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Whether the generator targets a type name or a parameter name.
+    #[allow(dead_code)] // will be used when generate is implemented
+    #[serde(default)]
+    pub kind: Option<String>,
 }
 
 /// A response message from this frontend to the core engine.
@@ -109,6 +129,14 @@ pub struct Response {
     pub language: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<Vec<String>>,
+
+    // Setup fields
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub setup_context: Option<serde_json::Value>,
+
+    // Generate fields
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<serde_json::Value>,
 
     // Error fields
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -127,6 +155,8 @@ impl Response {
             frontend_version: None,
             language: None,
             capabilities: None,
+            setup_context: None,
+            value: None,
             code: None,
             message: None,
         }
@@ -264,5 +294,170 @@ mod tests {
         } else {
             panic!("expected Object, got {:?}", nested);
         }
+    }
+
+    // -- Request deserialization tests for new commands --
+
+    #[test]
+    fn setup_request_deserializes() {
+        let json = r#"{"protocol_version":"0.1.0","id":20,"command":"setup","file":"./setup.ts","function":"processOrder","mode":"per_function"}"#;
+        let req: Request = serde_json::from_str(json).expect("deserialize setup");
+        assert_eq!(req.id, 20);
+        assert_eq!(req.command, "setup");
+        assert_eq!(req.file.as_deref(), Some("./setup.ts"));
+        assert_eq!(req.function.as_deref(), Some("processOrder"));
+        assert_eq!(req.mode.as_deref(), Some("per_function"));
+    }
+
+    #[test]
+    fn setup_request_per_execution_deserializes() {
+        let json = r#"{"protocol_version":"0.1.0","id":21,"command":"setup","file":"./setup.ts","function":"auth","mode":"per_execution"}"#;
+        let req: Request = serde_json::from_str(json).expect("deserialize setup per_execution");
+        assert_eq!(req.mode.as_deref(), Some("per_execution"));
+    }
+
+    #[test]
+    fn teardown_request_deserializes() {
+        let json = r#"{"protocol_version":"0.1.0","id":22,"command":"teardown","function":"processOrder"}"#;
+        let req: Request = serde_json::from_str(json).expect("deserialize teardown");
+        assert_eq!(req.id, 22);
+        assert_eq!(req.command, "teardown");
+        assert_eq!(req.function.as_deref(), Some("processOrder"));
+    }
+
+    #[test]
+    fn generate_request_type_name_deserializes() {
+        let json = r#"{"protocol_version":"0.1.0","id":23,"command":"generate","file":"./gen.ts","name":"User","kind":"type_name"}"#;
+        let req: Request = serde_json::from_str(json).expect("deserialize generate type_name");
+        assert_eq!(req.id, 23);
+        assert_eq!(req.command, "generate");
+        assert_eq!(req.file.as_deref(), Some("./gen.ts"));
+        assert_eq!(req.name.as_deref(), Some("User"));
+        assert_eq!(req.kind.as_deref(), Some("type_name"));
+    }
+
+    #[test]
+    fn generate_request_param_name_deserializes() {
+        let json = r#"{"protocol_version":"0.1.0","id":24,"command":"generate","file":"./gen.ts","name":"authToken","kind":"param_name"}"#;
+        let req: Request = serde_json::from_str(json).expect("deserialize generate param_name");
+        assert_eq!(req.kind.as_deref(), Some("param_name"));
+    }
+
+    #[test]
+    fn execute_request_with_setup_context_deserializes() {
+        let json = r#"{"protocol_version":"0.1.0","id":25,"command":"execute","function":"fn1","inputs":[1],"mocks":[],"setup_context":{"db":"conn_42"}}"#;
+        let req: Request = serde_json::from_str(json).expect("deserialize execute with setup_context");
+        assert_eq!(req.setup_context, Some(serde_json::json!({"db": "conn_42"})));
+    }
+
+    #[test]
+    fn execute_request_without_setup_context_defaults_to_none() {
+        let json = r#"{"protocol_version":"0.1.0","id":26,"command":"execute","function":"fn1","inputs":[],"mocks":[]}"#;
+        let req: Request = serde_json::from_str(json).expect("deserialize execute without setup_context");
+        assert_eq!(req.setup_context, None);
+    }
+
+    // -- Response round-trip tests for new statuses --
+
+    #[test]
+    fn setup_response_round_trips() {
+        let resp = Response {
+            protocol_version: PROTOCOL_VERSION.to_string(),
+            id: 20,
+            status: "setup".to_string(),
+            frontend_version: None,
+            language: None,
+            capabilities: None,
+            setup_context: Some(serde_json::json!({"db_handle": "conn_42"})),
+            value: None,
+            code: None,
+            message: None,
+        };
+        round_trip(&resp);
+    }
+
+    #[test]
+    fn teardown_ack_response_round_trips() {
+        let resp = Response {
+            protocol_version: PROTOCOL_VERSION.to_string(),
+            id: 21,
+            status: "teardown_ack".to_string(),
+            frontend_version: None,
+            language: None,
+            capabilities: None,
+            setup_context: None,
+            value: None,
+            code: None,
+            message: None,
+        };
+        round_trip(&resp);
+    }
+
+    #[test]
+    fn generate_response_round_trips() {
+        let resp = Response {
+            protocol_version: PROTOCOL_VERSION.to_string(),
+            id: 22,
+            status: "generate".to_string(),
+            frontend_version: None,
+            language: None,
+            capabilities: None,
+            setup_context: None,
+            value: Some(serde_json::json!({"id": 1, "name": "Alice"})),
+            code: None,
+            message: None,
+        };
+        round_trip(&resp);
+    }
+
+    #[test]
+    fn generate_response_primitive_value_round_trips() {
+        let resp = Response {
+            protocol_version: PROTOCOL_VERSION.to_string(),
+            id: 23,
+            status: "generate".to_string(),
+            frontend_version: None,
+            language: None,
+            capabilities: None,
+            setup_context: None,
+            value: Some(serde_json::json!("tok_abc123")),
+            code: None,
+            message: None,
+        };
+        round_trip(&resp);
+    }
+
+    #[test]
+    fn error_response_still_round_trips() {
+        let resp = Response {
+            protocol_version: PROTOCOL_VERSION.to_string(),
+            id: 99,
+            status: "error".to_string(),
+            frontend_version: None,
+            language: None,
+            capabilities: None,
+            setup_context: None,
+            value: None,
+            code: Some("internal_error".to_string()),
+            message: Some("something broke".to_string()),
+        };
+        round_trip(&resp);
+    }
+
+    #[test]
+    fn handshake_response_still_round_trips() {
+        let resp = Response {
+            protocol_version: PROTOCOL_VERSION.to_string(),
+            id: 1,
+            status: "handshake".to_string(),
+            frontend_version: Some(FRONTEND_VERSION.to_string()),
+            language: Some(FRONTEND_LANGUAGE.to_string()),
+            capabilities: Some(vec!["analyze".to_string()]),
+            setup_context: None,
+            value: None,
+            code: None,
+            message: None,
+        };
+        round_trip(&resp);
     }
 }
