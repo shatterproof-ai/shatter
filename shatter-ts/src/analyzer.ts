@@ -207,6 +207,12 @@ export function convertType(type: ts.Type, checker: ts.TypeChecker): TypeInfo {
 
   // Check for well-known complex types by symbol name
   if (flags & ts.TypeFlags.Object) {
+    // Check for Node.js opaque resource types first
+    const opaqueLabel = isOpaqueType(type, checker);
+    if (opaqueLabel) {
+      return { kind: "opaque", label: opaqueLabel };
+    }
+
     const symbol = type.getSymbol();
     const name = symbol?.getName();
     if (name) {
@@ -568,6 +574,74 @@ function formatSourceModule(declFile: string, currentFile: string): string {
   const rel = path.relative(path.dirname(currentFile), declFile);
   const withoutExt = rel.replace(/\.(ts|tsx|js|jsx|d\.ts)$/, "");
   return withoutExt.startsWith(".") ? withoutExt : `./${withoutExt}`;
+}
+
+// ---------------------------------------------------------------------------
+// Opaque type recognition (Node.js runtime resource types)
+// ---------------------------------------------------------------------------
+
+/** Known Node.js module → opaque type names. */
+const OPAQUE_NODE_TYPES: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ["net", new Set(["Socket", "Server"])],
+  ["http", new Set(["IncomingMessage", "ServerResponse", "Server"])],
+  ["stream", new Set(["Readable", "Writable", "Transform", "Duplex", "PassThrough"])],
+  ["child_process", new Set(["ChildProcess"])],
+  ["worker_threads", new Set(["Worker"])],
+  ["fs", new Set(["ReadStream", "WriteStream"])],
+  ["tls", new Set(["TLSSocket", "Server"])],
+  ["dgram", new Set(["Socket"])],
+]);
+
+/** Reverse lookup: type name → list of modules that define it. */
+const OPAQUE_NAME_TO_MODULES: ReadonlyMap<string, readonly string[]> = (() => {
+  const map = new Map<string, string[]>();
+  for (const [mod, names] of OPAQUE_NODE_TYPES) {
+    for (const name of names) {
+      const existing = map.get(name);
+      if (existing) {
+        existing.push(mod);
+      } else {
+        map.set(name, [mod]);
+      }
+    }
+  }
+  return map;
+})();
+
+/**
+ * Check if a type is a known Node.js opaque resource type.
+ * Returns the "module.TypeName" label or null.
+ */
+function isOpaqueType(type: ts.Type, checker: ts.TypeChecker): string | null {
+  const symbol = type.getSymbol();
+  if (!symbol) return null;
+
+  const name = symbol.getName();
+  const candidateModules = OPAQUE_NAME_TO_MODULES.get(name);
+  if (!candidateModules) return null;
+
+  // Verify the declaration comes from @types/node
+  const declarations = symbol.getDeclarations();
+  if (!declarations || declarations.length === 0) return null;
+
+  for (const decl of declarations) {
+    const fileName = decl.getSourceFile().fileName;
+    if (!fileName.includes("@types/node")) continue;
+
+    // Determine the module from the file path
+    for (const mod of candidateModules) {
+      const modulePattern = `/${mod.replace("_", "_")}`;
+      if (fileName.includes(modulePattern) || fileName.includes(`/${mod}.d.ts`)) {
+        return `${mod}.${name}`;
+      }
+    }
+
+    // Fallback: if it's from @types/node but we can't determine the exact module,
+    // use the first candidate module
+    return `${candidateModules[0]}.${name}`;
+  }
+
+  return null;
 }
 
 // ---------------------------------------------------------------------------

@@ -190,7 +190,8 @@ export type TypeInfo =
   | { kind: "object"; fields: [string, TypeInfo][] }
   | { kind: "union"; variants: TypeInfo[] }
   | { kind: "nullable"; inner: TypeInfo }
-  | { kind: "complex"; complex_kind: ComplexKind; metadata?: Record<string, unknown>; inner?: TypeInfo };
+  | { kind: "complex"; complex_kind: ComplexKind; metadata?: Record<string, unknown>; inner?: TypeInfo }
+  | { kind: "opaque"; label: string };
 
 export interface BranchInfo {
   id: number;

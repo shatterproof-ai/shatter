@@ -69,6 +69,7 @@ func TestTypeInfoRoundTripScalar(t *testing.T) {
 		{"str", TypeInfo{Kind: "str"}, `{"kind":"str"}`},
 		{"bool", TypeInfo{Kind: "bool"}, `{"kind":"bool"}`},
 		{"unknown", TypeInfo{Kind: "unknown"}, `{"kind":"unknown"}`},
+		{"opaque", TypeInfo{Kind: "opaque", Label: "chan int"}, `{"kind":"opaque","label":"chan int"}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -86,7 +87,44 @@ func TestTypeInfoRoundTripScalar(t *testing.T) {
 			if decoded.Kind != tt.ti.Kind {
 				t.Errorf("kind = %q, want %q", decoded.Kind, tt.ti.Kind)
 			}
+			if decoded.Label != tt.ti.Label {
+				t.Errorf("label = %q, want %q", decoded.Label, tt.ti.Label)
+			}
 		})
+	}
+}
+
+func TestTypeInfoRoundTripOpaque(t *testing.T) {
+	ti := TypeInfo{Kind: "opaque", Label: "net.Conn"}
+	data, err := json.Marshal(ti)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	want := `{"kind":"opaque","label":"net.Conn"}`
+	if string(data) != want {
+		t.Errorf("got %s, want %s", data, want)
+	}
+	var decoded TypeInfo
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.Kind != "opaque" {
+		t.Errorf("kind = %q, want opaque", decoded.Kind)
+	}
+	if decoded.Label != "net.Conn" {
+		t.Errorf("label = %q, want net.Conn", decoded.Label)
+	}
+}
+
+func TestTypeInfoOpaqueOmitsLabelWhenEmpty(t *testing.T) {
+	ti := TypeInfo{Kind: "int"}
+	data, err := json.Marshal(ti)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := string(data)
+	if got != `{"kind":"int"}` {
+		t.Errorf("got %s, want no label field", got)
 	}
 }
 

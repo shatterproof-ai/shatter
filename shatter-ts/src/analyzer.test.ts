@@ -320,6 +320,68 @@ describe("analyzeFile", () => {
     });
   });
 
+  describe("opaque Node.js types", () => {
+    it("emits opaque for net.Socket parameter", () => {
+      const results = analyzeFile(path.join(fixtures, "opaque-node-types.ts"), "handleSocket");
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(fn.params[0]!.type).toEqual({ kind: "opaque", label: "net.Socket" });
+    });
+
+    it("emits opaque for net.Server parameter", () => {
+      const results = analyzeFile(path.join(fixtures, "opaque-node-types.ts"), "handleNetServer");
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(fn.params[0]!.type).toEqual({ kind: "opaque", label: "net.Server" });
+    });
+
+    it("emits opaque for http.IncomingMessage and http.ServerResponse", () => {
+      const results = analyzeFile(path.join(fixtures, "opaque-node-types.ts"), "handleHttp");
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(fn.params[0]!.type).toEqual({ kind: "opaque", label: "http.IncomingMessage" });
+      expect(fn.params[1]!.type).toEqual({ kind: "opaque", label: "http.ServerResponse" });
+    });
+
+    it("emits opaque for stream.Readable and stream.Writable", () => {
+      const results = analyzeFile(path.join(fixtures, "opaque-node-types.ts"), "handleStreams");
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(fn.params[0]!.type).toEqual({ kind: "opaque", label: "stream.Readable" });
+      expect(fn.params[1]!.type).toEqual({ kind: "opaque", label: "stream.Writable" });
+    });
+
+    it("emits opaque for stream.Transform and stream.Duplex", () => {
+      const results = analyzeFile(path.join(fixtures, "opaque-node-types.ts"), "handleTransformDuplex");
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(fn.params[0]!.type).toEqual({ kind: "opaque", label: "stream.Transform" });
+      expect(fn.params[1]!.type).toEqual({ kind: "opaque", label: "stream.Duplex" });
+    });
+
+    it("emits opaque for child_process.ChildProcess", () => {
+      const results = analyzeFile(path.join(fixtures, "opaque-node-types.ts"), "handleChildProcess");
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(fn.params[0]!.type).toEqual({ kind: "opaque", label: "child_process.ChildProcess" });
+    });
+
+    it("emits opaque for fs.ReadStream and fs.WriteStream", () => {
+      const results = analyzeFile(path.join(fixtures, "opaque-node-types.ts"), "handleFsStreams");
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(fn.params[0]!.type).toEqual({ kind: "opaque", label: "fs.ReadStream" });
+      expect(fn.params[1]!.type).toEqual({ kind: "opaque", label: "fs.WriteStream" });
+    });
+
+    it("does NOT emit opaque for user-defined Socket class", () => {
+      const results = analyzeFile(path.join(fixtures, "opaque-user-types.ts"), "handleUserSocket");
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(fn.params[0]!.type.kind).not.toBe("opaque");
+    });
+  });
+
   describe("dependency detection", () => {
     it("returns empty dependencies for function without external calls", () => {
       const results = analyzeFile(path.join(fixtures, "dependencies.ts"), "noExternalDeps");

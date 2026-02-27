@@ -95,6 +95,7 @@ func (f *ObjectField) UnmarshalJSON(data []byte) error {
 // TypeInfo represents a type in the Shatter type system.
 type TypeInfo struct {
 	Kind        string                 `json:"kind"`
+	Label       string                 `json:"label,omitempty"`        // opaque
 	Element     *TypeInfo              `json:"element,omitempty"`      // array
 	Fields      []ObjectField          `json:"fields,omitempty"`       // object
 	Variants    []TypeInfo             `json:"variants,omitempty"`     // union

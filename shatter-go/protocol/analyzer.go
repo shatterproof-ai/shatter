@@ -152,7 +152,50 @@ func goTypeFromExpr(expr ast.Expr, info *types.Info) TypeInfo {
 	return typeInfoFromAST(expr)
 }
 
+// opaqueGoTypes maps package paths to sets of type names that represent
+// runtime resources (sockets, file handles, database connections, etc.).
+var opaqueGoTypes = map[string]map[string]bool{
+	"net":          {"Conn": true, "Listener": true, "PacketConn": true},
+	"os":           {"File": true},
+	"io":           {"Reader": true, "Writer": true, "ReadWriter": true, "Closer": true, "ReadCloser": true, "WriteCloser": true},
+	"database/sql": {"DB": true, "Tx": true, "Rows": true},
+	"net/http":     {"ResponseWriter": true},
+}
+
+// isOpaqueGoType checks whether t is a known opaque resource type.
+// Returns the label (e.g. "net.Conn") and true if opaque, or ("", false).
+func isOpaqueGoType(t types.Type) (string, bool) {
+	if ch, ok := t.(*types.Chan); ok {
+		return "chan " + ch.Elem().String(), true
+	}
+	named, ok := t.(*types.Named)
+	if !ok {
+		return "", false
+	}
+	obj := named.Obj()
+	pkg := obj.Pkg()
+	if pkg == nil {
+		return "", false
+	}
+	if names, found := opaqueGoTypes[pkg.Path()]; found {
+		if names[obj.Name()] {
+			return pkg.Name() + "." + obj.Name(), true
+		}
+	}
+	return "", false
+}
+
 func goTypeToTypeInfo(t types.Type) TypeInfo {
+	// Check for opaque resource types (channels, sockets, file handles, etc.)
+	if label, ok := isOpaqueGoType(t); ok {
+		return TypeInfo{Kind: "opaque", Label: label}
+	}
+	// Check for pointer-to-opaque (e.g. *os.File)
+	if ptr, ok := t.(*types.Pointer); ok {
+		if label, ok := isOpaqueGoType(ptr.Elem()); ok {
+			return TypeInfo{Kind: "opaque", Label: label}
+		}
+	}
 	// Check for well-known complex types by fully-qualified name
 	if named, ok := t.(*types.Named); ok {
 		if complexKind := complexKindFromNamed(named); complexKind != "" {
@@ -183,6 +226,8 @@ func goTypeToTypeInfo(t types.Type) TypeInfo {
 	case *types.Pointer:
 		inner := goTypeToTypeInfo(typ.Elem())
 		return TypeInfo{Kind: "nullable", Inner: &inner}
+	case *types.Chan:
+		return TypeInfo{Kind: "opaque", Label: "chan " + typ.Elem().String()}
 	case *types.Interface:
 		return TypeInfo{Kind: "unknown"}
 	case *types.Signature:

@@ -578,3 +578,82 @@ func TestAnalyzeNoExportHasEmptyParamsSlice(t *testing.T) {
 		t.Error("params should be empty slice, not nil")
 	}
 }
+
+// --- Opaque type detection ---
+
+func TestAnalyzeOpaqueTypes(t *testing.T) {
+	tests := []struct {
+		funcName  string
+		paramName string
+		wantKind  string
+		wantLabel string
+	}{
+		{"AcceptsChanInt", "ch", "opaque", "chan int"},
+		{"AcceptsChanString", "ch", "opaque", "chan string"},
+		{"AcceptsNetConn", "conn", "opaque", "net.Conn"},
+		{"AcceptsOsFile", "f", "opaque", "os.File"},
+		{"AcceptsIOReader", "r", "opaque", "io.Reader"},
+		{"AcceptsIOWriter", "w", "opaque", "io.Writer"},
+		{"AcceptsSqlDB", "db", "opaque", "sql.DB"},
+		{"AcceptsSqlTx", "tx", "opaque", "sql.Tx"},
+		{"AcceptsResponseWriter", "w", "opaque", "http.ResponseWriter"},
+		{"AcceptsNetListener", "ln", "opaque", "net.Listener"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.funcName, func(t *testing.T) {
+			results, err := AnalyzeFile(testdataPath("opaque.go"), tc.funcName)
+			if err != nil {
+				t.Fatalf("AnalyzeFile: %v", err)
+			}
+			fn := results[0]
+			if len(fn.Params) < 1 {
+				t.Fatalf("params len = %d, want >= 1", len(fn.Params))
+			}
+			p := fn.Params[0]
+			if p.Name != tc.paramName {
+				t.Errorf("param name = %q, want %q", p.Name, tc.paramName)
+			}
+			if p.Type.Kind != tc.wantKind {
+				t.Errorf("param type kind = %q, want %q", p.Type.Kind, tc.wantKind)
+			}
+			if p.Type.Label != tc.wantLabel {
+				t.Errorf("param type label = %q, want %q", p.Type.Label, tc.wantLabel)
+			}
+		})
+	}
+}
+
+func TestAnalyzePlainInterfaceStillReturnsUnknown(t *testing.T) {
+	results, err := AnalyzeFile(testdataPath("opaque.go"), "AcceptsPlainInterface")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	fn := results[0]
+	if fn.Params[0].Type.Kind != "unknown" {
+		t.Errorf("plain interface type = %q, want unknown", fn.Params[0].Type.Kind)
+	}
+}
+
+func TestAnalyzeSelectExampleChannelParamsAreOpaque(t *testing.T) {
+	results, err := AnalyzeFile(testdataPath("select.go"), "SelectExample")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	fn := results[0]
+	if len(fn.Params) != 2 {
+		t.Fatalf("params len = %d, want 2", len(fn.Params))
+	}
+	if fn.Params[0].Type.Kind != "opaque" {
+		t.Errorf("ch1 type kind = %q, want opaque", fn.Params[0].Type.Kind)
+	}
+	if fn.Params[0].Type.Label != "chan int" {
+		t.Errorf("ch1 type label = %q, want %q", fn.Params[0].Type.Label, "chan int")
+	}
+	if fn.Params[1].Type.Kind != "opaque" {
+		t.Errorf("ch2 type kind = %q, want opaque", fn.Params[1].Type.Kind)
+	}
+	if fn.Params[1].Type.Label != "chan string" {
+		t.Errorf("ch2 type label = %q, want %q", fn.Params[1].Type.Label, "chan string")
+	}
+}
