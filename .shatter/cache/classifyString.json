@@ -1,0 +1,35 @@
+{
+  "function_id": "classifyString",
+  "behaviors": [
+    {
+      "id": 0,
+      "input_args": [
+        ""
+      ],
+      "return_value": "empty",
+      "thrown_error": null,
+      "branch_path": [],
+      "side_effects": []
+    },
+    {
+      "id": 1,
+      "input_args": [
+        "hello"
+      ],
+      "return_value": "text",
+      "thrown_error": null,
+      "branch_path": [],
+      "side_effects": []
+    },
+    {
+      "id": 2,
+      "input_args": [
+        " "
+      ],
+      "return_value": "single-char",
+      "thrown_error": null,
+      "branch_path": [],
+      "side_effects": []
+    }
+  ]
+}

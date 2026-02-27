@@ -86,8 +86,12 @@ fn path_hash(result: &crate::protocol::ExecuteResult) -> u64 {
             decision.branch_id.hash(&mut hasher);
             decision.taken.hash(&mut hasher);
         }
+    } else if !result.lines_executed.is_empty() {
+        // Fall back to lines_executed: all executions through the same code
+        // path hit the same lines regardless of input values.
+        result.lines_executed.hash(&mut hasher);
     } else {
-        // Fall back to return value / error shape.
+        // Last resort: distinguish errors from successes by shape.
         if let Some(ref err) = result.thrown_error {
             "error".hash(&mut hasher);
             err.error_type.hash(&mut hasher);
@@ -409,9 +413,9 @@ mod tests {
     }
 
     #[test]
-    fn path_hash_same_return_value_produces_same_hash() {
+    fn path_hash_same_lines_executed_produces_same_hash() {
         let r1 = ExecuteResult {
-            return_value: Some(serde_json::json!("zero")),
+            return_value: Some(serde_json::json!(3.5)),
             thrown_error: None,
             branch_path: vec![],
             lines_executed: vec![1, 2, 3],
@@ -421,16 +425,41 @@ mod tests {
             performance: empty_perf(),
         };
         let r2 = ExecuteResult {
-            return_value: Some(serde_json::json!("zero")),
+            return_value: Some(serde_json::json!(99.0)),
             thrown_error: None,
             branch_path: vec![],
-            lines_executed: vec![1, 2],
+            lines_executed: vec![1, 2, 3],
             calls_to_external: vec![],
             path_constraints: vec![],
             side_effects: vec![],
             performance: empty_perf(),
         };
         assert_eq!(path_hash(&r1), path_hash(&r2));
+    }
+
+    #[test]
+    fn path_hash_different_lines_executed_produces_different_hash() {
+        let r1 = ExecuteResult {
+            return_value: Some(serde_json::json!("same")),
+            thrown_error: None,
+            branch_path: vec![],
+            lines_executed: vec![1, 2, 3],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
+            performance: empty_perf(),
+        };
+        let r2 = ExecuteResult {
+            return_value: Some(serde_json::json!("same")),
+            thrown_error: None,
+            branch_path: vec![],
+            lines_executed: vec![1, 2, 4],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
+            performance: empty_perf(),
+        };
+        assert_ne!(path_hash(&r1), path_hash(&r2));
     }
 
     #[test]
@@ -672,6 +701,7 @@ mod tests {
             params: vec![ParamInfo {
                 name: "x".into(),
                 typ: TypeInfo::Int,
+                type_name: None,
             }],
             branches: vec![],
             dependencies: vec![],

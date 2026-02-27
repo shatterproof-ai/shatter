@@ -133,6 +133,16 @@ enum CliCommand {
         #[arg(long)]
         inputs: Option<PathBuf>,
 
+        /// Execution timeout in seconds for each function invocation in the frontend
+        /// (e.g., how long a single Go function call may run). Default: 10s.
+        #[arg(long, default_value_t = 10)]
+        exec_timeout: u64,
+
+        /// Build timeout in seconds for compiling instrumented code in the frontend.
+        /// Default: 30s.
+        #[arg(long, default_value_t = 30)]
+        build_timeout: u64,
+
         /// Path to a .shatter/config.yaml file (bypasses hierarchical discovery).
         #[arg(long = "config")]
         config_path: Option<PathBuf>,
@@ -167,6 +177,26 @@ enum CliCommand {
         /// Per-request timeout in seconds (how long to wait for a single frontend response).
         #[arg(long, default_value_t = 30)]
         request_timeout: u64,
+
+        /// Execution timeout in seconds for each function invocation in the frontend.
+        /// Default: 10s.
+        #[arg(long, default_value_t = 10)]
+        exec_timeout: u64,
+
+        /// Build timeout in seconds for compiling instrumented code in the frontend.
+        /// Default: 30s.
+        #[arg(long, default_value_t = 30)]
+        build_timeout: u64,
+
+        /// Number of parallel frontend subprocesses for exploration.
+        /// Default: number of available CPUs (0 = auto-detect).
+        #[arg(long, default_value_t = 0)]
+        parallelism: usize,
+
+        /// Per-function exploration timeout in seconds. Functions exceeding this
+        /// limit are skipped without aborting the scan. Default: 30s.
+        #[arg(long, default_value_t = 30)]
+        timeout_per_fn: u64,
     },
 
     /// Export generated tests from behavior maps produced by exploration.
@@ -205,6 +235,16 @@ enum CliCommand {
         /// Per-request timeout in seconds (how long to wait for a single frontend response).
         #[arg(long, default_value_t = 30)]
         request_timeout: u64,
+
+        /// Execution timeout in seconds for each function invocation in the frontend.
+        /// Default: 10s.
+        #[arg(long, default_value_t = 10)]
+        exec_timeout: u64,
+
+        /// Build timeout in seconds for compiling instrumented code in the frontend.
+        /// Default: 30s.
+        #[arg(long, default_value_t = 30)]
+        build_timeout: u64,
     },
 
     /// Discover, analyze, and explore an entire repository in one shot.
@@ -236,6 +276,16 @@ enum CliCommand {
         /// Per-request timeout in seconds (how long to wait for a single frontend response).
         #[arg(long, default_value_t = 30)]
         request_timeout: u64,
+
+        /// Execution timeout in seconds for each function invocation in the frontend.
+        /// Default: 10s.
+        #[arg(long, default_value_t = 10)]
+        exec_timeout: u64,
+
+        /// Build timeout in seconds for compiling instrumented code in the frontend.
+        /// Default: 30s.
+        #[arg(long, default_value_t = 30)]
+        build_timeout: u64,
     },
 
     /// Compare current behaviors against a previous snapshot to detect regressions.
@@ -314,7 +364,13 @@ fn parse_target(target: &str) -> Result<Target, String> {
 }
 
 /// Build a `FrontendConfig` for the given language, with log level propagation.
-fn frontend_config(language: Language, timeout: Duration, log_level: LogLevel) -> Result<FrontendConfig, String> {
+fn frontend_config(
+    language: Language,
+    timeout: Duration,
+    log_level: LogLevel,
+    exec_timeout: u64,
+    build_timeout: u64,
+) -> Result<FrontendConfig, String> {
     let (command, args) = match language {
         Language::TypeScript => {
             let bundle_path = embedded_frontend::ensure_extracted()?;
@@ -336,6 +392,14 @@ fn frontend_config(language: Language, timeout: Duration, log_level: LogLevel) -
         LogLevel::ENV_VAR.to_string(),
         log_level.as_str().to_string(),
     ));
+    config.env_vars.push((
+        "SHATTER_EXEC_TIMEOUT".to_string(),
+        exec_timeout.to_string(),
+    ));
+    config.env_vars.push((
+        "SHATTER_BUILD_TIMEOUT".to_string(),
+        build_timeout.to_string(),
+    ));
     Ok(config)
 }
 
@@ -353,6 +417,8 @@ async fn run_explore(
     cache_dir: Option<&Path>,
     no_cache: bool,
     request_timeout: u64,
+    exec_timeout: u64,
+    build_timeout: u64,
     inputs_path: Option<&Path>,
     config_path: Option<&Path>,
     log_level: LogLevel,
@@ -405,7 +471,7 @@ async fn run_explore(
             );
         }
 
-        let config = frontend_config(target.language, req_timeout, log_level)?;
+        let config = frontend_config(target.language, req_timeout, log_level, exec_timeout, build_timeout)?;
         let mut frontend = Frontend::spawn(&config).await.map_err(|e| {
             format!(
                 "failed to spawn {} frontend: {e}",
@@ -585,6 +651,7 @@ async fn run_explore(
 }
 
 /// Run the scan command: explore multiple functions in dependency order.
+#[allow(clippy::too_many_arguments)]
 async fn run_scan(
     targets: &[String],
     max_iterations: u32,
@@ -592,6 +659,10 @@ async fn run_scan(
     scope_path: Option<&Path>,
     analyze_only: bool,
     request_timeout: u64,
+    exec_timeout: u64,
+    build_timeout: u64,
+    parallelism: usize,
+    timeout_per_fn: u64,
     log_level: LogLevel,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let _scope_config = match scope_path {
@@ -616,8 +687,8 @@ async fn run_scan(
     }
 
     let req_timeout = Duration::from_secs(request_timeout);
-    let config = frontend_config(first_lang, req_timeout, log_level)?;
-    let mut frontend = Frontend::spawn(&config).await.map_err(|e| {
+    let fe_config = frontend_config(first_lang, req_timeout, log_level, exec_timeout, build_timeout)?;
+    let mut frontend = Frontend::spawn(&fe_config).await.map_err(|e| {
         format!(
             "failed to spawn {} frontend: {e}",
             first_lang.label()
@@ -692,10 +763,24 @@ async fn run_scan(
         return Ok(());
     }
 
+    // Shut down the analysis frontend before starting parallel exploration.
+    shutdown_frontend(frontend).await;
+
+    // Resolve effective parallelism: 0 means auto-detect (CPU count).
+    let effective_parallelism = if parallelism == 0 {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+    } else {
+        parallelism
+    };
+
     if log_level >= LogLevel::Debug {
         println!(
-            "\n[debug] Scanning {} function(s) in dependency order...\n",
-            all_analyses.len()
+            "\n[debug] Scanning {} function(s) in dependency order ({} worker(s), {}s/fn)...\n",
+            all_analyses.len(),
+            effective_parallelism,
+            timeout_per_fn,
         );
     }
 
@@ -703,18 +788,19 @@ async fn run_scan(
         max_iterations_per_function: max_iterations,
         seed: None,
         file_map,
+        parallelism: effective_parallelism,
+        timeout_per_fn: Duration::from_secs(timeout_per_fn),
     };
 
-    match scan_orchestrator::scan(&mut frontend, &all_analyses, &scan_config).await {
+    match scan_orchestrator::parallel_scan(&fe_config, &all_analyses, &scan_config).await {
         Ok(result) => {
-            print!("{}", scan_orchestrator::format_scan_report(&result));
+            print!("{}", scan_orchestrator::format_parallel_scan_report(&result));
         }
         Err(e) => {
             eprintln!("Scan error: {e}");
         }
     }
 
-    shutdown_frontend(frontend).await;
     Ok(())
 }
 
@@ -755,6 +841,8 @@ async fn run_export_tests(
     _timeout: u64,
     scope_path: Option<&Path>,
     request_timeout: u64,
+    exec_timeout: u64,
+    build_timeout: u64,
     _log_level: LogLevel,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Validate framework
@@ -786,7 +874,7 @@ async fn run_export_tests(
 
         eprintln!("Exploring {file_str}:{func_display} for test export...");
 
-        let config = frontend_config(target.language, req_timeout, LogLevel::Warn)?;
+        let config = frontend_config(target.language, req_timeout, LogLevel::Warn, exec_timeout, build_timeout)?;
         let mut frontend = Frontend::spawn(&config).await.map_err(|e| {
             format!("failed to spawn {} frontend: {e}", target.language.label())
         })?;
@@ -871,6 +959,7 @@ fn discovery_lang_to_cli_lang(lang: DiscoveryLanguage) -> Option<Language> {
 }
 
 /// Run the run command: discover, analyze, build call graph, explore, and report.
+#[allow(clippy::too_many_arguments)]
 async fn run_run(
     path: &str,
     output_dir: Option<&Path>,
@@ -878,6 +967,8 @@ async fn run_run(
     timeout: u64,
     analyze_only: bool,
     request_timeout: u64,
+    exec_timeout: u64,
+    build_timeout: u64,
     log_level: LogLevel,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
@@ -962,7 +1053,7 @@ async fn run_run(
     for lang in &needed_langs {
         let cli_lang = discovery_lang_to_cli_lang(*lang)
             .ok_or_else(|| format!("no frontend for {lang:?}"))?;
-        let config = frontend_config(cli_lang, req_timeout, log_level)?;
+        let config = frontend_config(cli_lang, req_timeout, log_level, exec_timeout, build_timeout)?;
         let frontend = Frontend::spawn(&config).await.map_err(|e| {
             format!("failed to spawn {lang:?} frontend: {e}")
         })?;
@@ -1397,6 +1488,8 @@ async fn main() -> ExitCode {
             cache_dir,
             no_cache,
             request_timeout,
+            exec_timeout,
+            build_timeout,
             inputs,
             config_path,
         } => {
@@ -1410,6 +1503,8 @@ async fn main() -> ExitCode {
                 cache_dir.as_deref(),
                 no_cache,
                 request_timeout,
+                exec_timeout,
+                build_timeout,
                 inputs.as_deref(),
                 config_path.as_deref(),
                 log_level,
@@ -1426,6 +1521,10 @@ async fn main() -> ExitCode {
             analyze_only,
             no_cache: _,
             request_timeout,
+            exec_timeout,
+            build_timeout,
+            parallelism,
+            timeout_per_fn,
         } => {
             run_scan(
                 &targets,
@@ -1434,6 +1533,10 @@ async fn main() -> ExitCode {
                 scope.as_deref(),
                 analyze_only,
                 request_timeout,
+                exec_timeout,
+                build_timeout,
+                parallelism,
+                timeout_per_fn,
                 log_level,
             )
             .await
@@ -1447,6 +1550,8 @@ async fn main() -> ExitCode {
             timeout,
             scope,
             request_timeout,
+            exec_timeout,
+            build_timeout,
         } => {
             run_export_tests(
                 &targets,
@@ -1457,6 +1562,8 @@ async fn main() -> ExitCode {
                 timeout,
                 scope.as_deref(),
                 request_timeout,
+                exec_timeout,
+                build_timeout,
                 log_level,
             )
             .await
@@ -1468,6 +1575,8 @@ async fn main() -> ExitCode {
             timeout,
             analyze_only,
             request_timeout,
+            exec_timeout,
+            build_timeout,
         } => {
             run_run(
                 &path,
@@ -1476,6 +1585,8 @@ async fn main() -> ExitCode {
                 timeout,
                 analyze_only,
                 request_timeout,
+                exec_timeout,
+                build_timeout,
                 log_level,
             )
             .await
@@ -1587,6 +1698,7 @@ mod tests {
                 request_timeout,
                 inputs,
                 config_path,
+                ..
             } => {
                 assert_eq!(targets, vec!["test.ts:myFunc"]);
                 assert_eq!(max_iterations, 100);
@@ -1644,6 +1756,7 @@ mod tests {
                 request_timeout,
                 inputs,
                 config_path,
+                ..
             } => {
                 assert_eq!(targets, vec!["a.ts:fn1", "b.go:Fn2"]);
                 assert_eq!(max_iterations, 50);
@@ -1795,6 +1908,65 @@ mod tests {
     }
 
     #[test]
+    fn cli_parses_explore_with_exec_timeout() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "explore",
+            "--exec-timeout", "20",
+            "--build-timeout", "45",
+            "test.go:myFunc",
+        ]);
+        match cli.command {
+            CliCommand::Explore { exec_timeout, build_timeout, .. } => {
+                assert_eq!(exec_timeout, 20);
+                assert_eq!(build_timeout, 45);
+            }
+            _ => panic!("expected Explore command"),
+        }
+    }
+
+    #[test]
+    fn cli_explore_exec_timeout_defaults() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "explore",
+            "test.go:myFunc",
+        ]);
+        match cli.command {
+            CliCommand::Explore { exec_timeout, build_timeout, .. } => {
+                assert_eq!(exec_timeout, 10);
+                assert_eq!(build_timeout, 30);
+            }
+            _ => panic!("expected Explore command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_scan_with_exec_timeout() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "scan",
+            "--exec-timeout", "15",
+            "test.go",
+        ]);
+        match cli.command {
+            CliCommand::Scan { exec_timeout, build_timeout, .. } => {
+                assert_eq!(exec_timeout, 15);
+                assert_eq!(build_timeout, 30);
+            }
+            _ => panic!("expected Scan command"),
+        }
+    }
+
+    #[test]
+    fn frontend_config_passes_timeout_env_vars() {
+        let config = frontend_config(Language::Go, Duration::from_secs(30), LogLevel::Info, 20, 45).unwrap();
+        let env_map: std::collections::HashMap<_, _> = config.env_vars.iter().cloned().collect();
+        assert_eq!(env_map.get("SHATTER_EXEC_TIMEOUT").map(|s| s.as_str()), Some("20"));
+        assert_eq!(env_map.get("SHATTER_BUILD_TIMEOUT").map(|s| s.as_str()), Some("45"));
+    }
+
+    #[test]
     fn cli_explore_requires_at_least_one_target() {
         let result = Cli::try_parse_from(["shatter", "explore"]);
         assert!(result.is_err());
@@ -1824,6 +1996,9 @@ mod tests {
                 analyze_only,
                 no_cache,
                 request_timeout,
+                parallelism,
+                timeout_per_fn,
+                ..
             } => {
                 assert_eq!(targets, vec!["test.ts"]);
                 assert_eq!(max_iterations, 100);
@@ -1832,6 +2007,8 @@ mod tests {
                 assert!(!analyze_only);
                 assert!(!no_cache);
                 assert_eq!(request_timeout, 30);
+                assert_eq!(parallelism, 0);
+                assert_eq!(timeout_per_fn, 30);
             }
             _ => panic!("expected Scan command"),
         }
@@ -1877,7 +2054,7 @@ mod tests {
 
     #[test]
     fn frontend_config_typescript_uses_embedded_bundle() {
-        let config = frontend_config(Language::TypeScript, Duration::from_secs(30), LogLevel::Info).unwrap();
+        let config = frontend_config(Language::TypeScript, Duration::from_secs(30), LogLevel::Info, 10, 30).unwrap();
         assert_eq!(config.command, PathBuf::from("node"));
         assert_eq!(config.request_timeout, Duration::from_secs(30));
         // The arg should point to the extracted bundle, not a relative dev path
@@ -1891,7 +2068,7 @@ mod tests {
 
     #[test]
     fn frontend_config_go_uses_embedded_binary() {
-        let config = frontend_config(Language::Go, Duration::from_secs(45), LogLevel::Info).unwrap();
+        let config = frontend_config(Language::Go, Duration::from_secs(45), LogLevel::Info, 10, 30).unwrap();
         assert_eq!(config.request_timeout, Duration::from_secs(45));
         assert!(config.args.is_empty());
         // The command should point to the extracted binary, not a relative dev path
@@ -1983,6 +2160,7 @@ mod tests {
                 timeout,
                 scope,
                 request_timeout,
+                ..
             } => {
                 assert_eq!(targets, vec!["test.go:Add"]);
                 assert_eq!(framework, "gotest");
@@ -2107,6 +2285,7 @@ mod tests {
                 timeout,
                 analyze_only,
                 request_timeout,
+                ..
             } => {
                 assert_eq!(path, "/tmp/my-repo");
                 assert!(output_dir.is_none());
@@ -2138,6 +2317,7 @@ mod tests {
                 timeout,
                 analyze_only,
                 request_timeout,
+                ..
             } => {
                 assert_eq!(path, ".");
                 assert_eq!(output_dir, Some(PathBuf::from("/tmp/output")));

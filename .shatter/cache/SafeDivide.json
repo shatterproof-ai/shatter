@@ -1,0 +1,38 @@
+{
+  "function_id": "SafeDivide",
+  "behaviors": [
+    {
+      "id": 0,
+      "input_args": [
+        1,
+        -164
+      ],
+      "return_value": 0,
+      "thrown_error": null,
+      "branch_path": [],
+      "side_effects": []
+    },
+    {
+      "id": 1,
+      "input_args": [
+        0,
+        492
+      ],
+      "return_value": 0,
+      "thrown_error": null,
+      "branch_path": [],
+      "side_effects": []
+    },
+    {
+      "id": 2,
+      "input_args": [
+        669,
+        0
+      ],
+      "return_value": 0,
+      "thrown_error": null,
+      "branch_path": [],
+      "side_effects": []
+    }
+  ]
+}

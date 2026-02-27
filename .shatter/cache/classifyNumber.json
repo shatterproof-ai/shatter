@@ -1,0 +1,45 @@
+{
+  "function_id": "classifyNumber",
+  "behaviors": [
+    {
+      "id": 0,
+      "input_args": [
+        169.33745725528343
+      ],
+      "return_value": "positive-odd",
+      "thrown_error": null,
+      "branch_path": [],
+      "side_effects": []
+    },
+    {
+      "id": 1,
+      "input_args": [
+        -0.5
+      ],
+      "return_value": "negative",
+      "thrown_error": null,
+      "branch_path": [],
+      "side_effects": []
+    },
+    {
+      "id": 2,
+      "input_args": [
+        2.0
+      ],
+      "return_value": "positive-even",
+      "thrown_error": null,
+      "branch_path": [],
+      "side_effects": []
+    },
+    {
+      "id": 3,
+      "input_args": [
+        0.0
+      ],
+      "return_value": "zero",
+      "thrown_error": null,
+      "branch_path": [],
+      "side_effects": []
+    }
+  ]
+}

@@ -1,0 +1,69 @@
+{
+  "function_id": "categorizeUser",
+  "behaviors": [
+    {
+      "id": 0,
+      "input_args": [
+        {
+          "age": 2.0,
+          "isVerified": false,
+          "name": "0",
+          "role": "null"
+        }
+      ],
+      "return_value": "child",
+      "thrown_error": null,
+      "branch_path": [],
+      "side_effects": []
+    },
+    {
+      "id": 1,
+      "input_args": [
+        {
+          "age": -2.0,
+          "isVerified": true,
+          "name": "null",
+          "role": ""
+        }
+      ],
+      "return_value": null,
+      "thrown_error": {
+        "error_type": "Error",
+        "message": "Error: invalid age",
+        "stack": null
+      },
+      "branch_path": [],
+      "side_effects": []
+    },
+    {
+      "id": 2,
+      "input_args": [
+        {
+          "age": 21.0,
+          "isVerified": true,
+          "name": "eaghzmukcwsd",
+          "role": "0"
+        }
+      ],
+      "return_value": "verified-user",
+      "thrown_error": null,
+      "branch_path": [],
+      "side_effects": []
+    },
+    {
+      "id": 3,
+      "input_args": [
+        {
+          "age": 931.9222108446859,
+          "isVerified": false,
+          "name": "toatlxxegb",
+          "role": "mzepqr"
+        }
+      ],
+      "return_value": "unverified-user",
+      "thrown_error": null,
+      "branch_path": [],
+      "side_effects": []
+    }
+  ]
+}

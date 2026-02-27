@@ -38,6 +38,7 @@ pub fn generate_random_value(
                 generate_unknown(rng)
             }
         }
+        TypeInfo::Opaque { .. } => Value::Null,
         TypeInfo::Unknown => generate_unknown(rng),
     }
 }
@@ -802,9 +803,9 @@ mod tests {
     fn generate_random_inputs_matches_param_count() {
         let mut rng = seeded_rng();
         let params = vec![
-            ParamInfo { name: "a".into(), typ: TypeInfo::Int },
-            ParamInfo { name: "b".into(), typ: TypeInfo::Str },
-            ParamInfo { name: "c".into(), typ: TypeInfo::Bool },
+            ParamInfo { name: "a".into(), typ: TypeInfo::Int, type_name: None },
+            ParamInfo { name: "b".into(), typ: TypeInfo::Str, type_name: None },
+            ParamInfo { name: "c".into(), typ: TypeInfo::Bool, type_name: None },
         ];
         let inputs = generate_random_inputs(&params, &mut rng, None);
         assert_eq!(inputs.len(), 3);
@@ -947,5 +948,15 @@ mod tests {
             val.as_object().and_then(|o| o.get("__complex_type")).is_none(),
             "without caps, should not produce tagged complex: {val}"
         );
+    }
+
+    #[test]
+    fn opaque_type_generates_null() {
+        let mut rng = seeded_rng();
+        let typ = TypeInfo::Opaque {
+            label: "net.Socket".to_string(),
+        };
+        let val = generate_random_value(&typ, &mut rng, None);
+        assert!(val.is_null(), "expected null for opaque type, got {val}");
     }
 }

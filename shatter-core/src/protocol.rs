@@ -431,6 +431,7 @@ mod tests {
                                 ("priority".into(), TypeInfo::Str),
                             ],
                         },
+                        type_name: None,
                     }],
                     branches: vec![BranchInfo {
                         id: 1,
@@ -701,6 +702,7 @@ mod tests {
             params: vec![ParamInfo {
                 name: "x".into(),
                 typ: TypeInfo::Unknown,
+                type_name: None,
             }],
             branches: vec![],
             dependencies: vec![],
@@ -870,8 +872,8 @@ mod tests {
                         name: "add".into(),
                         exported: true,
                         params: vec![
-                            ParamInfo { name: "a".into(), typ: TypeInfo::Int },
-                            ParamInfo { name: "b".into(), typ: TypeInfo::Int },
+                            ParamInfo { name: "a".into(), typ: TypeInfo::Int, type_name: None },
+                            ParamInfo { name: "b".into(), typ: TypeInfo::Int, type_name: None },
                         ],
                         branches: vec![],
                         dependencies: vec![],
@@ -883,8 +885,8 @@ mod tests {
                         name: "divide".into(),
                         exported: true,
                         params: vec![
-                            ParamInfo { name: "a".into(), typ: TypeInfo::Float },
-                            ParamInfo { name: "b".into(), typ: TypeInfo::Float },
+                            ParamInfo { name: "a".into(), typ: TypeInfo::Float, type_name: None },
+                            ParamInfo { name: "b".into(), typ: TypeInfo::Float, type_name: None },
                         ],
                         branches: vec![BranchInfo {
                             id: 0,

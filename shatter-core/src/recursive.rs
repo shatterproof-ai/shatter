@@ -92,6 +92,8 @@ fn probe_values(typ: &TypeInfo) -> Vec<Value> {
         }
         // Complex types use same probes as Unknown for now
         TypeInfo::Complex { .. } => vec![json!(0), json!(1), json!(-1), json!(""), json!(null)],
+        // Opaque types cannot be constructed; use same fallback probes as Unknown
+        TypeInfo::Opaque { .. } => vec![json!(0), json!(1), json!(-1), json!(""), json!(null)],
         TypeInfo::Unknown => vec![json!(0), json!(1), json!(-1), json!(""), json!(null)],
     }
 }
@@ -551,6 +553,7 @@ mod tests {
         let params = vec![ParamInfo {
             name: "n".into(),
             typ: TypeInfo::Int,
+            type_name: None,
         }];
         let inputs = generate_probe_inputs(&params, 20);
         // Should have probe values for Int: 0, 1, -1, 2
@@ -565,14 +568,17 @@ mod tests {
             ParamInfo {
                 name: "a".into(),
                 typ: TypeInfo::Int,
+                type_name: None,
             },
             ParamInfo {
                 name: "b".into(),
                 typ: TypeInfo::Int,
+                type_name: None,
             },
             ParamInfo {
                 name: "c".into(),
                 typ: TypeInfo::Int,
+                type_name: None,
             },
         ];
         // 4^3 = 64 combinations, should be capped at 20
@@ -591,6 +597,7 @@ mod tests {
         let params = vec![ParamInfo {
             name: "n".into(),
             typ: TypeInfo::Int,
+            type_name: None,
         }];
         let d1 = generate_depth_inputs(&params, 1);
         let d3 = generate_depth_inputs(&params, 3);
@@ -606,6 +613,7 @@ mod tests {
             typ: TypeInfo::Array {
                 element: Box::new(TypeInfo::Int),
             },
+            type_name: None,
         }];
         let d2 = generate_depth_inputs(&params, 2);
         // Should contain an array of length 2

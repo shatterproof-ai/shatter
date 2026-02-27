@@ -126,7 +126,7 @@ GO_EXAMPLES=(
     "examples/go/03-errors.go:SafeDivide"
 )
 
-TOTAL=15
+TOTAL=18
 
 # ─── Walkthrough ──────────────────────────────────────────────────────
 
@@ -215,5 +215,20 @@ step 14 $TOTAL "User-Provided Inputs via Config" \
 step 15 $TOTAL "Performance Stats" \
     "Show per-function timing data with --perf" \
     $SHATTER explore --perf "${EXAMPLES[@]}"
+
+# Stage 16: Parallel scan with worker pool
+step 16 $TOTAL "Parallel Scan" \
+    "Scan with multiple worker processes for faster exploration" \
+    $SHATTER scan --parallelism 2 --timeout-per-fn 30 examples/typescript/src/01-arithmetic.ts
+
+# Stage 17: Execution timeout
+step 17 $TOTAL "Execution Timeout" \
+    "Configure per-execution timeout passed to frontends" \
+    $SHATTER explore --exec-timeout 5 --build-timeout 20 "${EXAMPLES[0]}"
+
+# Stage 18: Go execution timeout
+step 18 $TOTAL "Go Execution Timeout" \
+    "Configurable timeouts also apply to the Go frontend" \
+    $SHATTER explore --exec-timeout 8 "${GO_EXAMPLES[0]}"
 
 echo "${BOLD}${GREEN}Walkthrough complete.${RESET}"

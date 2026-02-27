@@ -1,0 +1,42 @@
+{
+  "function_id": "safeDivide",
+  "behaviors": [
+    {
+      "id": 0,
+      "input_args": [
+        -0.5,
+        453.9226927844493
+      ],
+      "return_value": -0.0011015091511131635,
+      "thrown_error": null,
+      "branch_path": [],
+      "side_effects": []
+    },
+    {
+      "id": 1,
+      "input_args": [
+        0.0,
+        680.2175717875864
+      ],
+      "return_value": 0,
+      "thrown_error": null,
+      "branch_path": [],
+      "side_effects": []
+    },
+    {
+      "id": 2,
+      "input_args": [
+        -31.0,
+        0.0
+      ],
+      "return_value": null,
+      "thrown_error": {
+        "error_type": "Error",
+        "message": "Error: division by zero",
+        "stack": null
+      },
+      "branch_path": [],
+      "side_effects": []
+    }
+  ]
+}

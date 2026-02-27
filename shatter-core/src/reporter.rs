@@ -332,6 +332,7 @@ fn format_type(typ: &TypeInfo) -> String {
                 base
             }
         }
+        TypeInfo::Opaque { label } => format!("opaque({label})"),
         TypeInfo::Unknown => "unknown".to_string(),
     }
 }
@@ -496,7 +497,7 @@ mod tests {
         let analysis = make_analysis(
             "calculateShipping",
             vec![
-                ParamInfo { name: "order".to_string(), typ: TypeInfo::Object { fields: vec![] } },
+                ParamInfo { name: "order".to_string(), typ: TypeInfo::Object { fields: vec![] }, type_name: None },
             ],
             TypeInfo::Object { fields: vec![] },
             vec![],
@@ -518,8 +519,8 @@ mod tests {
         let analysis = make_analysis(
             "add",
             vec![
-                ParamInfo { name: "a".to_string(), typ: TypeInfo::Int },
-                ParamInfo { name: "b".to_string(), typ: TypeInfo::Int },
+                ParamInfo { name: "a".to_string(), typ: TypeInfo::Int, type_name: None },
+                ParamInfo { name: "b".to_string(), typ: TypeInfo::Int, type_name: None },
             ],
             TypeInfo::Int,
             vec![],
@@ -731,6 +732,7 @@ mod tests {
                             ("priority".to_string(), TypeInfo::Str),
                         ],
                     },
+                    type_name: None,
                 },
             ],
             TypeInfo::Object { fields: vec![] },
@@ -815,7 +817,7 @@ mod tests {
 
         let analysis = make_analysis(
             "abs",
-            vec![ParamInfo { name: "x".to_string(), typ: TypeInfo::Int }],
+            vec![ParamInfo { name: "x".to_string(), typ: TypeInfo::Int, type_name: None }],
             TypeInfo::Int,
             vec![],
         );
@@ -871,6 +873,10 @@ mod tests {
             "{ x: number }"
         );
         assert_eq!(format_type(&TypeInfo::Object { fields: vec![] }), "object");
+        assert_eq!(
+            format_type(&TypeInfo::Opaque { label: "net.Socket".to_string() }),
+            "opaque(net.Socket)"
+        );
     }
 
     #[test]

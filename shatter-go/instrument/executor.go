@@ -14,9 +14,32 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
+
+// execTimeout returns the execution timeout, reading from SHATTER_EXEC_TIMEOUT
+// env var (in seconds) with a fallback to 10s.
+func execTimeout() time.Duration {
+	if s := os.Getenv("SHATTER_EXEC_TIMEOUT"); s != "" {
+		if secs, err := strconv.ParseFloat(s, 64); err == nil && secs > 0 {
+			return time.Duration(secs * float64(time.Second))
+		}
+	}
+	return 10 * time.Second
+}
+
+// buildTimeout returns the build timeout, reading from SHATTER_BUILD_TIMEOUT
+// env var (in seconds) with a fallback to 30s.
+func buildTimeout() time.Duration {
+	if s := os.Getenv("SHATTER_BUILD_TIMEOUT"); s != "" {
+		if secs, err := strconv.ParseFloat(s, 64); err == nil && secs > 0 {
+			return time.Duration(secs * float64(time.Second))
+		}
+	}
+	return 30 * time.Second
+}
 
 // ExecuteResult holds the output of running an instrumented function.
 type ExecuteResult struct {
@@ -97,7 +120,7 @@ func ExecuteFunction(sourcePath, funcName string, inputs []json.RawMessage) (*Ex
 	}
 	binaryPath := filepath.Join(outputDir, binaryName)
 
-	buildCtx, buildCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	buildCtx, buildCancel := context.WithTimeout(context.Background(), buildTimeout())
 	defer buildCancel()
 
 	buildCmd := exec.CommandContext(buildCtx, "go", "build", "-o", binaryPath, ".")
@@ -108,7 +131,8 @@ func ExecuteFunction(sourcePath, funcName string, inputs []json.RawMessage) (*Ex
 
 	// Run the binary with a timeout
 	start := time.Now()
-	runCtx, runCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	execDur := execTimeout()
+	runCtx, runCancel := context.WithTimeout(context.Background(), execDur)
 	defer runCancel()
 
 	runCmd := exec.CommandContext(runCtx, binaryPath)
@@ -159,7 +183,7 @@ func ExecuteFunction(sourcePath, funcName string, inputs []json.RawMessage) (*Ex
 		if runCtx.Err() == context.DeadlineExceeded {
 			result.ThrownError = &ErrorInfo{
 				ErrorType: "timeout",
-				Message:   "execution timed out after 10s",
+				Message:   fmt.Sprintf("execution timed out after %s", execDur),
 			}
 		} else {
 			result.ThrownError = &ErrorInfo{

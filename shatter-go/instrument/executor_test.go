@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func writeExecTestSource(t *testing.T, dir, filename, content string) string {
@@ -380,5 +381,54 @@ func multiCheck(x int, y int) string {
 	}
 	if retVal != "both positive" {
 		t.Errorf("expected %q, got %q", "both positive", retVal)
+	}
+}
+
+func TestExecTimeoutDefaultIs10s(t *testing.T) {
+	os.Unsetenv("SHATTER_EXEC_TIMEOUT")
+	if d := execTimeout(); d != 10*time.Second {
+		t.Errorf("expected 10s default, got %v", d)
+	}
+}
+
+func TestExecTimeoutReadsEnvVar(t *testing.T) {
+	t.Setenv("SHATTER_EXEC_TIMEOUT", "25")
+	if d := execTimeout(); d != 25*time.Second {
+		t.Errorf("expected 25s, got %v", d)
+	}
+}
+
+func TestExecTimeoutIgnoresInvalidEnvVar(t *testing.T) {
+	t.Setenv("SHATTER_EXEC_TIMEOUT", "not-a-number")
+	if d := execTimeout(); d != 10*time.Second {
+		t.Errorf("expected 10s fallback, got %v", d)
+	}
+}
+
+func TestExecTimeoutIgnoresZero(t *testing.T) {
+	t.Setenv("SHATTER_EXEC_TIMEOUT", "0")
+	if d := execTimeout(); d != 10*time.Second {
+		t.Errorf("expected 10s fallback for zero, got %v", d)
+	}
+}
+
+func TestExecTimeoutIgnoresNegative(t *testing.T) {
+	t.Setenv("SHATTER_EXEC_TIMEOUT", "-5")
+	if d := execTimeout(); d != 10*time.Second {
+		t.Errorf("expected 10s fallback for negative, got %v", d)
+	}
+}
+
+func TestBuildTimeoutDefaultIs30s(t *testing.T) {
+	os.Unsetenv("SHATTER_BUILD_TIMEOUT")
+	if d := buildTimeout(); d != 30*time.Second {
+		t.Errorf("expected 30s default, got %v", d)
+	}
+}
+
+func TestBuildTimeoutReadsEnvVar(t *testing.T) {
+	t.Setenv("SHATTER_BUILD_TIMEOUT", "60")
+	if d := buildTimeout(); d != 60*time.Second {
+		t.Errorf("expected 60s, got %v", d)
 	}
 }

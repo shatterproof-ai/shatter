@@ -199,6 +199,7 @@ mod tests {
             params: vec![ParamInfo {
                 name: "x".into(),
                 typ: TypeInfo::Int,
+                type_name: None,
             }],
             branches: (0..branch_count)
                 .map(|i| BranchInfo {
@@ -245,10 +246,12 @@ mod tests {
                 ParamInfo {
                     name: "a".into(),
                     typ: TypeInfo::Int,
+                    type_name: None,
                 },
                 ParamInfo {
                     name: "b".into(),
                     typ: TypeInfo::Str,
+                    type_name: None,
                 },
             ],
             branches: vec![
