@@ -4,11 +4,38 @@ use crate::protocol::{
     self, Request, Response, FRONTEND_LANGUAGE, FRONTEND_VERSION, PROTOCOL_VERSION,
 };
 
+/// Log level for the frontend, controlled by SHATTER_LOG_LEVEL env var.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum FrontendLogLevel {
+    Error = 0,
+    Warn = 1,
+    Info = 2,
+    Debug = 3,
+    Trace = 4,
+}
+
+impl FrontendLogLevel {
+    fn from_env() -> Self {
+        match std::env::var("SHATTER_LOG_LEVEL")
+            .unwrap_or_default()
+            .to_lowercase()
+            .as_str()
+        {
+            "error" => FrontendLogLevel::Error,
+            "warn" => FrontendLogLevel::Warn,
+            "debug" => FrontendLogLevel::Debug,
+            "trace" => FrontendLogLevel::Trace,
+            _ => FrontendLogLevel::Info,
+        }
+    }
+}
+
 /// Processes protocol requests from stdin and writes responses to stdout.
 pub struct Handler<R, W, L> {
     reader: BufReader<R>,
     writer: W,
     log: L,
+    log_level: FrontendLogLevel,
 }
 
 impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
@@ -17,12 +44,24 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             reader: BufReader::new(reader),
             writer,
             log,
+            log_level: FrontendLogLevel::from_env(),
+        }
+    }
+
+    /// Create a handler with an explicit log level (for testing).
+    #[cfg(test)]
+    fn with_log_level(reader: R, writer: W, log: L, level: FrontendLogLevel) -> Self {
+        Self {
+            reader: BufReader::new(reader),
+            writer,
+            log,
+            log_level: level,
         }
     }
 
     /// Process requests until shutdown or EOF. Returns Ok(()) on clean shutdown.
     pub fn run(mut self) -> io::Result<()> {
-        self.logf(&format!(
+        self.log_at(FrontendLogLevel::Debug, &format!(
             "Starting Rust frontend (protocol {PROTOCOL_VERSION})"
         ));
 
@@ -32,7 +71,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             let bytes_read = self.reader.read_line(&mut line)?;
             if bytes_read == 0 {
                 // EOF
-                self.logf("Stdin closed, exiting");
+                self.log_at(FrontendLogLevel::Debug, "Stdin closed, exiting");
                 return Ok(());
             }
 
@@ -55,7 +94,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             self.send(&resp)?;
 
             if shutdown {
-                self.logf("Shutting down");
+                self.log_at(FrontendLogLevel::Debug, "Shutting down");
                 return Ok(());
             }
         }
@@ -150,8 +189,16 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
         self.writer.flush()
     }
 
+    /// Log at TRACE level (protocol messages).
     fn logf(&mut self, msg: &str) {
-        let _ = writeln!(self.log, "[shatter-rust] {msg}");
+        self.log_at(FrontendLogLevel::Trace, msg);
+    }
+
+    /// Log at a specific level.
+    fn log_at(&mut self, level: FrontendLogLevel, msg: &str) {
+        if self.log_level >= level {
+            let _ = writeln!(self.log, "[shatter-rust] {msg}");
+        }
     }
 }
 
@@ -366,14 +413,52 @@ mod tests {
         let input = r#"{"protocol_version":"0.1.0","id":1,"command":"shutdown"}"#.to_string() + "\n";
         let mut output = Vec::new();
         let mut log = Vec::new();
-        let handler = Handler::new(
+        let handler = Handler::with_log_level(
             input.as_bytes(),
             &mut output,
             &mut log,
+            FrontendLogLevel::Trace,
         );
         handler.run().expect("handler.run");
         let log_str = String::from_utf8(log).expect("valid utf8");
         assert!(log_str.contains("[shatter-rust]"), "log missing prefix: {log_str}");
         assert!(log_str.contains("Shutting down"), "log missing shutdown message: {log_str}");
+    }
+
+    #[test]
+    fn log_level_filtering_suppresses_trace_at_info() {
+        let input = r#"{"protocol_version":"0.1.0","id":1,"command":"shutdown"}"#.to_string() + "\n";
+        let mut output = Vec::new();
+        let mut log = Vec::new();
+        let handler = Handler::with_log_level(
+            input.as_bytes(),
+            &mut output,
+            &mut log,
+            FrontendLogLevel::Info,
+        );
+        handler.run().expect("handler.run");
+        let log_str = String::from_utf8(log).expect("valid utf8");
+        // At INFO level, protocol messages (Received/Sent/Shutting down) should be suppressed
+        assert!(!log_str.contains("Received:"), "trace messages should be suppressed at info: {log_str}");
+        assert!(!log_str.contains("Sent:"), "trace messages should be suppressed at info: {log_str}");
+    }
+
+    #[test]
+    fn log_level_filtering_shows_debug_at_debug() {
+        let input = r#"{"protocol_version":"0.1.0","id":1,"command":"shutdown"}"#.to_string() + "\n";
+        let mut output = Vec::new();
+        let mut log = Vec::new();
+        let handler = Handler::with_log_level(
+            input.as_bytes(),
+            &mut output,
+            &mut log,
+            FrontendLogLevel::Debug,
+        );
+        handler.run().expect("handler.run");
+        let log_str = String::from_utf8(log).expect("valid utf8");
+        // At DEBUG level, lifecycle messages should appear but not protocol details
+        assert!(log_str.contains("Starting Rust frontend"), "debug messages should appear at debug: {log_str}");
+        assert!(log_str.contains("Shutting down"), "debug messages should appear at debug: {log_str}");
+        assert!(!log_str.contains("Received:"), "trace messages should be suppressed at debug: {log_str}");
     }
 }

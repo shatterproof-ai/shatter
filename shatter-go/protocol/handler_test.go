@@ -484,7 +484,7 @@ func TestResponseIsValidNDJSON(t *testing.T) {
 func TestDebugOutputGoesToLog(t *testing.T) {
 	input := `{"protocol_version":"0.1.0","id":1,"command":"shutdown"}` + "\n"
 	var output, logBuf bytes.Buffer
-	handler := NewHandler(strings.NewReader(input), &output, &logBuf)
+	handler := NewHandlerWithLogLevel(strings.NewReader(input), &output, &logBuf, "trace")
 	if err := handler.Run(); err != nil {
 		t.Fatalf("handler.Run: %v", err)
 	}
@@ -494,5 +494,40 @@ func TestDebugOutputGoesToLog(t *testing.T) {
 	}
 	if !strings.Contains(logStr, "Shutting down") {
 		t.Errorf("log output missing shutdown message: %s", logStr)
+	}
+}
+
+func TestLogLevelFilteringSuppressesTraceAtInfo(t *testing.T) {
+	input := `{"protocol_version":"0.1.0","id":1,"command":"shutdown"}` + "\n"
+	var output, logBuf bytes.Buffer
+	handler := NewHandlerWithLogLevel(strings.NewReader(input), &output, &logBuf, "info")
+	if err := handler.Run(); err != nil {
+		t.Fatalf("handler.Run: %v", err)
+	}
+	logStr := logBuf.String()
+	if strings.Contains(logStr, "Received:") {
+		t.Errorf("trace messages should be suppressed at info level: %s", logStr)
+	}
+	if strings.Contains(logStr, "Sent:") {
+		t.Errorf("trace messages should be suppressed at info level: %s", logStr)
+	}
+}
+
+func TestLogLevelFilteringShowsDebugAtDebug(t *testing.T) {
+	input := `{"protocol_version":"0.1.0","id":1,"command":"shutdown"}` + "\n"
+	var output, logBuf bytes.Buffer
+	handler := NewHandlerWithLogLevel(strings.NewReader(input), &output, &logBuf, "debug")
+	if err := handler.Run(); err != nil {
+		t.Fatalf("handler.Run: %v", err)
+	}
+	logStr := logBuf.String()
+	if !strings.Contains(logStr, "Starting Go frontend") {
+		t.Errorf("debug messages should appear at debug level: %s", logStr)
+	}
+	if !strings.Contains(logStr, "Shutting down") {
+		t.Errorf("debug messages should appear at debug level: %s", logStr)
+	}
+	if strings.Contains(logStr, "Received:") {
+		t.Errorf("trace messages should be suppressed at debug level: %s", logStr)
 	}
 }

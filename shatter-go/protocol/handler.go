@@ -14,11 +14,30 @@ import (
 const frontendVersion = "0.1.0"
 const frontendLanguage = "go"
 
+// logLevelRank maps level names to numeric ranks for comparison.
+var logLevelRank = map[string]int{
+	"error": 0,
+	"warn":  1,
+	"info":  2,
+	"debug": 3,
+	"trace": 4,
+}
+
+// getLogLevel reads SHATTER_LOG_LEVEL from environment, defaulting to "info".
+func getLogLevel() string {
+	level := strings.ToLower(os.Getenv("SHATTER_LOG_LEVEL"))
+	if _, ok := logLevelRank[level]; ok {
+		return level
+	}
+	return "info"
+}
+
 // Handler processes protocol requests and writes responses.
 type Handler struct {
 	reader           *bufio.Scanner
 	writer           io.Writer
 	log              io.Writer
+	logLevel         string
 	lastAnalyzedFile string // remembered from the most recent analyze command
 }
 
@@ -28,15 +47,28 @@ func NewHandler(r io.Reader, w io.Writer, logw io.Writer) *Handler {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024) // 10MB max line
 	return &Handler{
-		reader: scanner,
-		writer: w,
-		log:    logw,
+		reader:   scanner,
+		writer:   w,
+		log:      logw,
+		logLevel: getLogLevel(),
+	}
+}
+
+// NewHandlerWithLogLevel creates a handler with an explicit log level (for testing).
+func NewHandlerWithLogLevel(r io.Reader, w io.Writer, logw io.Writer, level string) *Handler {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
+	return &Handler{
+		reader:   scanner,
+		writer:   w,
+		log:      logw,
+		logLevel: level,
 	}
 }
 
 // Run processes requests until shutdown or EOF. Returns nil on clean shutdown.
 func (h *Handler) Run() error {
-	h.logf("Starting Go frontend (protocol %s)", ProtocolVersion)
+	h.logAt("debug", "Starting Go frontend (protocol %s)", ProtocolVersion)
 
 	for h.reader.Scan() {
 		line := h.reader.Text()
@@ -58,7 +90,7 @@ func (h *Handler) Run() error {
 		}
 
 		if shutdown {
-			h.logf("Shutting down")
+			h.logAt("debug", "Shutting down")
 			return nil
 		}
 	}
@@ -67,7 +99,7 @@ func (h *Handler) Run() error {
 		return fmt.Errorf("reading stdin: %w", err)
 	}
 
-	h.logf("Stdin closed, exiting")
+	h.logAt("debug", "Stdin closed, exiting")
 	return nil
 }
 
@@ -321,5 +353,11 @@ func (h *Handler) send(resp Response) error {
 }
 
 func (h *Handler) logf(format string, args ...any) {
-	fmt.Fprintf(h.log, "[shatter-go] "+format+"\n", args...)
+	h.logAt("trace", format, args...)
+}
+
+func (h *Handler) logAt(level string, format string, args ...any) {
+	if logLevelRank[h.logLevel] >= logLevelRank[level] {
+		fmt.Fprintf(h.log, "[shatter-go] "+format+"\n", args...)
+	}
 }
