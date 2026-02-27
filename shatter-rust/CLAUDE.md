@@ -29,3 +29,7 @@ Currently `analyze`, `instrument`, and `execute` return "not yet implemented" er
 - No `unwrap()` — use `Result` and `?`
 - Tests use `#[cfg(test)]` modules in the same file
 - Mirrors the Go frontend's patterns (flat structs, `send_recv`/`conversation` test helpers)
+
+## Output Review
+
+After changing stderr logging or protocol output, run `/walkthrough-review` to validate that frontend output respects log-level verbosity.
