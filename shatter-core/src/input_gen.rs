@@ -304,7 +304,7 @@ fn generate_url(rng: &mut impl Rng) -> Value {
         "https://example.com/path#fragment",
         "https://user:pass@example.com",
         "ftp://files.example.com/pub",
-        "https://例え.jp/テスト",
+        "https://xn--r8jz45g.jp/%E3%83%86%E3%82%B9%E3%83%88",
     ];
     let idx = rng.random_range(0..urls.len());
     json!({"__complex_type": "url", "value": urls[idx]})
@@ -443,8 +443,8 @@ fn generate_char(rng: &mut impl Rng) -> Value {
         2 => ("a", 97),           // lowercase
         3 => ("Z", 90),           // uppercase
         4 => ("0", 48),           // digit
-        5 => ("€", 8364),         // currency symbol
-        6 => ("🎉", 127881),     // emoji
+        5 => ("\u{20AC}", 8364),  // currency symbol (euro)
+        6 => ("\u{1F389}", 127881), // emoji (party popper)
         _ => {
             let cp = rng.random_range(32..=126) as u32; // printable ASCII
             let ch_str: String = char::from_u32(cp).map_or_else(|| "?".to_string(), |c| c.to_string());
@@ -666,6 +666,213 @@ pub fn generate_random_inputs(
         .collect()
 }
 
+// ---------------------------------------------------------------------------
+// Generator-aware input generation
+// ---------------------------------------------------------------------------
+
+/// Where a parameter's value should come from during input generation.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ValueSource {
+    /// Use a custom generator file to produce values for this parameter.
+    CustomGenerator {
+        /// Name of the generator (type name or param name, used for protocol).
+        generator_name: String,
+        /// The parameter name, if this is a param-level generator.
+        param_name: Option<String>,
+        /// Absolute path to the generator file.
+        generator_file: std::path::PathBuf,
+        /// Whether this targets a type name or a parameter name.
+        kind: crate::protocol::GeneratorKind,
+    },
+    /// Fall back to built-in random generation.
+    BuiltIn,
+}
+
+/// Determine the value source for each parameter based on resolved config.
+///
+/// Priority: `param_generators` (exact name match) > `type_generators` (type_name match) > `BuiltIn`.
+pub fn resolve_value_sources(
+    params: &[crate::types::ParamInfo],
+    param_generators: &std::collections::HashMap<String, std::path::PathBuf>,
+    type_generators: &std::collections::HashMap<String, std::path::PathBuf>,
+) -> Vec<ValueSource> {
+    params
+        .iter()
+        .map(|p| {
+            // 1. Check param_generators by parameter name
+            if let Some(gen_path) = param_generators.get(&p.name) {
+                return ValueSource::CustomGenerator {
+                    generator_name: p.name.clone(),
+                    param_name: Some(p.name.clone()),
+                    generator_file: gen_path.clone(),
+                    kind: crate::protocol::GeneratorKind::ParamName,
+                };
+            }
+            // 2. Check type_generators by type_name
+            if let Some(type_name) = &p.type_name {
+                if let Some(gen_path) = type_generators.get(type_name) {
+                    return ValueSource::CustomGenerator {
+                        generator_name: type_name.clone(),
+                        param_name: None,
+                        generator_file: gen_path.clone(),
+                        kind: crate::protocol::GeneratorKind::TypeName,
+                    };
+                }
+            }
+            // 3. Built-in
+            ValueSource::BuiltIn
+        })
+        .collect()
+}
+
+/// Pre-fetched values from custom generators, keyed by `(generator_file, generator_name)`.
+///
+/// Each entry holds a queue of values that can be drawn from during input generation.
+/// When the queue is empty, generation falls back to built-in.
+#[derive(Debug, Default)]
+pub struct PrefetchedValues {
+    /// Map from (generator file path as string, generator name) to queued values.
+    values: std::collections::HashMap<(String, String), Vec<Value>>,
+}
+
+impl PrefetchedValues {
+    /// Create an empty prefetch store.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            values: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Insert generated values for a specific generator.
+    pub fn insert(&mut self, file: String, name: String, vals: Vec<Value>) {
+        self.values.entry((file, name)).or_default().extend(vals);
+    }
+
+    /// Take the next value for a generator, if available.
+    pub fn take(&mut self, file: &str, name: &str) -> Option<Value> {
+        let key = (file.to_string(), name.to_string());
+        let queue = self.values.get_mut(&key)?;
+        if queue.is_empty() {
+            None
+        } else {
+            Some(queue.remove(0))
+        }
+    }
+
+    /// Check whether a generator has remaining values.
+    #[must_use]
+    pub fn has_values(&self, file: &str, name: &str) -> bool {
+        self.values
+            .get(&(file.to_string(), name.to_string()))
+            .is_some_and(|q| !q.is_empty())
+    }
+}
+
+/// Collect the set of unique Generate commands needed for the given value sources.
+///
+/// Returns `(file, name, kind)` tuples suitable for building protocol `Generate` commands.
+/// De-duplicates so each generator is only invoked once per prefetch round.
+pub fn collect_generate_commands(
+    sources: &[ValueSource],
+) -> Vec<(String, String, crate::protocol::GeneratorKind)> {
+    let mut seen = std::collections::HashSet::new();
+    let mut commands = Vec::new();
+    for source in sources {
+        if let ValueSource::CustomGenerator {
+            generator_name,
+            generator_file,
+            kind,
+            ..
+        } = source
+        {
+            let key = (generator_file.display().to_string(), generator_name.clone());
+            if seen.insert(key.clone()) {
+                commands.push((key.0, key.1, kind.clone()));
+            }
+        }
+    }
+    commands
+}
+
+/// Batch-prefetch values from custom generators via the frontend protocol.
+///
+/// Sends `Generate` commands for each unique generator and stores the returned
+/// values in a `PrefetchedValues` store. Each generator is called `count` times.
+///
+/// Returns an error if any protocol send/receive fails.
+pub async fn prefetch_custom_values(
+    sources: &[ValueSource],
+    frontend: &mut crate::frontend::Frontend,
+    count: usize,
+) -> Result<PrefetchedValues, crate::frontend::FrontendError> {
+    let commands = collect_generate_commands(sources);
+    let mut store = PrefetchedValues::new();
+
+    for (file, name, kind) in &commands {
+        for _ in 0..count {
+            let response = frontend
+                .send(crate::protocol::Command::Generate {
+                    file: file.clone(),
+                    name: name.clone(),
+                    kind: kind.clone(),
+                })
+                .await?;
+
+            match response.result {
+                crate::protocol::ResponseResult::Generate { value } => {
+                    store.insert(file.clone(), name.clone(), vec![value]);
+                }
+                crate::protocol::ResponseResult::Error { message, .. } => {
+                    // Log but don't fail -- we'll fall back to built-in generation.
+                    eprintln!(
+                        "[shatter-core] generator error for {name} ({file}): {message}"
+                    );
+                }
+                _ => {
+                    // Unexpected response type -- skip this generator.
+                    eprintln!(
+                        "[shatter-core] unexpected response for generator {name}"
+                    );
+                }
+            }
+        }
+    }
+
+    Ok(store)
+}
+
+/// Generate inputs using custom generators where available, falling back to built-in.
+///
+/// For each parameter, if its `ValueSource` is `CustomGenerator` and the prefetch
+/// store has a value available, that value is used. Otherwise, falls back to
+/// `generate_random_value`.
+pub fn generate_inputs_with_custom(
+    params: &[crate::types::ParamInfo],
+    sources: &[ValueSource],
+    prefetched: &mut PrefetchedValues,
+    rng: &mut impl Rng,
+    caps: Option<&FrontendCapabilities>,
+) -> Vec<Value> {
+    params
+        .iter()
+        .zip(sources.iter())
+        .map(|(param, source)| match source {
+            ValueSource::CustomGenerator {
+                generator_name,
+                generator_file,
+                ..
+            } => {
+                let file_str = generator_file.display().to_string();
+                prefetched
+                    .take(&file_str, generator_name)
+                    .unwrap_or_else(|| generate_random_value(&param.typ, rng, caps))
+            }
+            ValueSource::BuiltIn => generate_random_value(&param.typ, rng, caps),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -821,8 +1028,6 @@ mod tests {
             assert!(len <= 5, "length should be at most 5, got {len}");
             counts[len] += 1;
         }
-        // Empty (0) and single-element (1) should each be ~25% of results.
-        // With 1000 trials, expect at least 150 each (well below 25%).
         assert!(
             counts[0] >= 150,
             "expected empty arrays to be common, got {}/{}",
@@ -835,7 +1040,6 @@ mod tests {
             counts[1],
             trials
         );
-        // Small sizes (0-3) should dominate: at least 75% of results.
         let small: u32 = counts[0] + counts[1] + counts[2] + counts[3];
         assert!(
             small >= 700,
@@ -941,9 +1145,7 @@ mod tests {
             metadata: serde_json::Map::new(),
             inner: None,
         };
-        // No caps → falls back to Unknown generation
         let val = generate_random_value(&typ, &mut rng, None);
-        // Should be a primitive, not a tagged object
         assert!(
             val.as_object().and_then(|o| o.get("__complex_type")).is_none(),
             "without caps, should not produce tagged complex: {val}"
@@ -958,5 +1160,258 @@ mod tests {
         };
         let val = generate_random_value(&typ, &mut rng, None);
         assert!(val.is_null(), "expected null for opaque type, got {val}");
+    }
+
+    // -- Generator-aware input generation tests --
+
+    fn test_params() -> Vec<ParamInfo> {
+        vec![
+            ParamInfo {
+                name: "user".into(),
+                typ: TypeInfo::Object {
+                    fields: vec![("id".into(), TypeInfo::Int)],
+                },
+                type_name: Some("User".into()),
+            },
+            ParamInfo {
+                name: "authToken".into(),
+                typ: TypeInfo::Str,
+                type_name: None,
+            },
+            ParamInfo {
+                name: "count".into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            },
+        ]
+    }
+
+    #[test]
+    fn resolve_value_sources_param_generator_takes_precedence() {
+        let params = test_params();
+        let mut param_gens = std::collections::HashMap::new();
+        param_gens.insert("authToken".to_string(), std::path::PathBuf::from("/gen/token.ts"));
+
+        let mut type_gens = std::collections::HashMap::new();
+        type_gens.insert("User".to_string(), std::path::PathBuf::from("/gen/user.ts"));
+
+        let sources = resolve_value_sources(&params, &param_gens, &type_gens);
+        assert_eq!(sources.len(), 3);
+
+        assert!(matches!(&sources[0], ValueSource::CustomGenerator {
+            generator_name, kind, ..
+        } if generator_name == "User" && *kind == crate::protocol::GeneratorKind::TypeName));
+
+        assert!(matches!(&sources[1], ValueSource::CustomGenerator {
+            generator_name, kind, ..
+        } if generator_name == "authToken" && *kind == crate::protocol::GeneratorKind::ParamName));
+
+        assert_eq!(sources[2], ValueSource::BuiltIn);
+    }
+
+    #[test]
+    fn resolve_value_sources_param_generator_overrides_type_generator() {
+        let params = vec![ParamInfo {
+            name: "user".into(),
+            typ: TypeInfo::Str,
+            type_name: Some("User".into()),
+        }];
+        let mut param_gens = std::collections::HashMap::new();
+        param_gens.insert("user".to_string(), std::path::PathBuf::from("/gen/param_user.ts"));
+        let mut type_gens = std::collections::HashMap::new();
+        type_gens.insert("User".to_string(), std::path::PathBuf::from("/gen/type_user.ts"));
+
+        let sources = resolve_value_sources(&params, &param_gens, &type_gens);
+        assert!(matches!(&sources[0], ValueSource::CustomGenerator {
+            generator_file, kind, ..
+        } if generator_file == &std::path::PathBuf::from("/gen/param_user.ts")
+            && *kind == crate::protocol::GeneratorKind::ParamName));
+    }
+
+    #[test]
+    fn resolve_value_sources_all_builtin_when_no_generators() {
+        let params = test_params();
+        let empty_param = std::collections::HashMap::new();
+        let empty_type = std::collections::HashMap::new();
+
+        let sources = resolve_value_sources(&params, &empty_param, &empty_type);
+        assert!(sources.iter().all(|s| *s == ValueSource::BuiltIn));
+    }
+
+    #[test]
+    fn resolve_value_sources_type_generator_requires_type_name() {
+        let params = vec![ParamInfo {
+            name: "token".into(),
+            typ: TypeInfo::Str,
+            type_name: None,
+        }];
+        let empty_param = std::collections::HashMap::new();
+        let mut type_gens = std::collections::HashMap::new();
+        type_gens.insert("Str".to_string(), std::path::PathBuf::from("/gen/str.ts"));
+
+        let sources = resolve_value_sources(&params, &empty_param, &type_gens);
+        assert_eq!(sources[0], ValueSource::BuiltIn);
+    }
+
+    #[test]
+    fn collect_generate_commands_deduplicates() {
+        let sources = vec![
+            ValueSource::CustomGenerator {
+                generator_name: "User".into(),
+                param_name: None,
+                generator_file: "/gen/user.ts".into(),
+                kind: crate::protocol::GeneratorKind::TypeName,
+            },
+            ValueSource::CustomGenerator {
+                generator_name: "User".into(),
+                param_name: None,
+                generator_file: "/gen/user.ts".into(),
+                kind: crate::protocol::GeneratorKind::TypeName,
+            },
+            ValueSource::BuiltIn,
+        ];
+
+        let commands = collect_generate_commands(&sources);
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].1, "User");
+    }
+
+    #[test]
+    fn collect_generate_commands_multiple_generators() {
+        let sources = vec![
+            ValueSource::CustomGenerator {
+                generator_name: "User".into(),
+                param_name: None,
+                generator_file: "/gen/user.ts".into(),
+                kind: crate::protocol::GeneratorKind::TypeName,
+            },
+            ValueSource::CustomGenerator {
+                generator_name: "authToken".into(),
+                param_name: Some("authToken".into()),
+                generator_file: "/gen/token.ts".into(),
+                kind: crate::protocol::GeneratorKind::ParamName,
+            },
+        ];
+
+        let commands = collect_generate_commands(&sources);
+        assert_eq!(commands.len(), 2);
+    }
+
+    #[test]
+    fn collect_generate_commands_empty_for_all_builtin() {
+        let sources = vec![ValueSource::BuiltIn, ValueSource::BuiltIn];
+        let commands = collect_generate_commands(&sources);
+        assert!(commands.is_empty());
+    }
+
+    #[test]
+    fn prefetched_values_insert_and_take() {
+        let mut store = PrefetchedValues::new();
+        store.insert(
+            "/gen/user.ts".into(),
+            "User".into(),
+            vec![json!({"id": 1}), json!({"id": 2})],
+        );
+
+        assert!(store.has_values("/gen/user.ts", "User"));
+        assert_eq!(store.take("/gen/user.ts", "User"), Some(json!({"id": 1})));
+        assert_eq!(store.take("/gen/user.ts", "User"), Some(json!({"id": 2})));
+        assert_eq!(store.take("/gen/user.ts", "User"), None);
+        assert!(!store.has_values("/gen/user.ts", "User"));
+    }
+
+    #[test]
+    fn prefetched_values_missing_key_returns_none() {
+        let mut store = PrefetchedValues::new();
+        assert_eq!(store.take("/nonexistent.ts", "Foo"), None);
+        assert!(!store.has_values("/nonexistent.ts", "Foo"));
+    }
+
+    #[test]
+    fn generate_inputs_with_custom_uses_prefetched_values() {
+        let params = vec![
+            ParamInfo {
+                name: "user".into(),
+                typ: TypeInfo::Int,
+                type_name: Some("User".into()),
+            },
+            ParamInfo {
+                name: "count".into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            },
+        ];
+        let sources = vec![
+            ValueSource::CustomGenerator {
+                generator_name: "User".into(),
+                param_name: None,
+                generator_file: "/gen/user.ts".into(),
+                kind: crate::protocol::GeneratorKind::TypeName,
+            },
+            ValueSource::BuiltIn,
+        ];
+
+        let mut store = PrefetchedValues::new();
+        store.insert("/gen/user.ts".into(), "User".into(), vec![json!({"name": "Alice"})]);
+
+        let mut rng = seeded_rng();
+        let inputs = generate_inputs_with_custom(&params, &sources, &mut store, &mut rng, None);
+
+        assert_eq!(inputs.len(), 2);
+        assert_eq!(inputs[0], json!({"name": "Alice"}));
+        assert!(inputs[1].is_i64() || inputs[1].is_u64());
+    }
+
+    #[test]
+    fn generate_inputs_with_custom_falls_back_when_exhausted() {
+        let params = vec![ParamInfo {
+            name: "user".into(),
+            typ: TypeInfo::Int,
+            type_name: Some("User".into()),
+        }];
+        let sources = vec![ValueSource::CustomGenerator {
+            generator_name: "User".into(),
+            param_name: None,
+            generator_file: "/gen/user.ts".into(),
+            kind: crate::protocol::GeneratorKind::TypeName,
+        }];
+
+        let mut store = PrefetchedValues::new();
+        let mut rng = seeded_rng();
+
+        let inputs = generate_inputs_with_custom(&params, &sources, &mut store, &mut rng, None);
+        assert_eq!(inputs.len(), 1);
+        assert!(inputs[0].is_i64() || inputs[0].is_u64());
+    }
+
+    #[test]
+    fn generate_inputs_with_custom_all_builtin_matches_generate_random_inputs() {
+        let params = vec![
+            ParamInfo { name: "a".into(), typ: TypeInfo::Int, type_name: None },
+            ParamInfo { name: "b".into(), typ: TypeInfo::Str, type_name: None },
+        ];
+        let sources = vec![ValueSource::BuiltIn, ValueSource::BuiltIn];
+        let mut store = PrefetchedValues::new();
+
+        let mut rng1 = seeded_rng();
+        let mut rng2 = seeded_rng();
+
+        let custom_inputs = generate_inputs_with_custom(
+            &params, &sources, &mut store, &mut rng1, None,
+        );
+        let random_inputs = generate_random_inputs(&params, &mut rng2, None);
+
+        assert_eq!(custom_inputs, random_inputs);
+    }
+
+    #[test]
+    fn prefetched_values_multiple_inserts_append() {
+        let mut store = PrefetchedValues::new();
+        store.insert("/gen/user.ts".into(), "User".into(), vec![json!(1)]);
+        store.insert("/gen/user.ts".into(), "User".into(), vec![json!(2)]);
+
+        assert_eq!(store.take("/gen/user.ts", "User"), Some(json!(1)));
+        assert_eq!(store.take("/gen/user.ts", "User"), Some(json!(2)));
+        assert_eq!(store.take("/gen/user.ts", "User"), None);
     }
 }
