@@ -85,6 +85,7 @@ pub enum UnOpKind {
     Not,
     Neg,
     BitwiseNot,
+    #[serde(alias = "typeof")]
     TypeOf,
 }
 
@@ -240,5 +241,18 @@ mod tests {
         for op in ops {
             round_trip(&op);
         }
+    }
+
+    #[test]
+    fn typeof_alias_deserializes_from_frontend_format() {
+        // The TS frontend sends "typeof" but Rust serializes as "type_of".
+        // Both must deserialize correctly.
+        let from_frontend: UnOpKind =
+            serde_json::from_str(r#""typeof""#).expect("typeof alias should deserialize");
+        assert_eq!(from_frontend, UnOpKind::TypeOf);
+
+        let from_rust: UnOpKind =
+            serde_json::from_str(r#""type_of""#).expect("type_of should deserialize");
+        assert_eq!(from_rust, UnOpKind::TypeOf);
     }
 }
