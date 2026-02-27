@@ -23,7 +23,12 @@ import {
 } from "./executor.js";
 
 /** Supported capabilities for this frontend. */
-const SUPPORTED_CAPABILITIES = ["analyze", "execute", "instrument"];
+const SUPPORTED_CAPABILITIES = [
+  "analyze", "execute", "instrument",
+  "complex_type:date", "complex_type:date_time", "complex_type:duration",
+  "complex_type:reg_exp", "complex_type:url", "complex_type:big_int",
+  "complex_type:buffer", "complex_type:error", "complex_type:symbol",
+];
 
 /** Track the last analyzed file so execute can resolve function references. */
 let lastAnalyzedFile: string | null = null;

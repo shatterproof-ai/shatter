@@ -36,12 +36,12 @@ describe("analyzeFile", () => {
       expect(fn.return_type).toEqual({ kind: "bool" });
     });
 
-    it("extracts bigint as int type", () => {
+    it("extracts bigint as complex big_int type", () => {
       const results = analyzeFile(path.join(fixtures, "primitives.ts"), "identity");
       expect(results).toHaveLength(1);
       const fn = results[0]!;
-      expect(fn.params[0]!.type).toEqual({ kind: "int" });
-      expect(fn.return_type).toEqual({ kind: "int" });
+      expect(fn.params[0]!.type).toEqual({ kind: "complex", complex_kind: "big_int" });
+      expect(fn.return_type).toEqual({ kind: "complex", complex_kind: "big_int" });
     });
   });
 

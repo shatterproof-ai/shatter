@@ -10,6 +10,7 @@ import * as ts from "typescript";
 import * as fs from "node:fs";
 import * as vm from "node:vm";
 import * as path from "node:path";
+import { reconstructValue } from "./reconstruct.js";
 import type {
   ExecuteResponse,
   ErrorInfo,
@@ -249,7 +250,8 @@ export function executeFunction(
 
   let metrics: MeasuredExecution;
   try {
-    metrics = measureExecution(() => fn(...inputs));
+    const reconstructedInputs = inputs.map(reconstructValue);
+    metrics = measureExecution(() => fn(...reconstructedInputs));
   } finally {
     consoleTarget = previousTarget;
   }
@@ -368,8 +370,9 @@ export function executeInstrumented(
     );
   }
 
+  const reconstructedInputs = inputs.map(reconstructValue);
   const metrics = measureExecution(
-    () => (fn as (...args: unknown[]) => unknown)(...inputs),
+    () => (fn as (...args: unknown[]) => unknown)(...reconstructedInputs),
   );
 
   if (metrics.thrownError) {

@@ -153,6 +153,20 @@ func goTypeFromExpr(expr ast.Expr, info *types.Info) TypeInfo {
 }
 
 func goTypeToTypeInfo(t types.Type) TypeInfo {
+	// Check for well-known complex types by fully-qualified name
+	if named, ok := t.(*types.Named); ok {
+		if complexKind := complexKindFromNamed(named); complexKind != "" {
+			return TypeInfo{Kind: "complex", ComplexKind: complexKind}
+		}
+	}
+	// Check for pointer-to-named complex types
+	if ptr, ok := t.(*types.Pointer); ok {
+		if named, ok := ptr.Elem().(*types.Named); ok {
+			if complexKind := complexKindFromNamed(named); complexKind != "" {
+				return TypeInfo{Kind: "complex", ComplexKind: complexKind}
+			}
+		}
+	}
 	switch typ := t.Underlying().(type) {
 	case *types.Basic:
 		return basicTypeInfo(typ)
@@ -180,7 +194,54 @@ func goTypeToTypeInfo(t types.Type) TypeInfo {
 	}
 }
 
+// complexKindFromNamed maps well-known Go named types to their ComplexKind string.
+// Returns "" if the type is not a recognized complex type.
+func complexKindFromNamed(named *types.Named) string {
+	obj := named.Obj()
+	pkg := obj.Pkg()
+	name := obj.Name()
+
+	if pkg == nil {
+		// Built-in types: error interface
+		if name == "error" {
+			return "error"
+		}
+		return ""
+	}
+
+	pkgPath := pkg.Path()
+	switch {
+	case pkgPath == "time" && name == "Time":
+		return "date"
+	case pkgPath == "time" && name == "Duration":
+		return "duration"
+	case pkgPath == "net/url" && name == "URL":
+		return "url"
+	case pkgPath == "regexp" && name == "Regexp":
+		return "reg_exp"
+	case pkgPath == "net" && name == "IP":
+		return "ip_address"
+	case pkgPath == "math/big" && name == "Int":
+		return "big_int"
+	case pkgPath == "math/big" && name == "Rat":
+		return "rational"
+	case pkgPath == "math/big" && name == "Float":
+		return "big_decimal"
+	default:
+		return ""
+	}
+}
+
 func basicTypeInfo(b *types.Basic) TypeInfo {
+	// Check for rune (int32) and byte (uint8) aliases
+	switch b.Kind() {
+	case types.Int32:
+		// Go's rune is an alias for int32
+		return TypeInfo{Kind: "int"}
+	case types.Uint8:
+		// Go's byte is an alias for uint8
+		return TypeInfo{Kind: "int"}
+	}
 	switch {
 	case b.Info()&types.IsInteger != 0:
 		return TypeInfo{Kind: "int"}

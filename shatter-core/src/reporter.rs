@@ -324,6 +324,14 @@ fn format_type(typ: &TypeInfo) -> String {
             parts.join(" | ")
         }
         TypeInfo::Nullable { inner } => format!("{} | null", format_type(inner)),
+        TypeInfo::Complex { kind, inner, .. } => {
+            let base = format!("{kind:?}");
+            if let Some(inner) = inner {
+                format!("{base}<{}>", format_type(inner))
+            } else {
+                base
+            }
+        }
         TypeInfo::Unknown => "unknown".to_string(),
     }
 }

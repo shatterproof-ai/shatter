@@ -104,7 +104,7 @@ fn apply_mutation(
             } else {
                 rng.random_range(0..=result.len())
             };
-            let new_elem = generate_random_value(element_type, rng);
+            let new_elem = generate_random_value(element_type, rng, None);
             result.insert(pos, new_elem);
         }
         ArrayMutationKind::Delete => {
@@ -126,7 +126,7 @@ fn apply_mutation(
         ArrayMutationKind::Replace => {
             if !result.is_empty() {
                 let pos = rng.random_range(0..result.len());
-                result[pos] = generate_random_value(element_type, rng);
+                result[pos] = generate_random_value(element_type, rng, None);
             }
         }
         ArrayMutationKind::Splice => {
@@ -136,7 +136,7 @@ fn apply_mutation(
                 let end = rng.random_range(start + 1..=max_end);
                 let new_len = rng.random_range(0..=3);
                 let new_elems: Vec<Value> = (0..new_len)
-                    .map(|_| generate_random_value(element_type, rng))
+                    .map(|_| generate_random_value(element_type, rng, None))
                     .collect();
                 result.splice(start..end, new_elems);
             }

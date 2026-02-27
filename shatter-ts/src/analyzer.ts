@@ -176,7 +176,7 @@ export function convertType(type: ts.Type, checker: ts.TypeChecker): TypeInfo {
   }
 
   if (flags & ts.TypeFlags.BigInt || flags & ts.TypeFlags.BigIntLiteral) {
-    return { kind: "int" };
+    return { kind: "complex", complex_kind: "big_int" };
   }
 
   if (flags & ts.TypeFlags.Boolean || flags & ts.TypeFlags.BooleanLiteral) {
@@ -205,9 +205,23 @@ export function convertType(type: ts.Type, checker: ts.TypeChecker): TypeInfo {
     return { kind: "str" };
   }
 
-  // Object types (interfaces, type literals, classes)
+  // Check for well-known complex types by symbol name
   if (flags & ts.TypeFlags.Object) {
+    const symbol = type.getSymbol();
+    const name = symbol?.getName();
+    if (name) {
+      const complexKind = complexKindFromSymbol(name);
+      if (complexKind) {
+        return { kind: "complex", complex_kind: complexKind };
+      }
+    }
+    // Generic object types (interfaces, type literals, classes)
     return convertObjectType(type as ts.ObjectType, checker);
+  }
+
+  // ESSymbol / UniqueESSymbol
+  if (flags & ts.TypeFlags.ESSymbol || flags & ts.TypeFlags.UniqueESSymbol) {
+    return { kind: "complex", complex_kind: "symbol" };
   }
 
   return { kind: "unknown" };
@@ -557,6 +571,40 @@ function formatSourceModule(declFile: string, currentFile: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Complex type recognition
+// ---------------------------------------------------------------------------
+
+import type { ComplexKind } from "./protocol.js";
+
+/** Map well-known TypeScript class/interface names to ComplexKind. */
+function complexKindFromSymbol(name: string): ComplexKind | null {
+  switch (name) {
+    case "Date": return "date";
+    case "RegExp": return "reg_exp";
+    case "URL": return "url";
+    case "Error":
+    case "TypeError":
+    case "RangeError":
+    case "SyntaxError":
+    case "ReferenceError":
+    case "URIError":
+    case "EvalError":
+      return "error";
+    case "Buffer":
+    case "Uint8Array":
+    case "Int8Array":
+    case "Uint16Array":
+    case "Int16Array":
+    case "Uint32Array":
+    case "Int32Array":
+    case "Float32Array":
+    case "Float64Array":
+      return "buffer";
+    default:
+      return null;
+  }
+}
+
 // Object type conversion
 // ---------------------------------------------------------------------------
 

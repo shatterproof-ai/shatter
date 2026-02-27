@@ -18,6 +18,55 @@ use crate::frontend::{Frontend, FrontendError};
 use crate::protocol::{Command, ExecuteResult, ResponseResult};
 use crate::solver::{self, ConcreteValue, SolveResult};
 use crate::sym_expr::SymExpr;
+use crate::types::ComplexKind;
+
+/// Parsed frontend capabilities from the handshake response.
+///
+/// During handshake, frontends declare which commands they support and which
+/// complex types they can reconstruct. The core uses this to avoid generating
+/// complex-typed inputs the frontend can't handle.
+#[derive(Debug, Clone, Default)]
+pub struct FrontendCapabilities {
+    /// Standard commands the frontend supports ("analyze", "execute", etc.).
+    pub commands: HashSet<String>,
+    /// Complex types the frontend can reconstruct from `__complex_type` JSON.
+    pub complex_types: HashSet<ComplexKind>,
+}
+
+impl FrontendCapabilities {
+    /// Parse raw capability strings from a handshake response.
+    ///
+    /// Strings prefixed with `"complex_type:"` are parsed as `ComplexKind` values.
+    /// All other strings are treated as command capabilities.
+    /// Unknown complex type names are silently ignored.
+    pub fn from_raw(capabilities: &[String]) -> Self {
+        let mut commands = HashSet::new();
+        let mut complex_types = HashSet::new();
+        for cap in capabilities {
+            if let Some(kind_str) = cap.strip_prefix("complex_type:") {
+                // ComplexKind uses serde rename_all = "snake_case", so we
+                // deserialize the bare string as a JSON string value.
+                if let Ok(kind) = serde_json::from_value::<ComplexKind>(
+                    serde_json::Value::String(kind_str.to_string()),
+                ) {
+                    complex_types.insert(kind);
+                }
+                // Silently ignore unknown complex type names
+            } else {
+                commands.insert(cap.clone());
+            }
+        }
+        Self {
+            commands,
+            complex_types,
+        }
+    }
+
+    /// Check whether the frontend declared support for a specific complex type.
+    pub fn supports_complex(&self, kind: ComplexKind) -> bool {
+        self.complex_types.contains(&kind)
+    }
+}
 
 /// Configuration for a concolic exploration session.
 #[derive(Debug, Clone)]
@@ -165,12 +214,30 @@ fn extract_sym_constraints(result: &ExecuteResult) -> Vec<Option<SymExpr>> {
 }
 
 /// Convert Z3 `ConcreteValue`s back into JSON values suitable for the Execute protocol.
+///
+/// For `Complex` values, produces a `__complex_type` tagged JSON object.
+/// The solver unwraps complex types to their repr for solving, but when
+/// converting back to JSON we need to re-wrap with the type tag so the
+/// frontend can reconstruct the native value.
 fn concrete_to_json(value: &ConcreteValue) -> serde_json::Value {
     match value {
         ConcreteValue::Int(i) => serde_json::json!(*i),
         ConcreteValue::Float(f) => serde_json::json!(*f),
         ConcreteValue::Str(s) => serde_json::json!(s),
         ConcreteValue::Bool(b) => serde_json::json!(*b),
+        ConcreteValue::Complex { kind, repr } => {
+            // Serialize the kind to its snake_case name for the wire format
+            let kind_str = serde_json::to_value(kind)
+                .ok()
+                .and_then(|v| v.as_str().map(|s| s.to_string()))
+                .unwrap_or_else(|| format!("{kind:?}").to_lowercase());
+            let repr_json = concrete_to_json(repr);
+            // Build tagged wire format: {"__complex_type": "<kind>", "value": <repr>}
+            serde_json::json!({
+                "__complex_type": kind_str,
+                "value": repr_json,
+            })
+        }
     }
 }
 
@@ -551,6 +618,28 @@ mod tests {
             concrete_to_json(&ConcreteValue::Bool(true)),
             serde_json::json!(true)
         );
+    }
+
+    #[test]
+    fn concrete_complex_to_json_produces_tagged_format() {
+        let val = ConcreteValue::Complex {
+            kind: ComplexKind::Date,
+            repr: Box::new(ConcreteValue::Int(1704067200000)),
+        };
+        let json = concrete_to_json(&val);
+        assert_eq!(json["__complex_type"], "date");
+        assert_eq!(json["value"], 1704067200000_i64);
+    }
+
+    #[test]
+    fn concrete_complex_bigint_to_json() {
+        let val = ConcreteValue::Complex {
+            kind: ComplexKind::BigInt,
+            repr: Box::new(ConcreteValue::Str("99999999999999999999".into())),
+        };
+        let json = concrete_to_json(&val);
+        assert_eq!(json["__complex_type"], "big_int");
+        assert_eq!(json["value"], "99999999999999999999");
     }
 
     // -- overlay_solved_values tests --
@@ -1084,5 +1173,57 @@ mod tests {
         assert_eq!(result.termination_reason, TerminationReason::MaxIterations);
 
         frontend.shutdown().await.expect("shutdown failed");
+    }
+
+    #[test]
+    fn frontend_capabilities_parses_complex_types() {
+        let caps = FrontendCapabilities::from_raw(&[
+            "analyze".into(),
+            "execute".into(),
+            "complex_type:date".into(),
+            "complex_type:reg_exp".into(),
+            "complex_type:big_int".into(),
+        ]);
+        assert!(caps.commands.contains("analyze"));
+        assert!(caps.commands.contains("execute"));
+        assert!(caps.supports_complex(ComplexKind::Date));
+        assert!(caps.supports_complex(ComplexKind::RegExp));
+        assert!(caps.supports_complex(ComplexKind::BigInt));
+        assert!(!caps.supports_complex(ComplexKind::Url));
+        assert!(!caps.supports_complex(ComplexKind::Error));
+    }
+
+    #[test]
+    fn frontend_capabilities_ignores_unknown_complex_types() {
+        let caps = FrontendCapabilities::from_raw(&[
+            "complex_type:date".into(),
+            "complex_type:nonexistent_type".into(),
+            "complex_type:".into(),
+        ]);
+        assert!(caps.supports_complex(ComplexKind::Date));
+        assert_eq!(caps.complex_types.len(), 1);
+    }
+
+    #[test]
+    fn frontend_capabilities_separates_commands_from_complex_types() {
+        let caps = FrontendCapabilities::from_raw(&[
+            "analyze".into(),
+            "execute".into(),
+            "instrument".into(),
+            "complex_type:date".into(),
+            "complex_type:url".into(),
+        ]);
+        assert_eq!(caps.commands.len(), 3);
+        assert_eq!(caps.complex_types.len(), 2);
+        // "complex_type:date" should NOT appear in commands
+        assert!(!caps.commands.contains("complex_type:date"));
+    }
+
+    #[test]
+    fn frontend_capabilities_default_is_empty() {
+        let caps = FrontendCapabilities::default();
+        assert!(caps.commands.is_empty());
+        assert!(caps.complex_types.is_empty());
+        assert!(!caps.supports_complex(ComplexKind::Date));
     }
 }

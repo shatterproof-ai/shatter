@@ -192,6 +192,12 @@ fn capitalize_first(s: &str) -> String {
 
 /// Map a JSON value to a Go type string.
 fn go_type_from_value(value: &serde_json::Value) -> String {
+    // Check for __complex_type tagged objects first
+    if let Some(obj) = value.as_object()
+        && let Some(tag) = obj.get("__complex_type").and_then(|t| t.as_str())
+    {
+        return go_type_from_complex(tag);
+    }
     match value {
         serde_json::Value::String(_) => "string".to_string(),
         serde_json::Value::Bool(_) => "bool".to_string(),
@@ -208,14 +214,93 @@ fn go_type_from_value(value: &serde_json::Value) -> String {
     }
 }
 
+/// Map a complex type tag to its Go type name.
+fn go_type_from_complex(tag: &str) -> String {
+    match tag {
+        "date" | "date_time" => "time.Time".to_string(),
+        "duration" => "time.Duration".to_string(),
+        "reg_exp" => "*regexp.Regexp".to_string(),
+        "big_int" => "*big.Int".to_string(),
+        "big_decimal" => "*big.Float".to_string(),
+        "url" => "*url.URL".to_string(),
+        "ip_address" => "net.IP".to_string(),
+        "error" => "error".to_string(),
+        "rune" => "rune".to_string(),
+        "go_byte" => "byte".to_string(),
+        _ => "interface{}".to_string(),
+    }
+}
+
 /// Format a JSON value as a Go literal.
+///
+/// Detects `__complex_type` tagged objects and emits constructor calls.
 fn format_go_value(value: &serde_json::Value) -> String {
+    if let Some(go) = try_format_complex_go(value) {
+        return go;
+    }
     match value {
         serde_json::Value::String(s) => format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")),
         serde_json::Value::Null => "nil".to_string(),
         serde_json::Value::Bool(b) => b.to_string(),
         serde_json::Value::Number(n) => n.to_string(),
         other => format!("/* unsupported: {} */nil", other),
+    }
+}
+
+/// Try to format a `__complex_type` tagged JSON object as a Go constructor.
+/// Returns `None` if the value is not a tagged complex type.
+fn try_format_complex_go(value: &serde_json::Value) -> Option<String> {
+    let obj = value.as_object()?;
+    let tag = obj.get("__complex_type")?.as_str()?;
+    match tag {
+        "date" | "date_time" => {
+            let v = obj.get("value")?;
+            Some(format!("time.UnixMilli({})", v))
+        }
+        "duration" => {
+            let ms = obj.get("ms").or_else(|| obj.get("value"))?;
+            Some(format!("time.Duration({}) * time.Millisecond", ms))
+        }
+        "reg_exp" => {
+            let source = obj.get("source")?.as_str()?;
+            let escaped = source.replace('\\', "\\\\").replace('"', "\\\"");
+            Some(format!("regexp.MustCompile(\"{escaped}\")"))
+        }
+        "big_int" => {
+            let v = obj.get("value")?.as_str()?;
+            Some(format!("func() *big.Int {{ n, _ := new(big.Int).SetString(\"{v}\", 10); return n }}()"))
+        }
+        "url" => {
+            let v = obj.get("value")?.as_str()?;
+            let escaped = v.replace('"', "\\\"");
+            Some(format!("func() *url.URL {{ u, _ := url.Parse(\"{escaped}\"); return u }}()"))
+        }
+        "error" => {
+            let msg = obj.get("message").and_then(|m| m.as_str()).unwrap_or("");
+            let escaped = msg.replace('"', "\\\"");
+            Some(format!("errors.New(\"{escaped}\")"))
+        }
+        "uuid" => {
+            let v = obj.get("value")?.as_str()?;
+            Some(format!("/* uuid */ \"{v}\""))
+        }
+        "ip_address" => {
+            let v = obj.get("value")?.as_str()?;
+            Some(format!("net.ParseIP(\"{v}\")"))
+        }
+        "rune" => {
+            let v = obj.get("value")?.as_str()?;
+            if let Some(ch) = v.chars().next() {
+                Some(format!("'{ch}'"))
+            } else {
+                Some("0".to_string())
+            }
+        }
+        "go_byte" => {
+            let v = obj.get("value")?;
+            Some(format!("byte({})", v))
+        }
+        _ => None,
     }
 }
 
@@ -282,7 +367,12 @@ fn build_test_body(function_name: &str, behavior: &Behavior) -> String {
 }
 
 /// Format a JSON value for embedding in JavaScript source.
+///
+/// Detects `__complex_type` tagged objects and emits constructor calls.
 fn format_value(value: &serde_json::Value) -> String {
+    if let Some(js) = try_format_complex_js(value) {
+        return js;
+    }
     match value {
         serde_json::Value::String(s) => format!("'{}'", escape_single_quotes(s)),
         serde_json::Value::Null => "null".to_string(),
@@ -290,6 +380,64 @@ fn format_value(value: &serde_json::Value) -> String {
         serde_json::Value::Number(n) => n.to_string(),
         // For arrays/objects, use JSON.stringify-compatible output
         other => other.to_string(),
+    }
+}
+
+/// Try to format a `__complex_type` tagged JSON object as a JavaScript constructor.
+/// Returns `None` if the value is not a tagged complex type.
+fn try_format_complex_js(value: &serde_json::Value) -> Option<String> {
+    let obj = value.as_object()?;
+    let tag = obj.get("__complex_type")?.as_str()?;
+    match tag {
+        "date" | "date_time" => {
+            let v = obj.get("value")?;
+            Some(format!("new Date({})", v))
+        }
+        "duration" => {
+            let ms = obj.get("ms").or_else(|| obj.get("value"))?;
+            Some(format!("/* Duration */ {}", ms))
+        }
+        "reg_exp" => {
+            let source = obj.get("source")?.as_str()?;
+            let flags = obj.get("flags").and_then(|f| f.as_str()).unwrap_or("");
+            Some(format!("/{source}/{flags}"))
+        }
+        "big_int" => {
+            let v = obj.get("value")?.as_str()?;
+            Some(format!("BigInt('{v}')"))
+        }
+        "url" => {
+            let v = obj.get("value")?.as_str()?;
+            Some(format!("new URL('{}')", escape_single_quotes(v)))
+        }
+        "buffer" => {
+            let v = obj.get("value")?.as_str()?;
+            let enc = obj.get("encoding").and_then(|e| e.as_str()).unwrap_or("base64");
+            Some(format!("Buffer.from('{v}', '{enc}')"))
+        }
+        "error" => {
+            let class = obj.get("class").and_then(|c| c.as_str()).unwrap_or("Error");
+            let msg = obj.get("message").and_then(|m| m.as_str()).unwrap_or("");
+            Some(format!("new {class}('{}')", escape_single_quotes(msg)))
+        }
+        "uuid" | "path" | "email" | "mime_type" | "locale" | "sem_ver" => {
+            let v = obj.get("value")?.as_str()?;
+            Some(format!("'{}'", escape_single_quotes(v)))
+        }
+        "symbol" => {
+            let desc = obj.get("description").and_then(|d| d.as_str()).unwrap_or("");
+            Some(format!("Symbol('{}')", escape_single_quotes(desc)))
+        }
+        "option" => {
+            let present = obj.get("present")?.as_bool()?;
+            if present {
+                let inner = obj.get("value")?;
+                Some(format_value(inner))
+            } else {
+                Some("undefined".to_string())
+            }
+        }
+        _ => None, // fall through to default JSON formatting
     }
 }
 
@@ -675,5 +823,105 @@ mod tests {
         assert_eq!(capitalize_first("classifyNumber"), "ClassifyNumber");
         assert_eq!(capitalize_first("A"), "A");
         assert_eq!(capitalize_first(""), "");
+    }
+
+    // ── Complex type formatting ─────────────────────────────────────────
+
+    #[test]
+    fn format_value_date_produces_js_constructor() {
+        let val = json!({"__complex_type": "date", "value": 1704067200000_i64});
+        assert_eq!(format_value(&val), "new Date(1704067200000)");
+    }
+
+    #[test]
+    fn format_value_regexp_produces_literal() {
+        let val = json!({"__complex_type": "reg_exp", "source": "\\d+", "flags": "g"});
+        assert_eq!(format_value(&val), "/\\d+/g");
+    }
+
+    #[test]
+    fn format_value_bigint_produces_constructor() {
+        let val = json!({"__complex_type": "big_int", "value": "99999999999999999999"});
+        assert_eq!(format_value(&val), "BigInt('99999999999999999999')");
+    }
+
+    #[test]
+    fn format_value_url_produces_constructor() {
+        let val = json!({"__complex_type": "url", "value": "https://example.com"});
+        assert_eq!(format_value(&val), "new URL('https://example.com')");
+    }
+
+    #[test]
+    fn format_value_error_produces_constructor() {
+        let val = json!({"__complex_type": "error", "class": "TypeError", "message": "oops"});
+        assert_eq!(format_value(&val), "new TypeError('oops')");
+    }
+
+    #[test]
+    fn format_value_uuid_produces_string() {
+        let val = json!({"__complex_type": "uuid", "value": "550e8400-e29b-41d4-a716-446655440000"});
+        assert_eq!(format_value(&val), "'550e8400-e29b-41d4-a716-446655440000'");
+    }
+
+    #[test]
+    fn format_value_symbol_produces_constructor() {
+        let val = json!({"__complex_type": "symbol", "description": "mySymbol"});
+        assert_eq!(format_value(&val), "Symbol('mySymbol')");
+    }
+
+    #[test]
+    fn format_value_option_some() {
+        let val = json!({"__complex_type": "option", "present": true, "value": 42});
+        assert_eq!(format_value(&val), "42");
+    }
+
+    #[test]
+    fn format_value_option_none() {
+        let val = json!({"__complex_type": "option", "present": false});
+        assert_eq!(format_value(&val), "undefined");
+    }
+
+    #[test]
+    fn format_value_unknown_complex_falls_through() {
+        let val = json!({"__complex_type": "some_future_type", "value": "x"});
+        // Should fall through to default JSON formatting
+        let result = format_value(&val);
+        assert!(result.contains("__complex_type"), "should contain raw JSON: {result}");
+    }
+
+    #[test]
+    fn go_format_value_date_produces_constructor() {
+        let val = json!({"__complex_type": "date", "value": 1704067200000_i64});
+        assert_eq!(format_go_value(&val), "time.UnixMilli(1704067200000)");
+    }
+
+    #[test]
+    fn go_format_value_regexp_produces_compile() {
+        let val = json!({"__complex_type": "reg_exp", "source": "\\d+"});
+        assert_eq!(format_go_value(&val), "regexp.MustCompile(\"\\\\d+\")");
+    }
+
+    #[test]
+    fn go_format_value_error_produces_errors_new() {
+        let val = json!({"__complex_type": "error", "message": "bad input"});
+        assert_eq!(format_go_value(&val), "errors.New(\"bad input\")");
+    }
+
+    #[test]
+    fn go_type_from_complex_date() {
+        let val = json!({"__complex_type": "date", "value": 0});
+        assert_eq!(go_type_from_value(&val), "time.Time");
+    }
+
+    #[test]
+    fn go_type_from_complex_regexp() {
+        let val = json!({"__complex_type": "reg_exp", "source": ".*"});
+        assert_eq!(go_type_from_value(&val), "*regexp.Regexp");
+    }
+
+    #[test]
+    fn go_type_from_complex_unknown_is_interface() {
+        let val = json!({"__complex_type": "some_future_type", "value": "x"});
+        assert_eq!(go_type_from_value(&val), "interface{}");
     }
 }

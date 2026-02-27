@@ -166,6 +166,20 @@ export interface ParamInfo {
   type: TypeInfo;
 }
 
+/** Well-known complex types beyond primitives and structural types. */
+export type ComplexKind =
+  | "date" | "date_time" | "time" | "duration"
+  | "reg_exp" | "char" | "symbol"
+  | "big_int" | "big_decimal" | "complex" | "rational" | "range"
+  | "buffer" | "bit_set"
+  | "error" | "option" | "result"
+  | "closure" | "iterator"
+  | "url" | "ip_address"
+  | "uuid"
+  | "path"
+  | "money" | "sem_ver" | "email" | "mime_type" | "color" | "geo_point" | "locale"
+  | "rune" | "go_byte";
+
 export type TypeInfo =
   | { kind: "int" }
   | { kind: "float" }
@@ -175,7 +189,8 @@ export type TypeInfo =
   | { kind: "array"; element: TypeInfo }
   | { kind: "object"; fields: [string, TypeInfo][] }
   | { kind: "union"; variants: TypeInfo[] }
-  | { kind: "nullable"; inner: TypeInfo };
+  | { kind: "nullable"; inner: TypeInfo }
+  | { kind: "complex"; complex_kind: ComplexKind; metadata?: Record<string, unknown>; inner?: TypeInfo };
 
 export interface BranchInfo {
   id: number;
@@ -210,7 +225,8 @@ export type SymExprConst =
   | { kind: "const"; type: "str"; value: string }
   | { kind: "const"; type: "bool"; value: boolean }
   | { kind: "const"; type: "null" }
-  | { kind: "const"; type: "undefined" };
+  | { kind: "const"; type: "undefined" }
+  | { kind: "const"; type: "complex"; value: { kind: ComplexKind; repr: SymExprConst } };
 
 export type BinOpKind =
   | "eq" | "ne" | "lt" | "le" | "gt" | "ge"

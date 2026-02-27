@@ -34,6 +34,10 @@ pub enum ConcreteValue {
     Float(f64),
     Str(String),
     Bool(bool),
+    Complex {
+        kind: crate::types::ComplexKind,
+        repr: Box<ConcreteValue>,
+    },
 }
 
 /// Result of attempting to solve for a new execution path.
@@ -154,6 +158,10 @@ fn infer_sort(expr: &SymExpr) -> Sort {
         },
         SymExpr::Param { .. } | SymExpr::Call { .. } | SymExpr::Unknown => Sort::Int,
         SymExpr::Const(ConstValue::Null | ConstValue::Undefined) => Sort::Int,
+        // Complex constants unwrap to their repr's sort
+        SymExpr::Const(ConstValue::Complex { repr, .. }) => {
+            infer_sort(&SymExpr::Const(*repr.clone()))
+        }
     }
 }
 
@@ -226,6 +234,11 @@ fn to_z3_expr(
             })?)),
             ConstValue::Bool(b) => Ok(Z3Ast::Bool(Bool::from_bool(*b))),
             ConstValue::Null | ConstValue::Undefined => Ok(Z3Ast::Int(Int::from_i64(0))),
+            // Complex constants unwrap to their repr for solving
+            ConstValue::Complex { repr, .. } => {
+                let unwrapped = SymExpr::Const(*repr.clone());
+                to_z3_expr(vars, &unwrapped, hint_sort)
+            }
         },
 
         SymExpr::BinOp { op, left, right } => convert_binop(vars, *op, left, right, hint_sort),

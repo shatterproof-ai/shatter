@@ -142,7 +142,12 @@ func (h *Handler) handleHandshake(resp Response, req Request) Response {
 	resp.Status = "handshake"
 	resp.FrontendVersion = frontendVersion
 	resp.Language = frontendLanguage
-	resp.Capabilities = []string{"analyze", "execute", "instrument"}
+	resp.Capabilities = []string{
+		"analyze", "execute", "instrument",
+		"complex_type:date", "complex_type:duration", "complex_type:url",
+		"complex_type:reg_exp", "complex_type:ip_address", "complex_type:big_int",
+		"complex_type:rational", "complex_type:big_decimal", "complex_type:error",
+	}
 	return resp
 }
 

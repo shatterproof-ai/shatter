@@ -9,6 +9,51 @@
 //! requests and emit responses.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+/// Well-known complex types beyond primitives and structural types.
+/// Matches `ComplexKind` in shatter-core/src/types.rs.
+#[allow(dead_code)] // used once analyze/execute are implemented
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComplexKind {
+    Date, DateTime, Time, Duration,
+    RegExp, Char, Symbol,
+    BigInt, BigDecimal, Complex, Rational, Range,
+    Buffer, BitSet,
+    Error, Option, Result,
+    Closure, Iterator,
+    Url, IpAddress,
+    Uuid,
+    Path,
+    Money, SemVer, Email, MimeType, Color, GeoPoint, Locale,
+    Rune, GoByte,
+}
+
+/// Describes the type of a value, as reported by a language frontend.
+/// Matches `TypeInfo` in shatter-core/src/types.rs.
+#[allow(dead_code)] // used once analyze/execute are implemented
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TypeInfo {
+    Int,
+    Float,
+    Str,
+    Bool,
+    Array { element: Box<TypeInfo> },
+    Object { fields: Vec<(String, TypeInfo)> },
+    Union { variants: Vec<TypeInfo> },
+    Nullable { inner: Box<TypeInfo> },
+    Complex {
+        #[serde(rename = "complex_kind")]
+        kind: ComplexKind,
+        #[serde(default)]
+        metadata: HashMap<String, serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        inner: Option<Box<TypeInfo>>,
+    },
+    Unknown,
+}
 
 /// Current protocol version.
 pub const PROTOCOL_VERSION: &str = "0.1.0";

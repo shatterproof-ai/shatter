@@ -157,7 +157,7 @@ pub async fn explore_function(
     for _ in 0..config.max_iterations {
         iterations += 1;
 
-        let inputs = generate_random_inputs(&analysis.params, &mut rng);
+        let inputs = generate_random_inputs(&analysis.params, &mut rng, None);
 
         let response = frontend
             .send(ProtoCommand::Execute {

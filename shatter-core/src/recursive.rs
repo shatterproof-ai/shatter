@@ -90,6 +90,8 @@ fn probe_values(typ: &TypeInfo) -> Vec<Value> {
             vals.extend(probe_values(inner));
             vals
         }
+        // Complex types use same probes as Unknown for now
+        TypeInfo::Complex { .. } => vec![json!(0), json!(1), json!(-1), json!(""), json!(null)],
         TypeInfo::Unknown => vec![json!(0), json!(1), json!(-1), json!(""), json!(null)],
     }
 }

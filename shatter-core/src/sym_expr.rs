@@ -1,5 +1,6 @@
 //! Symbolic expression types for representing constraints on function inputs.
 
+use crate::types::ComplexKind;
 use serde::{Deserialize, Serialize};
 
 /// A symbolic expression representing a constraint on function inputs.
@@ -47,6 +48,13 @@ pub enum ConstValue {
     Bool(bool),
     Null,
     Undefined,
+    /// Complex constant (e.g., Date literal in a comparison).
+    /// `repr` is the underlying value the solver reasons about
+    /// (epoch millis for dates, digit string for bigint, codepoint for char).
+    Complex {
+        kind: ComplexKind,
+        repr: Box<ConstValue>,
+    },
 }
 
 /// Binary operators for symbolic expressions.
@@ -241,6 +249,46 @@ mod tests {
         for op in ops {
             round_trip(&op);
         }
+    }
+
+    #[test]
+    fn const_value_complex_round_trips() {
+        use crate::types::ComplexKind;
+
+        // Date with Int repr
+        round_trip(&ConstValue::Complex {
+            kind: ComplexKind::Date,
+            repr: Box::new(ConstValue::Int(1704067200000)),
+        });
+
+        // BigInt with Str repr
+        round_trip(&ConstValue::Complex {
+            kind: ComplexKind::BigInt,
+            repr: Box::new(ConstValue::Str("99999999999999999999".into())),
+        });
+
+        // Char with Int repr (codepoint)
+        round_trip(&ConstValue::Complex {
+            kind: ComplexKind::Char,
+            repr: Box::new(ConstValue::Int(8364)),
+        });
+    }
+
+    #[test]
+    fn sym_expr_with_complex_const_round_trips() {
+        use crate::types::ComplexKind;
+
+        round_trip(&SymExpr::BinOp {
+            op: BinOpKind::Gt,
+            left: Box::new(SymExpr::Param {
+                name: "date".into(),
+                path: vec![],
+            }),
+            right: Box::new(SymExpr::Const(ConstValue::Complex {
+                kind: ComplexKind::Date,
+                repr: Box::new(ConstValue::Int(1704067200000)),
+            })),
+        });
     }
 
     #[test]
