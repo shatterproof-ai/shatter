@@ -4,7 +4,7 @@
 //! Provides topological layering (for bottom-up exploration order) and cycle
 //! detection via Tarjan's strongly connected components algorithm.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::batch_analyze::FunctionRegistry;
 
@@ -28,6 +28,22 @@ pub struct Edge {
     pub caller: String,
     /// Qualified name of the callee.
     pub callee: String,
+}
+
+/// A batch of functions that can be explored in parallel.
+///
+/// All functions in a batch are independent of each other: they either have
+/// no callees in the graph, or all their callees appear in earlier batches.
+/// Functions in a cycle (strongly connected component) are grouped into the
+/// same batch because they must be explored together.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExplorationBatch {
+    /// The layer index (0 = leaves, higher = closer to entry points).
+    pub layer: usize,
+    /// Functions in this batch. Each inner `Vec` is one strongly connected
+    /// component. Single-element vecs are acyclic functions; multi-element
+    /// vecs are mutual-recursion groups.
+    pub groups: Vec<Vec<String>>,
 }
 
 impl CallGraph {
@@ -193,6 +209,101 @@ impl CallGraph {
     ///
     /// Returns only SCCs with more than one member (actual cycles).
     pub fn cycle_groups(&self) -> Vec<Vec<String>> {
+        let sccs = self.compute_sccs();
+        sccs.into_iter()
+            .filter(|scc| scc.len() > 1)
+            .map(|scc| scc.into_iter().map(|i| self.nodes[i].clone()).collect())
+            .collect()
+    }
+
+    /// Produce exploration batches in bottom-up dependency order.
+    ///
+    /// Collapses strongly connected components into single nodes, then
+    /// topologically sorts the resulting DAG. Each batch contains groups
+    /// of functions that can be explored in parallel because all their
+    /// dependencies appear in earlier batches.
+    ///
+    /// - Layer 0: leaf functions (no callees in the graph)
+    /// - Layer N: functions whose callees are all in layers 0..N-1
+    /// - Functions in cycles (SCCs with >1 member) are grouped and placed
+    ///   in the earliest valid layer
+    pub fn topological_batches(&self) -> Vec<ExplorationBatch> {
+        let n = self.nodes.len();
+        if n == 0 {
+            return Vec::new();
+        }
+
+        // Step 1: Compute all SCCs (including singletons).
+        let sccs = self.compute_sccs();
+        let num_sccs = sccs.len();
+
+        // Step 2: Map each node to its SCC index.
+        let mut node_to_scc = vec![0usize; n];
+        for (scc_idx, scc) in sccs.iter().enumerate() {
+            for &node in scc {
+                node_to_scc[node] = scc_idx;
+            }
+        }
+
+        // Step 3: Build condensation graph (DAG of SCCs).
+        let mut condensed_adj: Vec<HashSet<usize>> = vec![HashSet::new(); num_sccs];
+        for (caller, callees) in self.adj.iter().enumerate() {
+            let caller_scc = node_to_scc[caller];
+            for &callee in callees {
+                let callee_scc = node_to_scc[callee];
+                if caller_scc != callee_scc {
+                    condensed_adj[caller_scc].insert(callee_scc);
+                }
+            }
+        }
+
+        // Step 4: Kahn's algorithm on the condensation DAG (bottom-up: leaves first).
+        let mut out_degree: Vec<usize> = condensed_adj.iter().map(|s| s.len()).collect();
+
+        // Build reverse adjacency for the condensation.
+        let mut condensed_rev: Vec<Vec<usize>> = vec![Vec::new(); num_sccs];
+        for (from, tos) in condensed_adj.iter().enumerate() {
+            for &to in tos {
+                condensed_rev[to].push(from);
+            }
+        }
+
+        let mut queue: Vec<usize> = (0..num_sccs)
+            .filter(|&i| out_degree[i] == 0)
+            .collect();
+
+        let mut batches: Vec<ExplorationBatch> = Vec::new();
+        let mut layer = 0;
+
+        while !queue.is_empty() {
+            let mut groups: Vec<Vec<String>> = Vec::new();
+            let mut next_queue = Vec::new();
+
+            for &scc_idx in &queue {
+                let group: Vec<String> = sccs[scc_idx]
+                    .iter()
+                    .map(|&i| self.nodes[i].clone())
+                    .collect();
+                groups.push(group);
+
+                for &caller_scc in &condensed_rev[scc_idx] {
+                    out_degree[caller_scc] -= 1;
+                    if out_degree[caller_scc] == 0 {
+                        next_queue.push(caller_scc);
+                    }
+                }
+            }
+
+            batches.push(ExplorationBatch { layer, groups });
+            layer += 1;
+            queue = next_queue;
+        }
+
+        batches
+    }
+
+    /// Compute all strongly connected components (including singletons).
+    fn compute_sccs(&self) -> Vec<Vec<usize>> {
         let n = self.nodes.len();
         let mut state = TarjanState {
             index_counter: 0,
@@ -209,17 +320,7 @@ impl CallGraph {
             }
         }
 
-        // Convert indices to names, keep only multi-member SCCs.
-        state
-            .sccs
-            .into_iter()
-            .filter(|scc| scc.len() > 1)
-            .map(|scc| {
-                scc.into_iter()
-                    .map(|i| self.nodes[i].clone())
-                    .collect()
-            })
-            .collect()
+        state.sccs
     }
 }
 
@@ -643,5 +744,262 @@ mod tests {
 
         let cycles = graph.cycle_groups();
         assert_eq!(cycles.len(), 1);
+    }
+
+    // ── topological_batches tests ───────────────────────────────────
+
+    /// Helper: collect all function names from a batch, flattened and sorted.
+    fn batch_names(batch: &ExplorationBatch) -> Vec<String> {
+        let mut names: Vec<String> = batch.groups.iter().flatten().cloned().collect();
+        names.sort();
+        names
+    }
+
+    /// Helper: find groups with more than one member in a batch.
+    fn cycle_groups_in_batch(batch: &ExplorationBatch) -> Vec<Vec<String>> {
+        batch
+            .groups
+            .iter()
+            .filter(|g| g.len() > 1)
+            .map(|g| {
+                let mut sorted = g.clone();
+                sorted.sort();
+                sorted
+            })
+            .collect()
+    }
+
+    #[test]
+    fn batches_empty_graph() {
+        let registry = make_registry(&[]);
+        let graph = CallGraph::from_registry(&registry);
+        assert!(graph.topological_batches().is_empty());
+    }
+
+    #[test]
+    fn batches_single_node() {
+        let registry = make_registry(&[("src/a.ts", "foo", vec![])]);
+        let graph = CallGraph::from_registry(&registry);
+
+        let batches = graph.topological_batches();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].layer, 0);
+        assert_eq!(batch_names(&batches[0]), vec!["src/a.ts::foo"]);
+    }
+
+    #[test]
+    fn batches_linear_chain_produces_one_per_layer() {
+        // A → B → C: layers should be [C], [B], [A]
+        let registry = make_registry(&[
+            ("src/a.ts", "A", vec!["B"]),
+            ("src/a.ts", "B", vec!["C"]),
+            ("src/a.ts", "C", vec![]),
+        ]);
+        let graph = CallGraph::from_registry(&registry);
+
+        let batches = graph.topological_batches();
+        assert_eq!(batches.len(), 3);
+        assert_eq!(batch_names(&batches[0]), vec!["src/a.ts::C"]);
+        assert_eq!(batch_names(&batches[1]), vec!["src/a.ts::B"]);
+        assert_eq!(batch_names(&batches[2]), vec!["src/a.ts::A"]);
+    }
+
+    #[test]
+    fn batches_diamond_produces_three_layers() {
+        // A → B, A → C, B → D, C → D: layers [D], [B, C], [A]
+        let registry = make_registry(&[
+            ("src/a.ts", "A", vec!["B", "C"]),
+            ("src/a.ts", "B", vec!["D"]),
+            ("src/a.ts", "C", vec!["D"]),
+            ("src/a.ts", "D", vec![]),
+        ]);
+        let graph = CallGraph::from_registry(&registry);
+
+        let batches = graph.topological_batches();
+        assert_eq!(batches.len(), 3);
+        assert_eq!(batch_names(&batches[0]), vec!["src/a.ts::D"]);
+
+        let layer1 = batch_names(&batches[1]);
+        assert!(layer1.contains(&"src/a.ts::B".to_string()));
+        assert!(layer1.contains(&"src/a.ts::C".to_string()));
+
+        assert_eq!(batch_names(&batches[2]), vec!["src/a.ts::A"]);
+    }
+
+    #[test]
+    fn batches_cycle_grouped_together() {
+        // A ↔ B (mutual recursion): single batch with one group of 2
+        let registry = make_registry(&[
+            ("src/a.ts", "A", vec!["B"]),
+            ("src/a.ts", "B", vec!["A"]),
+        ]);
+        let graph = CallGraph::from_registry(&registry);
+
+        let batches = graph.topological_batches();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].layer, 0);
+
+        let names = batch_names(&batches[0]);
+        assert!(names.contains(&"src/a.ts::A".to_string()));
+        assert!(names.contains(&"src/a.ts::B".to_string()));
+
+        // Should be one group with both members
+        let cycles = cycle_groups_in_batch(&batches[0]);
+        assert_eq!(cycles.len(), 1);
+        assert_eq!(cycles[0].len(), 2);
+    }
+
+    #[test]
+    fn batches_isolated_nodes_all_in_layer_zero() {
+        let registry = make_registry(&[
+            ("src/a.ts", "X", vec![]),
+            ("src/a.ts", "Y", vec![]),
+            ("src/a.ts", "Z", vec![]),
+        ]);
+        let graph = CallGraph::from_registry(&registry);
+
+        let batches = graph.topological_batches();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].layer, 0);
+
+        let names = batch_names(&batches[0]);
+        assert_eq!(names.len(), 3);
+    }
+
+    #[test]
+    fn batches_cycle_with_dependency_on_leaf() {
+        // D is a leaf. A → B → A (cycle), A → D.
+        // Layer 0: [D], Layer 1: [A, B] (cycle group)
+        let registry = make_registry(&[
+            ("src/a.ts", "A", vec!["B", "D"]),
+            ("src/a.ts", "B", vec!["A"]),
+            ("src/a.ts", "D", vec![]),
+        ]);
+        let graph = CallGraph::from_registry(&registry);
+
+        let batches = graph.topological_batches();
+        assert_eq!(batches.len(), 2);
+
+        assert_eq!(batch_names(&batches[0]), vec!["src/a.ts::D"]);
+
+        let layer1 = batch_names(&batches[1]);
+        assert!(layer1.contains(&"src/a.ts::A".to_string()));
+        assert!(layer1.contains(&"src/a.ts::B".to_string()));
+
+        let cycles = cycle_groups_in_batch(&batches[1]);
+        assert_eq!(cycles.len(), 1);
+    }
+
+    #[test]
+    fn batches_mixed_cycles_and_linear_chains() {
+        // Chain: f0 → f1 → f2 → f3 → f4 (linear)
+        // Cycle: f5 ↔ f6
+        // Isolated: f7
+        let registry = make_registry(&[
+            ("src/a.ts", "f0", vec!["f1"]),
+            ("src/a.ts", "f1", vec!["f2"]),
+            ("src/a.ts", "f2", vec!["f3"]),
+            ("src/a.ts", "f3", vec!["f4"]),
+            ("src/a.ts", "f4", vec![]),
+            ("src/a.ts", "f5", vec!["f6"]),
+            ("src/a.ts", "f6", vec!["f5"]),
+            ("src/a.ts", "f7", vec![]),
+        ]);
+        let graph = CallGraph::from_registry(&registry);
+
+        let batches = graph.topological_batches();
+
+        // Layer 0 should contain f4, f7, and the f5↔f6 cycle (cycle has no
+        // external deps, so it's also a leaf in the condensation).
+        let layer0 = batch_names(&batches[0]);
+        assert!(layer0.contains(&"src/a.ts::f4".to_string()));
+        assert!(layer0.contains(&"src/a.ts::f7".to_string()));
+        assert!(layer0.contains(&"src/a.ts::f5".to_string()));
+        assert!(layer0.contains(&"src/a.ts::f6".to_string()));
+
+        // f5 and f6 should be in a single group (cycle)
+        let cycles = cycle_groups_in_batch(&batches[0]);
+        assert_eq!(cycles.len(), 1);
+        assert!(cycles[0].contains(&"src/a.ts::f5".to_string()));
+        assert!(cycles[0].contains(&"src/a.ts::f6".to_string()));
+
+        // Remaining layers: f3, f2, f1, f0 (one per layer)
+        assert_eq!(batches.len(), 5);
+        assert!(batch_names(&batches[1]).contains(&"src/a.ts::f3".to_string()));
+        assert!(batch_names(&batches[2]).contains(&"src/a.ts::f2".to_string()));
+        assert!(batch_names(&batches[3]).contains(&"src/a.ts::f1".to_string()));
+        assert!(batch_names(&batches[4]).contains(&"src/a.ts::f0".to_string()));
+    }
+
+    #[test]
+    fn batches_caller_of_cycle_appears_after_cycle() {
+        // C → A, A ↔ B: layers [A,B], [C]
+        let registry = make_registry(&[
+            ("src/a.ts", "A", vec!["B"]),
+            ("src/a.ts", "B", vec!["A"]),
+            ("src/a.ts", "C", vec!["A"]),
+        ]);
+        let graph = CallGraph::from_registry(&registry);
+
+        let batches = graph.topological_batches();
+        assert_eq!(batches.len(), 2);
+
+        let layer0 = batch_names(&batches[0]);
+        assert!(layer0.contains(&"src/a.ts::A".to_string()));
+        assert!(layer0.contains(&"src/a.ts::B".to_string()));
+
+        assert_eq!(batch_names(&batches[1]), vec!["src/a.ts::C"]);
+    }
+
+    #[test]
+    fn batches_three_node_cycle() {
+        // A → B → C → A: single batch with one group of 3
+        let registry = make_registry(&[
+            ("src/a.ts", "A", vec!["B"]),
+            ("src/a.ts", "B", vec!["C"]),
+            ("src/a.ts", "C", vec!["A"]),
+        ]);
+        let graph = CallGraph::from_registry(&registry);
+
+        let batches = graph.topological_batches();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batch_names(&batches[0]).len(), 3);
+
+        let cycles = cycle_groups_in_batch(&batches[0]);
+        assert_eq!(cycles.len(), 1);
+        assert_eq!(cycles[0].len(), 3);
+    }
+
+    #[test]
+    fn batches_two_independent_cycles() {
+        // A ↔ B, C ↔ D: both cycles in layer 0
+        let registry = make_registry(&[
+            ("src/a.ts", "A", vec!["B"]),
+            ("src/a.ts", "B", vec!["A"]),
+            ("src/a.ts", "C", vec!["D"]),
+            ("src/a.ts", "D", vec!["C"]),
+        ]);
+        let graph = CallGraph::from_registry(&registry);
+
+        let batches = graph.topological_batches();
+        assert_eq!(batches.len(), 1);
+
+        let cycles = cycle_groups_in_batch(&batches[0]);
+        assert_eq!(cycles.len(), 2);
+    }
+
+    #[test]
+    fn batches_layer_indices_are_sequential() {
+        let registry = make_registry(&[
+            ("src/a.ts", "A", vec!["B"]),
+            ("src/a.ts", "B", vec!["C"]),
+            ("src/a.ts", "C", vec![]),
+        ]);
+        let graph = CallGraph::from_registry(&registry);
+
+        let batches = graph.topological_batches();
+        for (i, batch) in batches.iter().enumerate() {
+            assert_eq!(batch.layer, i);
+        }
     }
 }
