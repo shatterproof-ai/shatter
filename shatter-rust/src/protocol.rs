@@ -52,6 +52,9 @@ pub enum TypeInfo {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         inner: Option<Box<TypeInfo>>,
     },
+    Opaque {
+        label: String,
+    },
     Unknown,
 }
 
@@ -126,6 +129,140 @@ impl Response {
             capabilities: None,
             code: None,
             message: None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn round_trip<T: Serialize + for<'de> Deserialize<'de> + PartialEq + std::fmt::Debug>(
+        value: &T,
+    ) {
+        let json = serde_json::to_string(value).expect("serialize");
+        let deserialized: T = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(*value, deserialized, "round-trip failed for json: {json}");
+    }
+
+    #[test]
+    fn typeinfo_opaque_round_trips() {
+        round_trip(&TypeInfo::Opaque {
+            label: "net.Socket".to_string(),
+        });
+    }
+
+    #[test]
+    fn typeinfo_opaque_serializes_with_correct_kind() {
+        let ti = TypeInfo::Opaque {
+            label: "fs.FileHandle".to_string(),
+        };
+        let json: serde_json::Value = serde_json::to_value(&ti).expect("serialize");
+        assert_eq!(json["kind"], "opaque");
+        assert_eq!(json["label"], "fs.FileHandle");
+    }
+
+    #[test]
+    fn typeinfo_opaque_deserializes_from_json() {
+        let json = r#"{"kind":"opaque","label":"pg.Client"}"#;
+        let ti: TypeInfo = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(
+            ti,
+            TypeInfo::Opaque {
+                label: "pg.Client".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn typeinfo_opaque_inside_array_round_trips() {
+        round_trip(&TypeInfo::Array {
+            element: Box::new(TypeInfo::Opaque {
+                label: "stream.Readable".to_string(),
+            }),
+        });
+    }
+
+    #[test]
+    fn typeinfo_opaque_inside_nullable_round_trips() {
+        round_trip(&TypeInfo::Nullable {
+            inner: Box::new(TypeInfo::Opaque {
+                label: "channel".to_string(),
+            }),
+        });
+    }
+
+    #[test]
+    fn typeinfo_opaque_inside_object_round_trips() {
+        round_trip(&TypeInfo::Object {
+            fields: vec![
+                (
+                    "conn".into(),
+                    TypeInfo::Opaque {
+                        label: "pg.Client".to_string(),
+                    },
+                ),
+                ("name".into(), TypeInfo::Str),
+            ],
+        });
+    }
+
+    #[test]
+    fn existing_typeinfo_variants_still_round_trip() {
+        round_trip(&TypeInfo::Int);
+        round_trip(&TypeInfo::Float);
+        round_trip(&TypeInfo::Str);
+        round_trip(&TypeInfo::Bool);
+        round_trip(&TypeInfo::Unknown);
+        round_trip(&TypeInfo::Array {
+            element: Box::new(TypeInfo::Int),
+        });
+        round_trip(&TypeInfo::Nullable {
+            inner: Box::new(TypeInfo::Str),
+        });
+        round_trip(&TypeInfo::Object {
+            fields: vec![("x".into(), TypeInfo::Int)],
+        });
+        round_trip(&TypeInfo::Union {
+            variants: vec![TypeInfo::Str, TypeInfo::Int],
+        });
+    }
+
+    #[test]
+    fn typeinfo_complex_still_round_trips() {
+        round_trip(&TypeInfo::Complex {
+            kind: ComplexKind::Date,
+            metadata: HashMap::new(),
+            inner: None,
+        });
+    }
+
+    #[test]
+    fn opaque_in_function_analysis_json_deserializes() {
+        // Verify TypeInfo::Opaque works when embedded in a FunctionAnalysis-shaped JSON,
+        // parsed as a generic Value and then extracting the type field.
+        let json = r#"{"kind": "opaque", "label": "stream.Readable"}"#;
+        let param_type: TypeInfo = serde_json::from_str(json).expect("deserialize param type");
+        assert_eq!(
+            param_type,
+            TypeInfo::Opaque {
+                label: "stream.Readable".to_string(),
+            }
+        );
+
+        // Nested inside an object field (simulating a return_type in analysis results)
+        let nested_json = r#"{"kind": "object", "fields": [["conn", {"kind": "opaque", "label": "pg.Client"}], ["ready", {"kind": "bool"}]]}"#;
+        let nested: TypeInfo = serde_json::from_str(nested_json).expect("deserialize nested");
+        if let TypeInfo::Object { fields } = &nested {
+            assert_eq!(fields.len(), 2);
+            assert_eq!(
+                fields[0].1,
+                TypeInfo::Opaque {
+                    label: "pg.Client".to_string(),
+                }
+            );
+        } else {
+            panic!("expected Object, got {:?}", nested);
         }
     }
 }
