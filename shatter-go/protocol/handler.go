@@ -128,6 +128,12 @@ func (h *Handler) dispatch(req Request) (Response, bool) {
 		return h.handleInstrument(base, req), false
 	case "execute":
 		return h.handleExecute(base, req), false
+	case "setup":
+		return h.handleSetup(base, req), false
+	case "teardown":
+		return h.handleTeardown(base, req), false
+	case "generate":
+		return h.handleGenerate(base, req), false
 	case "shutdown":
 		return h.handleShutdown(base), true
 	default:
@@ -339,6 +345,27 @@ func extractPathConstraints(branches []instrument.BranchDecision) []SymConstrain
 		return []SymConstraint{}
 	}
 	return constraints
+}
+
+func (h *Handler) handleSetup(resp Response, req Request) Response {
+	resp.Status = "error"
+	resp.Code = "internal_error"
+	resp.Message = "setup command not yet implemented"
+	return resp
+}
+
+func (h *Handler) handleTeardown(resp Response, req Request) Response {
+	resp.Status = "error"
+	resp.Code = "internal_error"
+	resp.Message = "teardown command not yet implemented"
+	return resp
+}
+
+func (h *Handler) handleGenerate(resp Response, req Request) Response {
+	resp.Status = "error"
+	resp.Code = "internal_error"
+	resp.Message = "generate command not yet implemented"
+	return resp
 }
 
 func (h *Handler) handleShutdown(resp Response) Response {

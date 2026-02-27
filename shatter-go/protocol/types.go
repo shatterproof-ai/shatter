@@ -29,7 +29,15 @@ type Request struct {
 	Mocks []MockConfig `json:"mocks,omitempty"`
 
 	// Execute fields
-	Inputs []json.RawMessage `json:"inputs,omitempty"`
+	Inputs       []json.RawMessage `json:"inputs,omitempty"`
+	SetupContext *json.RawMessage  `json:"setup_context,omitempty"`
+
+	// Setup fields
+	Mode string `json:"mode,omitempty"`
+
+	// Generate fields
+	Name string `json:"name,omitempty"`
+	Kind string `json:"kind,omitempty"`
 }
 
 // Response is a message from the frontend to the core engine.
@@ -60,6 +68,12 @@ type Response struct {
 	PathConstraints []SymConstraint  `json:"path_constraints,omitempty"`
 	SideEffects     []SideEffect     `json:"side_effects,omitempty"`
 	Performance     *PerfMetrics     `json:"performance,omitempty"`
+
+	// Setup
+	SetupContext *json.RawMessage `json:"setup_context,omitempty"`
+
+	// Generate
+	Value *json.RawMessage `json:"value,omitempty"`
 
 	// Error
 	Code    string           `json:"code,omitempty"`

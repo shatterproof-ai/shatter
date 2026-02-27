@@ -531,3 +531,253 @@ func TestLogLevelFilteringShowsDebugAtDebug(t *testing.T) {
 		t.Errorf("trace messages should be suppressed at debug level: %s", logStr)
 	}
 }
+
+func TestSetupReturnsNotImplementedError(t *testing.T) {
+	resp := sendRecv(t, `{"protocol_version":"0.1.0","id":10,"command":"setup","file":"./setup.ts","function":"init","mode":"per_function"}`)
+	if resp.Status != "error" {
+		t.Errorf("status = %q, want error", resp.Status)
+	}
+	if resp.Code != "internal_error" {
+		t.Errorf("code = %q, want internal_error", resp.Code)
+	}
+	if !strings.Contains(resp.Message, "not yet implemented") {
+		t.Errorf("message = %q, want 'not yet implemented'", resp.Message)
+	}
+	if resp.ID != 10 {
+		t.Errorf("id = %d, want 10", resp.ID)
+	}
+}
+
+func TestTeardownReturnsNotImplementedError(t *testing.T) {
+	resp := sendRecv(t, `{"protocol_version":"0.1.0","id":11,"command":"teardown","function":"init"}`)
+	if resp.Status != "error" {
+		t.Errorf("status = %q, want error", resp.Status)
+	}
+	if resp.Code != "internal_error" {
+		t.Errorf("code = %q, want internal_error", resp.Code)
+	}
+	if !strings.Contains(resp.Message, "not yet implemented") {
+		t.Errorf("message = %q, want 'not yet implemented'", resp.Message)
+	}
+	if resp.ID != 11 {
+		t.Errorf("id = %d, want 11", resp.ID)
+	}
+}
+
+func TestGenerateReturnsNotImplementedError(t *testing.T) {
+	resp := sendRecv(t, `{"protocol_version":"0.1.0","id":12,"command":"generate","file":"./gen.ts","name":"User","kind":"type_name"}`)
+	if resp.Status != "error" {
+		t.Errorf("status = %q, want error", resp.Status)
+	}
+	if resp.Code != "internal_error" {
+		t.Errorf("code = %q, want internal_error", resp.Code)
+	}
+	if !strings.Contains(resp.Message, "not yet implemented") {
+		t.Errorf("message = %q, want 'not yet implemented'", resp.Message)
+	}
+	if resp.ID != 12 {
+		t.Errorf("id = %d, want 12", resp.ID)
+	}
+}
+
+func TestNewCommandStubsTableDriven(t *testing.T) {
+	tests := []struct {
+		name    string
+		request string
+		wantID  int
+	}{
+		{
+			name:    "setup per_function",
+			request: `{"protocol_version":"0.1.0","id":20,"command":"setup","file":"./setup.ts","function":"fn1","mode":"per_function"}`,
+			wantID:  20,
+		},
+		{
+			name:    "setup per_execution",
+			request: `{"protocol_version":"0.1.0","id":21,"command":"setup","file":"./setup.ts","function":"fn1","mode":"per_execution"}`,
+			wantID:  21,
+		},
+		{
+			name:    "teardown",
+			request: `{"protocol_version":"0.1.0","id":22,"command":"teardown","function":"fn1"}`,
+			wantID:  22,
+		},
+		{
+			name:    "generate type_name",
+			request: `{"protocol_version":"0.1.0","id":23,"command":"generate","file":"./gen.ts","name":"User","kind":"type_name"}`,
+			wantID:  23,
+		},
+		{
+			name:    "generate param_name",
+			request: `{"protocol_version":"0.1.0","id":24,"command":"generate","file":"./gen.ts","name":"authToken","kind":"param_name"}`,
+			wantID:  24,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := sendRecv(t, tt.request)
+			if resp.Status != "error" {
+				t.Errorf("status = %q, want error", resp.Status)
+			}
+			if resp.Code != "internal_error" {
+				t.Errorf("code = %q, want internal_error", resp.Code)
+			}
+			if !strings.Contains(resp.Message, "not yet implemented") {
+				t.Errorf("message = %q, should contain 'not yet implemented'", resp.Message)
+			}
+			if resp.ID != tt.wantID {
+				t.Errorf("id = %d, want %d", resp.ID, tt.wantID)
+			}
+			if resp.ProtocolVersion != "0.1.0" {
+				t.Errorf("protocol_version = %q, want 0.1.0", resp.ProtocolVersion)
+			}
+		})
+	}
+}
+
+func TestNewCommandsInConversationSequence(t *testing.T) {
+	responses := conversation(t,
+		`{"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze"]}`,
+		`{"protocol_version":"0.1.0","id":2,"command":"setup","file":"./setup.ts","function":"fn1","mode":"per_function"}`,
+		`{"protocol_version":"0.1.0","id":3,"command":"teardown","function":"fn1"}`,
+		`{"protocol_version":"0.1.0","id":4,"command":"generate","file":"./gen.ts","name":"User","kind":"type_name"}`,
+		`{"protocol_version":"0.1.0","id":5,"command":"shutdown"}`,
+	)
+	if len(responses) != 5 {
+		t.Fatalf("got %d responses, want 5", len(responses))
+	}
+	if responses[0].Status != "handshake" {
+		t.Errorf("response[0].status = %q, want handshake", responses[0].Status)
+	}
+	if responses[1].Status != "error" || responses[1].Code != "internal_error" {
+		t.Errorf("response[1] = status:%q code:%q, want error/internal_error", responses[1].Status, responses[1].Code)
+	}
+	if responses[2].Status != "error" || responses[2].Code != "internal_error" {
+		t.Errorf("response[2] = status:%q code:%q, want error/internal_error", responses[2].Status, responses[2].Code)
+	}
+	if responses[3].Status != "error" || responses[3].Code != "internal_error" {
+		t.Errorf("response[3] = status:%q code:%q, want error/internal_error", responses[3].Status, responses[3].Code)
+	}
+	if responses[4].Status != "shutdown_ack" {
+		t.Errorf("response[4].status = %q, want shutdown_ack", responses[4].Status)
+	}
+}
+
+func TestNewCommandRequestDeserialization(t *testing.T) {
+	tests := []struct {
+		name     string
+		json     string
+		wantCmd  string
+		wantFile string
+		wantFunc string
+	}{
+		{
+			name:     "setup request",
+			json:     `{"protocol_version":"0.1.0","id":1,"command":"setup","file":"./setup.ts","function":"fn1","mode":"per_function"}`,
+			wantCmd:  "setup",
+			wantFile: "./setup.ts",
+			wantFunc: "fn1",
+		},
+		{
+			name:    "teardown request",
+			json:    `{"protocol_version":"0.1.0","id":2,"command":"teardown","function":"fn1"}`,
+			wantCmd: "teardown",
+		},
+		{
+			name:     "generate request",
+			json:     `{"protocol_version":"0.1.0","id":3,"command":"generate","file":"./gen.ts","name":"User","kind":"type_name"}`,
+			wantCmd:  "generate",
+			wantFile: "./gen.ts",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var req Request
+			if err := json.Unmarshal([]byte(tt.json), &req); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if req.Command != tt.wantCmd {
+				t.Errorf("command = %q, want %q", req.Command, tt.wantCmd)
+			}
+			if tt.wantFile != "" && req.File != tt.wantFile {
+				t.Errorf("file = %q, want %q", req.File, tt.wantFile)
+			}
+			if tt.wantFunc != "" {
+				if req.Function == nil || *req.Function != tt.wantFunc {
+					got := "<nil>"
+					if req.Function != nil {
+						got = *req.Function
+					}
+					t.Errorf("function = %q, want %q", got, tt.wantFunc)
+				}
+			}
+		})
+	}
+}
+
+func TestSetupRequestDeserializesMode(t *testing.T) {
+	tests := []struct {
+		name     string
+		json     string
+		wantMode string
+	}{
+		{
+			name:     "per_function",
+			json:     `{"protocol_version":"0.1.0","id":1,"command":"setup","file":"./s.ts","function":"f","mode":"per_function"}`,
+			wantMode: "per_function",
+		},
+		{
+			name:     "per_execution",
+			json:     `{"protocol_version":"0.1.0","id":1,"command":"setup","file":"./s.ts","function":"f","mode":"per_execution"}`,
+			wantMode: "per_execution",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var req Request
+			if err := json.Unmarshal([]byte(tt.json), &req); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if req.Mode != tt.wantMode {
+				t.Errorf("mode = %q, want %q", req.Mode, tt.wantMode)
+			}
+		})
+	}
+}
+
+func TestGenerateRequestDeserializesKind(t *testing.T) {
+	tests := []struct {
+		name     string
+		json     string
+		wantName string
+		wantKind string
+	}{
+		{
+			name:     "type_name",
+			json:     `{"protocol_version":"0.1.0","id":1,"command":"generate","file":"./g.ts","name":"User","kind":"type_name"}`,
+			wantName: "User",
+			wantKind: "type_name",
+		},
+		{
+			name:     "param_name",
+			json:     `{"protocol_version":"0.1.0","id":1,"command":"generate","file":"./g.ts","name":"authToken","kind":"param_name"}`,
+			wantName: "authToken",
+			wantKind: "param_name",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var req Request
+			if err := json.Unmarshal([]byte(tt.json), &req); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if req.Name != tt.wantName {
+				t.Errorf("name = %q, want %q", req.Name, tt.wantName)
+			}
+			if req.Kind != tt.wantKind {
+				t.Errorf("kind = %q, want %q", req.Kind, tt.wantKind)
+			}
+		})
+	}
+}
