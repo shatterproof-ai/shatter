@@ -662,6 +662,7 @@ functions:
                 ..DefaultsConfig::default()
             },
             functions: HashMap::new(),
+            ..ShatterConfig::default()
         };
         let far = ShatterConfig {
             defaults: DefaultsConfig {
@@ -670,6 +671,7 @@ functions:
                 ..DefaultsConfig::default()
             },
             functions: HashMap::new(),
+            ..ShatterConfig::default()
         };
 
         let merged = merge_configs(&[near, far]);
@@ -712,10 +714,12 @@ functions:
         let near = ShatterConfig {
             defaults: DefaultsConfig::default(),
             functions: near_funcs,
+            ..ShatterConfig::default()
         };
         let far = ShatterConfig {
             defaults: DefaultsConfig::default(),
             functions: far_funcs,
+            ..ShatterConfig::default()
         };
 
         let merged = merge_configs(&[near, far]);
@@ -753,6 +757,7 @@ functions:
                 ..DefaultsConfig::default()
             },
             functions,
+            ..ShatterConfig::default()
         };
 
         let resolved =
@@ -771,6 +776,7 @@ functions:
                 ..DefaultsConfig::default()
             },
             functions: HashMap::new(),
+            ..ShatterConfig::default()
         };
 
         let resolved =
@@ -807,6 +813,7 @@ functions:
         let config = ShatterConfig {
             defaults: DefaultsConfig::default(),
             functions,
+            ..ShatterConfig::default()
         };
 
         let resolved =
@@ -1049,6 +1056,7 @@ functions:
                 ..DefaultsConfig::default()
             },
             functions: HashMap::new(),
+            ..ShatterConfig::default()
         };
         let near = ShatterConfig {
             defaults: DefaultsConfig {
@@ -1058,6 +1066,7 @@ functions:
                 ..DefaultsConfig::default()
             },
             functions: HashMap::new(),
+            ..ShatterConfig::default()
         };
 
         let merged = merge_configs(&[near, far]);
@@ -1080,6 +1089,7 @@ functions:
                 ..DefaultsConfig::default()
             },
             functions: HashMap::new(),
+            ..ShatterConfig::default()
         };
         let far = ShatterConfig {
             defaults: DefaultsConfig {
@@ -1088,6 +1098,7 @@ functions:
                 ..DefaultsConfig::default()
             },
             functions: HashMap::new(),
+            ..ShatterConfig::default()
         };
 
         let merged = merge_configs(&[near, far]);
