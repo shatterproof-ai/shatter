@@ -376,6 +376,7 @@ mod tests {
                 thrown_error: None,
                 branch_path: vec![],
                 side_effects: vec![],
+                dependency_trace: None,
             })
             .collect();
 
@@ -640,6 +641,7 @@ mod tests {
             }),
             branch_path: vec![],
             side_effects: vec![],
+            dependency_trace: None,
         });
         func_result
             .exploration

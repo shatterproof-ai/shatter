@@ -831,6 +831,7 @@ mod tests {
                     thrown_error: None,
                     branch_path: vec![],
                     side_effects: vec![],
+                    dependency_trace: None,
                 },
                 Behavior {
                     id: 1,
@@ -839,6 +840,7 @@ mod tests {
                     thrown_error: None,
                     branch_path: vec![],
                     side_effects: vec![],
+                    dependency_trace: None,
                 },
             ],
         };

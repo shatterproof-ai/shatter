@@ -487,6 +487,7 @@ mod tests {
             thrown_error: error,
             branch_path: vec![],
             side_effects: vec![],
+            dependency_trace: None,
         }
     }
 
