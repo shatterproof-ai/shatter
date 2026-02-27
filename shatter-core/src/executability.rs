@@ -13,16 +13,33 @@ pub struct SkipReason {
 }
 
 /// Checks each parameter for opaque types. Returns a `SkipReason` for every
-/// parameter whose type tree contains an `Opaque` node.
+/// parameter whose type tree contains an `Opaque` node or whose `type_name`
+/// matches an entry in `custom_opaque_types`.
 #[must_use]
-pub fn check_executability(params: &[ParamInfo]) -> Vec<SkipReason> {
+pub fn check_executability(
+    params: &[ParamInfo],
+    custom_opaque_types: &[String],
+) -> Vec<SkipReason> {
     params
         .iter()
         .filter_map(|p| {
-            p.typ.find_opaque_label().map(|label| SkipReason {
-                param_name: p.name.clone(),
-                opaque_label: label,
-            })
+            // Check built-in opaque detection first.
+            if let Some(label) = p.typ.find_opaque_label() {
+                return Some(SkipReason {
+                    param_name: p.name.clone(),
+                    opaque_label: label,
+                });
+            }
+            // Check user-configured opaque types by type_name.
+            if let Some(ref tn) = p.type_name
+                && custom_opaque_types.iter().any(|o| o == tn)
+            {
+                return Some(SkipReason {
+                    param_name: p.name.clone(),
+                    opaque_label: tn.clone(),
+                });
+            }
+            None
         })
         .collect()
 }
@@ -40,10 +57,18 @@ mod tests {
         }
     }
 
+    fn param_with_type_name(name: &str, typ: TypeInfo, type_name: &str) -> ParamInfo {
+        ParamInfo {
+            name: name.into(),
+            typ,
+            type_name: Some(type_name.into()),
+        }
+    }
+
     #[test]
     fn no_opaque_params_returns_empty() {
         let params = vec![param("a", TypeInfo::Int), param("b", TypeInfo::Str)];
-        assert!(check_executability(&params).is_empty());
+        assert!(check_executability(&params, &[]).is_empty());
     }
 
     #[test]
@@ -54,7 +79,7 @@ mod tests {
                 label: "pg.Client".into(),
             },
         )];
-        let reasons = check_executability(&params);
+        let reasons = check_executability(&params, &[]);
         assert_eq!(reasons.len(), 1);
         assert_eq!(reasons[0].param_name, "conn");
         assert_eq!(reasons[0].opaque_label, "pg.Client");
@@ -70,7 +95,7 @@ mod tests {
                 }),
             },
         )];
-        let reasons = check_executability(&params);
+        let reasons = check_executability(&params, &[]);
         assert_eq!(reasons.len(), 1);
         assert_eq!(reasons[0].param_name, "sockets");
         assert_eq!(reasons[0].opaque_label, "net.Socket");
@@ -84,7 +109,7 @@ mod tests {
             param("name", TypeInfo::Str),
             param("flag", TypeInfo::Bool),
         ];
-        assert!(check_executability(&params).is_empty());
+        assert!(check_executability(&params, &[]).is_empty());
     }
 
     #[test]
@@ -104,7 +129,7 @@ mod tests {
                 },
             ),
         ];
-        let reasons = check_executability(&params);
+        let reasons = check_executability(&params, &[]);
         assert_eq!(reasons.len(), 2);
         assert_eq!(reasons[0].param_name, "db");
         assert_eq!(reasons[0].opaque_label, "pg.Client");
@@ -130,7 +155,7 @@ mod tests {
                 }),
             },
         )];
-        let reasons = check_executability(&params);
+        let reasons = check_executability(&params, &[]);
         assert_eq!(reasons.len(), 1);
         assert_eq!(reasons[0].param_name, "config");
         assert_eq!(reasons[0].opaque_label, "http.Handler");
@@ -149,7 +174,7 @@ mod tests {
                 ],
             },
         )];
-        let reasons = check_executability(&params);
+        let reasons = check_executability(&params, &[]);
         assert_eq!(reasons.len(), 1);
         assert_eq!(reasons[0].param_name, "input");
         assert_eq!(reasons[0].opaque_label, "stream.Readable");
@@ -165,7 +190,7 @@ mod tests {
                 }),
             },
         )];
-        let reasons = check_executability(&params);
+        let reasons = check_executability(&params, &[]);
         assert_eq!(reasons.len(), 1);
         assert_eq!(reasons[0].param_name, "maybe_conn");
         assert_eq!(reasons[0].opaque_label, "pg.Pool");
@@ -183,7 +208,7 @@ mod tests {
                 })),
             },
         )];
-        let reasons = check_executability(&params);
+        let reasons = check_executability(&params, &[]);
         assert_eq!(reasons.len(), 1);
         assert_eq!(reasons[0].param_name, "wrapped");
         assert_eq!(reasons[0].opaque_label, "channel");
@@ -191,6 +216,67 @@ mod tests {
 
     #[test]
     fn empty_params_returns_empty() {
-        assert!(check_executability(&[]).is_empty());
+        assert!(check_executability(&[], &[]).is_empty());
+    }
+
+    #[test]
+    fn custom_opaque_type_matched_by_type_name() {
+        let params = vec![param_with_type_name("pool", TypeInfo::Unknown, "DatabasePool")];
+        let custom = vec!["DatabasePool".to_string()];
+        let reasons = check_executability(&params, &custom);
+        assert_eq!(reasons.len(), 1);
+        assert_eq!(reasons[0].param_name, "pool");
+        assert_eq!(reasons[0].opaque_label, "DatabasePool");
+    }
+
+    #[test]
+    fn custom_opaque_type_no_match_returns_empty() {
+        let params = vec![param_with_type_name("name", TypeInfo::Str, "String")];
+        let custom = vec!["DatabasePool".to_string()];
+        assert!(check_executability(&params, &custom).is_empty());
+    }
+
+    #[test]
+    fn custom_opaque_types_empty_list_preserves_default_behavior() {
+        let params = vec![param("x", TypeInfo::Int)];
+        assert!(check_executability(&params, &[]).is_empty());
+    }
+
+    #[test]
+    fn builtin_opaque_takes_precedence_over_custom() {
+        let params = vec![ParamInfo {
+            name: "conn".into(),
+            typ: TypeInfo::Opaque {
+                label: "pg.Client".into(),
+            },
+            type_name: Some("DatabasePool".into()),
+        }];
+        let custom = vec!["DatabasePool".to_string()];
+        let reasons = check_executability(&params, &custom);
+        assert_eq!(reasons.len(), 1);
+        assert_eq!(reasons[0].opaque_label, "pg.Client");
+    }
+
+    #[test]
+    fn custom_opaque_with_no_type_name_not_matched() {
+        let params = vec![param("x", TypeInfo::Unknown)];
+        let custom = vec!["SomeType".to_string()];
+        assert!(check_executability(&params, &custom).is_empty());
+    }
+
+    #[test]
+    fn multiple_custom_opaque_types_matched() {
+        let params = vec![
+            param_with_type_name("pool", TypeInfo::Unknown, "DatabasePool"),
+            param("name", TypeInfo::Str),
+            param_with_type_name("cache", TypeInfo::Unknown, "RedisClient"),
+        ];
+        let custom = vec!["DatabasePool".to_string(), "RedisClient".to_string()];
+        let reasons = check_executability(&params, &custom);
+        assert_eq!(reasons.len(), 2);
+        assert_eq!(reasons[0].param_name, "pool");
+        assert_eq!(reasons[0].opaque_label, "DatabasePool");
+        assert_eq!(reasons[1].param_name, "cache");
+        assert_eq!(reasons[1].opaque_label, "RedisClient");
     }
 }

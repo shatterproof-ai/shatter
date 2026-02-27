@@ -68,6 +68,10 @@ pub struct ShatterConfig {
     /// Per-function overrides, keyed by function pattern (e.g. `"src/auth.ts:validateToken"`).
     #[serde(default)]
     pub functions: HashMap<String, FunctionConfig>,
+
+    /// Additional type names to treat as opaque (unexecutable).
+    #[serde(default)]
+    pub opaque_types: Vec<String>,
 }
 
 
@@ -303,6 +307,15 @@ pub fn merge_configs(configs: &[ShatterConfig]) -> ShatterConfig {
         }
     }
 
+    let mut opaque_types = Vec::new();
+    for config in configs {
+        for t in &config.opaque_types {
+            if !opaque_types.contains(t) {
+                opaque_types.push(t.clone());
+            }
+        }
+    }
+
     ShatterConfig {
         defaults: DefaultsConfig {
             max_iterations,
@@ -313,6 +326,7 @@ pub fn merge_configs(configs: &[ShatterConfig]) -> ShatterConfig {
             param_generators,
         },
         functions,
+        opaque_types,
     }
 }
 
@@ -662,6 +676,7 @@ functions:
                 ..DefaultsConfig::default()
             },
             functions: HashMap::new(),
+            ..ShatterConfig::default()
         };
         let far = ShatterConfig {
             defaults: DefaultsConfig {
@@ -670,6 +685,7 @@ functions:
                 ..DefaultsConfig::default()
             },
             functions: HashMap::new(),
+            ..ShatterConfig::default()
         };
 
         let merged = merge_configs(&[near, far]);
@@ -712,10 +728,12 @@ functions:
         let near = ShatterConfig {
             defaults: DefaultsConfig::default(),
             functions: near_funcs,
+            ..ShatterConfig::default()
         };
         let far = ShatterConfig {
             defaults: DefaultsConfig::default(),
             functions: far_funcs,
+            ..ShatterConfig::default()
         };
 
         let merged = merge_configs(&[near, far]);
@@ -753,6 +771,7 @@ functions:
                 ..DefaultsConfig::default()
             },
             functions,
+            ..ShatterConfig::default()
         };
 
         let resolved =
@@ -771,6 +790,7 @@ functions:
                 ..DefaultsConfig::default()
             },
             functions: HashMap::new(),
+            ..ShatterConfig::default()
         };
 
         let resolved =
@@ -807,6 +827,7 @@ functions:
         let config = ShatterConfig {
             defaults: DefaultsConfig::default(),
             functions,
+            ..ShatterConfig::default()
         };
 
         let resolved =
@@ -1049,6 +1070,7 @@ functions:
                 ..DefaultsConfig::default()
             },
             functions: HashMap::new(),
+            ..ShatterConfig::default()
         };
         let near = ShatterConfig {
             defaults: DefaultsConfig {
@@ -1058,6 +1080,7 @@ functions:
                 ..DefaultsConfig::default()
             },
             functions: HashMap::new(),
+            ..ShatterConfig::default()
         };
 
         let merged = merge_configs(&[near, far]);
@@ -1080,6 +1103,7 @@ functions:
                 ..DefaultsConfig::default()
             },
             functions: HashMap::new(),
+            ..ShatterConfig::default()
         };
         let far = ShatterConfig {
             defaults: DefaultsConfig {
@@ -1088,6 +1112,7 @@ functions:
                 ..DefaultsConfig::default()
             },
             functions: HashMap::new(),
+            ..ShatterConfig::default()
         };
 
         let merged = merge_configs(&[near, far]);
@@ -1232,5 +1257,67 @@ functions:
         let resolved =
             resolve_function_config("any/func", &[], 100, 60).unwrap();
         assert_eq!(resolved.setup_mode, SetupMode::PerFunction);
+    }
+
+    #[test]
+    fn parse_config_with_opaque_types() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.yaml");
+        fs::write(
+            &config_path,
+            r#"
+defaults:
+  max_iterations: 100
+opaque_types:
+  - DatabasePool
+  - RedisClient
+  - KafkaProducer
+"#,
+        )
+        .unwrap();
+
+        let config = parse_config(&config_path).unwrap();
+        assert_eq!(config.opaque_types, vec![
+            "DatabasePool".to_string(),
+            "RedisClient".to_string(),
+            "KafkaProducer".to_string(),
+        ]);
+    }
+
+    #[test]
+    fn parse_config_without_opaque_types_defaults_to_empty() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.yaml");
+        fs::write(&config_path, "defaults:\n  max_iterations: 100\n").unwrap();
+
+        let config = parse_config(&config_path).unwrap();
+        assert!(config.opaque_types.is_empty());
+    }
+
+    #[test]
+    fn merge_configs_combines_opaque_types_and_deduplicates() {
+        let near = ShatterConfig {
+            opaque_types: vec!["DatabasePool".to_string(), "RedisClient".to_string()],
+            ..ShatterConfig::default()
+        };
+        let far = ShatterConfig {
+            opaque_types: vec!["RedisClient".to_string(), "KafkaProducer".to_string()],
+            ..ShatterConfig::default()
+        };
+
+        let merged = merge_configs(&[near, far]);
+        assert_eq!(merged.opaque_types, vec![
+            "DatabasePool".to_string(),
+            "RedisClient".to_string(),
+            "KafkaProducer".to_string(),
+        ]);
+    }
+
+    #[test]
+    fn merge_configs_opaque_types_empty_when_no_configs_have_them() {
+        let a = ShatterConfig::default();
+        let b = ShatterConfig::default();
+        let merged = merge_configs(&[a, b]);
+        assert!(merged.opaque_types.is_empty());
     }
 }
