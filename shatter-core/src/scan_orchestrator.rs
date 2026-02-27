@@ -22,6 +22,8 @@ pub struct ScanConfig {
     pub max_iterations_per_function: u32,
     /// Random seed for reproducibility. If None, uses entropy.
     pub seed: Option<u64>,
+    /// Map from function name to source file path (needed for instrumentation).
+    pub file_map: HashMap<String, String>,
 }
 
 /// Result of exploring a single function during a scan.
@@ -136,7 +138,14 @@ pub async fn scan(
         }
         mocks_used.sort();
 
+        let file = config
+            .file_map
+            .get(func_name)
+            .cloned()
+            .unwrap_or_default();
+
         let explore_config = ExploreConfig {
+            file,
             max_iterations: config.max_iterations_per_function,
             seed: config.seed,
             mocks,
@@ -195,7 +204,7 @@ pub fn format_scan_report(result: &ScanResult) -> String {
     for func_result in &result.function_results {
         out.push_str(&format!("\n── {} ──\n", func_result.function_name));
 
-        out.push_str(&explorer::format_exploration_report(&func_result.exploration));
+        out.push_str(&explorer::format_exploration_report_verbose(&func_result.exploration));
 
         if !func_result.mocks_used.is_empty() {
             out.push_str(&format!(

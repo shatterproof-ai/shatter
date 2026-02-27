@@ -13,11 +13,15 @@ use rand::SeedableRng;
 
 use crate::frontend::{Frontend, FrontendError};
 use crate::input_gen::generate_random_inputs;
-use crate::protocol::{Command as ProtoCommand, ExecuteResult, FunctionAnalysis, MockConfig, ResponseResult};
+use crate::protocol::{
+    Command as ProtoCommand, ExecuteResult, FunctionAnalysis, MockConfig, ResponseResult,
+};
 
 /// Configuration for an exploration run.
 #[derive(Debug, Clone)]
 pub struct ExploreConfig {
+    /// Path to the source file being explored (needed for instrumentation).
+    pub file: String,
     /// Maximum number of iterations (execute calls) per function.
     pub max_iterations: u32,
     /// Random seed for reproducibility. If None, uses entropy.
@@ -106,6 +110,36 @@ pub async fn explore_function(
     analysis: &FunctionAnalysis,
     config: &ExploreConfig,
 ) -> Result<ExplorationResult, ExploreError> {
+    // Instrument the function before executing so the frontend can
+    // report branch_path data in execution results.
+    let instrument_response = frontend
+        .send(ProtoCommand::Instrument {
+            file: config.file.clone(),
+            function: analysis.name.clone(),
+            mocks: config.mocks.clone(),
+        })
+        .await?;
+
+    match instrument_response.result {
+        ResponseResult::Instrument { instrumented, .. } => {
+            if !instrumented {
+                return Err(ExploreError::UnexpectedResponse(
+                    "instrumentation returned instrumented=false".to_string(),
+                ));
+            }
+        }
+        ResponseResult::Error { code, message, .. } => {
+            return Err(ExploreError::UnexpectedResponse(format!(
+                "instrument error ({code:?}): {message}"
+            )));
+        }
+        other => {
+            return Err(ExploreError::UnexpectedResponse(format!(
+                "expected Instrument response, got {other:?}"
+            )));
+        }
+    }
+
     let mut rng = match config.seed {
         Some(seed) => StdRng::seed_from_u64(seed),
         None => StdRng::from_os_rng(),
@@ -183,8 +217,83 @@ pub async fn explore_function(
     })
 }
 
-/// Format an exploration result as a human-readable report.
-pub fn format_exploration_report(result: &ExplorationResult) -> String {
+/// Options for formatting an exploration report.
+#[derive(Debug, Clone, Default)]
+pub struct ReportOptions {
+    /// Function location (e.g. "examples/typescript/src/04-errors.ts:10").
+    pub location: Option<String>,
+    /// Show performance data.
+    pub show_perf: bool,
+    /// Wall time spent on this function.
+    pub wall_time: Option<std::time::Duration>,
+}
+
+/// Format an exploration result as a concise, human-readable summary.
+///
+/// Produces clustered output: groups paths by outcome and shows example inputs.
+pub fn format_exploration_report(result: &ExplorationResult, options: &ReportOptions) -> String {
+    let mut out = String::new();
+
+    // Header: function name and location
+    let location = options.location.as_deref().unwrap_or("");
+    if location.is_empty() {
+        out.push_str(&format!("{}\n", result.function_name));
+    } else {
+        out.push_str(&format!("{} ({})\n", result.function_name, location));
+    }
+
+    out.push_str(&format!("  {} distinct path(s)\n", result.unique_paths));
+
+    if result.total_lines > 0 && result.lines_covered > 0 {
+        let pct = (result.lines_covered as f64 / result.total_lines as f64 * 100.0).min(100.0);
+        out.push_str(&format!(
+            "  Line coverage: {}/{} lines ({pct:.0}%)\n",
+            result.lines_covered, result.total_lines
+        ));
+    }
+
+    if !result.new_path_executions.is_empty() {
+        out.push_str("\n  Path clusters:\n");
+        for (i, exec) in result.new_path_executions.iter().enumerate() {
+            let outcome_label = format_outcome_label(exec);
+            out.push_str(&format!("    {}. {}\n", i + 1, outcome_label));
+
+            // Show example inputs
+            let inputs_str = exec
+                .inputs
+                .iter()
+                .map(format_value_short)
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            let outcome_short = format_outcome_short(exec);
+            out.push_str(&format!(
+                "       e.g. {}({inputs_str}) {outcome_short}\n",
+                result.function_name
+            ));
+        }
+    }
+
+    if options.show_perf {
+        if let Some(dur) = options.wall_time {
+            out.push_str(&format!(
+                "\n  Perf: {:.1}ms, {} iteration(s)\n",
+                dur.as_secs_f64() * 1000.0,
+                result.iterations
+            ));
+        } else {
+            out.push_str(&format!(
+                "\n  Perf: {} iteration(s)\n",
+                result.iterations
+            ));
+        }
+    }
+
+    out
+}
+
+/// Format an exploration result in the legacy verbose format (for DEBUG/TRACE level).
+pub fn format_exploration_report_verbose(result: &ExplorationResult) -> String {
     let mut out = String::new();
 
     out.push_str(&format!(
@@ -222,6 +331,30 @@ pub fn format_exploration_report(result: &ExplorationResult) -> String {
     }
 
     out
+}
+
+/// Describe what a path does (e.g. "returns 5" or "throws Error: boom").
+fn format_outcome_label(exec: &ExecutionSummary) -> String {
+    if let Some(ref err) = exec.thrown_error {
+        format!("throws {err}")
+    } else {
+        match &exec.return_value {
+            Some(v) if !v.is_null() => format!("returns {}", format_value_short(v)),
+            _ => "returns (void)".to_string(),
+        }
+    }
+}
+
+/// Short outcome for the example line (e.g. "→ 5.0" or "→ Error").
+fn format_outcome_short(exec: &ExecutionSummary) -> String {
+    if exec.thrown_error.is_some() {
+        "→ Error".to_string()
+    } else {
+        match &exec.return_value {
+            Some(v) if !v.is_null() => format!("→ {}", format_value_short(v)),
+            _ => "→ (void)".to_string(),
+        }
+    }
 }
 
 /// Format a JSON value for display, truncating long values.
@@ -380,7 +513,7 @@ mod tests {
     }
 
     #[test]
-    fn format_exploration_report_shows_paths() {
+    fn format_exploration_report_shows_clustered_paths() {
         let result = ExplorationResult {
             function_name: "classify".into(),
             iterations: 10,
@@ -406,12 +539,41 @@ mod tests {
             raw_results: vec![],
         };
 
-        let report = format_exploration_report(&result);
-        assert!(report.contains("10 iteration(s)"));
-        assert!(report.contains("2 unique path(s)"));
-        assert!(report.contains("50%"));
-        assert!(report.contains("positive-odd"));
-        assert!(report.contains("negative"));
+        let options = ReportOptions::default();
+        let report = format_exploration_report(&result, &options);
+        assert!(report.contains("classify"), "should contain function name");
+        assert!(report.contains("2 distinct path(s)"), "should show path count");
+        assert!(report.contains("50%"), "should show coverage");
+        assert!(report.contains("positive-odd"), "should show return value");
+        assert!(report.contains("negative"), "should show return value");
+        assert!(report.contains("Path clusters:"), "should have cluster heading");
+        assert!(report.contains("e.g."), "should show example");
+    }
+
+    #[test]
+    fn format_exploration_report_with_location() {
+        let result = ExplorationResult {
+            function_name: "safeDivide".into(),
+            iterations: 5,
+            unique_paths: 1,
+            lines_covered: 3,
+            total_lines: 5,
+            new_path_executions: vec![ExecutionSummary {
+                inputs: vec![serde_json::json!(10)],
+                return_value: Some(serde_json::json!(5)),
+                thrown_error: None,
+                lines_executed: vec![1, 2, 3],
+                is_new_path: true,
+            }],
+            raw_results: vec![],
+        };
+
+        let options = ReportOptions {
+            location: Some("src/math.ts:10".into()),
+            ..Default::default()
+        };
+        let report = format_exploration_report(&result, &options);
+        assert!(report.contains("safeDivide (src/math.ts:10)"));
     }
 
     #[test]
@@ -432,8 +594,112 @@ mod tests {
             raw_results: vec![],
         };
 
-        let report = format_exploration_report(&result);
-        assert!(report.contains("THROWS"));
-        assert!(report.contains("TypeError"));
+        let options = ReportOptions::default();
+        let report = format_exploration_report(&result, &options);
+        assert!(report.contains("throws"), "should show throws in cluster");
+        assert!(report.contains("TypeError"), "should show error type");
+    }
+
+    #[test]
+    fn format_exploration_report_with_perf() {
+        let result = ExplorationResult {
+            function_name: "fast".into(),
+            iterations: 10,
+            unique_paths: 1,
+            lines_covered: 0,
+            total_lines: 0,
+            new_path_executions: vec![],
+            raw_results: vec![],
+        };
+
+        let options = ReportOptions {
+            show_perf: true,
+            wall_time: Some(std::time::Duration::from_millis(42)),
+            ..Default::default()
+        };
+        let report = format_exploration_report(&result, &options);
+        assert!(report.contains("Perf:"), "should show perf section");
+        assert!(report.contains("42.0ms"), "should show wall time");
+        assert!(report.contains("10 iteration(s)"), "should show iterations");
+    }
+
+    #[test]
+    fn format_exploration_report_verbose_shows_legacy_format() {
+        let result = ExplorationResult {
+            function_name: "classify".into(),
+            iterations: 10,
+            unique_paths: 2,
+            lines_covered: 5,
+            total_lines: 10,
+            new_path_executions: vec![
+                ExecutionSummary {
+                    inputs: vec![serde_json::json!(5)],
+                    return_value: Some(serde_json::json!("positive-odd")),
+                    thrown_error: None,
+                    lines_executed: vec![1, 2, 3],
+                    is_new_path: true,
+                },
+            ],
+            raw_results: vec![],
+        };
+
+        let report = format_exploration_report_verbose(&result);
+        assert!(report.contains("10 iteration(s)"));
+        assert!(report.contains("2 unique path(s)"));
+        assert!(report.contains("positive-odd"));
+        assert!(report.contains("Discovered paths:"));
+    }
+
+    #[tokio::test]
+    async fn explore_function_instruments_before_executing() {
+        use crate::frontend::{Frontend, FrontendConfig};
+        use crate::types::{ParamInfo, TypeInfo};
+        use std::path::{Path, PathBuf};
+        use std::time::Duration;
+
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let noop_path = manifest_dir.join("../protocol/noop-frontend.sh");
+
+        let mut config = FrontendConfig::new(PathBuf::from("bash"));
+        config.args = vec![noop_path.to_string_lossy().into_owned()];
+        config.request_timeout = Duration::from_secs(5);
+
+        let mut frontend = Frontend::spawn(&config).await.expect("spawn noop frontend");
+
+        let analysis = FunctionAnalysis {
+            name: "stub".into(),
+            exported: true,
+            params: vec![ParamInfo {
+                name: "x".into(),
+                typ: TypeInfo::Int,
+            }],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Unknown,
+            start_line: 1,
+            end_line: 5,
+        };
+
+        let explore_config = ExploreConfig {
+            file: "test.ts".into(),
+            max_iterations: 3,
+            seed: Some(42),
+            mocks: vec![],
+        };
+
+        // This should succeed — explore_function now sends Instrument
+        // before Execute. Without the instrument step, the noop frontend
+        // would never receive an instrument command.
+        let result = explore_function(&mut frontend, &analysis, &explore_config)
+            .await
+            .expect("explore_function should succeed with noop frontend");
+
+        assert_eq!(result.function_name, "stub");
+        assert_eq!(result.iterations, 3);
+        // The noop frontend returns the same result for every execution,
+        // so we should have exactly 1 unique path.
+        assert_eq!(result.unique_paths, 1);
+
+        frontend.shutdown().await.expect("shutdown failed");
     }
 }

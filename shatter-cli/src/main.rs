@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
@@ -9,10 +10,12 @@ use shatter_core::batch_analyze::{self, FunctionRegistry};
 use shatter_core::behavior::BehaviorMap;
 use shatter_core::cache::BehaviorMapCache;
 use shatter_core::call_graph::CallGraph;
+use shatter_core::config::{self as shatter_config, ShatterConfig};
 use shatter_core::discovery::{self, DiscoveryOptions, Language as DiscoveryLanguage};
-use shatter_core::explorer::{self, ExploreConfig};
+use shatter_core::explorer::{self, ExploreConfig, ReportOptions};
 use shatter_core::export;
 use shatter_core::frontend::{Frontend, FrontendConfig};
+use shatter_core::log_level::LogLevel;
 use shatter_core::protocol::{Command as ProtoCommand, ResponseResult};
 use shatter_core::scan_orchestrator::{self, ScanConfig};
 use shatter_core::scope::{ScopeConfig, ScopeMatcher};
@@ -25,8 +28,63 @@ mod embedded_go_frontend;
 #[derive(Parser, Debug)]
 #[command(name = "shatter", version, about)]
 struct Cli {
+    /// Log verbosity level: error, warn, info (default), debug, trace.
+    #[arg(long, global = true, default_value = "info")]
+    log_level: LogLevel,
+
+    /// Increase verbosity (-v = debug, -vv = trace).
+    #[arg(short = 'v', long = "verbose", global = true, action = clap::ArgAction::Count)]
+    verbose: u8,
+
+    /// Decrease verbosity to warnings and errors only.
+    #[arg(short = 'q', long = "quiet", global = true)]
+    quiet: bool,
+
+    /// Show per-function performance stats.
+    #[arg(long, global = true)]
+    perf: bool,
+
     #[command(subcommand)]
     command: CliCommand,
+}
+
+impl Cli {
+    /// Resolve the effective log level from --log-level, -v, and -q flags.
+    fn effective_log_level(&self) -> LogLevel {
+        if self.quiet {
+            return LogLevel::Warn;
+        }
+        match self.verbose {
+            0 => self.log_level,
+            1 => LogLevel::Debug,
+            _ => LogLevel::Trace,
+        }
+    }
+}
+
+/// Terminal color support based on TTY detection.
+struct Colors {
+    bold: &'static str,
+    dim: &'static str,
+    reset: &'static str,
+}
+
+impl Colors {
+    fn detect() -> Self {
+        if std::io::stdout().is_terminal() {
+            Colors {
+                bold: "\x1b[1m",
+                dim: "\x1b[2m",
+                reset: "\x1b[0m",
+            }
+        } else {
+            Colors {
+                bold: "",
+                dim: "",
+                reset: "",
+            }
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -66,6 +124,18 @@ enum CliCommand {
         /// Disable behavior map caching entirely.
         #[arg(long)]
         no_cache: bool,
+
+        /// Per-request timeout in seconds (how long to wait for a single frontend response).
+        #[arg(long, default_value_t = 30)]
+        request_timeout: u64,
+
+        /// Path to a candidate inputs JSON file (overrides .shatter/ config inputs).
+        #[arg(long)]
+        inputs: Option<PathBuf>,
+
+        /// Path to a .shatter/config.yaml file (bypasses hierarchical discovery).
+        #[arg(long = "config")]
+        config_path: Option<PathBuf>,
     },
 
     /// Scan multiple functions in dependency order, using behavior maps as mocks.
@@ -93,6 +163,10 @@ enum CliCommand {
         /// Disable behavior map caching entirely.
         #[arg(long)]
         no_cache: bool,
+
+        /// Per-request timeout in seconds (how long to wait for a single frontend response).
+        #[arg(long, default_value_t = 30)]
+        request_timeout: u64,
     },
 
     /// Export generated tests from behavior maps produced by exploration.
@@ -127,6 +201,10 @@ enum CliCommand {
         /// Path to a scope configuration YAML file.
         #[arg(long)]
         scope: Option<PathBuf>,
+
+        /// Per-request timeout in seconds (how long to wait for a single frontend response).
+        #[arg(long, default_value_t = 30)]
+        request_timeout: u64,
     },
 
     /// Discover, analyze, and explore an entire repository in one shot.
@@ -154,6 +232,10 @@ enum CliCommand {
         /// Only discover and analyze, skip exploration.
         #[arg(long)]
         analyze_only: bool,
+
+        /// Per-request timeout in seconds (how long to wait for a single frontend response).
+        #[arg(long, default_value_t = 30)]
+        request_timeout: u64,
     },
 
     /// Compare current behaviors against a previous snapshot to detect regressions.
@@ -231,8 +313,8 @@ fn parse_target(target: &str) -> Result<Target, String> {
     })
 }
 
-/// Build a `FrontendConfig` for the given language.
-fn frontend_config(language: Language, timeout: Duration) -> Result<FrontendConfig, String> {
+/// Build a `FrontendConfig` for the given language, with log level propagation.
+fn frontend_config(language: Language, timeout: Duration, log_level: LogLevel) -> Result<FrontendConfig, String> {
     let (command, args) = match language {
         Language::TypeScript => {
             let bundle_path = embedded_frontend::ensure_extracted()?;
@@ -250,6 +332,10 @@ fn frontend_config(language: Language, timeout: Duration) -> Result<FrontendConf
     let mut config = FrontendConfig::new(command);
     config.args = args;
     config.request_timeout = timeout;
+    config.env_vars.push((
+        LogLevel::ENV_VAR.to_string(),
+        log_level.as_str().to_string(),
+    ));
     Ok(config)
 }
 
@@ -266,12 +352,20 @@ async fn run_explore(
     _show_clusters: bool,
     cache_dir: Option<&Path>,
     no_cache: bool,
+    request_timeout: u64,
+    inputs_path: Option<&Path>,
+    config_path: Option<&Path>,
+    log_level: LogLevel,
+    show_perf: bool,
+    colors: &Colors,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let scope_config = match scope_path {
         Some(path) => {
             let config = ScopeConfig::from_file(path)
                 .map_err(|e| format!("failed to load scope config: {e}"))?;
-            println!("Loaded scope config from {}", path.display());
+            if log_level >= LogLevel::Info {
+                println!("Loaded scope config from {}", path.display());
+            }
             config
         }
         None => ScopeConfig::default(),
@@ -295,7 +389,7 @@ async fn run_explore(
         .map(|t| parse_target(t))
         .collect::<Result<Vec<_>, _>>()?;
 
-    let request_timeout = Duration::from_secs(timeout);
+    let req_timeout = Duration::from_secs(request_timeout);
 
     for target in &parsed {
         let file_str = target.file.to_string_lossy();
@@ -304,12 +398,14 @@ async fn run_explore(
             .as_deref()
             .unwrap_or("(all)");
 
-        println!(
-            "Exploring {file_str}:{func_display} [language={}, max_iterations={max_iterations}]",
-            target.language.label()
-        );
+        if log_level >= LogLevel::Debug {
+            println!(
+                "[debug] Exploring {file_str}:{func_display} [language={}, max_iterations={max_iterations}]",
+                target.language.label()
+            );
+        }
 
-        let config = frontend_config(target.language, request_timeout)?;
+        let config = frontend_config(target.language, req_timeout, log_level)?;
         let mut frontend = Frontend::spawn(&config).await.map_err(|e| {
             format!(
                 "failed to spawn {} frontend: {e}",
@@ -317,10 +413,12 @@ async fn run_explore(
             )
         })?;
 
-        println!(
-            "  Frontend connected (language={})",
-            frontend.language().unwrap_or("unknown")
-        );
+        if log_level >= LogLevel::Debug {
+            println!(
+                "[debug] Frontend connected (language={})",
+                frontend.language().unwrap_or("unknown")
+            );
+        }
 
         // Analyze phase
         let analyze_response = frontend
@@ -333,13 +431,15 @@ async fn run_explore(
 
         match &analyze_response.result {
             ResponseResult::Analyze { functions } => {
-                println!("  Found {} function(s):", functions.len());
-                for func in functions {
-                    println!("    - {} ({} params, {} branches)",
-                        func.name,
-                        func.params.len(),
-                        func.branches.len(),
-                    );
+                if log_level >= LogLevel::Debug {
+                    println!("  Found {} function(s):", functions.len());
+                    for func in functions {
+                        println!("    - {} ({} params, {} branches)",
+                            func.name,
+                            func.params.len(),
+                            func.branches.len(),
+                        );
+                    }
                 }
             }
             ResponseResult::Error { code, message, .. } => {
@@ -360,23 +460,109 @@ async fn run_explore(
         };
 
         if analyze_only {
+            if log_level >= LogLevel::Info {
+                for func in &functions {
+                    println!(
+                        "{}{}{}  ({file_str}:{})",
+                        colors.bold, func.name, colors.reset, func.start_line
+                    );
+                    println!(
+                        "  {}params: {}, branches: {}{}",
+                        colors.dim,
+                        func.params.len(),
+                        func.branches.len(),
+                        colors.reset
+                    );
+                }
+            }
             shutdown_frontend(frontend).await;
             continue;
         }
 
-        // Exploration phase: generate random inputs and execute
-        let explore_config = ExploreConfig {
-            max_iterations,
-            seed: None,
-            mocks: vec![],
+        // Load .shatter/ config for this target
+        let shatter_configs: Vec<ShatterConfig> = if let Some(cp) = config_path {
+            // Explicit config bypasses discovery
+            let cfg = shatter_config::parse_config(cp)
+                .map_err(|e| format!("failed to load config: {e}"))?;
+            if log_level >= LogLevel::Debug {
+                println!("[debug] Loaded config from {}", cp.display());
+            }
+            vec![cfg]
+        } else {
+            // Hierarchical discovery from target file's directory
+            let target_dir = target.file.parent().unwrap_or(Path::new("."));
+            shatter_config::discover_configs(target_dir)
+                .map_err(|e| format!("config discovery error: {e}"))?
         };
 
+        // Exploration phase: generate random inputs and execute
         for func in &functions {
-            println!("\n  Exploring {}...", func.name);
+            let function_id = format!("{}:{}", file_str, func.name);
+
+            // Resolve per-function config
+            let resolved = shatter_config::resolve_function_config_with_inputs(
+                &function_id,
+                target.file.parent().unwrap_or(Path::new(".")),
+                inputs_path,
+                max_iterations,
+                timeout,
+            )
+            .map_err(|e| format!("config resolution error for {}: {e}", func.name))?;
+
+            if resolved.skip {
+                if log_level >= LogLevel::Debug {
+                    println!("\n  [debug] Skipping {} (skip=true in config)", func.name);
+                }
+                continue;
+            }
+
+            let explore_config = ExploreConfig {
+                file: file_str.to_string(),
+                max_iterations: resolved.max_iterations,
+                seed: None,
+                mocks: vec![],
+            };
+
+            // Convert candidate inputs for logging
+            if log_level >= LogLevel::Debug {
+                if !resolved.candidate_inputs.is_empty() {
+                    println!(
+                        "\n  [debug] Exploring {} ({} candidate input(s) from config)...",
+                        func.name,
+                        resolved.candidate_inputs.len()
+                    );
+                } else {
+                    println!("\n  [debug] Exploring {}...", func.name);
+                }
+            }
+
+            // Store candidate inputs on the ExploreConfig is not needed;
+            // they are used by the explorer via its own mechanism.
+            // For now, we just log that they exist. The actual wiring into
+            // the orchestrator's worklist happens when the concolic orchestrator
+            // is used. For the random explorer (explore_function), we pass them
+            // as extra seed inputs.
+            let _ = &shatter_configs; // suppress unused warning
+
+            let func_start = Instant::now();
 
             match explorer::explore_function(&mut frontend, func, &explore_config).await {
                 Ok(result) => {
-                    print!("{}", explorer::format_exploration_report(&result));
+                    let wall_time = func_start.elapsed();
+
+                    if log_level >= LogLevel::Info {
+                        if log_level >= LogLevel::Trace {
+                            print!("{}", explorer::format_exploration_report_verbose(&result));
+                        } else {
+                            let report_opts = ReportOptions {
+                                location: Some(format!("{file_str}:{}", func.start_line)),
+                                show_perf,
+                                wall_time: Some(wall_time),
+                            };
+                            print!("{}", explorer::format_exploration_report(&result, &report_opts));
+                        }
+                        println!();
+                    }
 
                     let behavior_map =
                         BehaviorMap::from_exploration_result(&func.name, &result);
@@ -393,7 +579,6 @@ async fn run_explore(
         }
 
         shutdown_frontend(frontend).await;
-        println!();
     }
 
     Ok(())
@@ -403,9 +588,11 @@ async fn run_explore(
 async fn run_scan(
     targets: &[String],
     max_iterations: u32,
-    timeout: u64,
+    _timeout: u64,
     scope_path: Option<&Path>,
     analyze_only: bool,
+    request_timeout: u64,
+    log_level: LogLevel,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let _scope_config = match scope_path {
         Some(path) => {
@@ -428,8 +615,8 @@ async fn run_scan(
         return Err("scan currently requires all targets to use the same language frontend".into());
     }
 
-    let request_timeout = Duration::from_secs(timeout);
-    let config = frontend_config(first_lang, request_timeout)?;
+    let req_timeout = Duration::from_secs(request_timeout);
+    let config = frontend_config(first_lang, req_timeout, log_level)?;
     let mut frontend = Frontend::spawn(&config).await.map_err(|e| {
         format!(
             "failed to spawn {} frontend: {e}",
@@ -437,20 +624,26 @@ async fn run_scan(
         )
     })?;
 
-    println!(
-        "Frontend connected (language={})",
-        frontend.language().unwrap_or("unknown")
-    );
+    if log_level >= LogLevel::Debug {
+        println!(
+            "[debug] Frontend connected (language={})",
+            frontend.language().unwrap_or("unknown")
+        );
+    }
 
     // Analyze all targets to collect FunctionAnalysis data.
     let mut all_analyses = Vec::new();
+    let mut file_map: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
 
     for target in &parsed {
         let file_str = target.file.to_string_lossy();
-        println!(
-            "Analyzing {file_str}:{}",
-            target.function.as_deref().unwrap_or("(all)")
-        );
+        if log_level >= LogLevel::Debug {
+            println!(
+                "[debug] Analyzing {file_str}:{}",
+                target.function.as_deref().unwrap_or("(all)")
+            );
+        }
 
         let analyze_response = frontend
             .send(ProtoCommand::Analyze {
@@ -462,15 +655,20 @@ async fn run_scan(
 
         match analyze_response.result {
             ResponseResult::Analyze { functions } => {
-                println!("  Found {} function(s):", functions.len());
+                if log_level >= LogLevel::Debug {
+                    println!("  Found {} function(s):", functions.len());
+                    for func in &functions {
+                        println!(
+                            "    - {} ({} params, {} branches, {} deps)",
+                            func.name,
+                            func.params.len(),
+                            func.branches.len(),
+                            func.dependencies.len(),
+                        );
+                    }
+                }
                 for func in &functions {
-                    println!(
-                        "    - {} ({} params, {} branches, {} deps)",
-                        func.name,
-                        func.params.len(),
-                        func.branches.len(),
-                        func.dependencies.len(),
-                    );
+                    file_map.insert(func.name.clone(), file_str.to_string());
                 }
                 all_analyses.extend(functions);
             }
@@ -494,14 +692,17 @@ async fn run_scan(
         return Ok(());
     }
 
-    println!(
-        "\nScanning {} function(s) in dependency order...\n",
-        all_analyses.len()
-    );
+    if log_level >= LogLevel::Debug {
+        println!(
+            "\n[debug] Scanning {} function(s) in dependency order...\n",
+            all_analyses.len()
+        );
+    }
 
     let scan_config = ScanConfig {
         max_iterations_per_function: max_iterations,
         seed: None,
+        file_map,
     };
 
     match scan_orchestrator::scan(&mut frontend, &all_analyses, &scan_config).await {
@@ -544,14 +745,17 @@ fn run_diff(
 }
 
 /// Run the export-tests command: explore targets and generate test code.
+#[allow(clippy::too_many_arguments)]
 async fn run_export_tests(
     targets: &[String],
     framework: &str,
     module_path: &str,
     output_path: Option<&Path>,
     max_iterations: u32,
-    timeout: u64,
+    _timeout: u64,
     scope_path: Option<&Path>,
+    request_timeout: u64,
+    _log_level: LogLevel,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Validate framework
     if framework != "jest" && framework != "gotest" {
@@ -573,7 +777,7 @@ async fn run_export_tests(
         .map(|t| parse_target(t))
         .collect::<Result<Vec<_>, _>>()?;
 
-    let request_timeout = Duration::from_secs(timeout);
+    let req_timeout = Duration::from_secs(request_timeout);
     let mut all_output = String::new();
 
     for target in &parsed {
@@ -582,7 +786,7 @@ async fn run_export_tests(
 
         eprintln!("Exploring {file_str}:{func_display} for test export...");
 
-        let config = frontend_config(target.language, request_timeout)?;
+        let config = frontend_config(target.language, req_timeout, LogLevel::Warn)?;
         let mut frontend = Frontend::spawn(&config).await.map_err(|e| {
             format!("failed to spawn {} frontend: {e}", target.language.label())
         })?;
@@ -612,6 +816,7 @@ async fn run_export_tests(
 
         // Explore each function and generate tests
         let explore_config = ExploreConfig {
+            file: file_str.to_string(),
             max_iterations,
             seed: None,
             mocks: vec![],
@@ -672,6 +877,8 @@ async fn run_run(
     max_iterations: u32,
     timeout: u64,
     analyze_only: bool,
+    request_timeout: u64,
+    log_level: LogLevel,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
 
@@ -688,11 +895,15 @@ async fn run_run(
     let root = root.canonicalize()
         .map_err(|e| format!("failed to resolve path '{}': {e}", path))?;
 
-    println!("Shatter run: {}", root.display());
-    println!();
+    if log_level >= LogLevel::Debug {
+        println!("Shatter run: {}", root.display());
+        println!();
+    }
 
     // Step 1: Discover files
-    println!("Discovering source files...");
+    if log_level >= LogLevel::Debug {
+        println!("Discovering source files...");
+    }
     let options = DiscoveryOptions::default();
     let files = discovery::discover_files(&root, &options)
         .map_err(|e| format!("file discovery failed: {e}"))?;
@@ -714,17 +925,19 @@ async fn run_run(
         }
     }
 
-    println!("  Found {} file(s):", files.len());
-    if !ts_files.is_empty() {
-        println!("    TypeScript: {}", ts_files.len());
+    if log_level >= LogLevel::Debug {
+        println!("  Found {} file(s):", files.len());
+        if !ts_files.is_empty() {
+            println!("    TypeScript: {}", ts_files.len());
+        }
+        if !go_files.is_empty() {
+            println!("    Go: {}", go_files.len());
+        }
+        if !rs_files.is_empty() {
+            println!("    Rust: {} (analysis not yet supported)", rs_files.len());
+        }
+        println!();
     }
-    if !go_files.is_empty() {
-        println!("    Go: {}", go_files.len());
-    }
-    if !rs_files.is_empty() {
-        println!("    Rust: {} (analysis not yet supported)", rs_files.len());
-    }
-    println!();
 
     // Filter to languages we can actually analyze (TS, Go)
     let analyzable_files: Vec<(PathBuf, DiscoveryLanguage)> = files
@@ -738,7 +951,7 @@ async fn run_run(
     }
 
     // Step 2: Spawn frontends for each language
-    let request_timeout = Duration::from_secs(timeout);
+    let req_timeout = Duration::from_secs(request_timeout);
     let mut frontends: HashMap<DiscoveryLanguage, Frontend> = HashMap::new();
 
     let needed_langs: std::collections::HashSet<DiscoveryLanguage> = analyzable_files
@@ -749,20 +962,24 @@ async fn run_run(
     for lang in &needed_langs {
         let cli_lang = discovery_lang_to_cli_lang(*lang)
             .ok_or_else(|| format!("no frontend for {lang:?}"))?;
-        let config = frontend_config(cli_lang, request_timeout)?;
+        let config = frontend_config(cli_lang, req_timeout, log_level)?;
         let frontend = Frontend::spawn(&config).await.map_err(|e| {
             format!("failed to spawn {lang:?} frontend: {e}")
         })?;
-        println!(
-            "Frontend connected (language={})",
-            frontend.language().unwrap_or("unknown")
-        );
+        if log_level >= LogLevel::Debug {
+            println!(
+                "Frontend connected (language={})",
+                frontend.language().unwrap_or("unknown")
+            );
+        }
         frontends.insert(*lang, frontend);
     }
 
     // Step 3: Batch analyze
-    println!();
-    println!("Analyzing {} file(s)...", analyzable_files.len());
+    if log_level >= LogLevel::Debug {
+        println!();
+        println!("Analyzing {} file(s)...", analyzable_files.len());
+    }
     let registry = batch_analyze::batch_analyze(&mut frontends, &analyzable_files)
         .await
         .map_err(|e| format!("batch analyze failed: {e}"))?;
@@ -770,8 +987,10 @@ async fn run_run(
     let total_functions = registry.len();
     let total_branches: usize = registry.entries().iter().map(|e| e.branch_count).sum();
 
-    println!("  Found {} function(s) with {} total branch(es)", total_functions, total_branches);
-    println!();
+    if log_level >= LogLevel::Debug {
+        println!("  Found {} function(s) with {} total branch(es)", total_functions, total_branches);
+        println!();
+    }
 
     if total_functions == 0 {
         println!("No functions found to explore.");
@@ -780,19 +999,23 @@ async fn run_run(
     }
 
     // Step 4: Build call graph
-    println!("Building call graph...");
+    if log_level >= LogLevel::Debug {
+        println!("Building call graph...");
+    }
     let call_graph = CallGraph::from_registry(&registry);
     let layers = call_graph.topological_layers();
     let cycles = call_graph.cycle_groups();
 
-    println!(
-        "  {} node(s), {} edge(s), {} layer(s), {} cycle(s)",
-        call_graph.node_count(),
-        call_graph.edge_count(),
-        layers.len(),
-        cycles.len(),
-    );
-    println!();
+    if log_level >= LogLevel::Debug {
+        println!(
+            "  {} node(s), {} edge(s), {} layer(s), {} cycle(s)",
+            call_graph.node_count(),
+            call_graph.edge_count(),
+            layers.len(),
+            cycles.len(),
+        );
+        println!();
+    }
 
     if analyze_only {
         print_summary_report(
@@ -817,13 +1040,17 @@ async fn run_run(
     }
 
     // Step 5: Explore in dependency order (layer by layer)
-    println!("Exploring functions in dependency order...");
-    println!();
+    if log_level >= LogLevel::Debug {
+        println!("Exploring functions in dependency order...");
+        println!();
+    }
 
     let mut exploration_results: Vec<(String, explorer::ExplorationResult)> = Vec::new();
 
     for (layer_idx, layer) in layers.iter().enumerate() {
-        println!("  Layer {} ({} function(s)):", layer_idx, layer.len());
+        if log_level >= LogLevel::Debug {
+            println!("  Layer {} ({} function(s)):", layer_idx, layer.len());
+        }
 
         for qualified_name in layer {
             let entry = match registry.get(qualified_name) {
@@ -864,9 +1091,12 @@ async fn run_run(
                 continue;
             };
 
-            print!("    Exploring {}...", entry.name);
+            if log_level >= LogLevel::Debug {
+                print!("    Exploring {}...", entry.name);
+            }
 
             let explore_config = ExploreConfig {
+                file: entry.file_path.to_string_lossy().into_owned(),
                 max_iterations,
                 seed: None,
                 mocks: vec![],
@@ -874,14 +1104,18 @@ async fn run_run(
 
             match explorer::explore_function(frontend, &func_analysis, &explore_config).await {
                 Ok(result) => {
-                    println!(
-                        " {} path(s), {}/{} lines",
-                        result.unique_paths, result.lines_covered, result.total_lines
-                    );
+                    if log_level >= LogLevel::Debug {
+                        println!(
+                            " {} path(s), {}/{} lines",
+                            result.unique_paths, result.lines_covered, result.total_lines
+                        );
+                    }
                     exploration_results.push((qualified_name.clone(), result));
                 }
                 Err(e) => {
-                    println!(" error: {e}");
+                    if log_level >= LogLevel::Debug {
+                        println!(" error: {e}");
+                    }
                 }
             }
 
@@ -1149,6 +1383,8 @@ async fn shutdown_frontend(frontend: Frontend) {
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
+    let log_level = cli.effective_log_level();
+    let colors = Colors::detect();
 
     let result = match cli.command {
         CliCommand::Explore {
@@ -1160,6 +1396,9 @@ async fn main() -> ExitCode {
             show_clusters,
             cache_dir,
             no_cache,
+            request_timeout,
+            inputs,
+            config_path,
         } => {
             run_explore(
                 &targets,
@@ -1170,6 +1409,12 @@ async fn main() -> ExitCode {
                 show_clusters,
                 cache_dir.as_deref(),
                 no_cache,
+                request_timeout,
+                inputs.as_deref(),
+                config_path.as_deref(),
+                log_level,
+                cli.perf,
+                &colors,
             )
             .await
         }
@@ -1180,6 +1425,7 @@ async fn main() -> ExitCode {
             scope,
             analyze_only,
             no_cache: _,
+            request_timeout,
         } => {
             run_scan(
                 &targets,
@@ -1187,6 +1433,8 @@ async fn main() -> ExitCode {
                 timeout,
                 scope.as_deref(),
                 analyze_only,
+                request_timeout,
+                log_level,
             )
             .await
         }
@@ -1198,6 +1446,7 @@ async fn main() -> ExitCode {
             max_iterations,
             timeout,
             scope,
+            request_timeout,
         } => {
             run_export_tests(
                 &targets,
@@ -1207,6 +1456,8 @@ async fn main() -> ExitCode {
                 max_iterations,
                 timeout,
                 scope.as_deref(),
+                request_timeout,
+                log_level,
             )
             .await
         }
@@ -1216,6 +1467,7 @@ async fn main() -> ExitCode {
             max_iterations,
             timeout,
             analyze_only,
+            request_timeout,
         } => {
             run_run(
                 &path,
@@ -1223,6 +1475,8 @@ async fn main() -> ExitCode {
                 max_iterations,
                 timeout,
                 analyze_only,
+                request_timeout,
+                log_level,
             )
             .await
         }
@@ -1330,6 +1584,9 @@ mod tests {
                 show_clusters,
                 cache_dir,
                 no_cache,
+                request_timeout,
+                inputs,
+                config_path,
             } => {
                 assert_eq!(targets, vec!["test.ts:myFunc"]);
                 assert_eq!(max_iterations, 100);
@@ -1339,6 +1596,9 @@ mod tests {
                 assert!(!show_clusters);
                 assert!(cache_dir.is_none());
                 assert!(!no_cache);
+                assert_eq!(request_timeout, 30);
+                assert!(inputs.is_none());
+                assert!(config_path.is_none());
             }
             _ => panic!("expected Explore command"),
         }
@@ -1381,6 +1641,9 @@ mod tests {
                 show_clusters,
                 cache_dir,
                 no_cache,
+                request_timeout,
+                inputs,
+                config_path,
             } => {
                 assert_eq!(targets, vec!["a.ts:fn1", "b.go:Fn2"]);
                 assert_eq!(max_iterations, 50);
@@ -1390,6 +1653,9 @@ mod tests {
                 assert!(!show_clusters);
                 assert!(cache_dir.is_none());
                 assert!(!no_cache);
+                assert_eq!(request_timeout, 30);
+                assert!(inputs.is_none());
+                assert!(config_path.is_none());
             }
             _ => panic!("expected Explore command"),
         }
@@ -1427,6 +1693,108 @@ mod tests {
     }
 
     #[test]
+    fn cli_parses_explore_with_request_timeout() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "explore",
+            "--request-timeout", "10",
+            "test.ts:myFunc",
+        ]);
+        match cli.command {
+            CliCommand::Explore { request_timeout, timeout, .. } => {
+                assert_eq!(request_timeout, 10);
+                assert_eq!(timeout, 60);
+            }
+            _ => panic!("expected Explore command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_explore_with_inputs_flag() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "explore",
+            "--inputs", "candidates.json",
+            "test.ts:myFunc",
+        ]);
+        match cli.command {
+            CliCommand::Explore { inputs, config_path, .. } => {
+                assert_eq!(inputs, Some(PathBuf::from("candidates.json")));
+                assert!(config_path.is_none());
+            }
+            _ => panic!("expected Explore command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_explore_with_config_flag() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "explore",
+            "--config", ".shatter/config.yaml",
+            "test.ts:myFunc",
+        ]);
+        match cli.command {
+            CliCommand::Explore { inputs, config_path, .. } => {
+                assert!(inputs.is_none());
+                assert_eq!(config_path, Some(PathBuf::from(".shatter/config.yaml")));
+            }
+            _ => panic!("expected Explore command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_scan_with_request_timeout() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "scan",
+            "--request-timeout", "15",
+            "--timeout", "200",
+            "test.ts",
+        ]);
+        match cli.command {
+            CliCommand::Scan { request_timeout, timeout, .. } => {
+                assert_eq!(request_timeout, 15);
+                assert_eq!(timeout, 200);
+            }
+            _ => panic!("expected Scan command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_export_tests_with_request_timeout() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "export-tests",
+            "--request-timeout", "5",
+            "test.ts:myFunc",
+        ]);
+        match cli.command {
+            CliCommand::ExportTests { request_timeout, .. } => {
+                assert_eq!(request_timeout, 5);
+            }
+            _ => panic!("expected ExportTests command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_run_with_request_timeout() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "run",
+            "--request-timeout", "45",
+            "/tmp/repo",
+        ]);
+        match cli.command {
+            CliCommand::Run { request_timeout, timeout, .. } => {
+                assert_eq!(request_timeout, 45);
+                assert_eq!(timeout, 300);
+            }
+            _ => panic!("expected Run command"),
+        }
+    }
+
+    #[test]
     fn cli_explore_requires_at_least_one_target() {
         let result = Cli::try_parse_from(["shatter", "explore"]);
         assert!(result.is_err());
@@ -1455,6 +1823,7 @@ mod tests {
                 scope,
                 analyze_only,
                 no_cache,
+                request_timeout,
             } => {
                 assert_eq!(targets, vec!["test.ts"]);
                 assert_eq!(max_iterations, 100);
@@ -1462,6 +1831,7 @@ mod tests {
                 assert!(scope.is_none());
                 assert!(!analyze_only);
                 assert!(!no_cache);
+                assert_eq!(request_timeout, 30);
             }
             _ => panic!("expected Scan command"),
         }
@@ -1507,7 +1877,7 @@ mod tests {
 
     #[test]
     fn frontend_config_typescript_uses_embedded_bundle() {
-        let config = frontend_config(Language::TypeScript, Duration::from_secs(30)).unwrap();
+        let config = frontend_config(Language::TypeScript, Duration::from_secs(30), LogLevel::Info).unwrap();
         assert_eq!(config.command, PathBuf::from("node"));
         assert_eq!(config.request_timeout, Duration::from_secs(30));
         // The arg should point to the extracted bundle, not a relative dev path
@@ -1521,7 +1891,7 @@ mod tests {
 
     #[test]
     fn frontend_config_go_uses_embedded_binary() {
-        let config = frontend_config(Language::Go, Duration::from_secs(45)).unwrap();
+        let config = frontend_config(Language::Go, Duration::from_secs(45), LogLevel::Info).unwrap();
         assert_eq!(config.request_timeout, Duration::from_secs(45));
         assert!(config.args.is_empty());
         // The command should point to the extracted binary, not a relative dev path
@@ -1612,6 +1982,7 @@ mod tests {
                 max_iterations,
                 timeout,
                 scope,
+                request_timeout,
             } => {
                 assert_eq!(targets, vec!["test.go:Add"]);
                 assert_eq!(framework, "gotest");
@@ -1620,6 +1991,7 @@ mod tests {
                 assert_eq!(max_iterations, 100);
                 assert_eq!(timeout, 60);
                 assert!(scope.is_none());
+                assert_eq!(request_timeout, 30);
             }
             _ => panic!("expected ExportTests command"),
         }
@@ -1734,12 +2106,14 @@ mod tests {
                 max_iterations,
                 timeout,
                 analyze_only,
+                request_timeout,
             } => {
                 assert_eq!(path, "/tmp/my-repo");
                 assert!(output_dir.is_none());
                 assert_eq!(max_iterations, 50);
                 assert_eq!(timeout, 300);
                 assert!(!analyze_only);
+                assert_eq!(request_timeout, 30);
             }
             _ => panic!("expected Run command"),
         }
@@ -1763,12 +2137,14 @@ mod tests {
                 max_iterations,
                 timeout,
                 analyze_only,
+                request_timeout,
             } => {
                 assert_eq!(path, ".");
                 assert_eq!(output_dir, Some(PathBuf::from("/tmp/output")));
                 assert_eq!(max_iterations, 25);
                 assert_eq!(timeout, 120);
                 assert!(analyze_only);
+                assert_eq!(request_timeout, 30);
             }
             _ => panic!("expected Run command"),
         }

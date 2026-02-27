@@ -48,8 +48,10 @@ pub enum InputSource {
     Seed = 0,
     /// Medium priority: fuzzed from concrete values of unknown constraints.
     Fuzzed = 1,
-    /// Highest priority: Z3-solved inputs targeting a specific branch.
+    /// High priority: Z3-solved inputs targeting a specific branch.
     Z3Solved = 2,
+    /// Highest priority: user-provided candidate inputs from `.shatter/` config.
+    UserProvided = 3,
 }
 
 /// An entry in the exploration worklist.
@@ -205,11 +207,13 @@ fn overlay_solved_values(
 ///
 /// `function_name` is the fully-qualified name of the function to explore.
 /// `seed_inputs` provides initial input sets to begin exploration.
+/// `user_inputs` provides user-provided candidate inputs (highest priority).
 /// `param_names` maps parameter positions to their names (used to map Z3 variables back).
 pub async fn explore(
     frontend: &mut Frontend,
     function_name: &str,
     seed_inputs: Vec<Vec<serde_json::Value>>,
+    user_inputs: Vec<Vec<serde_json::Value>>,
     param_names: &[String],
     config: &ExploreConfig,
 ) -> Result<ExploreResult, ExploreError> {
@@ -221,6 +225,14 @@ pub async fn explore(
     let mut fuzz_generated: usize = 0;
     let mut plateau_counter: usize = 0;
     let mut termination_reason = TerminationReason::WorklistExhausted;
+
+    // Add user-provided candidates with highest priority.
+    for inputs in user_inputs {
+        worklist.push(WorklistEntry {
+            inputs,
+            source: InputSource::UserProvided,
+        });
+    }
 
     // Seed the worklist.
     for inputs in seed_inputs {
@@ -634,7 +646,7 @@ mod tests {
     // -- WorklistEntry ordering tests --
 
     #[test]
-    fn z3_solved_has_highest_priority() {
+    fn user_provided_has_highest_priority() {
         let mut heap = BinaryHeap::new();
         heap.push(WorklistEntry {
             inputs: vec![serde_json::json!(1)],
@@ -648,7 +660,12 @@ mod tests {
             inputs: vec![serde_json::json!(3)],
             source: InputSource::Fuzzed,
         });
+        heap.push(WorklistEntry {
+            inputs: vec![serde_json::json!(4)],
+            source: InputSource::UserProvided,
+        });
 
+        assert_eq!(heap.pop().unwrap().source, InputSource::UserProvided);
         assert_eq!(heap.pop().unwrap().source, InputSource::Z3Solved);
         assert_eq!(heap.pop().unwrap().source, InputSource::Fuzzed);
         assert_eq!(heap.pop().unwrap().source, InputSource::Seed);
@@ -912,6 +929,7 @@ mod tests {
             &mut frontend,
             "stub",
             vec![vec![serde_json::json!(0)]],
+            vec![],
             &["x".to_string()],
             &explore_config,
         )
@@ -945,6 +963,7 @@ mod tests {
             &mut frontend,
             "f",
             vec![vec![serde_json::json!(0)]],
+            vec![],
             &["x".to_string()],
             &explore_config,
         )
@@ -987,6 +1006,7 @@ mod tests {
             &mut frontend,
             "stub",
             seeds,
+            vec![],
             &["x".to_string()],
             &explore_config,
         )
@@ -1023,6 +1043,7 @@ mod tests {
             &mut frontend,
             "stub",
             seeds,
+            vec![],
             &["x".to_string()],
             &explore_config,
         )
@@ -1052,6 +1073,7 @@ mod tests {
             &mut frontend,
             "f",
             vec![vec![serde_json::json!(0)], vec![serde_json::json!(20)]],
+            vec![],
             &["x".to_string()],
             &explore_config,
         )

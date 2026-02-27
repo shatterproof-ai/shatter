@@ -76,6 +76,8 @@ pub struct FrontendConfig {
     pub request_timeout: Duration,
     /// Capabilities to advertise during handshake.
     pub capabilities: Vec<String>,
+    /// Environment variables to set on the subprocess.
+    pub env_vars: Vec<(String, String)>,
 }
 
 impl FrontendConfig {
@@ -90,6 +92,7 @@ impl FrontendConfig {
                 "execute".into(),
                 "instrument".into(),
             ],
+            env_vars: Vec::new(),
         }
     }
 }
@@ -112,13 +115,15 @@ impl Frontend {
     ///
     /// Returns a ready-to-use `Frontend` after verifying protocol compatibility.
     pub async fn spawn(config: &FrontendConfig) -> Result<Self, FrontendError> {
-        let mut child = Command::new(&config.command)
-            .args(&config.args)
+        let mut cmd = Command::new(&config.command);
+        cmd.args(&config.args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .map_err(FrontendError::Spawn)?;
+            .stderr(Stdio::inherit());
+        for (key, value) in &config.env_vars {
+            cmd.env(key, value);
+        }
+        let mut child = cmd.spawn().map_err(FrontendError::Spawn)?;
 
         let stdin = child.stdin.take().expect("stdin was piped");
         let stdout = child.stdout.take().expect("stdout was piped");
