@@ -1,12 +1,17 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand};
 
+use shatter_core::batch_analyze::{self, FunctionRegistry};
 use shatter_core::behavior::BehaviorMap;
 use shatter_core::cache::BehaviorMapCache;
+use shatter_core::call_graph::CallGraph;
+use shatter_core::discovery::{self, DiscoveryOptions, Language as DiscoveryLanguage};
 use shatter_core::explorer::{self, ExploreConfig};
+use shatter_core::export;
 use shatter_core::frontend::{Frontend, FrontendConfig};
 use shatter_core::protocol::{Command as ProtoCommand, ResponseResult};
 use shatter_core::scan_orchestrator::{self, ScanConfig};
@@ -88,6 +93,67 @@ enum CliCommand {
         /// Disable behavior map caching entirely.
         #[arg(long)]
         no_cache: bool,
+    },
+
+    /// Export generated tests from behavior maps produced by exploration.
+    ///
+    /// Runs exploration on the given targets, then generates test files in the
+    /// specified framework format.
+    ExportTests {
+        /// Targets to explore and export tests for, in <file>:<function> format.
+        #[arg(required = true)]
+        targets: Vec<String>,
+
+        /// Test framework to generate: jest or gotest.
+        #[arg(long, default_value = "jest")]
+        framework: String,
+
+        /// Module path for imports (Jest: relative path; Go: package name).
+        #[arg(long, default_value = ".")]
+        module_path: String,
+
+        /// Write output to a file instead of stdout.
+        #[arg(long, short)]
+        output: Option<PathBuf>,
+
+        /// Maximum number of iterations for the concolic loop.
+        #[arg(long, default_value_t = 100)]
+        max_iterations: u32,
+
+        /// Timeout in seconds for the entire exploration.
+        #[arg(long, default_value_t = 60)]
+        timeout: u64,
+
+        /// Path to a scope configuration YAML file.
+        #[arg(long)]
+        scope: Option<PathBuf>,
+    },
+
+    /// Discover, analyze, and explore an entire repository in one shot.
+    ///
+    /// Accepts a local directory path, discovers all supported source files,
+    /// analyzes them, builds a call graph, and explores functions in dependency
+    /// order (leaves first). Outputs a markdown summary report.
+    Run {
+        /// Path to the repository root (local directory).
+        #[arg(required = true)]
+        path: String,
+
+        /// Write per-function reports to this directory.
+        #[arg(long)]
+        output_dir: Option<PathBuf>,
+
+        /// Maximum number of iterations per function (default: 50).
+        #[arg(long, default_value_t = 50)]
+        max_iterations: u32,
+
+        /// Overall timeout in seconds (default: 300).
+        #[arg(long, default_value_t = 300)]
+        timeout: u64,
+
+        /// Only discover and analyze, skip exploration.
+        #[arg(long)]
+        analyze_only: bool,
     },
 
     /// Compare current behaviors against a previous snapshot to detect regressions.
@@ -477,6 +543,603 @@ fn run_diff(
     Ok(result.has_regressions())
 }
 
+/// Run the export-tests command: explore targets and generate test code.
+async fn run_export_tests(
+    targets: &[String],
+    framework: &str,
+    module_path: &str,
+    output_path: Option<&Path>,
+    max_iterations: u32,
+    timeout: u64,
+    scope_path: Option<&Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Validate framework
+    if framework != "jest" && framework != "gotest" {
+        return Err(format!("unsupported framework '{framework}': expected 'jest' or 'gotest'").into());
+    }
+
+    let _scope_config = match scope_path {
+        Some(path) => {
+            let config = ScopeConfig::from_file(path)
+                .map_err(|e| format!("failed to load scope config: {e}"))?;
+            eprintln!("Loaded scope config from {}", path.display());
+            config
+        }
+        None => ScopeConfig::default(),
+    };
+
+    let parsed: Vec<Target> = targets
+        .iter()
+        .map(|t| parse_target(t))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let request_timeout = Duration::from_secs(timeout);
+    let mut all_output = String::new();
+
+    for target in &parsed {
+        let file_str = target.file.to_string_lossy();
+        let func_display = target.function.as_deref().unwrap_or("(all)");
+
+        eprintln!("Exploring {file_str}:{func_display} for test export...");
+
+        let config = frontend_config(target.language, request_timeout)?;
+        let mut frontend = Frontend::spawn(&config).await.map_err(|e| {
+            format!("failed to spawn {} frontend: {e}", target.language.label())
+        })?;
+
+        // Analyze
+        let analyze_response = frontend
+            .send(ProtoCommand::Analyze {
+                file: file_str.to_string(),
+                function: target.function.clone(),
+            })
+            .await
+            .map_err(|e| format!("analyze failed: {e}"))?;
+
+        let functions = match &analyze_response.result {
+            ResponseResult::Analyze { functions } => functions.clone(),
+            ResponseResult::Error { code, message, .. } => {
+                eprintln!("  Analyze error ({code:?}): {message}");
+                shutdown_frontend(frontend).await;
+                continue;
+            }
+            other => {
+                eprintln!("  Unexpected analyze response: {other:?}");
+                shutdown_frontend(frontend).await;
+                continue;
+            }
+        };
+
+        // Explore each function and generate tests
+        let explore_config = ExploreConfig {
+            max_iterations,
+            seed: None,
+            mocks: vec![],
+        };
+
+        for func in &functions {
+            eprintln!("  Exploring {}...", func.name);
+
+            match explorer::explore_function(&mut frontend, func, &explore_config).await {
+                Ok(result) => {
+                    let behavior_map = BehaviorMap::from_exploration_result(&func.name, &result);
+
+                    let test_code = match framework {
+                        "jest" => export::generate_jest_tests(&behavior_map, &func.name, module_path),
+                        "gotest" => export::generate_go_tests(&behavior_map, &func.name, module_path),
+                        _ => unreachable!("validated above"),
+                    };
+
+                    all_output.push_str(&test_code);
+                    all_output.push('\n');
+                }
+                Err(e) => {
+                    eprintln!("  Exploration error for {}: {e}", func.name);
+                }
+            }
+        }
+
+        shutdown_frontend(frontend).await;
+    }
+
+    match output_path {
+        Some(path) => {
+            std::fs::write(path, &all_output)
+                .map_err(|e| format!("failed to write to '{}': {e}", path.display()))?;
+            eprintln!("Wrote tests to {}", path.display());
+        }
+        None => {
+            print!("{all_output}");
+        }
+    }
+
+    Ok(())
+}
+
+/// Map discovery Language to CLI Language for frontend_config.
+fn discovery_lang_to_cli_lang(lang: DiscoveryLanguage) -> Option<Language> {
+    match lang {
+        DiscoveryLanguage::TypeScript => Some(Language::TypeScript),
+        DiscoveryLanguage::Go => Some(Language::Go),
+        DiscoveryLanguage::Rust => None, // Rust frontend not yet supported for exploration
+    }
+}
+
+/// Run the run command: discover, analyze, build call graph, explore, and report.
+async fn run_run(
+    path: &str,
+    output_dir: Option<&Path>,
+    max_iterations: u32,
+    timeout: u64,
+    analyze_only: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let start = Instant::now();
+
+    // Check for URL input (not yet supported)
+    if path.starts_with("http://") || path.starts_with("https://") || path.starts_with("git@") {
+        return Err("URL/git clone input is not yet supported. Please provide a local directory path.".into());
+    }
+
+    let root = PathBuf::from(path);
+    if !root.is_dir() {
+        return Err(format!("'{}' is not a directory", root.display()).into());
+    }
+
+    let root = root.canonicalize()
+        .map_err(|e| format!("failed to resolve path '{}': {e}", path))?;
+
+    println!("Shatter run: {}", root.display());
+    println!();
+
+    // Step 1: Discover files
+    println!("Discovering source files...");
+    let options = DiscoveryOptions::default();
+    let files = discovery::discover_files(&root, &options)
+        .map_err(|e| format!("file discovery failed: {e}"))?;
+
+    if files.is_empty() {
+        println!("No supported source files found in {}", root.display());
+        return Ok(());
+    }
+
+    // Group by language for reporting
+    let mut ts_files = Vec::new();
+    let mut go_files = Vec::new();
+    let mut rs_files = Vec::new();
+    for (p, lang) in &files {
+        match lang {
+            DiscoveryLanguage::TypeScript => ts_files.push(p.clone()),
+            DiscoveryLanguage::Go => go_files.push(p.clone()),
+            DiscoveryLanguage::Rust => rs_files.push(p.clone()),
+        }
+    }
+
+    println!("  Found {} file(s):", files.len());
+    if !ts_files.is_empty() {
+        println!("    TypeScript: {}", ts_files.len());
+    }
+    if !go_files.is_empty() {
+        println!("    Go: {}", go_files.len());
+    }
+    if !rs_files.is_empty() {
+        println!("    Rust: {} (analysis not yet supported)", rs_files.len());
+    }
+    println!();
+
+    // Filter to languages we can actually analyze (TS, Go)
+    let analyzable_files: Vec<(PathBuf, DiscoveryLanguage)> = files
+        .into_iter()
+        .filter(|(_, lang)| discovery_lang_to_cli_lang(*lang).is_some())
+        .collect();
+
+    if analyzable_files.is_empty() {
+        println!("No analyzable source files found (only TypeScript and Go are supported).");
+        return Ok(());
+    }
+
+    // Step 2: Spawn frontends for each language
+    let request_timeout = Duration::from_secs(timeout);
+    let mut frontends: HashMap<DiscoveryLanguage, Frontend> = HashMap::new();
+
+    let needed_langs: std::collections::HashSet<DiscoveryLanguage> = analyzable_files
+        .iter()
+        .map(|(_, lang)| *lang)
+        .collect();
+
+    for lang in &needed_langs {
+        let cli_lang = discovery_lang_to_cli_lang(*lang)
+            .ok_or_else(|| format!("no frontend for {lang:?}"))?;
+        let config = frontend_config(cli_lang, request_timeout)?;
+        let frontend = Frontend::spawn(&config).await.map_err(|e| {
+            format!("failed to spawn {lang:?} frontend: {e}")
+        })?;
+        println!(
+            "Frontend connected (language={})",
+            frontend.language().unwrap_or("unknown")
+        );
+        frontends.insert(*lang, frontend);
+    }
+
+    // Step 3: Batch analyze
+    println!();
+    println!("Analyzing {} file(s)...", analyzable_files.len());
+    let registry = batch_analyze::batch_analyze(&mut frontends, &analyzable_files)
+        .await
+        .map_err(|e| format!("batch analyze failed: {e}"))?;
+
+    let total_functions = registry.len();
+    let total_branches: usize = registry.entries().iter().map(|e| e.branch_count).sum();
+
+    println!("  Found {} function(s) with {} total branch(es)", total_functions, total_branches);
+    println!();
+
+    if total_functions == 0 {
+        println!("No functions found to explore.");
+        shutdown_all_frontends(frontends).await;
+        return Ok(());
+    }
+
+    // Step 4: Build call graph
+    println!("Building call graph...");
+    let call_graph = CallGraph::from_registry(&registry);
+    let layers = call_graph.topological_layers();
+    let cycles = call_graph.cycle_groups();
+
+    println!(
+        "  {} node(s), {} edge(s), {} layer(s), {} cycle(s)",
+        call_graph.node_count(),
+        call_graph.edge_count(),
+        layers.len(),
+        cycles.len(),
+    );
+    println!();
+
+    if analyze_only {
+        print_summary_report(
+            &root,
+            &ts_files,
+            &go_files,
+            &rs_files,
+            &registry,
+            &call_graph,
+            &layers,
+            &cycles,
+            &[],
+            start.elapsed(),
+        );
+
+        if let Some(dir) = output_dir {
+            write_analysis_report(dir, &registry, &call_graph)?;
+        }
+
+        shutdown_all_frontends(frontends).await;
+        return Ok(());
+    }
+
+    // Step 5: Explore in dependency order (layer by layer)
+    println!("Exploring functions in dependency order...");
+    println!();
+
+    let mut exploration_results: Vec<(String, explorer::ExplorationResult)> = Vec::new();
+
+    for (layer_idx, layer) in layers.iter().enumerate() {
+        println!("  Layer {} ({} function(s)):", layer_idx, layer.len());
+
+        for qualified_name in layer {
+            let entry = match registry.get(qualified_name) {
+                Some(e) => e,
+                None => continue,
+            };
+
+            // Determine the language of this file
+            let ext = entry.file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            let disc_lang = match DiscoveryLanguage::from_extension(ext) {
+                Some(l) => l,
+                None => continue,
+            };
+
+            let frontend = match frontends.get_mut(&disc_lang) {
+                Some(f) => f,
+                None => continue,
+            };
+
+            // Analyze to get FunctionAnalysis (needed for explore_function)
+            let analyze_response = frontend
+                .send(ProtoCommand::Analyze {
+                    file: entry.file_path.to_string_lossy().into_owned(),
+                    function: Some(entry.name.clone()),
+                })
+                .await
+                .map_err(|e| format!("analyze failed for {qualified_name}: {e}"))?;
+
+            let func_analysis = match &analyze_response.result {
+                ResponseResult::Analyze { functions } => {
+                    functions.iter().find(|f| f.name == entry.name).cloned()
+                }
+                _ => None,
+            };
+
+            let Some(func_analysis) = func_analysis else {
+                eprintln!("    Skipping {}: could not get analysis", entry.name);
+                continue;
+            };
+
+            print!("    Exploring {}...", entry.name);
+
+            let explore_config = ExploreConfig {
+                max_iterations,
+                seed: None,
+                mocks: vec![],
+            };
+
+            match explorer::explore_function(frontend, &func_analysis, &explore_config).await {
+                Ok(result) => {
+                    println!(
+                        " {} path(s), {}/{} lines",
+                        result.unique_paths, result.lines_covered, result.total_lines
+                    );
+                    exploration_results.push((qualified_name.clone(), result));
+                }
+                Err(e) => {
+                    println!(" error: {e}");
+                }
+            }
+
+            // Check overall timeout
+            if start.elapsed() > Duration::from_secs(timeout) {
+                eprintln!("\nTimeout reached ({timeout}s), stopping exploration.");
+                break;
+            }
+        }
+
+        if start.elapsed() > Duration::from_secs(timeout) {
+            break;
+        }
+    }
+
+    println!();
+
+    // Step 6: Print summary report
+    print_summary_report(
+        &root,
+        &ts_files,
+        &go_files,
+        &rs_files,
+        &registry,
+        &call_graph,
+        &layers,
+        &cycles,
+        &exploration_results,
+        start.elapsed(),
+    );
+
+    // Step 7: Write output files if requested
+    if let Some(dir) = output_dir {
+        write_run_report(dir, &call_graph, &exploration_results)?;
+    }
+
+    shutdown_all_frontends(frontends).await;
+    Ok(())
+}
+
+/// Print a markdown-style summary report to stdout.
+#[allow(clippy::too_many_arguments)]
+fn print_summary_report(
+    root: &Path,
+    ts_files: &[PathBuf],
+    go_files: &[PathBuf],
+    rs_files: &[PathBuf],
+    registry: &FunctionRegistry,
+    call_graph: &CallGraph,
+    layers: &[Vec<String>],
+    cycles: &[Vec<String>],
+    exploration_results: &[(String, explorer::ExplorationResult)],
+    elapsed: Duration,
+) {
+    println!("# Shatter Run Report");
+    println!();
+    println!("**Repository**: {}", root.display());
+    println!("**Elapsed**: {:.1}s", elapsed.as_secs_f64());
+    println!();
+
+    // Files discovered
+    let total_files = ts_files.len() + go_files.len() + rs_files.len();
+    println!("## Files Discovered");
+    println!();
+    println!("| Language | Files |");
+    println!("|----------|-------|");
+    if !ts_files.is_empty() {
+        println!("| TypeScript | {} |", ts_files.len());
+    }
+    if !go_files.is_empty() {
+        println!("| Go | {} |", go_files.len());
+    }
+    if !rs_files.is_empty() {
+        println!("| Rust | {} |", rs_files.len());
+    }
+    println!("| **Total** | **{total_files}** |");
+    println!();
+
+    // Functions analyzed
+    let total_branches: usize = registry.entries().iter().map(|e| e.branch_count).sum();
+    println!("## Functions Analyzed");
+    println!();
+    println!("- **Total functions**: {}", registry.len());
+    println!("- **Total branches**: {total_branches}");
+    println!("- **Exported functions**: {}", registry.exported_functions().len());
+    println!();
+
+    // Call graph summary
+    println!("## Call Graph");
+    println!();
+    println!("- **Nodes**: {}", call_graph.node_count());
+    println!("- **Edges**: {}", call_graph.edge_count());
+    println!("- **Topological layers**: {}", layers.len());
+    println!("- **Cycles**: {}", cycles.len());
+    if !cycles.is_empty() {
+        println!();
+        for (i, cycle) in cycles.iter().enumerate() {
+            println!("  Cycle {}: {}", i + 1, cycle.join(" <-> "));
+        }
+    }
+    println!();
+
+    // Exploration results
+    if !exploration_results.is_empty() {
+        println!("## Exploration Results");
+        println!();
+        println!("| Function | Paths | Lines Covered | Coverage |");
+        println!("|----------|-------|---------------|----------|");
+
+        let mut total_paths = 0;
+        let mut total_covered = 0;
+        let mut total_lines = 0u32;
+
+        for (qname, result) in exploration_results {
+            let pct = if result.total_lines > 0 {
+                (result.lines_covered as f64 / result.total_lines as f64 * 100.0).min(100.0)
+            } else {
+                0.0
+            };
+            println!(
+                "| {qname} | {} | {}/{} | {pct:.0}% |",
+                result.unique_paths, result.lines_covered, result.total_lines
+            );
+            total_paths += result.unique_paths;
+            total_covered += result.lines_covered;
+            total_lines += result.total_lines;
+        }
+
+        let total_pct = if total_lines > 0 {
+            (total_covered as f64 / total_lines as f64 * 100.0).min(100.0)
+        } else {
+            0.0
+        };
+        println!(
+            "| **Total** | **{total_paths}** | **{total_covered}/{total_lines}** | **{total_pct:.0}%** |",
+        );
+        println!();
+    }
+}
+
+/// Write analysis-only report to output directory.
+fn write_analysis_report(
+    dir: &Path,
+    registry: &FunctionRegistry,
+    call_graph: &CallGraph,
+) -> Result<(), Box<dyn std::error::Error>> {
+    std::fs::create_dir_all(dir)
+        .map_err(|e| format!("failed to create output dir '{}': {e}", dir.display()))?;
+
+    let summary_path = dir.join("analysis-summary.md");
+    let mut content = String::new();
+    content.push_str("# Analysis Summary\n\n");
+    content.push_str(&format!("- Functions: {}\n", registry.len()));
+    content.push_str(&format!("- Call graph edges: {}\n", call_graph.edge_count()));
+    content.push_str(&format!("- Cycles: {}\n", call_graph.cycle_groups().len()));
+    content.push_str("\n## Functions\n\n");
+
+    for entry in registry.entries() {
+        content.push_str(&format!(
+            "- **{}** ({}): {} branches, {} deps\n",
+            entry.name,
+            entry.file_path.display(),
+            entry.branch_count,
+            entry.dependencies.len(),
+        ));
+    }
+
+    std::fs::write(&summary_path, &content)
+        .map_err(|e| format!("failed to write summary: {e}"))?;
+    println!("Wrote analysis report to {}", summary_path.display());
+
+    Ok(())
+}
+
+/// Write full run report with per-function files to output directory.
+fn write_run_report(
+    dir: &Path,
+    call_graph: &CallGraph,
+    exploration_results: &[(String, explorer::ExplorationResult)],
+) -> Result<(), Box<dyn std::error::Error>> {
+    std::fs::create_dir_all(dir)
+        .map_err(|e| format!("failed to create output dir '{}': {e}", dir.display()))?;
+
+    for (qname, result) in exploration_results {
+        let safe_name = qname.replace("::", "__").replace('/', "_");
+        let func_path = dir.join(format!("{safe_name}.md"));
+
+        let pct = if result.total_lines > 0 {
+            (result.lines_covered as f64 / result.total_lines as f64 * 100.0).min(100.0)
+        } else {
+            0.0
+        };
+
+        let mut content = String::new();
+        content.push_str(&format!("# {qname}\n\n"));
+        content.push_str(&format!("- **Iterations**: {}\n", result.iterations));
+        content.push_str(&format!("- **Unique paths**: {}\n", result.unique_paths));
+        content.push_str(&format!(
+            "- **Line coverage**: {}/{} ({pct:.0}%)\n",
+            result.lines_covered, result.total_lines
+        ));
+
+        if !result.new_path_executions.is_empty() {
+            content.push_str("\n## Discovered Paths\n\n");
+            for (i, exec) in result.new_path_executions.iter().enumerate() {
+                let inputs_str: Vec<String> = exec.inputs.iter().map(|v| v.to_string()).collect();
+                let outcome = if let Some(ref err) = exec.thrown_error {
+                    format!("THROWS {err}")
+                } else {
+                    match &exec.return_value {
+                        Some(v) if !v.is_null() => format!("returns {v}"),
+                        _ => "returns void".to_string(),
+                    }
+                };
+                content.push_str(&format!(
+                    "{}. Input: ({}) -> {}\n",
+                    i + 1,
+                    inputs_str.join(", "),
+                    outcome
+                ));
+            }
+        }
+
+        // Add call graph info
+        let callees = call_graph.callees_of(qname);
+        let callers = call_graph.callers_of(qname);
+        if !callees.is_empty() || !callers.is_empty() {
+            content.push_str("\n## Call Graph\n\n");
+            if !callees.is_empty() {
+                content.push_str(&format!("- **Calls**: {}\n", callees.join(", ")));
+            }
+            if !callers.is_empty() {
+                content.push_str(&format!("- **Called by**: {}\n", callers.join(", ")));
+            }
+        }
+
+        std::fs::write(&func_path, &content)
+            .map_err(|e| format!("failed to write {}: {e}", func_path.display()))?;
+    }
+
+    println!(
+        "Wrote {} per-function report(s) to {}",
+        exploration_results.len(),
+        dir.display()
+    );
+
+    Ok(())
+}
+
+/// Shutdown all frontends in a map.
+async fn shutdown_all_frontends(frontends: HashMap<DiscoveryLanguage, Frontend>) {
+    for (_, frontend) in frontends {
+        if let Err(e) = frontend.shutdown().await {
+            eprintln!("  Warning: frontend shutdown error: {e}");
+        }
+    }
+}
+
 async fn shutdown_frontend(frontend: Frontend) {
     if let Err(e) = frontend.shutdown().await {
         eprintln!("  Warning: frontend shutdown error: {e}");
@@ -523,6 +1186,42 @@ async fn main() -> ExitCode {
                 max_iterations,
                 timeout,
                 scope.as_deref(),
+                analyze_only,
+            )
+            .await
+        }
+        CliCommand::ExportTests {
+            targets,
+            framework,
+            module_path,
+            output,
+            max_iterations,
+            timeout,
+            scope,
+        } => {
+            run_export_tests(
+                &targets,
+                &framework,
+                &module_path,
+                output.as_deref(),
+                max_iterations,
+                timeout,
+                scope.as_deref(),
+            )
+            .await
+        }
+        CliCommand::Run {
+            path,
+            output_dir,
+            max_iterations,
+            timeout,
+            analyze_only,
+        } => {
+            run_run(
+                &path,
+                output_dir.as_deref(),
+                max_iterations,
+                timeout,
                 analyze_only,
             )
             .await
@@ -896,6 +1595,84 @@ mod tests {
     }
 
     #[test]
+    fn cli_parses_export_tests_subcommand() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "export-tests",
+            "--framework", "gotest",
+            "--module-path", "examples",
+            "test.go:Add",
+        ]);
+        match cli.command {
+            CliCommand::ExportTests {
+                targets,
+                framework,
+                module_path,
+                output,
+                max_iterations,
+                timeout,
+                scope,
+            } => {
+                assert_eq!(targets, vec!["test.go:Add"]);
+                assert_eq!(framework, "gotest");
+                assert_eq!(module_path, "examples");
+                assert!(output.is_none());
+                assert_eq!(max_iterations, 100);
+                assert_eq!(timeout, 60);
+                assert!(scope.is_none());
+            }
+            _ => panic!("expected ExportTests command"),
+        }
+    }
+
+    #[test]
+    fn cli_export_tests_defaults() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "export-tests",
+            "test.ts:myFunc",
+        ]);
+        match cli.command {
+            CliCommand::ExportTests {
+                framework,
+                module_path,
+                output,
+                ..
+            } => {
+                assert_eq!(framework, "jest");
+                assert_eq!(module_path, ".");
+                assert!(output.is_none());
+            }
+            _ => panic!("expected ExportTests command"),
+        }
+    }
+
+    #[test]
+    fn cli_export_tests_with_output_flag() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "export-tests",
+            "--output", "tests/generated_test.go",
+            "--framework", "gotest",
+            "test.go:Add",
+        ]);
+        match cli.command {
+            CliCommand::ExportTests { output, .. } => {
+                assert_eq!(output, Some(PathBuf::from("tests/generated_test.go")));
+            }
+            _ => panic!("expected ExportTests command"),
+        }
+    }
+
+    #[test]
+    fn cli_export_tests_requires_at_least_one_target() {
+        let result = Cli::try_parse_from(["shatter", "export-tests"]);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
     fn cli_parses_diff_subcommand() {
         let cli = Cli::parse_from([
             "shatter",
@@ -941,5 +1718,83 @@ mod tests {
 
         let result = Cli::try_parse_from(["shatter", "diff", "only-one.json"]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn cli_parses_run_subcommand() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "run",
+            "/tmp/my-repo",
+        ]);
+        match cli.command {
+            CliCommand::Run {
+                path,
+                output_dir,
+                max_iterations,
+                timeout,
+                analyze_only,
+            } => {
+                assert_eq!(path, "/tmp/my-repo");
+                assert!(output_dir.is_none());
+                assert_eq!(max_iterations, 50);
+                assert_eq!(timeout, 300);
+                assert!(!analyze_only);
+            }
+            _ => panic!("expected Run command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_run_with_all_flags() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "run",
+            "--output-dir", "/tmp/output",
+            "--max-iterations", "25",
+            "--timeout", "120",
+            "--analyze-only",
+            ".",
+        ]);
+        match cli.command {
+            CliCommand::Run {
+                path,
+                output_dir,
+                max_iterations,
+                timeout,
+                analyze_only,
+            } => {
+                assert_eq!(path, ".");
+                assert_eq!(output_dir, Some(PathBuf::from("/tmp/output")));
+                assert_eq!(max_iterations, 25);
+                assert_eq!(timeout, 120);
+                assert!(analyze_only);
+            }
+            _ => panic!("expected Run command"),
+        }
+    }
+
+    #[test]
+    fn cli_run_requires_path_argument() {
+        let result = Cli::try_parse_from(["shatter", "run"]);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn discovery_lang_to_cli_lang_maps_correctly() {
+        assert_eq!(
+            discovery_lang_to_cli_lang(DiscoveryLanguage::TypeScript),
+            Some(Language::TypeScript)
+        );
+        assert_eq!(
+            discovery_lang_to_cli_lang(DiscoveryLanguage::Go),
+            Some(Language::Go)
+        );
+        assert_eq!(
+            discovery_lang_to_cli_lang(DiscoveryLanguage::Rust),
+            None
+        );
     }
 }

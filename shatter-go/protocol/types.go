@@ -139,7 +139,7 @@ type BranchDecision struct {
 type SymExpr struct {
 	Kind     string    `json:"kind"`
 	Name     string    `json:"name,omitempty"`
-	Path     []string  `json:"path,omitempty"`
+	Path     []string  `json:"path"`
 	Type     string    `json:"type,omitempty"`
 	Value    any       `json:"value,omitempty"`
 	Op       string    `json:"op,omitempty"`

@@ -341,6 +341,88 @@ func classify(x int) string {
 	}
 }
 
+func TestExecuteReturnsPerformanceMetrics(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "target.go")
+	src := `package main
+
+func identity(x int) int {
+	return x
+}
+`
+	if err := os.WriteFile(tmp, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	req := `{"protocol_version":"0.1.0","id":5,"command":"execute","file":"` + tmp + `","function":"identity","inputs":[42]}`
+	resp := sendRecv(t, req)
+	if resp.Status != "execute" {
+		t.Fatalf("status = %q, want execute (message: %s)", resp.Status, resp.Message)
+	}
+
+	if resp.Performance == nil {
+		t.Fatal("expected performance metrics")
+	}
+	if resp.Performance.WallTimeMs <= 0 {
+		t.Errorf("expected positive wall_time_ms, got %f", resp.Performance.WallTimeMs)
+	}
+}
+
+func TestExecuteWithMissingFunctionReturnsFunctionNotFound(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "target.go")
+	src := `package main
+
+func Foo() {}
+`
+	if err := os.WriteFile(tmp, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	req := `{"protocol_version":"0.1.0","id":5,"command":"execute","file":"` + tmp + `","function":"NonExistent","inputs":[]}`
+	resp := sendRecv(t, req)
+	if resp.Status != "error" {
+		t.Fatalf("status = %q, want error", resp.Status)
+	}
+	if resp.Code != "function_not_found" {
+		t.Errorf("code = %q, want function_not_found", resp.Code)
+	}
+}
+
+func TestExecuteHandshakeExecuteSequence(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "target.go")
+	src := `package main
+
+func add(a int, b int) int {
+	return a + b
+}
+`
+	if err := os.WriteFile(tmp, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	responses := conversation(t,
+		`{"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze","execute"]}`,
+		`{"protocol_version":"0.1.0","id":2,"command":"execute","file":"`+tmp+`","function":"add","inputs":[3,4]}`,
+		`{"protocol_version":"0.1.0","id":3,"command":"shutdown"}`,
+	)
+	if len(responses) != 3 {
+		t.Fatalf("got %d responses, want 3", len(responses))
+	}
+	if responses[0].Status != "handshake" {
+		t.Errorf("response[0].status = %q, want handshake", responses[0].Status)
+	}
+	if responses[1].Status != "execute" {
+		t.Errorf("response[1].status = %q, want execute (message: %s)", responses[1].Status, responses[1].Message)
+	}
+	// Verify return value
+	var retVal int
+	if err := json.Unmarshal(responses[1].ReturnValue, &retVal); err != nil {
+		t.Fatalf("parsing return value: %v", err)
+	}
+	if retVal != 7 {
+		t.Errorf("expected return value 7, got %d", retVal)
+	}
+	if responses[2].Status != "shutdown_ack" {
+		t.Errorf("response[2].status = %q, want shutdown_ack", responses[2].Status)
+	}
+}
+
 func TestMultipleCommandsInSequence(t *testing.T) {
 	responses := conversation(t,
 		`{"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze"]}`,

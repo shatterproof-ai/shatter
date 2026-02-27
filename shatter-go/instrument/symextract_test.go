@@ -11,8 +11,8 @@ func TestParamComparison(t *testing.T) {
 	params := map[string]bool{"x": true}
 	sym := exprToSymExpr(expr, params)
 
-	if sym.Kind != "binop" {
-		t.Fatalf("kind = %q, want binop", sym.Kind)
+	if sym.Kind != "bin_op" {
+		t.Fatalf("kind = %q, want bin_op", sym.Kind)
 	}
 	if sym.Op != "gt" {
 		t.Errorf("op = %q, want gt", sym.Op)
@@ -30,8 +30,8 @@ func TestStringEquality(t *testing.T) {
 	params := map[string]bool{"s": true}
 	sym := exprToSymExpr(expr, params)
 
-	if sym.Kind != "binop" || sym.Op != "eq" {
-		t.Errorf("got kind=%q op=%q, want binop eq", sym.Kind, sym.Op)
+	if sym.Kind != "bin_op" || sym.Op != "eq" {
+		t.Errorf("got kind=%q op=%q, want bin_op eq", sym.Kind, sym.Op)
 	}
 	if sym.Left.Kind != "param" || sym.Left.Name != "s" {
 		t.Errorf("left = %+v, want param s", sym.Left)
@@ -46,8 +46,8 @@ func TestLogicalAnd(t *testing.T) {
 	params := map[string]bool{"x": true, "y": true}
 	sym := exprToSymExpr(expr, params)
 
-	if sym.Kind != "binop" || sym.Op != "and" {
-		t.Fatalf("got kind=%q op=%q, want binop and", sym.Kind, sym.Op)
+	if sym.Kind != "bin_op" || sym.Op != "and" {
+		t.Fatalf("got kind=%q op=%q, want bin_op and", sym.Kind, sym.Op)
 	}
 	if sym.Left.Op != "gt" {
 		t.Errorf("left.op = %q, want gt", sym.Left.Op)
@@ -62,8 +62,8 @@ func TestLogicalOr(t *testing.T) {
 	params := map[string]bool{"a": true, "b": true}
 	sym := exprToSymExpr(expr, params)
 
-	if sym.Kind != "binop" || sym.Op != "or" {
-		t.Errorf("got kind=%q op=%q, want binop or", sym.Kind, sym.Op)
+	if sym.Kind != "bin_op" || sym.Op != "or" {
+		t.Errorf("got kind=%q op=%q, want bin_op or", sym.Kind, sym.Op)
 	}
 }
 
@@ -72,8 +72,8 @@ func TestNegation(t *testing.T) {
 	params := map[string]bool{"ok": true}
 	sym := exprToSymExpr(expr, params)
 
-	if sym.Kind != "unop" || sym.Op != "not" {
-		t.Fatalf("got kind=%q op=%q, want unop not", sym.Kind, sym.Op)
+	if sym.Kind != "un_op" || sym.Op != "not" {
+		t.Fatalf("got kind=%q op=%q, want un_op not", sym.Kind, sym.Op)
 	}
 	if sym.Operand.Kind != "param" || sym.Operand.Name != "ok" {
 		t.Errorf("operand = %+v, want param ok", sym.Operand)
@@ -85,8 +85,8 @@ func TestNilComparison(t *testing.T) {
 	params := map[string]bool{"p": true}
 	sym := exprToSymExpr(expr, params)
 
-	if sym.Kind != "binop" || sym.Op != "eq" {
-		t.Fatalf("got kind=%q op=%q, want binop eq", sym.Kind, sym.Op)
+	if sym.Kind != "bin_op" || sym.Op != "eq" {
+		t.Fatalf("got kind=%q op=%q, want bin_op eq", sym.Kind, sym.Op)
 	}
 	if sym.Right.Kind != "const" || sym.Right.Type != "null" {
 		t.Errorf("right = %+v, want const null", sym.Right)
@@ -135,8 +135,8 @@ func TestParenExprUnwraps(t *testing.T) {
 	params := map[string]bool{"x": true}
 	sym := exprToSymExpr(expr, params)
 
-	if sym.Kind != "binop" || sym.Op != "gt" {
-		t.Errorf("got kind=%q op=%q, want binop gt", sym.Kind, sym.Op)
+	if sym.Kind != "bin_op" || sym.Op != "gt" {
+		t.Errorf("got kind=%q op=%q, want bin_op gt", sym.Kind, sym.Op)
 	}
 }
 
@@ -149,8 +149,8 @@ func TestExtractConstraintExpr(t *testing.T) {
 	if c.Kind != "expr" {
 		t.Fatalf("kind = %q, want expr", c.Kind)
 	}
-	if c.Expr == nil || c.Expr.Kind != "binop" {
-		t.Errorf("expr = %+v, want binop", c.Expr)
+	if c.Expr == nil || c.Expr.Kind != "bin_op" {
+		t.Errorf("expr = %+v, want bin_op", c.Expr)
 	}
 }
 
@@ -171,15 +171,18 @@ func TestExtractConstraintUnknown(t *testing.T) {
 func TestBoolLiterals(t *testing.T) {
 	for _, tc := range []struct {
 		input string
-		value string
+		value bool
 	}{
-		{"true", "true"},
-		{"false", "false"},
+		{"true", true},
+		{"false", false},
 	} {
 		expr, _ := parser.ParseExpr(tc.input)
 		sym := exprToSymExpr(expr, map[string]bool{})
 		if sym.Kind != "const" || sym.Type != "bool" {
 			t.Errorf("%s: got kind=%q type=%q, want const bool", tc.input, sym.Kind, sym.Type)
+		}
+		if sym.Value != tc.value {
+			t.Errorf("%s: got value=%v, want %v", tc.input, sym.Value, tc.value)
 		}
 	}
 }

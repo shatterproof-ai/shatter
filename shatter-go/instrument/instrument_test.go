@@ -264,8 +264,8 @@ func main() {
 	if constraint.Kind != "expr" {
 		t.Errorf("constraint kind = %q, want expr", constraint.Kind)
 	}
-	if constraint.Expr == nil || constraint.Expr.Kind != "binop" || constraint.Expr.Op != "gt" {
-		t.Errorf("expected binop gt constraint, got: %+v", constraint.Expr)
+	if constraint.Expr == nil || constraint.Expr.Kind != "bin_op" || constraint.Expr.Op != "gt" {
+		t.Errorf("expected bin_op gt constraint, got: %+v", constraint.Expr)
 	}
 }
 

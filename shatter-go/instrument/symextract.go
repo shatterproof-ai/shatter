@@ -5,6 +5,7 @@ import (
 	"go/ast"
 	"go/printer"
 	"go/token"
+	"strconv"
 )
 
 // symExpr is a symbolic expression representing a constraint on inputs.
@@ -12,7 +13,7 @@ import (
 type symExpr struct {
 	Kind     string    `json:"kind"`
 	Name     string    `json:"name,omitempty"`
-	Path     []string  `json:"path,omitempty"`
+	Path     []string  `json:"path"`
 	Type     string    `json:"type,omitempty"`
 	Value    any       `json:"value,omitempty"`
 	Op       string    `json:"op,omitempty"`
@@ -42,8 +43,11 @@ func exprToSymExpr(expr ast.Expr, params map[string]bool) *symExpr {
 		if params[e.Name] {
 			return &symExpr{Kind: "param", Name: e.Name, Path: []string{}}
 		}
-		if e.Name == "true" || e.Name == "false" {
-			return &symExpr{Kind: "const", Type: "bool", Value: e.Name}
+		if e.Name == "true" {
+			return &symExpr{Kind: "const", Type: "bool", Value: true}
+		}
+		if e.Name == "false" {
+			return &symExpr{Kind: "const", Type: "bool", Value: false}
 		}
 		if e.Name == "nil" {
 			return &symExpr{Kind: "const", Type: "null", Value: nil}
@@ -59,7 +63,7 @@ func exprToSymExpr(expr ast.Expr, params map[string]bool) *symExpr {
 			return &symExpr{Kind: "unknown"}
 		}
 		return &symExpr{
-			Kind:  "binop",
+			Kind:  "bin_op",
 			Op:    op,
 			Left:  exprToSymExpr(e.X, params),
 			Right: exprToSymExpr(e.Y, params),
@@ -68,7 +72,7 @@ func exprToSymExpr(expr ast.Expr, params map[string]bool) *symExpr {
 	case *ast.UnaryExpr:
 		if e.Op == token.NOT {
 			return &symExpr{
-				Kind:    "unop",
+				Kind:    "un_op",
 				Op:      "not",
 				Operand: exprToSymExpr(e.X, params),
 			}
@@ -96,13 +100,30 @@ func exprToSymExpr(expr ast.Expr, params map[string]bool) *symExpr {
 func basicLitToSymExpr(lit *ast.BasicLit) *symExpr {
 	switch lit.Kind {
 	case token.INT:
-		return &symExpr{Kind: "const", Type: "int", Value: lit.Value}
+		n, err := strconv.ParseInt(lit.Value, 0, 64)
+		if err != nil {
+			return &symExpr{Kind: "unknown"}
+		}
+		return &symExpr{Kind: "const", Type: "int", Value: n}
 	case token.FLOAT:
-		return &symExpr{Kind: "const", Type: "float", Value: lit.Value}
+		f, err := strconv.ParseFloat(lit.Value, 64)
+		if err != nil {
+			return &symExpr{Kind: "unknown"}
+		}
+		return &symExpr{Kind: "const", Type: "float", Value: f}
 	case token.STRING:
-		return &symExpr{Kind: "const", Type: "str", Value: lit.Value}
+		// Strip quotes
+		s, err := strconv.Unquote(lit.Value)
+		if err != nil {
+			s = lit.Value
+		}
+		return &symExpr{Kind: "const", Type: "str", Value: s}
 	case token.CHAR:
-		return &symExpr{Kind: "const", Type: "str", Value: lit.Value}
+		s, err := strconv.Unquote(lit.Value)
+		if err != nil {
+			s = lit.Value
+		}
+		return &symExpr{Kind: "const", Type: "str", Value: s}
 	default:
 		return &symExpr{Kind: "unknown"}
 	}
@@ -137,13 +158,13 @@ func tokenToOp(tok token.Token) string {
 	case token.LSS:
 		return "lt"
 	case token.GEQ:
-		return "gte"
+		return "ge"
 	case token.LEQ:
-		return "lte"
+		return "le"
 	case token.EQL:
 		return "eq"
 	case token.NEQ:
-		return "neq"
+		return "ne"
 	case token.LAND:
 		return "and"
 	case token.LOR:

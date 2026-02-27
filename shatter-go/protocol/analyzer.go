@@ -8,6 +8,7 @@ import (
 	"go/printer"
 	"go/token"
 	"go/types"
+	"strconv"
 	"strings"
 )
 
@@ -468,9 +469,17 @@ func flattenSelector(sel *ast.SelectorExpr) (root string, path []string) {
 func litSymExpr(lit *ast.BasicLit) *SymExpr {
 	switch lit.Kind {
 	case token.INT:
-		return &SymExpr{Kind: "const", Type: "int", Value: lit.Value}
+		n, err := strconv.ParseInt(lit.Value, 0, 64)
+		if err != nil {
+			return &SymExpr{Kind: "unknown"}
+		}
+		return &SymExpr{Kind: "const", Type: "int", Value: n}
 	case token.FLOAT:
-		return &SymExpr{Kind: "const", Type: "float", Value: lit.Value}
+		f, err := strconv.ParseFloat(lit.Value, 64)
+		if err != nil {
+			return &SymExpr{Kind: "unknown"}
+		}
+		return &SymExpr{Kind: "const", Type: "float", Value: f}
 	case token.STRING, token.CHAR:
 		// Strip quotes for the value
 		val := strings.Trim(lit.Value, "`\"'")
@@ -544,7 +553,7 @@ func tokenToOp(tok token.Token) string {
 	case token.QUO:
 		return "div"
 	case token.REM:
-		return "rem"
+		return "mod"
 	case token.LAND:
 		return "and"
 	case token.LOR:

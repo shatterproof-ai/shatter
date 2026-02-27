@@ -120,13 +120,19 @@ EXAMPLES=(
     "examples/typescript/src/04-errors.ts:safeDivide"
 )
 
-TOTAL=6
+GO_EXAMPLES=(
+    "examples/go/01-arithmetic.go:ClassifyNumber"
+    "examples/go/02-strings.go:ClassifyString"
+    "examples/go/03-errors.go:SafeDivide"
+)
+
+TOTAL=11
 
 # ─── Walkthrough ──────────────────────────────────────────────────────
 
 echo ""
 echo "${BOLD}${GREEN}Shatter Walkthrough${RESET}"
-echo "${DIM}Exercising shatter's pipeline against ${#EXAMPLES[@]} example functions${RESET}"
+echo "${DIM}Exercising shatter's pipeline against ${#EXAMPLES[@]} TS + ${#GO_EXAMPLES[@]} Go example functions${RESET}"
 if [[ "$DRY_RUN" == true ]]; then
     echo "${YELLOW}(dry-run mode: commands will not be executed)${RESET}"
 fi
@@ -162,5 +168,31 @@ step 5 $TOTAL "Scan in Dependency Order" \
 step 6 $TOTAL "Explore with Disk Cache" \
     "Persist behavior maps to disk for reuse across runs" \
     $SHATTER explore --cache-dir /tmp/shatter-demo-cache "${EXAMPLES[@]}"
+
+# Stage 7: Analyze Go functions
+step 7 $TOTAL "Analyze Go Functions" \
+    "Discover parameters, types, and branch conditions in Go code" \
+    $SHATTER explore --analyze-only "${GO_EXAMPLES[@]}"
+
+# Stage 8: Explore Go functions
+step 8 $TOTAL "Explore Go Functions" \
+    "Concolic execution on Go: generate inputs to cover all branches" \
+    $SHATTER explore "${GO_EXAMPLES[@]}"
+
+# Stage 9: Export tests
+step 9 $TOTAL "Export Generated Tests" \
+    "Generate Jest test files from explored behavior maps" \
+    $SHATTER export-tests --framework jest --module-path "./src/01-arithmetic" \
+    "examples/typescript/src/01-arithmetic.ts:classifyNumber"
+
+# Stage 10: Run (full pipeline, analyze only)
+step 10 $TOTAL "Run: Analyze Only" \
+    "Discover, analyze, and report on all files in the examples directory" \
+    $SHATTER run --analyze-only examples/typescript/src
+
+# Stage 11: Run (full pipeline with exploration)
+step 11 $TOTAL "Run: Full Pipeline" \
+    "Discover, analyze, explore, and generate a full report" \
+    $SHATTER run --max-iterations 10 --timeout 60 examples/typescript/src
 
 echo "${BOLD}${GREEN}Walkthrough complete.${RESET}"

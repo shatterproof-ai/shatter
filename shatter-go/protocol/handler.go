@@ -16,9 +16,10 @@ const frontendLanguage = "go"
 
 // Handler processes protocol requests and writes responses.
 type Handler struct {
-	reader *bufio.Scanner
-	writer io.Writer
-	log    io.Writer
+	reader           *bufio.Scanner
+	writer           io.Writer
+	log              io.Writer
+	lastAnalyzedFile string // remembered from the most recent analyze command
 }
 
 // NewHandler creates a handler reading from r, writing responses to w,
@@ -128,6 +129,8 @@ func (h *Handler) handleAnalyze(resp Response, req Request) Response {
 		return resp
 	}
 
+	h.lastAnalyzedFile = req.File
+
 	var functionName string
 	if req.Function != nil {
 		functionName = *req.Function
@@ -187,10 +190,14 @@ func (h *Handler) handleInstrument(resp Response, req Request) Response {
 }
 
 func (h *Handler) handleExecute(resp Response, req Request) Response {
-	if req.File == "" {
+	file := req.File
+	if file == "" {
+		file = h.lastAnalyzedFile
+	}
+	if file == "" {
 		resp.Status = "error"
 		resp.Code = "invalid_request"
-		resp.Message = "execute command requires a file path"
+		resp.Message = "execute command requires a file path (or a prior analyze)"
 		return resp
 	}
 
@@ -201,14 +208,14 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 		return resp
 	}
 
-	if _, err := os.Stat(req.File); err != nil {
+	if _, err := os.Stat(file); err != nil {
 		resp.Status = "error"
 		resp.Code = "file_not_found"
-		resp.Message = fmt.Sprintf("file not found: %s", req.File)
+		resp.Message = fmt.Sprintf("file not found: %s", file)
 		return resp
 	}
 
-	result, err := instrument.ExecuteFunction(req.File, *req.Function, req.Inputs)
+	result, err := instrument.ExecuteFunction(file, *req.Function, req.Inputs)
 	if err != nil {
 		resp.Status = "error"
 		if strings.Contains(err.Error(), "function not found") {
@@ -230,8 +237,13 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 	resp.LinesExecuted = toIntSlice(result.LinesExecuted)
 	resp.BranchPath = convertBranchPath(result.BranchPath)
 	resp.PathConstraints = extractPathConstraints(result.BranchPath)
+	resp.CallsToExternal = []ExternalCall{}
+	resp.SideEffects = []SideEffect{}
 	resp.Performance = &PerfMetrics{
-		WallTimeMs: result.Performance.WallTimeMs,
+		WallTimeMs:         result.Performance.WallTimeMs,
+		CPUTimeUs:          result.Performance.CPUTimeUs,
+		HeapUsedBytes:      result.Performance.HeapUsedBytes,
+		HeapAllocatedBytes: result.Performance.HeapAllocatedBytes,
 	}
 
 	return resp

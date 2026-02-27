@@ -2,6 +2,7 @@
 
 pub mod batch_analyze;
 pub mod behavior;
+pub mod call_graph;
 pub mod cache;
 pub mod clustering;
 pub mod discovery;

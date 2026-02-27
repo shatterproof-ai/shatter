@@ -237,4 +237,148 @@ func identity(x int) int {
 	if result.Performance.WallTimeMs <= 0 {
 		t.Errorf("expected positive wall time, got %f", result.Performance.WallTimeMs)
 	}
+
+	// CPUTimeUs should be non-negative (may be 0 for very fast functions)
+	if result.Performance.CPUTimeUs < 0 {
+		t.Errorf("expected non-negative CPU time, got %d", result.Performance.CPUTimeUs)
+	}
+
+	// HeapAllocatedBytes should be non-negative
+	if result.Performance.HeapAllocatedBytes < 0 {
+		t.Errorf("expected non-negative heap allocated, got %d", result.Performance.HeapAllocatedBytes)
+	}
+}
+
+func TestExecuteFunctionHandlesPanic(t *testing.T) {
+	srcDir := t.TempDir()
+	src := writeExecTestSource(t, srcDir, "target.go", `package main
+
+func boom(x int) int {
+	panic("kaboom")
+}
+`)
+	result, err := ExecuteFunction(src, "boom", []json.RawMessage{
+		json.RawMessage("1"),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteFunction: %v", err)
+	}
+
+	if result.ThrownError == nil {
+		t.Fatal("expected error for panicking function")
+	}
+	if result.ThrownError.ErrorType != "runtime_error" {
+		t.Errorf("expected error_type runtime_error, got %q", result.ThrownError.ErrorType)
+	}
+}
+
+func TestExecuteFunctionWithBoolInput(t *testing.T) {
+	srcDir := t.TempDir()
+	src := writeExecTestSource(t, srcDir, "target.go", `package main
+
+func negate(b bool) bool {
+	return !b
+}
+`)
+	result, err := ExecuteFunction(src, "negate", []json.RawMessage{
+		json.RawMessage("true"),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteFunction: %v", err)
+	}
+	if result.ThrownError != nil {
+		t.Fatalf("unexpected error: %+v", result.ThrownError)
+	}
+
+	var retVal bool
+	if err := json.Unmarshal(result.ReturnValue, &retVal); err != nil {
+		t.Fatalf("parsing return value: %v", err)
+	}
+	if retVal != false {
+		t.Errorf("expected false, got %v", retVal)
+	}
+}
+
+func TestExecuteFunctionWithFloat64Input(t *testing.T) {
+	srcDir := t.TempDir()
+	src := writeExecTestSource(t, srcDir, "target.go", `package main
+
+func double(x float64) float64 {
+	return x * 2
+}
+`)
+	result, err := ExecuteFunction(src, "double", []json.RawMessage{
+		json.RawMessage("3.5"),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteFunction: %v", err)
+	}
+	if result.ThrownError != nil {
+		t.Fatalf("unexpected error: %+v", result.ThrownError)
+	}
+
+	var retVal float64
+	if err := json.Unmarshal(result.ReturnValue, &retVal); err != nil {
+		t.Fatalf("parsing return value: %v", err)
+	}
+	if retVal != 7.0 {
+		t.Errorf("expected 7.0, got %f", retVal)
+	}
+}
+
+func TestExecuteFunctionWithBuildFailure(t *testing.T) {
+	srcDir := t.TempDir()
+	// Write invalid Go code that will fail to compile
+	src := writeExecTestSource(t, srcDir, "target.go", `package main
+
+func broken(x int) int {
+	return x +
+}
+`)
+	_, err := ExecuteFunction(src, "broken", []json.RawMessage{
+		json.RawMessage("1"),
+	})
+	// Should get an error (either parse or build failure)
+	if err == nil {
+		t.Error("expected error for code with syntax error")
+	}
+}
+
+func TestExecuteFunctionWithMultipleBranches(t *testing.T) {
+	srcDir := t.TempDir()
+	src := writeExecTestSource(t, srcDir, "target.go", `package main
+
+func multiCheck(x int, y int) string {
+	if x > 0 {
+		if y > 0 {
+			return "both positive"
+		}
+		return "x positive only"
+	}
+	return "x not positive"
+}
+`)
+	result, err := ExecuteFunction(src, "multiCheck", []json.RawMessage{
+		json.RawMessage("5"),
+		json.RawMessage("10"),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteFunction: %v", err)
+	}
+	if result.ThrownError != nil {
+		t.Fatalf("unexpected error: %+v", result.ThrownError)
+	}
+
+	// Should have at least 2 branch decisions (x > 0 and y > 0)
+	if len(result.BranchPath) < 2 {
+		t.Errorf("expected at least 2 branch decisions, got %d: %+v", len(result.BranchPath), result.BranchPath)
+	}
+
+	var retVal string
+	if err := json.Unmarshal(result.ReturnValue, &retVal); err != nil {
+		t.Fatalf("parsing return value: %v", err)
+	}
+	if retVal != "both positive" {
+		t.Errorf("expected %q, got %q", "both positive", retVal)
+	}
 }

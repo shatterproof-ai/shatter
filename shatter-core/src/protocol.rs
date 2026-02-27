@@ -237,14 +237,19 @@ pub struct ExecuteResult {
     /// Error thrown during execution, if any.
     pub thrown_error: Option<ErrorInfo>,
     /// Branch decisions recorded during execution.
+    #[serde(default)]
     pub branch_path: Vec<BranchDecision>,
     /// Source lines executed.
+    #[serde(default)]
     pub lines_executed: Vec<u32>,
     /// Calls to external dependencies observed.
+    #[serde(default)]
     pub calls_to_external: Vec<ExternalCall>,
     /// Symbolic path constraints collected.
+    #[serde(default)]
     pub path_constraints: Vec<SymConstraint>,
     /// Side effects observed during execution.
+    #[serde(default)]
     pub side_effects: Vec<SideEffect>,
     /// Performance metrics.
     pub performance: PerformanceMetrics,

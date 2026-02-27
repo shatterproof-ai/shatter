@@ -41,6 +41,14 @@ pub struct FunctionRegistry {
 }
 
 impl FunctionRegistry {
+    /// Construct a registry from pre-built entries and index.
+    ///
+    /// This is primarily useful in tests that need to build a registry without
+    /// going through the async `batch_analyze` pipeline.
+    pub fn from_raw(entries: Vec<FunctionEntry>, index: HashMap<String, usize>) -> Self {
+        Self { entries, index }
+    }
+
     /// Number of functions in the registry.
     pub fn len(&self) -> usize {
         self.entries.len()

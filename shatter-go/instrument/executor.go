@@ -7,6 +7,7 @@ import (
 	"go/ast"
 	"go/importer"
 	"go/parser"
+	"go/printer"
 	"go/token"
 	"go/types"
 	"os"
@@ -43,7 +44,10 @@ type BranchDecision struct {
 
 // PerfMetrics captures execution performance data.
 type PerfMetrics struct {
-	WallTimeMs float64 `json:"wall_time_ms"`
+	WallTimeMs         float64 `json:"wall_time_ms"`
+	CPUTimeUs          int     `json:"cpu_time_us"`
+	HeapUsedBytes      int     `json:"heap_used_bytes"`
+	HeapAllocatedBytes int     `json:"heap_allocated_bytes"`
 }
 
 // ExecuteFunction instruments the given source file for the target function,
@@ -67,10 +71,16 @@ func ExecuteFunction(sourcePath, funcName string, inputs []json.RawMessage) (*Ex
 	}
 	defer os.RemoveAll(outputDir)
 
+	// Rewrite all Go files in the output dir to package main so the harness can call them.
+	if err := rewritePackageToMain(outputDir); err != nil {
+		return nil, fmt.Errorf("rewriting package: %w", err)
+	}
+
 	// Generate the main harness
 	resultsPath := filepath.Join(outputDir, "shatter_results.json")
 	returnPath := filepath.Join(outputDir, "shatter_return.json")
-	harness, err := generateHarness(funcName, params, returnInfo, inputs, resultsPath, returnPath)
+	perfPath := filepath.Join(outputDir, "shatter_perf.json")
+	harness, err := generateHarness(funcName, params, returnInfo, inputs, resultsPath, returnPath, perfPath)
 	if err != nil {
 		return nil, fmt.Errorf("generating harness: %w", err)
 	}
@@ -128,6 +138,20 @@ func ExecuteFunction(sourcePath, funcName string, inputs []json.RawMessage) (*Ex
 	// Try to parse the return value
 	if data, err := os.ReadFile(returnPath); err == nil {
 		result.ReturnValue = json.RawMessage(data)
+	}
+
+	// Try to parse performance metrics from the harness
+	if data, err := os.ReadFile(perfPath); err == nil {
+		var perf struct {
+			CPUTimeUs          int `json:"cpu_time_us"`
+			HeapUsedBytes      int `json:"heap_used_bytes"`
+			HeapAllocatedBytes int `json:"heap_allocated_bytes"`
+		}
+		if err := json.Unmarshal(data, &perf); err == nil {
+			result.Performance.CPUTimeUs = perf.CPUTimeUs
+			result.Performance.HeapUsedBytes = perf.HeapUsedBytes
+			result.Performance.HeapAllocatedBytes = perf.HeapAllocatedBytes
+		}
 	}
 
 	// Handle execution errors
@@ -272,7 +296,7 @@ func astTypeString(expr ast.Expr) string {
 
 // generateHarness creates a main.go that deserializes inputs, calls the function,
 // captures results, and writes output files.
-func generateHarness(funcName string, params []paramInfo, retInfo returnTypeInfo, inputs []json.RawMessage, resultsPath, returnPath string) (string, error) {
+func generateHarness(funcName string, params []paramInfo, retInfo returnTypeInfo, inputs []json.RawMessage, resultsPath, returnPath, perfPath string) (string, error) {
 	var b strings.Builder
 
 	b.WriteString("package main\n\n")
@@ -280,9 +304,14 @@ func generateHarness(funcName string, params []paramInfo, retInfo returnTypeInfo
 	b.WriteString("\t\"encoding/json\"\n")
 	b.WriteString("\t\"fmt\"\n")
 	b.WriteString("\t\"os\"\n")
+	b.WriteString("\t\"runtime\"\n")
+	b.WriteString("\t\"time\"\n")
 	b.WriteString(")\n\n")
 
 	b.WriteString("func main() {\n")
+	b.WriteString("\tvar memBefore runtime.MemStats\n")
+	b.WriteString("\truntime.ReadMemStats(&memBefore)\n")
+	b.WriteString("\tcpuStart := time.Now()\n\n")
 
 	// Declare and deserialize each input parameter
 	for i, p := range params {
@@ -368,7 +397,53 @@ func generateHarness(funcName string, params []paramInfo, retInfo returnTypeInfo
 		b.WriteString("\t}\n")
 	}
 
+	// Write performance metrics
+	perfPathEscaped := strings.ReplaceAll(perfPath, `\`, `\\`)
+	b.WriteString("\n\tcpuElapsed := time.Since(cpuStart)\n")
+	b.WriteString("\tvar memAfter runtime.MemStats\n")
+	b.WriteString("\truntime.ReadMemStats(&memAfter)\n")
+	b.WriteString("\tperfData, _ := json.Marshal(map[string]any{\n")
+	b.WriteString("\t\t\"cpu_time_us\": cpuElapsed.Microseconds(),\n")
+	b.WriteString("\t\t\"heap_used_bytes\": memAfter.HeapInuse - memBefore.HeapInuse,\n")
+	b.WriteString("\t\t\"heap_allocated_bytes\": memAfter.TotalAlloc - memBefore.TotalAlloc,\n")
+	b.WriteString("\t})\n")
+	b.WriteString(fmt.Sprintf("\tos.WriteFile(%q, perfData, 0644)\n", perfPathEscaped))
+
 	b.WriteString("}\n")
 
 	return b.String(), nil
+}
+
+// rewritePackageToMain rewrites the package declaration in all Go files in dir
+// to "package main", so the harness main.go can call functions from those files.
+func rewritePackageToMain(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".go" || entry.Name() == "main.go" {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		fset := token.NewFileSet()
+		f, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+		if err != nil {
+			continue // skip unparseable files
+		}
+		if f.Name.Name == "main" {
+			continue
+		}
+		f.Name.Name = "main"
+		out, err := os.Create(path)
+		if err != nil {
+			return err
+		}
+		err = printer.Fprint(out, fset, f)
+		out.Close()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
