@@ -126,7 +126,7 @@ GO_EXAMPLES=(
     "examples/go/03-errors.go:SafeDivide"
 )
 
-TOTAL=11
+TOTAL=15
 
 # ─── Walkthrough ──────────────────────────────────────────────────────
 
@@ -194,5 +194,26 @@ step 10 $TOTAL "Run: Analyze Only" \
 step 11 $TOTAL "Run: Full Pipeline" \
     "Discover, analyze, explore, and generate a full report" \
     $SHATTER run --max-iterations 10 --timeout 60 examples/typescript/src
+
+# Stage 12: Log level verbosity (debug)
+step 12 $TOTAL "Verbose Output with Debug Log Level" \
+    "Show detailed progress output using --log-level debug" \
+    $SHATTER explore --log-level debug "${EXAMPLES[0]}"
+
+# Stage 13: Request timeout
+step 13 $TOTAL "Request Timeout" \
+    "Set a per-request timeout to bound frontend communication" \
+    $SHATTER explore --request-timeout 15 "${EXAMPLES[@]}"
+
+# Stage 14: User-provided inputs via config
+step 14 $TOTAL "User-Provided Inputs via Config" \
+    "Load candidate inputs from a .shatter config directory" \
+    $SHATTER explore --config examples/typescript/.shatter/config.yaml \
+    "${EXAMPLES[0]}"
+
+# Stage 15: Performance stats
+step 15 $TOTAL "Performance Stats" \
+    "Show per-function timing data with --perf" \
+    $SHATTER explore --perf "${EXAMPLES[@]}"
 
 echo "${BOLD}${GREEN}Walkthrough complete.${RESET}"
