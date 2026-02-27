@@ -291,6 +291,15 @@ pub fn generate_report_from_scan(
 
     let dependency_graph = build_dependency_edges(&result.function_results);
 
+    let skipped_functions: Vec<SkippedFunctionReport> = result
+        .skipped_functions
+        .iter()
+        .map(|s| SkippedFunctionReport {
+            function_name: s.function_name.clone(),
+            reason: s.reason.clone(),
+        })
+        .collect();
+
     ScanReport {
         version: 1,
         functions,
@@ -298,7 +307,7 @@ pub fn generate_report_from_scan(
             total_functions: result.function_results.len(),
             total_branches,
             overall_coverage,
-            skipped_functions: vec![],
+            skipped_functions,
             dependency_graph,
         },
         test_order: result.test_order.clone(),
@@ -688,6 +697,7 @@ mod tests {
                 make_function_result("b", 10, 2, 7, 10, vec!["a".to_string()]),
             ],
             test_order: vec!["a".into(), "b".into()],
+            skipped_functions: vec![],
         };
 
         let mut file_map = HashMap::new();
