@@ -329,6 +329,7 @@ pub async fn explore(
                 function: function_name.to_string(),
                 inputs: entry.inputs.clone(),
                 mocks: vec![],
+                setup_context: None,
             })
             .await?;
 

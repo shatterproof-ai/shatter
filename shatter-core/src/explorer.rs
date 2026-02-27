@@ -168,6 +168,7 @@ pub async fn explore_function(
                 function: analysis.name.clone(),
                 inputs: inputs.clone(),
                 mocks: config.mocks.clone(),
+                setup_context: None,
             })
             .await?;
 
@@ -230,6 +231,8 @@ pub struct ReportOptions {
     pub show_perf: bool,
     /// Wall time spent on this function.
     pub wall_time: Option<std::time::Duration>,
+    /// Coverage metrics to include in the report.
+    pub coverage_metrics: Option<crate::coverage_metrics::CoverageMetrics>,
 }
 
 /// Format an exploration result as a concise, human-readable summary.
@@ -276,6 +279,11 @@ pub fn format_exploration_report(result: &ExplorationResult, options: &ReportOpt
                 result.function_name
             ));
         }
+    }
+
+    if let Some(ref metrics) = options.coverage_metrics {
+        out.push('\n');
+        out.push_str(&crate::coverage_metrics::format_coverage_metrics(metrics));
     }
 
     if options.show_perf {
@@ -650,6 +658,39 @@ mod tests {
         assert!(report.contains("Perf:"), "should show perf section");
         assert!(report.contains("42.0ms"), "should show wall time");
         assert!(report.contains("10 iteration(s)"), "should show iterations");
+    }
+
+    #[test]
+    fn format_exploration_report_includes_coverage_metrics() {
+        let result = ExplorationResult {
+            function_name: "analyze".into(),
+            iterations: 20,
+            unique_paths: 3,
+            lines_covered: 8,
+            total_lines: 10,
+            new_path_executions: vec![],
+            raw_results: vec![],
+        };
+
+        let metrics = crate::coverage_metrics::CoverageMetrics {
+            total_branches: 4,
+            z3_solved: 2,
+            random_found: 1,
+            user_provided: 0,
+            uncovered: 1,
+            symexpr_count: 3,
+            unknown_count: 1,
+        };
+
+        let options = ReportOptions {
+            coverage_metrics: Some(metrics),
+            ..Default::default()
+        };
+        let report = format_exploration_report(&result, &options);
+        assert!(report.contains("Coverage metrics:"));
+        assert!(report.contains("Z3 solved"));
+        assert!(report.contains("Uncovered"));
+        assert!(report.contains("Symbolic expr"));
     }
 
     #[test]

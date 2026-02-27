@@ -19,6 +19,7 @@ pub enum CacheError {
 }
 
 /// Disk-backed cache for storing and loading [`BehaviorMap`]s.
+#[derive(Debug)]
 pub struct BehaviorMapCache {
     cache_dir: PathBuf,
 }

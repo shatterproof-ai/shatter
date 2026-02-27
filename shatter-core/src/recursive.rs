@@ -150,6 +150,7 @@ async fn probe_for_base_cases(
                 function: analysis.name.clone(),
                 inputs: inputs.clone(),
                 mocks: vec![],
+                setup_context: None,
             })
             .await?;
 
@@ -236,6 +237,7 @@ pub async fn explore_recursive(
                     function: analysis.name.clone(),
                     inputs: inputs.clone(),
                     mocks: vec![mock.clone()],
+                    setup_context: None,
                 })
                 .await?;
 
@@ -368,6 +370,7 @@ pub async fn explore_mutual_group(
                     function: func_id.clone(),
                     inputs: inputs.clone(),
                     mocks: vec![],
+                    setup_context: None,
                 })
                 .await?;
 
@@ -442,6 +445,7 @@ pub async fn explore_mutual_group(
                         function: func_id.clone(),
                         inputs: inputs.clone(),
                         mocks: mocks.clone(),
+                        setup_context: None,
                     })
                     .await?;
 

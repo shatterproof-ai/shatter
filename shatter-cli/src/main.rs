@@ -17,6 +17,7 @@ use shatter_core::export;
 use shatter_core::frontend::{Frontend, FrontendConfig};
 use shatter_core::log_level::LogLevel;
 use shatter_core::protocol::{Command as ProtoCommand, ResponseResult};
+use shatter_core::report;
 use shatter_core::scan_orchestrator::{self, ScanConfig};
 use shatter_core::scope::{ScopeConfig, ScopeMatcher};
 use shatter_core::snapshot;
@@ -170,6 +171,11 @@ enum CliCommand {
         #[arg(long)]
         analyze_only: bool,
 
+        /// Directory for caching behavior maps across runs.
+        /// Falls back to SHATTER_CACHE_DIR env var, then `.shatter/cache/`.
+        #[arg(long, env = "SHATTER_CACHE_DIR")]
+        cache_dir: Option<PathBuf>,
+
         /// Disable behavior map caching entirely.
         #[arg(long)]
         no_cache: bool,
@@ -197,6 +203,10 @@ enum CliCommand {
         /// limit are skipped without aborting the scan. Default: 30s.
         #[arg(long, default_value_t = 30)]
         timeout_per_fn: u64,
+
+        /// Write JSON report to this directory (default: ./shatter-report/).
+        #[arg(long)]
+        output_dir: Option<PathBuf>,
     },
 
     /// Export generated tests from behavior maps produced by exploration.
@@ -624,6 +634,7 @@ async fn run_explore(
                                 location: Some(format!("{file_str}:{}", func.start_line)),
                                 show_perf,
                                 wall_time: Some(wall_time),
+                                coverage_metrics: None,
                             };
                             print!("{}", explorer::format_exploration_report(&result, &report_opts));
                         }
@@ -658,11 +669,14 @@ async fn run_scan(
     _timeout: u64,
     scope_path: Option<&Path>,
     analyze_only: bool,
+    cache_dir: Option<&Path>,
+    no_cache: bool,
     request_timeout: u64,
     exec_timeout: u64,
     build_timeout: u64,
     parallelism: usize,
     timeout_per_fn: u64,
+    output_dir: Option<&Path>,
     log_level: LogLevel,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let _scope_config = match scope_path {
@@ -784,17 +798,44 @@ async fn run_scan(
         );
     }
 
+    let cache = if no_cache {
+        None
+    } else {
+        let dir = match cache_dir {
+            Some(d) => d.to_path_buf(),
+            None => BehaviorMapCache::default_dir(&std::env::current_dir()?),
+        };
+        Some(std::sync::Arc::new(
+            BehaviorMapCache::new(dir).map_err(|e| format!("failed to initialize cache: {e}"))?,
+        ))
+    };
+
     let scan_config = ScanConfig {
         max_iterations_per_function: max_iterations,
         seed: None,
         file_map,
         parallelism: effective_parallelism,
         timeout_per_fn: Duration::from_secs(timeout_per_fn),
+        cache,
     };
 
     match scan_orchestrator::parallel_scan(&fe_config, &all_analyses, &scan_config).await {
         Ok(result) => {
             print!("{}", scan_orchestrator::format_parallel_scan_report(&result));
+
+            // Generate and write JSON report if output_dir is specified.
+            let report_dir = output_dir
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("./shatter-report/"));
+            let json_report = report::generate_report(&result, &scan_config.file_map);
+            match report::write_report(&json_report, &report_dir) {
+                Ok(path) => {
+                    println!("Wrote JSON report to {}", path.display());
+                }
+                Err(e) => {
+                    eprintln!("Failed to write JSON report: {e}");
+                }
+            }
         }
         Err(e) => {
             eprintln!("Scan error: {e}");
@@ -1519,12 +1560,14 @@ async fn main() -> ExitCode {
             timeout,
             scope,
             analyze_only,
-            no_cache: _,
+            cache_dir,
+            no_cache,
             request_timeout,
             exec_timeout,
             build_timeout,
             parallelism,
             timeout_per_fn,
+            output_dir,
         } => {
             run_scan(
                 &targets,
@@ -1532,11 +1575,14 @@ async fn main() -> ExitCode {
                 timeout,
                 scope.as_deref(),
                 analyze_only,
+                cache_dir.as_deref(),
+                no_cache,
                 request_timeout,
                 exec_timeout,
                 build_timeout,
                 parallelism,
                 timeout_per_fn,
+                output_dir.as_deref(),
                 log_level,
             )
             .await
@@ -2039,6 +2085,31 @@ mod tests {
                 assert_eq!(timeout, 300);
                 assert!(analyze_only);
                 assert!(!no_cache);
+            }
+            _ => panic!("expected Scan command"),
+        }
+    }
+
+    #[test]
+    fn cli_scan_output_dir_flag() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "scan",
+            "--output-dir", "/tmp/report",
+            "test.ts",
+        ]);
+        match cli.command {
+            CliCommand::Scan { output_dir, .. } => {
+                assert_eq!(output_dir, Some(PathBuf::from("/tmp/report")));
+            }
+            _ => panic!("expected Scan command"),
+        }
+
+        // Default: no output_dir
+        let cli = Cli::parse_from(["shatter", "scan", "test.ts"]);
+        match cli.command {
+            CliCommand::Scan { output_dir, .. } => {
+                assert!(output_dir.is_none());
             }
             _ => panic!("expected Scan command"),
         }

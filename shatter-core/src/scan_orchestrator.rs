@@ -20,6 +20,7 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 
 use crate::behavior::{BehaviorCoverage, BehaviorMap, CallGraph, CallGraphError, TestOrderEntry};
+use crate::cache::BehaviorMapCache;
 use crate::execution_record::ExecutionRecord;
 use crate::explorer::{self, ExploreConfig, ExploreError, ExplorationResult};
 use crate::frontend::{Frontend, FrontendConfig, FrontendError};
@@ -39,6 +40,10 @@ pub struct ScanConfig {
     /// Per-function timeout. If a function takes longer, it is skipped.
     /// Default: 30 seconds.
     pub timeout_per_fn: Duration,
+    /// Optional disk cache for persisting behavior maps across runs.
+    /// When set, behavior maps are stored after exploration and loaded
+    /// before exploration to skip re-exploring unchanged functions.
+    pub cache: Option<Arc<BehaviorMapCache>>,
 }
 
 /// Result of exploring a single function during a scan.
@@ -168,6 +173,17 @@ pub async fn scan(
             None => continue,
         };
 
+        // Try loading a cached behavior map for callees that aren't yet in memory.
+        if let Some(ref cache) = config.cache {
+            for dep in &analysis.dependencies {
+                if !behavior_maps.contains_key(&dep.symbol)
+                    && let Ok(Some(cached)) = cache.load(&dep.symbol)
+                {
+                    behavior_maps.insert(dep.symbol.clone(), cached);
+                }
+            }
+        }
+
         // Build mocks from callees that have already been tested.
         let callees = call_graph.callees(func_name);
         let mut mocks: Vec<MockConfig> = Vec::new();
@@ -204,6 +220,11 @@ pub async fn scan(
             .collect();
 
         let behavior_map = BehaviorMap::from_records(func_name, &records);
+
+        // Persist the behavior map to cache for reuse across runs.
+        if let Some(ref cache) = config.cache {
+            let _ = cache.store(&behavior_map);
+        }
 
         // Compute behavior coverage for each callee.
         let mut behavior_coverage: Vec<BehaviorCoverage> = Vec::new();
@@ -344,6 +365,19 @@ pub async fn parallel_scan(
                 }
             };
 
+            // Try loading cached behavior maps for callees not yet in memory.
+            if let Some(ref cache) = config.cache {
+                let mut maps = behavior_maps.lock().await;
+                for dep in &analysis.dependencies {
+                    if !maps.contains_key(&dep.symbol)
+                        && let Ok(Some(cached)) = cache.load(&dep.symbol)
+                    {
+                        maps.insert(dep.symbol.clone(), cached);
+                    }
+                }
+                drop(maps);
+            }
+
             // Build mocks from callees that have already been tested.
             let callees = call_graph.callees(func_name);
             let maps = behavior_maps.lock().await;
@@ -382,6 +416,7 @@ pub async fn parallel_scan(
             let pool = Arc::clone(&pool);
             let behavior_maps = Arc::clone(&behavior_maps);
             let timeout = config.timeout_per_fn;
+            let cache = config.cache.clone();
 
             let handle = tokio::spawn(async move {
                 let mut frontend = pool.checkout().await;
@@ -408,6 +443,13 @@ pub async fn parallel_scan(
                         // Store the behavior map for downstream functions.
                         let mut maps = behavior_maps.lock().await;
                         maps.insert(func_name.clone(), func_result.behavior_map.clone());
+                        drop(maps);
+
+                        // Persist to disk cache for reuse across runs.
+                        if let Some(ref cache) = cache {
+                            let _ = cache.store(&func_result.behavior_map);
+                        }
+
                         FunctionOutcome::Success(func_result)
                     }
                     Ok(Err(e)) => FunctionOutcome::Error {
@@ -1048,6 +1090,7 @@ mod tests {
             file_map,
             parallelism: 2,
             timeout_per_fn: Duration::from_secs(10),
+            cache: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -1107,6 +1150,7 @@ mod tests {
             file_map,
             parallelism: 1,
             timeout_per_fn: Duration::from_secs(10),
+            cache: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -1117,5 +1161,65 @@ mod tests {
         assert_eq!(result.function_results.len(), 1);
         assert_eq!(result.function_results[0].function_name, "solo");
         assert_eq!(result.function_results[0].exploration.iterations, 2);
+    }
+
+    #[tokio::test]
+    async fn parallel_scan_persists_behavior_maps_to_cache() {
+        use crate::cache::BehaviorMapCache;
+        use crate::frontend::FrontendConfig;
+        use crate::types::{ParamInfo, TypeInfo};
+        use std::path::{Path, PathBuf};
+
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let noop_path = manifest_dir.join("../protocol/noop-frontend.sh");
+
+        let mut fe_config = FrontendConfig::new(PathBuf::from("bash"));
+        fe_config.args = vec![noop_path.to_string_lossy().into_owned()];
+        fe_config.request_timeout = Duration::from_secs(10);
+
+        let analyses = vec![FunctionAnalysis {
+            name: "cached_fn".to_string(),
+            exported: true,
+            params: vec![ParamInfo {
+                name: "x".into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            }],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Unknown,
+            start_line: 1,
+            end_line: 5,
+        }];
+
+        let mut file_map = HashMap::new();
+        file_map.insert("cached_fn".to_string(), "test.ts".to_string());
+
+        let tmp_dir = tempfile::tempdir().expect("create temp dir");
+        let cache = Arc::new(
+            BehaviorMapCache::new(tmp_dir.path().to_path_buf()).expect("create cache"),
+        );
+
+        let config = ScanConfig {
+            max_iterations_per_function: 2,
+            seed: Some(42),
+            file_map,
+            parallelism: 1,
+            timeout_per_fn: Duration::from_secs(10),
+            cache: Some(cache.clone()),
+        };
+
+        let result = parallel_scan(&fe_config, &analyses, &config)
+            .await
+            .expect("parallel_scan should succeed");
+
+        assert_eq!(result.function_results.len(), 1);
+
+        // Verify the behavior map was persisted to cache.
+        let loaded = cache
+            .load("cached_fn")
+            .expect("cache load should succeed");
+        assert!(loaded.is_some(), "behavior map should be cached on disk");
+        assert_eq!(loaded.as_ref().unwrap().function_id, "cached_fn");
     }
 }

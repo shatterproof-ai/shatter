@@ -369,6 +369,7 @@ mod tests {
                 function: "myFunc".into(),
                 inputs: vec![serde_json::json!(42)],
                 mocks: vec![],
+                setup_context: None,
             })
             .await
             .expect("execute failed");
@@ -448,6 +449,7 @@ mod tests {
                 function: "fn1".into(),
                 inputs: vec![serde_json::json!(1), serde_json::json!("hello")],
                 mocks: vec![],
+                setup_context: None,
             })
             .await
             .expect("execute failed");

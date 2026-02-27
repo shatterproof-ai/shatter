@@ -6,6 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::config::SetupMode;
 use crate::execution_record::{
     BranchDecision, ErrorInfo, ExternalCall, SideEffect, SymConstraint,
 };
@@ -64,9 +65,45 @@ pub enum Command {
         inputs: Vec<serde_json::Value>,
         /// Mock configurations for external dependencies.
         mocks: Vec<MockConfig>,
+        /// Opaque context returned by a prior Setup command, if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        setup_context: Option<serde_json::Value>,
+    },
+    /// Run a setup file to initialize state before function execution.
+    Setup {
+        /// Path to the setup file.
+        file: String,
+        /// Name of the function this setup is associated with.
+        function: String,
+        /// When to run setup relative to executions.
+        mode: SetupMode,
+    },
+    /// Tear down state established by a prior Setup command.
+    Teardown {
+        /// Name of the function whose setup should be torn down.
+        function: String,
+    },
+    /// Invoke a custom generator to produce a value for a type or parameter.
+    Generate {
+        /// Path to the generator file.
+        file: String,
+        /// Name of the type or parameter to generate a value for.
+        name: String,
+        /// Whether this generator targets a type name or a parameter name.
+        kind: GeneratorKind,
     },
     /// Request graceful shutdown of the frontend process.
     Shutdown,
+}
+
+/// Whether a generator targets a type name or a parameter name.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GeneratorKind {
+    /// Generator for a named type (e.g., "User").
+    TypeName,
+    /// Generator for a named parameter (e.g., "authToken").
+    ParamName,
 }
 
 /// Configuration for mocking an external dependency during execution.
@@ -139,6 +176,18 @@ pub enum ResponseResult {
     },
     /// Successful execution result.
     Execute(ExecuteResult),
+    /// Successful setup result.
+    Setup {
+        /// Opaque context to pass to subsequent Execute commands.
+        setup_context: serde_json::Value,
+    },
+    /// Acknowledgment that teardown completed.
+    TeardownAck,
+    /// Result of invoking a custom generator.
+    Generate {
+        /// The generated value.
+        value: serde_json::Value,
+    },
     /// Acknowledgment of shutdown request.
     ShutdownAck,
     /// Error response for any command.
@@ -390,6 +439,7 @@ mod tests {
                 function: "calculateShipping".into(),
                 inputs: vec![serde_json::json!({"items": [1, 2, 3], "priority": "express"})],
                 mocks: vec![],
+                setup_context: None,
             },
         ));
     }
@@ -770,6 +820,7 @@ mod tests {
                         default_behavior: MockBehavior::Passthrough,
                     },
                 ],
+                setup_context: None,
             },
         ));
     }
@@ -910,5 +961,227 @@ mod tests {
                 ],
             },
         ));
+    }
+
+    // -- Setup / Teardown / Generate round-trips --
+
+    #[test]
+    fn setup_request_round_trips() {
+        round_trip(&Request::new(
+            20,
+            Command::Setup {
+                file: "./setup/global.ts".into(),
+                function: "processOrder".into(),
+                mode: crate::config::SetupMode::PerFunction,
+            },
+        ));
+    }
+
+    #[test]
+    fn setup_request_per_execution_round_trips() {
+        round_trip(&Request::new(
+            21,
+            Command::Setup {
+                file: "./setup/auth.ts".into(),
+                function: "authenticate".into(),
+                mode: crate::config::SetupMode::PerExecution,
+            },
+        ));
+    }
+
+    #[test]
+    fn teardown_request_round_trips() {
+        round_trip(&Request::new(
+            22,
+            Command::Teardown {
+                function: "processOrder".into(),
+            },
+        ));
+    }
+
+    #[test]
+    fn generate_request_type_name_round_trips() {
+        round_trip(&Request::new(
+            23,
+            Command::Generate {
+                file: "./generators/user.ts".into(),
+                name: "User".into(),
+                kind: GeneratorKind::TypeName,
+            },
+        ));
+    }
+
+    #[test]
+    fn generate_request_param_name_round_trips() {
+        round_trip(&Request::new(
+            24,
+            Command::Generate {
+                file: "./generators/token.ts".into(),
+                name: "authToken".into(),
+                kind: GeneratorKind::ParamName,
+            },
+        ));
+    }
+
+    #[test]
+    fn setup_response_round_trips() {
+        round_trip(&Response::new(
+            20,
+            ResponseResult::Setup {
+                setup_context: serde_json::json!({"db_handle": "conn_42", "temp_dir": "/tmp/test"}),
+            },
+        ));
+    }
+
+    #[test]
+    fn teardown_ack_response_round_trips() {
+        round_trip(&Response::new(21, ResponseResult::TeardownAck));
+    }
+
+    #[test]
+    fn generate_response_round_trips() {
+        round_trip(&Response::new(
+            22,
+            ResponseResult::Generate {
+                value: serde_json::json!({"id": 1, "name": "Alice", "email": "alice@example.com"}),
+            },
+        ));
+    }
+
+    #[test]
+    fn generate_response_primitive_value_round_trips() {
+        round_trip(&Response::new(
+            23,
+            ResponseResult::Generate {
+                value: serde_json::json!("tok_abc123"),
+            },
+        ));
+    }
+
+    #[test]
+    fn execute_request_with_setup_context_round_trips() {
+        round_trip(&Request::new(
+            25,
+            Command::Execute {
+                function: "processOrder".into(),
+                inputs: vec![serde_json::json!({"id": 1})],
+                mocks: vec![],
+                setup_context: Some(serde_json::json!({"db_handle": "conn_42"})),
+            },
+        ));
+    }
+
+    #[test]
+    fn execute_request_without_setup_context_backward_compatible() {
+        // Verify that JSON without setup_context still deserializes correctly.
+        let json = r#"{"protocol_version":"0.1.0","id":26,"command":"execute","function":"myFunc","inputs":[1],"mocks":[]}"#;
+        let req: Request = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(req.id, 26);
+        if let Command::Execute { setup_context, .. } = &req.command {
+            assert_eq!(*setup_context, None);
+        } else {
+            panic!("expected Execute command");
+        }
+    }
+
+    #[test]
+    fn execute_request_without_setup_context_omits_field_in_json() {
+        let req = Request::new(
+            27,
+            Command::Execute {
+                function: "myFunc".into(),
+                inputs: vec![serde_json::json!(1)],
+                mocks: vec![],
+                setup_context: None,
+            },
+        );
+        let json = serde_json::to_value(&req).expect("serialize");
+        assert!(!json.as_object().expect("object").contains_key("setup_context"));
+    }
+
+    #[test]
+    fn setup_request_serializes_with_command_tag() {
+        let req = Request::new(
+            30,
+            Command::Setup {
+                file: "./setup.ts".into(),
+                function: "fn1".into(),
+                mode: crate::config::SetupMode::PerFunction,
+            },
+        );
+        let json = serde_json::to_value(&req).expect("serialize");
+        assert_eq!(json["command"], "setup");
+        assert_eq!(json["file"], "./setup.ts");
+        assert_eq!(json["function"], "fn1");
+        assert_eq!(json["mode"], "per_function");
+    }
+
+    #[test]
+    fn teardown_request_serializes_with_command_tag() {
+        let req = Request::new(
+            31,
+            Command::Teardown {
+                function: "fn1".into(),
+            },
+        );
+        let json = serde_json::to_value(&req).expect("serialize");
+        assert_eq!(json["command"], "teardown");
+        assert_eq!(json["function"], "fn1");
+    }
+
+    #[test]
+    fn generate_request_serializes_with_command_tag() {
+        let req = Request::new(
+            32,
+            Command::Generate {
+                file: "./gen.ts".into(),
+                name: "User".into(),
+                kind: GeneratorKind::TypeName,
+            },
+        );
+        let json = serde_json::to_value(&req).expect("serialize");
+        assert_eq!(json["command"], "generate");
+        assert_eq!(json["file"], "./gen.ts");
+        assert_eq!(json["name"], "User");
+        assert_eq!(json["kind"], "type_name");
+    }
+
+    #[test]
+    fn setup_response_serializes_with_status_tag() {
+        let resp = Response::new(
+            30,
+            ResponseResult::Setup {
+                setup_context: serde_json::json!({"ready": true}),
+            },
+        );
+        let json = serde_json::to_value(&resp).expect("serialize");
+        assert_eq!(json["status"], "setup");
+        assert_eq!(json["setup_context"], serde_json::json!({"ready": true}));
+    }
+
+    #[test]
+    fn teardown_ack_response_serializes_with_status_tag() {
+        let resp = Response::new(31, ResponseResult::TeardownAck);
+        let json = serde_json::to_value(&resp).expect("serialize");
+        assert_eq!(json["status"], "teardown_ack");
+    }
+
+    #[test]
+    fn generate_response_serializes_with_status_tag() {
+        let resp = Response::new(
+            32,
+            ResponseResult::Generate {
+                value: serde_json::json!(42),
+            },
+        );
+        let json = serde_json::to_value(&resp).expect("serialize");
+        assert_eq!(json["status"], "generate");
+        assert_eq!(json["value"], 42);
+    }
+
+    #[test]
+    fn all_generator_kinds_round_trip() {
+        round_trip(&GeneratorKind::TypeName);
+        round_trip(&GeneratorKind::ParamName);
     }
 }
