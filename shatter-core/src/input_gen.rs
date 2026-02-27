@@ -84,13 +84,33 @@ fn generate_string(rng: &mut impl Rng) -> Value {
     json!(s)
 }
 
-/// Generate a random array with 0-5 elements.
+/// Generate a random array with bounded length, biased toward small sizes.
+///
+/// Most real bugs appear at boundary lengths (0, 1, 2, 3), so we heavily
+/// favor those over larger sizes. The distribution:
+/// - 25% chance of length 0 (empty array)
+/// - 25% chance of length 1 (single element)
+/// - 20% chance of length 2
+/// - 15% chance of length 3
+/// - 15% chance of length 4-5 (larger arrays, less common in bug-triggering)
 fn generate_array(element: &TypeInfo, rng: &mut impl Rng) -> Value {
-    let len = rng.random_range(0..=5);
+    let len = generate_bounded_array_length(rng);
     let items: Vec<Value> = (0..len)
         .map(|_| generate_random_value(element, rng))
         .collect();
     json!(items)
+}
+
+/// Generate an array length biased toward small boundary values (0-3).
+fn generate_bounded_array_length(rng: &mut impl Rng) -> usize {
+    let choice: u8 = rng.random_range(0..20);
+    match choice {
+        0..5 => 0,   // 25%: empty
+        5..10 => 1,  // 25%: single element
+        10..14 => 2, // 20%: two elements
+        14..17 => 3, // 15%: three elements
+        _ => rng.random_range(4..=5), // 15%: larger
+    }
 }
 
 /// Generate a random object with the specified fields.
@@ -279,6 +299,51 @@ mod tests {
         ];
         let inputs = generate_random_inputs(&params, &mut rng);
         assert_eq!(inputs.len(), 3);
+    }
+
+    #[test]
+    fn bounded_array_length_favors_small_sizes() {
+        let mut rng = seeded_rng();
+        let mut counts = [0u32; 6]; // indices 0-5
+        let trials = 1000;
+        for _ in 0..trials {
+            let len = generate_bounded_array_length(&mut rng);
+            assert!(len <= 5, "length should be at most 5, got {len}");
+            counts[len] += 1;
+        }
+        // Empty (0) and single-element (1) should each be ~25% of results.
+        // With 1000 trials, expect at least 150 each (well below 25%).
+        assert!(
+            counts[0] >= 150,
+            "expected empty arrays to be common, got {}/{}",
+            counts[0],
+            trials
+        );
+        assert!(
+            counts[1] >= 150,
+            "expected single-element arrays to be common, got {}/{}",
+            counts[1],
+            trials
+        );
+        // Small sizes (0-3) should dominate: at least 75% of results.
+        let small: u32 = counts[0] + counts[1] + counts[2] + counts[3];
+        assert!(
+            small >= 700,
+            "expected small sizes (0-3) to dominate, got {small}/{trials}"
+        );
+    }
+
+    #[test]
+    fn generated_arrays_have_bounded_length() {
+        let mut rng = seeded_rng();
+        let typ = TypeInfo::Array {
+            element: Box::new(TypeInfo::Int),
+        };
+        for _ in 0..100 {
+            let val = generate_random_value(&typ, &mut rng);
+            let arr = val.as_array().expect("expected array");
+            assert!(arr.len() <= 5, "array too long: {}", arr.len());
+        }
     }
 
     #[test]

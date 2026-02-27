@@ -1,9 +1,11 @@
 //\! Shatter core engine: concolic execution and constraint solving.
 
+pub mod array_mutation;
 pub mod batch_analyze;
 pub mod behavior;
 pub mod call_graph;
 pub mod cache;
+pub mod config;
 pub mod clustering;
 pub mod discovery;
 pub mod execution_record;
@@ -11,6 +13,7 @@ pub mod explorer;
 pub mod export;
 pub mod frontend;
 pub mod input_gen;
+pub mod log_level;
 pub mod invariants;
 pub mod orchestrator;
 pub mod protocol;
