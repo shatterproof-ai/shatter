@@ -14,6 +14,7 @@ pub struct SkipReason {
 
 /// Checks each parameter for opaque types. Returns a `SkipReason` for every
 /// parameter whose type tree contains an `Opaque` node.
+#[must_use]
 pub fn check_executability(params: &[ParamInfo]) -> Vec<SkipReason> {
     params
         .iter()
