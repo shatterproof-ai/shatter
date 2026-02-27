@@ -10,8 +10,176 @@ use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::execution_record::{BranchDecision, ErrorInfo, ExecutionRecord, SideEffect};
-use crate::protocol::{MockBehavior, MockConfig};
+use crate::execution_record::{
+    BranchDecision, ErrorInfo, ExternalCall, ExecutionRecord, SideEffect,
+};
+use crate::protocol::{ExecuteResult, MockBehavior, MockConfig};
+
+// ---------------------------------------------------------------------------
+// DependencyTrace
+// ---------------------------------------------------------------------------
+
+/// A single call to an external dependency, captured with ordering information.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TracedCall {
+    /// Name of the called function/symbol.
+    pub function_name: String,
+    /// Arguments passed to the call.
+    pub arguments: Vec<serde_json::Value>,
+    /// Return value from the call.
+    pub return_value: serde_json::Value,
+    /// Zero-based index indicating the order of this call relative to all
+    /// dependency interactions (calls and side effects combined).
+    pub call_index: u32,
+}
+
+/// Categorization of a side effect.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SideEffectKind {
+    ConsoleOutput,
+    FileWrite,
+    NetworkRequest,
+    GlobalMutation,
+    ThrownError,
+    GlobalStateChange,
+}
+
+/// A side effect observed during execution, captured with ordering information.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TracedSideEffect {
+    /// What category of side effect this is.
+    pub kind: SideEffectKind,
+    /// Human-readable description of the side effect.
+    pub description: String,
+    /// Zero-based index indicating the order of this side effect relative to
+    /// all dependency interactions (calls and side effects combined).
+    pub call_index: u32,
+}
+
+/// Full dependency interaction trace for a single execution.
+///
+/// Captures every external call and side effect in order, enabling
+/// compositional reasoning about how a function interacts with its
+/// dependencies.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DependencyTrace {
+    /// External calls made during execution, in order.
+    pub external_calls: Vec<TracedCall>,
+    /// Side effects observed during execution, in order.
+    pub side_effects: Vec<TracedSideEffect>,
+    /// Total number of dependency interactions (calls + side effects),
+    /// useful for verifying ordering completeness.
+    pub call_ordering: u32,
+}
+
+/// Classify a [`SideEffect`] into a [`SideEffectKind`].
+fn side_effect_kind(effect: &SideEffect) -> SideEffectKind {
+    match effect {
+        SideEffect::ConsoleOutput { .. } => SideEffectKind::ConsoleOutput,
+        SideEffect::FileWrite { .. } => SideEffectKind::FileWrite,
+        SideEffect::NetworkRequest { .. } => SideEffectKind::NetworkRequest,
+        SideEffect::GlobalMutation { .. } => SideEffectKind::GlobalMutation,
+        SideEffect::ThrownError { .. } => SideEffectKind::ThrownError,
+        SideEffect::GlobalStateChange { .. } => SideEffectKind::GlobalStateChange,
+    }
+}
+
+/// Produce a human-readable description of a [`SideEffect`].
+fn side_effect_description(effect: &SideEffect) -> String {
+    match effect {
+        SideEffect::ConsoleOutput { level, message } => {
+            format!("console.{level}: {message}")
+        }
+        SideEffect::FileWrite { path } => {
+            format!("file write: {path}")
+        }
+        SideEffect::NetworkRequest { method, url } => {
+            format!("{method} {url}")
+        }
+        SideEffect::GlobalMutation { name } => {
+            format!("mutated global: {name}")
+        }
+        SideEffect::ThrownError {
+            error_type,
+            message,
+            ..
+        } => {
+            format!("{error_type}: {message}")
+        }
+        SideEffect::GlobalStateChange {
+            variable,
+            before,
+            after,
+        } => {
+            format!("{variable}: {before} -> {after}")
+        }
+    }
+}
+
+/// Build [`TracedCall`]s from a slice of [`ExternalCall`]s, starting at the
+/// given call index offset.
+fn build_traced_calls(calls: &[ExternalCall], start_index: u32) -> Vec<TracedCall> {
+    calls
+        .iter()
+        .enumerate()
+        .map(|(i, call)| TracedCall {
+            function_name: call.symbol.clone(),
+            arguments: call.args.clone(),
+            return_value: call.return_value.clone(),
+            call_index: start_index + i as u32,
+        })
+        .collect()
+}
+
+/// Build [`TracedSideEffect`]s from a slice of [`SideEffect`]s, starting at
+/// the given call index offset.
+fn build_traced_side_effects(
+    effects: &[SideEffect],
+    start_index: u32,
+) -> Vec<TracedSideEffect> {
+    effects
+        .iter()
+        .enumerate()
+        .map(|(i, effect)| TracedSideEffect {
+            kind: side_effect_kind(effect),
+            description: side_effect_description(effect),
+            call_index: start_index + i as u32,
+        })
+        .collect()
+}
+
+/// Build a [`DependencyTrace`] from an [`ExecuteResult`].
+///
+/// External calls are indexed first, then side effects.
+pub fn build_dependency_trace(result: &ExecuteResult) -> DependencyTrace {
+    let external_calls = build_traced_calls(&result.calls_to_external, 0);
+    let se_start = external_calls.len() as u32;
+    let side_effects = build_traced_side_effects(&result.side_effects, se_start);
+    let call_ordering = se_start + side_effects.len() as u32;
+
+    DependencyTrace {
+        external_calls,
+        side_effects,
+        call_ordering,
+    }
+}
+
+/// Build a [`DependencyTrace`] from an [`ExecutionRecord`].
+///
+/// External calls are indexed first, then side effects.
+pub fn build_dependency_trace_from_record(record: &ExecutionRecord) -> DependencyTrace {
+    let external_calls = build_traced_calls(&record.calls_to_external, 0);
+    let se_start = external_calls.len() as u32;
+    let side_effects = build_traced_side_effects(&record.side_effects, se_start);
+    let call_ordering = se_start + side_effects.len() as u32;
+
+    DependencyTrace {
+        external_calls,
+        side_effects,
+        call_ordering,
+    }
+}
 
 // ---------------------------------------------------------------------------
 // BehaviorMap
@@ -26,6 +194,10 @@ pub struct Behavior {
     pub thrown_error: Option<ErrorInfo>,
     pub branch_path: Vec<BranchDecision>,
     pub side_effects: Vec<SideEffect>,
+    /// Full dependency interaction trace, present when the execution involved
+    /// external calls or side effects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dependency_trace: Option<DependencyTrace>,
 }
 
 /// All observed behaviors for a function, built from execution records.
@@ -46,6 +218,12 @@ impl BehaviorMap {
             if !seen_hashes.insert(record.input_hash) {
                 continue;
             }
+            let dependency_trace =
+                if record.calls_to_external.is_empty() && record.side_effects.is_empty() {
+                    None
+                } else {
+                    Some(build_dependency_trace_from_record(record))
+                };
             behaviors.push(Behavior {
                 id: next_id,
                 input_args: record.parameters.clone(),
@@ -53,6 +231,7 @@ impl BehaviorMap {
                 thrown_error: record.thrown_error.clone(),
                 branch_path: record.branch_path.clone(),
                 side_effects: record.side_effects.clone(),
+                dependency_trace,
             });
             next_id += 1;
         }
@@ -66,7 +245,8 @@ impl BehaviorMap {
     /// Build a behavior map from an [`ExplorationResult`](crate::explorer::ExplorationResult).
     ///
     /// Converts each [`ExecutionSummary`](crate::explorer::ExecutionSummary) that discovered
-    /// a new path into a [`Behavior`] entry.
+    /// a new path into a [`Behavior`] entry. When raw results are available,
+    /// dependency traces are populated from the matching [`ExecuteResult`].
     pub fn from_exploration_result(
         function_id: impl Into<String>,
         result: &crate::explorer::ExplorationResult,
@@ -81,6 +261,16 @@ impl BehaviorMap {
                     message: msg.clone(),
                     stack: None,
                 });
+                // Try to find the matching raw result for this execution to
+                // extract the dependency trace.
+                let dependency_trace = result
+                    .raw_results
+                    .iter()
+                    .find(|(inputs, _)| *inputs == exec.inputs)
+                    .filter(|(_, res)| {
+                        !res.calls_to_external.is_empty() || !res.side_effects.is_empty()
+                    })
+                    .map(|(_, res)| build_dependency_trace(res));
                 Behavior {
                     id: i as u32,
                     input_args: exec.inputs.clone(),
@@ -88,6 +278,7 @@ impl BehaviorMap {
                     thrown_error,
                     branch_path: vec![],
                     side_effects: vec![],
+                    dependency_trace,
                 }
             })
             .collect();
@@ -403,7 +594,7 @@ mod tests {
     use super::*;
     use crate::execution_record::ExternalCall;
     use crate::explorer::{ExecutionSummary, ExplorationResult};
-    use crate::protocol::{DependencyKind, ExternalDependency, FunctionAnalysis};
+    use crate::protocol::{DependencyKind, ExternalDependency, FunctionAnalysis, PerformanceMetrics};
     use crate::types::TypeInfo;
 
     /// Helper: build a minimal execution record with the given parameters and return value.
@@ -760,6 +951,7 @@ mod tests {
                     thrown_error: None,
                     branch_path: vec![],
                     side_effects: vec![],
+                    dependency_trace: None,
                 }],
             },
             behavior_coverage: vec![BehaviorCoverage {
@@ -850,4 +1042,265 @@ mod tests {
         round_trip(&composite);
     }
 
+    // -----------------------------------------------------------------------
+    // DependencyTrace tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn build_dependency_trace_from_execute_result() {
+        let result = ExecuteResult {
+            return_value: Some(json!(42)),
+            thrown_error: None,
+            branch_path: vec![],
+            lines_executed: vec![],
+            calls_to_external: vec![
+                ExternalCall {
+                    symbol: "getRate".to_string(),
+                    args: vec![json!("express")],
+                    return_value: json!(12.99),
+                },
+                ExternalCall {
+                    symbol: "applyTax".to_string(),
+                    args: vec![json!(12.99)],
+                    return_value: json!(14.29),
+                },
+            ],
+            path_constraints: vec![],
+            side_effects: vec![],
+            performance: PerformanceMetrics {
+                wall_time_ms: 1.0,
+                cpu_time_us: 800,
+                heap_used_bytes: 512,
+                heap_allocated_bytes: 1024,
+            },
+        };
+
+        let trace = build_dependency_trace(&result);
+        assert_eq!(trace.external_calls.len(), 2);
+        assert_eq!(trace.external_calls[0].function_name, "getRate");
+        assert_eq!(trace.external_calls[0].call_index, 0);
+        assert_eq!(trace.external_calls[1].function_name, "applyTax");
+        assert_eq!(trace.external_calls[1].call_index, 1);
+        assert_eq!(trace.side_effects.len(), 0);
+        assert_eq!(trace.call_ordering, 2);
+    }
+
+    #[test]
+    fn dependency_trace_captures_call_ordering() {
+        let result = ExecuteResult {
+            return_value: Some(json!("ok")),
+            thrown_error: None,
+            branch_path: vec![],
+            lines_executed: vec![],
+            calls_to_external: vec![ExternalCall {
+                symbol: "fetch".to_string(),
+                args: vec![json!("https://api.example.com")],
+                return_value: json!({"status": 200}),
+            }],
+            path_constraints: vec![],
+            side_effects: vec![SideEffect::ConsoleOutput {
+                level: "info".to_string(),
+                message: "fetching data".to_string(),
+            }],
+            performance: PerformanceMetrics {
+                wall_time_ms: 5.0,
+                cpu_time_us: 3000,
+                heap_used_bytes: 256,
+                heap_allocated_bytes: 512,
+            },
+        };
+
+        let trace = build_dependency_trace(&result);
+        assert_eq!(trace.external_calls.len(), 1);
+        assert_eq!(trace.side_effects.len(), 1);
+        assert_eq!(trace.external_calls[0].call_index, 0);
+        assert_eq!(trace.side_effects[0].call_index, 1);
+        assert_eq!(trace.side_effects[0].kind, SideEffectKind::ConsoleOutput);
+        assert_eq!(trace.call_ordering, 2);
+    }
+
+    #[test]
+    fn behavior_map_entries_include_traces_when_available() {
+        let mut record = make_record("myFunc", 1, vec![json!(10)], Some(json!("ok")));
+        record.calls_to_external = vec![ExternalCall {
+            symbol: "helper".to_string(),
+            args: vec![json!(10)],
+            return_value: json!(true),
+        }];
+
+        let map = BehaviorMap::from_records("myFunc", &[record]);
+        assert_eq!(map.behaviors.len(), 1);
+        assert!(map.behaviors[0].dependency_trace.is_some());
+
+        let trace = map.behaviors[0].dependency_trace.as_ref().unwrap();
+        assert_eq!(trace.external_calls.len(), 1);
+        assert_eq!(trace.external_calls[0].function_name, "helper");
+    }
+
+    #[test]
+    fn behavior_map_no_trace_when_no_deps() {
+        let record = make_record("pureFunc", 1, vec![json!(5)], Some(json!(10)));
+        let map = BehaviorMap::from_records("pureFunc", &[record]);
+        assert_eq!(map.behaviors.len(), 1);
+        assert!(map.behaviors[0].dependency_trace.is_none());
+    }
+
+    #[test]
+    fn dependency_trace_round_trips() {
+        let trace = DependencyTrace {
+            external_calls: vec![TracedCall {
+                function_name: "getRate".to_string(),
+                arguments: vec![json!("express")],
+                return_value: json!(12.99),
+                call_index: 0,
+            }],
+            side_effects: vec![TracedSideEffect {
+                kind: SideEffectKind::ConsoleOutput,
+                description: "console.info: log msg".to_string(),
+                call_index: 1,
+            }],
+            call_ordering: 2,
+        };
+        round_trip(&trace);
+    }
+
+    #[test]
+    fn empty_trace_no_external_calls() {
+        let result = ExecuteResult {
+            return_value: Some(json!(1)),
+            thrown_error: None,
+            branch_path: vec![],
+            lines_executed: vec![],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
+            performance: PerformanceMetrics {
+                wall_time_ms: 0.1,
+                cpu_time_us: 50,
+                heap_used_bytes: 64,
+                heap_allocated_bytes: 128,
+            },
+        };
+
+        let trace = build_dependency_trace(&result);
+        assert_eq!(trace.external_calls.len(), 0);
+        assert_eq!(trace.side_effects.len(), 0);
+        assert_eq!(trace.call_ordering, 0);
+    }
+
+    #[test]
+    fn traced_call_round_trips() {
+        round_trip(&TracedCall {
+            function_name: "compute".to_string(),
+            arguments: vec![json!(1), json!("two")],
+            return_value: json!(3),
+            call_index: 0,
+        });
+    }
+
+    #[test]
+    fn traced_side_effect_round_trips() {
+        round_trip(&TracedSideEffect {
+            kind: SideEffectKind::FileWrite,
+            description: "file write: /tmp/out.txt".to_string(),
+            call_index: 2,
+        });
+    }
+
+    #[test]
+    fn all_side_effect_kinds_round_trip() {
+        let kinds = vec![
+            SideEffectKind::ConsoleOutput,
+            SideEffectKind::FileWrite,
+            SideEffectKind::NetworkRequest,
+            SideEffectKind::GlobalMutation,
+            SideEffectKind::ThrownError,
+            SideEffectKind::GlobalStateChange,
+        ];
+        for kind in kinds {
+            round_trip(&kind);
+        }
+    }
+
+    #[test]
+    fn dependency_trace_with_side_effects_only() {
+        let result = ExecuteResult {
+            return_value: None,
+            thrown_error: None,
+            branch_path: vec![],
+            lines_executed: vec![],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![
+                SideEffect::FileWrite {
+                    path: "/tmp/out.txt".to_string(),
+                },
+                SideEffect::NetworkRequest {
+                    method: "POST".to_string(),
+                    url: "https://api.example.com".to_string(),
+                },
+            ],
+            performance: PerformanceMetrics {
+                wall_time_ms: 2.0,
+                cpu_time_us: 1500,
+                heap_used_bytes: 128,
+                heap_allocated_bytes: 256,
+            },
+        };
+
+        let trace = build_dependency_trace(&result);
+        assert_eq!(trace.external_calls.len(), 0);
+        assert_eq!(trace.side_effects.len(), 2);
+        assert_eq!(trace.side_effects[0].kind, SideEffectKind::FileWrite);
+        assert_eq!(trace.side_effects[0].call_index, 0);
+        assert_eq!(trace.side_effects[1].kind, SideEffectKind::NetworkRequest);
+        assert_eq!(trace.side_effects[1].call_index, 1);
+        assert_eq!(trace.call_ordering, 2);
+    }
+
+    #[test]
+    fn from_exploration_result_populates_trace_from_raw_results() {
+        let raw_result = ExecuteResult {
+            return_value: Some(json!("positive")),
+            thrown_error: None,
+            branch_path: vec![],
+            lines_executed: vec![1, 2],
+            calls_to_external: vec![ExternalCall {
+                symbol: "logger".to_string(),
+                args: vec![json!("classified")],
+                return_value: json!(null),
+            }],
+            path_constraints: vec![],
+            side_effects: vec![],
+            performance: PerformanceMetrics {
+                wall_time_ms: 0.5,
+                cpu_time_us: 300,
+                heap_used_bytes: 64,
+                heap_allocated_bytes: 128,
+            },
+        };
+
+        let result = ExplorationResult {
+            function_name: "classify".to_string(),
+            iterations: 5,
+            unique_paths: 1,
+            lines_covered: 2,
+            total_lines: 5,
+            new_path_executions: vec![ExecutionSummary {
+                inputs: vec![json!(5)],
+                return_value: Some(json!("positive")),
+                thrown_error: None,
+                lines_executed: vec![1, 2],
+                is_new_path: true,
+            }],
+            raw_results: vec![(vec![json!(5)], raw_result)],
+        };
+
+        let map = BehaviorMap::from_exploration_result("classify", &result);
+        assert_eq!(map.behaviors.len(), 1);
+        assert!(map.behaviors[0].dependency_trace.is_some());
+        let trace = map.behaviors[0].dependency_trace.as_ref().unwrap();
+        assert_eq!(trace.external_calls.len(), 1);
+        assert_eq!(trace.external_calls[0].function_name, "logger");
+    }
 }
