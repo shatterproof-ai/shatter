@@ -1,0 +1,20 @@
+# Example .shatter/config.yaml
+#
+# Place this file in a `.shatter/` directory alongside your source code.
+# Shatter discovers config files by walking upward from each target file.
+# The nearest config wins on conflicts (closest to the target takes precedence).
+
+defaults:
+  max_iterations: 100
+  timeout: 60
+
+functions:
+  # Override settings for a specific function
+  "src/classify.ts:classify":
+    max_iterations: 500
+    timeout: 120
+    inputs: ./inputs/validateToken/candidates.json
+
+  # Skip generated code
+  "src/generated/**":
+    skip: true
