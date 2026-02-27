@@ -68,6 +68,8 @@ pub struct ScanResult {
     pub function_results: Vec<FunctionResult>,
     /// The order in which functions were tested.
     pub test_order: Vec<String>,
+    /// Functions that were skipped before exploration (e.g. unexecutable parameter types).
+    pub skipped_functions: Vec<SkippedFunction>,
 }
 
 /// Errors that can occur during a scan.
@@ -249,6 +251,7 @@ pub async fn scan(
     Ok(ScanResult {
         function_results,
         test_order,
+        skipped_functions: Vec::new(),
     })
 }
 
@@ -699,6 +702,13 @@ pub fn format_scan_report(result: &ScanResult) -> String {
         }
     }
 
+    if !result.skipped_functions.is_empty() {
+        out.push_str("\nSkipped functions:\n");
+        for skip in &result.skipped_functions {
+            out.push_str(&format!("  {}: {}\n", skip.function_name, skip.reason));
+        }
+    }
+
     out
 }
 
@@ -846,6 +856,7 @@ mod tests {
                     mocks_used: vec!["leaf".into()],
                 },
             ],
+            skipped_functions: vec![],
         };
 
         let report = format_scan_report(&result);
@@ -877,12 +888,83 @@ mod tests {
                 behavior_coverage: vec![],
                 mocks_used: vec![],
             }],
+            skipped_functions: vec![],
         };
 
         let report = format_scan_report(&result);
         assert!(report.contains("1 function(s) tested"));
         assert!(!report.contains("Mocks used"));
         assert!(!report.contains("Behavior coverage"));
+    }
+
+    #[test]
+    fn format_scan_report_includes_skipped_functions() {
+        let result = ScanResult {
+            test_order: vec!["good_func".into()],
+            function_results: vec![FunctionResult {
+                function_name: "good_func".into(),
+                exploration: ExplorationResult {
+                    function_name: "good_func".into(),
+                    iterations: 5,
+                    unique_paths: 1,
+                    lines_covered: 3,
+                    total_lines: 5,
+                    new_path_executions: vec![],
+                    raw_results: vec![],
+                },
+                behavior_map: BehaviorMap {
+                    function_id: "good_func".into(),
+                    behaviors: vec![],
+                },
+                behavior_coverage: vec![],
+                mocks_used: vec![],
+            }],
+            skipped_functions: vec![
+                SkippedFunction {
+                    function_name: "handleRequest".into(),
+                    reason: "param \"socket\" has opaque type net.Socket".into(),
+                },
+                SkippedFunction {
+                    function_name: "processStream".into(),
+                    reason: "param \"input\" has opaque type stream.Readable".into(),
+                },
+            ],
+        };
+
+        let report = format_scan_report(&result);
+        assert!(report.contains("1 function(s) tested"));
+        assert!(report.contains("Skipped functions:"));
+        assert!(report.contains("handleRequest: param \"socket\" has opaque type net.Socket"));
+        assert!(report.contains("processStream: param \"input\" has opaque type stream.Readable"));
+    }
+
+    #[test]
+    fn format_scan_report_no_skipped_functions_omits_section() {
+        let result = ScanResult {
+            test_order: vec!["func".into()],
+            function_results: vec![FunctionResult {
+                function_name: "func".into(),
+                exploration: ExplorationResult {
+                    function_name: "func".into(),
+                    iterations: 1,
+                    unique_paths: 1,
+                    lines_covered: 1,
+                    total_lines: 1,
+                    new_path_executions: vec![],
+                    raw_results: vec![],
+                },
+                behavior_map: BehaviorMap {
+                    function_id: "func".into(),
+                    behaviors: vec![],
+                },
+                behavior_coverage: vec![],
+                mocks_used: vec![],
+            }],
+            skipped_functions: vec![],
+        };
+
+        let report = format_scan_report(&result);
+        assert!(!report.contains("Skipped functions:"));
     }
 
     // ── build_layers tests ──────────────────────────────────────────

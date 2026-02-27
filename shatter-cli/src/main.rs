@@ -13,12 +13,13 @@ use shatter_core::call_graph::CallGraph;
 use shatter_core::config::{self as shatter_config, ShatterConfig};
 use shatter_core::discovery::{self, DiscoveryOptions, Language as DiscoveryLanguage};
 use shatter_core::explorer::{self, ExploreConfig, ReportOptions};
+use shatter_core::executability;
 use shatter_core::export;
 use shatter_core::frontend::{Frontend, FrontendConfig};
 use shatter_core::log_level::LogLevel;
 use shatter_core::protocol::{Command as ProtoCommand, ResponseResult};
 use shatter_core::report;
-use shatter_core::scan_orchestrator::{self, ScanConfig};
+use shatter_core::scan_orchestrator::{self, ScanConfig, SkippedFunction};
 use shatter_core::scope::{ScopeConfig, ScopeMatcher};
 use shatter_core::snapshot;
 
@@ -572,6 +573,7 @@ async fn run_explore(
         };
 
         // Exploration phase: generate random inputs and execute
+        let mut skipped_unexecutable: Vec<(String, Vec<executability::SkipReason>)> = Vec::new();
         for func in &functions {
             let function_id = format!("{}:{}", file_str, func.name);
 
@@ -589,6 +591,16 @@ async fn run_explore(
                 if log_level >= LogLevel::Debug {
                     println!("\n  [debug] Skipping {} (skip=true in config)", func.name);
                 }
+                continue;
+            }
+
+            // Check for unexecutable parameter types (opaque types like net.Socket).
+            let skip_reasons = executability::check_executability(&func.params);
+            if !skip_reasons.is_empty() {
+                if log_level >= LogLevel::Debug {
+                    println!("\n  [debug] Skipping {} (unexecutable parameter types)", func.name);
+                }
+                skipped_unexecutable.push((func.name.clone(), skip_reasons));
                 continue;
             }
 
@@ -651,6 +663,22 @@ async fn run_explore(
                 }
                 Err(e) => {
                     eprintln!("  Exploration error for {}: {e}", func.name);
+                }
+            }
+        }
+
+        // Print summary of skipped unexecutable functions.
+        if !skipped_unexecutable.is_empty() && log_level >= LogLevel::Info {
+            println!(
+                "Skipped {} function(s) (unexecutable parameter types):",
+                skipped_unexecutable.len()
+            );
+            for (name, reasons) in &skipped_unexecutable {
+                for reason in reasons {
+                    println!(
+                        "  {name}: param {:?} has opaque type {}",
+                        reason.param_name, reason.opaque_label
+                    );
                 }
             }
         }
@@ -769,6 +797,36 @@ async fn run_scan(
     if analyze_only {
         shutdown_frontend(frontend).await;
         return Ok(());
+    }
+
+    // Filter out functions with unexecutable parameter types.
+    let mut skipped_for_executability: Vec<SkippedFunction> = Vec::new();
+    all_analyses.retain(|func| {
+        let reasons = executability::check_executability(&func.params);
+        if reasons.is_empty() {
+            true
+        } else {
+            let reason = reasons
+                .iter()
+                .map(|r| format!("param {:?} has opaque type {}", r.param_name, r.opaque_label))
+                .collect::<Vec<_>>()
+                .join("; ");
+            skipped_for_executability.push(SkippedFunction {
+                function_name: func.name.clone(),
+                reason,
+            });
+            false
+        }
+    });
+
+    if !skipped_for_executability.is_empty() && log_level >= LogLevel::Info {
+        println!(
+            "Skipped {} function(s) (unexecutable parameter types):",
+            skipped_for_executability.len()
+        );
+        for skip in &skipped_for_executability {
+            println!("  {}: {}", skip.function_name, skip.reason);
+        }
     }
 
     if all_analyses.is_empty() {
