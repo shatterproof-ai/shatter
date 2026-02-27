@@ -26,6 +26,7 @@ pub mod reporter;
 pub mod scan_orchestrator;
 pub mod scope;
 pub mod snapshot;
+pub mod spec;
 pub mod solver;
 pub mod sym_expr;
 pub mod types;

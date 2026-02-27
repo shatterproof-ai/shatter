@@ -13,11 +13,18 @@ export const FRONTEND_LANGUAGE = "typescript";
 // Request: Core → Frontend
 // ---------------------------------------------------------------------------
 
+export type SetupMode = "per_function" | "per_execution";
+
+export type GeneratorKind = "type_name" | "param_name";
+
 export type Command =
   | "handshake"
   | "analyze"
   | "instrument"
   | "execute"
+  | "setup"
+  | "teardown"
+  | "generate"
   | "shutdown";
 
 export interface MockConfig {
@@ -56,6 +63,26 @@ export interface ExecuteRequest extends BaseRequest {
   function: string;
   inputs: unknown[];
   mocks: MockConfig[];
+  setup_context?: unknown;
+}
+
+export interface SetupRequest extends BaseRequest {
+  command: "setup";
+  file: string;
+  function: string;
+  mode: SetupMode;
+}
+
+export interface TeardownRequest extends BaseRequest {
+  command: "teardown";
+  function: string;
+}
+
+export interface GenerateRequest extends BaseRequest {
+  command: "generate";
+  file: string;
+  name: string;
+  kind: GeneratorKind;
 }
 
 export interface ShutdownRequest extends BaseRequest {
@@ -67,6 +94,9 @@ export type Request =
   | AnalyzeRequest
   | InstrumentRequest
   | ExecuteRequest
+  | SetupRequest
+  | TeardownRequest
+  | GenerateRequest
   | ShutdownRequest;
 
 // ---------------------------------------------------------------------------
@@ -78,6 +108,9 @@ export type ResponseStatus =
   | "analyze"
   | "instrument"
   | "execute"
+  | "setup"
+  | "teardown_ack"
+  | "generate"
   | "shutdown_ack"
   | "error";
 
@@ -128,6 +161,20 @@ export interface ExecuteResponse extends BaseResponse {
   performance: PerformanceMetrics;
 }
 
+export interface SetupResponse extends BaseResponse {
+  status: "setup";
+  setup_context: unknown;
+}
+
+export interface TeardownAckResponse extends BaseResponse {
+  status: "teardown_ack";
+}
+
+export interface GenerateResponse extends BaseResponse {
+  status: "generate";
+  value: unknown;
+}
+
 export interface ShutdownAckResponse extends BaseResponse {
   status: "shutdown_ack";
 }
@@ -144,6 +191,9 @@ export type Response =
   | AnalyzeResponse
   | InstrumentResponse
   | ExecuteResponse
+  | SetupResponse
+  | TeardownAckResponse
+  | GenerateResponse
   | ShutdownAckResponse
   | ErrorResponse;
 

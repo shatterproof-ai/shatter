@@ -147,6 +147,14 @@ enum CliCommand {
         /// Path to a .shatter/config.yaml file (bypasses hierarchical discovery).
         #[arg(long = "config")]
         config_path: Option<PathBuf>,
+
+        /// Output a behavioral specification (markdown by default, JSON with --spec-json).
+        #[arg(long)]
+        spec: bool,
+
+        /// Output the behavioral specification as JSON instead of markdown.
+        #[arg(long)]
+        spec_json: bool,
     },
 
     /// Scan multiple functions in dependency order, using behavior maps as mocks.
@@ -434,6 +442,8 @@ async fn run_explore(
     log_level: LogLevel,
     show_perf: bool,
     colors: &Colors,
+    show_spec: bool,
+    spec_as_json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let scope_config = match scope_path {
         Some(path) => {
@@ -639,6 +649,22 @@ async fn run_explore(
                             print!("{}", explorer::format_exploration_report(&result, &report_opts));
                         }
                         println!();
+                    }
+
+                    // Spec output: build equivalence classes and spec
+                    if show_spec {
+                        let eq_classes =
+                            shatter_core::equivalence::group_into_classes(&result.raw_results);
+                        let location = Some(format!("{file_str}:{}", func.start_line));
+                        let spec = shatter_core::spec::build_spec(&result, &eq_classes, location);
+                        if spec_as_json {
+                            match shatter_core::spec::format_spec_json(&spec) {
+                                Ok(json) => println!("{json}"),
+                                Err(e) => eprintln!("  Error serializing spec: {e}"),
+                            }
+                        } else {
+                            print!("{}", shatter_core::spec::format_spec_markdown(&spec));
+                        }
                     }
 
                     let behavior_map =
@@ -1533,6 +1559,8 @@ async fn main() -> ExitCode {
             build_timeout,
             inputs,
             config_path,
+            spec,
+            spec_json,
         } => {
             run_explore(
                 &targets,
@@ -1551,6 +1579,8 @@ async fn main() -> ExitCode {
                 log_level,
                 cli.perf,
                 &colors,
+                spec || spec_json,
+                spec_json,
             )
             .await
         }

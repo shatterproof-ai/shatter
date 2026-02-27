@@ -177,6 +177,24 @@ export function handleRequest(request: Request): { response: Response; shutdown:
       }
     }
 
+    case "setup":
+      return {
+        response: errorResponse(request.id, "internal_error", "Setup not yet implemented"),
+        shutdown: false,
+      };
+
+    case "teardown":
+      return {
+        response: errorResponse(request.id, "internal_error", "Teardown not yet implemented"),
+        shutdown: false,
+      };
+
+    case "generate":
+      return {
+        response: errorResponse(request.id, "internal_error", "Generate not yet implemented"),
+        shutdown: false,
+      };
+
     case "shutdown":
       return {
         response: {
@@ -267,7 +285,7 @@ export function parseRequest(line: string): { request: Request } | { error: Erro
     };
   }
 
-  const validCommands = ["handshake", "analyze", "instrument", "execute", "shutdown"];
+  const validCommands = ["handshake", "analyze", "instrument", "execute", "setup", "teardown", "generate", "shutdown"];
   if (!validCommands.includes(obj["command"] as string)) {
     return {
       error: errorResponse(id, "invalid_request", `Unknown command: ${String(obj["command"])}`),

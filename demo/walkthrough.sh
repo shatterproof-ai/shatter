@@ -126,7 +126,7 @@ GO_EXAMPLES=(
     "examples/go/03-errors.go:SafeDivide"
 )
 
-TOTAL=18
+TOTAL=20
 
 # ─── Walkthrough ──────────────────────────────────────────────────────
 
@@ -230,5 +230,15 @@ step 17 $TOTAL "Execution Timeout" \
 step 18 $TOTAL "Go Execution Timeout" \
     "Configurable timeouts also apply to the Go frontend" \
     $SHATTER explore --exec-timeout 8 "${GO_EXAMPLES[0]}"
+
+# Stage 19: Behavioral specification (markdown)
+step 19 $TOTAL "Behavioral Specification (Markdown)" \
+    "Generate a behavioral spec with equivalence classes, pre/postconditions" \
+    $SHATTER explore --spec "${EXAMPLES[0]}"
+
+# Stage 20: Behavioral specification (JSON)
+step 20 $TOTAL "Behavioral Specification (JSON)" \
+    "Machine-readable JSON spec for tooling integration" \
+    $SHATTER explore --spec-json "${EXAMPLES[0]}"
 
 echo "${BOLD}${GREEN}Walkthrough complete.${RESET}"
