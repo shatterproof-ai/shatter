@@ -334,6 +334,32 @@ pub fn write_report(report: &ScanReport, output_dir: &Path) -> Result<PathBuf, R
     Ok(report_path)
 }
 
+/// Report output format selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReportFormat {
+    /// JSON report only (default).
+    Json,
+    /// Markdown report only.
+    Markdown,
+    /// Both JSON and markdown reports.
+    Both,
+}
+
+impl std::str::FromStr for ReportFormat {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "json" => Ok(Self::Json),
+            "markdown" | "md" => Ok(Self::Markdown),
+            "both" => Ok(Self::Both),
+            other => Err(format!(
+                "unknown report format '{other}': expected 'json', 'markdown', or 'both'"
+            )),
+        }
+    }
+}
+
 /// Errors that can occur during report generation or writing.
 #[derive(Debug, thiserror::Error)]
 pub enum ReportError {

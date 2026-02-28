@@ -315,6 +315,41 @@ fn go_zero_value(type_name: &str) -> String {
     }
 }
 
+/// Generate Vitest test source from a behavior map.
+///
+/// Similar to Jest but uses `import { describe, it, expect } from 'vitest'`
+/// and imports the function from the module path.
+pub fn generate_vitest_tests(
+    behavior_map: &BehaviorMap,
+    function_name: &str,
+    module_path: &str,
+) -> String {
+    let mut out = String::new();
+
+    out.push_str("import { describe, it, expect } from 'vitest';\n");
+    out.push_str(&format!(
+        "import {{ {function_name} }} from '{module_path}';\n\n"
+    ));
+
+    out.push_str(&format!("describe('{function_name}', () => {{\n"));
+
+    if behavior_map.behaviors.is_empty() {
+        out.push_str("  // No behaviors observed\n");
+    }
+
+    for behavior in &behavior_map.behaviors {
+        let test_name = build_test_name(behavior);
+        let body = build_test_body(function_name, behavior);
+
+        out.push_str(&format!("  it('{test_name}', () => {{\n"));
+        out.push_str(&body);
+        out.push_str("  });\n\n");
+    }
+
+    out.push_str("});\n");
+    out
+}
+
 /// Build a descriptive test name from a behavior.
 fn build_test_name(behavior: &Behavior) -> String {
     let inputs = format_args_short(&behavior.input_args);
@@ -924,5 +959,84 @@ mod tests {
     fn go_type_from_complex_unknown_is_interface() {
         let val = json!({"__complex_type": "some_future_type", "value": "x"});
         assert_eq!(go_type_from_value(&val), "interface{}");
+    }
+
+    // ── Vitest test generation ────────────────────────────────────────────
+
+    #[test]
+    fn vitest_generates_vitest_import() {
+        let map = BehaviorMap {
+            function_id: "add".to_string(),
+            behaviors: vec![],
+        };
+        let output = generate_vitest_tests(&map, "add", "./src/math");
+        assert!(output.contains("import { describe, it, expect } from 'vitest';"));
+    }
+
+    #[test]
+    fn vitest_generates_function_import() {
+        let map = BehaviorMap {
+            function_id: "add".to_string(),
+            behaviors: vec![],
+        };
+        let output = generate_vitest_tests(&map, "add", "./src/math");
+        assert!(output.contains("import { add } from './src/math';"));
+    }
+
+    #[test]
+    fn vitest_generates_describe_block() {
+        let map = BehaviorMap {
+            function_id: "add".to_string(),
+            behaviors: vec![],
+        };
+        let output = generate_vitest_tests(&map, "add", "./src/math");
+        assert!(output.contains("describe('add', () => {"));
+        assert!(output.ends_with("});\n"));
+    }
+
+    #[test]
+    fn vitest_generates_it_block_for_return_value() {
+        let map = BehaviorMap {
+            function_id: "add".to_string(),
+            behaviors: vec![make_behavior(0, vec![json!(1), json!(2)], Some(json!(3)), None)],
+        };
+        let output = generate_vitest_tests(&map, "add", "./src/math");
+        assert!(output.contains("it('returns 3 for input (1, 2)'"));
+        assert!(output.contains("const result = add(1, 2);"));
+        assert!(output.contains("expect(result).toEqual(3);"));
+    }
+
+    #[test]
+    fn vitest_generates_thrown_error_test() {
+        let map = BehaviorMap {
+            function_id: "divide".to_string(),
+            behaviors: vec![make_behavior(
+                0,
+                vec![json!(1), json!(0)],
+                None,
+                Some(ErrorInfo {
+                    error_type: "Error".to_string(),
+                    message: "division by zero".to_string(),
+                    stack: None,
+                }),
+            )],
+        };
+        let output = generate_vitest_tests(&map, "divide", "./src/math");
+        assert!(output.contains("expect(() => divide(1, 0)).toThrow();"));
+    }
+
+    #[test]
+    fn vitest_generates_multiple_behaviors() {
+        let map = BehaviorMap {
+            function_id: "abs".to_string(),
+            behaviors: vec![
+                make_behavior(0, vec![json!(5)], Some(json!(5)), None),
+                make_behavior(1, vec![json!(-3)], Some(json!(3)), None),
+                make_behavior(2, vec![json!(0)], Some(json!(0)), None),
+            ],
+        };
+        let output = generate_vitest_tests(&map, "abs", "./src/math");
+        let it_count = output.matches("  it('").count();
+        assert_eq!(it_count, 3, "expected 3 it blocks, output:\n{output}");
     }
 }
