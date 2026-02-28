@@ -709,15 +709,13 @@ pub fn resolve_value_sources(
                 };
             }
             // 2. Check type_generators by type_name
-            if let Some(type_name) = &p.type_name {
-                if let Some(gen_path) = type_generators.get(type_name) {
-                    return ValueSource::CustomGenerator {
-                        generator_name: type_name.clone(),
-                        param_name: None,
-                        generator_file: gen_path.clone(),
-                        kind: crate::protocol::GeneratorKind::TypeName,
-                    };
-                }
+            if let Some(gen_path) = p.type_name.as_ref().and_then(|tn| type_generators.get(tn)) {
+                return ValueSource::CustomGenerator {
+                    generator_name: p.type_name.clone().unwrap_or_default(),
+                    param_name: None,
+                    generator_file: gen_path.clone(),
+                    kind: crate::protocol::GeneratorKind::TypeName,
+                };
             }
             // 3. Built-in
             ValueSource::BuiltIn
