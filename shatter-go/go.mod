@@ -1,3 +1,3 @@
 module github.com/shatter-dev/shatter/shatter-go
 
-go 1.24.4
+go 1.23
