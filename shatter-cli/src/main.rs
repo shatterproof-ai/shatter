@@ -605,7 +605,7 @@ async fn run_explore(
             }
 
             // Check for unexecutable parameter types (opaque types like net.Socket).
-            let skip_reasons = executability::check_executability(&func.params);
+            let skip_reasons = executability::check_executability(&func.params, &[]);
             if !skip_reasons.is_empty() {
                 if log_level >= LogLevel::Debug {
                     println!("\n  [debug] Skipping {} (unexecutable parameter types)", func.name);
@@ -828,7 +828,7 @@ async fn run_scan(
     // Filter out functions with unexecutable parameter types.
     let mut skipped_for_executability: Vec<SkippedFunction> = Vec::new();
     all_analyses.retain(|func| {
-        let reasons = executability::check_executability(&func.params);
+        let reasons = executability::check_executability(&func.params, &[]);
         if reasons.is_empty() {
             true
         } else {
