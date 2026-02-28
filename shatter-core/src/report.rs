@@ -5,6 +5,7 @@
 //! constraint stats) and codebase-level aggregates (total functions, overall
 //! coverage, unreachable branches, dependency graph summary).
 
+use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -332,6 +333,331 @@ pub fn write_report(report: &ScanReport, output_dir: &Path) -> Result<PathBuf, R
     })?;
 
     Ok(report_path)
+}
+
+/// Write a [`ScanReport`] as a markdown file to a directory.
+///
+/// Creates the output directory if it does not exist. Writes to
+/// `<output_dir>/scan-report.md`.
+pub fn write_markdown_report(report: &ScanReport, output_dir: &Path) -> Result<PathBuf, ReportError> {
+    std::fs::create_dir_all(output_dir).map_err(|e| ReportError::Io {
+        path: output_dir.to_path_buf(),
+        source: e,
+    })?;
+
+    let report_path = output_dir.join("scan-report.md");
+    let markdown = format_markdown_report(report);
+    std::fs::write(&report_path, markdown).map_err(|e| ReportError::Io {
+        path: report_path.clone(),
+        source: e,
+    })?;
+
+    Ok(report_path)
+}
+
+// ---------------------------------------------------------------------------
+// Markdown report generation
+// ---------------------------------------------------------------------------
+
+/// Format a [`ScanReport`] as a human-readable markdown string.
+#[must_use]
+pub fn format_markdown_report(report: &ScanReport) -> String {
+    let mut out = String::new();
+
+    write_md_header(&mut out, report);
+    write_md_summary_table(&mut out, report);
+    write_md_function_details(&mut out, &report.functions);
+    write_md_uncovered_branches(&mut out, &report.functions);
+    write_md_interesting_inputs(&mut out, &report.functions);
+    write_md_skipped_functions(&mut out, &report.codebase.skipped_functions);
+
+    out
+}
+
+fn write_md_header(out: &mut String, report: &ScanReport) {
+    let _ = writeln!(out, "# Shatter Scan Report\n");
+
+    let total_covered: usize = report.functions.iter().map(|f| f.branches_covered).sum();
+    let total_branches = report.codebase.total_branches;
+    let coverage = report.codebase.overall_coverage;
+
+    let _ = writeln!(out, "- **Functions explored:** {}", report.codebase.total_functions);
+    let _ = writeln!(out, "- **Total branches:** {total_branches}");
+    let _ = writeln!(out, "- **Branches covered:** {total_covered}");
+    let _ = writeln!(out, "- **Overall coverage:** {coverage:.1}%");
+
+    if !report.codebase.skipped_functions.is_empty() {
+        let _ = writeln!(
+            out,
+            "- **Skipped functions:** {}",
+            report.codebase.skipped_functions.len()
+        );
+    }
+
+    out.push('\n');
+}
+
+fn write_md_summary_table(out: &mut String, report: &ScanReport) {
+    if report.functions.is_empty() {
+        let _ = writeln!(out, "*No functions were explored.*\n");
+        return;
+    }
+
+    let _ = writeln!(out, "## Function Summary\n");
+    let _ = writeln!(out, "| Status | Function | File | Coverage | Branches | Lines | Iterations |");
+    let _ = writeln!(out, "|--------|----------|------|----------|----------|-------|------------|");
+
+    for func in &report.functions {
+        let status = if func.coverage_pct >= 100.0 {
+            "PASS"
+        } else if func.coverage_pct >= 50.0 {
+            "WARN"
+        } else {
+            "FAIL"
+        };
+
+        let _ = writeln!(
+            out,
+            "| {status} | `{name}` | {file} | {cov:.1}% | {covered}/{total} | {lc}/{tl} | {iter} |",
+            name = func.function_name,
+            file = if func.file_path.is_empty() { "-" } else { &func.file_path },
+            cov = func.coverage_pct,
+            covered = func.branches_covered,
+            total = func.branch_count,
+            lc = func.lines_covered,
+            tl = func.total_lines,
+            iter = func.iterations,
+        );
+    }
+
+    out.push('\n');
+}
+
+fn write_md_function_details(out: &mut String, functions: &[FunctionReport]) {
+    if functions.is_empty() {
+        return;
+    }
+
+    let _ = writeln!(out, "## Function Details\n");
+
+    for func in functions {
+        let _ = writeln!(out, "### `{}`\n", func.function_name);
+
+        if !func.file_path.is_empty() {
+            let _ = writeln!(out, "- **File:** {}", func.file_path);
+        }
+        let _ = writeln!(out, "- **Coverage:** {:.1}%", func.coverage_pct);
+        let _ = writeln!(
+            out,
+            "- **Branches:** {}/{}",
+            func.branches_covered, func.branch_count
+        );
+        let _ = writeln!(out, "- **Lines:** {}/{}", func.lines_covered, func.total_lines);
+        let _ = writeln!(out, "- **Iterations:** {}", func.iterations);
+        let _ = writeln!(
+            out,
+            "- **Constraints collected:** {}",
+            func.constraint_stats.total_constraints
+        );
+
+        if !func.mocks_used.is_empty() {
+            let _ = writeln!(out, "- **Mocks:** {}", func.mocks_used.join(", "));
+        }
+
+        if !func.behavior_clusters.is_empty() {
+            let _ = writeln!(out, "\n**Behaviors:**\n");
+            for cluster in &func.behavior_clusters {
+                let outcome = if let Some(ref err) = cluster.thrown_error {
+                    format!("throws {err}")
+                } else if let Some(ref val) = cluster.return_value {
+                    format!("returns {}", format_json_compact(val))
+                } else {
+                    "returns void".to_string()
+                };
+                let inputs = format_json_compact_list(&cluster.representative_inputs);
+                let _ = writeln!(out, "- Cluster {}: {outcome} (inputs: {inputs})", cluster.id);
+            }
+        }
+
+        out.push('\n');
+    }
+}
+
+fn write_md_uncovered_branches(out: &mut String, functions: &[FunctionReport]) {
+    let low_coverage: Vec<&FunctionReport> = functions
+        .iter()
+        .filter(|f| f.coverage_pct < 100.0 && f.branch_count > 0)
+        .collect();
+
+    if low_coverage.is_empty() {
+        return;
+    }
+
+    let _ = writeln!(out, "## Uncovered Branches\n");
+
+    for func in &low_coverage {
+        let uncovered = func.branch_count.saturating_sub(func.branches_covered);
+        let _ = writeln!(
+            out,
+            "- `{}`: {uncovered} uncovered branch(es) ({:.1}% coverage)",
+            func.function_name, func.coverage_pct
+        );
+    }
+
+    out.push('\n');
+}
+
+fn write_md_interesting_inputs(out: &mut String, functions: &[FunctionReport]) {
+    let has_interesting = functions.iter().any(|f| {
+        f.discovered_inputs
+            .iter()
+            .any(|d| d.thrown_error.is_some() || is_boundary_value(&d.inputs))
+    });
+
+    if !has_interesting {
+        return;
+    }
+
+    let _ = writeln!(out, "## Interesting Inputs\n");
+
+    for func in functions {
+        let interesting: Vec<&DiscoveredInput> = func
+            .discovered_inputs
+            .iter()
+            .filter(|d| d.thrown_error.is_some() || is_boundary_value(&d.inputs))
+            .collect();
+
+        if interesting.is_empty() {
+            continue;
+        }
+
+        let _ = writeln!(out, "### `{}`\n", func.function_name);
+
+        for input in &interesting {
+            let inputs_str = format_json_compact_list(&input.inputs);
+            if let Some(ref err) = input.thrown_error {
+                let _ = writeln!(out, "- {inputs_str} -> **error:** {err}");
+            } else if let Some(ref val) = input.return_value {
+                let _ = writeln!(out, "- {inputs_str} -> {}", format_json_compact(val));
+            } else {
+                let _ = writeln!(out, "- {inputs_str} -> void");
+            }
+        }
+
+        out.push('\n');
+    }
+}
+
+fn write_md_skipped_functions(out: &mut String, skipped: &[SkippedFunctionReport]) {
+    if skipped.is_empty() {
+        return;
+    }
+
+    let _ = writeln!(out, "## Skipped Functions\n");
+
+    for s in skipped {
+        let _ = writeln!(out, "- `{}`: {}", s.function_name, s.reason);
+    }
+
+    out.push('\n');
+}
+
+fn is_boundary_value(inputs: &[serde_json::Value]) -> bool {
+    inputs.iter().any(|v| match v {
+        serde_json::Value::Number(n) => {
+            if let Some(f) = n.as_f64() {
+                f == 0.0 || f == -1.0
+            } else {
+                false
+            }
+        }
+        serde_json::Value::String(s) => s.is_empty(),
+        serde_json::Value::Null => true,
+        serde_json::Value::Array(a) => a.is_empty(),
+        _ => false,
+    })
+}
+
+fn format_json_compact(value: &serde_json::Value) -> String {
+    let s = value.to_string();
+    if s.len() > 60 {
+        format!("{}...", &s[..57])
+    } else {
+        s
+    }
+}
+
+fn format_json_compact_list(values: &[serde_json::Value]) -> String {
+    let parts: Vec<String> = values.iter().map(format_json_compact).collect();
+    parts.join(", ")
+}
+
+// ---------------------------------------------------------------------------
+// Progress reporting
+// ---------------------------------------------------------------------------
+
+/// A structured progress event for machine-readable output.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProgressEvent {
+    /// Event type — always "progress".
+    #[serde(rename = "type")]
+    pub event_type: String,
+    /// Name of the function currently being processed.
+    pub function: String,
+    /// 1-based index of the current function.
+    pub current: usize,
+    /// Total number of functions to process.
+    pub total: usize,
+    /// Milliseconds elapsed since the scan started.
+    pub elapsed_ms: u64,
+}
+
+impl ProgressEvent {
+    /// Create a new progress event.
+    #[must_use]
+    pub fn new(function: &str, current: usize, total: usize, elapsed_ms: u64) -> Self {
+        Self {
+            event_type: "progress".to_string(),
+            function: function.to_string(),
+            current,
+            total,
+            elapsed_ms,
+        }
+    }
+
+    /// Serialize this event as a JSON string.
+    ///
+    /// Returns `None` if serialization fails (should not happen for valid data).
+    #[must_use]
+    pub fn to_json(&self) -> Option<String> {
+        serde_json::to_string(self).ok()
+    }
+}
+
+/// Report format for scan output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReportFormat {
+    /// JSON only (default).
+    Json,
+    /// Markdown only.
+    Markdown,
+    /// Both JSON and Markdown.
+    Both,
+}
+
+impl std::str::FromStr for ReportFormat {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "json" => Ok(Self::Json),
+            "markdown" | "md" => Ok(Self::Markdown),
+            "both" => Ok(Self::Both),
+            _ => Err(format!(
+                "unknown report format '{s}': expected 'json', 'markdown', or 'both'"
+            )),
+        }
+    }
 }
 
 /// Errors that can occur during report generation or writing.
@@ -734,5 +1060,227 @@ mod tests {
 
         // branches = 2 + 3 = 5, covered = 2 + 3 = 5 => 100%
         assert!((report.codebase.overall_coverage - 100.0).abs() < 0.01);
+    }
+
+    // -----------------------------------------------------------------------
+    // Markdown report tests
+    // -----------------------------------------------------------------------
+
+    fn make_report_with_functions() -> ScanReport {
+        let parallel_result = ParallelScanResult {
+            function_results: vec![
+                make_function_result("leaf", 10, 2, 5, 10, vec![]),
+                make_function_result("caller", 20, 3, 8, 10, vec!["leaf".to_string()]),
+            ],
+            test_order: vec!["leaf".into(), "caller".into()],
+            skipped: vec![],
+            workers_used: 2,
+        };
+
+        let mut file_map = HashMap::new();
+        file_map.insert("leaf".to_string(), "src/math.ts".to_string());
+        file_map.insert("caller".to_string(), "src/app.ts".to_string());
+
+        generate_report(&parallel_result, &file_map)
+    }
+
+    #[test]
+    fn markdown_report_contains_all_sections() {
+        let report = make_report_with_functions();
+        let md = format_markdown_report(&report);
+
+        assert!(md.contains("# Shatter Scan Report"), "missing heading");
+        assert!(md.contains("## Function Summary"), "missing summary table");
+        assert!(md.contains("## Function Details"), "missing details");
+        assert!(md.contains("### `leaf`"), "missing leaf details");
+        assert!(md.contains("### `caller`"), "missing caller details");
+    }
+
+    #[test]
+    fn markdown_report_has_correct_statistics() {
+        let report = make_report_with_functions();
+        let md = format_markdown_report(&report);
+
+        assert!(md.contains("**Functions explored:** 2"), "bad function count: {md}");
+        assert!(md.contains("**Total branches:** 5"), "bad branch count: {md}");
+    }
+
+    #[test]
+    fn markdown_report_summary_table_has_headers() {
+        let report = make_report_with_functions();
+        let md = format_markdown_report(&report);
+
+        assert!(
+            md.contains("| Status | Function | File | Coverage | Branches | Lines | Iterations |"),
+            "missing table header"
+        );
+        assert!(
+            md.contains("|--------|----------|------|----------|----------|-------|------------|"),
+            "missing table separator"
+        );
+    }
+
+    #[test]
+    fn markdown_report_coverage_indicators() {
+        let report = make_report_with_functions();
+        let md = format_markdown_report(&report);
+
+        // leaf: 5/10 lines = 50% -> WARN, caller: 8/10 = 80% -> WARN
+        assert!(md.contains("WARN"), "should contain WARN status for partial coverage");
+    }
+
+    #[test]
+    fn markdown_report_shows_mocks() {
+        let report = make_report_with_functions();
+        let md = format_markdown_report(&report);
+
+        assert!(md.contains("**Mocks:** leaf"), "missing mock info: {md}");
+    }
+
+    #[test]
+    fn markdown_empty_report_produces_sensible_output() {
+        let report = ScanReport {
+            version: 1,
+            functions: vec![],
+            codebase: CodebaseReport {
+                total_functions: 0,
+                total_branches: 0,
+                overall_coverage: 0.0,
+                skipped_functions: vec![],
+                dependency_graph: vec![],
+            },
+            test_order: vec![],
+        };
+
+        let md = format_markdown_report(&report);
+
+        assert!(md.contains("# Shatter Scan Report"), "missing heading");
+        assert!(md.contains("**Functions explored:** 0"), "missing zero functions");
+        assert!(md.contains("*No functions were explored.*"), "missing empty message");
+        assert!(!md.contains("## Function Details"), "should not have details section");
+        assert!(
+            !md.contains("## Uncovered Branches"),
+            "should not have uncovered section"
+        );
+    }
+
+    #[test]
+    fn markdown_report_with_skipped_functions() {
+        let report = ScanReport {
+            version: 1,
+            functions: vec![],
+            codebase: CodebaseReport {
+                total_functions: 0,
+                total_branches: 0,
+                overall_coverage: 0.0,
+                skipped_functions: vec![SkippedFunctionReport {
+                    function_name: "slow".to_string(),
+                    reason: "timed out after 30s".to_string(),
+                }],
+                dependency_graph: vec![],
+            },
+            test_order: vec![],
+        };
+
+        let md = format_markdown_report(&report);
+
+        assert!(md.contains("## Skipped Functions"), "missing skipped section: {md}");
+        assert!(
+            md.contains("`slow`: timed out after 30s"),
+            "missing skip detail: {md}"
+        );
+    }
+
+    #[test]
+    fn markdown_table_formatting_is_valid() {
+        let report = make_report_with_functions();
+        let md = format_markdown_report(&report);
+
+        let in_table: Vec<&str> = md
+            .lines()
+            .skip_while(|l| !l.starts_with("| Status"))
+            .take_while(|l| l.starts_with('|'))
+            .collect();
+
+        // header + separator + 2 data rows = 4 lines
+        assert_eq!(in_table.len(), 4, "table should have 4 rows, got: {in_table:?}");
+
+        for line in &in_table {
+            assert!(line.starts_with('|'), "row should start with |: {line}");
+            assert!(line.ends_with('|'), "row should end with |: {line}");
+        }
+    }
+
+    #[test]
+    fn write_markdown_report_creates_file() {
+        let report = make_report_with_functions();
+        let dir = std::env::temp_dir().join("shatter-md-report-test");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let path = write_markdown_report(&report, &dir).expect("write should succeed");
+        assert!(path.exists());
+        assert_eq!(path.file_name().unwrap(), "scan-report.md");
+
+        let contents = std::fs::read_to_string(&path).expect("read file");
+        assert!(contents.contains("# Shatter Scan Report"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -----------------------------------------------------------------------
+    // Progress event tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn progress_event_has_correct_structure() {
+        let event = ProgressEvent::new("classifyNumber", 1, 5, 1234);
+
+        assert_eq!(event.event_type, "progress");
+        assert_eq!(event.function, "classifyNumber");
+        assert_eq!(event.current, 1);
+        assert_eq!(event.total, 5);
+        assert_eq!(event.elapsed_ms, 1234);
+    }
+
+    #[test]
+    fn progress_event_serializes_to_json() {
+        let event = ProgressEvent::new("f", 2, 10, 500);
+        let json = event.to_json().expect("should serialize");
+
+        assert!(json.contains("\"type\":\"progress\""), "missing type: {json}");
+        assert!(json.contains("\"function\":\"f\""), "missing function: {json}");
+        assert!(json.contains("\"current\":2"), "missing current: {json}");
+        assert!(json.contains("\"total\":10"), "missing total: {json}");
+        assert!(json.contains("\"elapsed_ms\":500"), "missing elapsed: {json}");
+    }
+
+    #[test]
+    fn progress_event_round_trips() {
+        let event = ProgressEvent::new("test", 3, 7, 999);
+        let json = serde_json::to_string(&event).expect("serialize");
+        let deserialized: ProgressEvent = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(event, deserialized);
+    }
+
+    #[test]
+    fn report_format_from_str() {
+        assert_eq!("json".parse::<ReportFormat>().unwrap(), ReportFormat::Json);
+        assert_eq!(
+            "markdown".parse::<ReportFormat>().unwrap(),
+            ReportFormat::Markdown
+        );
+        assert_eq!("md".parse::<ReportFormat>().unwrap(), ReportFormat::Markdown);
+        assert_eq!("both".parse::<ReportFormat>().unwrap(), ReportFormat::Both);
+        assert!("invalid".parse::<ReportFormat>().is_err());
+    }
+
+    #[test]
+    fn boundary_values_detected() {
+        assert!(is_boundary_value(&[serde_json::json!(0)]));
+        assert!(is_boundary_value(&[serde_json::json!(null)]));
+        assert!(is_boundary_value(&[serde_json::json!("")]));
+        assert!(is_boundary_value(&[serde_json::json!([])]));
+        assert!(!is_boundary_value(&[serde_json::json!(42)]));
+        assert!(!is_boundary_value(&[serde_json::json!("hello")]));
     }
 }

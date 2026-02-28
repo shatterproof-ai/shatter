@@ -126,7 +126,7 @@ GO_EXAMPLES=(
     "examples/go/03-errors.go:SafeDivide"
 )
 
-TOTAL=20
+TOTAL=21
 
 # ─── Walkthrough ──────────────────────────────────────────────────────
 
@@ -240,5 +240,10 @@ step 19 $TOTAL "Behavioral Specification (Markdown)" \
 step 20 $TOTAL "Behavioral Specification (JSON)" \
     "Machine-readable JSON spec for tooling integration" \
     $SHATTER explore --spec-json "${EXAMPLES[0]}"
+
+# Stage 21: Markdown scan report
+step 21 $TOTAL "Markdown Scan Report" \
+    "Generate a human-readable markdown report alongside JSON" \
+    $SHATTER scan --report=markdown examples/typescript/src/01-arithmetic.ts
 
 echo "${BOLD}${GREEN}Walkthrough complete.${RESET}"

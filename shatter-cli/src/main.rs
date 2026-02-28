@@ -216,6 +216,14 @@ enum CliCommand {
         /// Write JSON report to this directory (default: ./shatter-report/).
         #[arg(long)]
         output_dir: Option<PathBuf>,
+
+        /// Report format: json (default), markdown, or both.
+        #[arg(long, default_value = "json")]
+        report: String,
+
+        /// Emit structured JSON progress events to stdout (for tooling).
+        #[arg(long)]
+        progress_json: bool,
     },
 
     /// Export generated tests from behavior maps produced by exploration.
@@ -731,8 +739,14 @@ async fn run_scan(
     parallelism: usize,
     timeout_per_fn: u64,
     output_dir: Option<&Path>,
+    report_format_str: &str,
+    progress_json: bool,
     log_level: LogLevel,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let report_format: report::ReportFormat = report_format_str
+        .parse()
+        .map_err(|e: String| -> Box<dyn std::error::Error> { e.into() })?;
+
     let _scope_config = match scope_path {
         Some(path) => {
             let config = ScopeConfig::from_file(path)
@@ -903,21 +917,72 @@ async fn run_scan(
         cache,
     };
 
+    let scan_start = Instant::now();
+    let total_functions = all_analyses.len();
+
+    if log_level >= LogLevel::Info {
+        eprintln!(
+            "Scanning {} function(s) in dependency order...",
+            total_functions,
+        );
+    }
+
     match scan_orchestrator::parallel_scan(&fe_config, &all_analyses, &scan_config).await {
         Ok(result) => {
+            let elapsed = scan_start.elapsed();
+
+            for (i, fr) in result.function_results.iter().enumerate() {
+                let elapsed_ms = elapsed.as_millis() as u64;
+                if progress_json {
+                    let event = report::ProgressEvent::new(
+                        &fr.function_name,
+                        i + 1,
+                        total_functions,
+                        elapsed_ms,
+                    );
+                    if let Some(json) = event.to_json() {
+                        println!("{json}");
+                    }
+                } else if log_level >= LogLevel::Info {
+                    eprintln!(
+                        "  [{}/{}] {} ({:.1}s elapsed)",
+                        i + 1,
+                        total_functions,
+                        fr.function_name,
+                        elapsed.as_secs_f64(),
+                    );
+                }
+            }
+
             print!("{}", scan_orchestrator::format_parallel_scan_report(&result));
 
-            // Generate and write JSON report if output_dir is specified.
             let report_dir = output_dir
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("./shatter-report/"));
-            let json_report = report::generate_report(&result, &scan_config.file_map);
-            match report::write_report(&json_report, &report_dir) {
-                Ok(path) => {
-                    println!("Wrote JSON report to {}", path.display());
+            let scan_report = report::generate_report(&result, &scan_config.file_map);
+
+            match report_format {
+                report::ReportFormat::Json => {
+                    match report::write_report(&scan_report, &report_dir) {
+                        Ok(path) => println!("Wrote JSON report to {}", path.display()),
+                        Err(e) => eprintln!("Failed to write JSON report: {e}"),
+                    }
                 }
-                Err(e) => {
-                    eprintln!("Failed to write JSON report: {e}");
+                report::ReportFormat::Markdown => {
+                    match report::write_markdown_report(&scan_report, &report_dir) {
+                        Ok(path) => println!("Wrote markdown report to {}", path.display()),
+                        Err(e) => eprintln!("Failed to write markdown report: {e}"),
+                    }
+                }
+                report::ReportFormat::Both => {
+                    match report::write_report(&scan_report, &report_dir) {
+                        Ok(path) => println!("Wrote JSON report to {}", path.display()),
+                        Err(e) => eprintln!("Failed to write JSON report: {e}"),
+                    }
+                    match report::write_markdown_report(&scan_report, &report_dir) {
+                        Ok(path) => println!("Wrote markdown report to {}", path.display()),
+                        Err(e) => eprintln!("Failed to write markdown report: {e}"),
+                    }
                 }
             }
         }
@@ -1656,6 +1721,8 @@ async fn main() -> ExitCode {
             parallelism,
             timeout_per_fn,
             output_dir,
+            report,
+            progress_json,
         } => {
             run_scan(
                 &targets,
@@ -1671,6 +1738,8 @@ async fn main() -> ExitCode {
                 parallelism,
                 timeout_per_fn,
                 output_dir.as_deref(),
+                &report,
+                progress_json,
                 log_level,
             )
             .await
