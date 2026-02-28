@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::equivalence::{BranchPath, EquivalenceClass, Precondition};
 use crate::execution_record::{ErrorInfo, SideEffect};
 use crate::explorer::ExplorationResult;
+use crate::invariants::ClassifiedInvariant;
 
 /// Whether a property was proven by constraint solving or merely observed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,6 +72,9 @@ pub struct SpecClass {
     pub precondition_provenance: Provenance,
     /// Whether postconditions are proven or observed.
     pub postcondition_provenance: Provenance,
+    /// Detected invariants for this equivalence class (empty if invariant detection is disabled).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub invariants: Vec<ClassifiedInvariant>,
 }
 
 /// Complete behavioral specification of a function.
@@ -88,6 +92,9 @@ pub struct FunctionSpec {
     pub lines_covered: usize,
     /// Total lines in the function.
     pub total_lines: u32,
+    /// Function-wide invariants (across all classes). Empty if invariant detection is disabled.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub invariants: Vec<ClassifiedInvariant>,
 }
 
 /// Build a [`FunctionSpec`] from an exploration result and its equivalence classes.
@@ -112,6 +119,70 @@ pub fn build_spec(
         iterations: result.iterations,
         lines_covered: result.lines_covered,
         total_lines: result.total_lines,
+        invariants: vec![],
+    }
+}
+
+/// Build a [`FunctionSpec`] with invariant detection enabled.
+///
+/// Runs Daikon-style invariant detection on the raw execution results, producing
+/// classified invariants at both the per-class and function-wide levels.
+pub fn build_spec_with_invariants(
+    result: &ExplorationResult,
+    eq_classes: &[EquivalenceClass],
+    location: Option<String>,
+) -> FunctionSpec {
+    use crate::invariants::{
+        detect_classified_invariants, records_from_raw_results, InvariantTarget,
+    };
+
+    // Convert raw results to execution records for invariant detection
+    let all_records = records_from_raw_results(&result.function_name, &result.raw_results);
+
+    // Function-wide invariants (across all executions)
+    let mut function_invariants =
+        detect_classified_invariants(&all_records, InvariantTarget::Input);
+    function_invariants.extend(detect_classified_invariants(
+        &all_records,
+        InvariantTarget::Output,
+    ));
+
+    // Per-class invariants: group records by equivalence class branch path
+    let classes: Vec<SpecClass> = eq_classes
+        .iter()
+        .enumerate()
+        .map(|(i, ec)| {
+            let mut spec_class = build_spec_class(i, ec);
+
+            // Collect records belonging to this class by matching inputs
+            let class_records: Vec<_> = all_records
+                .iter()
+                .filter(|r| ec.all_inputs.contains(&r.parameters))
+                .cloned()
+                .collect();
+
+            if class_records.len() >= 2 {
+                let mut class_invs =
+                    detect_classified_invariants(&class_records, InvariantTarget::Input);
+                class_invs.extend(detect_classified_invariants(
+                    &class_records,
+                    InvariantTarget::Output,
+                ));
+                spec_class.invariants = class_invs;
+            }
+
+            spec_class
+        })
+        .collect();
+
+    FunctionSpec {
+        function_name: result.function_name.clone(),
+        location,
+        classes,
+        iterations: result.iterations,
+        lines_covered: result.lines_covered,
+        total_lines: result.total_lines,
+        invariants: function_invariants,
     }
 }
 
@@ -164,6 +235,7 @@ fn build_spec_class(index: usize, ec: &EquivalenceClass) -> SpecClass {
         sample_count: ec.all_inputs.len(),
         precondition_provenance: Provenance::Observed,
         postcondition_provenance: Provenance::Observed,
+        invariants: vec![],
     }
 }
 
@@ -203,7 +275,24 @@ pub fn format_spec_markdown(spec: &FunctionSpec) -> String {
         let pct = (spec.lines_covered as f64 / spec.total_lines as f64 * 100.0).min(100.0);
         out.push_str(&format!(" ({pct:.0}%)"));
     }
-    out.push_str("\n\n---\n\n");
+    out.push_str("\n\n");
+
+    // Function-wide invariants
+    if !spec.invariants.is_empty() {
+        out.push_str("**Function invariants:**\n");
+        for ci in &spec.invariants {
+            out.push_str(&format!(
+                "- {} [{}] ({}/{})\n",
+                ci.invariant.description,
+                ci.confidence,
+                ci.satisfied_count,
+                ci.total_count,
+            ));
+        }
+        out.push('\n');
+    }
+
+    out.push_str("---\n\n");
 
     // Classes
     for (i, class) in spec.classes.iter().enumerate() {
@@ -234,6 +323,21 @@ pub fn format_spec_markdown(spec: &FunctionSpec) -> String {
             out.push_str("**Side effects:**\n");
             for effect in &class.side_effects {
                 out.push_str(&format!("- {}\n", format_side_effect(effect)));
+            }
+            out.push('\n');
+        }
+
+        // Invariants (per-class)
+        if !class.invariants.is_empty() {
+            out.push_str("**Invariants:**\n");
+            for ci in &class.invariants {
+                out.push_str(&format!(
+                    "- {} [{}] ({}/{})\n",
+                    ci.invariant.description,
+                    ci.confidence,
+                    ci.satisfied_count,
+                    ci.total_count,
+                ));
             }
             out.push('\n');
         }
@@ -804,6 +908,7 @@ mod tests {
                     sample_count: 10,
                     precondition_provenance: Provenance::Proven,
                     postcondition_provenance: Provenance::Observed,
+                    invariants: vec![],
                 },
                 SpecClass {
                     label: "Class 2 — throws Error: bad input".to_string(),
@@ -832,11 +937,13 @@ mod tests {
                     sample_count: 5,
                     precondition_provenance: Provenance::Observed,
                     postcondition_provenance: Provenance::Observed,
+                    invariants: vec![],
                 },
             ],
             iterations: 100,
             lines_covered: 15,
             total_lines: 20,
+            invariants: vec![],
         };
 
         let json_str = serde_json::to_string_pretty(&spec).expect("serialize");

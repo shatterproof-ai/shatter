@@ -276,63 +276,172 @@ describe("handleRequest", () => {
   });
 
   describe("setup", () => {
-    it("returns not yet implemented error", () => {
+    it("loads setup file and returns setup_context", () => {
+      const setupFile = path.resolve(__dirname, "__fixtures__", "setup-module.ts");
       const { response, shutdown } = handleRequest(
-        makeRequest({ command: "setup", file: "./setup.ts", function: "myFunc", mode: "per_function" })
+        makeRequest({ command: "setup", file: setupFile, function: "myFunc", mode: "per_function" })
       );
       expect(shutdown).toBe(false);
-      expect(response.status).toBe("error");
-      if (response.status === "error") {
-        expect(response.code).toBe("internal_error");
-        expect(response.message).toContain("not yet implemented");
+      expect(response.status).toBe("setup");
+      if (response.status === "setup") {
+        expect(response.setup_context).toEqual({
+          db: "test_db_conn",
+          functionName: "myFunc",
+          mode: "per_function",
+        });
       }
     });
 
-    it("returns not yet implemented for per_execution mode", () => {
+    it("works with per_execution mode", () => {
+      const setupFile = path.resolve(__dirname, "__fixtures__", "setup-module.ts");
       const { response } = handleRequest(
-        makeRequest({ command: "setup", file: "./setup.ts", function: "auth", mode: "per_execution" })
+        makeRequest({ command: "setup", file: setupFile, function: "auth", mode: "per_execution" })
+      );
+      expect(response.status).toBe("setup");
+      if (response.status === "setup") {
+        expect(response.setup_context).toEqual({
+          db: "test_db_conn",
+          functionName: "auth",
+          mode: "per_execution",
+        });
+      }
+    });
+
+    it("returns file_not_found for missing setup file", () => {
+      const { response } = handleRequest(
+        makeRequest({ command: "setup", file: "/nonexistent/setup.ts", function: "f", mode: "per_function" })
+      );
+      expect(response.status).toBe("error");
+      if (response.status === "error") {
+        expect(response.code).toBe("file_not_found");
+      }
+    });
+
+    it("returns error when setup export is missing", () => {
+      const fixtureFile = path.resolve(__dirname, "__fixtures__", "primitives.ts");
+      const { response } = handleRequest(
+        makeRequest({ command: "setup", file: fixtureFile, function: "f", mode: "per_function" })
       );
       expect(response.status).toBe("error");
       if (response.status === "error") {
         expect(response.code).toBe("internal_error");
+        expect(response.message).toContain("setup()");
       }
     });
   });
 
   describe("teardown", () => {
-    it("returns not yet implemented error", () => {
+    it("tears down after a successful setup", () => {
+      const setupFile = path.resolve(__dirname, "__fixtures__", "setup-module.ts");
+      // First do setup
+      handleRequest(
+        makeRequest({ command: "setup", file: setupFile, function: "myFunc", mode: "per_function" })
+      );
+      // Then teardown
       const { response, shutdown } = handleRequest(
         makeRequest({ command: "teardown", function: "myFunc" })
       );
       expect(shutdown).toBe(false);
+      expect(response.status).toBe("teardown_ack");
+    });
+
+    it("returns error when no setup context exists", () => {
+      const { response } = handleRequest(
+        makeRequest({ command: "teardown", function: "neverSetUp" })
+      );
       expect(response.status).toBe("error");
       if (response.status === "error") {
         expect(response.code).toBe("internal_error");
-        expect(response.message).toContain("not yet implemented");
+        expect(response.message).toContain("No setup context");
+      }
+    });
+
+    it("returns error when setup file has no teardown export", () => {
+      const setupFile = path.resolve(__dirname, "__fixtures__", "setup-no-teardown.ts");
+      // Setup succeeds
+      const { response: setupResp } = handleRequest(
+        makeRequest({ command: "setup", file: setupFile, function: "fn", mode: "per_function" })
+      );
+      expect(setupResp.status).toBe("setup");
+
+      // Teardown fails because no teardown() export
+      const { response } = handleRequest(
+        makeRequest({ command: "teardown", function: "fn" })
+      );
+      expect(response.status).toBe("error");
+      if (response.status === "error") {
+        expect(response.code).toBe("internal_error");
+        expect(response.message).toContain("teardown()");
       }
     });
   });
 
   describe("generate", () => {
-    it("returns not yet implemented error for type_name generator", () => {
+    it("generates a value for type_name kind", () => {
+      const genFile = path.resolve(__dirname, "__fixtures__", "generator-module.ts");
       const { response, shutdown } = handleRequest(
-        makeRequest({ command: "generate", file: "./gen.ts", name: "User", kind: "type_name" })
+        makeRequest({ command: "generate", file: genFile, name: "User", kind: "type_name" })
       );
       expect(shutdown).toBe(false);
-      expect(response.status).toBe("error");
-      if (response.status === "error") {
-        expect(response.code).toBe("internal_error");
-        expect(response.message).toContain("not yet implemented");
+      expect(response.status).toBe("generate");
+      if (response.status === "generate") {
+        expect(response.value).toEqual({ id: 1, name: "Alice", email: "alice@example.com" });
       }
     });
 
-    it("returns not yet implemented error for param_name generator", () => {
+    it("generates a value for param_name kind", () => {
+      const genFile = path.resolve(__dirname, "__fixtures__", "generator-module.ts");
       const { response } = handleRequest(
-        makeRequest({ command: "generate", file: "./gen.ts", name: "authToken", kind: "param_name" })
+        makeRequest({ command: "generate", file: genFile, name: "authToken", kind: "param_name" })
+      );
+      expect(response.status).toBe("generate");
+      if (response.status === "generate") {
+        expect(response.value).toBe("tok_test_abc123");
+      }
+    });
+
+    it("generates a numeric value", () => {
+      const genFile = path.resolve(__dirname, "__fixtures__", "generator-module.ts");
+      const { response } = handleRequest(
+        makeRequest({ command: "generate", file: genFile, name: "count", kind: "param_name" })
+      );
+      expect(response.status).toBe("generate");
+      if (response.status === "generate") {
+        expect(response.value).toBe(42);
+      }
+    });
+
+    it("returns file_not_found for missing generator file", () => {
+      const { response } = handleRequest(
+        makeRequest({ command: "generate", file: "/nonexistent/gen.ts", name: "T", kind: "type_name" })
+      );
+      expect(response.status).toBe("error");
+      if (response.status === "error") {
+        expect(response.code).toBe("file_not_found");
+      }
+    });
+
+    it("returns error when generator export is missing", () => {
+      const fixtureFile = path.resolve(__dirname, "__fixtures__", "primitives.ts");
+      const { response } = handleRequest(
+        makeRequest({ command: "generate", file: fixtureFile, name: "NonExistent", kind: "type_name" })
       );
       expect(response.status).toBe("error");
       if (response.status === "error") {
         expect(response.code).toBe("internal_error");
+        expect(response.message).toContain("NonExistent");
+      }
+    });
+  });
+
+  describe("capabilities", () => {
+    it("includes setup and generate in capabilities", () => {
+      const { response } = handleRequest(
+        makeRequest({ command: "handshake", capabilities: [] })
+      );
+      if (response.status === "handshake") {
+        expect(response.capabilities).toContain("setup");
+        expect(response.capabilities).toContain("generate");
       }
     });
   });

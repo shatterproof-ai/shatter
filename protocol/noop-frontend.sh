@@ -36,7 +36,7 @@ while IFS= read -r line; do
   case "$command" in
     handshake)
       response=$(cat <<EOF
-{"protocol_version":"$PROTOCOL_VERSION","id":$id,"status":"handshake","frontend_version":"$PROTOCOL_VERSION","language":"$FRONTEND_LANGUAGE","capabilities":["analyze","execute","instrument"]}
+{"protocol_version":"$PROTOCOL_VERSION","id":$id,"status":"handshake","frontend_version":"$PROTOCOL_VERSION","language":"$FRONTEND_LANGUAGE","capabilities":["analyze","execute","instrument","setup","teardown","generate"]}
 EOF
 )
       ;;
@@ -59,6 +59,27 @@ EOF
     execute)
       response=$(cat <<EOF
 {"protocol_version":"$PROTOCOL_VERSION","id":$id,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+EOF
+)
+      ;;
+
+    setup)
+      response=$(cat <<EOF
+{"protocol_version":"$PROTOCOL_VERSION","id":$id,"status":"setup","setup_context":{"noop":true}}
+EOF
+)
+      ;;
+
+    teardown)
+      response=$(cat <<EOF
+{"protocol_version":"$PROTOCOL_VERSION","id":$id,"status":"teardown_ack"}
+EOF
+)
+      ;;
+
+    generate)
+      response=$(cat <<EOF
+{"protocol_version":"$PROTOCOL_VERSION","id":$id,"status":"generate","value":42}
 EOF
 )
       ;;

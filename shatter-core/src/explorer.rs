@@ -11,8 +11,14 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
+use crate::boundary_dict;
+use crate::config::SetupMode;
 use crate::frontend::{Frontend, FrontendError};
-use crate::input_gen::generate_random_inputs;
+use crate::input_gen::{
+    generate_inputs_with_custom, generate_random_inputs, prefetch_custom_values,
+    PrefetchedValues, ValueSource,
+};
+use crate::orchestrator::FrontendCapabilities;
 use crate::protocol::{
     Command as ProtoCommand, ExecuteResult, FunctionAnalysis, MockConfig, ResponseResult,
 };
@@ -28,6 +34,16 @@ pub struct ExploreConfig {
     pub seed: Option<u64>,
     /// Mock configurations to pass to Execute commands.
     pub mocks: Vec<MockConfig>,
+    /// Path to a setup file, if any.
+    pub setup_file: Option<String>,
+    /// When to run setup relative to executions.
+    pub setup_mode: SetupMode,
+    /// Value sources for each parameter (custom generators or built-in).
+    pub value_sources: Vec<ValueSource>,
+    /// Frontend capabilities from handshake (used to gate setup/generate commands).
+    pub capabilities: FrontendCapabilities,
+    /// Whether to include built-in boundary values as initial seed inputs.
+    pub use_boundary_values: bool,
 }
 
 /// Summary of a single function execution during exploration.
@@ -106,6 +122,59 @@ fn path_hash(result: &crate::protocol::ExecuteResult) -> u64 {
     hasher.finish()
 }
 
+/// Check if the frontend supports a given command based on capabilities.
+fn frontend_supports(caps: &FrontendCapabilities, command: &str) -> bool {
+    caps.commands.contains(command)
+}
+
+/// Send a Setup command to the frontend, returning the setup_context.
+async fn send_setup(
+    frontend: &mut Frontend,
+    setup_file: &str,
+    function: &str,
+    mode: SetupMode,
+) -> Result<Option<serde_json::Value>, ExploreError> {
+    let response = frontend
+        .send(ProtoCommand::Setup {
+            file: setup_file.to_string(),
+            function: function.to_string(),
+            mode,
+        })
+        .await?;
+
+    match response.result {
+        ResponseResult::Setup { setup_context } => Ok(Some(setup_context)),
+        ResponseResult::Error { code, message, .. } => Err(ExploreError::UnexpectedResponse(
+            format!("setup error ({code:?}): {message}"),
+        )),
+        other => Err(ExploreError::UnexpectedResponse(format!(
+            "expected Setup response, got {other:?}"
+        ))),
+    }
+}
+
+/// Send a Teardown command to the frontend.
+async fn send_teardown(
+    frontend: &mut Frontend,
+    function: &str,
+) -> Result<(), ExploreError> {
+    let response = frontend
+        .send(ProtoCommand::Teardown {
+            function: function.to_string(),
+        })
+        .await?;
+
+    match response.result {
+        ResponseResult::TeardownAck => Ok(()),
+        ResponseResult::Error { code, message, .. } => Err(ExploreError::UnexpectedResponse(
+            format!("teardown error ({code:?}): {message}"),
+        )),
+        other => Err(ExploreError::UnexpectedResponse(format!(
+            "expected TeardownAck response, got {other:?}"
+        ))),
+    }
+}
+
 /// Explore a single function by generating random inputs and executing them.
 ///
 /// Returns an [`ExplorationResult`] summarizing the discovered paths and coverage.
@@ -144,6 +213,34 @@ pub async fn explore_function(
         }
     }
 
+    // Per-function setup: send Setup once before the exploration loop.
+    let has_setup = config.setup_file.is_some()
+        && frontend_supports(&config.capabilities, "setup");
+    let per_function_context = if has_setup && config.setup_mode == SetupMode::PerFunction {
+        send_setup(
+            frontend,
+            config.setup_file.as_deref().unwrap_or_default(),
+            &analysis.name,
+            config.setup_mode,
+        )
+        .await?
+    } else {
+        None
+    };
+
+    // Prefetch custom generator values if any custom sources are configured
+    // and the frontend supports the generate command.
+    let has_custom_generators = config.value_sources.iter().any(|s| !matches!(s, ValueSource::BuiltIn));
+    let has_generate_support = frontend_supports(&config.capabilities, "generate");
+
+    let mut prefetched = if has_custom_generators && has_generate_support {
+        prefetch_custom_values(&config.value_sources, frontend, config.max_iterations as usize)
+            .await
+            .unwrap_or_default()
+    } else {
+        PrefetchedValues::new()
+    };
+
     let mut rng = match config.seed {
         Some(seed) => StdRng::seed_from_u64(seed),
         None => StdRng::from_os_rng(),
@@ -158,19 +255,62 @@ pub async fn explore_function(
     // Track return value → count for the summary
     let mut path_counts: HashMap<u64, u32> = HashMap::new();
 
+    let caps_ref = Some(&config.capabilities);
+
+    // Phase 1: Run boundary-value inputs first (lowest priority — used to seed
+    // the path set before random/solver inputs).
+    let boundary_inputs = if config.use_boundary_values {
+        boundary_dict::generate_boundary_inputs(&analysis.params)
+    } else {
+        Vec::new()
+    };
+    let mut boundary_iter = boundary_inputs.into_iter();
+
     for _ in 0..config.max_iterations {
         iterations += 1;
 
-        let inputs = generate_random_inputs(&analysis.params, &mut rng, None);
+        // Use boundary inputs for the first N iterations, then switch to
+        // random/custom generation for the remainder.
+        let inputs = if let Some(bi) = boundary_iter.next() {
+            bi
+        } else if has_custom_generators && has_generate_support {
+            generate_inputs_with_custom(
+                &analysis.params,
+                &config.value_sources,
+                &mut prefetched,
+                &mut rng,
+                caps_ref,
+            )
+        } else {
+            generate_random_inputs(&analysis.params, &mut rng, caps_ref)
+        };
+
+        // Per-execution setup: send Setup before each Execute call.
+        let setup_context = if has_setup && config.setup_mode == SetupMode::PerExecution {
+            send_setup(
+                frontend,
+                config.setup_file.as_deref().unwrap_or_default(),
+                &analysis.name,
+                config.setup_mode,
+            )
+            .await?
+        } else {
+            per_function_context.clone()
+        };
 
         let response = frontend
             .send(ProtoCommand::Execute {
                 function: analysis.name.clone(),
                 inputs: inputs.clone(),
                 mocks: config.mocks.clone(),
-                setup_context: None,
+                setup_context,
             })
             .await?;
+
+        // Per-execution teardown: send Teardown after each Execute call.
+        if has_setup && config.setup_mode == SetupMode::PerExecution {
+            send_teardown(frontend, &analysis.name).await?;
+        }
 
         let exec_result = match response.result {
             ResponseResult::Execute(result) => result,
@@ -207,6 +347,11 @@ pub async fn explore_function(
         }
 
         raw_results.push((inputs, exec_result));
+    }
+
+    // Per-function teardown: send Teardown once after the exploration loop.
+    if has_setup && config.setup_mode == SetupMode::PerFunction {
+        send_teardown(frontend, &analysis.name).await?;
     }
 
     let total_lines = analysis.end_line.saturating_sub(analysis.start_line) + 1;
@@ -756,6 +901,11 @@ mod tests {
             max_iterations: 3,
             seed: Some(42),
             mocks: vec![],
+            setup_file: None,
+            setup_mode: SetupMode::PerFunction,
+            value_sources: vec![],
+            capabilities: FrontendCapabilities::default(),
+            use_boundary_values: false,
         };
 
         // This should succeed — explore_function now sends Instrument
@@ -769,6 +919,203 @@ mod tests {
         assert_eq!(result.iterations, 3);
         // The noop frontend returns the same result for every execution,
         // so we should have exactly 1 unique path.
+        assert_eq!(result.unique_paths, 1);
+
+        frontend.shutdown().await.expect("shutdown failed");
+    }
+
+    /// Helper to spawn a noop frontend for tests.
+    async fn spawn_noop_frontend() -> Frontend {
+        use crate::frontend::FrontendConfig;
+        use std::path::{Path, PathBuf};
+        use std::time::Duration;
+
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let noop_path = manifest_dir.join("../protocol/noop-frontend.sh");
+
+        let mut config = FrontendConfig::new(PathBuf::from("bash"));
+        config.args = vec![noop_path.to_string_lossy().into_owned()];
+        config.request_timeout = Duration::from_secs(5);
+
+        Frontend::spawn(&config).await.expect("spawn noop frontend")
+    }
+
+    fn stub_analysis() -> FunctionAnalysis {
+        use crate::types::{ParamInfo, TypeInfo};
+        FunctionAnalysis {
+            name: "stub".into(),
+            exported: true,
+            params: vec![ParamInfo {
+                name: "x".into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            }],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Unknown,
+            start_line: 1,
+            end_line: 5,
+        }
+    }
+
+    #[tokio::test]
+    async fn per_function_setup_teardown_lifecycle() {
+        // When setup_file is set and capabilities include "setup",
+        // per_function mode sends Setup once before exploration and
+        // Teardown once after. The noop frontend handles these.
+        let mut frontend = spawn_noop_frontend().await;
+        let analysis = stub_analysis();
+
+        let mut caps = FrontendCapabilities::default();
+        caps.commands.insert("setup".into());
+        caps.commands.insert("teardown".into());
+
+        let config = ExploreConfig {
+            file: "test.ts".into(),
+            max_iterations: 2,
+            seed: Some(42),
+            mocks: vec![],
+            setup_file: Some("./setup.ts".into()),
+            setup_mode: SetupMode::PerFunction,
+            value_sources: vec![],
+            capabilities: caps,
+            use_boundary_values: false,
+        };
+
+        let result = explore_function(&mut frontend, &analysis, &config)
+            .await
+            .expect("per_function setup/teardown should succeed");
+
+        assert_eq!(result.function_name, "stub");
+        assert_eq!(result.iterations, 2);
+
+        frontend.shutdown().await.expect("shutdown failed");
+    }
+
+    #[tokio::test]
+    async fn per_execution_setup_teardown_lifecycle() {
+        // per_execution mode sends Setup/Teardown around each Execute call.
+        let mut frontend = spawn_noop_frontend().await;
+        let analysis = stub_analysis();
+
+        let mut caps = FrontendCapabilities::default();
+        caps.commands.insert("setup".into());
+        caps.commands.insert("teardown".into());
+
+        let config = ExploreConfig {
+            file: "test.ts".into(),
+            max_iterations: 2,
+            seed: Some(42),
+            mocks: vec![],
+            setup_file: Some("./setup.ts".into()),
+            setup_mode: SetupMode::PerExecution,
+            value_sources: vec![],
+            capabilities: caps,
+            use_boundary_values: false,
+        };
+
+        let result = explore_function(&mut frontend, &analysis, &config)
+            .await
+            .expect("per_execution setup/teardown should succeed");
+
+        assert_eq!(result.function_name, "stub");
+        assert_eq!(result.iterations, 2);
+
+        frontend.shutdown().await.expect("shutdown failed");
+    }
+
+    #[tokio::test]
+    async fn setup_skipped_when_frontend_lacks_capability() {
+        // If frontend doesn't declare "setup" capability, Setup is never sent.
+        // This is safe even though a setup_file is configured.
+        let mut frontend = spawn_noop_frontend().await;
+        let analysis = stub_analysis();
+
+        // Default capabilities don't include "setup"
+        let config = ExploreConfig {
+            file: "test.ts".into(),
+            max_iterations: 2,
+            seed: Some(42),
+            mocks: vec![],
+            setup_file: Some("./setup.ts".into()),
+            setup_mode: SetupMode::PerFunction,
+            value_sources: vec![],
+            capabilities: FrontendCapabilities::default(),
+            use_boundary_values: false,
+        };
+
+        // Should succeed without sending setup (noop frontend would reject unknown commands)
+        let result = explore_function(&mut frontend, &analysis, &config)
+            .await
+            .expect("should work without setup when capability not declared");
+
+        assert_eq!(result.iterations, 2);
+
+        frontend.shutdown().await.expect("shutdown failed");
+    }
+
+    #[tokio::test]
+    async fn generator_integration_uses_custom_values() {
+        // When custom generators are configured and the frontend supports "generate",
+        // prefetched values are used for input generation.
+        let mut frontend = spawn_noop_frontend().await;
+        let analysis = stub_analysis();
+
+        let mut caps = FrontendCapabilities::default();
+        caps.commands.insert("generate".into());
+
+        let value_sources = vec![ValueSource::CustomGenerator {
+            generator_name: "x".into(),
+            param_name: Some("x".into()),
+            generator_file: std::path::PathBuf::from("./generators/x.ts"),
+            kind: crate::protocol::GeneratorKind::ParamName,
+        }];
+
+        let config = ExploreConfig {
+            file: "test.ts".into(),
+            max_iterations: 2,
+            seed: Some(42),
+            mocks: vec![],
+            setup_file: None,
+            setup_mode: SetupMode::PerFunction,
+            value_sources,
+            capabilities: caps,
+            use_boundary_values: false,
+        };
+
+        let result = explore_function(&mut frontend, &analysis, &config)
+            .await
+            .expect("generator-aware exploration should succeed");
+
+        assert_eq!(result.function_name, "stub");
+        assert_eq!(result.iterations, 2);
+
+        frontend.shutdown().await.expect("shutdown failed");
+    }
+
+    #[tokio::test]
+    async fn fallback_to_builtin_when_no_generators_configured() {
+        // With empty value_sources, should use built-in generation (same as before).
+        let mut frontend = spawn_noop_frontend().await;
+        let analysis = stub_analysis();
+
+        let config = ExploreConfig {
+            file: "test.ts".into(),
+            max_iterations: 3,
+            seed: Some(42),
+            mocks: vec![],
+            setup_file: None,
+            setup_mode: SetupMode::PerFunction,
+            value_sources: vec![],
+            capabilities: FrontendCapabilities::default(),
+            use_boundary_values: false,
+        };
+
+        let result = explore_function(&mut frontend, &analysis, &config)
+            .await
+            .expect("exploration with no generators should succeed");
+
+        assert_eq!(result.iterations, 3);
         assert_eq!(result.unique_paths, 1);
 
         frontend.shutdown().await.expect("shutdown failed");

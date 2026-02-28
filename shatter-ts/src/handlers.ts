@@ -21,10 +21,18 @@ import {
   executeInstrumented,
   buildExecuteResponse,
 } from "./executor.js";
+import {
+  loadSetupModule,
+  runSetup,
+  runTeardown,
+  loadGeneratorModule,
+  runGenerator,
+  type SetupModule,
+} from "./setup-loader.js";
 
 /** Supported capabilities for this frontend. */
 const SUPPORTED_CAPABILITIES = [
-  "analyze", "execute", "instrument",
+  "analyze", "execute", "instrument", "setup", "generate",
   "complex_type:date", "complex_type:date_time", "complex_type:duration",
   "complex_type:reg_exp", "complex_type:url", "complex_type:big_int",
   "complex_type:buffer", "complex_type:error", "complex_type:symbol",
@@ -38,6 +46,18 @@ let lastAnalyzedFile: string | null = null;
  * Set by the instrument handler, consumed by the execute handler.
  */
 const instrumentedSources = new Map<string, string>();
+
+/**
+ * Loaded setup modules, keyed by file path.
+ * Cached so teardown can use the same module instance as setup.
+ */
+const loadedSetupModules = new Map<string, SetupModule>();
+
+/**
+ * Setup contexts from the most recent setup call, keyed by function name.
+ * Stored so teardown can pass the context back to the teardown function.
+ */
+const setupContexts = new Map<string, { module: SetupModule; context: unknown }>();
 
 /**
  * Dispatch a parsed request to the appropriate handler.
@@ -177,23 +197,106 @@ export function handleRequest(request: Request): { response: Response; shutdown:
       }
     }
 
-    case "setup":
-      return {
-        response: errorResponse(request.id, "internal_error", "Setup not yet implemented"),
-        shutdown: false,
-      };
+    case "setup": {
+      if (!fs.existsSync(request.file)) {
+        return {
+          response: errorResponse(request.id, "file_not_found", `File not found: ${request.file}`),
+          shutdown: false,
+        };
+      }
 
-    case "teardown":
-      return {
-        response: errorResponse(request.id, "internal_error", "Teardown not yet implemented"),
-        shutdown: false,
-      };
+      try {
+        let setupModule = loadedSetupModules.get(request.file);
+        if (!setupModule) {
+          setupModule = loadSetupModule(request.file);
+          loadedSetupModules.set(request.file, setupModule);
+        }
 
-    case "generate":
-      return {
-        response: errorResponse(request.id, "internal_error", "Generate not yet implemented"),
-        shutdown: false,
-      };
+        const setupContext = runSetup(setupModule, request.function, request.mode);
+
+        setupContexts.set(request.function, { module: setupModule, context: setupContext });
+
+        return {
+          response: {
+            protocol_version: PROTOCOL_VERSION,
+            id: request.id,
+            status: "setup",
+            setup_context: setupContext,
+          },
+          shutdown: false,
+        };
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return {
+          response: errorResponse(request.id, "internal_error", `Setup failed: ${msg}`),
+          shutdown: false,
+        };
+      }
+    }
+
+    case "teardown": {
+      try {
+        const stored = setupContexts.get(request.function);
+        if (!stored) {
+          return {
+            response: errorResponse(
+              request.id,
+              "internal_error",
+              `No setup context found for function: ${request.function}. Call setup first.`,
+            ),
+            shutdown: false,
+          };
+        }
+
+        runTeardown(stored.module, request.function, stored.context);
+        setupContexts.delete(request.function);
+
+        return {
+          response: {
+            protocol_version: PROTOCOL_VERSION,
+            id: request.id,
+            status: "teardown_ack",
+          },
+          shutdown: false,
+        };
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return {
+          response: errorResponse(request.id, "internal_error", `Teardown failed: ${msg}`),
+          shutdown: false,
+        };
+      }
+    }
+
+    case "generate": {
+      if (!fs.existsSync(request.file)) {
+        return {
+          response: errorResponse(request.id, "file_not_found", `File not found: ${request.file}`),
+          shutdown: false,
+        };
+      }
+
+      try {
+        const generatorModule = loadGeneratorModule(request.file);
+        const value = runGenerator(generatorModule, request.name, request.kind);
+
+        return {
+          response: {
+            protocol_version: PROTOCOL_VERSION,
+            id: request.id,
+            status: "generate",
+            value,
+          },
+          shutdown: false,
+        };
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return {
+          response: errorResponse(request.id, "internal_error", `Generate failed: ${msg}`),
+          shutdown: false,
+        };
+      }
+    }
 
     case "shutdown":
       return {
@@ -296,8 +399,10 @@ export function parseRequest(line: string): { request: Request } | { error: Erro
 }
 
 /**
- * Clear stored instrumented sources. Useful for testing.
+ * Clear stored instrumented sources and setup state. Useful for testing.
  */
 export function clearInstrumentedSources(): void {
   instrumentedSources.clear();
+  loadedSetupModules.clear();
+  setupContexts.clear();
 }

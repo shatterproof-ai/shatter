@@ -126,7 +126,7 @@ GO_EXAMPLES=(
     "examples/go/03-errors.go:SafeDivide"
 )
 
-TOTAL=20
+TOTAL=21
 
 # ─── Walkthrough ──────────────────────────────────────────────────────
 
@@ -240,5 +240,13 @@ step 19 $TOTAL "Behavioral Specification (Markdown)" \
 step 20 $TOTAL "Behavioral Specification (JSON)" \
     "Machine-readable JSON spec for tooling integration" \
     $SHATTER explore --spec-json "${EXAMPLES[0]}"
+
+# Stage 21: Spec diff
+# Generate two spec JSON files and diff them. We use the same function twice
+# (identical specs) so the diff shows "No changes detected" — a real diff
+# would compare specs from different code versions.
+step 21 $TOTAL "Specification Diff" \
+    "Compare two spec JSON files to detect behavioral regressions" \
+    bash -c "$SHATTER explore --spec-json '${EXAMPLES[0]}' > /tmp/shatter-spec-old.json 2>/dev/null && cp /tmp/shatter-spec-old.json /tmp/shatter-spec-new.json && $SHATTER spec-diff /tmp/shatter-spec-old.json /tmp/shatter-spec-new.json"
 
 echo "${BOLD}${GREEN}Walkthrough complete.${RESET}"

@@ -156,6 +156,10 @@ enum CliCommand {
         /// Output the behavioral specification as JSON instead of markdown.
         #[arg(long)]
         spec_json: bool,
+
+        /// Disable built-in boundary values as seed inputs.
+        #[arg(long)]
+        no_boundary_values: bool,
     },
 
     /// Scan multiple functions in dependency order, using behavior maps as mocks.
@@ -216,6 +220,22 @@ enum CliCommand {
         /// Write JSON report to this directory (default: ./shatter-report/).
         #[arg(long)]
         output_dir: Option<PathBuf>,
+
+        /// Report format: json (default), markdown, or both.
+        #[arg(long, default_value = "json")]
+        report: String,
+
+        /// Emit structured JSON progress events to stdout (for tooling).
+        #[arg(long)]
+        progress_json: bool,
+
+        /// Generate test files after scan. Framework: jest, vitest, or gotest.
+        #[arg(long)]
+        emit_tests: Option<String>,
+
+        /// Output directory for emitted test files (default: same as --output-dir or ./shatter-report/).
+        #[arg(long)]
+        emit_tests_dir: Option<PathBuf>,
     },
 
     /// Export generated tests from behavior maps produced by exploration.
@@ -318,6 +338,25 @@ enum CliCommand {
         /// Path to the current snapshot JSON file to compare against.
         #[arg(required = true)]
         current: PathBuf,
+
+        /// Output the diff result as JSON instead of human-readable text.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Compare two function specifications and report behavioral changes.
+    ///
+    /// Accepts two spec JSON files (as produced by `explore --spec-json`).
+    /// Exit code is 0 when specs are equivalent, nonzero when regressions are found.
+    #[command(name = "spec-diff")]
+    SpecDiff {
+        /// Path to the old (baseline) spec JSON file.
+        #[arg(required = true)]
+        old: PathBuf,
+
+        /// Path to the new (current) spec JSON file.
+        #[arg(required = true)]
+        new: PathBuf,
 
         /// Output the diff result as JSON instead of human-readable text.
         #[arg(long)]
@@ -445,6 +484,7 @@ async fn run_explore(
     colors: &Colors,
     show_spec: bool,
     spec_as_json: bool,
+    use_boundary_values: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let scope_config = match scope_path {
         Some(path) => {
@@ -619,6 +659,15 @@ async fn run_explore(
                 max_iterations: resolved.max_iterations,
                 seed: None,
                 mocks: vec![],
+                setup_file: resolved.setup.as_ref().map(|p| p.display().to_string()),
+                setup_mode: resolved.setup_mode,
+                value_sources: shatter_core::input_gen::resolve_value_sources(
+                    &func.params,
+                    &resolved.param_generators,
+                    &resolved.generators,
+                ),
+                capabilities: shatter_core::orchestrator::FrontendCapabilities::default(),
+                use_boundary_values,
             };
 
             // Convert candidate inputs for logging
@@ -731,8 +780,26 @@ async fn run_scan(
     parallelism: usize,
     timeout_per_fn: u64,
     output_dir: Option<&Path>,
+    report_format_str: &str,
+    progress_json: bool,
+    emit_tests: Option<&str>,
+    emit_tests_dir: Option<&Path>,
     log_level: LogLevel,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let report_format: report::ReportFormat = report_format_str
+        .parse()
+        .map_err(|e: String| -> Box<dyn std::error::Error> { e.into() })?;
+
+    // Validate --emit-tests framework early.
+    if let Some(framework) = emit_tests {
+        if framework != "jest" && framework != "vitest" && framework != "gotest" {
+            return Err(format!(
+                "unsupported framework '{framework}': expected 'jest', 'vitest', or 'gotest'"
+            )
+            .into());
+        }
+    }
+
     let _scope_config = match scope_path {
         Some(path) => {
             let config = ScopeConfig::from_file(path)
@@ -920,6 +987,17 @@ async fn run_scan(
                     eprintln!("Failed to write JSON report: {e}");
                 }
             }
+
+            // Emit test files if --emit-tests was specified.
+            if let Some(framework) = emit_tests {
+                let tests_dir = emit_tests_dir
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| report_dir.clone());
+
+                if let Err(e) = emit_test_files(&result, &scan_config.file_map, framework, &tests_dir) {
+                    eprintln!("Failed to emit test files: {e}");
+                }
+            }
         }
         Err(e) => {
             eprintln!("Scan error: {e}");
@@ -950,6 +1028,37 @@ fn run_diff(
         println!("{json}");
     } else {
         print!("{}", result.format_report());
+    }
+
+    Ok(result.has_regressions())
+}
+
+/// Run the spec-diff command: compare two function specifications.
+///
+/// Returns `Ok(true)` if there are regressions (nonzero exit), `Ok(false)` if clean.
+fn run_spec_diff(
+    old_path: &Path,
+    new_path: &Path,
+    output_json: bool,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let old_contents = std::fs::read_to_string(old_path)
+        .map_err(|e| format!("failed to read old spec '{}': {e}", old_path.display()))?;
+    let new_contents = std::fs::read_to_string(new_path)
+        .map_err(|e| format!("failed to read new spec '{}': {e}", new_path.display()))?;
+
+    let old_spec: shatter_core::spec::FunctionSpec = serde_json::from_str(&old_contents)
+        .map_err(|e| format!("failed to parse old spec '{}': {e}", old_path.display()))?;
+    let new_spec: shatter_core::spec::FunctionSpec = serde_json::from_str(&new_contents)
+        .map_err(|e| format!("failed to parse new spec '{}': {e}", new_path.display()))?;
+
+    let result = shatter_core::spec_diff::diff_specs(&old_spec, &new_spec);
+
+    if output_json {
+        let json = shatter_core::spec_diff::format_spec_diff_json(&result)
+            .map_err(|e| format!("failed to serialize spec diff: {e}"))?;
+        println!("{json}");
+    } else {
+        print!("{}", shatter_core::spec_diff::format_spec_diff_text(&result));
     }
 
     Ok(result.has_regressions())
@@ -1033,6 +1142,11 @@ async fn run_export_tests(
             max_iterations,
             seed: None,
             mocks: vec![],
+            setup_file: None,
+            setup_mode: shatter_core::config::SetupMode::PerFunction,
+            value_sources: vec![],
+            capabilities: shatter_core::orchestrator::FrontendCapabilities::default(),
+            use_boundary_values: true,
         };
 
         for func in &functions {
@@ -1316,6 +1430,11 @@ async fn run_run(
                 max_iterations,
                 seed: None,
                 mocks: vec![],
+                setup_file: None,
+                setup_mode: shatter_core::config::SetupMode::PerFunction,
+                value_sources: vec![],
+                capabilities: shatter_core::orchestrator::FrontendCapabilities::default(),
+                use_boundary_values: true,
             };
 
             match explorer::explore_function(frontend, &func_analysis, &explore_config).await {
@@ -1619,6 +1738,7 @@ async fn main() -> ExitCode {
             config_path,
             spec,
             spec_json,
+            no_boundary_values,
         } => {
             run_explore(
                 &targets,
@@ -1639,6 +1759,7 @@ async fn main() -> ExitCode {
                 &colors,
                 spec || spec_json,
                 spec_json,
+                !no_boundary_values,
             )
             .await
         }
@@ -1656,6 +1777,10 @@ async fn main() -> ExitCode {
             parallelism,
             timeout_per_fn,
             output_dir,
+            report,
+            progress_json,
+            emit_tests,
+            emit_tests_dir,
         } => {
             run_scan(
                 &targets,
@@ -1671,6 +1796,10 @@ async fn main() -> ExitCode {
                 parallelism,
                 timeout_per_fn,
                 output_dir.as_deref(),
+                &report,
+                progress_json,
+                emit_tests.as_deref(),
+                emit_tests_dir.as_deref(),
                 log_level,
             )
             .await
@@ -1731,6 +1860,18 @@ async fn main() -> ExitCode {
             json,
         } => {
             match run_diff(&snapshot, &current, json) {
+                Ok(has_regressions) => {
+                    return if has_regressions {
+                        ExitCode::FAILURE
+                    } else {
+                        ExitCode::SUCCESS
+                    };
+                }
+                Err(e) => Err(e),
+            }
+        }
+        CliCommand::SpecDiff { old, new, json } => {
+            match run_spec_diff(&old, &new, json) {
                 Ok(has_regressions) => {
                     return if has_regressions {
                         ExitCode::FAILURE
@@ -2426,6 +2567,50 @@ mod tests {
         assert!(result.is_err());
 
         let result = Cli::try_parse_from(["shatter", "diff", "only-one.json"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn cli_parses_spec_diff_subcommand() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "spec-diff",
+            "specs/old.json",
+            "specs/new.json",
+        ]);
+        match cli.command {
+            CliCommand::SpecDiff { old, new, json } => {
+                assert_eq!(old, PathBuf::from("specs/old.json"));
+                assert_eq!(new, PathBuf::from("specs/new.json"));
+                assert!(!json);
+            }
+            _ => panic!("expected SpecDiff command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_spec_diff_with_json_flag() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "spec-diff",
+            "--json",
+            "specs/old.json",
+            "specs/new.json",
+        ]);
+        match cli.command {
+            CliCommand::SpecDiff { json, .. } => {
+                assert!(json);
+            }
+            _ => panic!("expected SpecDiff command"),
+        }
+    }
+
+    #[test]
+    fn cli_spec_diff_requires_both_arguments() {
+        let result = Cli::try_parse_from(["shatter", "spec-diff"]);
+        assert!(result.is_err());
+
+        let result = Cli::try_parse_from(["shatter", "spec-diff", "only-one.json"]);
         assert!(result.is_err());
     }
 
