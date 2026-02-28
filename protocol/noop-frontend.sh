@@ -84,6 +84,26 @@ EOF
 )
       ;;
 
+    setup)
+      response=$(cat <<EOF
+{"protocol_version":"$PROTOCOL_VERSION","id":$id,"status":"setup","setup_context":{"noop":true}}
+EOF
+)
+      ;;
+
+    teardown)
+      response=$(cat <<EOF
+{"protocol_version":"$PROTOCOL_VERSION","id":$id,"status":"teardown_ack"}
+EOF
+)
+      ;;
+
+    generate)
+      response=$(cat <<EOF
+{"protocol_version":"$PROTOCOL_VERSION","id":$id,"status":"generate","value":42}
+EOF
+)
+      ;;
     shutdown)
       response=$(cat <<EOF
 {"protocol_version":"$PROTOCOL_VERSION","id":$id,"status":"shutdown_ack"}
