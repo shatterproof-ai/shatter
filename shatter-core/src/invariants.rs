@@ -1202,4 +1202,166 @@ mod tests {
         });
         assert!(has_gt_0, "should detect param > 0 for scalar input, got: {invariants:?}");
     }
+
+    // -----------------------------------------------------------------------
+    // Tests for ClassifiedInvariant, detect_classified_invariants, format_invariant_label
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn classified_invariants_all_observed() {
+        let specimens = vec![
+            make_record(vec![json!({"x": 5})], Some(json!(10))),
+            make_record(vec![json!({"x": 10})], Some(json!(20))),
+        ];
+
+        let classified = detect_classified_invariants(&specimens, InvariantTarget::Input);
+        assert!(!classified.is_empty());
+
+        for ci in &classified {
+            assert_eq!(ci.target, InvariantTarget::Input);
+            assert!((ci.confidence - 1.0).abs() < f64::EPSILON);
+            assert_eq!(ci.satisfied_count, 2);
+            assert_eq!(ci.total_count, 2);
+            assert!(!ci.label.is_empty());
+        }
+    }
+
+    #[test]
+    fn classified_invariants_empty_returns_empty() {
+        let classified = detect_classified_invariants(&[], InvariantTarget::Input);
+        assert!(classified.is_empty());
+    }
+
+    #[test]
+    fn classified_invariants_include_output() {
+        let specimens = vec![
+            make_record(vec![json!(1)], Some(json!(42))),
+            make_record(vec![json!(2)], Some(json!(42))),
+        ];
+
+        let classified = detect_classified_invariants(&specimens, InvariantTarget::Output);
+        assert!(!classified.is_empty());
+        for ci in &classified {
+            assert_eq!(ci.target, InvariantTarget::Output);
+        }
+    }
+
+    #[test]
+    fn classified_invariant_has_label() {
+        let specimens = vec![
+            make_record(vec![json!({"x": 5})], Some(json!(10))),
+            make_record(vec![json!({"x": 10})], Some(json!(20))),
+        ];
+
+        let classified = detect_classified_invariants(&specimens, InvariantTarget::Input);
+        let x_inv = classified.iter().find(|ci| ci.label.contains("input.x"));
+        assert!(x_inv.is_some(), "should have label containing 'input.x', got: {:?}",
+            classified.iter().map(|c| &c.label).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn classified_invariant_serialization_round_trips() {
+        let ci = ClassifiedInvariant {
+            invariant: Invariant {
+                description: "x > 0".to_string(),
+                target: InvariantTarget::Input,
+                kind: InvariantKind::NumericComparison {
+                    path: vec!["x".to_string()],
+                    op: ComparisonOp::Gt,
+                    value: 0.0,
+                },
+            },
+            target: InvariantTarget::Input,
+            label: "input.x > 0".to_string(),
+            confidence: 1.0,
+            satisfied_count: 10,
+            total_count: 10,
+        };
+
+        let json = serde_json::to_string(&ci).expect("serialize");
+        let deserialized: ClassifiedInvariant = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(ci, deserialized);
+    }
+
+    #[test]
+    fn format_invariant_label_numeric_comparison() {
+        let inv = Invariant {
+            description: "x > 0".to_string(),
+            target: InvariantTarget::Input,
+            kind: InvariantKind::NumericComparison {
+                path: vec!["x".to_string()],
+                op: ComparisonOp::Gt,
+                value: 0.0,
+            },
+        };
+        let label = format_invariant_label(&inv, InvariantTarget::Input);
+        assert_eq!(label, "input.x > 0");
+    }
+
+    #[test]
+    fn format_invariant_label_output_equals_input() {
+        let inv = Invariant {
+            description: "output.len == input[0].len".to_string(),
+            target: InvariantTarget::Output,
+            kind: InvariantKind::OutputEqualsInput {
+                output_path: vec!["len".to_string()],
+                param_index: 0,
+                input_path: vec!["len".to_string()],
+            },
+        };
+        let label = format_invariant_label(&inv, InvariantTarget::Output);
+        assert_eq!(label, "output.len == input[0].len");
+    }
+
+    #[test]
+    fn format_invariant_label_root_path() {
+        let inv = Invariant {
+            description: "output > 0".to_string(),
+            target: InvariantTarget::Output,
+            kind: InvariantKind::NumericComparison {
+                path: vec![],
+                op: ComparisonOp::Gt,
+                value: 0.0,
+            },
+        };
+        let label = format_invariant_label(&inv, InvariantTarget::Output);
+        assert_eq!(label, "output > 0");
+    }
+
+    #[test]
+    fn records_from_raw_results_converts_correctly() {
+        use crate::protocol::{ExecuteResult, PerformanceMetrics};
+
+        let raw = vec![(
+            vec![json!(42)],
+            ExecuteResult {
+                return_value: Some(json!("positive")),
+                thrown_error: None,
+                branch_path: vec![],
+                lines_executed: vec![1, 2],
+                calls_to_external: vec![],
+                path_constraints: vec![],
+                side_effects: vec![],
+                performance: PerformanceMetrics {
+                    wall_time_ms: 1.0,
+                    cpu_time_us: 100,
+                    heap_used_bytes: 256,
+                    heap_allocated_bytes: 512,
+                },
+            },
+        )];
+
+        let records = records_from_raw_results("test_fn", &raw);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].function_id, "test_fn");
+        assert_eq!(records[0].parameters, vec![json!(42)]);
+        assert_eq!(records[0].return_value, Some(json!("positive")));
+        assert_eq!(records[0].lines_executed, vec![1, 2]);
+    }
+
+    #[test]
+    fn records_from_raw_results_empty_input() {
+        let records = records_from_raw_results("empty_fn", &[]);
+        assert!(records.is_empty());
+    }
 }

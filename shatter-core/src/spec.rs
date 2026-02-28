@@ -951,4 +951,123 @@ mod tests {
             serde_json::from_str(&json_str).expect("deserialize");
         assert_eq!(spec, deserialized);
     }
+
+    #[test]
+    fn format_spec_markdown_includes_function_invariants() {
+        use crate::invariants::{
+            ClassifiedInvariant, Invariant, InvariantKind, InvariantTarget, ComparisonOp,
+        };
+
+        let mut spec = build_spec(
+            &make_exploration_result("fn1", 10, 1),
+            &[make_eq_class(vec![], vec![json!(1)], Some(json!(2)), None, vec![], 5)],
+            None,
+        );
+        spec.invariants = vec![ClassifiedInvariant {
+            invariant: Invariant {
+                description: "x > 0".to_string(),
+                target: InvariantTarget::Input,
+                kind: InvariantKind::NumericComparison {
+                    path: vec!["x".to_string()],
+                    op: ComparisonOp::Gt,
+                    value: 0.0,
+                },
+            },
+            target: InvariantTarget::Input,
+            label: "input.x > 0".to_string(),
+            confidence: 1.0,
+            satisfied_count: 10,
+            total_count: 10,
+        }];
+
+        let md = format_spec_markdown(&spec);
+        assert!(md.contains("Function invariants:"), "should have function invariants section");
+        assert!(md.contains("x > 0"), "should contain invariant description");
+    }
+
+    #[test]
+    fn format_spec_markdown_includes_class_invariants() {
+        use crate::invariants::{
+            ClassifiedInvariant, Invariant, InvariantKind, InvariantTarget, ComparisonOp,
+        };
+
+        let mut spec = build_spec(
+            &make_exploration_result("fn1", 10, 1),
+            &[make_eq_class(vec![], vec![json!(1)], Some(json!(2)), None, vec![], 5)],
+            None,
+        );
+        spec.classes[0].invariants = vec![ClassifiedInvariant {
+            invariant: Invariant {
+                description: "y >= 0".to_string(),
+                target: InvariantTarget::Output,
+                kind: InvariantKind::NumericComparison {
+                    path: vec![],
+                    op: ComparisonOp::Ge,
+                    value: 0.0,
+                },
+            },
+            target: InvariantTarget::Output,
+            label: "output >= 0".to_string(),
+            confidence: 1.0,
+            satisfied_count: 5,
+            total_count: 5,
+        }];
+
+        let md = format_spec_markdown(&spec);
+        assert!(md.contains("**Invariants:**"), "should have per-class invariants section");
+        assert!(md.contains("y >= 0"), "should contain invariant description");
+    }
+
+    #[test]
+    fn invariants_skipped_in_json_when_empty() {
+        let spec = build_spec(
+            &make_exploration_result("fn1", 10, 1),
+            &[make_eq_class(vec![], vec![json!(1)], Some(json!(2)), None, vec![], 5)],
+            None,
+        );
+
+        let json_str = format_spec_json(&spec).expect("json serialization");
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).expect("parse");
+
+        assert!(parsed.get("invariants").is_none(), "empty invariants should be skipped");
+        assert!(
+            parsed["classes"][0].get("invariants").is_none(),
+            "empty class invariants should be skipped"
+        );
+    }
+
+    #[test]
+    fn invariants_present_in_json_when_populated() {
+        use crate::invariants::{
+            ClassifiedInvariant, Invariant, InvariantKind, InvariantTarget, ComparisonOp,
+        };
+
+        let mut spec = build_spec(
+            &make_exploration_result("fn1", 10, 1),
+            &[make_eq_class(vec![], vec![json!(1)], Some(json!(2)), None, vec![], 5)],
+            None,
+        );
+        spec.invariants = vec![ClassifiedInvariant {
+            invariant: Invariant {
+                description: "x > 0".to_string(),
+                target: InvariantTarget::Input,
+                kind: InvariantKind::NumericComparison {
+                    path: vec!["x".to_string()],
+                    op: ComparisonOp::Gt,
+                    value: 0.0,
+                },
+            },
+            target: InvariantTarget::Input,
+            label: "input.x > 0".to_string(),
+            confidence: 1.0,
+            satisfied_count: 10,
+            total_count: 10,
+        }];
+
+        let json_str = format_spec_json(&spec).expect("json serialization");
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).expect("parse");
+
+        assert!(parsed["invariants"].is_array(), "invariants should be present when populated");
+        assert_eq!(parsed["invariants"][0]["label"], "input.x > 0");
+    }
 }

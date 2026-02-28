@@ -126,7 +126,7 @@ GO_EXAMPLES=(
     "examples/go/03-errors.go:SafeDivide"
 )
 
-TOTAL=24
+TOTAL=25
 
 # ─── Walkthrough ──────────────────────────────────────────────────────
 
@@ -264,5 +264,10 @@ step 23 $TOTAL "Emit Tests from Scan" \
 step 24 $TOTAL "Markdown Scan Report" \
     "Generate a human-readable markdown report alongside JSON" \
     $SHATTER scan --report=markdown examples/typescript/src/01-arithmetic.ts
+
+# Stage 25: Invariant detection
+step 25 $TOTAL "Invariant Detection" \
+    "Detect Daikon-style invariants over explored executions" \
+    $SHATTER explore --invariants "${EXAMPLES[0]}"
 
 echo "${BOLD}${GREEN}Walkthrough complete.${RESET}"
