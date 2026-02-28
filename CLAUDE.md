@@ -112,10 +112,10 @@ frontends.
 
 ### Add a new protocol message type
 
-1. Define the message in `shatter-core/src/protocol/` (Rust types + serde)
+1. Define the message in `shatter-core/src/protocol.rs` (Rust types + serde)
 2. Add round-trip serialization tests in the same module
 3. Implement the handler in each frontend:
-   - TypeScript: `shatter-ts/src/protocol/`
+   - TypeScript: `shatter-ts/src/protocol.ts`
    - Go: `shatter-go/protocol/`
 4. Add round-trip tests in each frontend (serialize → deserialize → verify)
 
