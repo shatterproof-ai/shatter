@@ -24,6 +24,7 @@ use crate::cache::BehaviorMapCache;
 use crate::execution_record::ExecutionRecord;
 use crate::explorer::{self, ExploreConfig, ExploreError, ExplorationResult};
 use crate::frontend::{Frontend, FrontendConfig, FrontendError};
+use crate::mock_gen::mock_config_from_behavior_map;
 use crate::protocol::{ExecuteResult, FunctionAnalysis, MockConfig};
 
 /// Configuration for a scan run.
@@ -193,7 +194,7 @@ pub async fn scan(
 
         for callee in &callees {
             if let Some(bmap) = behavior_maps.get(callee) {
-                mocks.push(bmap.to_mock_config());
+                mocks.push(mock_config_from_behavior_map(bmap));
                 mocks_used.push(callee.clone());
             }
         }
@@ -388,7 +389,7 @@ pub async fn parallel_scan(
             let mut mocks_used: Vec<String> = Vec::new();
             for callee in &callees {
                 if let Some(bmap) = maps.get(callee) {
-                    mocks.push(bmap.to_mock_config());
+                    mocks.push(mock_config_from_behavior_map(bmap));
                     mocks_used.push(callee.clone());
                 }
             }

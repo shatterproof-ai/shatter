@@ -17,6 +17,7 @@ pub mod export;
 pub mod frontend;
 pub mod input_gen;
 pub mod log_level;
+pub mod mock_gen;
 pub mod invariants;
 pub mod orchestrator;
 pub mod protocol;
