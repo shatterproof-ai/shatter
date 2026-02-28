@@ -213,7 +213,6 @@ export function handleRequest(request: Request): { response: Response; shutdown:
         }
 
         const setupContext = runSetup(setupModule, request.function, request.mode);
-
         setupContexts.set(request.function, { module: setupModule, context: setupContext });
 
         return {
