@@ -450,6 +450,17 @@ fn frontend_config(
     let mut config = FrontendConfig::new(command);
     config.args = args;
     config.request_timeout = timeout;
+    apply_frontend_env(&mut config, log_level, exec_timeout, build_timeout);
+    Ok(config)
+}
+
+/// Apply standard environment variables to a frontend config.
+fn apply_frontend_env(
+    config: &mut FrontendConfig,
+    log_level: LogLevel,
+    exec_timeout: u64,
+    build_timeout: u64,
+) {
     config.env_vars.push((
         LogLevel::ENV_VAR.to_string(),
         log_level.as_str().to_string(),
@@ -462,7 +473,6 @@ fn frontend_config(
         "SHATTER_BUILD_TIMEOUT".to_string(),
         build_timeout.to_string(),
     ));
-    Ok(config)
 }
 
 /// Run the explore command.
@@ -2327,7 +2337,8 @@ mod tests {
 
     #[test]
     fn frontend_config_passes_timeout_env_vars() {
-        let config = frontend_config(Language::Go, Duration::from_secs(30), LogLevel::Info, 20, 45).unwrap();
+        let mut config = FrontendConfig::new(PathBuf::from("dummy"));
+        apply_frontend_env(&mut config, LogLevel::Info, 20, 45);
         let env_map: std::collections::HashMap<_, _> = config.env_vars.iter().cloned().collect();
         assert_eq!(env_map.get("SHATTER_EXEC_TIMEOUT").map(|s| s.as_str()), Some("20"));
         assert_eq!(env_map.get("SHATTER_BUILD_TIMEOUT").map(|s| s.as_str()), Some("45"));
