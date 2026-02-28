@@ -380,8 +380,9 @@ func TestSideEffectVariants(t *testing.T) {
 		want string
 	}{
 		{"console_output", SideEffect{Kind: "console_output", Level: "info", Message: "hello"}, `"kind":"console_output"`},
-		{"file_write", SideEffect{Kind: "file_write", Path: "/tmp/f"}, `"kind":"file_write"`},
+		{"file_write", SideEffect{Kind: "file_write", Path: "/tmp/f", Content: "data"}, `"content":"data"`},
 		{"network_request", SideEffect{Kind: "network_request", Method: "GET", URL: "http://x"}, `"kind":"network_request"`},
+		{"environment_read", SideEffect{Kind: "environment_read", Variable: "HOME", Value: strPtr("/home/user")}, `"variable":"HOME"`},
 		{"global_mutation", SideEffect{Kind: "global_mutation", Name: "counter"}, `"kind":"global_mutation"`},
 		{"thrown_error", SideEffect{Kind: "thrown_error", ErrorType: "Error", Message: "bad", Stack: strPtr("trace")}, `"error_type":"Error"`},
 		{"global_state_change", SideEffect{Kind: "global_state_change", Variable: "x"}, `"variable":"x"`},

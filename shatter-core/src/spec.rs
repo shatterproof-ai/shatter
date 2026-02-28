@@ -436,8 +436,12 @@ fn format_side_effect(effect: &SideEffect) -> String {
         SideEffect::ConsoleOutput { level, message } => {
             format!("console.{level}(\"{message}\")")
         }
-        SideEffect::FileWrite { path } => format!("writes to file: {path}"),
-        SideEffect::NetworkRequest { method, url } => format!("{method} {url}"),
+        SideEffect::FileWrite { path, .. } => format!("writes to file: {path}"),
+        SideEffect::NetworkRequest { method, url, .. } => format!("{method} {url}"),
+        SideEffect::EnvironmentRead { variable, value } => {
+            let val = value.as_deref().unwrap_or("null");
+            format!("reads env: {variable}={val}")
+        }
         SideEffect::GlobalMutation { name } => format!("mutates global: {name}"),
         SideEffect::ThrownError {
             error_type,
@@ -836,14 +840,16 @@ mod tests {
         );
         assert_eq!(
             format_side_effect(&SideEffect::FileWrite {
-                path: "/tmp/out".into()
+                path: "/tmp/out".into(),
+                content: None,
             }),
             "writes to file: /tmp/out"
         );
         assert_eq!(
             format_side_effect(&SideEffect::NetworkRequest {
                 method: "GET".into(),
-                url: "http://api.test".into()
+                url: "http://api.test".into(),
+                body: None,
             }),
             "GET http://api.test"
         );

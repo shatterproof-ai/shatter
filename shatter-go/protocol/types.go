@@ -220,6 +220,7 @@ type SideEffect struct {
 	ErrorType string           `json:"error_type,omitempty"`
 	Stack     *string          `json:"stack,omitempty"`
 	Variable  string           `json:"variable,omitempty"`
+	Value     *string          `json:"value,omitempty"`
 	Before    *json.RawMessage `json:"before,omitempty"`
 	After     *json.RawMessage `json:"after,omitempty"`
 }

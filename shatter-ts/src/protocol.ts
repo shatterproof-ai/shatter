@@ -324,8 +324,9 @@ export type DependencyKind =
 
 export type SideEffect =
   | { kind: "console_output"; level: string; message: string }
-  | { kind: "file_write"; path: string }
-  | { kind: "network_request"; method: string; url: string }
+  | { kind: "file_write"; path: string; content: string }
+  | { kind: "network_request"; method: string; url: string; body: unknown }
+  | { kind: "environment_read"; variable: string; value: string | null }
   | { kind: "global_mutation"; name: string }
   | { kind: "thrown_error"; error_type: string; message: string; stack: string | null }
   | { kind: "global_state_change"; variable: string; before: unknown; after: unknown };

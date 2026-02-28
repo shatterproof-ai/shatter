@@ -40,6 +40,7 @@ pub enum SideEffectKind {
     ConsoleOutput,
     FileWrite,
     NetworkRequest,
+    EnvironmentRead,
     GlobalMutation,
     ThrownError,
     GlobalStateChange,
@@ -79,6 +80,7 @@ fn side_effect_kind(effect: &SideEffect) -> SideEffectKind {
         SideEffect::ConsoleOutput { .. } => SideEffectKind::ConsoleOutput,
         SideEffect::FileWrite { .. } => SideEffectKind::FileWrite,
         SideEffect::NetworkRequest { .. } => SideEffectKind::NetworkRequest,
+        SideEffect::EnvironmentRead { .. } => SideEffectKind::EnvironmentRead,
         SideEffect::GlobalMutation { .. } => SideEffectKind::GlobalMutation,
         SideEffect::ThrownError { .. } => SideEffectKind::ThrownError,
         SideEffect::GlobalStateChange { .. } => SideEffectKind::GlobalStateChange,
@@ -91,11 +93,15 @@ fn side_effect_description(effect: &SideEffect) -> String {
         SideEffect::ConsoleOutput { level, message } => {
             format!("console.{level}: {message}")
         }
-        SideEffect::FileWrite { path } => {
+        SideEffect::FileWrite { path, .. } => {
             format!("file write: {path}")
         }
-        SideEffect::NetworkRequest { method, url } => {
+        SideEffect::NetworkRequest { method, url, .. } => {
             format!("{method} {url}")
+        }
+        SideEffect::EnvironmentRead { variable, value } => {
+            let val = value.as_deref().unwrap_or("null");
+            format!("env read: {variable}={val}")
         }
         SideEffect::GlobalMutation { name } => {
             format!("mutated global: {name}")
@@ -1234,10 +1240,12 @@ mod tests {
             side_effects: vec![
                 SideEffect::FileWrite {
                     path: "/tmp/out.txt".to_string(),
+                    content: None,
                 },
                 SideEffect::NetworkRequest {
                     method: "POST".to_string(),
                     url: "https://api.example.com".to_string(),
+                    body: None,
                 },
             ],
             performance: PerformanceMetrics {

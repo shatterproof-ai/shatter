@@ -43,8 +43,21 @@ pub struct ErrorInfo {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SideEffect {
     ConsoleOutput { level: String, message: String },
-    FileWrite { path: String },
-    NetworkRequest { method: String, url: String },
+    FileWrite {
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        content: Option<String>,
+    },
+    NetworkRequest {
+        method: String,
+        url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        body: Option<serde_json::Value>,
+    },
+    EnvironmentRead {
+        variable: String,
+        value: Option<String>,
+    },
     GlobalMutation { name: String },
     ThrownError {
         error_type: String,
@@ -180,10 +193,29 @@ mod tests {
         });
         round_trip(&SideEffect::FileWrite {
             path: "/tmp/output.txt".into(),
+            content: None,
+        });
+        round_trip(&SideEffect::FileWrite {
+            path: "/tmp/output.txt".into(),
+            content: Some("hello".into()),
         });
         round_trip(&SideEffect::NetworkRequest {
             method: "POST".into(),
             url: "https://api.example.com/data".into(),
+            body: None,
+        });
+        round_trip(&SideEffect::NetworkRequest {
+            method: "POST".into(),
+            url: "https://api.example.com/data".into(),
+            body: Some(serde_json::json!({"key": "value"})),
+        });
+        round_trip(&SideEffect::EnvironmentRead {
+            variable: "HOME".into(),
+            value: Some("/home/user".into()),
+        });
+        round_trip(&SideEffect::EnvironmentRead {
+            variable: "MISSING".into(),
+            value: None,
         });
         round_trip(&SideEffect::GlobalMutation {
             name: "window.count".into(),
