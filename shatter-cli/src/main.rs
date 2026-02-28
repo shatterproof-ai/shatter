@@ -495,7 +495,7 @@ async fn run_explore(
             let config = ScopeConfig::from_file(path)
                 .map_err(|e| format!("failed to load scope config: {e}"))?;
             if log_level >= LogLevel::Info {
-                println!("Loaded scope config from {}", path.display());
+                eprintln!("Loaded scope config from {}", path.display());
             }
             config
         }
@@ -530,7 +530,7 @@ async fn run_explore(
             .unwrap_or("(all)");
 
         if log_level >= LogLevel::Debug {
-            println!(
+            eprintln!(
                 "[debug] Exploring {file_str}:{func_display} [language={}, max_iterations={max_iterations}]",
                 target.language.label()
             );
@@ -545,7 +545,7 @@ async fn run_explore(
         })?;
 
         if log_level >= LogLevel::Debug {
-            println!(
+            eprintln!(
                 "[debug] Frontend connected (language={})",
                 frontend.language().unwrap_or("unknown")
             );
@@ -563,9 +563,9 @@ async fn run_explore(
         match &analyze_response.result {
             ResponseResult::Analyze { functions } => {
                 if log_level >= LogLevel::Debug {
-                    println!("  Found {} function(s):", functions.len());
+                    eprintln!("  Found {} function(s):", functions.len());
                     for func in functions {
-                        println!("    - {} ({} params, {} branches)",
+                        eprintln!("    - {} ({} params, {} branches)",
                             func.name,
                             func.params.len(),
                             func.branches.len(),
@@ -593,11 +593,11 @@ async fn run_explore(
         if analyze_only {
             if log_level >= LogLevel::Info {
                 for func in &functions {
-                    println!(
+                    eprintln!(
                         "{}{}{}  ({file_str}:{})",
                         colors.bold, func.name, colors.reset, func.start_line
                     );
-                    println!(
+                    eprintln!(
                         "  {}params: {}, branches: {}{}",
                         colors.dim,
                         func.params.len(),
@@ -616,7 +616,7 @@ async fn run_explore(
             let cfg = shatter_config::parse_config(cp)
                 .map_err(|e| format!("failed to load config: {e}"))?;
             if log_level >= LogLevel::Debug {
-                println!("[debug] Loaded config from {}", cp.display());
+                eprintln!("[debug] Loaded config from {}", cp.display());
             }
             vec![cfg]
         } else {
@@ -643,7 +643,7 @@ async fn run_explore(
 
             if resolved.skip {
                 if log_level >= LogLevel::Debug {
-                    println!("\n  [debug] Skipping {} (skip=true in config)", func.name);
+                    eprintln!("\n  [debug] Skipping {} (skip=true in config)", func.name);
                 }
                 continue;
             }
@@ -652,7 +652,7 @@ async fn run_explore(
             let skip_reasons = executability::check_executability(&func.params, &[]);
             if !skip_reasons.is_empty() {
                 if log_level >= LogLevel::Debug {
-                    println!("\n  [debug] Skipping {} (unexecutable parameter types)", func.name);
+                    eprintln!("\n  [debug] Skipping {} (unexecutable parameter types)", func.name);
                 }
                 skipped_unexecutable.push((func.name.clone(), skip_reasons));
                 continue;
@@ -676,13 +676,13 @@ async fn run_explore(
             // Convert candidate inputs for logging
             if log_level >= LogLevel::Debug {
                 if !resolved.candidate_inputs.is_empty() {
-                    println!(
+                    eprintln!(
                         "\n  [debug] Exploring {} ({} candidate input(s) from config)...",
                         func.name,
                         resolved.candidate_inputs.len()
                     );
                 } else {
-                    println!("\n  [debug] Exploring {}...", func.name);
+                    eprintln!("\n  [debug] Exploring {}...", func.name);
                 }
             }
 
@@ -702,7 +702,7 @@ async fn run_explore(
 
                     if log_level >= LogLevel::Info {
                         if log_level >= LogLevel::Trace {
-                            print!("{}", explorer::format_exploration_report_verbose(&result));
+                            eprint!("{}", explorer::format_exploration_report_verbose(&result));
                         } else {
                             let report_opts = ReportOptions {
                                 location: Some(format!("{file_str}:{}", func.start_line)),
@@ -710,9 +710,9 @@ async fn run_explore(
                                 wall_time: Some(wall_time),
                                 coverage_metrics: None,
                             };
-                            print!("{}", explorer::format_exploration_report(&result, &report_opts));
+                            eprint!("{}", explorer::format_exploration_report(&result, &report_opts));
                         }
-                        println!();
+                        eprintln!();
                     }
 
                     // Spec output: build equivalence classes and spec
@@ -753,13 +753,13 @@ async fn run_explore(
 
         // Print summary of skipped unexecutable functions.
         if !skipped_unexecutable.is_empty() && log_level >= LogLevel::Info {
-            println!(
+            eprintln!(
                 "Skipped {} function(s) (unexecutable parameter types):",
                 skipped_unexecutable.len()
             );
             for (name, reasons) in &skipped_unexecutable {
                 for reason in reasons {
-                    println!(
+                    eprintln!(
                         "  {name}: param {:?} has opaque type {}",
                         reason.param_name, reason.opaque_label
                     );
@@ -813,7 +813,7 @@ async fn run_scan(
         Some(path) => {
             let config = ScopeConfig::from_file(path)
                 .map_err(|e| format!("failed to load scope config: {e}"))?;
-            println!("Loaded scope config from {}", path.display());
+            eprintln!("Loaded scope config from {}", path.display());
             config
         }
         None => ScopeConfig::default(),
@@ -840,7 +840,7 @@ async fn run_scan(
     })?;
 
     if log_level >= LogLevel::Debug {
-        println!(
+        eprintln!(
             "[debug] Frontend connected (language={})",
             frontend.language().unwrap_or("unknown")
         );
@@ -854,7 +854,7 @@ async fn run_scan(
     for target in &parsed {
         let file_str = target.file.to_string_lossy();
         if log_level >= LogLevel::Debug {
-            println!(
+            eprintln!(
                 "[debug] Analyzing {file_str}:{}",
                 target.function.as_deref().unwrap_or("(all)")
             );
@@ -871,9 +871,9 @@ async fn run_scan(
         match analyze_response.result {
             ResponseResult::Analyze { functions } => {
                 if log_level >= LogLevel::Debug {
-                    println!("  Found {} function(s):", functions.len());
+                    eprintln!("  Found {} function(s):", functions.len());
                     for func in &functions {
-                        println!(
+                        eprintln!(
                             "    - {} ({} params, {} branches, {} deps)",
                             func.name,
                             func.params.len(),
@@ -922,12 +922,12 @@ async fn run_scan(
     });
 
     if !skipped_for_executability.is_empty() && log_level >= LogLevel::Info {
-        println!(
+        eprintln!(
             "Skipped {} function(s) (unexecutable parameter types):",
             skipped_for_executability.len()
         );
         for skip in &skipped_for_executability {
-            println!("  {}: {}", skip.function_name, skip.reason);
+            eprintln!("  {}: {}", skip.function_name, skip.reason);
         }
     }
 
@@ -950,7 +950,7 @@ async fn run_scan(
     };
 
     if log_level >= LogLevel::Debug {
-        println!(
+        eprintln!(
             "\n[debug] Scanning {} function(s) in dependency order ({} worker(s), {}s/fn)...\n",
             all_analyses.len(),
             effective_parallelism,
@@ -1026,23 +1026,23 @@ async fn run_scan(
             match report_format {
                 report::ReportFormat::Json => {
                     match report::write_report(&scan_report, &report_dir) {
-                        Ok(path) => println!("Wrote JSON report to {}", path.display()),
+                        Ok(path) => eprintln!("Wrote JSON report to {}", path.display()),
                         Err(e) => eprintln!("Failed to write JSON report: {e}"),
                     }
                 }
                 report::ReportFormat::Markdown => {
                     match report::write_markdown_report(&scan_report, &report_dir) {
-                        Ok(path) => println!("Wrote markdown report to {}", path.display()),
+                        Ok(path) => eprintln!("Wrote markdown report to {}", path.display()),
                         Err(e) => eprintln!("Failed to write markdown report: {e}"),
                     }
                 }
                 report::ReportFormat::Both => {
                     match report::write_report(&scan_report, &report_dir) {
-                        Ok(path) => println!("Wrote JSON report to {}", path.display()),
+                        Ok(path) => eprintln!("Wrote JSON report to {}", path.display()),
                         Err(e) => eprintln!("Failed to write JSON report: {e}"),
                     }
                     match report::write_markdown_report(&scan_report, &report_dir) {
-                        Ok(path) => println!("Wrote markdown report to {}", path.display()),
+                        Ok(path) => eprintln!("Wrote markdown report to {}", path.display()),
                         Err(e) => eprintln!("Failed to write markdown report: {e}"),
                     }
                 }
@@ -1318,20 +1318,20 @@ async fn run_run(
         .map_err(|e| format!("failed to resolve path '{}': {e}", path))?;
 
     if log_level >= LogLevel::Debug {
-        println!("Shatter run: {}", root.display());
-        println!();
+        eprintln!("Shatter run: {}", root.display());
+        eprintln!();
     }
 
     // Step 1: Discover files
     if log_level >= LogLevel::Debug {
-        println!("Discovering source files...");
+        eprintln!("Discovering source files...");
     }
     let options = DiscoveryOptions::default();
     let files = discovery::discover_files(&root, &options)
         .map_err(|e| format!("file discovery failed: {e}"))?;
 
     if files.is_empty() {
-        println!("No supported source files found in {}", root.display());
+        eprintln!("No supported source files found in {}", root.display());
         return Ok(());
     }
 
@@ -1348,17 +1348,17 @@ async fn run_run(
     }
 
     if log_level >= LogLevel::Debug {
-        println!("  Found {} file(s):", files.len());
+        eprintln!("  Found {} file(s):", files.len());
         if !ts_files.is_empty() {
-            println!("    TypeScript: {}", ts_files.len());
+            eprintln!("    TypeScript: {}", ts_files.len());
         }
         if !go_files.is_empty() {
-            println!("    Go: {}", go_files.len());
+            eprintln!("    Go: {}", go_files.len());
         }
         if !rs_files.is_empty() {
-            println!("    Rust: {} (analysis not yet supported)", rs_files.len());
+            eprintln!("    Rust: {} (analysis not yet supported)", rs_files.len());
         }
-        println!();
+        eprintln!();
     }
 
     // Filter to languages we can actually analyze (TS, Go)
@@ -1368,7 +1368,7 @@ async fn run_run(
         .collect();
 
     if analyzable_files.is_empty() {
-        println!("No analyzable source files found (only TypeScript and Go are supported).");
+        eprintln!("No analyzable source files found (only TypeScript and Go are supported).");
         return Ok(());
     }
 
@@ -1389,7 +1389,7 @@ async fn run_run(
             format!("failed to spawn {lang:?} frontend: {e}")
         })?;
         if log_level >= LogLevel::Debug {
-            println!(
+            eprintln!(
                 "Frontend connected (language={})",
                 frontend.language().unwrap_or("unknown")
             );
@@ -1399,8 +1399,8 @@ async fn run_run(
 
     // Step 3: Batch analyze
     if log_level >= LogLevel::Debug {
-        println!();
-        println!("Analyzing {} file(s)...", analyzable_files.len());
+        eprintln!();
+        eprintln!("Analyzing {} file(s)...", analyzable_files.len());
     }
     let registry = batch_analyze::batch_analyze(&mut frontends, &analyzable_files)
         .await
@@ -1410,33 +1410,33 @@ async fn run_run(
     let total_branches: usize = registry.entries().iter().map(|e| e.branch_count).sum();
 
     if log_level >= LogLevel::Debug {
-        println!("  Found {} function(s) with {} total branch(es)", total_functions, total_branches);
-        println!();
+        eprintln!("  Found {} function(s) with {} total branch(es)", total_functions, total_branches);
+        eprintln!();
     }
 
     if total_functions == 0 {
-        println!("No functions found to explore.");
+        eprintln!("No functions found to explore.");
         shutdown_all_frontends(frontends).await;
         return Ok(());
     }
 
     // Step 4: Build call graph
     if log_level >= LogLevel::Debug {
-        println!("Building call graph...");
+        eprintln!("Building call graph...");
     }
     let call_graph = CallGraph::from_registry(&registry);
     let layers = call_graph.topological_layers();
     let cycles = call_graph.cycle_groups();
 
     if log_level >= LogLevel::Debug {
-        println!(
+        eprintln!(
             "  {} node(s), {} edge(s), {} layer(s), {} cycle(s)",
             call_graph.node_count(),
             call_graph.edge_count(),
             layers.len(),
             cycles.len(),
         );
-        println!();
+        eprintln!();
     }
 
     if analyze_only {
@@ -1463,15 +1463,15 @@ async fn run_run(
 
     // Step 5: Explore in dependency order (layer by layer)
     if log_level >= LogLevel::Debug {
-        println!("Exploring functions in dependency order...");
-        println!();
+        eprintln!("Exploring functions in dependency order...");
+        eprintln!();
     }
 
     let mut exploration_results: Vec<(String, explorer::ExplorationResult)> = Vec::new();
 
     for (layer_idx, layer) in layers.iter().enumerate() {
         if log_level >= LogLevel::Debug {
-            println!("  Layer {} ({} function(s)):", layer_idx, layer.len());
+            eprintln!("  Layer {} ({} function(s)):", layer_idx, layer.len());
         }
 
         for qualified_name in layer {
@@ -1514,7 +1514,7 @@ async fn run_run(
             };
 
             if log_level >= LogLevel::Debug {
-                print!("    Exploring {}...", entry.name);
+                eprint!("    Exploring {}...", entry.name);
             }
 
             let explore_config = ExploreConfig {
@@ -1531,7 +1531,7 @@ async fn run_run(
             match explorer::explore_function(frontend, &func_analysis, &explore_config).await {
                 Ok(result) => {
                     if log_level >= LogLevel::Debug {
-                        println!(
+                        eprintln!(
                             " {} path(s), {}/{} lines",
                             result.unique_paths, result.lines_covered, result.total_lines
                         );
@@ -1540,7 +1540,7 @@ async fn run_run(
                 }
                 Err(e) => {
                     if log_level >= LogLevel::Debug {
-                        println!(" error: {e}");
+                        eprintln!(" error: {e}");
                     }
                 }
             }
@@ -1557,7 +1557,7 @@ async fn run_run(
         }
     }
 
-    println!();
+    eprintln!();
 
     // Step 6: Print summary report
     print_summary_report(
@@ -1711,7 +1711,7 @@ fn write_analysis_report(
 
     std::fs::write(&summary_path, &content)
         .map_err(|e| format!("failed to write summary: {e}"))?;
-    println!("Wrote analysis report to {}", summary_path.display());
+    eprintln!("Wrote analysis report to {}", summary_path.display());
 
     Ok(())
 }
@@ -1782,7 +1782,7 @@ fn write_run_report(
             .map_err(|e| format!("failed to write {}: {e}", func_path.display()))?;
     }
 
-    println!(
+    eprintln!(
         "Wrote {} per-function report(s) to {}",
         exploration_results.len(),
         dir.display()
