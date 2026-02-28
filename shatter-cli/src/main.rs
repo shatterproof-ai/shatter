@@ -489,7 +489,6 @@ async fn run_explore(
     show_spec: bool,
     spec_as_json: bool,
     detect_invariants: bool,
-    use_boundary_values: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let scope_config = match scope_path {
         Some(path) => {
@@ -672,7 +671,6 @@ async fn run_explore(
                     &resolved.generators,
                 ),
                 capabilities: shatter_core::orchestrator::FrontendCapabilities::default(),
-                use_boundary_values,
             };
 
             // Convert candidate inputs for logging
@@ -802,13 +800,13 @@ async fn run_scan(
         .map_err(|e: String| -> Box<dyn std::error::Error> { e.into() })?;
 
     // Validate --emit-tests framework early.
-    if let Some(framework) = emit_tests {
-        if framework != "jest" && framework != "vitest" && framework != "gotest" {
-            return Err(format!(
-                "unsupported framework '{framework}': expected 'jest', 'vitest', or 'gotest'"
-            )
-            .into());
-        }
+    if let Some(framework) = emit_tests
+        && framework != "jest" && framework != "vitest" && framework != "gotest"
+    {
+        return Err(format!(
+            "unsupported framework '{framework}': expected 'jest', 'vitest', or 'gotest'"
+        )
+        .into());
     }
 
     let _scope_config = match scope_path {
@@ -981,21 +979,72 @@ async fn run_scan(
         cache,
     };
 
+    let scan_start = Instant::now();
+    let total_functions = all_analyses.len();
+
+    if log_level >= LogLevel::Info {
+        eprintln!(
+            "Scanning {} function(s) in dependency order...",
+            total_functions,
+        );
+    }
+
     match scan_orchestrator::parallel_scan(&fe_config, &all_analyses, &scan_config).await {
         Ok(result) => {
+            let elapsed = scan_start.elapsed();
+
+            for (i, fr) in result.function_results.iter().enumerate() {
+                let elapsed_ms = elapsed.as_millis() as u64;
+                if progress_json {
+                    let event = report::ProgressEvent::new(
+                        &fr.function_name,
+                        i + 1,
+                        total_functions,
+                        elapsed_ms,
+                    );
+                    if let Some(json) = event.to_json() {
+                        println!("{json}");
+                    }
+                } else if log_level >= LogLevel::Info {
+                    eprintln!(
+                        "  [{}/{}] {} ({:.1}s elapsed)",
+                        i + 1,
+                        total_functions,
+                        fr.function_name,
+                        elapsed.as_secs_f64(),
+                    );
+                }
+            }
+
             print!("{}", scan_orchestrator::format_parallel_scan_report(&result));
 
-            // Generate and write JSON report if output_dir is specified.
             let report_dir = output_dir
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("./shatter-report/"));
-            let json_report = report::generate_report(&result, &scan_config.file_map);
-            match report::write_report(&json_report, &report_dir) {
-                Ok(path) => {
-                    println!("Wrote JSON report to {}", path.display());
+            let scan_report = report::generate_report(&result, &scan_config.file_map);
+
+            match report_format {
+                report::ReportFormat::Json => {
+                    match report::write_report(&scan_report, &report_dir) {
+                        Ok(path) => println!("Wrote JSON report to {}", path.display()),
+                        Err(e) => eprintln!("Failed to write JSON report: {e}"),
+                    }
                 }
-                Err(e) => {
-                    eprintln!("Failed to write JSON report: {e}");
+                report::ReportFormat::Markdown => {
+                    match report::write_markdown_report(&scan_report, &report_dir) {
+                        Ok(path) => println!("Wrote markdown report to {}", path.display()),
+                        Err(e) => eprintln!("Failed to write markdown report: {e}"),
+                    }
+                }
+                report::ReportFormat::Both => {
+                    match report::write_report(&scan_report, &report_dir) {
+                        Ok(path) => println!("Wrote JSON report to {}", path.display()),
+                        Err(e) => eprintln!("Failed to write JSON report: {e}"),
+                    }
+                    match report::write_markdown_report(&scan_report, &report_dir) {
+                        Ok(path) => println!("Wrote markdown report to {}", path.display()),
+                        Err(e) => eprintln!("Failed to write markdown report: {e}"),
+                    }
                 }
             }
 
@@ -1013,6 +1062,38 @@ async fn run_scan(
         Err(e) => {
             eprintln!("Scan error: {e}");
         }
+    }
+
+    Ok(())
+}
+
+/// Emit test files from a parallel scan result.
+fn emit_test_files(
+    result: &scan_orchestrator::ParallelScanResult,
+    file_map: &std::collections::HashMap<String, String>,
+    framework: &str,
+    output_dir: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    std::fs::create_dir_all(output_dir)?;
+
+    for func_result in &result.function_results {
+        let module_path = file_map
+            .get(&func_result.function_name)
+            .map(|s| s.as_str())
+            .unwrap_or("./module");
+
+        let test_code = match framework {
+            "jest" => export::generate_jest_tests(&func_result.behavior_map, &func_result.function_name, module_path),
+            "vitest" => export::generate_vitest_tests(&func_result.behavior_map, &func_result.function_name, module_path),
+            "gotest" => export::generate_go_tests(&func_result.behavior_map, &func_result.function_name, module_path),
+            _ => continue,
+        };
+
+        let ext = if framework == "gotest" { "go" } else { "ts" };
+        let filename = format!("{}.test.{ext}", func_result.function_name);
+        let path = output_dir.join(&filename);
+        std::fs::write(&path, &test_code)?;
+        eprintln!("  Wrote {}", path.display());
     }
 
     Ok(())
@@ -1157,7 +1238,6 @@ async fn run_export_tests(
             setup_mode: shatter_core::config::SetupMode::PerFunction,
             value_sources: vec![],
             capabilities: shatter_core::orchestrator::FrontendCapabilities::default(),
-            use_boundary_values: true,
         };
 
         for func in &functions {
@@ -1446,8 +1526,7 @@ async fn run_run(
                 setup_mode: shatter_core::config::SetupMode::PerFunction,
                 value_sources: vec![],
                 capabilities: shatter_core::orchestrator::FrontendCapabilities::default(),
-                use_boundary_values: true,
-            };
+                };
 
             match explorer::explore_function(frontend, &func_analysis, &explore_config).await {
                 Ok(result) => {
@@ -1751,7 +1830,7 @@ async fn main() -> ExitCode {
             spec,
             spec_json,
             invariants,
-            no_boundary_values,
+            no_boundary_values: _,
         } => {
             run_explore(
                 &targets,
@@ -1773,7 +1852,6 @@ async fn main() -> ExitCode {
                 spec || spec_json || invariants,
                 spec_json,
                 invariants,
-                !no_boundary_values,
             )
             .await
         }

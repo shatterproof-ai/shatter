@@ -126,7 +126,7 @@ GO_EXAMPLES=(
     "examples/go/03-errors.go:SafeDivide"
 )
 
-TOTAL=23
+TOTAL=24
 
 # ─── Walkthrough ──────────────────────────────────────────────────────
 
@@ -259,5 +259,10 @@ step 23 $TOTAL "Emit Tests from Scan" \
     "Generate Jest test files from behavior maps discovered during scan" \
     $SHATTER scan --emit-tests jest --emit-tests-dir /tmp/shatter-demo-tests \
     examples/typescript/src/01-arithmetic.ts
+
+# Stage 24: Markdown scan report
+step 24 $TOTAL "Markdown Scan Report" \
+    "Generate a human-readable markdown report alongside JSON" \
+    $SHATTER scan --report=markdown examples/typescript/src/01-arithmetic.ts
 
 echo "${BOLD}${GREEN}Walkthrough complete.${RESET}"

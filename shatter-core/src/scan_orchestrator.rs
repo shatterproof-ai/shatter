@@ -215,7 +215,6 @@ pub async fn scan(
             setup_mode: crate::config::SetupMode::PerFunction,
             value_sources: vec![],
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
-            use_boundary_values: false,
         };
 
         let exploration = explorer::explore_function(frontend, analysis, &explore_config).await?;
@@ -416,7 +415,6 @@ pub async fn parallel_scan(
                 setup_mode: crate::config::SetupMode::PerFunction,
                 value_sources: vec![],
                 capabilities: crate::orchestrator::FrontendCapabilities::default(),
-                use_boundary_values: false,
             };
 
             tasks.push((func_name.clone(), analysis.clone(), explore_config, mocks_used, callees));

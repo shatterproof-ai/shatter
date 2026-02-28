@@ -96,8 +96,7 @@ fn path_hash(result: &crate::protocol::ExecuteResult) -> u64 {
         }
     } else if !result.lines_executed.is_empty() {
         result.lines_executed.hash(&mut hasher);
-    } else {
-        if let Some(ref err) = result.thrown_error {
+    } else if let Some(ref err) = result.thrown_error {
             "error".hash(&mut hasher);
             err.error_type.hash(&mut hasher);
             err.message.hash(&mut hasher);
@@ -106,7 +105,6 @@ fn path_hash(result: &crate::protocol::ExecuteResult) -> u64 {
             let ret_str = serde_json::to_string(&result.return_value).unwrap_or_default();
             ret_str.hash(&mut hasher);
         }
-    }
     hasher.finish()
 }
 
@@ -207,11 +205,11 @@ pub async fn explore_function(
 
     let mut setup_context: Option<serde_json::Value> = None;
 
-    if per_function_setup {
-        if let Some(ref setup_file) = config.setup_file {
-            setup_context =
-                send_setup(frontend, setup_file, &analysis.name, config.setup_mode).await?;
-        }
+    if per_function_setup
+        && let Some(ref setup_file) = config.setup_file
+    {
+        setup_context =
+            send_setup(frontend, setup_file, &analysis.name, config.setup_mode).await?;
     }
 
     // --- Generator prefetch ---
@@ -243,11 +241,11 @@ pub async fn explore_function(
         iterations += 1;
 
         // --- Per-execution setup ---
-        if per_execution_setup {
-            if let Some(ref setup_file) = config.setup_file {
-                setup_context =
-                    send_setup(frontend, setup_file, &analysis.name, config.setup_mode).await?;
-            }
+        if per_execution_setup
+            && let Some(ref setup_file) = config.setup_file
+        {
+            setup_context =
+                send_setup(frontend, setup_file, &analysis.name, config.setup_mode).await?;
         }
 
         // --- Input generation ---
