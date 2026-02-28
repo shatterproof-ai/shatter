@@ -71,6 +71,7 @@ func analyzeFunc(fset *token.FileSet, fn *ast.FuncDecl, info *types.Info) Functi
 
 	return FunctionAnalysis{
 		Name:         fn.Name.Name,
+		Exported:     ast.IsExported(fn.Name.Name),
 		Params:       params,
 		Branches:     branches,
 		Dependencies: deps,
