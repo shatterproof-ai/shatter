@@ -3,6 +3,7 @@
 Automatic exploratory testing via concolic execution. Rust core engine with language-specific frontends (TypeScript, Go, Rust) communicating via JSON-over-stdio protocol.
 
 See `PLAN.md` for the full architecture and implementation roadmap.
+See `SPEC.md` for the living behavioral specification (what the system does today).
 See `LANGUAGE-EVALUATION.md` for the rationale behind choosing Rust for the core.
 
 ## Prerequisites
@@ -105,6 +106,7 @@ frontends.
 - **Never add** `node_modules/`, `dist/`, or `target/` to git
 - **Never bypass clippy warnings** with `#[allow(...)]` without a comment explaining why
 - **Never add a CLI command** without updating `demo/walkthrough.sh`
+- **Never change observable behavior** without updating `SPEC.md`
 
 ## Common Task Recipes
 
@@ -123,6 +125,7 @@ frontends.
 2. Implement the handler, delegating to `shatter-core` for logic
 3. Add integration tests exercising the command
 4. Update `demo/walkthrough.sh` to exercise the new command
+5. Update `SPEC.md` section 2 with the new command's syntax, behavior, and options
 
 ### Add a new frontend language
 
@@ -138,6 +141,22 @@ frontends.
 2. Document the expected branches and triggering inputs in a comment
 3. Write the test in `shatter-core` that invokes the engine and asserts all branches are found
 4. Check in a regression snapshot of the output
+
+## Behavioral Specification (SPEC.md)
+
+`SPEC.md` is the living behavioral specification — it describes what Shatter
+does today from a user's perspective. **Keep it up to date** when making changes
+that affect observable behavior:
+
+- New or changed CLI commands, flags, or options → update section 2
+- New output formats or changes to existing formats → update section 5
+- New core concepts (equivalence classes, invariants, etc.) → update section 3
+- Changes to the frontend protocol → update section 4
+- Fixing a known limitation or adding a new one → update section 6
+- Add an entry to the Changelog table (section 7) for every update
+
+The `/audit` skill (Phase 4) compares SPEC.md against the actual codebase and
+flags discrepancies. If the audit finds gaps, update SPEC.md first.
 
 ## Demo Walkthrough
 

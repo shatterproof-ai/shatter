@@ -120,6 +120,22 @@ Do not leave stale branches. Merge and delete promptly.
 - After merge, delete the feature branch both locally and remotely
 - Work is complete when changes are on `main` and pushed, not when a branch is pushed
 
+### Commit Early, Commit Often
+
+Sessions can be interrupted at any time — context window compaction, usage limits,
+crashes, or network failures. **Uncommitted work is lost work.**
+
+- **Commit after every meaningful change.** Don't accumulate multiple logical
+  changes before committing. If you've made something work — tests pass, a
+  function is implemented, a bug is fixed — commit it immediately.
+- **Push your branch frequently.** A local commit is better than uncommitted
+  changes, but a pushed commit survives everything. Push after every 1–2 commits.
+- **Never hold work "until it's ready."** A series of small, incremental commits
+  on a feature branch is vastly better than one big commit that might never land.
+- **Teammates in worktrees**: push your branch before reporting task completion.
+  If the session is interrupted before the lead merges your branch, pushed work
+  can be recovered. Unpushed work in a worktree cannot.
+
 ### Commit messages and issue references
 
 When a commit includes changes to beads data (`.beads/` files), list all
