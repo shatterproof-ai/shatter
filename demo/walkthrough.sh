@@ -126,7 +126,7 @@ GO_EXAMPLES=(
     "examples/go/03-errors.go:SafeDivide"
 )
 
-TOTAL=25
+TOTAL=27
 
 # ─── Walkthrough ──────────────────────────────────────────────────────
 
@@ -269,5 +269,17 @@ step 24 $TOTAL "Markdown Scan Report" \
 step 25 $TOTAL "Invariant Detection" \
     "Detect Daikon-style invariants over explored executions" \
     $SHATTER explore --invariants "${EXAMPLES[0]}"
+
+# Stage 26: Setup + generators via config
+step 26 $TOTAL "Setup + Generators via Config" \
+    "Explore with setup/teardown lifecycle and custom type generators from .shatter/config.yaml" \
+    $SHATTER explore --config examples/typescript/.shatter/config.yaml \
+    "examples/typescript/src/03-objects.ts:categorizeUser"
+
+# Stage 27: Setup + generators with debug logging
+step 27 $TOTAL "Setup + Generators (Debug)" \
+    "Show setup/teardown and generator lifecycle with --log-level debug" \
+    $SHATTER explore --config examples/typescript/.shatter/config.yaml \
+    --log-level debug "examples/typescript/src/03-objects.ts:categorizeUser"
 
 echo "${BOLD}${GREEN}Walkthrough complete.${RESET}"

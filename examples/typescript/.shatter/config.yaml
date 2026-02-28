@@ -8,12 +8,33 @@ defaults:
   max_iterations: 100
   timeout: 60
 
+  # Run a setup file before exploration to initialize shared state (e.g. DB).
+  # The setup() return value is passed as setup_context to each execute call.
+  # teardown() is called after exploration completes.
+  setup: ./setup/global.ts
+  setup_mode: per_function
+
+  # Type-name generators: map a type name to a file exporting a function
+  # of the same name that returns a seed value for that type.
+  generators:
+    UserProfile: ./generators/user.ts
+
+  # Param-name generators: map a parameter name to a file exporting a
+  # function of the same name that returns a seed value for that parameter.
+  param_generators:
+    authToken: ./generators/token.ts
+
 functions:
   # Override settings for a specific function
   "src/classify.ts:classify":
     max_iterations: 500
     timeout: 120
     inputs: ./inputs/validateToken/candidates.json
+
+  # Per-execution setup: run setup/teardown around each individual execution
+  "src/03-objects.ts:categorizeUser":
+    setup: ./setup/global.ts
+    setup_mode: per_execution
 
   # Skip generated code
   "src/generated/**":
