@@ -64,6 +64,12 @@ This approach combines the precision of real execution with the systematic cover
 
 ## CLI Reference
 
+All commands accept targets in `<file>:<function>` format (e.g., `src/math.ts:add`) or `<file>` to target all functions. File extension determines the language frontend (`.ts` = TypeScript, `.go` = Go).
+
+**Global options:** `--log-level <LEVEL>` (error/warn/info/debug/trace), `-v` (debug), `-vv` (trace), `-q` (quiet), `--perf` (show timing stats).
+
+See [`SPEC.md`](SPEC.md) for the full behavioral specification.
+
 ### `shatter explore`
 
 Explore functions to discover branches and generate test inputs.
@@ -72,31 +78,146 @@ Explore functions to discover branches and generate test inputs.
 shatter explore [OPTIONS] <TARGETS>...
 ```
 
-**Arguments:**
-
-- `<TARGETS>` — Functions to explore, as `file:function` or `file` (all functions)
-  - Examples: `src/math.ts:add`, `src/math.ts`, `pkg/utils.go:Validate`
-
-**Options:**
-
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--max-iterations N` | 100 | Maximum exploration iterations per function |
-| `--timeout SECS` | 60 | Timeout in seconds per function |
-| `--analyze-only` | — | Only analyze branches, skip exploration |
-| `--show-clusters` | — | Display behavior clusters in output |
-
-**Examples:**
+| `--timeout SECS` | 60 | Timeout in seconds for entire exploration |
+| `--analyze-only` | -- | Only analyze branches, skip exploration |
+| `--show-clusters` | -- | Display behavior clusters in output |
+| `--scope PATH` | -- | Path to a `shatter.scope.yaml` file |
+| `--cache-dir DIR` | `.shatter/cache/` | Directory for caching behavior maps |
+| `--no-cache` | -- | Disable behavior map caching |
+| `--request-timeout SECS` | 30 | Per-request timeout for frontend responses |
+| `--exec-timeout SECS` | 10 | Per-invocation timeout in the frontend |
+| `--build-timeout SECS` | 30 | Timeout for compiling instrumented code |
+| `--inputs PATH` | -- | Path to a candidate inputs JSON file |
+| `--config PATH` | -- | Path to `.shatter/config.yaml` |
+| `--spec` | -- | Output a behavioral specification (markdown) |
+| `--spec-json` | -- | Output the behavioral specification as JSON |
+| `--no-boundary-values` | -- | Disable built-in boundary values as seeds |
+| `--invariants` | -- | Enable Daikon-style invariant detection |
 
 ```bash
-# Explore a single function
 shatter explore src/shipping.ts:calculateShipping
-
-# Analyze branches without exploring
 shatter explore --analyze-only src/shipping.ts
+shatter explore --spec --invariants src/math.ts:add
+```
 
-# Explore with custom limits
-shatter explore --max-iterations 200 --timeout 120 src/utils.go:ParseConfig
+### `shatter scan`
+
+Scan multiple functions in dependency order, using behavior maps as mocks.
+
+```
+shatter scan [OPTIONS] <TARGETS>...
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--max-iterations N` | 100 | Maximum iterations per function |
+| `--timeout SECS` | 120 | Timeout for the entire scan |
+| `--analyze-only` | -- | Only analyze, skip exploration |
+| `--scope PATH` | -- | Path to a scope config YAML file |
+| `--cache-dir DIR` | `.shatter/cache/` | Behavior map cache directory |
+| `--no-cache` | -- | Disable caching |
+| `--request-timeout SECS` | 30 | Per-request frontend timeout |
+| `--exec-timeout SECS` | 10 | Per-invocation timeout |
+| `--build-timeout SECS` | 30 | Build timeout |
+| `--parallelism N` | auto | Number of parallel frontend subprocesses |
+| `--timeout-per-fn SECS` | 30 | Per-function timeout (skip on exceed) |
+| `--output-dir DIR` | `./shatter-report/` | Write reports to this directory |
+| `--report FORMAT` | json | Report format: json, markdown, or both |
+| `--progress-json` | -- | Emit structured JSON progress events |
+| `--emit-tests FRAMEWORK` | -- | Generate tests: jest, vitest, or gotest |
+| `--emit-tests-dir DIR` | -- | Output directory for emitted test files |
+
+```bash
+shatter scan src/shipping.ts src/utils.ts
+shatter scan --report both --output-dir ./reports src/
+```
+
+### `shatter export-tests`
+
+Export generated tests from behavior maps produced by exploration.
+
+```
+shatter export-tests [OPTIONS] <TARGETS>...
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--framework NAME` | jest | Test framework: jest, vitest, or gotest |
+| `--module-path PATH` | `.` | Module path for imports |
+| `-o, --output PATH` | stdout | Write output to a file |
+| `--max-iterations N` | 100 | Maximum iterations for exploration |
+| `--timeout SECS` | 60 | Exploration timeout |
+| `--scope PATH` | -- | Scope config YAML file |
+| `--request-timeout SECS` | 30 | Per-request frontend timeout |
+| `--exec-timeout SECS` | 10 | Per-invocation timeout |
+| `--build-timeout SECS` | 30 | Build timeout |
+
+```bash
+shatter export-tests --framework jest -o shipping.test.ts src/shipping.ts:calculateShipping
+shatter export-tests --framework gotest pkg/utils.go:Validate
+```
+
+### `shatter run`
+
+Discover, analyze, and explore an entire repository in one shot.
+
+```
+shatter run [OPTIONS] <PATH>
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--output-dir DIR` | -- | Write per-function reports to this directory |
+| `--max-iterations N` | 50 | Maximum iterations per function |
+| `--timeout SECS` | 300 | Overall timeout |
+| `--analyze-only` | -- | Only discover and analyze, skip exploration |
+| `--request-timeout SECS` | 30 | Per-request frontend timeout |
+| `--exec-timeout SECS` | 10 | Per-invocation timeout |
+| `--build-timeout SECS` | 30 | Build timeout |
+
+```bash
+shatter run .
+shatter run --analyze-only --output-dir ./reports ./my-project
+```
+
+### `shatter diff`
+
+Compare current behaviors against a previous snapshot to detect regressions.
+
+```
+shatter diff [OPTIONS] <SNAPSHOT> <CURRENT>
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--json` | -- | Output diff as JSON instead of text |
+
+Exit code 0 when all behaviors match, nonzero when regressions are found.
+
+```bash
+shatter diff baseline.json current.json
+shatter diff --json old.json new.json
+```
+
+### `shatter spec-diff`
+
+Compare two function specifications and report behavioral changes.
+
+```
+shatter spec-diff [OPTIONS] <OLD> <NEW>
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--json` | -- | Output diff as JSON instead of text |
+
+Accepts spec JSON files produced by `explore --spec-json`. Exit code 0 when specs are equivalent, nonzero when regressions are found.
+
+```bash
+shatter spec-diff old-spec.json new-spec.json
 ```
 
 ## Development
