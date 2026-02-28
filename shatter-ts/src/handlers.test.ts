@@ -1,7 +1,14 @@
 import * as path from "node:path";
 import { handleRequest, parseRequest, clearInstrumentedSources } from "./handlers.js";
 import { clearModuleCache } from "./executor.js";
-import { PROTOCOL_VERSION, type Request, type Response } from "./protocol.js";
+import {
+  PROTOCOL_VERSION,
+  type Request,
+  type Response,
+  type SetupResponse,
+  type TeardownAckResponse,
+  type GenerateResponse,
+} from "./protocol.js";
 
 describe("parseRequest", () => {
   it("rejects non-JSON input", () => {
@@ -268,9 +275,74 @@ describe("handleRequest", () => {
     });
   });
 
+  describe("setup", () => {
+    it("returns not yet implemented error", () => {
+      const { response, shutdown } = handleRequest(
+        makeRequest({ command: "setup", file: "./setup.ts", function: "myFunc", mode: "per_function" })
+      );
+      expect(shutdown).toBe(false);
+      expect(response.status).toBe("error");
+      if (response.status === "error") {
+        expect(response.code).toBe("internal_error");
+        expect(response.message).toContain("not yet implemented");
+      }
+    });
+
+    it("returns not yet implemented for per_execution mode", () => {
+      const { response } = handleRequest(
+        makeRequest({ command: "setup", file: "./setup.ts", function: "auth", mode: "per_execution" })
+      );
+      expect(response.status).toBe("error");
+      if (response.status === "error") {
+        expect(response.code).toBe("internal_error");
+      }
+    });
+  });
+
+  describe("teardown", () => {
+    it("returns not yet implemented error", () => {
+      const { response, shutdown } = handleRequest(
+        makeRequest({ command: "teardown", function: "myFunc" })
+      );
+      expect(shutdown).toBe(false);
+      expect(response.status).toBe("error");
+      if (response.status === "error") {
+        expect(response.code).toBe("internal_error");
+        expect(response.message).toContain("not yet implemented");
+      }
+    });
+  });
+
+  describe("generate", () => {
+    it("returns not yet implemented error for type_name generator", () => {
+      const { response, shutdown } = handleRequest(
+        makeRequest({ command: "generate", file: "./gen.ts", name: "User", kind: "type_name" })
+      );
+      expect(shutdown).toBe(false);
+      expect(response.status).toBe("error");
+      if (response.status === "error") {
+        expect(response.code).toBe("internal_error");
+        expect(response.message).toContain("not yet implemented");
+      }
+    });
+
+    it("returns not yet implemented error for param_name generator", () => {
+      const { response } = handleRequest(
+        makeRequest({ command: "generate", file: "./gen.ts", name: "authToken", kind: "param_name" })
+      );
+      expect(response.status).toBe("error");
+      if (response.status === "error") {
+        expect(response.code).toBe("internal_error");
+      }
+    });
+  });
+
   describe("response format conformance", () => {
     it("all responses include protocol_version and id", () => {
-      const commands: Request["command"][] = ["handshake", "analyze", "instrument", "execute", "shutdown"];
+      const commands: Request["command"][] = [
+        "handshake", "analyze", "instrument", "execute",
+        "setup", "teardown", "generate", "shutdown",
+      ];
 
       for (const command of commands) {
         const request = makeRequest(
@@ -278,6 +350,9 @@ describe("handleRequest", () => {
           command === "analyze" ? { command, file: "t.ts" } :
           command === "instrument" ? { command, file: "t.ts", function: "f", mocks: [] } :
           command === "execute" ? { command, function: "f", inputs: [], mocks: [] } :
+          command === "setup" ? { command, file: "s.ts", function: "f", mode: "per_function" as const } :
+          command === "teardown" ? { command, function: "f" } :
+          command === "generate" ? { command, file: "g.ts", name: "T", kind: "type_name" as const } :
           { command }
         );
         const { response } = handleRequest(request);
@@ -340,5 +415,183 @@ describe("protocol round-trip", () => {
     expect(parsed.status).toBe("shutdown_ack");
     expect(parsed.id).toBe(99);
     expect(parsed.protocol_version).toBe(PROTOCOL_VERSION);
+  });
+
+  it("setup response round-trips through JSON", () => {
+    const response: SetupResponse = {
+      protocol_version: PROTOCOL_VERSION,
+      id: 20,
+      status: "setup",
+      setup_context: { db_handle: "conn_42", temp_dir: "/tmp/test" },
+    };
+    const json = JSON.stringify(response);
+    const parsed = JSON.parse(json) as Response;
+    expect(parsed.status).toBe("setup");
+    expect(parsed.id).toBe(20);
+    if (parsed.status === "setup") {
+      expect(parsed.setup_context).toEqual({ db_handle: "conn_42", temp_dir: "/tmp/test" });
+    }
+  });
+
+  it("teardown_ack response round-trips through JSON", () => {
+    const response: TeardownAckResponse = {
+      protocol_version: PROTOCOL_VERSION,
+      id: 21,
+      status: "teardown_ack",
+    };
+    const json = JSON.stringify(response);
+    const parsed = JSON.parse(json) as Response;
+    expect(parsed.status).toBe("teardown_ack");
+    expect(parsed.id).toBe(21);
+    expect(parsed.protocol_version).toBe(PROTOCOL_VERSION);
+  });
+
+  it("generate response round-trips through JSON", () => {
+    const response: GenerateResponse = {
+      protocol_version: PROTOCOL_VERSION,
+      id: 22,
+      status: "generate",
+      value: { id: 1, name: "Alice", email: "alice@example.com" },
+    };
+    const json = JSON.stringify(response);
+    const parsed = JSON.parse(json) as Response;
+    expect(parsed.status).toBe("generate");
+    expect(parsed.id).toBe(22);
+    if (parsed.status === "generate") {
+      expect(parsed.value).toEqual({ id: 1, name: "Alice", email: "alice@example.com" });
+    }
+  });
+
+  it("generate response with primitive value round-trips", () => {
+    const response: GenerateResponse = {
+      protocol_version: PROTOCOL_VERSION,
+      id: 23,
+      status: "generate",
+      value: "tok_abc123",
+    };
+    const json = JSON.stringify(response);
+    const parsed = JSON.parse(json) as Response;
+    expect(parsed.status).toBe("generate");
+    if (parsed.status === "generate") {
+      expect(parsed.value).toBe("tok_abc123");
+    }
+  });
+
+  it("setup request round-trips through JSON", () => {
+    const request: Request = {
+      protocol_version: PROTOCOL_VERSION,
+      id: 30,
+      command: "setup",
+      file: "./setup/global.ts",
+      function: "processOrder",
+      mode: "per_function",
+    };
+    const json = JSON.stringify(request);
+    const parsed = JSON.parse(json) as Request;
+    expect(parsed.command).toBe("setup");
+    expect(parsed.id).toBe(30);
+    if (parsed.command === "setup") {
+      expect(parsed.file).toBe("./setup/global.ts");
+      expect(parsed.function).toBe("processOrder");
+      expect(parsed.mode).toBe("per_function");
+    }
+  });
+
+  it("setup request with per_execution mode round-trips", () => {
+    const request: Request = {
+      protocol_version: PROTOCOL_VERSION,
+      id: 31,
+      command: "setup",
+      file: "./setup/auth.ts",
+      function: "authenticate",
+      mode: "per_execution",
+    };
+    const json = JSON.stringify(request);
+    const parsed = JSON.parse(json) as Request;
+    if (parsed.command === "setup") {
+      expect(parsed.mode).toBe("per_execution");
+    }
+  });
+
+  it("teardown request round-trips through JSON", () => {
+    const request: Request = {
+      protocol_version: PROTOCOL_VERSION,
+      id: 32,
+      command: "teardown",
+      function: "processOrder",
+    };
+    const json = JSON.stringify(request);
+    const parsed = JSON.parse(json) as Request;
+    expect(parsed.command).toBe("teardown");
+    if (parsed.command === "teardown") {
+      expect(parsed.function).toBe("processOrder");
+    }
+  });
+
+  it("generate request with type_name round-trips through JSON", () => {
+    const request: Request = {
+      protocol_version: PROTOCOL_VERSION,
+      id: 33,
+      command: "generate",
+      file: "./generators/user.ts",
+      name: "User",
+      kind: "type_name",
+    };
+    const json = JSON.stringify(request);
+    const parsed = JSON.parse(json) as Request;
+    expect(parsed.command).toBe("generate");
+    if (parsed.command === "generate") {
+      expect(parsed.file).toBe("./generators/user.ts");
+      expect(parsed.name).toBe("User");
+      expect(parsed.kind).toBe("type_name");
+    }
+  });
+
+  it("generate request with param_name round-trips through JSON", () => {
+    const request: Request = {
+      protocol_version: PROTOCOL_VERSION,
+      id: 34,
+      command: "generate",
+      file: "./generators/token.ts",
+      name: "authToken",
+      kind: "param_name",
+    };
+    const json = JSON.stringify(request);
+    const parsed = JSON.parse(json) as Request;
+    if (parsed.command === "generate") {
+      expect(parsed.kind).toBe("param_name");
+    }
+  });
+});
+
+describe("parseRequest with new commands", () => {
+  it("accepts valid setup request", () => {
+    const result = parseRequest(
+      '{"id":1,"protocol_version":"0.1.0","command":"setup","file":"s.ts","function":"fn","mode":"per_function"}'
+    );
+    expect("request" in result).toBe(true);
+    if ("request" in result) {
+      expect(result.request.command).toBe("setup");
+    }
+  });
+
+  it("accepts valid teardown request", () => {
+    const result = parseRequest(
+      '{"id":2,"protocol_version":"0.1.0","command":"teardown","function":"fn"}'
+    );
+    expect("request" in result).toBe(true);
+    if ("request" in result) {
+      expect(result.request.command).toBe("teardown");
+    }
+  });
+
+  it("accepts valid generate request", () => {
+    const result = parseRequest(
+      '{"id":3,"protocol_version":"0.1.0","command":"generate","file":"g.ts","name":"User","kind":"type_name"}'
+    );
+    expect("request" in result).toBe(true);
+    if ("request" in result) {
+      expect(result.request.command).toBe("generate");
+    }
   });
 });
