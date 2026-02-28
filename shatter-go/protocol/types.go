@@ -120,13 +120,15 @@ type TypeInfo struct {
 
 // ParamInfo describes a function parameter.
 type ParamInfo struct {
-	Name string   `json:"name"`
-	Type TypeInfo `json:"type"`
+	Name     string   `json:"name"`
+	Type     TypeInfo `json:"type"`
+	TypeName *string  `json:"type_name,omitempty"`
 }
 
 // FunctionAnalysis is the result of analyzing a single function.
 type FunctionAnalysis struct {
 	Name         string               `json:"name"`
+	Exported     bool                 `json:"exported,omitempty"`
 	Params       []ParamInfo          `json:"params"`
 	Branches     []BranchInfo         `json:"branches"`
 	Dependencies []ExternalDependency `json:"dependencies"`
@@ -203,7 +205,7 @@ type MockConfig struct {
 type ErrorInfo struct {
 	ErrorType string `json:"error_type"`
 	Message   string `json:"message"`
-	Stack     string `json:"stack"`
+	Stack     *string `json:"stack"`
 }
 
 // SideEffect represents an observed side effect.
@@ -215,6 +217,11 @@ type SideEffect struct {
 	Method  string `json:"method,omitempty"`
 	URL     string `json:"url,omitempty"`
 	Name    string `json:"name,omitempty"`
+	ErrorType string           `json:"error_type,omitempty"`
+	Stack     *string          `json:"stack,omitempty"`
+	Variable  string           `json:"variable,omitempty"`
+	Before    *json.RawMessage `json:"before,omitempty"`
+	After     *json.RawMessage `json:"after,omitempty"`
 }
 
 // PerfMetrics captures execution performance data.

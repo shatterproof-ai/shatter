@@ -202,6 +202,7 @@ export type Response =
 // ---------------------------------------------------------------------------
 
 export interface FunctionAnalysis {
+  exported?: boolean;
   name: string;
   params: ParamInfo[];
   branches: BranchInfo[];
@@ -214,6 +215,7 @@ export interface FunctionAnalysis {
 export interface ParamInfo {
   name: string;
   type: TypeInfo;
+  type_name?: string;
 }
 
 /** Well-known complex types beyond primitives and structural types. */
@@ -322,9 +324,9 @@ export type DependencyKind =
 
 export type SideEffect =
   | { kind: "console_output"; level: string; message: string }
-  | { kind: "file_write"; path: string; content: string }
-  | { kind: "network_request"; method: string; url: string; body: unknown }
-  | { kind: "environment_read"; variable: string; value: string | null }
+  | { kind: "file_write"; path: string }
+  | { kind: "network_request"; method: string; url: string }
+  | { kind: "global_mutation"; name: string }
   | { kind: "thrown_error"; error_type: string; message: string; stack: string | null }
   | { kind: "global_state_change"; variable: string; before: unknown; after: unknown };
 
