@@ -169,7 +169,10 @@ automatically (via `isolation: "worktree"` on the Task tool).
 must write a plan and get approval from the team lead before implementing.
 This ensures the user can review proposed approaches before code is written.
 
-**Example: working on two independent issues in parallel:**
+**Quick start:** Use `/swarm` to automate the full parallel workflow — triage,
+team setup, plan review, merge, quality gates, and close protocol.
+
+**Manual workflow (if not using `/swarm`):**
 ```
 1. Create tasks for each issue (TaskCreate)
 2. Spawn teammates with isolation: "worktree", mode: "plan" (Task tool)
