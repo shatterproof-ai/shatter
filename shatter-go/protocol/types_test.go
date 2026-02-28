@@ -2,8 +2,11 @@ package protocol
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
+
+func strPtr(s string) *string { return &s }
 
 func TestObjectFieldMarshalJSON(t *testing.T) {
 	field := ObjectField{Name: "age", Type: TypeInfo{Kind: "int"}}
@@ -252,5 +255,154 @@ func TestSymExprRoundTripBinOp(t *testing.T) {
 	}
 	if decoded.Right == nil || decoded.Right.Value != float64(42) {
 		t.Errorf("right.value = %v, want 42", decoded.Right)
+	}
+}
+
+func TestFunctionAnalysisExportedField(t *testing.T) {
+	tests := []struct {
+		name     string
+		exported bool
+		wantKey  bool
+	}{
+		{"exported true", true, true},
+		{"exported false (omitted)", false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fa := FunctionAnalysis{
+				Name:     "Foo",
+				Exported: tt.exported,
+				Params:   []ParamInfo{},
+			}
+			data, err := json.Marshal(fa)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			got := string(data)
+			hasKey := strings.Contains(got, `"exported"`)
+			if hasKey != tt.wantKey {
+				t.Errorf("exported key present=%v, want %v; json=%s", hasKey, tt.wantKey, got)
+			}
+			var decoded FunctionAnalysis
+			if err := json.Unmarshal(data, &decoded); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if decoded.Exported != tt.exported {
+				t.Errorf("exported = %v, want %v", decoded.Exported, tt.exported)
+			}
+		})
+	}
+}
+
+func TestParamInfoWithTypeName(t *testing.T) {
+	tests := []struct {
+		name     string
+		typeName *string
+		wantKey  bool
+	}{
+		{"with type_name", strPtr("User"), true},
+		{"without type_name", nil, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := ParamInfo{
+				Name:     "user",
+				Type:     TypeInfo{Kind: "object"},
+				TypeName: tt.typeName,
+			}
+			data, err := json.Marshal(p)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			got := string(data)
+			hasKey := strings.Contains(got, `"type_name"`)
+			if hasKey != tt.wantKey {
+				t.Errorf("type_name key present=%v, want %v; json=%s", hasKey, tt.wantKey, got)
+			}
+			var decoded ParamInfo
+			if err := json.Unmarshal(data, &decoded); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if tt.typeName != nil {
+				if decoded.TypeName == nil || *decoded.TypeName != *tt.typeName {
+					t.Errorf("type_name = %v, want %v", decoded.TypeName, *tt.typeName)
+				}
+			} else if decoded.TypeName != nil {
+				t.Errorf("type_name = %v, want nil", decoded.TypeName)
+			}
+		})
+	}
+}
+
+func TestErrorInfoNullableStack(t *testing.T) {
+	tests := []struct {
+		name  string
+		stack *string
+		want  string
+	}{
+		{"with stack", strPtr("goroutine 1 [running]:"), `"stack":"goroutine 1 [running]:`},
+		{"null stack", nil, `"stack":null`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := ErrorInfo{
+				ErrorType: "panic",
+				Message:   "oops",
+				Stack:     tt.stack,
+			}
+			data, err := json.Marshal(e)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			got := string(data)
+			if !strings.Contains(got, tt.want) {
+				t.Errorf("json = %s, want to contain %s", got, tt.want)
+			}
+			var decoded ErrorInfo
+			if err := json.Unmarshal(data, &decoded); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if tt.stack != nil {
+				if decoded.Stack == nil || *decoded.Stack != *tt.stack {
+					t.Errorf("stack = %v, want %v", decoded.Stack, *tt.stack)
+				}
+			} else if decoded.Stack != nil {
+				t.Errorf("stack = %v, want nil", decoded.Stack)
+			}
+		})
+	}
+}
+
+func TestSideEffectVariants(t *testing.T) {
+	tests := []struct {
+		name string
+		se   SideEffect
+		want string
+	}{
+		{"console_output", SideEffect{Kind: "console_output", Level: "info", Message: "hello"}, `"kind":"console_output"`},
+		{"file_write", SideEffect{Kind: "file_write", Path: "/tmp/f"}, `"kind":"file_write"`},
+		{"network_request", SideEffect{Kind: "network_request", Method: "GET", URL: "http://x"}, `"kind":"network_request"`},
+		{"global_mutation", SideEffect{Kind: "global_mutation", Name: "counter"}, `"kind":"global_mutation"`},
+		{"thrown_error", SideEffect{Kind: "thrown_error", ErrorType: "Error", Message: "bad", Stack: strPtr("trace")}, `"error_type":"Error"`},
+		{"global_state_change", SideEffect{Kind: "global_state_change", Variable: "x"}, `"variable":"x"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := json.Marshal(tt.se)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			got := string(data)
+			if !strings.Contains(got, tt.want) {
+				t.Errorf("json = %s, want to contain %s", got, tt.want)
+			}
+			var decoded SideEffect
+			if err := json.Unmarshal(data, &decoded); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if decoded.Kind != tt.se.Kind {
+				t.Errorf("kind = %q, want %q", decoded.Kind, tt.se.Kind)
+			}
+		})
 	}
 }

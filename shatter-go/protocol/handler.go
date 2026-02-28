@@ -296,10 +296,14 @@ func convertErrorInfo(e *instrument.ErrorInfo) *ErrorInfo {
 	if e == nil {
 		return nil
 	}
+	var stack *string
+	if e.Stack != "" {
+		stack = &e.Stack
+	}
 	return &ErrorInfo{
 		ErrorType: e.ErrorType,
 		Message:   e.Message,
-		Stack:     e.Stack,
+		Stack:     stack,
 	}
 }
 

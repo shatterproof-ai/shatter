@@ -20,6 +20,11 @@ import type {
   DependencyKind,
 } from "./protocol.js";
 
+function hasExportModifier(node: ts.Node): boolean {
+  const modifiers = ts.canHaveModifiers(node) ? ts.getModifiers(node) : undefined;
+  return modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) ?? false;
+}
+
 /**
  * Analyze functions in a TypeScript file.
  *
@@ -49,20 +54,22 @@ export function analyzeFile(filePath: string, functionName?: string | null): Fun
       if (functionName != null && name !== functionName) {
         return;
       }
-      const analysis = analyzeFunctionDeclaration(node, checker, sourceFile);
+      const exported = hasExportModifier(node);
+      const analysis = analyzeFunctionDeclaration(node, checker, sourceFile, exported);
       if (analysis) {
         results.push(analysis);
       }
     }
 
     if (ts.isVariableStatement(node)) {
+      const exported = hasExportModifier(node);
       for (const decl of node.declarationList.declarations) {
         if (!ts.isIdentifier(decl.name)) continue;
         const name = decl.name.text;
         if (functionName != null && name !== functionName) continue;
 
         if (decl.initializer && ts.isArrowFunction(decl.initializer)) {
-          const analysis = analyzeArrowFunction(name, decl.initializer, checker, sourceFile);
+          const analysis = analyzeArrowFunction(name, decl.initializer, checker, sourceFile, exported);
           if (analysis) {
             results.push(analysis);
           }
@@ -78,6 +85,7 @@ function analyzeFunctionDeclaration(
   node: ts.FunctionDeclaration,
   checker: ts.TypeChecker,
   sourceFile: ts.SourceFile,
+  exported: boolean,
 ): FunctionAnalysis | null {
   if (!node.name) return null;
 
@@ -98,6 +106,7 @@ function analyzeFunctionDeclaration(
 
   return {
     name,
+    exported,
     params,
     branches,
     dependencies,
@@ -112,6 +121,7 @@ function analyzeArrowFunction(
   node: ts.ArrowFunction,
   checker: ts.TypeChecker,
   sourceFile: ts.SourceFile,
+  exported: boolean,
 ): FunctionAnalysis {
   const params = node.parameters.map((p) => analyzeParameter(p, checker));
   const paramNames = new Set(params.map((p) => p.name));
@@ -130,6 +140,7 @@ function analyzeArrowFunction(
 
   return {
     name,
+    exported,
     params,
     branches,
     dependencies,
