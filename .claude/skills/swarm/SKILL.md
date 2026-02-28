@@ -49,6 +49,19 @@ isolated worktree with plan-mode supervision.
      - Cross-language → `/check-all`
    - Instruction to **push their branch** before reporting completion
    - Instruction to follow CLAUDE.md and AGENTS.md conventions
+   - **Worktree isolation rules** (copy verbatim into each prompt):
+     ```
+     ## WORKTREE ISOLATION — CRITICAL
+     You are running in an isolated git worktree. You MUST:
+     1. NEVER run `cd /home/ketan/project/shatter` or cd to the main repo
+     2. NEVER run `git checkout` to switch branches — you are already on your branch
+     3. ALWAYS use your current working directory for all operations
+     4. Verify your worktree: run `git rev-parse --show-toplevel` — it must
+        contain `.claude/worktrees/`, NOT be the main repo
+     5. If any command changes your directory to the main repo, STOP and
+        cd back to your worktree immediately
+     6. Commit and push ONLY on your worktree branch — never touch main
+     ```
 
 ---
 

@@ -181,6 +181,26 @@ team setup, plan review, merge, quality gates, and close protocol.
 5. Approved teammates implement, team lead merges results
 ```
 
+### Worktree isolation for teammates
+
+When spawned as a teammate with `isolation: "worktree"`, you run in a separate
+copy of the repo. **Violating isolation corrupts other agents' work.**
+
+**Rules:**
+- **Never `cd` to the main repo** (`/home/ketan/project/shatter`). Stay in your
+  worktree directory (under `.claude/worktrees/`).
+- **Never `git checkout`** to switch branches. You are already on your branch.
+- **Never run git commands with `-C /home/ketan/project/shatter`**. All git
+  operations must target your worktree.
+- **Verify isolation** before critical operations: `git rev-parse --show-toplevel`
+  must return a path containing `.claude/worktrees/`.
+- **Commit and push only your branch**. The team lead merges to main.
+
+**Why this matters:** All worktrees share the same `.git` directory. Running
+`git checkout` in the main repo changes HEAD for the main working directory,
+which other agents and the team lead depend on. This causes branch switching
+races, lost commits, and merge failures.
+
 ### Worktree workflow (single-agent)
 
 When working in a git worktree (e.g. started with `--worktree`), **always merge
