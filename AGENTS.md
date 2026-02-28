@@ -142,7 +142,7 @@ When a commit includes changes to beads data (`.beads/` files), list all
 affected issue IDs in the commit message body. This makes it easy to trace
 which issues were created, updated, or closed in each push.
 
-Example:
+Example for feature commits:
 ```
 Add symbolic integer support to concolic engine
 

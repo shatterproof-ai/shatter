@@ -66,22 +66,9 @@ This project demands clean structure, high quality code, and thorough automated 
 - Test names describe the behavior being tested, not the function name
 - Regression snapshots are checked into the repo and verified in CI
 
-### Rust-Specific
-- Run `cargo test` before every commit
-- Run `cargo clippy -- -D warnings` before every commit
-- Use `#[cfg(test)]` modules for unit tests in the same file
-- Use `proptest` for property-based tests where applicable
-- Prefer `thiserror` for error types in library code
+### Language-Specific Standards
 
-### TypeScript-Specific
-- Run `npm test` (jest) before every commit
-- Use strict TypeScript — no implicit any, no unchecked index access
-- Frontend protocol messages are validated against JSON schemas
-
-### Go-Specific
-- Run `go test ./...` before every commit
-- Run `go vet` before every commit
-- Use table-driven tests
+See `/rust-conventions`, `/ts-conventions`, `/go-conventions` skills for detailed per-language standards.
 
 ### Test Tiers
 
@@ -91,7 +78,7 @@ Pick the right tier for the moment:
 |---|---|---|---|
 | Quick | `cargo test` | ~5-15s | During development — catches logic bugs and regressions |
 | Standard | `cargo test && cargo clippy -- -D warnings` | ~15-30s | Before committing — full Rust validation |
-| Full | Standard + `cd shatter-ts && npm test` + `cd shatter-go && go test ./...` | ~30-60s | Before merge — validates all frontends too |
+| Full | Standard + `cd shatter-ts && npm test` + `cd shatter-go && go test ./...` + `cd shatter-rust && cargo test` | ~30-60s | Before merge — validates all frontends too |
 
 When working on a single frontend, run its tests alongside Rust tests. When
 touching protocol definitions, always run Full — changes ripple across all
@@ -99,8 +86,6 @@ frontends.
 
 ## What NOT to Do
 
-- **Never use `unwrap()`** in library code (`shatter-core`) — use `Result` and `?`
-- **Never use `any`** in TypeScript — use proper typing
 - **Never edit generated protocol bindings** manually — regenerate from the schema
 - **Never commit** `.env` or files containing secrets — only `.env.example`
 - **Never add** `node_modules/`, `dist/`, or `target/` to git
@@ -117,6 +102,7 @@ frontends.
 3. Implement the handler in each frontend:
    - TypeScript: `shatter-ts/src/protocol.ts`
    - Go: `shatter-go/protocol/`
+   - Rust: `shatter-rust/src/protocol.rs`
 4. Add round-trip tests in each frontend (serialize → deserialize → verify)
 
 ### Add a new CLI command
@@ -155,14 +141,12 @@ that affect observable behavior:
 - Fixing a known limitation or adding a new one → update section 6
 - Add an entry to the Changelog table (section 7) for every update
 
-The `/audit` skill (Phase 4) compares SPEC.md against the actual codebase and
+The `/audit` skill compares SPEC.md against the actual codebase and
 flags discrepancies. If the audit finds gaps, update SPEC.md first.
 
-## Demo Walkthrough
+## Output Review
 
-`demo/walkthrough.sh` exercises shatter's full pipeline against example functions in `examples/typescript/src/`. It calls the CLI the same way a user would, so it serves as a living integration test. Steps that use unimplemented CLI commands will fail with an error until those commands are built — this is intentional.
-
-When adding a new CLI command or flag, update the walkthrough to exercise it. The walkthrough should always reflect the current capabilities of the CLI.
+After any change affecting CLI output, frontend logging, or protocol formatting, run `/walkthrough-review` to validate the output is human-readable.
 
 ## README.md
 
@@ -173,6 +157,17 @@ project (new prerequisites, new commands, changed project structure, etc.).
 ## Agent Workflow
 
 See `AGENTS.md` for issue tracking (beads), git workflow, and agent operational instructions.
+
+### Sprint Workflow
+
+When asked to work on ready issues in parallel, **always invoke `/swarm`**. Do not manually re-implement the team/worktree workflow. The swarm skill handles triage, team setup, plan review, safe merge-before-shutdown, and quality gates.
+
+### Efficiency Rules
+
+- **Batch `bd show` calls**: `bd show X && echo --- && bd show Y && echo --- && bd show Z` — never sequential individual calls.
+- **Before `git merge`**: Always run `git branch --show-current` to verify you are on main. If not, `git checkout main` first.
+- **After context compaction**: Trust the summary. Do not re-run git status, git diff, git log, or test suites that the pre-compaction portion already completed.
+- **AskUserQuestion**: Only for decisions where the wrong choice requires significant rework. For preference questions, pick a sensible default and proceed.
 
 @shatter-core/CLAUDE.md
 @shatter-cli/CLAUDE.md

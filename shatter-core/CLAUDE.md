@@ -9,7 +9,11 @@ Rust core engine (library crate). Contains the concolic explorer, constraint sol
 - `batch_analyze.rs` — Multi-file analysis orchestration
 - `call_graph.rs` — Function dependency graph
 - `export.rs` — Test generation from behavior maps
-
-## Output Review
-
-After changing code that affects CLI output (explore reports, log formatting, cluster summaries, export format), run `/walkthrough-review` to validate the output is human-readable.
+- `invariants.rs` — Invariant inference from execution traces
+- `spec.rs` — Behavioral specification output format
+- `input_gen.rs` — Generator-aware input generation and mutation
+- `coverage_metrics.rs` — Concolic coverage reporting
+- `equivalence.rs` — Equivalence class clustering
+- `orchestrator.rs` — Multi-round exploration orchestration
+- `scan_orchestrator.rs` — Multi-file scan coordination
+- `executability.rs` — Opaque type detection and executability checks

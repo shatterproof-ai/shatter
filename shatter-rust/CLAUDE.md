@@ -20,16 +20,4 @@ cargo run               # Start the frontend (reads NDJSON from stdin)
 
 This crate implements the same NDJSON protocol as `shatter-go/`. It does **not** depend on `shatter-core` — it defines its own protocol types that produce compatible JSON.
 
-Commands: `handshake`, `analyze`, `instrument`, `execute`, `shutdown`
-
-Currently `analyze`, `instrument`, and `execute` return "not yet implemented" errors. These will be filled in by subsequent tasks.
-
-## Conventions
-
-- No `unwrap()` — use `Result` and `?`
-- Tests use `#[cfg(test)]` modules in the same file
-- Mirrors the Go frontend's patterns (flat structs, `send_recv`/`conversation` test helpers)
-
-## Output Review
-
-After changing stderr logging or protocol output, run `/walkthrough-review` to validate that frontend output respects log-level verbosity.
+Commands: `handshake`, `analyze`, `instrument`, `execute`, `setup`, `teardown`, `generate`, `shutdown`
