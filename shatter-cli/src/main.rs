@@ -160,6 +160,10 @@ enum CliCommand {
         /// Disable built-in boundary values as seed inputs.
         #[arg(long)]
         no_boundary_values: bool,
+
+        /// Enable Daikon-style invariant detection on explored functions.
+        #[arg(long)]
+        invariants: bool,
     },
 
     /// Scan multiple functions in dependency order, using behavior maps as mocks.
@@ -247,7 +251,7 @@ enum CliCommand {
         #[arg(required = true)]
         targets: Vec<String>,
 
-        /// Test framework to generate: jest or gotest.
+        /// Test framework to generate: jest, vitest, or gotest.
         #[arg(long, default_value = "jest")]
         framework: String,
 
@@ -484,6 +488,7 @@ async fn run_explore(
     colors: &Colors,
     show_spec: bool,
     spec_as_json: bool,
+    detect_invariants: bool,
     use_boundary_values: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let scope_config = match scope_path {
@@ -713,11 +718,17 @@ async fn run_explore(
                     }
 
                     // Spec output: build equivalence classes and spec
-                    if show_spec {
+                    if show_spec || detect_invariants {
                         let eq_classes =
                             shatter_core::equivalence::group_into_classes(&result.raw_results);
                         let location = Some(format!("{file_str}:{}", func.start_line));
-                        let spec = shatter_core::spec::build_spec(&result, &eq_classes, location);
+                        let spec = if detect_invariants {
+                            shatter_core::spec::build_spec_with_invariants(
+                                &result, &eq_classes, location,
+                            )
+                        } else {
+                            shatter_core::spec::build_spec(&result, &eq_classes, location)
+                        };
                         if spec_as_json {
                             match shatter_core::spec::format_spec_json(&spec) {
                                 Ok(json) => println!("{json}"),
@@ -1080,8 +1091,8 @@ async fn run_export_tests(
     _log_level: LogLevel,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Validate framework
-    if framework != "jest" && framework != "gotest" {
-        return Err(format!("unsupported framework '{framework}': expected 'jest' or 'gotest'").into());
+    if framework != "jest" && framework != "vitest" && framework != "gotest" {
+        return Err(format!("unsupported framework '{framework}': expected 'jest', 'vitest', or 'gotest'").into());
     }
 
     let _scope_config = match scope_path {
@@ -1158,6 +1169,7 @@ async fn run_export_tests(
 
                     let test_code = match framework {
                         "jest" => export::generate_jest_tests(&behavior_map, &func.name, module_path),
+                        "vitest" => export::generate_vitest_tests(&behavior_map, &func.name, module_path),
                         "gotest" => export::generate_go_tests(&behavior_map, &func.name, module_path),
                         _ => unreachable!("validated above"),
                     };
@@ -1738,6 +1750,7 @@ async fn main() -> ExitCode {
             config_path,
             spec,
             spec_json,
+            invariants,
             no_boundary_values,
         } => {
             run_explore(
@@ -1757,8 +1770,9 @@ async fn main() -> ExitCode {
                 log_level,
                 cli.perf,
                 &colors,
-                spec || spec_json,
+                spec || spec_json || invariants,
                 spec_json,
+                invariants,
                 !no_boundary_values,
             )
             .await
@@ -2696,5 +2710,68 @@ mod tests {
             discovery_lang_to_cli_lang(DiscoveryLanguage::Rust),
             None
         );
+    }
+
+    #[test]
+    fn cli_scan_emit_tests_flag() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "scan",
+            "--emit-tests", "jest",
+            "test.ts",
+        ]);
+        match cli.command {
+            CliCommand::Scan { emit_tests, emit_tests_dir, .. } => {
+                assert_eq!(emit_tests, Some("jest".to_string()));
+                assert!(emit_tests_dir.is_none());
+            }
+            _ => panic!("expected Scan command"),
+        }
+    }
+
+    #[test]
+    fn cli_scan_emit_tests_with_dir() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "scan",
+            "--emit-tests", "vitest",
+            "--emit-tests-dir", "/tmp/tests",
+            "test.ts",
+        ]);
+        match cli.command {
+            CliCommand::Scan { emit_tests, emit_tests_dir, .. } => {
+                assert_eq!(emit_tests, Some("vitest".to_string()));
+                assert_eq!(emit_tests_dir, Some(PathBuf::from("/tmp/tests")));
+            }
+            _ => panic!("expected Scan command"),
+        }
+    }
+
+    #[test]
+    fn cli_scan_emit_tests_gotest() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "scan",
+            "--emit-tests", "gotest",
+            "test.go",
+        ]);
+        match cli.command {
+            CliCommand::Scan { emit_tests, .. } => {
+                assert_eq!(emit_tests, Some("gotest".to_string()));
+            }
+            _ => panic!("expected Scan command"),
+        }
+    }
+
+    #[test]
+    fn cli_scan_emit_tests_defaults_to_none() {
+        let cli = Cli::parse_from(["shatter", "scan", "test.ts"]);
+        match cli.command {
+            CliCommand::Scan { emit_tests, emit_tests_dir, .. } => {
+                assert!(emit_tests.is_none());
+                assert!(emit_tests_dir.is_none());
+            }
+            _ => panic!("expected Scan command"),
+        }
     }
 }

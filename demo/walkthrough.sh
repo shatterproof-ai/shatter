@@ -126,7 +126,7 @@ GO_EXAMPLES=(
     "examples/go/03-errors.go:SafeDivide"
 )
 
-TOTAL=21
+TOTAL=23
 
 # ─── Walkthrough ──────────────────────────────────────────────────────
 
@@ -248,5 +248,16 @@ step 20 $TOTAL "Behavioral Specification (JSON)" \
 step 21 $TOTAL "Specification Diff" \
     "Compare two spec JSON files to detect behavioral regressions" \
     bash -c "$SHATTER explore --spec-json '${EXAMPLES[0]}' > /tmp/shatter-spec-old.json 2>/dev/null && cp /tmp/shatter-spec-old.json /tmp/shatter-spec-new.json && $SHATTER spec-diff /tmp/shatter-spec-old.json /tmp/shatter-spec-new.json"
+
+# Stage 22: Explore without boundary values
+step 22 $TOTAL "Explore Without Boundary Values" \
+    "Disable built-in boundary value seeding with --no-boundary-values" \
+    $SHATTER explore --no-boundary-values "${EXAMPLES[0]}"
+
+# Stage 23: Emit tests from scan
+step 23 $TOTAL "Emit Tests from Scan" \
+    "Generate Jest test files from behavior maps discovered during scan" \
+    $SHATTER scan --emit-tests jest --emit-tests-dir /tmp/shatter-demo-tests \
+    examples/typescript/src/01-arithmetic.ts
 
 echo "${BOLD}${GREEN}Walkthrough complete.${RESET}"

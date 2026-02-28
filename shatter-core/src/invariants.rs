@@ -632,6 +632,153 @@ pub fn detect_invariants_all_clusters(
 }
 
 // ---------------------------------------------------------------------------
+// Classified invariants: invariants annotated with target and human-readable label.
+// ---------------------------------------------------------------------------
+
+/// An invariant with its target (input/output) and a human-readable description.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClassifiedInvariant {
+    /// The underlying invariant.
+    pub invariant: Invariant,
+    /// Whether this invariant applies to inputs or outputs.
+    pub target: InvariantTarget,
+    /// Human-readable description (e.g. "param[0] > 0").
+    pub label: String,
+    /// Confidence score (0.0–1.0): fraction of specimens satisfying this invariant.
+    pub confidence: f64,
+    /// Number of specimens that satisfied this invariant.
+    pub satisfied_count: usize,
+    /// Total number of specimens checked.
+    pub total_count: usize,
+}
+
+/// Detect invariants and return them with target classification and labels.
+pub fn detect_classified_invariants(
+    specimens: &[ExecutionRecord],
+    target: InvariantTarget,
+) -> Vec<ClassifiedInvariant> {
+    let total = specimens.len();
+    detect_invariants(specimens, target)
+        .into_iter()
+        .map(|inv| {
+            let label = format_invariant_label(&inv, target);
+            ClassifiedInvariant {
+                invariant: inv,
+                target,
+                label,
+                confidence: 1.0, // detect_invariants only returns invariants that hold for all specimens
+                satisfied_count: total,
+                total_count: total,
+            }
+        })
+        .collect()
+}
+
+/// Format a human-readable label for an invariant.
+fn format_invariant_label(inv: &Invariant, target: InvariantTarget) -> String {
+    let prefix = match target {
+        InvariantTarget::Input => "input",
+        InvariantTarget::Output => "output",
+    };
+
+    let format_path = |path: &JsonPath| -> String {
+        if path.is_empty() {
+            prefix.to_string()
+        } else {
+            format!("{prefix}.{}", path.join("."))
+        }
+    };
+
+    match &inv.kind {
+        InvariantKind::NumericComparison { path, op, value } => {
+            let op_str = match op {
+                ComparisonOp::Gt => ">",
+                ComparisonOp::Ge => ">=",
+                ComparisonOp::Lt => "<",
+                ComparisonOp::Le => "<=",
+            };
+            format!("{} {op_str} {value}", format_path(path))
+        }
+        InvariantKind::NumericConstant { path, value } => {
+            format!("{} == {value}", format_path(path))
+        }
+        InvariantKind::NotNull { path } => {
+            format!("{} is non-null", format_path(path))
+        }
+        InvariantKind::IsNull { path } => {
+            format!("{} is null", format_path(path))
+        }
+        InvariantKind::StringNonEmpty { path } => {
+            format!("{} is non-empty string", format_path(path))
+        }
+        InvariantKind::StringLength { path, op, value } => {
+            let op_str = match op {
+                ComparisonOp::Gt => ">",
+                ComparisonOp::Ge => ">=",
+                ComparisonOp::Lt => "<",
+                ComparisonOp::Le => "<=",
+            };
+            format!("{}.length {op_str} {value}", format_path(path))
+        }
+        InvariantKind::OutputEqualsInput { output_path, param_index, input_path } => {
+            let out = if output_path.is_empty() {
+                "output".to_string()
+            } else {
+                format!("output.{}", output_path.join("."))
+            };
+            let inp = if input_path.is_empty() {
+                format!("input[{param_index}]")
+            } else {
+                format!("input[{param_index}].{}", input_path.join("."))
+            };
+            format!("{out} == {inp}")
+        }
+        InvariantKind::AlwaysTrue { path } => {
+            format!("{} is always true", format_path(path))
+        }
+        InvariantKind::AlwaysFalse { path } => {
+            format!("{} is always false", format_path(path))
+        }
+    }
+}
+
+/// Convert raw exploration results (inputs, ExecuteResult pairs) into ExecutionRecords.
+pub fn records_from_raw_results(
+    function_id: &str,
+    raw_results: &[(Vec<serde_json::Value>, crate::protocol::ExecuteResult)],
+) -> Vec<ExecutionRecord> {
+    use std::hash::{Hash, Hasher};
+    raw_results
+        .iter()
+        .map(|(inputs, result)| {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            let input_str = serde_json::to_string(inputs).unwrap_or_default();
+            input_str.hash(&mut hasher);
+            let input_hash = hasher.finish();
+
+            ExecutionRecord {
+                function_id: function_id.to_string(),
+                input_hash,
+                parameters: inputs.clone(),
+                branch_path: result.branch_path.clone(),
+                lines_executed: result.lines_executed.clone(),
+                calls_to_external: result.calls_to_external.clone(),
+                path_constraints: result.path_constraints.clone(),
+                return_value: result.return_value.clone(),
+                thrown_error: result.thrown_error.clone(),
+                side_effects: result.side_effects.clone(),
+                wall_time_ms: result.performance.wall_time_ms,
+                cpu_time_us: result.performance.cpu_time_us,
+                heap_used_bytes: result.performance.heap_used_bytes,
+                heap_allocated_bytes: result.performance.heap_allocated_bytes,
+                timestamp: String::new(),
+                engine_version: String::new(),
+            }
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
