@@ -138,18 +138,36 @@ crashes, or network failures. **Uncommitted work is lost work.**
 
 ### Commit messages and issue references
 
-When a commit includes changes to beads data (`.beads/` files), list all
-affected issue IDs in the commit message body. This makes it easy to trace
-which issues were created, updated, or closed in each push.
+When working on a beads issue, **prefix the commit message with the issue key**.
+This links commits to the issue they address and makes history easy to trace.
+
+Format: `<issue-key>: <description>`
 
 Example for feature commits:
 ```
-Add symbolic integer support to concolic engine
+str-a1b: Add symbolic integer support to concolic engine
+
+Implements concrete+symbolic tracking for i32/i64 values with
+path constraint generation for branch conditions.
+```
+
+When a commit addresses multiple issues, use the primary issue as the prefix
+and list others in the body:
+```
+str-a1b: Add symbolic integer support to concolic engine
 
 Implements concrete+symbolic tracking for i32/i64 values with
 path constraint generation for branch conditions.
 
-Issues: str-a1b, str-c2d, str-e3f
+Also: str-c2d, str-e3f
+```
+
+When a commit includes changes to beads data (`.beads/` files) without a
+specific feature issue, list all affected issue IDs in the body:
+```
+bd sync: close str-a1b, str-c2d
+
+Issues: str-a1b, str-c2d
 ```
 
 ### Parallel work with agent teams (preferred)
