@@ -917,16 +917,6 @@ async fn run_scan(
         );
     }
 
-    // Dry run: print discovered files and exit.
-    if dry_run {
-        eprintln!("Dry run: would scan the following files:");
-        for (path, lang) in &analyzable_files {
-            let relative = path.strip_prefix(&root).unwrap_or(path);
-            eprintln!("  {:?}  {}", lang, relative.display());
-        }
-        return Ok(());
-    }
-
     // Spawn frontends for each language.
     let req_timeout = Duration::from_secs(request_timeout);
     let needed_langs: std::collections::HashSet<DiscoveryLanguage> = analyzable_files
@@ -1056,6 +1046,26 @@ async fn run_scan(
     } else {
         parallelism
     };
+
+    // Dry run: show the full exploration plan without executing.
+    if dry_run {
+        let scan_config = ScanConfig {
+            max_iterations_per_function: max_iterations,
+            seed: None,
+            file_map: file_map.clone(),
+            parallelism: effective_parallelism,
+            timeout_per_fn: Duration::from_secs(timeout_per_fn),
+            cache: None,
+        };
+        let plan = scan_orchestrator::format_dry_run_plan(
+            &all_analyses,
+            &skipped_for_executability,
+            &scan_config,
+        )
+        .map_err(|e| format!("failed to build dry-run plan: {e}"))?;
+        eprint!("{plan}");
+        return Ok(());
+    }
 
     if log_level >= LogLevel::Debug {
         eprintln!(

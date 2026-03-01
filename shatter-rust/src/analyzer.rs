@@ -1,0 +1,1672 @@
+//! Static analyzer for Rust source files using the `syn` crate.
+//!
+//! Parses Rust source code and extracts function signatures, branch locations,
+//! symbolic conditions, and external dependencies for the Shatter protocol.
+//!
+//! ## Limitations
+//!
+//! - **No cross-file type resolution**: `syn` parses a single file. Struct definitions
+//!   from other modules/crates are not available — named types become `Opaque`.
+//! - **No trait resolution**: Cannot determine which trait impl a method call resolves to.
+//! - **No macro expansion**: Macros are not expanded; generated code is invisible.
+//! - **No const evaluation**: Constant references in conditions appear as `Unknown`.
+//! - **Limited generics**: Generic type parameters `T` are reported as `Unknown`.
+//! - **Pattern matching**: Complex match patterns produce `condition: None`.
+
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
+
+use quote::ToTokens;
+use syn::spanned::Spanned;
+
+use crate::protocol::{
+    BinOpKind, BranchInfo, BranchType, ComplexKind, ConstValue, DependencyKind,
+    ExternalDependency, FunctionAnalysis, ParamInfo, SymExpr, TypeInfo, UnOpKind,
+};
+
+/// Error type for analysis failures.
+#[derive(Debug)]
+pub enum AnalyzeError {
+    FileNotFound(String),
+    ReadError(String),
+    ParseError(String),
+    FunctionNotFound(String),
+}
+
+impl std::fmt::Display for AnalyzeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::FileNotFound(p) => write!(f, "file not found: {p}"),
+            Self::ReadError(e) => write!(f, "failed to read file: {e}"),
+            Self::ParseError(e) => write!(f, "failed to parse file: {e}"),
+            Self::FunctionNotFound(n) => write!(f, "function not found: {n}"),
+        }
+    }
+}
+
+/// Analyze a Rust source file. If `function_name` is provided, return only that function.
+pub fn analyze_file(
+    file_path: &Path,
+    function_name: Option<&str>,
+) -> Result<Vec<FunctionAnalysis>, AnalyzeError> {
+    if !file_path.exists() {
+        return Err(AnalyzeError::FileNotFound(
+            file_path.display().to_string(),
+        ));
+    }
+
+    let source = std::fs::read_to_string(file_path)
+        .map_err(|e| AnalyzeError::ReadError(e.to_string()))?;
+
+    analyze_source(&source, function_name)
+}
+
+/// Analyze Rust source code from a string.
+pub fn analyze_source(
+    source: &str,
+    function_name: Option<&str>,
+) -> Result<Vec<FunctionAnalysis>, AnalyzeError> {
+    let file = syn::parse_file(source)
+        .map_err(|e| AnalyzeError::ParseError(e.to_string()))?;
+
+    // Collect struct definitions in this file for field extraction.
+    let structs = collect_struct_defs(&file);
+
+    let mut results = Vec::new();
+
+    for item in &file.items {
+        if let syn::Item::Fn(item_fn) = item {
+            let name = item_fn.sig.ident.to_string();
+
+            if let Some(target) = function_name
+                && name != target
+            {
+                continue;
+            }
+
+            results.push(analyze_function(item_fn, &structs));
+        }
+    }
+
+    if function_name.is_some() && results.is_empty() {
+        return Err(AnalyzeError::FunctionNotFound(
+            function_name.unwrap_or_default().to_string(),
+        ));
+    }
+
+    Ok(results)
+}
+
+/// Collected struct definitions from the same file.
+type StructDefs = HashMap<String, Vec<(String, syn::Type)>>;
+
+fn collect_struct_defs(file: &syn::File) -> StructDefs {
+    let mut defs = HashMap::new();
+    for item in &file.items {
+        if let syn::Item::Struct(s) = item
+            && let syn::Fields::Named(fields) = &s.fields
+        {
+            let field_list: Vec<(String, syn::Type)> = fields
+                .named
+                .iter()
+                .filter_map(|f| {
+                    f.ident.as_ref().map(|id| (id.to_string(), f.ty.clone()))
+                })
+                .collect();
+            defs.insert(s.ident.to_string(), field_list);
+        }
+    }
+    defs
+}
+
+fn analyze_function(item_fn: &syn::ItemFn, structs: &StructDefs) -> FunctionAnalysis {
+    let name = item_fn.sig.ident.to_string();
+    let exported = matches!(item_fn.vis, syn::Visibility::Public(_));
+
+    let params = extract_params(&item_fn.sig.inputs, structs);
+    let param_names: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+
+    let return_type = convert_return_type(&item_fn.sig.output, structs);
+
+    let start_line = item_fn.sig.ident.span().start().line as u32;
+    let end_line = item_fn.block.brace_token.span.close().end().line as u32;
+
+    let branches = extract_branches(&item_fn.block, &param_names);
+    let dependencies = extract_dependencies(&item_fn.block, &param_names);
+
+    FunctionAnalysis {
+        name,
+        exported,
+        params,
+        branches,
+        dependencies,
+        return_type,
+        start_line,
+        end_line,
+    }
+}
+
+// ─── Parameter & Type Extraction ─────────────────────────────────────────────
+
+fn extract_params(
+    inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::token::Comma>,
+    structs: &StructDefs,
+) -> Vec<ParamInfo> {
+    let mut params = Vec::new();
+    for arg in inputs {
+        if let syn::FnArg::Typed(pat_type) = arg {
+            let name = extract_pat_name(&pat_type.pat);
+            let type_name = extract_type_name(&pat_type.ty);
+            let typ = convert_type(&pat_type.ty, structs);
+            params.push(ParamInfo {
+                name,
+                typ,
+                type_name,
+            });
+        }
+        // Skip FnArg::Receiver (self params)
+    }
+    params
+}
+
+fn extract_pat_name(pat: &syn::Pat) -> String {
+    match pat {
+        syn::Pat::Ident(pi) => pi.ident.to_string(),
+        syn::Pat::Wild(_) => "_".to_string(),
+        syn::Pat::Reference(pr) => extract_pat_name(&pr.pat),
+        _ => "_".to_string(),
+    }
+}
+
+fn extract_type_name(ty: &syn::Type) -> Option<String> {
+    match ty {
+        syn::Type::Path(tp) => {
+            let seg = tp.path.segments.last()?;
+            let name = seg.ident.to_string();
+            // Only set type_name for non-primitive, non-standard-library types
+            if is_primitive_name(&name) || is_well_known_generic(&name) {
+                None
+            } else {
+                Some(name)
+            }
+        }
+        syn::Type::Reference(tr) => extract_type_name(&tr.elem),
+        _ => None,
+    }
+}
+
+fn is_primitive_name(name: &str) -> bool {
+    matches!(
+        name,
+        "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
+            | "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
+            | "f32" | "f64"
+            | "bool"
+            | "String" | "str"
+            | "char"
+    )
+}
+
+fn is_well_known_generic(name: &str) -> bool {
+    matches!(
+        name,
+        "Vec" | "Option" | "Result" | "Box" | "Arc" | "Rc"
+            | "HashMap" | "HashSet" | "BTreeMap" | "BTreeSet"
+    )
+}
+
+fn convert_type(ty: &syn::Type, structs: &StructDefs) -> TypeInfo {
+    match ty {
+        syn::Type::Path(type_path) => convert_type_path(type_path, structs),
+        syn::Type::Reference(type_ref) => convert_reference(type_ref, structs),
+        syn::Type::Tuple(type_tuple) => convert_tuple(type_tuple, structs),
+        syn::Type::Array(type_array) => TypeInfo::Array {
+            element: Box::new(convert_type(&type_array.elem, structs)),
+        },
+        syn::Type::Slice(type_slice) => TypeInfo::Array {
+            element: Box::new(convert_type(&type_slice.elem, structs)),
+        },
+        syn::Type::Paren(type_paren) => convert_type(&type_paren.elem, structs),
+        syn::Type::BareFn(_) => TypeInfo::Complex {
+            kind: ComplexKind::Closure,
+            metadata: HashMap::new(),
+            inner: None,
+        },
+        syn::Type::Never(_) => TypeInfo::Unknown,
+        _ => TypeInfo::Unknown,
+    }
+}
+
+fn convert_type_path(type_path: &syn::TypePath, structs: &StructDefs) -> TypeInfo {
+    let Some(seg) = type_path.path.segments.last() else {
+        return TypeInfo::Unknown;
+    };
+    let name = seg.ident.to_string();
+
+    match name.as_str() {
+        // Integer types
+        "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32" | "u64"
+        | "u128" | "usize" => TypeInfo::Int,
+
+        // Float types
+        "f32" | "f64" => TypeInfo::Float,
+
+        // String types
+        "String" => TypeInfo::Str,
+
+        // Boolean
+        "bool" => TypeInfo::Bool,
+
+        // Character
+        "char" => TypeInfo::Complex {
+            kind: ComplexKind::Char,
+            metadata: HashMap::new(),
+            inner: None,
+        },
+
+        // Vec<T> → Array
+        "Vec" => {
+            let inner = extract_first_generic_arg(seg, structs);
+            TypeInfo::Array {
+                element: Box::new(inner),
+            }
+        }
+
+        // Option<T> → Nullable
+        "Option" => {
+            let inner = extract_first_generic_arg(seg, structs);
+            TypeInfo::Nullable {
+                inner: Box::new(inner),
+            }
+        }
+
+        // Result<T, E> → Union
+        "Result" => {
+            let variants = extract_generic_args(seg, structs);
+            TypeInfo::Union { variants }
+        }
+
+        // Smart pointers / wrappers → unwrap to inner
+        "Box" | "Arc" | "Rc" | "Cow" | "Cell" | "RefCell" | "Mutex" | "RwLock" => {
+            extract_first_generic_arg(seg, structs)
+        }
+
+        // HashMap/BTreeMap → Object with key/value fields
+        "HashMap" | "BTreeMap" => {
+            let args = extract_generic_args(seg, structs);
+            let key_type = args.first().cloned().unwrap_or(TypeInfo::Unknown);
+            let val_type = args.get(1).cloned().unwrap_or(TypeInfo::Unknown);
+            TypeInfo::Object {
+                fields: vec![
+                    ("_key".to_string(), key_type),
+                    ("_value".to_string(), val_type),
+                ],
+            }
+        }
+
+        // HashSet/BTreeSet → Array
+        "HashSet" | "BTreeSet" => {
+            let inner = extract_first_generic_arg(seg, structs);
+            TypeInfo::Array {
+                element: Box::new(inner),
+            }
+        }
+
+        // Well-known complex types
+        "PathBuf" | "Path" => TypeInfo::Complex {
+            kind: ComplexKind::Path,
+            metadata: HashMap::new(),
+            inner: None,
+        },
+        "Duration" => TypeInfo::Complex {
+            kind: ComplexKind::Duration,
+            metadata: HashMap::new(),
+            inner: None,
+        },
+        "IpAddr" | "Ipv4Addr" | "Ipv6Addr" => TypeInfo::Complex {
+            kind: ComplexKind::IpAddress,
+            metadata: HashMap::new(),
+            inner: None,
+        },
+        "Url" => TypeInfo::Complex {
+            kind: ComplexKind::Url,
+            metadata: HashMap::new(),
+            inner: None,
+        },
+        "Uuid" => TypeInfo::Complex {
+            kind: ComplexKind::Uuid,
+            metadata: HashMap::new(),
+            inner: None,
+        },
+        "Regex" => TypeInfo::Complex {
+            kind: ComplexKind::RegExp,
+            metadata: HashMap::new(),
+            inner: None,
+        },
+
+        // Check if it's a struct defined in the same file
+        _ => {
+            if let Some(fields) = structs.get(&name) {
+                TypeInfo::Object {
+                    fields: fields
+                        .iter()
+                        .map(|(n, t)| (n.clone(), convert_type(t, structs)))
+                        .collect(),
+                }
+            } else {
+                TypeInfo::Opaque { label: name }
+            }
+        }
+    }
+}
+
+fn convert_reference(type_ref: &syn::TypeReference, structs: &StructDefs) -> TypeInfo {
+    // Special case: &str → Str
+    if let syn::Type::Path(tp) = type_ref.elem.as_ref()
+        && let Some(seg) = tp.path.segments.last()
+        && seg.ident == "str"
+    {
+        return TypeInfo::Str;
+    }
+    // Special case: &[T] → Array
+    if let syn::Type::Slice(ts) = type_ref.elem.as_ref() {
+        return TypeInfo::Array {
+            element: Box::new(convert_type(&ts.elem, structs)),
+        };
+    }
+    // Otherwise unwrap the reference
+    convert_type(&type_ref.elem, structs)
+}
+
+fn convert_tuple(type_tuple: &syn::TypeTuple, structs: &StructDefs) -> TypeInfo {
+    if type_tuple.elems.is_empty() {
+        return TypeInfo::Unknown; // unit type ()
+    }
+    let fields = type_tuple
+        .elems
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (i.to_string(), convert_type(t, structs)))
+        .collect();
+    TypeInfo::Object { fields }
+}
+
+fn extract_first_generic_arg(seg: &syn::PathSegment, structs: &StructDefs) -> TypeInfo {
+    if let syn::PathArguments::AngleBracketed(args) = &seg.arguments
+        && let Some(syn::GenericArgument::Type(ty)) = args.args.first()
+    {
+        return convert_type(ty, structs);
+    }
+    TypeInfo::Unknown
+}
+
+fn extract_generic_args(seg: &syn::PathSegment, structs: &StructDefs) -> Vec<TypeInfo> {
+    if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
+        return args
+            .args
+            .iter()
+            .filter_map(|a| {
+                if let syn::GenericArgument::Type(ty) = a {
+                    Some(convert_type(ty, structs))
+                } else {
+                    None
+                }
+            })
+            .collect();
+    }
+    vec![]
+}
+
+fn convert_return_type(output: &syn::ReturnType, structs: &StructDefs) -> TypeInfo {
+    match output {
+        syn::ReturnType::Default => TypeInfo::Unknown, // unit return
+        syn::ReturnType::Type(_, ty) => convert_type(ty, structs),
+    }
+}
+
+// ─── Branch Extraction ───────────────────────────────────────────────────────
+
+fn extract_branches(block: &syn::Block, param_names: &HashSet<String>) -> Vec<BranchInfo> {
+    let mut branches = Vec::new();
+    let mut next_id: u32 = 0;
+    walk_block_for_branches(block, param_names, &mut branches, &mut next_id, false);
+    branches
+}
+
+fn walk_block_for_branches(
+    block: &syn::Block,
+    param_names: &HashSet<String>,
+    branches: &mut Vec<BranchInfo>,
+    next_id: &mut u32,
+    _is_else_if: bool,
+) {
+    for stmt in &block.stmts {
+        walk_stmt_for_branches(stmt, param_names, branches, next_id);
+    }
+}
+
+fn walk_stmt_for_branches(
+    stmt: &syn::Stmt,
+    param_names: &HashSet<String>,
+    branches: &mut Vec<BranchInfo>,
+    next_id: &mut u32,
+) {
+    match stmt {
+        syn::Stmt::Expr(expr, _) => {
+            walk_expr_for_branches(expr, param_names, branches, next_id, false);
+        }
+        syn::Stmt::Local(local) => {
+            if let Some(init) = &local.init {
+                walk_expr_for_branches(&init.expr, param_names, branches, next_id, false);
+                if let Some((_, diverge)) = &init.diverge {
+                    walk_expr_for_branches(diverge, param_names, branches, next_id, false);
+                }
+            }
+        }
+        syn::Stmt::Item(_) | syn::Stmt::Macro(_) => {}
+    }
+}
+
+fn walk_expr_for_branches(
+    expr: &syn::Expr,
+    param_names: &HashSet<String>,
+    branches: &mut Vec<BranchInfo>,
+    next_id: &mut u32,
+    is_else_if: bool,
+) {
+    match expr {
+        syn::Expr::If(expr_if) => {
+            let line = expr_if.if_token.span().start().line as u32;
+            let condition_text = expr_if.cond.to_token_stream().to_string();
+            let condition = build_sym_expr(&expr_if.cond, param_names);
+            let branch_type = if is_else_if {
+                BranchType::ElseIf
+            } else {
+                BranchType::If
+            };
+
+            branches.push(BranchInfo {
+                id: *next_id,
+                line,
+                condition_text,
+                condition: meaningful(condition),
+                branch_type,
+            });
+            *next_id += 1;
+
+            // Recurse into then block
+            walk_block_for_branches(&expr_if.then_branch, param_names, branches, next_id, false);
+
+            // Handle else branch
+            if let Some((_, else_branch)) = &expr_if.else_branch {
+                walk_expr_for_branches(else_branch, param_names, branches, next_id, true);
+            }
+        }
+
+        syn::Expr::Match(expr_match) => {
+            // Recurse into the scrutinee
+            walk_expr_for_branches(&expr_match.expr, param_names, branches, next_id, false);
+
+            for arm in &expr_match.arms {
+                let line = arm.pat.to_token_stream().to_string();
+                let span_line = arm.fat_arrow_token.span().start().line as u32;
+
+                let condition = build_pattern_sym_expr(&arm.pat, &expr_match.expr, param_names);
+
+                branches.push(BranchInfo {
+                    id: *next_id,
+                    line: span_line,
+                    condition_text: line,
+                    condition: meaningful(condition),
+                    branch_type: BranchType::Switch,
+                });
+                *next_id += 1;
+
+                // Recurse into arm body
+                walk_expr_for_branches(&arm.body, param_names, branches, next_id, false);
+            }
+        }
+
+        syn::Expr::While(expr_while) => {
+            let line = expr_while.while_token.span().start().line as u32;
+            let condition_text = expr_while.cond.to_token_stream().to_string();
+            let condition = build_sym_expr(&expr_while.cond, param_names);
+
+            branches.push(BranchInfo {
+                id: *next_id,
+                line,
+                condition_text,
+                condition: meaningful(condition),
+                branch_type: BranchType::While,
+            });
+            *next_id += 1;
+
+            walk_block_for_branches(&expr_while.body, param_names, branches, next_id, false);
+        }
+
+        syn::Expr::ForLoop(expr_for) => {
+            let line = expr_for.for_token.span().start().line as u32;
+            let condition_text = expr_for.expr.to_token_stream().to_string();
+
+            branches.push(BranchInfo {
+                id: *next_id,
+                line,
+                condition_text,
+                condition: None, // for-in loops don't have boolean conditions
+                branch_type: BranchType::For,
+            });
+            *next_id += 1;
+
+            walk_block_for_branches(&expr_for.body, param_names, branches, next_id, false);
+        }
+
+        syn::Expr::Loop(expr_loop) => {
+            let line = expr_loop.loop_token.span().start().line as u32;
+
+            branches.push(BranchInfo {
+                id: *next_id,
+                line,
+                condition_text: "loop".to_string(),
+                condition: None,
+                branch_type: BranchType::While,
+            });
+            *next_id += 1;
+
+            walk_block_for_branches(&expr_loop.body, param_names, branches, next_id, false);
+        }
+
+        syn::Expr::Try(expr_try) => {
+            let line = expr_try.question_token.span.start().line as u32;
+            let condition_text = format!(
+                "{}?",
+                expr_try.expr.to_token_stream()
+            );
+
+            branches.push(BranchInfo {
+                id: *next_id,
+                line,
+                condition_text,
+                condition: None,
+                branch_type: BranchType::If, // ? is an implicit if Ok/Err
+            });
+            *next_id += 1;
+
+            walk_expr_for_branches(&expr_try.expr, param_names, branches, next_id, false);
+        }
+
+        syn::Expr::Block(expr_block) => {
+            walk_block_for_branches(&expr_block.block, param_names, branches, next_id, false);
+        }
+
+        syn::Expr::Return(expr_ret) => {
+            if let Some(e) = &expr_ret.expr {
+                walk_expr_for_branches(e, param_names, branches, next_id, false);
+            }
+        }
+
+        syn::Expr::Call(expr_call) => {
+            walk_expr_for_branches(&expr_call.func, param_names, branches, next_id, false);
+            for arg in &expr_call.args {
+                walk_expr_for_branches(arg, param_names, branches, next_id, false);
+            }
+        }
+
+        syn::Expr::MethodCall(expr_mc) => {
+            walk_expr_for_branches(&expr_mc.receiver, param_names, branches, next_id, false);
+            for arg in &expr_mc.args {
+                walk_expr_for_branches(arg, param_names, branches, next_id, false);
+            }
+        }
+
+        syn::Expr::Binary(expr_bin) => {
+            // Check for short-circuit operators
+            match &expr_bin.op {
+                syn::BinOp::And(token) => {
+                    let line = token.spans[0].start().line as u32;
+                    let condition_text = expr.to_token_stream().to_string();
+                    let condition = build_sym_expr(expr, param_names);
+
+                    branches.push(BranchInfo {
+                        id: *next_id,
+                        line,
+                        condition_text,
+                        condition: meaningful(condition),
+                        branch_type: BranchType::LogicalAnd,
+                    });
+                    *next_id += 1;
+                }
+                syn::BinOp::Or(token) => {
+                    let line = token.spans[0].start().line as u32;
+                    let condition_text = expr.to_token_stream().to_string();
+                    let condition = build_sym_expr(expr, param_names);
+
+                    branches.push(BranchInfo {
+                        id: *next_id,
+                        line,
+                        condition_text,
+                        condition: meaningful(condition),
+                        branch_type: BranchType::LogicalOr,
+                    });
+                    *next_id += 1;
+                }
+                _ => {}
+            }
+
+            walk_expr_for_branches(&expr_bin.left, param_names, branches, next_id, false);
+            walk_expr_for_branches(&expr_bin.right, param_names, branches, next_id, false);
+        }
+
+        syn::Expr::Let(expr_let) => {
+            walk_expr_for_branches(&expr_let.expr, param_names, branches, next_id, false);
+        }
+
+        syn::Expr::Assign(expr_assign) => {
+            walk_expr_for_branches(&expr_assign.right, param_names, branches, next_id, false);
+        }
+
+        syn::Expr::Closure(expr_closure) => {
+            walk_expr_for_branches(&expr_closure.body, param_names, branches, next_id, false);
+        }
+
+        syn::Expr::Tuple(expr_tuple) => {
+            for elem in &expr_tuple.elems {
+                walk_expr_for_branches(elem, param_names, branches, next_id, false);
+            }
+        }
+
+        syn::Expr::Unary(expr_unary) => {
+            walk_expr_for_branches(&expr_unary.expr, param_names, branches, next_id, false);
+        }
+
+        syn::Expr::Paren(expr_paren) => {
+            walk_expr_for_branches(&expr_paren.expr, param_names, branches, next_id, false);
+        }
+
+        syn::Expr::Reference(expr_ref) => {
+            walk_expr_for_branches(&expr_ref.expr, param_names, branches, next_id, false);
+        }
+
+        syn::Expr::Field(expr_field) => {
+            walk_expr_for_branches(&expr_field.base, param_names, branches, next_id, false);
+        }
+
+        syn::Expr::Index(expr_index) => {
+            walk_expr_for_branches(&expr_index.expr, param_names, branches, next_id, false);
+            walk_expr_for_branches(&expr_index.index, param_names, branches, next_id, false);
+        }
+
+        syn::Expr::Unsafe(expr_unsafe) => {
+            walk_block_for_branches(&expr_unsafe.block, param_names, branches, next_id, false);
+        }
+
+        _ => {}
+    }
+}
+
+// ─── Symbolic Expression Building ────────────────────────────────────────────
+
+fn build_sym_expr(expr: &syn::Expr, param_names: &HashSet<String>) -> SymExpr {
+    match expr {
+        syn::Expr::Path(expr_path) => {
+            if let Some(ident) = expr_path.path.get_ident() {
+                let name = ident.to_string();
+                if param_names.contains(&name) {
+                    return SymExpr::Param {
+                        name,
+                        path: vec![],
+                    };
+                }
+            }
+            SymExpr::Unknown
+        }
+
+        syn::Expr::Field(expr_field) => {
+            if let Some((base_name, mut path)) = resolve_field_chain(expr, param_names) {
+                path.reverse();
+                return SymExpr::Param {
+                    name: base_name,
+                    path,
+                };
+            }
+            let _ = expr_field;
+            SymExpr::Unknown
+        }
+
+        syn::Expr::Binary(expr_bin) => {
+            let Some(op) = convert_bin_op(&expr_bin.op) else {
+                return SymExpr::Unknown;
+            };
+            let left = build_sym_expr(&expr_bin.left, param_names);
+            let right = build_sym_expr(&expr_bin.right, param_names);
+            SymExpr::BinOp {
+                op,
+                left: Box::new(left),
+                right: Box::new(right),
+            }
+        }
+
+        syn::Expr::Unary(expr_unary) => {
+            let op = match &expr_unary.op {
+                syn::UnOp::Not(_) => UnOpKind::Not,
+                syn::UnOp::Neg(_) => UnOpKind::Neg,
+                _ => return SymExpr::Unknown,
+            };
+            let operand = build_sym_expr(&expr_unary.expr, param_names);
+            SymExpr::UnOp {
+                op,
+                operand: Box::new(operand),
+            }
+        }
+
+        syn::Expr::Lit(expr_lit) => {
+            let cv = convert_lit(&expr_lit.lit);
+            SymExpr::Const(cv)
+        }
+
+        syn::Expr::MethodCall(mc) => {
+            let name = mc.method.to_string();
+            let receiver = build_sym_expr(&mc.receiver, param_names);
+            let args: Vec<SymExpr> = mc
+                .args
+                .iter()
+                .map(|a| build_sym_expr(a, param_names))
+                .collect();
+            SymExpr::Call {
+                name,
+                receiver: Some(Box::new(receiver)),
+                args,
+            }
+        }
+
+        syn::Expr::Call(call) => {
+            let name = call.func.to_token_stream().to_string();
+            let args: Vec<SymExpr> = call
+                .args
+                .iter()
+                .map(|a| build_sym_expr(a, param_names))
+                .collect();
+            SymExpr::Call {
+                name,
+                receiver: None,
+                args,
+            }
+        }
+
+        syn::Expr::Paren(paren) => build_sym_expr(&paren.expr, param_names),
+
+        syn::Expr::Reference(reference) => build_sym_expr(&reference.expr, param_names),
+
+        syn::Expr::Let(expr_let) => {
+            // `let Some(x) = expr` in if-let: treat the expression as the condition
+            build_sym_expr(&expr_let.expr, param_names)
+        }
+
+        _ => SymExpr::Unknown,
+    }
+}
+
+fn resolve_field_chain(expr: &syn::Expr, param_names: &HashSet<String>) -> Option<(String, Vec<String>)> {
+    match expr {
+        syn::Expr::Field(field) => {
+            let field_name = match &field.member {
+                syn::Member::Named(ident) => ident.to_string(),
+                syn::Member::Unnamed(idx) => idx.index.to_string(),
+            };
+            if let Some((base, mut path)) = resolve_field_chain(&field.base, param_names) {
+                path.push(field_name);
+                Some((base, path))
+            } else {
+                None
+            }
+        }
+        syn::Expr::Path(path) => {
+            if let Some(ident) = path.path.get_ident() {
+                let name = ident.to_string();
+                if param_names.contains(&name) {
+                    return Some((name, vec![]));
+                }
+            }
+            None
+        }
+        syn::Expr::Reference(reference) => resolve_field_chain(&reference.expr, param_names),
+        _ => None,
+    }
+}
+
+fn build_pattern_sym_expr(
+    pat: &syn::Pat,
+    scrutinee: &syn::Expr,
+    param_names: &HashSet<String>,
+) -> SymExpr {
+    match pat {
+        syn::Pat::Const(pat_const) => {
+            // Pattern like `0`, `1`, `"hello"` in match arms
+            let left = build_sym_expr(scrutinee, param_names);
+            let right = build_sym_expr(&pat_const.block.stmts.first().and_then(|s| {
+                if let syn::Stmt::Expr(e, _) = s { Some(e) } else { None }
+            }).cloned().unwrap_or_else(|| syn::parse_quote!(())), param_names);
+            SymExpr::BinOp {
+                op: BinOpKind::Eq,
+                left: Box::new(left),
+                right: Box::new(right),
+            }
+        }
+        syn::Pat::Wild(_) => SymExpr::Unknown, // wildcard _ matches anything
+        _ => SymExpr::Unknown,
+    }
+}
+
+fn convert_bin_op(op: &syn::BinOp) -> Option<BinOpKind> {
+    Some(match op {
+        syn::BinOp::Eq(_) => BinOpKind::Eq,
+        syn::BinOp::Ne(_) => BinOpKind::Ne,
+        syn::BinOp::Lt(_) => BinOpKind::Lt,
+        syn::BinOp::Le(_) => BinOpKind::Le,
+        syn::BinOp::Gt(_) => BinOpKind::Gt,
+        syn::BinOp::Ge(_) => BinOpKind::Ge,
+        syn::BinOp::Add(_) | syn::BinOp::AddAssign(_) => BinOpKind::Add,
+        syn::BinOp::Sub(_) | syn::BinOp::SubAssign(_) => BinOpKind::Sub,
+        syn::BinOp::Mul(_) | syn::BinOp::MulAssign(_) => BinOpKind::Mul,
+        syn::BinOp::Div(_) | syn::BinOp::DivAssign(_) => BinOpKind::Div,
+        syn::BinOp::Rem(_) | syn::BinOp::RemAssign(_) => BinOpKind::Mod,
+        syn::BinOp::And(_) => BinOpKind::And,
+        syn::BinOp::Or(_) => BinOpKind::Or,
+        syn::BinOp::BitAnd(_) | syn::BinOp::BitAndAssign(_) => BinOpKind::BitwiseAnd,
+        syn::BinOp::BitOr(_) | syn::BinOp::BitOrAssign(_) => BinOpKind::BitwiseOr,
+        syn::BinOp::BitXor(_) | syn::BinOp::BitXorAssign(_) => BinOpKind::BitwiseXor,
+        _ => return None,
+    })
+}
+
+fn convert_lit(lit: &syn::Lit) -> ConstValue {
+    match lit {
+        syn::Lit::Int(li) => {
+            ConstValue::Int(li.base10_parse::<i64>().unwrap_or(0))
+        }
+        syn::Lit::Float(lf) => {
+            ConstValue::Float(lf.base10_parse::<f64>().unwrap_or(0.0))
+        }
+        syn::Lit::Str(ls) => ConstValue::Str(ls.value()),
+        syn::Lit::Bool(lb) => ConstValue::Bool(lb.value),
+        syn::Lit::Char(lc) => ConstValue::Int(lc.value() as i64),
+        _ => ConstValue::Null,
+    }
+}
+
+/// Returns `Some(expr)` if the SymExpr is meaningful (not just Unknown).
+fn meaningful(expr: SymExpr) -> Option<SymExpr> {
+    if matches!(expr, SymExpr::Unknown) {
+        None
+    } else {
+        Some(expr)
+    }
+}
+
+// ─── Dependency Extraction ───────────────────────────────────────────────────
+
+fn extract_dependencies(
+    block: &syn::Block,
+    param_names: &HashSet<String>,
+) -> Vec<ExternalDependency> {
+    let mut acc: HashMap<String, ExternalDependency> = HashMap::new();
+    walk_block_for_deps(block, param_names, &mut acc);
+    acc.into_values().collect()
+}
+
+fn walk_block_for_deps(
+    block: &syn::Block,
+    param_names: &HashSet<String>,
+    acc: &mut HashMap<String, ExternalDependency>,
+) {
+    for stmt in &block.stmts {
+        walk_stmt_for_deps(stmt, param_names, acc);
+    }
+}
+
+fn walk_stmt_for_deps(
+    stmt: &syn::Stmt,
+    param_names: &HashSet<String>,
+    acc: &mut HashMap<String, ExternalDependency>,
+) {
+    match stmt {
+        syn::Stmt::Expr(expr, _) => {
+            walk_expr_for_deps(expr, param_names, acc);
+        }
+        syn::Stmt::Local(local) => {
+            if let Some(init) = &local.init {
+                walk_expr_for_deps(&init.expr, param_names, acc);
+                if let Some((_, diverge)) = &init.diverge {
+                    walk_expr_for_deps(diverge, param_names, acc);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn walk_expr_for_deps(
+    expr: &syn::Expr,
+    param_names: &HashSet<String>,
+    acc: &mut HashMap<String, ExternalDependency>,
+) {
+    match expr {
+        syn::Expr::Call(call) => {
+            // Check if the function is a qualified path (module::func)
+            if let syn::Expr::Path(path) = call.func.as_ref()
+                && path.path.segments.len() >= 2
+            {
+                let symbol = path
+                    .path
+                    .segments
+                    .iter()
+                    .map(|s| s.ident.to_string())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                let source_module = path
+                    .path
+                    .segments
+                    .first()
+                    .map(|s| s.ident.to_string())
+                    .unwrap_or_default();
+                let line = path
+                    .path
+                    .segments
+                    .last()
+                    .map(|s| Spanned::span(&s.ident).start().line as u32)
+                    .unwrap_or(0);
+
+                let entry = acc.entry(symbol.clone()).or_insert_with(|| {
+                    ExternalDependency {
+                        kind: DependencyKind::FunctionCall,
+                        symbol,
+                        source_module,
+                        return_type: TypeInfo::Unknown,
+                        param_types: vec![],
+                        call_sites: vec![],
+                    }
+                });
+                entry.call_sites.push(line);
+            }
+
+            // Recurse into arguments
+            for arg in &call.args {
+                walk_expr_for_deps(arg, param_names, acc);
+            }
+        }
+
+        syn::Expr::MethodCall(mc) => {
+            // Check if receiver is NOT a parameter (external method call)
+            let is_param_receiver = is_param_based_expr(&mc.receiver, param_names);
+            if !is_param_receiver {
+                let name = mc.method.to_string();
+                let line = Spanned::span(&mc.method).start().line as u32;
+
+                let entry = acc.entry(name.clone()).or_insert_with(|| {
+                    ExternalDependency {
+                        kind: DependencyKind::MethodCall,
+                        symbol: name,
+                        source_module: String::new(),
+                        return_type: TypeInfo::Unknown,
+                        param_types: vec![],
+                        call_sites: vec![],
+                    }
+                });
+                entry.call_sites.push(line);
+            }
+
+            // Recurse
+            walk_expr_for_deps(&mc.receiver, param_names, acc);
+            for arg in &mc.args {
+                walk_expr_for_deps(arg, param_names, acc);
+            }
+        }
+
+        syn::Expr::If(e) => {
+            walk_expr_for_deps(&e.cond, param_names, acc);
+            walk_block_for_deps(&e.then_branch, param_names, acc);
+            if let Some((_, else_branch)) = &e.else_branch {
+                walk_expr_for_deps(else_branch, param_names, acc);
+            }
+        }
+
+        syn::Expr::Match(e) => {
+            walk_expr_for_deps(&e.expr, param_names, acc);
+            for arm in &e.arms {
+                walk_expr_for_deps(&arm.body, param_names, acc);
+            }
+        }
+
+        syn::Expr::Block(e) => {
+            walk_block_for_deps(&e.block, param_names, acc);
+        }
+
+        syn::Expr::While(e) => {
+            walk_expr_for_deps(&e.cond, param_names, acc);
+            walk_block_for_deps(&e.body, param_names, acc);
+        }
+
+        syn::Expr::ForLoop(e) => {
+            walk_expr_for_deps(&e.expr, param_names, acc);
+            walk_block_for_deps(&e.body, param_names, acc);
+        }
+
+        syn::Expr::Loop(e) => {
+            walk_block_for_deps(&e.body, param_names, acc);
+        }
+
+        syn::Expr::Try(e) => {
+            walk_expr_for_deps(&e.expr, param_names, acc);
+        }
+
+        syn::Expr::Return(e) => {
+            if let Some(expr) = &e.expr {
+                walk_expr_for_deps(expr, param_names, acc);
+            }
+        }
+
+        syn::Expr::Binary(e) => {
+            walk_expr_for_deps(&e.left, param_names, acc);
+            walk_expr_for_deps(&e.right, param_names, acc);
+        }
+
+        syn::Expr::Unary(e) => {
+            walk_expr_for_deps(&e.expr, param_names, acc);
+        }
+
+        syn::Expr::Paren(e) => {
+            walk_expr_for_deps(&e.expr, param_names, acc);
+        }
+
+        syn::Expr::Reference(e) => {
+            walk_expr_for_deps(&e.expr, param_names, acc);
+        }
+
+        syn::Expr::Closure(e) => {
+            walk_expr_for_deps(&e.body, param_names, acc);
+        }
+
+        syn::Expr::Assign(e) => {
+            walk_expr_for_deps(&e.right, param_names, acc);
+        }
+
+        syn::Expr::Unsafe(e) => {
+            walk_block_for_deps(&e.block, param_names, acc);
+        }
+
+        syn::Expr::Let(e) => {
+            walk_expr_for_deps(&e.expr, param_names, acc);
+        }
+
+        syn::Expr::Tuple(e) => {
+            for elem in &e.elems {
+                walk_expr_for_deps(elem, param_names, acc);
+            }
+        }
+
+        _ => {}
+    }
+}
+
+fn is_param_based_expr(expr: &syn::Expr, param_names: &HashSet<String>) -> bool {
+    match expr {
+        syn::Expr::Path(p) => {
+            p.path
+                .get_ident()
+                .is_some_and(|id| param_names.contains(&id.to_string()))
+        }
+        syn::Expr::Field(f) => is_param_based_expr(&f.base, param_names),
+        syn::Expr::Reference(r) => is_param_based_expr(&r.expr, param_names),
+        syn::Expr::Paren(p) => is_param_based_expr(&p.expr, param_names),
+        _ => false,
+    }
+}
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn analyze(code: &str) -> Vec<FunctionAnalysis> {
+        analyze_source(code, None).expect("analysis should succeed")
+    }
+
+    fn analyze_fn(code: &str, name: &str) -> FunctionAnalysis {
+        analyze_source(code, Some(name))
+            .expect("analysis should succeed")
+            .into_iter()
+            .next()
+            .expect("function should be found")
+    }
+
+    // ── Type mapping tests ──
+
+    #[test]
+    fn maps_i32_to_int() {
+        let f = analyze_fn("fn f(x: i32) {}", "f");
+        assert_eq!(f.params[0].typ, TypeInfo::Int);
+        assert_eq!(f.params[0].name, "x");
+    }
+
+    #[test]
+    fn maps_u64_to_int() {
+        let f = analyze_fn("fn f(x: u64) {}", "f");
+        assert_eq!(f.params[0].typ, TypeInfo::Int);
+    }
+
+    #[test]
+    fn maps_f64_to_float() {
+        let f = analyze_fn("fn f(x: f64) {}", "f");
+        assert_eq!(f.params[0].typ, TypeInfo::Float);
+    }
+
+    #[test]
+    fn maps_string_to_str() {
+        let f = analyze_fn("fn f(x: String) {}", "f");
+        assert_eq!(f.params[0].typ, TypeInfo::Str);
+    }
+
+    #[test]
+    fn maps_str_ref_to_str() {
+        let f = analyze_fn("fn f(x: &str) {}", "f");
+        assert_eq!(f.params[0].typ, TypeInfo::Str);
+    }
+
+    #[test]
+    fn maps_bool_to_bool() {
+        let f = analyze_fn("fn f(x: bool) {}", "f");
+        assert_eq!(f.params[0].typ, TypeInfo::Bool);
+    }
+
+    #[test]
+    fn maps_vec_to_array() {
+        let f = analyze_fn("fn f(x: Vec<i32>) {}", "f");
+        assert_eq!(
+            f.params[0].typ,
+            TypeInfo::Array {
+                element: Box::new(TypeInfo::Int)
+            }
+        );
+    }
+
+    #[test]
+    fn maps_option_to_nullable() {
+        let f = analyze_fn("fn f(x: Option<String>) {}", "f");
+        assert_eq!(
+            f.params[0].typ,
+            TypeInfo::Nullable {
+                inner: Box::new(TypeInfo::Str)
+            }
+        );
+    }
+
+    #[test]
+    fn maps_result_to_union() {
+        let f = analyze_fn("fn f(x: Result<i32, String>) {}", "f");
+        assert_eq!(
+            f.params[0].typ,
+            TypeInfo::Union {
+                variants: vec![TypeInfo::Int, TypeInfo::Str]
+            }
+        );
+    }
+
+    #[test]
+    fn unwraps_box() {
+        let f = analyze_fn("fn f(x: Box<i32>) {}", "f");
+        assert_eq!(f.params[0].typ, TypeInfo::Int);
+    }
+
+    #[test]
+    fn unwraps_reference() {
+        let f = analyze_fn("fn f(x: &i32) {}", "f");
+        assert_eq!(f.params[0].typ, TypeInfo::Int);
+    }
+
+    #[test]
+    fn maps_tuple_to_object() {
+        let f = analyze_fn("fn f(x: (i32, String)) {}", "f");
+        assert_eq!(
+            f.params[0].typ,
+            TypeInfo::Object {
+                fields: vec![
+                    ("0".to_string(), TypeInfo::Int),
+                    ("1".to_string(), TypeInfo::Str),
+                ]
+            }
+        );
+    }
+
+    #[test]
+    fn maps_slice_to_array() {
+        let f = analyze_fn("fn f(x: &[u8]) {}", "f");
+        assert_eq!(
+            f.params[0].typ,
+            TypeInfo::Array {
+                element: Box::new(TypeInfo::Int)
+            }
+        );
+    }
+
+    #[test]
+    fn maps_array_literal_to_array() {
+        let f = analyze_fn("fn f(x: [i32; 5]) {}", "f");
+        assert_eq!(
+            f.params[0].typ,
+            TypeInfo::Array {
+                element: Box::new(TypeInfo::Int)
+            }
+        );
+    }
+
+    #[test]
+    fn maps_pathbuf_to_complex_path() {
+        let f = analyze_fn("fn f(x: PathBuf) {}", "f");
+        assert_eq!(
+            f.params[0].typ,
+            TypeInfo::Complex {
+                kind: ComplexKind::Path,
+                metadata: HashMap::new(),
+                inner: None,
+            }
+        );
+    }
+
+    #[test]
+    fn maps_unknown_struct_to_opaque() {
+        let f = analyze_fn("fn f(x: MyStruct) {}", "f");
+        assert_eq!(
+            f.params[0].typ,
+            TypeInfo::Opaque {
+                label: "MyStruct".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn maps_same_file_struct_to_object() {
+        let code = r#"
+            struct Order {
+                id: i32,
+                name: String,
+            }
+            fn f(o: Order) {}
+        "#;
+        let f = analyze_fn(code, "f");
+        assert_eq!(
+            f.params[0].typ,
+            TypeInfo::Object {
+                fields: vec![
+                    ("id".to_string(), TypeInfo::Int),
+                    ("name".to_string(), TypeInfo::Str),
+                ]
+            }
+        );
+        assert_eq!(f.params[0].type_name.as_deref(), Some("Order"));
+    }
+
+    // ── Return type tests ──
+
+    #[test]
+    fn extracts_return_type() {
+        let f = analyze_fn("fn f() -> i32 { 0 }", "f");
+        assert_eq!(f.return_type, TypeInfo::Int);
+    }
+
+    #[test]
+    fn default_return_type_is_unknown() {
+        let f = analyze_fn("fn f() {}", "f");
+        assert_eq!(f.return_type, TypeInfo::Unknown);
+    }
+
+    // ── Visibility tests ──
+
+    #[test]
+    fn detects_public_functions() {
+        let fns = analyze("pub fn exported() {} fn private() {}");
+        assert_eq!(fns.len(), 2);
+        assert!(fns[0].exported);
+        assert!(!fns[1].exported);
+    }
+
+    // ── Branch extraction tests ──
+
+    #[test]
+    fn extracts_if_branch() {
+        let f = analyze_fn(
+            r#"
+            fn f(x: i32) {
+                if x > 5 {
+                    println!("big");
+                }
+            }
+            "#,
+            "f",
+        );
+        assert_eq!(f.branches.len(), 1);
+        assert_eq!(f.branches[0].branch_type, BranchType::If);
+        assert!(f.branches[0].condition_text.contains("x > 5"));
+    }
+
+    #[test]
+    fn extracts_if_else_if_branches() {
+        let f = analyze_fn(
+            r#"
+            fn f(x: i32) {
+                if x > 10 {
+                    println!("big");
+                } else if x > 0 {
+                    println!("small");
+                } else {
+                    println!("neg");
+                }
+            }
+            "#,
+            "f",
+        );
+        assert!(f.branches.len() >= 2);
+        assert_eq!(f.branches[0].branch_type, BranchType::If);
+        assert_eq!(f.branches[1].branch_type, BranchType::ElseIf);
+    }
+
+    #[test]
+    fn extracts_match_arms() {
+        let f = analyze_fn(
+            r#"
+            fn f(x: i32) -> &'static str {
+                match x {
+                    0 => "zero",
+                    1 => "one",
+                    _ => "other",
+                }
+            }
+            "#,
+            "f",
+        );
+        let switch_branches: Vec<_> = f
+            .branches
+            .iter()
+            .filter(|b| b.branch_type == BranchType::Switch)
+            .collect();
+        assert_eq!(switch_branches.len(), 3);
+    }
+
+    #[test]
+    fn extracts_while_branch() {
+        let f = analyze_fn(
+            r#"
+            fn f(x: i32) {
+                let mut i = 0;
+                while i < x {
+                    i += 1;
+                }
+            }
+            "#,
+            "f",
+        );
+        let while_branches: Vec<_> = f
+            .branches
+            .iter()
+            .filter(|b| b.branch_type == BranchType::While)
+            .collect();
+        assert_eq!(while_branches.len(), 1);
+    }
+
+    #[test]
+    fn extracts_for_branch() {
+        let f = analyze_fn(
+            r#"
+            fn f(items: Vec<i32>) {
+                for item in &items {
+                    println!("{}", item);
+                }
+            }
+            "#,
+            "f",
+        );
+        let for_branches: Vec<_> = f
+            .branches
+            .iter()
+            .filter(|b| b.branch_type == BranchType::For)
+            .collect();
+        assert_eq!(for_branches.len(), 1);
+    }
+
+    #[test]
+    fn extracts_try_operator_branch() {
+        let f = analyze_fn(
+            r#"
+            fn f(input: &str) -> Result<i32, String> {
+                let n = input.parse::<i32>().map_err(|e| e.to_string())?;
+                Ok(n)
+            }
+            "#,
+            "f",
+        );
+        // The ? operator should produce a branch
+        let try_branches: Vec<_> = f
+            .branches
+            .iter()
+            .filter(|b| b.condition_text.contains('?'))
+            .collect();
+        assert!(!try_branches.is_empty());
+    }
+
+    #[test]
+    fn extracts_loop_branch() {
+        let f = analyze_fn(
+            r#"
+            fn f() {
+                loop {
+                    break;
+                }
+            }
+            "#,
+            "f",
+        );
+        let loop_branches: Vec<_> = f
+            .branches
+            .iter()
+            .filter(|b| b.condition_text == "loop")
+            .collect();
+        assert_eq!(loop_branches.len(), 1);
+    }
+
+    // ── SymExpr tests ──
+
+    #[test]
+    fn builds_param_sym_expr() {
+        let params: HashSet<String> = ["x".to_string()].into();
+        let expr: syn::Expr = syn::parse_str("x").expect("parse");
+        let sym = build_sym_expr(&expr, &params);
+        assert_eq!(
+            sym,
+            SymExpr::Param {
+                name: "x".to_string(),
+                path: vec![],
+            }
+        );
+    }
+
+    #[test]
+    fn builds_field_access_sym_expr() {
+        let params: HashSet<String> = ["order".to_string()].into();
+        let expr: syn::Expr = syn::parse_str("order.priority").expect("parse");
+        let sym = build_sym_expr(&expr, &params);
+        assert_eq!(
+            sym,
+            SymExpr::Param {
+                name: "order".to_string(),
+                path: vec!["priority".to_string()],
+            }
+        );
+    }
+
+    #[test]
+    fn builds_binary_op_sym_expr() {
+        let params: HashSet<String> = ["x".to_string()].into();
+        let expr: syn::Expr = syn::parse_str("x > 5").expect("parse");
+        let sym = build_sym_expr(&expr, &params);
+        assert_eq!(
+            sym,
+            SymExpr::BinOp {
+                op: BinOpKind::Gt,
+                left: Box::new(SymExpr::Param {
+                    name: "x".to_string(),
+                    path: vec![],
+                }),
+                right: Box::new(SymExpr::Const(ConstValue::Int(5))),
+            }
+        );
+    }
+
+    #[test]
+    fn builds_unary_not_sym_expr() {
+        let params: HashSet<String> = ["valid".to_string()].into();
+        let expr: syn::Expr = syn::parse_str("!valid").expect("parse");
+        let sym = build_sym_expr(&expr, &params);
+        assert_eq!(
+            sym,
+            SymExpr::UnOp {
+                op: UnOpKind::Not,
+                operand: Box::new(SymExpr::Param {
+                    name: "valid".to_string(),
+                    path: vec![],
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn builds_method_call_sym_expr() {
+        let params: HashSet<String> = ["s".to_string()].into();
+        let expr: syn::Expr = syn::parse_str(r#"s.starts_with("/api")"#).expect("parse");
+        let sym = build_sym_expr(&expr, &params);
+        assert_eq!(
+            sym,
+            SymExpr::Call {
+                name: "starts_with".to_string(),
+                receiver: Some(Box::new(SymExpr::Param {
+                    name: "s".to_string(),
+                    path: vec![],
+                })),
+                args: vec![SymExpr::Const(ConstValue::Str("/api".to_string()))],
+            }
+        );
+    }
+
+    #[test]
+    fn non_param_is_unknown() {
+        let params: HashSet<String> = ["x".to_string()].into();
+        let expr: syn::Expr = syn::parse_str("local_var").expect("parse");
+        let sym = build_sym_expr(&expr, &params);
+        assert_eq!(sym, SymExpr::Unknown);
+    }
+
+    // ── Dependency tests ──
+
+    #[test]
+    fn detects_qualified_function_call_dep() {
+        let f = analyze_fn(
+            r#"
+            fn f(x: i32) {
+                db::save(x);
+            }
+            "#,
+            "f",
+        );
+        assert_eq!(f.dependencies.len(), 1);
+        assert_eq!(f.dependencies[0].symbol, "db::save");
+        assert_eq!(f.dependencies[0].source_module, "db");
+        assert_eq!(f.dependencies[0].kind, DependencyKind::FunctionCall);
+    }
+
+    #[test]
+    fn groups_multiple_calls_to_same_symbol() {
+        let f = analyze_fn(
+            r#"
+            fn f(x: i32) {
+                db::save(x);
+                db::save(x + 1);
+            }
+            "#,
+            "f",
+        );
+        assert_eq!(f.dependencies.len(), 1);
+        assert_eq!(f.dependencies[0].call_sites.len(), 2);
+    }
+
+    // ── Error handling tests ──
+
+    #[test]
+    fn function_not_found_returns_error() {
+        let result = analyze_source("fn f() {}", Some("nonexistent"));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, AnalyzeError::FunctionNotFound(_)));
+    }
+
+    #[test]
+    fn parse_error_returns_error() {
+        let result = analyze_source("fn f( {}", None);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, AnalyzeError::ParseError(_)));
+    }
+
+    // ── Filter by function name ──
+
+    #[test]
+    fn filters_by_function_name() {
+        let code = "fn a() {} fn b() {} fn c() {}";
+        let result = analyze_source(code, Some("b")).expect("success");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "b");
+    }
+
+    #[test]
+    fn returns_all_functions_when_no_filter() {
+        let code = "fn a() {} fn b() {} fn c() {}";
+        let result = analyze_source(code, None).expect("success");
+        assert_eq!(result.len(), 3);
+    }
+
+    // ── Integration: full analysis ──
+
+    #[test]
+    fn full_analysis_of_classify_function() {
+        let code = r#"
+            pub fn classify(n: i32) -> &'static str {
+                if n < 0 {
+                    "negative"
+                } else if n == 0 {
+                    "zero"
+                } else {
+                    "positive"
+                }
+            }
+        "#;
+        let f = analyze_fn(code, "classify");
+        assert_eq!(f.name, "classify");
+        assert!(f.exported);
+        assert_eq!(f.params.len(), 1);
+        assert_eq!(f.params[0].name, "n");
+        assert_eq!(f.params[0].typ, TypeInfo::Int);
+        assert_eq!(f.return_type, TypeInfo::Str);
+        assert!(f.branches.len() >= 2); // if + else-if at least
+        assert_eq!(f.branches[0].branch_type, BranchType::If);
+
+        // Verify symbolic condition for first branch
+        assert_eq!(
+            f.branches[0].condition,
+            Some(SymExpr::BinOp {
+                op: BinOpKind::Lt,
+                left: Box::new(SymExpr::Param {
+                    name: "n".to_string(),
+                    path: vec![],
+                }),
+                right: Box::new(SymExpr::Const(ConstValue::Int(0))),
+            })
+        );
+    }
+}

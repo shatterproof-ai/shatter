@@ -19,7 +19,11 @@ use std::time::Duration;
 
 use tokio::sync::Mutex;
 
+use std::collections::HashSet;
+
+use crate::auto_mock;
 use crate::behavior::{BehaviorCoverage, BehaviorMap, CallGraph, CallGraphError, TestOrderEntry};
+use crate::types::TypeInfo;
 use crate::cache::BehaviorMapCache;
 use crate::execution_record::ExecutionRecord;
 use crate::explorer::{self, ExploreConfig, ExploreError, ExplorationResult};
@@ -745,13 +749,196 @@ pub fn format_scan_report(result: &ScanResult) -> String {
     out
 }
 
+/// Format a [`TypeInfo`] as a concise human-readable string.
+fn format_type(ty: &TypeInfo) -> String {
+    match ty {
+        TypeInfo::Int => "int".to_string(),
+        TypeInfo::Float => "float".to_string(),
+        TypeInfo::Str => "string".to_string(),
+        TypeInfo::Bool => "bool".to_string(),
+        TypeInfo::Array { element } => format!("{}[]", format_type(element)),
+        TypeInfo::Nullable { inner } => format!("{}?", format_type(inner)),
+        TypeInfo::Object { fields } => {
+            if fields.is_empty() {
+                "object".to_string()
+            } else {
+                let field_strs: Vec<String> = fields
+                    .iter()
+                    .map(|(name, t)| format!("{name}: {}", format_type(t)))
+                    .collect();
+                format!("{{{}}}", field_strs.join(", "))
+            }
+        }
+        TypeInfo::Union { variants } => {
+            variants
+                .iter()
+                .map(format_type)
+                .collect::<Vec<_>>()
+                .join(" | ")
+        }
+        TypeInfo::Complex { kind, .. } => format!("{kind:?}"),
+        TypeInfo::Opaque { label } => label.clone(),
+        TypeInfo::Unknown => "unknown".to_string(),
+    }
+}
+
+/// Generate a dry-run plan showing what a scan would do without exploring.
+///
+/// Builds the call graph, computes test order and layers, determines mocking
+/// decisions, and formats a human-readable plan. Requires only the static
+/// analysis results — no frontends need to be running.
+pub fn format_dry_run_plan(
+    analyses: &[FunctionAnalysis],
+    skipped: &[SkippedFunction],
+    config: &ScanConfig,
+) -> Result<String, ScanError> {
+    let call_graph = CallGraph::from_analyses(analyses);
+    let order_entries = call_graph.test_order()?;
+    let layers = build_layers(&order_entries, &call_graph);
+
+    // Collect unique source files.
+    let file_count = config
+        .file_map
+        .values()
+        .collect::<HashSet<_>>()
+        .len();
+
+    let total_functions = analyses.len();
+    let layer_count = layers.len();
+
+    let mut out = String::new();
+
+    out.push_str("Dry-run scan plan\n");
+    out.push_str("=================\n\n");
+
+    out.push_str(&format!(
+        "Summary: {} function(s) across {} file(s), {} layer(s)\n",
+        total_functions, file_count, layer_count,
+    ));
+    out.push_str(&format!(
+        "Workers: {} {}\n",
+        config.parallelism,
+        if config.parallelism == 1 { "" } else { "(parallel)" },
+    ));
+
+    // Estimate time: each layer runs sequentially, functions within a layer run in parallel.
+    // Worst case per layer = ceil(functions / workers) * timeout_per_fn.
+    let timeout_secs = config.timeout_per_fn.as_secs();
+    let mut total_estimate_secs: u64 = 0;
+    for layer in &layers {
+        let batches = (layer.len() as u64 + config.parallelism as u64 - 1)
+            / config.parallelism.max(1) as u64;
+        total_estimate_secs += batches * timeout_secs;
+    }
+    out.push_str(&format!(
+        "Estimated time: <={total_estimate_secs}s ({layer_count} layer(s) x {timeout_secs}s timeout)\n",
+    ));
+
+    // Build analysis lookup.
+    let analysis_map: HashMap<&str, &FunctionAnalysis> =
+        analyses.iter().map(|a| (a.name.as_str(), a)).collect();
+
+    // All function names in the scan set.
+    let scan_set: HashSet<&str> = analyses.iter().map(|a| a.name.as_str()).collect();
+
+    for (layer_idx, layer) in layers.iter().enumerate() {
+        let parallelizable = if layer.len() > 1 { ", parallelizable" } else { "" };
+        out.push_str(&format!(
+            "\nLayer {} ({} function(s){}):\n",
+            layer_idx,
+            layer.len(),
+            parallelizable,
+        ));
+
+        for func_name in layer {
+            let analysis = match analysis_map.get(func_name.as_str()) {
+                Some(a) => *a,
+                None => continue,
+            };
+
+            // Format function signature.
+            let params_str: Vec<String> = analysis
+                .params
+                .iter()
+                .map(|p| format!("{}: {}", p.name, format_type(&p.typ)))
+                .collect();
+            let ret_str = format_type(&analysis.return_type);
+            out.push_str(&format!(
+                "  {}({}) -> {}\n",
+                func_name,
+                params_str.join(", "),
+                ret_str,
+            ));
+
+            // Branch count.
+            let branch_count = analysis.branches.len();
+
+            // Internal dependencies (other functions in the scan set).
+            let callees = call_graph.callees(func_name);
+            let internal_deps: Vec<&str> = callees
+                .iter()
+                .filter(|c| scan_set.contains(c.as_str()))
+                .map(|c| c.as_str())
+                .collect();
+
+            let deps_str = if internal_deps.is_empty() {
+                "none".to_string()
+            } else {
+                internal_deps
+                    .iter()
+                    .map(|d| format!("{d} (behavior-mock)"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            out.push_str(&format!(
+                "    Branches: {} | Deps: {}\n",
+                branch_count, deps_str,
+            ));
+
+            // External dependencies with auto-mock classification.
+            let external_deps: Vec<_> = analysis
+                .dependencies
+                .iter()
+                .filter(|d| !scan_set.contains(d.symbol.as_str()))
+                .collect();
+
+            if !external_deps.is_empty() {
+                let ext_strs: Vec<String> = external_deps
+                    .iter()
+                    .map(|dep| {
+                        let category = auto_mock::classify_dependency(dep);
+                        let label = match category {
+                            auto_mock::IoCategory::FileSystem => "filesystem — auto-mock",
+                            auto_mock::IoCategory::Network => "network — auto-mock",
+                            auto_mock::IoCategory::Database => "database — auto-mock",
+                            auto_mock::IoCategory::PureUtility => "pure utility — passthrough",
+                            auto_mock::IoCategory::ExternalOther => "external — auto-mock",
+                        };
+                        format!("{} ({})", dep.symbol, label)
+                    })
+                    .collect();
+                out.push_str(&format!("    External: {}\n", ext_strs.join(", ")));
+            }
+        }
+    }
+
+    if !skipped.is_empty() {
+        out.push_str("\nSkipped (unexecutable):\n");
+        for skip in skipped {
+            out.push_str(&format!("  {}: {}\n", skip.function_name, skip.reason));
+        }
+    }
+
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::protocol::{
         DependencyKind, ExecuteResult, ExternalDependency, PerformanceMetrics,
     };
-    use crate::types::TypeInfo;
+    use crate::types::{ParamInfo, TypeInfo};
 
     fn make_analysis(name: &str, deps: Vec<&str>) -> FunctionAnalysis {
         FunctionAnalysis {
@@ -1336,5 +1523,139 @@ mod tests {
             .expect("cache load should succeed");
         assert!(loaded.is_some(), "behavior map should be cached on disk");
         assert_eq!(loaded.as_ref().unwrap().function_id, "cached_fn");
+    }
+
+    // ── dry-run plan tests ──────────────────────────────────────────
+
+    fn make_analysis_with_params(
+        name: &str,
+        params: Vec<ParamInfo>,
+        return_type: TypeInfo,
+        deps: Vec<ExternalDependency>,
+    ) -> FunctionAnalysis {
+        FunctionAnalysis {
+            name: name.to_string(),
+            exported: true,
+            params,
+            branches: vec![],
+            dependencies: deps,
+            return_type,
+            start_line: 1,
+            end_line: 10,
+        }
+    }
+
+    #[test]
+    fn dry_run_plan_shows_layers_and_deps() {
+        // leaf has no deps, caller depends on leaf
+        let analyses = vec![
+            make_analysis("leaf", vec![]),
+            make_analysis("caller", vec!["leaf"]),
+        ];
+
+        let mut file_map = HashMap::new();
+        file_map.insert("leaf".to_string(), "src/math.ts".to_string());
+        file_map.insert("caller".to_string(), "src/app.ts".to_string());
+
+        let config = ScanConfig {
+            max_iterations_per_function: 100,
+            seed: None,
+            file_map,
+            parallelism: 2,
+            timeout_per_fn: Duration::from_secs(30),
+            cache: None,
+        };
+
+        let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
+
+        assert!(plan.contains("Dry-run scan plan"));
+        assert!(plan.contains("2 function(s) across 2 file(s), 2 layer(s)"));
+        assert!(plan.contains("Workers: 2"));
+        assert!(plan.contains("Layer 0"));
+        assert!(plan.contains("Layer 1"));
+        assert!(plan.contains("leaf"));
+        assert!(plan.contains("leaf (behavior-mock)"));
+    }
+
+    #[test]
+    fn dry_run_plan_shows_external_deps() {
+        let analyses = vec![make_analysis_with_params(
+            "fetchData",
+            vec![ParamInfo {
+                name: "url".into(),
+                typ: TypeInfo::Str,
+                type_name: None,
+            }],
+            TypeInfo::Unknown,
+            vec![ExternalDependency {
+                kind: DependencyKind::FunctionCall,
+                symbol: "axios.get".into(),
+                source_module: "axios".into(),
+                return_type: TypeInfo::Unknown,
+                param_types: vec![],
+                call_sites: vec![],
+            }],
+        )];
+
+        let mut file_map = HashMap::new();
+        file_map.insert("fetchData".to_string(), "src/api.ts".to_string());
+
+        let config = ScanConfig {
+            max_iterations_per_function: 100,
+            seed: None,
+            file_map,
+            parallelism: 1,
+            timeout_per_fn: Duration::from_secs(30),
+            cache: None,
+        };
+
+        let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
+
+        assert!(plan.contains("fetchData(url: string) -> unknown"));
+        assert!(plan.contains("axios.get (network"));
+    }
+
+    #[test]
+    fn dry_run_plan_shows_skipped_functions() {
+        let analyses = vec![make_analysis("good", vec![])];
+
+        let skipped = vec![SkippedFunction {
+            function_name: "broken".into(),
+            reason: "param \"sock\" has opaque type net.Socket".into(),
+        }];
+
+        let config = ScanConfig {
+            max_iterations_per_function: 100,
+            seed: None,
+            file_map: [("good".to_string(), "src/lib.ts".to_string())]
+                .into_iter()
+                .collect(),
+            parallelism: 1,
+            timeout_per_fn: Duration::from_secs(30),
+            cache: None,
+        };
+
+        let plan = format_dry_run_plan(&analyses, &skipped, &config).expect("should succeed");
+
+        assert!(plan.contains("Skipped (unexecutable)"));
+        assert!(plan.contains("broken: param \"sock\" has opaque type net.Socket"));
+    }
+
+    #[test]
+    fn dry_run_plan_empty_analyses() {
+        let config = ScanConfig {
+            max_iterations_per_function: 100,
+            seed: None,
+            file_map: HashMap::new(),
+            parallelism: 1,
+            timeout_per_fn: Duration::from_secs(30),
+            cache: None,
+        };
+
+        let plan = format_dry_run_plan(&[], &[], &config).expect("should succeed");
+
+        assert!(plan.contains("0 function(s)"));
+        assert!(plan.contains("0 layer(s)"));
+        assert!(!plan.contains("Layer 0"));
     }
 }

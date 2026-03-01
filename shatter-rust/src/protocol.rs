@@ -13,7 +13,6 @@ use std::collections::HashMap;
 
 /// Well-known complex types beyond primitives and structural types.
 /// Matches `ComplexKind` in shatter-core/src/types.rs.
-#[allow(dead_code)] // used once analyze/execute are implemented
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ComplexKind {
@@ -32,7 +31,6 @@ pub enum ComplexKind {
 
 /// Describes the type of a value, as reported by a language frontend.
 /// Matches `TypeInfo` in shatter-core/src/types.rs.
-#[allow(dead_code)] // used once analyze/execute are implemented
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TypeInfo {
@@ -56,6 +54,138 @@ pub enum TypeInfo {
         label: String,
     },
     Unknown,
+}
+
+/// Binary operation kind for symbolic expressions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BinOpKind {
+    Eq, Ne, Lt, Le, Gt, Ge,
+    Add, Sub, Mul, Div, Mod,
+    And, Or,
+    BitwiseAnd, BitwiseOr, BitwiseXor,
+    In, InstanceOf,
+}
+
+/// Unary operation kind for symbolic expressions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnOpKind {
+    Not,
+    Neg,
+    BitwiseNot,
+    #[serde(rename = "typeof")]
+    TypeOf,
+}
+
+/// Constant value in a symbolic expression.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "const_type", content = "value", rename_all = "snake_case")]
+pub enum ConstValue {
+    Int(i64),
+    Float(f64),
+    Str(String),
+    Bool(bool),
+    Null,
+}
+
+/// Symbolic expression tree for branch conditions.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SymExpr {
+    Param {
+        name: String,
+        #[serde(default)]
+        path: Vec<String>,
+    },
+    Const(ConstValue),
+    BinOp {
+        op: BinOpKind,
+        left: Box<SymExpr>,
+        right: Box<SymExpr>,
+    },
+    UnOp {
+        op: UnOpKind,
+        operand: Box<SymExpr>,
+    },
+    Call {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        receiver: Option<Box<SymExpr>>,
+        #[serde(default)]
+        args: Vec<SymExpr>,
+    },
+    Unknown,
+}
+
+/// Branch type in control flow.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BranchType {
+    If,
+    ElseIf,
+    Switch,
+    Ternary,
+    LogicalAnd,
+    LogicalOr,
+    While,
+    For,
+}
+
+/// A branch point in a function's control flow.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BranchInfo {
+    pub id: u32,
+    pub line: u32,
+    pub condition_text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condition: Option<SymExpr>,
+    pub branch_type: BranchType,
+}
+
+/// Parameter info for a function.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ParamInfo {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub typ: TypeInfo,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub type_name: Option<String>,
+}
+
+/// Kind of external dependency.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DependencyKind {
+    FunctionCall,
+    MethodCall,
+    PropertyAccess,
+    ModuleImport,
+}
+
+/// An external dependency detected in a function body.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExternalDependency {
+    pub kind: DependencyKind,
+    pub symbol: String,
+    pub source_module: String,
+    pub return_type: TypeInfo,
+    pub param_types: Vec<TypeInfo>,
+    pub call_sites: Vec<u32>,
+}
+
+/// Analysis result for a single function.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FunctionAnalysis {
+    pub name: String,
+    #[serde(default)]
+    pub exported: bool,
+    pub params: Vec<ParamInfo>,
+    pub branches: Vec<BranchInfo>,
+    pub dependencies: Vec<ExternalDependency>,
+    pub return_type: TypeInfo,
+    pub start_line: u32,
+    pub end_line: u32,
 }
 
 /// Current protocol version.
@@ -138,6 +268,10 @@ pub struct Response {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<serde_json::Value>,
 
+    // Analyze fields
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub functions: Option<Vec<FunctionAnalysis>>,
+
     // Error fields
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
@@ -157,6 +291,7 @@ impl Response {
             capabilities: None,
             setup_context: None,
             value: None,
+            functions: None,
             code: None,
             message: None,
         }
@@ -370,6 +505,7 @@ mod tests {
             capabilities: None,
             setup_context: Some(serde_json::json!({"db_handle": "conn_42"})),
             value: None,
+            functions: None,
             code: None,
             message: None,
         };
@@ -387,6 +523,7 @@ mod tests {
             capabilities: None,
             setup_context: None,
             value: None,
+            functions: None,
             code: None,
             message: None,
         };
@@ -404,6 +541,7 @@ mod tests {
             capabilities: None,
             setup_context: None,
             value: Some(serde_json::json!({"id": 1, "name": "Alice"})),
+            functions: None,
             code: None,
             message: None,
         };
@@ -421,6 +559,7 @@ mod tests {
             capabilities: None,
             setup_context: None,
             value: Some(serde_json::json!("tok_abc123")),
+            functions: None,
             code: None,
             message: None,
         };
@@ -438,6 +577,7 @@ mod tests {
             capabilities: None,
             setup_context: None,
             value: None,
+            functions: None,
             code: Some("internal_error".to_string()),
             message: Some("something broke".to_string()),
         };
@@ -455,6 +595,7 @@ mod tests {
             capabilities: Some(vec!["analyze".to_string()]),
             setup_context: None,
             value: None,
+            functions: None,
             code: None,
             message: None,
         };

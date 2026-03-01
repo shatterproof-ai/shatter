@@ -145,17 +145,45 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
     }
 
     fn handle_analyze(&self, mut resp: Response, req: &Request) -> Response {
-        if req.file.is_none() {
+        let file_path = match &req.file {
+            Some(f) => f,
+            None => {
+                resp.status = "error".to_string();
+                resp.code = Some("invalid_request".to_string());
+                resp.message = Some("analyze command requires a file path".to_string());
+                return resp;
+            }
+        };
+
+        let path = std::path::Path::new(file_path);
+        if !path.exists() {
             resp.status = "error".to_string();
-            resp.code = Some("invalid_request".to_string());
-            resp.message = Some("analyze command requires a file path".to_string());
+            resp.code = Some("file_not_found".to_string());
+            resp.message = Some(format!("file not found: {file_path}"));
             return resp;
         }
 
-        resp.status = "error".to_string();
-        resp.code = Some("internal_error".to_string());
-        resp.message = Some("analyze command not yet implemented".to_string());
-        resp
+        match crate::analyzer::analyze_file(path, req.function.as_deref()) {
+            Ok(functions) => {
+                resp.status = "analyze".to_string();
+                resp.functions = Some(functions);
+                resp
+            }
+            Err(e) => {
+                resp.status = "error".to_string();
+                resp.code = Some(
+                    match &e {
+                        crate::analyzer::AnalyzeError::FileNotFound(_) => "file_not_found",
+                        crate::analyzer::AnalyzeError::ReadError(_) => "internal_error",
+                        crate::analyzer::AnalyzeError::ParseError(_) => "parse_error",
+                        crate::analyzer::AnalyzeError::FunctionNotFound(_) => "function_not_found",
+                    }
+                    .to_string(),
+                );
+                resp.message = Some(e.to_string());
+                resp
+            }
+        }
     }
 
     fn handle_instrument(&self, mut resp: Response, req: &Request) -> Response {
@@ -363,12 +391,12 @@ mod tests {
     }
 
     #[test]
-    fn analyze_with_file_returns_not_implemented() {
+    fn analyze_with_nonexistent_file_returns_file_not_found() {
         let resp = send_recv(
-            r#"{"protocol_version":"0.1.0","id":2,"command":"analyze","file":"test.rs"}"#,
+            r#"{"protocol_version":"0.1.0","id":2,"command":"analyze","file":"nonexistent.rs"}"#,
         );
         assert_eq!(resp.status, "error");
-        assert_eq!(resp.code.as_deref(), Some("internal_error"));
+        assert_eq!(resp.code.as_deref(), Some("file_not_found"));
     }
 
     #[test]
