@@ -3,86 +3,32 @@
 Automatic exploratory testing via concolic execution. Rust core engine with language-specific frontends (TypeScript, Go, Rust) communicating via JSON-over-stdio protocol.
 
 See `PLAN.md` for the full architecture and implementation roadmap.
-See `SPEC.md` for the living behavioral specification (what the system does today).
-See `LANGUAGE-EVALUATION.md` for the rationale behind choosing Rust for the core.
 
 ## Prerequisites
 
-**Devcontainer** (recommended): Open in VS Code with the Dev Containers extension — all dependencies are included.
-
-**Local development** (Ubuntu/Debian):
-- Rust toolchain (`rustup`)
-- Node.js 22+
-- Go 1.24+
-- `libclang` — needed by `bindgen` to build Z3 bindings
-  ```
-  sudo apt install libclang1-18    # minimal (runtime .so only)
-  # or
-  sudo apt install libclang-dev    # full (includes clang headers)
-  ```
-  If you install only `libclang1-18`, run the configure script to auto-detect
-  GCC's builtin headers path:
-  ```
-  ./scripts/configure-bindgen.sh
-  ```
-  This generates `.cargo/config.toml` with the correct `BINDGEN_EXTRA_CLANG_ARGS`
-  for your GCC version. Re-run it if you upgrade GCC.
-
-## Project Structure
-
-```
-shatter-core/     Rust core engine (library crate)
-shatter-cli/      Rust CLI binary (clap)
-shatter-ts/       TypeScript frontend (Node.js subprocess)
-shatter-go/       Go frontend (Go binary subprocess)
-shatter-rust/     Rust frontend (Rust binary subprocess)
-```
+For local dev: Rust toolchain, Node.js 22+, Go 1.24+, libclang. Run `./scripts/configure-bindgen.sh` if Z3 build fails. Devcontainer includes everything.
 
 ## Code Quality Standards
 
-This project demands clean structure, high quality code, and thorough automated testing. These are not aspirational — they are requirements.
-
-### Clean Structure
-- Every module has a single, clear responsibility
-- Public APIs are minimal and well-documented
-- Dependencies flow in one direction: cli → core, frontends → protocol
-- No circular dependencies between modules
-- Prefer small, focused files over large monoliths
-
-### High Quality Code
 - All Rust code must pass `cargo clippy` with no warnings
 - All TypeScript code must pass strict mode (`strict: true` in tsconfig)
 - All Go code must pass `go vet` and `golangci-lint`
-- No `unwrap()` in Rust library code — use proper error handling with `Result` and `?`
+- No `unwrap()` in Rust library code — use `Result` and `?`
 - No `any` type in TypeScript — use proper typing
-- Name things precisely. If a name requires a comment to explain, choose a better name
-- Keep functions short. If a function needs a section comment, extract a function instead
-
-### Thorough Automated Testing
-- Every module has unit tests. No exceptions
-- Every public function has tests covering its documented behavior
-- The concolic engine has integration tests with known-answer functions (functions where we know exactly which branches exist and what inputs trigger them)
+- Dependencies flow in one direction: cli → core, frontends → protocol
+- Integration tests use known-answer functions with expected branches and triggering inputs
 - Frontend protocol handlers have round-trip tests (serialize → deserialize → verify)
-- Test names describe the behavior being tested, not the function name
 - Regression snapshots are checked into the repo and verified in CI
-
-### Language-Specific Standards
 
 See `/rust-conventions`, `/ts-conventions`, `/go-conventions` skills for detailed per-language standards.
 
 ### Test Tiers
 
-Pick the right tier for the moment:
-
-| Tier | Command | Time | Use when |
-|---|---|---|---|
-| Quick | `cargo test` | ~5-15s | During development — catches logic bugs and regressions |
-| Standard | `cargo test && cargo clippy -- -D warnings` | ~15-30s | Before committing — full Rust validation |
-| Full | Standard + `cd shatter-ts && npm test` + `cd shatter-go && go test ./...` + `cd shatter-rust && cargo test` | ~30-60s | Before merge — validates all frontends too |
-
-When working on a single frontend, run its tests alongside Rust tests. When
-touching protocol definitions, always run Full — changes ripple across all
-frontends.
+| Tier | Command | Use when |
+|---|---|---|
+| Quick | `cargo test` | During development |
+| Standard | `cargo test && cargo clippy -- -D warnings` | Before committing |
+| Full | Standard + `cd shatter-ts && npm test` + `cd shatter-go && go test ./...` + `cd shatter-rust && cargo test` | Before merge or when touching protocol definitions |
 
 ## What NOT to Do
 
@@ -91,7 +37,6 @@ frontends.
 - **Never add** `node_modules/`, `dist/`, or `target/` to git
 - **Never bypass clippy warnings** with `#[allow(...)]` without a comment explaining why
 - **Never add a CLI command** without updating `demo/walkthrough.sh`
-- **Never change observable behavior** without updating `SPEC.md`
 
 ## Common Task Recipes
 
@@ -111,15 +56,6 @@ frontends.
 2. Implement the handler, delegating to `shatter-core` for logic
 3. Add integration tests exercising the command
 4. Update `demo/walkthrough.sh` to exercise the new command
-5. Update `SPEC.md` section 2 with the new command's syntax, behavior, and options
-
-### Add a new frontend language
-
-1. Create `shatter-<lang>/` with the language's standard project structure
-2. Implement the JSON-over-stdio protocol handler
-3. Add round-trip tests for all existing protocol messages
-4. Add the frontend to the Full test tier
-5. Update the Project Structure table in this file
 
 ### Add an integration test with known-answer functions
 
@@ -128,31 +64,11 @@ frontends.
 3. Write the test in `shatter-core` that invokes the engine and asserts all branches are found
 4. Check in a regression snapshot of the output
 
-## Behavioral Specification (SPEC.md)
-
-`SPEC.md` is the living behavioral specification — it describes what Shatter
-does today from a user's perspective. **Keep it up to date** when making changes
-that affect observable behavior:
-
-- New or changed CLI commands, flags, or options → update section 2
-- New output formats or changes to existing formats → update section 5
-- New core concepts (equivalence classes, invariants, etc.) → update section 3
-- Changes to the frontend protocol → update section 4
-- Fixing a known limitation or adding a new one → update section 6
-- Add an entry to the Changelog table (section 7) for every update
-
-The `/audit` skill compares SPEC.md against the actual codebase and
-flags discrepancies. If the audit finds gaps, update SPEC.md first.
-
 ## Output Review
 
 After any change affecting CLI output, frontend logging, or protocol formatting, run `/walkthrough-review` to validate the output is human-readable.
 
-## README.md
-
-`README.md` is the human-facing project documentation. **Keep it up to date**
-when making changes that affect how someone builds, runs, or configures the
-project (new prerequisites, new commands, changed project structure, etc.).
+Update README.md when build/run/config procedures change.
 
 ## Agent Workflow
 
