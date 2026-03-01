@@ -49,6 +49,9 @@ pub struct ScanConfig {
     /// When set, behavior maps are stored after exploration and loaded
     /// before exploration to skip re-exploring unchanged functions.
     pub cache: Option<Arc<BehaviorMapCache>>,
+    /// Optional stratum filter. When set, only functions in the matching
+    /// call graph layers are explored; callees outside are mocked.
+    pub stratum: Option<crate::stratum::StratumSpec>,
 }
 
 /// Result of exploring a single function during a scan.
@@ -86,6 +89,8 @@ pub enum ScanError {
     Cycle(#[from] CallGraphError),
     #[error("frontend error: {0}")]
     Frontend(#[from] FrontendError),
+    #[error("stratum error: {0}")]
+    Stratum(String),
 }
 
 /// Per-function outcome used internally during parallel scan.
@@ -353,7 +358,19 @@ pub async fn parallel_scan(
 
     // Flatten test order into layers. Each layer contains functions whose
     // callees are all in previous layers.
-    let layers = build_layers(&order_entries, &call_graph);
+    let all_layers = build_layers(&order_entries, &call_graph);
+
+    // Apply stratum filter: only explore functions in selected layers.
+    let layers: Vec<Vec<String>> = if let Some(ref spec) = config.stratum {
+        let max_layer = if all_layers.is_empty() { 0 } else { all_layers.len() - 1 };
+        let range = crate::stratum::resolve_range(spec, max_layer)?;
+        crate::stratum::filter_layers(&all_layers, &range)
+            .into_iter()
+            .map(|(_, funcs)| funcs.clone())
+            .collect()
+    } else {
+        all_layers
+    };
 
     let analysis_map: HashMap<&str, &FunctionAnalysis> =
         analyses.iter().map(|a| (a.name.as_str(), a)).collect();
@@ -794,7 +811,17 @@ pub fn format_dry_run_plan(
 ) -> Result<String, ScanError> {
     let call_graph = CallGraph::from_analyses(analyses);
     let order_entries = call_graph.test_order()?;
-    let layers = build_layers(&order_entries, &call_graph);
+    let all_layers = build_layers(&order_entries, &call_graph);
+    let total_layer_count = all_layers.len();
+
+    // Apply stratum filter if specified.
+    let selected_layers: Vec<(usize, &Vec<String>)> = if let Some(ref spec) = config.stratum {
+        let max_layer = if all_layers.is_empty() { 0 } else { all_layers.len() - 1 };
+        let range = crate::stratum::resolve_range(spec, max_layer)?;
+        crate::stratum::filter_layers(&all_layers, &range)
+    } else {
+        all_layers.iter().enumerate().collect()
+    };
 
     // Collect unique source files.
     let file_count = config
@@ -803,18 +830,26 @@ pub fn format_dry_run_plan(
         .collect::<HashSet<_>>()
         .len();
 
+    let selected_function_count: usize = selected_layers.iter().map(|(_, l)| l.len()).sum();
     let total_functions = analyses.len();
-    let layer_count = layers.len();
 
     let mut out = String::new();
 
     out.push_str("Dry-run scan plan\n");
     out.push_str("=================\n\n");
 
-    out.push_str(&format!(
-        "Summary: {} function(s) across {} file(s), {} layer(s)\n",
-        total_functions, file_count, layer_count,
-    ));
+    if config.stratum.is_some() {
+        out.push_str(&format!(
+            "Summary: {} of {} function(s) across {} file(s), {} of {} layer(s) selected\n",
+            selected_function_count, total_functions, file_count,
+            selected_layers.len(), total_layer_count,
+        ));
+    } else {
+        out.push_str(&format!(
+            "Summary: {} function(s) across {} file(s), {} layer(s)\n",
+            total_functions, file_count, total_layer_count,
+        ));
+    }
     out.push_str(&format!(
         "Workers: {} {}\n",
         config.parallelism,
@@ -825,13 +860,14 @@ pub fn format_dry_run_plan(
     // Worst case per layer = ceil(functions / workers) * timeout_per_fn.
     let timeout_secs = config.timeout_per_fn.as_secs();
     let mut total_estimate_secs: u64 = 0;
-    for layer in &layers {
+    for (_, layer) in &selected_layers {
         let batches = (layer.len() as u64 + config.parallelism as u64 - 1)
             / config.parallelism.max(1) as u64;
         total_estimate_secs += batches * timeout_secs;
     }
+    let selected_layer_count = selected_layers.len();
     out.push_str(&format!(
-        "Estimated time: <={total_estimate_secs}s ({layer_count} layer(s) x {timeout_secs}s timeout)\n",
+        "Estimated time: <={total_estimate_secs}s ({selected_layer_count} layer(s) x {timeout_secs}s timeout)\n",
     ));
 
     // Build analysis lookup.
@@ -841,7 +877,13 @@ pub fn format_dry_run_plan(
     // All function names in the scan set.
     let scan_set: HashSet<&str> = analyses.iter().map(|a| a.name.as_str()).collect();
 
-    for (layer_idx, layer) in layers.iter().enumerate() {
+    // Functions in selected layers (for cross-stratum mock labelling).
+    let selected_set: HashSet<&str> = selected_layers
+        .iter()
+        .flat_map(|(_, layer)| layer.iter().map(|s| s.as_str()))
+        .collect();
+
+    for &(layer_idx, layer) in &selected_layers {
         let parallelizable = if layer.len() > 1 { ", parallelizable" } else { "" };
         out.push_str(&format!(
             "\nLayer {} ({} function(s){}):\n",
@@ -886,7 +928,13 @@ pub fn format_dry_run_plan(
             } else {
                 internal_deps
                     .iter()
-                    .map(|d| format!("{d} (behavior-mock)"))
+                    .map(|d| {
+                        if selected_set.contains(d) {
+                            format!("{d} (behavior-mock)")
+                        } else {
+                            format!("{d} (outside stratum — auto-mock)")
+                        }
+                    })
                     .collect::<Vec<_>>()
                     .join(", ")
             };
@@ -1393,6 +1441,7 @@ mod tests {
             parallelism: 2,
             timeout_per_fn: Duration::from_secs(10),
             cache: None,
+            stratum: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -1453,6 +1502,7 @@ mod tests {
             parallelism: 1,
             timeout_per_fn: Duration::from_secs(10),
             cache: None,
+            stratum: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -1509,6 +1559,7 @@ mod tests {
             parallelism: 1,
             timeout_per_fn: Duration::from_secs(10),
             cache: Some(cache.clone()),
+            stratum: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -1564,6 +1615,7 @@ mod tests {
             parallelism: 2,
             timeout_per_fn: Duration::from_secs(30),
             cache: None,
+            stratum: None,
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -1607,6 +1659,7 @@ mod tests {
             parallelism: 1,
             timeout_per_fn: Duration::from_secs(30),
             cache: None,
+            stratum: None,
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -1633,6 +1686,7 @@ mod tests {
             parallelism: 1,
             timeout_per_fn: Duration::from_secs(30),
             cache: None,
+            stratum: None,
         };
 
         let plan = format_dry_run_plan(&analyses, &skipped, &config).expect("should succeed");
@@ -1650,6 +1704,7 @@ mod tests {
             parallelism: 1,
             timeout_per_fn: Duration::from_secs(30),
             cache: None,
+            stratum: None,
         };
 
         let plan = format_dry_run_plan(&[], &[], &config).expect("should succeed");

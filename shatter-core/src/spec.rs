@@ -77,6 +77,18 @@ pub struct SpecClass {
     pub invariants: Vec<ClassifiedInvariant>,
 }
 
+/// Per-file spec bundle: all function specs from a single source file.
+///
+/// Used by `--output` to write a single JSON file containing specs for every
+/// explored function in a source file, keyed by file path.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FileSpecBundle {
+    /// Source file path (e.g., "src/math.ts").
+    pub file: String,
+    /// Specs for each explored function in this file.
+    pub functions: Vec<FunctionSpec>,
+}
+
 /// Complete behavioral specification of a function.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FunctionSpec {
@@ -383,6 +395,11 @@ pub fn format_spec_markdown(spec: &FunctionSpec) -> String {
 /// Returns a `Result` because serialization can theoretically fail.
 pub fn format_spec_json(spec: &FunctionSpec) -> Result<String, serde_json::Error> {
     serde_json::to_string_pretty(spec)
+}
+
+/// Format a collection of per-file spec bundles as machine-readable JSON.
+pub fn format_file_spec_json(bundles: &[FileSpecBundle]) -> Result<String, serde_json::Error> {
+    serde_json::to_string_pretty(bundles)
 }
 
 /// Badge text for provenance level.
@@ -1075,5 +1092,25 @@ mod tests {
 
         assert!(parsed["invariants"].is_array(), "invariants should be present when populated");
         assert_eq!(parsed["invariants"][0]["label"], "input.x > 0");
+    }
+
+    #[test]
+    fn file_spec_bundle_round_trip() {
+        let spec = build_spec(
+            &make_exploration_result("add", 10, 2),
+            &[],
+            Some("src/math.ts:1".to_string()),
+        );
+        let bundle = FileSpecBundle {
+            file: "src/math.ts".to_string(),
+            functions: vec![spec],
+        };
+        let bundles = vec![bundle];
+        let json = format_file_spec_json(&bundles).expect("serialize");
+        let parsed: Vec<FileSpecBundle> = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].file, "src/math.ts");
+        assert_eq!(parsed[0].functions.len(), 1);
+        assert_eq!(parsed[0].functions[0].function_name, "add");
     }
 }

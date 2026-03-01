@@ -236,6 +236,11 @@ enum CliCommand {
         #[arg(long)]
         progress: bool,
 
+        /// Stratum filter: explore only specific call graph layers.
+        /// Examples: "0" (leaves), "0..3", "-2..-0" (top 3 layers), "3.."
+        #[arg(long)]
+        stratum: Option<String>,
+
         /// Maximum number of iterations per function.
         #[arg(long, default_value_t = 100)]
         max_iterations: u32,
@@ -838,6 +843,7 @@ async fn run_scan(
     dry_run: bool,
     _resume: Option<&Path>,
     _mock_config: Option<&Path>,
+    stratum_spec: Option<&str>,
     log_level: LogLevel,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let report_format: report::ReportFormat = report_format_str
@@ -1047,6 +1053,16 @@ async fn run_scan(
         parallelism
     };
 
+    // Parse --stratum spec if provided.
+    let parsed_stratum = if let Some(spec_str) = stratum_spec {
+        Some(
+            shatter_core::stratum::parse_stratum_spec(spec_str)
+                .map_err(|e| e.to_string())?,
+        )
+    } else {
+        None
+    };
+
     // Dry run: show the full exploration plan without executing.
     if dry_run {
         let scan_config = ScanConfig {
@@ -1056,6 +1072,7 @@ async fn run_scan(
             parallelism: effective_parallelism,
             timeout_per_fn: Duration::from_secs(timeout_per_fn),
             cache: None,
+            stratum: parsed_stratum.clone(),
         };
         let plan = scan_orchestrator::format_dry_run_plan(
             &all_analyses,
@@ -1101,6 +1118,7 @@ async fn run_scan(
         parallelism: effective_parallelism,
         timeout_per_fn: Duration::from_secs(timeout_per_fn),
         cache,
+        stratum: parsed_stratum,
     };
 
     let scan_start = Instant::now();
@@ -2006,6 +2024,7 @@ async fn main() -> ExitCode {
             request_timeout,
             exec_timeout,
             build_timeout,
+            stratum,
         } => {
             run_scan(
                 &directory,
@@ -2030,6 +2049,7 @@ async fn main() -> ExitCode {
                 dry_run,
                 resume.as_deref(),
                 mock_config.as_deref(),
+                stratum.as_deref(),
                 log_level,
             )
             .await
