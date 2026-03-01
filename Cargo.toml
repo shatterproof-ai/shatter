@@ -1,4 +1,4 @@
 [workspace]
 members = ["shatter-core", "shatter-cli"]
-exclude = ["shatter-rust", "examples/rust"]
+exclude = ["shatter-rust", "shatter-rust-runtime", "examples/rust"]
 resolver = "2"
