@@ -20,7 +20,8 @@ import type {
   SymExpr,
   SideEffect,
 } from "./protocol.js";
-import { RECORD_FUNCTION, BRANCH_FUNCTION } from "./instrumentor.js";
+import { RECORD_FUNCTION, BRANCH_FUNCTION, MOCK_REGISTRY, MOCK_CALL_FUNCTION } from "./instrumentor.js";
+import type { MockConfig, ExternalCall } from "./protocol.js";
 
 /** Cache of compiled modules to avoid re-transpiling on every execute call. */
 const compiledModuleCache = new Map<string, Record<string, unknown>>();
@@ -194,6 +195,7 @@ interface RawExecuteResult {
   path_constraints: SymConstraint[];
   lines_executed: number[];
   side_effects: SideEffect[];
+  calls_to_external: ExternalCall[];
 }
 
 /**
@@ -273,6 +275,7 @@ export function executeFunction(
     path_constraints: [],
     lines_executed: [],
     performance: metrics.performance,
+    calls_to_external: [],
   };
 }
 
@@ -287,6 +290,7 @@ export function executeInstrumented(
   instrumentedSource: string,
   functionName: string,
   inputs: unknown[],
+  mocks: MockConfig[] = [],
 ): RawExecuteResult {
   // Transpile instrumented TS to JS
   const jsResult = ts.transpileModule(instrumentedSource, {
@@ -301,6 +305,7 @@ export function executeInstrumented(
   const linesExecuted: number[] = [];
   const branchDecisions: BranchDecision[] = [];
   const sideEffects: SideEffect[] = [];
+  const externalCalls: ExternalCall[] = [];
 
   // Define the runtime callbacks
   const recordFn = (line: number): void => {
@@ -327,6 +332,40 @@ export function executeInstrumented(
     return conditionResult;
   };
 
+  // Build mock registry from MockConfig array
+  const mockRegistry: Record<string, (...args: unknown[]) => unknown> = {};
+  for (const mock of mocks) {
+    if (mock.default_behavior === "passthrough") {
+      continue;
+    }
+    let callIndex = 0;
+    const returnValues = mock.return_values;
+    mockRegistry[mock.symbol] = (...args: unknown[]): unknown => {
+      if (returnValues.length > 0) {
+        const idx = mock.default_behavior === "repeat_last"
+          ? Math.min(callIndex, returnValues.length - 1)
+          : callIndex % returnValues.length;
+        callIndex++;
+        return returnValues[idx];
+      }
+      return undefined;
+    };
+  }
+
+  // Mock call recorder
+  const mockCallFn = (
+    moduleName: string,
+    symbolName: string,
+    args: unknown[],
+    returnValue: unknown,
+  ): void => {
+    externalCalls.push({
+      symbol: `${moduleName}:${symbolName}`,
+      args: Array.isArray(args) ? args : [],
+      return_value: returnValue,
+    });
+  };
+
   // Build the execution context with capturing console
   const capturingConsole = createCapturingConsole(sideEffects);
   const moduleExports: Record<string, unknown> = {};
@@ -345,6 +384,8 @@ export function executeInstrumented(
     clearInterval,
     [RECORD_FUNCTION]: recordFn,
     [BRANCH_FUNCTION]: branchFn,
+    [MOCK_REGISTRY]: mockRegistry,
+    [MOCK_CALL_FUNCTION]: mockCallFn,
   });
 
   vm.runInContext(jsResult.outputText, sandbox, { filename: "instrumented.js" });
@@ -409,6 +450,7 @@ export function executeInstrumented(
     path_constraints: pathConstraints,
     lines_executed: linesExecuted,
     performance: metrics.performance,
+    calls_to_external: externalCalls,
   };
 }
 
@@ -428,7 +470,7 @@ export function buildExecuteResponse(
     thrown_error: rawResult.thrown_error,
     branch_path: rawResult.branch_path,
     lines_executed: rawResult.lines_executed,
-    calls_to_external: [],
+    calls_to_external: rawResult.calls_to_external,
     path_constraints: rawResult.path_constraints,
     side_effects: rawResult.side_effects,
     performance: rawResult.performance,

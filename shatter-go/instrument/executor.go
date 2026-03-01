@@ -73,10 +73,20 @@ type PerfMetrics struct {
 	HeapAllocatedBytes int     `json:"heap_allocated_bytes"`
 }
 
+// MockConfig specifies how to mock an external dependency during execution.
+type MockConfig struct {
+	Symbol           string `json:"symbol"`
+	ReturnValues     []any  `json:"return_values"`
+	ShouldTrackCalls bool   `json:"should_track_calls"`
+	DefaultBehavior  string `json:"default_behavior"`
+}
+
 // ExecuteFunction instruments the given source file for the target function,
 // generates a main harness that calls it with the given JSON inputs, compiles,
 // runs, and returns the collected results.
-func ExecuteFunction(sourcePath, funcName string, inputs []json.RawMessage) (*ExecuteResult, error) {
+// The mocks parameter provides mock configurations for external dependencies
+// (reserved for future harness injection support).
+func ExecuteFunction(sourcePath, funcName string, inputs []json.RawMessage, mocks ...[]MockConfig) (*ExecuteResult, error) {
 	// Analyze the function to get parameter types
 	params, returnInfo, err := analyzeForExecution(sourcePath, funcName)
 	if err != nil {

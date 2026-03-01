@@ -179,7 +179,7 @@ export function handleRequest(request: Request): { response: Response; shutdown:
 
         let rawResult;
         if (instrumentedSource) {
-          rawResult = executeInstrumented(instrumentedSource, funcName, request.inputs);
+          rawResult = executeInstrumented(instrumentedSource, funcName, request.inputs, request.mocks ?? []);
         } else {
           rawResult = executeFunction(fileForExec, funcRef, request.inputs);
         }

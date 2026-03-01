@@ -258,7 +258,17 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 		return resp
 	}
 
-	result, err := instrument.ExecuteFunction(file, *req.Function, req.Inputs)
+	// Convert protocol MockConfigs to instrument MockConfigs and pass to executor.
+	var execMocks []instrument.MockConfig
+	for _, m := range req.Mocks {
+		execMocks = append(execMocks, instrument.MockConfig{
+			Symbol:           m.Symbol,
+			ReturnValues:     m.ReturnValues,
+			ShouldTrackCalls: m.ShouldTrackCalls,
+			DefaultBehavior:  m.DefaultBehavior,
+		})
+	}
+	result, err := instrument.ExecuteFunction(file, *req.Function, req.Inputs, execMocks)
 	if err != nil {
 		resp.Status = "error"
 		if strings.Contains(err.Error(), "function not found") {

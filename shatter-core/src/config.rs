@@ -101,6 +101,10 @@ pub struct DefaultsConfig {
     /// Param-name-to-generator-file mappings (e.g. `"authToken": "./generators/token.js"`).
     #[serde(default)]
     pub param_generators: Option<HashMap<String, String>>,
+
+    /// Per-symbol mock overrides for auto-mocking (e.g. `"db.query": { return_values: [...] }`).
+    #[serde(default)]
+    pub mocks: Option<HashMap<String, crate::auto_mock::MockOverride>>,
 }
 
 
@@ -138,6 +142,10 @@ pub struct FunctionConfig {
     /// Param-name-to-generator-file mappings, overriding defaults.
     #[serde(default)]
     pub param_generators: Option<HashMap<String, String>>,
+
+    /// Per-symbol mock overrides, overriding defaults.
+    #[serde(default)]
+    pub mocks: Option<HashMap<String, crate::auto_mock::MockOverride>>,
 }
 
 /// A single candidate input for a function.
@@ -177,6 +185,9 @@ pub struct ResolvedFunctionConfig {
 
     /// Merged param-name-to-generator-file mappings (absolute paths).
     pub param_generators: HashMap<String, PathBuf>,
+
+    /// Merged per-symbol mock overrides for auto-mocking.
+    pub mock_overrides: HashMap<String, crate::auto_mock::MockOverride>,
 }
 
 /// A config file found during hierarchical discovery, paired with its directory.
@@ -324,6 +335,7 @@ pub fn merge_configs(configs: &[ShatterConfig]) -> ShatterConfig {
             setup_mode,
             generators,
             param_generators,
+            mocks: None,
         },
         functions,
         opaque_types,
@@ -383,6 +395,20 @@ fn resolve_from_merged(
         .or(config.defaults.setup_mode)
         .unwrap_or(SetupMode::PerFunction);
 
+    // Merge mock overrides: defaults first, then function-level overrides on top.
+    let mut mock_overrides: HashMap<String, crate::auto_mock::MockOverride> = config
+        .defaults
+        .mocks
+        .clone()
+        .unwrap_or_default();
+    if let Some(fc) = func_config
+        && let Some(ref func_mocks) = fc.mocks
+    {
+        for (k, v) in func_mocks {
+            mock_overrides.insert(k.clone(), v.clone());
+        }
+    }
+
     Ok(ResolvedFunctionConfig {
         max_iterations,
         timeout,
@@ -394,6 +420,7 @@ fn resolve_from_merged(
         setup_mode,
         generators: HashMap::new(),
         param_generators: HashMap::new(),
+        mock_overrides,
     })
 }
 
@@ -707,6 +734,7 @@ functions:
                 setup_mode: None,
                 generators: None,
                 param_generators: None,
+                mocks: None,
             },
         );
 
@@ -722,6 +750,7 @@ functions:
                 setup_mode: None,
                 generators: None,
                 param_generators: None,
+                mocks: None,
             },
         );
 
@@ -761,6 +790,7 @@ functions:
                 setup_mode: None,
                 generators: None,
                 param_generators: None,
+                mocks: None,
             },
         );
 
@@ -821,6 +851,7 @@ functions:
                 setup_mode: None,
                 generators: None,
                 param_generators: None,
+                mocks: None,
             },
         );
 

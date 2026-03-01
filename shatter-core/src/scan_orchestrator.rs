@@ -198,6 +198,18 @@ pub async fn scan(
                 mocks_used.push(callee.clone());
             }
         }
+
+        // Generate auto-mocks for remaining unmocked dependencies.
+        let auto_mocks = crate::auto_mock::generate_auto_mocks(
+            &analysis.dependencies,
+            None,
+            &std::collections::HashMap::new(),
+            &mocks,
+        );
+        for am in &auto_mocks {
+            mocks_used.push(am.symbol.clone());
+        }
+        mocks.extend(auto_mocks);
         mocks_used.sort();
 
         let file = config
@@ -397,8 +409,20 @@ pub async fn parallel_scan(
                     mocks_used.push(callee.clone());
                 }
             }
-            mocks_used.sort();
             drop(maps);
+
+            // Generate auto-mocks for remaining unmocked dependencies.
+            let auto_mocks = crate::auto_mock::generate_auto_mocks(
+                &analysis.dependencies,
+                None,
+                &std::collections::HashMap::new(),
+                &mocks,
+            );
+            for am in &auto_mocks {
+                mocks_used.push(am.symbol.clone());
+            }
+            mocks.extend(auto_mocks);
+            mocks_used.sort();
 
             let file = config
                 .file_map
