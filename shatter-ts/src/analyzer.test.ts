@@ -429,4 +429,73 @@ describe("analyzeFile", () => {
       expect(fn.dependencies).toEqual([]);
     });
   });
+
+  describe("literal extraction", () => {
+    it("extracts string literals from if conditions and return values", () => {
+      const results = analyzeFile(path.join(fixtures, "literals.ts"), "classifyPriority");
+      const fn = results[0]!;
+      const strs = (fn.literals ?? [])
+        .filter((l): l is { type: "str"; value: string } => l.type === "str")
+        .map((l) => l.value);
+      expect(strs).toContain("express");
+      expect(strs).toContain("economy");
+      expect(strs).toContain("standard");
+    });
+
+    it("extracts numeric literals from switch cases", () => {
+      const results = analyzeFile(path.join(fixtures, "literals.ts"), "gradeScore");
+      const fn = results[0]!;
+      const ints = (fn.literals ?? [])
+        .filter((l): l is { type: "int"; value: number } => l.type === "int")
+        .map((l) => l.value);
+      expect(ints).toContain(90);
+      expect(ints).toContain(70);
+      expect(ints).toContain(50);
+    });
+
+    it("extracts regex patterns", () => {
+      const results = analyzeFile(path.join(fixtures, "literals.ts"), "validateZip");
+      const fn = results[0]!;
+      const regexes = (fn.literals ?? []).filter(
+        (l): l is { type: "regex"; pattern: string } => l.type === "regex",
+      );
+      expect(regexes.length).toBe(1);
+      expect(regexes[0]!.pattern).toBe("^\\d{5}$");
+    });
+
+    it("extracts default parameter values", () => {
+      const results = analyzeFile(path.join(fixtures, "literals.ts"), "greetWithDefault");
+      const fn = results[0]!;
+      const strs = (fn.literals ?? [])
+        .filter((l): l is { type: "str"; value: string } => l.type === "str")
+        .map((l) => l.value);
+      expect(strs).toContain("World");
+    });
+
+    it("omits literals field when none found", () => {
+      const results = analyzeFile(path.join(fixtures, "literals.ts"), "noLiterals");
+      const fn = results[0]!;
+      expect(fn.literals).toBeUndefined();
+    });
+
+    it("extracts literals from arrow functions", () => {
+      const results = analyzeFile(path.join(fixtures, "literals.ts"), "classifyArrow");
+      const fn = results[0]!;
+      const strs = (fn.literals ?? [])
+        .filter((l): l is { type: "str"; value: string } => l.type === "str")
+        .map((l) => l.value);
+      expect(strs).toContain("admin");
+      expect(strs).toContain("privileged");
+      expect(strs).toContain("normal");
+    });
+
+    it("deduplicates repeated literals", () => {
+      const results = analyzeFile(path.join(fixtures, "literals.ts"), "withDuplicates");
+      const fn = results[0]!;
+      const okCount = (fn.literals ?? []).filter(
+        (l) => l.type === "str" && (l as { type: "str"; value: string }).value === "ok",
+      ).length;
+      expect(okCount).toBe(1);
+    });
+  });
 });

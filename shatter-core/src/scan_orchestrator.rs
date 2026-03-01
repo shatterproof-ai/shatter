@@ -1008,6 +1008,7 @@ mod tests {
             return_type: TypeInfo::Unknown,
             start_line: 1,
             end_line: 5,
+            literals: vec![],
         }
     }
 
@@ -1406,6 +1407,7 @@ mod tests {
                 return_type: TypeInfo::Unknown,
                 start_line: 1,
                 end_line: 5,
+                literals: vec![],
             },
             FunctionAnalysis {
                 name: "caller".to_string(),
@@ -1427,6 +1429,7 @@ mod tests {
                 return_type: TypeInfo::Unknown,
                 start_line: 1,
                 end_line: 5,
+                literals: vec![],
             },
         ];
 
@@ -1490,6 +1493,7 @@ mod tests {
             return_type: TypeInfo::Unknown,
             start_line: 1,
             end_line: 5,
+            literals: vec![],
         }];
 
         let mut file_map = HashMap::new();
@@ -1542,6 +1546,7 @@ mod tests {
             return_type: TypeInfo::Unknown,
             start_line: 1,
             end_line: 5,
+            literals: vec![],
         }];
 
         let mut file_map = HashMap::new();
@@ -1593,6 +1598,7 @@ mod tests {
             return_type,
             start_line: 1,
             end_line: 10,
+            literals: vec![],
         }
     }
 

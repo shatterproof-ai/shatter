@@ -239,6 +239,7 @@ mod tests {
             return_type: TypeInfo::Int,
             start_line: 1,
             end_line: 10,
+            literals: vec![],
         }
     }
 
@@ -306,6 +307,7 @@ mod tests {
             return_type: TypeInfo::Bool,
             start_line: 1,
             end_line: 15,
+            literals: vec![],
         };
 
         let entry = function_entry_from_analysis(PathBuf::from("src/app.ts"), analysis);

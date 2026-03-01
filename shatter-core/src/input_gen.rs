@@ -871,6 +871,94 @@ pub fn generate_inputs_with_custom(
         .collect()
 }
 
+// ---------------------------------------------------------------------------
+// Literal-derived candidate inputs
+// ---------------------------------------------------------------------------
+
+use crate::boundary_dict::get_boundary_values;
+use crate::protocol::LiteralValue;
+use crate::types::ParamInfo;
+
+/// Convert extracted literal values from static analysis into candidate input vectors.
+///
+/// For each `LiteralValue`, produces one input vector per parameter whose type
+/// is compatible with the literal's type. Other parameters receive a neutral default
+/// (first boundary value for their type).
+///
+/// Deduplication: identical `(literal, param_index)` pairs produce a single vector.
+pub fn literals_to_candidate_inputs(
+    params: &[ParamInfo],
+    literals: &[LiteralValue],
+) -> Vec<Vec<Value>> {
+    if params.is_empty() || literals.is_empty() {
+        return Vec::new();
+    }
+
+    // Neutral default per parameter: first boundary value or null
+    let defaults: Vec<Value> = params
+        .iter()
+        .map(|p| {
+            get_boundary_values(&p.typ)
+                .into_iter()
+                .next()
+                .map(|e| e.value)
+                .unwrap_or(Value::Null)
+        })
+        .collect();
+
+    // Deduplicate literals first
+    let mut lit_seen = std::collections::HashSet::new();
+    let deduped: Vec<&LiteralValue> = literals
+        .iter()
+        .filter(|lit| {
+            let key = serde_json::to_string(lit).unwrap_or_default();
+            lit_seen.insert(key)
+        })
+        .collect();
+
+    // Deduplicate by (param_index, serialized_value)
+    let mut seen = std::collections::HashSet::new();
+    let mut result = Vec::new();
+
+    for lit in &deduped {
+        for (idx, param) in params.iter().enumerate() {
+            let Some(val) = literal_matches_type(lit, &param.typ) else {
+                continue;
+            };
+            let dedup_key = (idx, serde_json::to_string(&val).unwrap_or_default());
+            if !seen.insert(dedup_key) {
+                continue;
+            }
+            let mut row = defaults.clone();
+            row[idx] = val;
+            result.push(row);
+        }
+    }
+
+    result
+}
+
+/// Check whether a `LiteralValue` is type-compatible with a `TypeInfo` and return
+/// the corresponding `serde_json::Value` if so.
+fn literal_matches_type(lit: &LiteralValue, typ: &TypeInfo) -> Option<Value> {
+    match (lit, typ) {
+        (LiteralValue::Int { value }, TypeInfo::Int) => Some(json!(value)),
+        (LiteralValue::Int { value }, TypeInfo::Float) => Some(json!(*value as f64)),
+        (LiteralValue::Float { value }, TypeInfo::Float) => Some(json!(value)),
+        (LiteralValue::Str { value }, TypeInfo::Str) => Some(json!(value)),
+        (LiteralValue::Bool { value }, TypeInfo::Bool) => Some(json!(value)),
+        // For union types, try each variant
+        (_, TypeInfo::Union { variants }) => {
+            variants.iter().find_map(|v| literal_matches_type(lit, v))
+        }
+        // For nullable, try the inner type
+        (_, TypeInfo::Nullable { inner }) => literal_matches_type(lit, inner),
+        // Regex literal → Str param: try the pattern as a string input
+        (LiteralValue::Regex { pattern }, TypeInfo::Str) => Some(json!(pattern)),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1411,5 +1499,94 @@ mod tests {
         assert_eq!(store.take("/gen/user.ts", "User"), Some(json!(1)));
         assert_eq!(store.take("/gen/user.ts", "User"), Some(json!(2)));
         assert_eq!(store.take("/gen/user.ts", "User"), None);
+    }
+
+    // -- Literal-derived candidate input tests --
+
+    #[test]
+    fn literals_to_candidates_str_matches_str_param() {
+        let params = vec![ParamInfo { name: "s".into(), typ: TypeInfo::Str, type_name: None }];
+        let literals = vec![LiteralValue::Str { value: "express".into() }];
+        let candidates = literals_to_candidate_inputs(&params, &literals);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0][0], json!("express"));
+    }
+
+    #[test]
+    fn literals_to_candidates_int_does_not_match_str_param() {
+        let params = vec![ParamInfo { name: "s".into(), typ: TypeInfo::Str, type_name: None }];
+        let literals = vec![LiteralValue::Int { value: 42 }];
+        let candidates = literals_to_candidate_inputs(&params, &literals);
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn literals_to_candidates_deduplicates_same_value() {
+        let params = vec![ParamInfo { name: "n".into(), typ: TypeInfo::Int, type_name: None }];
+        let literals = vec![
+            LiteralValue::Int { value: 100 },
+            LiteralValue::Int { value: 100 },
+        ];
+        let candidates = literals_to_candidate_inputs(&params, &literals);
+        assert_eq!(candidates.len(), 1);
+    }
+
+    #[test]
+    fn literals_to_candidates_int_matches_float_param() {
+        let params = vec![ParamInfo { name: "x".into(), typ: TypeInfo::Float, type_name: None }];
+        let literals = vec![LiteralValue::Int { value: 5 }];
+        let candidates = literals_to_candidate_inputs(&params, &literals);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0][0], json!(5.0));
+    }
+
+    #[test]
+    fn literals_to_candidates_multi_param_uses_defaults() {
+        let params = vec![
+            ParamInfo { name: "s".into(), typ: TypeInfo::Str, type_name: None },
+            ParamInfo { name: "n".into(), typ: TypeInfo::Int, type_name: None },
+        ];
+        let literals = vec![LiteralValue::Str { value: "express".into() }];
+        let candidates = literals_to_candidate_inputs(&params, &literals);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0][0], json!("express"));
+        // second param gets a boundary default for Int (which is 0)
+        assert_eq!(candidates[0][1], json!(0));
+    }
+
+    #[test]
+    fn literals_to_candidates_nullable_unwraps() {
+        let params = vec![ParamInfo {
+            name: "s".into(),
+            typ: TypeInfo::Nullable { inner: Box::new(TypeInfo::Str) },
+            type_name: None,
+        }];
+        let literals = vec![LiteralValue::Str { value: "hello".into() }];
+        let candidates = literals_to_candidate_inputs(&params, &literals);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0][0], json!("hello"));
+    }
+
+    #[test]
+    fn literals_to_candidates_empty_params_returns_empty() {
+        let literals = vec![LiteralValue::Str { value: "test".into() }];
+        let candidates = literals_to_candidate_inputs(&[], &literals);
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn literals_to_candidates_empty_literals_returns_empty() {
+        let params = vec![ParamInfo { name: "x".into(), typ: TypeInfo::Int, type_name: None }];
+        let candidates = literals_to_candidate_inputs(&params, &[]);
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn literals_to_candidates_regex_matches_str_param() {
+        let params = vec![ParamInfo { name: "s".into(), typ: TypeInfo::Str, type_name: None }];
+        let literals = vec![LiteralValue::Regex { pattern: "\\d{5}".into() }];
+        let candidates = literals_to_candidate_inputs(&params, &literals);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0][0], json!("\\d{5}"));
     }
 }

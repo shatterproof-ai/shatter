@@ -14,8 +14,8 @@ use rand::SeedableRng;
 use crate::config::SetupMode;
 use crate::frontend::{Frontend, FrontendError};
 use crate::input_gen::{
-    generate_inputs_with_custom, generate_random_inputs, prefetch_custom_values, PrefetchedValues,
-    ValueSource,
+    generate_inputs_with_custom, generate_random_inputs, literals_to_candidate_inputs,
+    prefetch_custom_values, PrefetchedValues, ValueSource,
 };
 use crate::orchestrator::FrontendCapabilities;
 use crate::protocol::{
@@ -237,6 +237,14 @@ pub async fn explore_function(
     let mut iterations: u32 = 0;
     let mut path_counts: HashMap<u64, u32> = HashMap::new();
 
+    // --- Literal-derived seed inputs ---
+    // Execute extracted literals first to cover magic-value branches before random exploration.
+    let literal_candidates = literals_to_candidate_inputs(&analysis.params, &analysis.literals);
+    let literal_budget = literal_candidates
+        .len()
+        .min(config.max_iterations as usize / 2);
+    let mut literal_iter = literal_candidates.into_iter().take(literal_budget).peekable();
+
     for _ in 0..config.max_iterations {
         iterations += 1;
 
@@ -249,7 +257,10 @@ pub async fn explore_function(
         }
 
         // --- Input generation ---
-        let inputs = if use_generators {
+        // Use literal-derived candidates first, then fall back to random/custom generation.
+        let inputs = if let Some(lit_inputs) = literal_iter.next() {
+            lit_inputs
+        } else if use_generators {
             generate_inputs_with_custom(
                 &analysis.params,
                 &config.value_sources,
@@ -715,6 +726,7 @@ mod tests {
             params: vec![ParamInfo { name: "x".into(), typ: TypeInfo::Int, type_name: None }],
             branches: vec![], dependencies: vec![],
             return_type: TypeInfo::Unknown, start_line: 1, end_line: 5,
+            literals: vec![],
         }
     }
 

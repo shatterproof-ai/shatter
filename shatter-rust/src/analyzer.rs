@@ -21,7 +21,7 @@ use syn::spanned::Spanned;
 
 use crate::protocol::{
     BinOpKind, BranchInfo, BranchType, ComplexKind, ConstValue, DependencyKind,
-    ExternalDependency, FunctionAnalysis, ParamInfo, SymExpr, TypeInfo, UnOpKind,
+    ExternalDependency, FunctionAnalysis, LiteralValue, ParamInfo, SymExpr, TypeInfo, UnOpKind,
 };
 
 /// Error type for analysis failures.
@@ -133,6 +133,7 @@ fn analyze_function(item_fn: &syn::ItemFn, structs: &StructDefs) -> FunctionAnal
 
     let branches = extract_branches(&item_fn.block, &param_names);
     let dependencies = extract_dependencies(&item_fn.block, &param_names);
+    let literals = extract_literals(&item_fn.block);
 
     FunctionAnalysis {
         name,
@@ -143,6 +144,7 @@ fn analyze_function(item_fn: &syn::ItemFn, structs: &StructDefs) -> FunctionAnal
         return_type,
         start_line,
         end_line,
+        literals,
     }
 }
 
@@ -1121,6 +1123,187 @@ fn is_param_based_expr(expr: &syn::Expr, param_names: &HashSet<String>) -> bool 
     }
 }
 
+// ─── Literal Extraction ──────────────────────────────────────────────────────
+
+/// Walk a function block and collect all literal values, deduplicated.
+fn extract_literals(block: &syn::Block) -> Vec<LiteralValue> {
+    let mut seen = HashSet::new();
+    let mut results = Vec::new();
+
+    fn add(lit: LiteralValue, seen: &mut HashSet<String>, results: &mut Vec<LiteralValue>) {
+        let key = serde_json::to_string(&lit).unwrap_or_default();
+        if seen.insert(key) {
+            results.push(lit);
+        }
+    }
+
+    fn walk_expr(expr: &syn::Expr, seen: &mut HashSet<String>, results: &mut Vec<LiteralValue>) {
+        match expr {
+            syn::Expr::Lit(lit_expr) => match &lit_expr.lit {
+                syn::Lit::Int(li) => {
+                    if let Ok(v) = li.base10_parse::<i64>() {
+                        add(LiteralValue::Int { value: v }, seen, results);
+                    }
+                }
+                syn::Lit::Float(lf) => {
+                    if let Ok(v) = lf.base10_parse::<f64>() {
+                        add(LiteralValue::Float { value: v }, seen, results);
+                    }
+                }
+                syn::Lit::Str(ls) => {
+                    add(LiteralValue::Str { value: ls.value() }, seen, results);
+                }
+                syn::Lit::Bool(lb) => {
+                    add(LiteralValue::Bool { value: lb.value }, seen, results);
+                }
+                syn::Lit::Byte(lb) => {
+                    add(LiteralValue::Int { value: lb.value() as i64 }, seen, results);
+                }
+                syn::Lit::Char(lc) => {
+                    add(LiteralValue::Int { value: lc.value() as i64 }, seen, results);
+                }
+                _ => {}
+            },
+            syn::Expr::Block(eb) => walk_block(&eb.block, seen, results),
+            syn::Expr::If(ei) => {
+                walk_expr(&ei.cond, seen, results);
+                walk_block(&ei.then_branch, seen, results);
+                if let Some((_, else_branch)) = &ei.else_branch {
+                    walk_expr(else_branch, seen, results);
+                }
+            }
+            syn::Expr::Match(em) => {
+                walk_expr(&em.expr, seen, results);
+                for arm in &em.arms {
+                    walk_pat(&arm.pat, seen, results);
+                    walk_expr(&arm.body, seen, results);
+                }
+            }
+            syn::Expr::Binary(eb) => {
+                walk_expr(&eb.left, seen, results);
+                walk_expr(&eb.right, seen, results);
+            }
+            syn::Expr::Call(ec) => {
+                walk_expr(&ec.func, seen, results);
+                for arg in &ec.args {
+                    walk_expr(arg, seen, results);
+                }
+                // Detect Regex::new("pattern")
+                if let syn::Expr::Path(path_expr) = &*ec.func {
+                    let seg_names: Vec<String> =
+                        path_expr.path.segments.iter().map(|s| s.ident.to_string()).collect();
+                    let is_regex_new = seg_names.last().map(|s| s == "new").unwrap_or(false)
+                        && seg_names.iter().any(|s| s == "Regex");
+                    if is_regex_new
+                        && ec.args.len() == 1
+                        && let syn::Expr::Lit(syn::ExprLit {
+                            lit: syn::Lit::Str(ls), ..
+                        }) = &ec.args[0]
+                    {
+                        let key = format!("regex:{}", ls.value());
+                        if seen.insert(key) {
+                            results.push(LiteralValue::Regex { pattern: ls.value() });
+                        }
+                    }
+                }
+            }
+            syn::Expr::MethodCall(em) => {
+                walk_expr(&em.receiver, seen, results);
+                for arg in &em.args {
+                    walk_expr(arg, seen, results);
+                }
+            }
+            syn::Expr::Return(er) => {
+                if let Some(expr) = &er.expr {
+                    walk_expr(expr, seen, results);
+                }
+            }
+            syn::Expr::Assign(ea) => {
+                walk_expr(&ea.right, seen, results);
+            }
+            syn::Expr::Let(el) => {
+                walk_expr(&el.expr, seen, results);
+            }
+            syn::Expr::Paren(ep) => walk_expr(&ep.expr, seen, results),
+            syn::Expr::Unary(eu) => walk_expr(&eu.expr, seen, results),
+            syn::Expr::Reference(er) => walk_expr(&er.expr, seen, results),
+            syn::Expr::Tuple(et) => {
+                for elem in &et.elems {
+                    walk_expr(elem, seen, results);
+                }
+            }
+            syn::Expr::Index(ei) => {
+                walk_expr(&ei.expr, seen, results);
+                walk_expr(&ei.index, seen, results);
+            }
+            syn::Expr::While(ew) => {
+                walk_expr(&ew.cond, seen, results);
+                walk_block(&ew.body, seen, results);
+            }
+            syn::Expr::ForLoop(ef) => {
+                walk_expr(&ef.expr, seen, results);
+                walk_block(&ef.body, seen, results);
+            }
+            syn::Expr::Loop(el) => walk_block(&el.body, seen, results),
+            _ => {}
+        }
+    }
+
+    fn walk_pat(pat: &syn::Pat, seen: &mut HashSet<String>, results: &mut Vec<LiteralValue>) {
+        match pat {
+            syn::Pat::Lit(pl) => {
+                // PatLit holds a Lit, not an Expr; convert to ExprLit for walk_expr
+                let expr_lit = syn::ExprLit { attrs: vec![], lit: pl.lit.clone() };
+                walk_expr(&syn::Expr::Lit(expr_lit), seen, results);
+            }
+            syn::Pat::Range(pr) => {
+                if let Some(start) = &pr.start {
+                    walk_expr(start, seen, results);
+                }
+                if let Some(end) = &pr.end {
+                    walk_expr(end, seen, results);
+                }
+            }
+            syn::Pat::Or(po) => {
+                for case in &po.cases {
+                    walk_pat(case, seen, results);
+                }
+            }
+            syn::Pat::Tuple(pt) => {
+                for elem in &pt.elems {
+                    walk_pat(elem, seen, results);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn walk_stmt(stmt: &syn::Stmt, seen: &mut HashSet<String>, results: &mut Vec<LiteralValue>) {
+        match stmt {
+            syn::Stmt::Expr(expr, _) => walk_expr(expr, seen, results),
+            syn::Stmt::Local(local) => {
+                if let Some(init) = &local.init {
+                    walk_expr(&init.expr, seen, results);
+                }
+            }
+            syn::Stmt::Item(_) | syn::Stmt::Macro(_) => {}
+        }
+    }
+
+    fn walk_block(
+        block: &syn::Block,
+        seen: &mut HashSet<String>,
+        results: &mut Vec<LiteralValue>,
+    ) {
+        for stmt in &block.stmts {
+            walk_stmt(stmt, seen, results);
+        }
+    }
+
+    walk_block(block, &mut seen, &mut results);
+    results
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1668,5 +1851,75 @@ mod tests {
                 right: Box::new(SymExpr::Const(ConstValue::Int(0))),
             })
         );
+    }
+
+    // ── Literal extraction tests ──
+
+    #[test]
+    fn extract_literals_finds_strings_in_if_condition() {
+        let f = analyze_fn(
+            r#"pub fn classify(s: &str) -> &str {
+                if s == "express" { return "fast"; }
+                "slow"
+            }"#,
+            "classify",
+        );
+        let strs: Vec<&str> = f.literals.iter()
+            .filter_map(|l| if let LiteralValue::Str { value } = l { Some(value.as_str()) } else { None })
+            .collect();
+        assert!(strs.contains(&"express"), "should find 'express'");
+        assert!(strs.contains(&"fast"), "should find 'fast'");
+        assert!(strs.contains(&"slow"), "should find 'slow'");
+    }
+
+    #[test]
+    fn extract_literals_finds_ints_in_match_arm() {
+        let f = analyze_fn(
+            r#"pub fn grade(n: i32) -> &str {
+                match n {
+                    90 => "A",
+                    70 => "B",
+                    _ => "F",
+                }
+            }"#,
+            "grade",
+        );
+        let ints: Vec<i64> = f.literals.iter()
+            .filter_map(|l| if let LiteralValue::Int { value } = l { Some(*value) } else { None })
+            .collect();
+        assert!(ints.contains(&90));
+        assert!(ints.contains(&70));
+    }
+
+    #[test]
+    fn extract_literals_deduplicates_repeated_values() {
+        let f = analyze_fn(
+            r#"pub fn f(s: &str) -> bool {
+                s == "ok" || s == "ok" || s == "ok"
+            }"#,
+            "f",
+        );
+        let ok_count = f.literals.iter()
+            .filter(|l| matches!(l, LiteralValue::Str { value } if value == "ok"))
+            .count();
+        assert_eq!(ok_count, 1);
+    }
+
+    #[test]
+    fn extract_literals_empty_for_no_literals() {
+        let f = analyze_fn(
+            r#"pub fn identity(x: i32) -> i32 { x }"#,
+            "identity",
+        );
+        assert!(f.literals.is_empty());
+    }
+
+    #[test]
+    fn extract_literals_finds_bool() {
+        let f = analyze_fn(
+            r#"pub fn check() -> bool { true }"#,
+            "check",
+        );
+        assert!(f.literals.iter().any(|l| matches!(l, LiteralValue::Bool { value: true })));
     }
 }

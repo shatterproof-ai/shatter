@@ -201,6 +201,14 @@ export type Response =
 // Supporting types
 // ---------------------------------------------------------------------------
 
+/** A literal constant extracted from source code for use as a candidate test input. */
+export type LiteralValue =
+  | { type: "int"; value: number }
+  | { type: "float"; value: number }
+  | { type: "str"; value: string }
+  | { type: "bool"; value: boolean }
+  | { type: "regex"; pattern: string };
+
 export interface FunctionAnalysis {
   name: string;
   exported?: boolean;
@@ -210,6 +218,7 @@ export interface FunctionAnalysis {
   return_type: TypeInfo;
   start_line: number;
   end_line: number;
+  literals?: LiteralValue[];
 }
 
 export interface ParamInfo {

@@ -118,6 +118,7 @@ mod tests {
             return_type: TypeInfo::Int,
             start_line: 1,
             end_line: 5,
+            literals: vec![],
         }
     }
 

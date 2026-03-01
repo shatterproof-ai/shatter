@@ -18,6 +18,7 @@ import type {
   UnOpKind,
   ExternalDependency,
   DependencyKind,
+  LiteralValue,
 } from "./protocol.js";
 
 function hasExportModifier(node: ts.Node): boolean {
@@ -103,6 +104,7 @@ function analyzeFunctionDeclaration(
 
   const branches = node.body ? extractBranches(node.body, sourceFile, paramNames) : [];
   const dependencies = node.body ? extractDependencies(node.body, checker, sourceFile, paramNames) : [];
+  const literals = extractLiterals(node, sourceFile);
 
   return {
     name,
@@ -113,6 +115,7 @@ function analyzeFunctionDeclaration(
     return_type: returnType,
     start_line: startLine,
     end_line: endLine,
+    ...(literals.length > 0 ? { literals } : {}),
   };
 }
 
@@ -137,6 +140,7 @@ function analyzeArrowFunction(
   const body = ts.isBlock(node.body) ? node.body : null;
   const branches = body ? extractBranches(body, sourceFile, paramNames) : [];
   const dependencies = body ? extractDependencies(body, checker, sourceFile, paramNames) : [];
+  const literals = extractLiterals(node, sourceFile);
 
   return {
     name,
@@ -147,6 +151,7 @@ function analyzeArrowFunction(
     return_type: returnType,
     start_line: startLine,
     end_line: endLine,
+    ...(literals.length > 0 ? { literals } : {}),
   };
 }
 
@@ -892,4 +897,68 @@ function mapUnaryOp(kind: ts.PrefixUnaryOperator): UnOpKind | null {
     default:
       return null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Literal extraction — collect all constant values from a function body
+// ---------------------------------------------------------------------------
+
+/**
+ * Walk a function's body (and default parameter values) to extract all literal
+ * constant values. Results are deduplicated and returned for use as candidate
+ * test inputs by the core engine.
+ */
+function extractLiterals(
+  node: ts.FunctionDeclaration | ts.ArrowFunction,
+  sourceFile: ts.SourceFile,
+): LiteralValue[] {
+  const seen = new Set<string>();
+  const results: LiteralValue[] = [];
+
+  function add(lit: LiteralValue): void {
+    const key = JSON.stringify(lit);
+    if (!seen.has(key)) {
+      seen.add(key);
+      results.push(lit);
+    }
+  }
+
+  function walk(n: ts.Node): void {
+    if (ts.isStringLiteral(n)) {
+      add({ type: "str", value: n.text });
+    } else if (ts.isNoSubstitutionTemplateLiteral(n)) {
+      add({ type: "str", value: n.text });
+    } else if (ts.isNumericLiteral(n)) {
+      const num = Number(n.text);
+      if (Number.isInteger(num)) {
+        add({ type: "int", value: num });
+      } else {
+        add({ type: "float", value: num });
+      }
+    } else if (n.kind === ts.SyntaxKind.TrueKeyword) {
+      add({ type: "bool", value: true });
+    } else if (n.kind === ts.SyntaxKind.FalseKeyword) {
+      add({ type: "bool", value: false });
+    } else if (ts.isRegularExpressionLiteral(n)) {
+      const text = n.text;
+      const lastSlash = text.lastIndexOf("/");
+      const pattern = text.slice(1, lastSlash);
+      add({ type: "regex", pattern });
+    }
+    ts.forEachChild(n, walk);
+  }
+
+  // Walk default parameter values
+  for (const param of node.parameters) {
+    if (param.initializer) {
+      walk(param.initializer);
+    }
+  }
+
+  // Walk function body
+  if (node.body) {
+    walk(node.body);
+  }
+
+  return results;
 }

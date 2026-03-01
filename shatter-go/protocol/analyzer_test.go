@@ -657,3 +657,102 @@ func TestAnalyzeSelectExampleChannelParamsAreOpaque(t *testing.T) {
 		t.Errorf("ch2 type label = %q, want %q", fn.Params[1].Type.Label, "chan string")
 	}
 }
+
+// --- Literal extraction ---
+
+func TestExtractLiterals_StringsFromConditions(t *testing.T) {
+	results, err := AnalyzeFile(testdataPath("literals.go"), "ClassifyPriority")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	fn := results[0]
+	strs := filterLiterals(fn.Literals, "str")
+	for _, want := range []string{"express", "economy", "standard"} {
+		if !containsLitValue(strs, want) {
+			t.Errorf("missing string literal %q in %v", want, strs)
+		}
+	}
+}
+
+func TestExtractLiterals_IntsFromSwitch(t *testing.T) {
+	results, err := AnalyzeFile(testdataPath("literals.go"), "GradeScore")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	fn := results[0]
+	ints := filterLiterals(fn.Literals, "int")
+	for _, want := range []int64{90, 70, 50} {
+		if !containsLitValue(ints, want) {
+			t.Errorf("missing int literal %d in %v", want, ints)
+		}
+	}
+}
+
+func TestExtractLiterals_RegexpMustCompile(t *testing.T) {
+	results, err := AnalyzeFile(testdataPath("literals.go"), "ValidateZip")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	fn := results[0]
+	regexes := filterLiterals(fn.Literals, "regex")
+	if len(regexes) != 1 {
+		t.Fatalf("got %d regex literals, want 1", len(regexes))
+	}
+	if regexes[0].Pattern != `^\d{5}$` {
+		t.Errorf("regex pattern = %q, want %q", regexes[0].Pattern, `^\d{5}$`)
+	}
+}
+
+func TestExtractLiterals_NoLiteralsReturnsEmpty(t *testing.T) {
+	results, err := AnalyzeFile(testdataPath("literals.go"), "NoLiterals")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	fn := results[0]
+	if len(fn.Literals) != 0 {
+		t.Errorf("expected 0 literals, got %d", len(fn.Literals))
+	}
+}
+
+func TestExtractLiterals_Deduplication(t *testing.T) {
+	results, err := AnalyzeFile(testdataPath("literals.go"), "WithDuplicates")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	fn := results[0]
+	okCount := 0
+	for _, lit := range fn.Literals {
+		if lit.Type == "str" && lit.Value == "ok" {
+			okCount++
+		}
+	}
+	if okCount != 1 {
+		t.Errorf("expected 1 'ok' literal, got %d", okCount)
+	}
+}
+
+// Test helpers for literal assertions
+func filterLiterals(lits []LiteralValue, typ string) []LiteralValue {
+	var out []LiteralValue
+	for _, l := range lits {
+		if l.Type == typ {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+func containsLitValue(lits []LiteralValue, val any) bool {
+	for _, l := range lits {
+		if l.Value == val {
+			return true
+		}
+		if l.Pattern == val {
+			return true
+		}
+	}
+	return false
+}

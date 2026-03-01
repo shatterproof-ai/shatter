@@ -65,6 +65,7 @@ func analyzeFunc(fset *token.FileSet, fn *ast.FuncDecl, info *types.Info) Functi
 	paramNames := paramNameSet(params)
 	branches := extractBranches(fset, fn.Body, paramNames)
 	deps := extractDependencies(fset, fn.Body, info)
+	literals := extractLiterals(fn)
 
 	startLine := fset.Position(fn.Pos()).Line
 	endLine := fset.Position(fn.End()).Line
@@ -78,6 +79,7 @@ func analyzeFunc(fset *token.FileSet, fn *ast.FuncDecl, info *types.Info) Functi
 		ReturnType:   returnType,
 		StartLine:    startLine,
 		EndLine:      endLine,
+		Literals:     literals,
 	}
 }
 
@@ -787,4 +789,84 @@ func exprString(expr ast.Expr) string {
 	var buf strings.Builder
 	printer.Fprint(&buf, token.NewFileSet(), expr)
 	return buf.String()
+}
+
+// --- Literal Extraction ---
+
+// extractLiterals walks a function body collecting all literal constant values.
+// Results are deduplicated by (type, value) pair.
+func extractLiterals(fn *ast.FuncDecl) []LiteralValue {
+	if fn.Body == nil {
+		return nil
+	}
+
+	seen := make(map[string]bool)
+	var results []LiteralValue
+
+	add := func(lit LiteralValue) {
+		var key string
+		if lit.Pattern != "" {
+			key = "regex:" + lit.Pattern
+		} else {
+			key = fmt.Sprintf("%s:%v", lit.Type, lit.Value)
+		}
+		if !seen[key] {
+			seen[key] = true
+			results = append(results, lit)
+		}
+	}
+
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		switch node := n.(type) {
+		case *ast.BasicLit:
+			switch node.Kind {
+			case token.INT:
+				if v, err := strconv.ParseInt(node.Value, 0, 64); err == nil {
+					add(LiteralValue{Type: "int", Value: v})
+				}
+			case token.FLOAT:
+				if v, err := strconv.ParseFloat(node.Value, 64); err == nil {
+					add(LiteralValue{Type: "float", Value: v})
+				}
+			case token.STRING, token.CHAR:
+				s, err := strconv.Unquote(node.Value)
+				if err != nil {
+					s = strings.Trim(node.Value, "`\"'")
+				}
+				add(LiteralValue{Type: "str", Value: s})
+			}
+		case *ast.Ident:
+			switch node.Name {
+			case "true":
+				add(LiteralValue{Type: "bool", Value: true})
+			case "false":
+				add(LiteralValue{Type: "bool", Value: false})
+			}
+		case *ast.CallExpr:
+			// Detect regexp.Compile("pattern") and regexp.MustCompile("pattern")
+			if sel, ok := node.Fun.(*ast.SelectorExpr); ok {
+				if (sel.Sel.Name == "Compile" || sel.Sel.Name == "MustCompile") && len(node.Args) >= 1 {
+					if pkgIdent, ok := sel.X.(*ast.Ident); ok && pkgIdent.Name == "regexp" {
+						if lit, ok := node.Args[0].(*ast.BasicLit); ok && (lit.Kind == token.STRING) {
+							s, err := strconv.Unquote(lit.Value)
+							if err != nil {
+								s = strings.Trim(lit.Value, "`\"")
+							}
+							pkey := "regex:" + s
+							if !seen[pkey] {
+								seen[pkey] = true
+								results = append(results, LiteralValue{Type: "regex", Pattern: s})
+							}
+						}
+					}
+				}
+			}
+		}
+		return true
+	})
+
+	if results == nil {
+		return []LiteralValue{}
+	}
+	return results
 }

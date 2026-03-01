@@ -125,6 +125,15 @@ type ParamInfo struct {
 	TypeName *string  `json:"type_name,omitempty"`
 }
 
+// LiteralValue is a literal constant found in a function body, used as a
+// candidate test input. The JSON tags match the Rust core's
+// #[serde(tag = "type", rename_all = "snake_case")] enum encoding.
+type LiteralValue struct {
+	Type    string `json:"type"`
+	Value   any    `json:"value,omitempty"`   // int/float/str/bool literals
+	Pattern string `json:"pattern,omitempty"` // regex literals only
+}
+
 // FunctionAnalysis is the result of analyzing a single function.
 type FunctionAnalysis struct {
 	Name         string               `json:"name"`
@@ -135,6 +144,7 @@ type FunctionAnalysis struct {
 	ReturnType   TypeInfo             `json:"return_type"`
 	StartLine    int                  `json:"start_line"`
 	EndLine      int                  `json:"end_line"`
+	Literals     []LiteralValue       `json:"literals,omitempty"`
 }
 
 // BranchInfo describes a branch point in the source code.

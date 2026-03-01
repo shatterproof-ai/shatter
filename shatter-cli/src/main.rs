@@ -998,6 +998,7 @@ async fn run_scan(
             exported: entry.exported,
             start_line: 0,
             end_line: 0,
+            literals: vec![],
         });
     }
 

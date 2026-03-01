@@ -407,3 +407,75 @@ func TestSideEffectVariants(t *testing.T) {
 		})
 	}
 }
+
+// --- LiteralValue tests ---
+
+func TestLiteralValue_RoundTrip(t *testing.T) {
+	cases := []LiteralValue{
+		{Type: "int", Value: int64(42)},
+		{Type: "float", Value: 3.14},
+		{Type: "str", Value: "express"},
+		{Type: "bool", Value: true},
+		{Type: "regex", Pattern: `\d+`},
+	}
+	for _, lit := range cases {
+		data, err := json.Marshal(lit)
+		if err != nil {
+			t.Fatalf("marshal %s: %v", lit.Type, err)
+		}
+		var back LiteralValue
+		if err := json.Unmarshal(data, &back); err != nil {
+			t.Fatalf("unmarshal %s: %v", lit.Type, err)
+		}
+		if back.Type != lit.Type {
+			t.Errorf("type = %q, want %q", back.Type, lit.Type)
+		}
+	}
+}
+
+func TestFunctionAnalysis_LiteralsRoundTrip(t *testing.T) {
+	fa := FunctionAnalysis{
+		Name:         "classify",
+		Exported:     true,
+		Params:       []ParamInfo{{Name: "s", Type: TypeInfo{Kind: "str"}}},
+		Branches:     []BranchInfo{},
+		Dependencies: []ExternalDependency{},
+		ReturnType:   TypeInfo{Kind: "str"},
+		StartLine:    1,
+		EndLine:      10,
+		Literals: []LiteralValue{
+			{Type: "str", Value: "express"},
+			{Type: "int", Value: int64(100)},
+			{Type: "regex", Pattern: `\d{5}`},
+		},
+	}
+	data, err := json.Marshal(fa)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var back FunctionAnalysis
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(back.Literals) != 3 {
+		t.Errorf("literals len = %d, want 3", len(back.Literals))
+	}
+}
+
+func TestFunctionAnalysis_EmptyLiteralsOmitted(t *testing.T) {
+	fa := FunctionAnalysis{
+		Name:         "stub",
+		Params:       []ParamInfo{},
+		Branches:     []BranchInfo{},
+		Dependencies: []ExternalDependency{},
+		ReturnType:   TypeInfo{Kind: "unknown"},
+		StartLine:    1,
+		EndLine:      1,
+	}
+	data, _ := json.Marshal(fa)
+	var raw map[string]any
+	json.Unmarshal(data, &raw)
+	if _, hasLiterals := raw["literals"]; hasLiterals {
+		t.Error("empty literals should be omitted from JSON")
+	}
+}

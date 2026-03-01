@@ -201,6 +201,21 @@ pub enum ResponseResult {
     },
 }
 
+/// A literal constant value extracted from source code during static analysis.
+///
+/// Used to seed the candidate input pool with values the function itself
+/// compares against, improving branch coverage on first pass.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum LiteralValue {
+    Int { value: i64 },
+    Float { value: f64 },
+    Str { value: String },
+    Bool { value: bool },
+    /// Regex pattern string (source text, no delimiters or flags).
+    Regex { pattern: String },
+}
+
 /// Analysis result for a single function.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FunctionAnalysis {
@@ -220,6 +235,9 @@ pub struct FunctionAnalysis {
     /// Source location.
     pub start_line: u32,
     pub end_line: u32,
+    /// Literal constants extracted from the function body for use as candidate inputs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub literals: Vec<LiteralValue>,
 }
 
 /// A branch point found during static analysis.
@@ -513,6 +531,7 @@ mod tests {
                     },
                     start_line: 10,
                     end_line: 45,
+                    literals: vec![],
                 }],
             },
         ));
@@ -759,6 +778,7 @@ mod tests {
             return_type: TypeInfo::Unknown,
             start_line: 1,
             end_line: 3,
+            literals: vec![],
         });
     }
 
@@ -931,6 +951,7 @@ mod tests {
                         return_type: TypeInfo::Int,
                         start_line: 1,
                         end_line: 3,
+                        literals: vec![],
                     },
                     FunctionAnalysis {
                         name: "divide".into(),
@@ -957,6 +978,7 @@ mod tests {
                         return_type: TypeInfo::Float,
                         start_line: 5,
                         end_line: 10,
+                        literals: vec![],
                     },
                 ],
             },
@@ -1183,5 +1205,63 @@ mod tests {
     fn all_generator_kinds_round_trip() {
         round_trip(&GeneratorKind::TypeName);
         round_trip(&GeneratorKind::ParamName);
+    }
+
+    // -- LiteralValue tests --
+
+    #[test]
+    fn literal_value_round_trips_all_variants() {
+        round_trip(&LiteralValue::Int { value: 42 });
+        round_trip(&LiteralValue::Int { value: -1 });
+        round_trip(&LiteralValue::Float { value: 3.14 });
+        round_trip(&LiteralValue::Str { value: "express".into() });
+        round_trip(&LiteralValue::Bool { value: true });
+        round_trip(&LiteralValue::Regex { pattern: "\\d+".into() });
+    }
+
+    #[test]
+    fn function_analysis_with_literals_round_trips() {
+        round_trip(&FunctionAnalysis {
+            name: "classify".into(),
+            exported: true,
+            params: vec![ParamInfo { name: "s".into(), typ: TypeInfo::Str, type_name: None }],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Str,
+            start_line: 1,
+            end_line: 10,
+            literals: vec![
+                LiteralValue::Str { value: "express".into() },
+                LiteralValue::Int { value: 100 },
+                LiteralValue::Regex { pattern: "\\d{5}".into() },
+            ],
+        });
+    }
+
+    #[test]
+    fn function_analysis_without_literals_field_deserializes_as_empty() {
+        let json = r#"{"name":"stub","params":[],"branches":[],"dependencies":[],"return_type":{"kind":"unknown"},"start_line":1,"end_line":1}"#;
+        let fa: FunctionAnalysis = serde_json::from_str(json).expect("deserialize");
+        assert!(fa.literals.is_empty(), "missing field should default to empty");
+    }
+
+    #[test]
+    fn function_analysis_empty_literals_omits_field_in_json() {
+        let fa = FunctionAnalysis {
+            name: "stub".into(),
+            exported: false,
+            params: vec![],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Unknown,
+            start_line: 1,
+            end_line: 1,
+            literals: vec![],
+        };
+        let json = serde_json::to_value(&fa).expect("serialize");
+        assert!(
+            !json.as_object().unwrap().contains_key("literals"),
+            "empty literals should not appear in JSON"
+        );
     }
 }
