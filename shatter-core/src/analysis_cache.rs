@@ -1,0 +1,353 @@
+//! Disk cache for [`FunctionAnalysis`] results, enabling fast re-analysis of unchanged files.
+//!
+//! Each source file's analysis results are cached keyed by `(file_path, content_hash)`.
+//! On lookup, an mtime fast-path avoids re-hashing when the file hasn't been touched.
+//! A protocol version is stored with each entry — version bumps invalidate all cached data.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
+
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+use crate::cache::CacheError;
+use crate::protocol::{FunctionAnalysis, PROTOCOL_VERSION};
+
+/// A single cached analysis entry for one source file.
+#[derive(Debug, Serialize, Deserialize)]
+struct AnalysisCacheEntry {
+    /// Hex-encoded SHA-256 of the file contents at the time of caching.
+    content_hash: String,
+    /// File modification time in seconds since the Unix epoch.
+    mtime_secs: i64,
+    /// Protocol version used when the analysis was produced.
+    protocol_version: String,
+    /// The cached analysis results.
+    analyses: Vec<FunctionAnalysis>,
+}
+
+/// Disk-backed cache for storing and loading [`FunctionAnalysis`] results.
+#[derive(Debug)]
+pub struct AnalysisCache {
+    cache_dir: PathBuf,
+}
+
+impl AnalysisCache {
+    /// Create a new analysis cache backed by the given directory.
+    ///
+    /// Creates the directory (and parents) if it doesn't exist.
+    pub fn new(cache_dir: PathBuf) -> Result<Self, CacheError> {
+        fs::create_dir_all(&cache_dir)?;
+        Ok(Self { cache_dir })
+    }
+
+    /// Look up cached analysis results for a source file.
+    ///
+    /// Returns `Ok(Some(analyses))` on cache hit, `Ok(None)` on cache miss.
+    /// Uses an mtime fast-path: if the file's mtime matches the cached mtime,
+    /// the content hash is not recomputed.
+    pub fn lookup(&self, file_path: &Path) -> Result<Option<Vec<FunctionAnalysis>>, CacheError> {
+        let cache_file = self.cache_path_for(file_path);
+
+        let contents = match fs::read_to_string(&cache_file) {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(CacheError::Io(e)),
+        };
+
+        let mut entry: AnalysisCacheEntry = serde_json::from_str(&contents)?;
+
+        // Protocol version mismatch invalidates the cache.
+        if entry.protocol_version != PROTOCOL_VERSION {
+            return Ok(None);
+        }
+
+        let file_mtime = mtime_secs(file_path)?;
+
+        // Fast-path: mtime unchanged means file content hasn't changed.
+        if file_mtime == entry.mtime_secs {
+            return Ok(Some(entry.analyses));
+        }
+
+        // Slow path: mtime differs — compute content hash to check for real changes.
+        let current_hash = sha256_file(file_path)?;
+
+        if current_hash == entry.content_hash {
+            // File was touched but content is identical. Update the cached mtime
+            // so future lookups hit the fast-path.
+            entry.mtime_secs = file_mtime;
+            let json = serde_json::to_string_pretty(&entry)?;
+            let tmp = cache_file.with_extension("json.tmp");
+            fs::write(&tmp, json)?;
+            fs::rename(&tmp, &cache_file)?;
+            return Ok(Some(entry.analyses));
+        }
+
+        // Content actually changed — cache miss.
+        Ok(None)
+    }
+
+    /// Store analysis results for a source file.
+    pub fn store(
+        &self,
+        file_path: &Path,
+        analyses: &[FunctionAnalysis],
+    ) -> Result<(), CacheError> {
+        let content_hash = sha256_file(file_path)?;
+        let mtime_secs = mtime_secs(file_path)?;
+
+        let entry = AnalysisCacheEntry {
+            content_hash,
+            mtime_secs,
+            protocol_version: PROTOCOL_VERSION.to_string(),
+            analyses: analyses.to_vec(),
+        };
+
+        let cache_file = self.cache_path_for(file_path);
+        let json = serde_json::to_string_pretty(&entry)?;
+        let tmp = cache_file.with_extension("json.tmp");
+        fs::write(&tmp, &json)?;
+        fs::rename(&tmp, &cache_file)?;
+
+        Ok(())
+    }
+
+    /// Remove all cached analysis entries.
+    pub fn clear(&self) -> Result<(), CacheError> {
+        if self.cache_dir.exists() {
+            fs::remove_dir_all(&self.cache_dir)?;
+            fs::create_dir_all(&self.cache_dir)?;
+        }
+        Ok(())
+    }
+
+    /// Default analysis cache directory: `<project_root>/.shatter/cache/analysis/`.
+    pub fn default_dir(project_root: &Path) -> PathBuf {
+        project_root
+            .join(".shatter")
+            .join("cache")
+            .join("analysis")
+    }
+
+    /// Compute the cache file path for a given source file path.
+    ///
+    /// Uses SHA-256 of the file path string as the filename to avoid
+    /// issues with path separators and special characters.
+    fn cache_path_for(&self, file_path: &Path) -> PathBuf {
+        let path_str = file_path.to_string_lossy();
+        let hash = hex_sha256(path_str.as_bytes());
+        self.cache_dir.join(format!("{hash}.json"))
+    }
+}
+
+/// Compute hex-encoded SHA-256 of a byte slice.
+fn hex_sha256(data: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    format!("{:x}", hasher.finalize())
+}
+
+/// Compute hex-encoded SHA-256 of a file's contents.
+fn sha256_file(path: &Path) -> Result<String, CacheError> {
+    let contents = fs::read(path)?;
+    Ok(hex_sha256(&contents))
+}
+
+/// Get a file's modification time as seconds since the Unix epoch.
+fn mtime_secs(path: &Path) -> Result<i64, CacheError> {
+    let metadata = fs::metadata(path)?;
+    let mtime = metadata.modified()?;
+    let duration = mtime
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default();
+    Ok(duration.as_secs() as i64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::{BranchInfo, BranchType};
+    use crate::types::{ParamInfo, TypeInfo};
+    use std::thread;
+    use std::time::Duration;
+
+    fn sample_analyses() -> Vec<FunctionAnalysis> {
+        vec![FunctionAnalysis {
+            name: "add".to_string(),
+            exported: true,
+            params: vec![
+                ParamInfo {
+                    name: "a".into(),
+                    typ: TypeInfo::Int,
+                    type_name: None,
+                },
+                ParamInfo {
+                    name: "b".into(),
+                    typ: TypeInfo::Int,
+                    type_name: None,
+                },
+            ],
+            branches: vec![BranchInfo {
+                id: 0,
+                line: 3,
+                condition_text: "a > 0".into(),
+                condition: None,
+                branch_type: BranchType::If,
+            }],
+            dependencies: vec![],
+            return_type: TypeInfo::Int,
+            start_line: 1,
+            end_line: 10,
+        }]
+    }
+
+    fn create_source_file(dir: &Path, name: &str, content: &str) -> PathBuf {
+        let path = dir.join(name);
+        fs::write(&path, content).unwrap();
+        path
+    }
+
+    #[test]
+    fn cache_hit_returns_cached_analysis() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_dir = dir.path().join("cache");
+        let cache = AnalysisCache::new(cache_dir).unwrap();
+
+        let src = create_source_file(dir.path(), "test.ts", "function add(a, b) { return a + b; }");
+        let analyses = sample_analyses();
+
+        cache.store(&src, &analyses).unwrap();
+        let result = cache.lookup(&src).unwrap();
+
+        assert!(result.is_some());
+        let cached = result.unwrap();
+        assert_eq!(cached.len(), 1);
+        assert_eq!(cached[0].name, "add");
+        assert_eq!(cached[0].params.len(), 2);
+    }
+
+    #[test]
+    fn cache_miss_on_modified_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_dir = dir.path().join("cache");
+        let cache = AnalysisCache::new(cache_dir).unwrap();
+
+        let src = create_source_file(dir.path(), "test.ts", "function add(a, b) { return a + b; }");
+        cache.store(&src, &sample_analyses()).unwrap();
+
+        // Modify the file content — ensure mtime changes.
+        // Use filetime to guarantee mtime differs even on filesystems with coarse granularity.
+        thread::sleep(Duration::from_millis(1100));
+        fs::write(&src, "function subtract(a, b) { return a - b; }").unwrap();
+
+        let result = cache.lookup(&src).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn timestamp_fast_path_unchanged_mtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_dir = dir.path().join("cache");
+        let cache = AnalysisCache::new(cache_dir).unwrap();
+
+        let src = create_source_file(dir.path(), "test.ts", "const x = 1;");
+        cache.store(&src, &sample_analyses()).unwrap();
+
+        // Lookup without modifying file — should hit mtime fast-path.
+        let result = cache.lookup(&src).unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap()[0].name, "add");
+    }
+
+    #[test]
+    fn touch_without_content_change_is_cache_hit() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_dir = dir.path().join("cache");
+        let cache = AnalysisCache::new(cache_dir).unwrap();
+
+        let content = "function identity(x) { return x; }";
+        let src = create_source_file(dir.path(), "test.ts", content);
+        cache.store(&src, &sample_analyses()).unwrap();
+
+        // Touch the file (rewrite same content) after a brief delay to change mtime.
+        thread::sleep(Duration::from_millis(1100));
+        fs::write(&src, content).unwrap();
+
+        // mtime differs but content hash matches → cache hit.
+        let result = cache.lookup(&src).unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap()[0].name, "add");
+    }
+
+    #[test]
+    fn protocol_version_change_invalidates_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_dir = dir.path().join("cache");
+        let cache = AnalysisCache::new(cache_dir).unwrap();
+
+        let src = create_source_file(dir.path(), "test.ts", "const x = 1;");
+        cache.store(&src, &sample_analyses()).unwrap();
+
+        // Manually tamper with the cached entry's protocol version.
+        let cache_file = cache.cache_path_for(&src);
+        let json = fs::read_to_string(&cache_file).unwrap();
+        let tampered = json.replace(PROTOCOL_VERSION, "0.0.0-invalid");
+        fs::write(&cache_file, tampered).unwrap();
+
+        let result = cache.lookup(&src).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn clear_removes_all_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_dir = dir.path().join("cache");
+        let cache = AnalysisCache::new(cache_dir).unwrap();
+
+        let src1 = create_source_file(dir.path(), "a.ts", "const a = 1;");
+        let src2 = create_source_file(dir.path(), "b.ts", "const b = 2;");
+
+        cache.store(&src1, &sample_analyses()).unwrap();
+        cache.store(&src2, &sample_analyses()).unwrap();
+
+        assert!(cache.lookup(&src1).unwrap().is_some());
+        assert!(cache.lookup(&src2).unwrap().is_some());
+
+        cache.clear().unwrap();
+
+        assert!(cache.lookup(&src1).unwrap().is_none());
+        assert!(cache.lookup(&src2).unwrap().is_none());
+    }
+
+    #[test]
+    fn lookup_returns_none_for_uncached_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_dir = dir.path().join("cache");
+        let cache = AnalysisCache::new(cache_dir).unwrap();
+
+        let src = create_source_file(dir.path(), "test.ts", "const x = 1;");
+        let result = cache.lookup(&src).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn default_dir_path() {
+        let root = Path::new("/home/user/project");
+        let dir = AnalysisCache::default_dir(root);
+        assert_eq!(
+            dir,
+            PathBuf::from("/home/user/project/.shatter/cache/analysis")
+        );
+    }
+
+    #[test]
+    fn new_creates_directory_if_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("a").join("b").join("analysis");
+        assert!(!nested.exists());
+
+        let _cache = AnalysisCache::new(nested.clone()).unwrap();
+        assert!(nested.exists());
+    }
+}

@@ -1,6 +1,8 @@
 //\! Shatter core engine: concolic execution and constraint solving.
 
+pub mod analysis_cache;
 pub mod array_mutation;
+pub mod auto_mock;
 pub mod batch_analyze;
 pub mod behavior;
 pub mod boundary_dict;

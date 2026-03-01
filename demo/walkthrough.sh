@@ -126,7 +126,7 @@ GO_EXAMPLES=(
     "examples/go/03-errors.go:SafeDivide"
 )
 
-TOTAL=27
+TOTAL=28
 
 # ─── Walkthrough ──────────────────────────────────────────────────────
 
@@ -162,7 +162,7 @@ step 4 $TOTAL "Show Behavior Clusters" \
 # Stage 5: Scan (dependency-ordered exploration)
 step 5 $TOTAL "Scan in Dependency Order" \
     "Test functions leaf-first, using behavior maps as mocks for callers" \
-    $SHATTER scan examples/typescript/src/01-arithmetic.ts
+    $SHATTER scan examples/typescript/src
 
 # Stage 6: Cache behavior maps
 step 6 $TOTAL "Explore with Disk Cache" \
@@ -219,7 +219,7 @@ step 15 $TOTAL "Performance Stats" \
 # Stage 16: Parallel scan with worker pool
 step 16 $TOTAL "Parallel Scan" \
     "Scan with multiple worker processes for faster exploration" \
-    $SHATTER scan --parallelism 2 --timeout-per-fn 30 examples/typescript/src/01-arithmetic.ts
+    $SHATTER scan --parallelism 2 --timeout-per-fn 30 examples/typescript/src
 
 # Stage 17: Execution timeout
 step 17 $TOTAL "Execution Timeout" \
@@ -257,27 +257,32 @@ step 22 $TOTAL "Explore Without Boundary Values" \
 # Stage 23: Emit tests from scan
 step 23 $TOTAL "Emit Tests from Scan" \
     "Generate Jest test files from behavior maps discovered during scan" \
-    $SHATTER scan --emit-tests jest --emit-tests-dir /tmp/shatter-demo-tests \
-    examples/typescript/src/01-arithmetic.ts
+    $SHATTER scan --emit-tests jest --output /tmp/shatter-demo-tests \
+    examples/typescript/src
 
 # Stage 24: Markdown scan report
 step 24 $TOTAL "Markdown Scan Report" \
     "Generate a human-readable markdown report alongside JSON" \
-    $SHATTER scan --report=markdown examples/typescript/src/01-arithmetic.ts
+    $SHATTER scan --format=markdown examples/typescript/src
 
-# Stage 25: Invariant detection
-step 25 $TOTAL "Invariant Detection" \
+# Stage 25: Scan dry-run
+step 25 $TOTAL "Scan Dry Run" \
+    "Preview which files would be scanned without executing" \
+    $SHATTER scan --dry-run --language typescript examples/typescript/src
+
+# Stage 26: Invariant detection
+step 26 $TOTAL "Invariant Detection" \
     "Detect Daikon-style invariants over explored executions" \
     $SHATTER explore --invariants "${EXAMPLES[0]}"
 
-# Stage 26: Setup + generators via config
-step 26 $TOTAL "Setup + Generators via Config" \
+# Stage 27: Setup + generators via config
+step 27 $TOTAL "Setup + Generators via Config" \
     "Explore with setup/teardown lifecycle and custom type generators from .shatter/config.yaml" \
     $SHATTER explore --config examples/typescript/.shatter/config.yaml \
     "examples/typescript/src/03-objects.ts:categorizeUser"
 
-# Stage 27: Setup + generators with debug logging
-step 27 $TOTAL "Setup + Generators (Debug)" \
+# Stage 28: Setup + generators with debug logging
+step 28 $TOTAL "Setup + Generators (Debug)" \
     "Show setup/teardown and generator lifecycle with --log-level debug" \
     $SHATTER explore --config examples/typescript/.shatter/config.yaml \
     --log-level debug "examples/typescript/src/03-objects.ts:categorizeUser"

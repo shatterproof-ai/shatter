@@ -12,6 +12,7 @@ rand = "0.9"
 rayon = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["process", "io-util", "time", "rt", "macros", "sync"] }
+sha2 = "0.10"
 z3 = { version = "0.19", features = ["gh-release"] }
 
 [dev-dependencies]

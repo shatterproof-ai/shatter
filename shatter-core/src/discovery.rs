@@ -36,6 +36,8 @@ pub struct DiscoveryOptions {
     pub exclude_patterns: Vec<String>,
     /// Whether to respect `.gitignore` files.
     pub respect_gitignore: bool,
+    /// Maximum directory traversal depth. `None` means unlimited.
+    pub max_depth: Option<usize>,
 }
 
 impl Default for DiscoveryOptions {
@@ -44,6 +46,7 @@ impl Default for DiscoveryOptions {
             include_patterns: vec![],
             exclude_patterns: vec![],
             respect_gitignore: true,
+            max_depth: None,
         }
     }
 }
@@ -94,12 +97,13 @@ pub fn discover_files(
     let shatter_ignore_matcher = load_ignore_file(&root.join(".shatterignore"));
 
     let mut results = Vec::new();
-    walk_dir(root, root, &WalkConfig {
+    walk_dir(root, root, 0, &WalkConfig {
         include_set: &include_set,
         exclude_set: &exclude_set,
         default_exclude_set: &default_exclude_set,
         ignore_matcher: ignore_matcher.as_ref(),
         shatter_ignore_matcher: shatter_ignore_matcher.as_ref(),
+        max_depth: options.max_depth,
     }, &mut results)?;
 
     results.sort_by(|a, b| a.0.cmp(&b.0));
@@ -112,11 +116,13 @@ struct WalkConfig<'a> {
     default_exclude_set: &'a Option<GlobSet>,
     ignore_matcher: Option<&'a GlobSet>,
     shatter_ignore_matcher: Option<&'a GlobSet>,
+    max_depth: Option<usize>,
 }
 
 fn walk_dir(
     base: &Path,
     dir: &Path,
+    depth: usize,
     config: &WalkConfig<'_>,
     results: &mut Vec<(PathBuf, Language)>,
 ) -> Result<(), DiscoveryError> {
@@ -132,6 +138,12 @@ fn walk_dir(
         let relative = path.strip_prefix(base).unwrap_or(&path);
 
         if path.is_dir() {
+            // Respect max_depth if set
+            if let Some(max) = config.max_depth
+                && depth >= max
+            {
+                continue;
+            }
             // Check if directory is excluded by default patterns
             // For directory matching, append a trailing slash sentinel
             let dir_pattern_path = PathBuf::from(format!("{}/sentinel", relative.display()));
@@ -155,7 +167,7 @@ fn walk_dir(
             {
                 continue;
             }
-            walk_dir(base, &path, config, results)?;
+            walk_dir(base, &path, depth + 1, config, results)?;
             continue;
         }
 

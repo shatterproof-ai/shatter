@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::analysis_cache::AnalysisCache;
 use crate::discovery::Language;
 use crate::frontend::{Frontend, FrontendError};
 use crate::protocol::{Command as ProtoCommand, ExternalDependency, FunctionAnalysis, ResponseResult};
@@ -110,11 +111,25 @@ pub enum BatchAnalyzeError {
 pub async fn batch_analyze(
     frontends: &mut HashMap<Language, Frontend>,
     files: &[(PathBuf, Language)],
+    analysis_cache: Option<&AnalysisCache>,
 ) -> Result<FunctionRegistry, BatchAnalyzeError> {
     let mut entries = Vec::new();
     let mut index = HashMap::new();
 
     for (file_path, language) in files {
+        // Check the analysis cache before calling the frontend.
+        if let Some(cache) = analysis_cache
+            && let Ok(Some(cached_functions)) = cache.lookup(file_path)
+        {
+            for func in cached_functions {
+                let qualified = FunctionRegistry::qualified_name(file_path, &func.name);
+                let idx = entries.len();
+                index.insert(qualified, idx);
+                entries.push(function_entry_from_analysis(file_path.clone(), func));
+            }
+            continue;
+        }
+
         let frontend = frontends
             .get_mut(language)
             .ok_or(BatchAnalyzeError::NoFrontend(*language))?;
@@ -157,6 +172,16 @@ pub async fn batch_analyze(
                 });
             }
         };
+
+        // Store fresh analysis results in the cache.
+        if let Some(cache) = analysis_cache
+            && let Err(e) = cache.store(file_path, &functions)
+        {
+            eprintln!(
+                "Warning: failed to cache analysis for {}: {e}",
+                file_path.display()
+            );
+        }
 
         for func in functions {
             let qualified = FunctionRegistry::qualified_name(file_path, &func.name);
@@ -520,7 +545,7 @@ mod tests {
             (PathBuf::from("src/utils.ts"), Language::TypeScript),
         ];
 
-        let registry = batch_analyze(&mut frontends, &files)
+        let registry = batch_analyze(&mut frontends, &files, None)
             .await
             .expect("batch analyze failed");
 
@@ -552,7 +577,7 @@ mod tests {
 
         let files = vec![(PathBuf::from("src/app.ts"), Language::TypeScript)];
 
-        let result = batch_analyze(&mut frontends.into_iter().collect(), &files).await;
+        let result = batch_analyze(&mut frontends.into_iter().collect(), &files, None).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(matches!(err, BatchAnalyzeError::NoFrontend(Language::TypeScript)));
@@ -564,7 +589,7 @@ mod tests {
 
         let files: Vec<(PathBuf, Language)> = vec![];
 
-        let registry = batch_analyze(&mut frontends, &files)
+        let registry = batch_analyze(&mut frontends, &files, None)
             .await
             .expect("batch analyze failed");
 
@@ -588,7 +613,7 @@ mod tests {
             (PathBuf::from("pkg/handler.go"), Language::Go),
         ];
 
-        let registry = batch_analyze(&mut frontends, &files)
+        let registry = batch_analyze(&mut frontends, &files, None)
             .await
             .expect("batch analyze failed");
 

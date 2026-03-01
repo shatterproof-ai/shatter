@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand};
 
+use shatter_core::analysis_cache::AnalysisCache;
 use shatter_core::batch_analyze::{self, FunctionRegistry};
 use shatter_core::behavior::BehaviorMap;
 use shatter_core::cache::BehaviorMapCache;
@@ -166,27 +167,78 @@ enum CliCommand {
         invariants: bool,
     },
 
-    /// Scan multiple functions in dependency order, using behavior maps as mocks.
+    /// Scan a directory for source files, analyze and explore all functions in
+    /// dependency order, using behavior maps as mocks.
     Scan {
-        /// Targets to scan, in <file>:<function> format or just <file> for all functions.
+        /// Directory to scan for source files.
         #[arg(required = true)]
-        targets: Vec<String>,
+        directory: String,
+
+        /// Language to scan: typescript, go. Auto-detected from file extensions if omitted.
+        #[arg(long)]
+        language: Option<String>,
+
+        /// Glob patterns for files to include (e.g. "**/*.ts"). May be repeated.
+        #[arg(long)]
+        include: Vec<String>,
+
+        /// Glob patterns for files to exclude (e.g. "**/vendor/**"). May be repeated.
+        #[arg(long)]
+        exclude: Vec<String>,
+
+        /// Scan all functions, including non-exported ones.
+        #[arg(long)]
+        all: bool,
+
+        /// Maximum directory traversal depth.
+        #[arg(long)]
+        max_depth: Option<usize>,
+
+        /// Per-function exploration timeout in seconds. Functions exceeding this
+        /// limit are skipped without aborting the scan. Default: 30s.
+        #[arg(long, default_value_t = 30)]
+        timeout_per_fn: u64,
+
+        /// Total scan timeout in seconds. Default: 300s.
+        #[arg(long, default_value_t = 300)]
+        timeout_total: u64,
+
+        /// Number of parallel frontend subprocesses for exploration.
+        /// Default: number of available CPUs (0 = auto-detect).
+        #[arg(long, default_value_t = 0)]
+        parallelism: usize,
+
+        /// Path to a mock configuration YAML file.
+        #[arg(long)]
+        mock_config: Option<PathBuf>,
+
+        /// Output directory for reports (default: ./shatter-report/).
+        #[arg(long, short)]
+        output: Option<PathBuf>,
+
+        /// Report format: json (default), markdown, or both.
+        #[arg(long, default_value = "json")]
+        format: String,
+
+        /// Generate test files after scan. Framework: jest, vitest, or gotest.
+        #[arg(long)]
+        emit_tests: Option<String>,
+
+        /// Show what would be scanned without executing.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Resume a previous scan from a state file.
+        #[arg(long)]
+        resume: Option<PathBuf>,
+
+        /// Emit progress events to stderr during scan.
+        #[arg(long)]
+        progress: bool,
 
         /// Maximum number of iterations per function.
         #[arg(long, default_value_t = 100)]
         max_iterations: u32,
-
-        /// Timeout in seconds for the entire scan.
-        #[arg(long, default_value_t = 120)]
-        timeout: u64,
-
-        /// Path to a scope configuration YAML file.
-        #[arg(long)]
-        scope: Option<PathBuf>,
-
-        /// Only run the analyze phase (skip exploration).
-        #[arg(long)]
-        analyze_only: bool,
 
         /// Directory for caching behavior maps across runs.
         /// Falls back to SHATTER_CACHE_DIR env var, then `.shatter/cache/`.
@@ -210,36 +262,6 @@ enum CliCommand {
         /// Default: 30s.
         #[arg(long, default_value_t = 30)]
         build_timeout: u64,
-
-        /// Number of parallel frontend subprocesses for exploration.
-        /// Default: number of available CPUs (0 = auto-detect).
-        #[arg(long, default_value_t = 0)]
-        parallelism: usize,
-
-        /// Per-function exploration timeout in seconds. Functions exceeding this
-        /// limit are skipped without aborting the scan. Default: 30s.
-        #[arg(long, default_value_t = 30)]
-        timeout_per_fn: u64,
-
-        /// Write JSON report to this directory (default: ./shatter-report/).
-        #[arg(long)]
-        output_dir: Option<PathBuf>,
-
-        /// Report format: json (default), markdown, or both.
-        #[arg(long, default_value = "json")]
-        report: String,
-
-        /// Emit structured JSON progress events to stdout (for tooling).
-        #[arg(long)]
-        progress_json: bool,
-
-        /// Generate test files after scan. Framework: jest, vitest, or gotest.
-        #[arg(long)]
-        emit_tests: Option<String>,
-
-        /// Output directory for emitted test files (default: same as --output-dir or ./shatter-report/).
-        #[arg(long)]
-        emit_tests_dir: Option<PathBuf>,
     },
 
     /// Export generated tests from behavior maps produced by exploration.
@@ -668,11 +690,19 @@ async fn run_explore(
                 continue;
             }
 
+            // Generate auto-mocks for external dependencies.
+            let auto_mocks = shatter_core::auto_mock::generate_auto_mocks(
+                &func.dependencies,
+                None,
+                &resolved.mock_overrides,
+                &[],
+            );
+
             let explore_config = ExploreConfig {
                 file: file_str.to_string(),
                 max_iterations: resolved.max_iterations,
                 seed: None,
-                mocks: vec![],
+                mocks: auto_mocks,
                 setup_file: resolved.setup.as_ref().map(|p| p.display().to_string()),
                 setup_mode: resolved.setup_mode,
                 value_sources: shatter_core::input_gen::resolve_value_sources(
@@ -786,11 +816,14 @@ async fn run_explore(
 /// Run the scan command: explore multiple functions in dependency order.
 #[allow(clippy::too_many_arguments)]
 async fn run_scan(
-    targets: &[String],
+    directory: &str,
+    language_filter: Option<&str>,
+    include_patterns: &[String],
+    exclude_patterns: &[String],
+    all_functions: bool,
+    max_depth: Option<usize>,
     max_iterations: u32,
-    _timeout: u64,
-    scope_path: Option<&Path>,
-    analyze_only: bool,
+    _timeout_total: u64,
     cache_dir: Option<&Path>,
     no_cache: bool,
     request_timeout: u64,
@@ -800,9 +833,11 @@ async fn run_scan(
     timeout_per_fn: u64,
     output_dir: Option<&Path>,
     report_format_str: &str,
-    progress_json: bool,
+    progress: bool,
     emit_tests: Option<&str>,
-    emit_tests_dir: Option<&Path>,
+    dry_run: bool,
+    _resume: Option<&Path>,
+    _mock_config: Option<&Path>,
     log_level: LogLevel,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let report_format: report::ReportFormat = report_format_str
@@ -819,96 +854,155 @@ async fn run_scan(
         .into());
     }
 
-    let _scope_config = match scope_path {
-        Some(path) => {
-            let config = ScopeConfig::from_file(path)
-                .map_err(|e| format!("failed to load scope config: {e}"))?;
-            eprintln!("Loaded scope config from {}", path.display());
-            config
-        }
-        None => ScopeConfig::default(),
-    };
-
-    let parsed: Vec<Target> = targets
-        .iter()
-        .map(|t| parse_target(t))
-        .collect::<Result<Vec<_>, _>>()?;
-
-    // Group targets by language (scan operates on one frontend at a time).
-    let first_lang = parsed.first().map(|t| t.language).ok_or("no targets")?;
-    if parsed.iter().any(|t| t.language != first_lang) {
-        return Err("scan currently requires all targets to use the same language frontend".into());
+    // Validate --language if specified.
+    if let Some(lang) = language_filter
+        && lang != "typescript" && lang != "go"
+    {
+        return Err(format!(
+            "unsupported language '{lang}': expected 'typescript' or 'go'"
+        )
+        .into());
     }
 
-    let req_timeout = Duration::from_secs(request_timeout);
-    let fe_config = frontend_config(first_lang, req_timeout, log_level, exec_timeout, build_timeout)?;
-    let mut frontend = Frontend::spawn(&fe_config).await.map_err(|e| {
-        format!(
-            "failed to spawn {} frontend: {e}",
-            first_lang.label()
-        )
-    })?;
+    // Resolve directory.
+    let root = PathBuf::from(directory);
+    if !root.is_dir() {
+        return Err(format!("'{}' is not a directory", root.display()).into());
+    }
+    let root = root
+        .canonicalize()
+        .map_err(|e| format!("failed to resolve path '{}': {e}", directory))?;
 
-    if log_level >= LogLevel::Debug {
+    // Discover source files.
+    let options = DiscoveryOptions {
+        include_patterns: include_patterns.to_vec(),
+        exclude_patterns: exclude_patterns.to_vec(),
+        respect_gitignore: true,
+        max_depth,
+    };
+    let files = discovery::discover_files(&root, &options)
+        .map_err(|e| format!("file discovery failed: {e}"))?;
+
+    // Filter by language if specified.
+    let files: Vec<(PathBuf, DiscoveryLanguage)> = if let Some(lang) = language_filter {
+        let target_lang = match lang {
+            "typescript" => DiscoveryLanguage::TypeScript,
+            "go" => DiscoveryLanguage::Go,
+            _ => unreachable!(),
+        };
+        files
+            .into_iter()
+            .filter(|(_, l)| *l == target_lang)
+            .collect()
+    } else {
+        files
+    };
+
+    // Filter to languages we can actually analyze (TS, Go).
+    let analyzable_files: Vec<(PathBuf, DiscoveryLanguage)> = files
+        .into_iter()
+        .filter(|(_, lang)| discovery_lang_to_cli_lang(*lang).is_some())
+        .collect();
+
+    if analyzable_files.is_empty() {
+        eprintln!("No supported source files found in {}", root.display());
+        return Ok(());
+    }
+
+    if log_level >= LogLevel::Info {
         eprintln!(
-            "[debug] Frontend connected (language={})",
-            frontend.language().unwrap_or("unknown")
+            "Discovered {} source file(s) in {}",
+            analyzable_files.len(),
+            root.display(),
         );
     }
 
-    // Analyze all targets to collect FunctionAnalysis data.
-    let mut all_analyses = Vec::new();
-    let mut file_map: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-
-    for target in &parsed {
-        let file_str = target.file.to_string_lossy();
-        if log_level >= LogLevel::Debug {
-            eprintln!(
-                "[debug] Analyzing {file_str}:{}",
-                target.function.as_deref().unwrap_or("(all)")
-            );
+    // Dry run: print discovered files and exit.
+    if dry_run {
+        eprintln!("Dry run: would scan the following files:");
+        for (path, lang) in &analyzable_files {
+            let relative = path.strip_prefix(&root).unwrap_or(path);
+            eprintln!("  {:?}  {}", lang, relative.display());
         }
-
-        let analyze_response = frontend
-            .send(ProtoCommand::Analyze {
-                file: file_str.to_string(),
-                function: target.function.clone(),
-            })
-            .await
-            .map_err(|e| format!("analyze failed: {e}"))?;
-
-        match analyze_response.result {
-            ResponseResult::Analyze { functions } => {
-                if log_level >= LogLevel::Debug {
-                    eprintln!("  Found {} function(s):", functions.len());
-                    for func in &functions {
-                        eprintln!(
-                            "    - {} ({} params, {} branches, {} deps)",
-                            func.name,
-                            func.params.len(),
-                            func.branches.len(),
-                            func.dependencies.len(),
-                        );
-                    }
-                }
-                for func in &functions {
-                    file_map.insert(func.name.clone(), file_str.to_string());
-                }
-                all_analyses.extend(functions);
-            }
-            ResponseResult::Error { code, message, .. } => {
-                eprintln!("  Analyze error ({code:?}): {message}");
-            }
-            other => {
-                eprintln!("  Unexpected analyze response: {other:?}");
-            }
-        }
+        return Ok(());
     }
 
-    if analyze_only {
-        shutdown_frontend(frontend).await;
-        return Ok(());
+    // Spawn frontends for each language.
+    let req_timeout = Duration::from_secs(request_timeout);
+    let needed_langs: std::collections::HashSet<DiscoveryLanguage> = analyzable_files
+        .iter()
+        .map(|(_, lang)| *lang)
+        .collect();
+
+    let mut frontends: HashMap<DiscoveryLanguage, Frontend> = HashMap::new();
+    for lang in &needed_langs {
+        let cli_lang = discovery_lang_to_cli_lang(*lang)
+            .ok_or_else(|| format!("no frontend for {lang:?}"))?;
+        let config = frontend_config(cli_lang, req_timeout, log_level, exec_timeout, build_timeout)?;
+        let frontend = Frontend::spawn(&config).await.map_err(|e| {
+            format!("failed to spawn {lang:?} frontend: {e}")
+        })?;
+        if log_level >= LogLevel::Debug {
+            eprintln!(
+                "[debug] Frontend connected (language={})",
+                frontend.language().unwrap_or("unknown")
+            );
+        }
+        frontends.insert(*lang, frontend);
+    }
+
+    // Build analysis cache if caching is enabled.
+    let analysis_cache = if no_cache {
+        None
+    } else {
+        let dir = match cache_dir {
+            Some(p) => p.join("analysis"),
+            None => AnalysisCache::default_dir(&std::env::current_dir()?),
+        };
+        Some(AnalysisCache::new(dir).map_err(|e| format!("failed to initialize analysis cache: {e}"))?)
+    };
+
+    // Batch analyze all files.
+    let registry = batch_analyze::batch_analyze(
+        &mut frontends,
+        &analyzable_files,
+        analysis_cache.as_ref(),
+    )
+    .await
+    .map_err(|e| format!("batch analyze failed: {e}"))?;
+
+    if log_level >= LogLevel::Debug {
+        eprintln!(
+            "  Found {} function(s) across {} file(s)",
+            registry.len(),
+            analyzable_files.len(),
+        );
+    }
+
+    // Collect analyses and file map from the registry.
+    let mut all_analyses = Vec::new();
+    let mut file_map: HashMap<String, String> = HashMap::new();
+
+    for entry in registry.entries() {
+        // Skip non-exported functions unless --all is specified.
+        if !all_functions && !entry.exported {
+            continue;
+        }
+
+        file_map.insert(
+            entry.name.clone(),
+            entry.file_path.to_string_lossy().to_string(),
+        );
+        all_analyses.push(shatter_core::protocol::FunctionAnalysis {
+            name: entry.name.clone(),
+            params: entry.params.clone(),
+            return_type: entry.return_type.clone(),
+            branches: vec![],
+            dependencies: entry.dependencies.clone(),
+            exported: entry.exported,
+            start_line: 0,
+            end_line: 0,
+        });
     }
 
     // Filter out functions with unexecutable parameter types.
@@ -943,12 +1037,16 @@ async fn run_scan(
 
     if all_analyses.is_empty() {
         eprintln!("No functions found to scan.");
-        shutdown_frontend(frontend).await;
+        for frontend in frontends.into_values() {
+            shutdown_frontend(frontend).await;
+        }
         return Ok(());
     }
 
-    // Shut down the analysis frontend before starting parallel exploration.
-    shutdown_frontend(frontend).await;
+    // Shut down analysis frontends before starting parallel exploration.
+    for frontend in frontends.into_values() {
+        shutdown_frontend(frontend).await;
+    }
 
     // Resolve effective parallelism: 0 means auto-detect (CPU count).
     let effective_parallelism = if parallelism == 0 {
@@ -980,6 +1078,12 @@ async fn run_scan(
         ))
     };
 
+    // We need a single frontend config for parallel_scan. Pick from the first language.
+    let first_lang = needed_langs.iter().next().copied().unwrap();
+    let cli_lang = discovery_lang_to_cli_lang(first_lang)
+        .ok_or_else(|| format!("no frontend for {first_lang:?}"))?;
+    let fe_config = frontend_config(cli_lang, req_timeout, log_level, exec_timeout, build_timeout)?;
+
     let scan_config = ScanConfig {
         max_iterations_per_function: max_iterations,
         seed: None,
@@ -1004,8 +1108,8 @@ async fn run_scan(
             let elapsed = scan_start.elapsed();
 
             for (i, fr) in result.function_results.iter().enumerate() {
-                let elapsed_ms = elapsed.as_millis() as u64;
-                if progress_json {
+                if progress {
+                    let elapsed_ms = elapsed.as_millis() as u64;
                     let event = report::ProgressEvent::new(
                         &fr.function_name,
                         i + 1,
@@ -1013,7 +1117,7 @@ async fn run_scan(
                         elapsed_ms,
                     );
                     if let Some(json) = event.to_json() {
-                        println!("{json}");
+                        eprintln!("{json}");
                     }
                 } else if log_level >= LogLevel::Info {
                     eprintln!(
@@ -1060,7 +1164,7 @@ async fn run_scan(
 
             // Emit test files if --emit-tests was specified.
             if let Some(framework) = emit_tests {
-                let tests_dir = emit_tests_dir
+                let tests_dir = output_dir
                     .map(PathBuf::from)
                     .unwrap_or_else(|| report_dir.clone());
 
@@ -1412,9 +1516,13 @@ async fn run_run(
         eprintln!();
         eprintln!("Analyzing {} file(s)...", analyzable_files.len());
     }
-    let registry = batch_analyze::batch_analyze(&mut frontends, &analyzable_files)
-        .await
-        .map_err(|e| format!("batch analyze failed: {e}"))?;
+    let registry = batch_analyze::batch_analyze(
+        &mut frontends,
+        &analyzable_files,
+        None,
+    )
+    .await
+    .map_err(|e| format!("batch analyze failed: {e}"))?;
 
     let total_functions = registry.len();
     let total_branches: usize = registry.entries().iter().map(|e| e.branch_count).sum();
@@ -1866,30 +1974,38 @@ async fn main() -> ExitCode {
             .await
         }
         CliCommand::Scan {
-            targets,
+            directory,
+            language,
+            include,
+            exclude,
+            all,
+            max_depth,
+            timeout_per_fn,
+            timeout_total,
+            parallelism,
+            mock_config,
+            output,
+            format,
+            emit_tests,
+            dry_run,
+            resume,
+            progress,
             max_iterations,
-            timeout,
-            scope,
-            analyze_only,
             cache_dir,
             no_cache,
             request_timeout,
             exec_timeout,
             build_timeout,
-            parallelism,
-            timeout_per_fn,
-            output_dir,
-            report,
-            progress_json,
-            emit_tests,
-            emit_tests_dir,
         } => {
             run_scan(
-                &targets,
+                &directory,
+                language.as_deref(),
+                &include,
+                &exclude,
+                all,
+                max_depth,
                 max_iterations,
-                timeout,
-                scope.as_deref(),
-                analyze_only,
+                timeout_total,
                 cache_dir.as_deref(),
                 no_cache,
                 request_timeout,
@@ -1897,11 +2013,13 @@ async fn main() -> ExitCode {
                 build_timeout,
                 parallelism,
                 timeout_per_fn,
-                output_dir.as_deref(),
-                &report,
-                progress_json,
+                output.as_deref(),
+                &format,
+                progress,
                 emit_tests.as_deref(),
-                emit_tests_dir.as_deref(),
+                dry_run,
+                resume.as_deref(),
+                mock_config.as_deref(),
                 log_level,
             )
             .await
@@ -2239,13 +2357,13 @@ mod tests {
             "shatter",
             "scan",
             "--request-timeout", "15",
-            "--timeout", "200",
-            "test.ts",
+            "--timeout-total", "200",
+            "test_dir",
         ]);
         match cli.command {
-            CliCommand::Scan { request_timeout, timeout, .. } => {
+            CliCommand::Scan { request_timeout, timeout_total, .. } => {
                 assert_eq!(request_timeout, 15);
-                assert_eq!(timeout, 200);
+                assert_eq!(timeout_total, 200);
             }
             _ => panic!("expected Scan command"),
         }
@@ -2324,7 +2442,7 @@ mod tests {
             "shatter",
             "scan",
             "--exec-timeout", "15",
-            "test.go",
+            "test_dir",
         ]);
         match cli.command {
             CliCommand::Scan { exec_timeout, build_timeout, .. } => {
@@ -2363,30 +2481,30 @@ mod tests {
         let cli = Cli::parse_from([
             "shatter",
             "scan",
-            "test.ts",
+            "src/",
         ]);
         match cli.command {
             CliCommand::Scan {
-                targets,
+                directory,
                 max_iterations,
-                timeout,
-                scope,
-                analyze_only,
+                timeout_total,
                 no_cache,
                 request_timeout,
                 parallelism,
                 timeout_per_fn,
+                dry_run,
+                progress,
                 ..
             } => {
-                assert_eq!(targets, vec!["test.ts"]);
+                assert_eq!(directory, "src/");
                 assert_eq!(max_iterations, 100);
-                assert_eq!(timeout, 120);
-                assert!(scope.is_none());
-                assert!(!analyze_only);
+                assert_eq!(timeout_total, 300);
                 assert!(!no_cache);
                 assert_eq!(request_timeout, 30);
                 assert_eq!(parallelism, 0);
                 assert_eq!(timeout_per_fn, 30);
+                assert!(!dry_run);
+                assert!(!progress);
             }
             _ => panic!("expected Scan command"),
         }
@@ -2398,24 +2516,38 @@ mod tests {
             "shatter",
             "scan",
             "--max-iterations", "50",
-            "--timeout", "300",
-            "--analyze-only",
-            "a.ts",
-            "b.ts:helperFn",
+            "--timeout-total", "600",
+            "--dry-run",
+            "--language", "typescript",
+            "--include", "**/*.ts",
+            "--exclude", "**/vendor/**",
+            "--all",
+            "--max-depth", "3",
+            "src/",
         ]);
         match cli.command {
             CliCommand::Scan {
-                targets,
+                directory,
                 max_iterations,
-                timeout,
-                analyze_only,
+                timeout_total,
+                dry_run,
+                language,
+                include,
+                exclude,
+                all,
+                max_depth,
                 no_cache,
                 ..
             } => {
-                assert_eq!(targets, vec!["a.ts", "b.ts:helperFn"]);
+                assert_eq!(directory, "src/");
                 assert_eq!(max_iterations, 50);
-                assert_eq!(timeout, 300);
-                assert!(analyze_only);
+                assert_eq!(timeout_total, 600);
+                assert!(dry_run);
+                assert_eq!(language, Some("typescript".to_string()));
+                assert_eq!(include, vec!["**/*.ts"]);
+                assert_eq!(exclude, vec!["**/vendor/**"]);
+                assert!(all);
+                assert_eq!(max_depth, Some(3));
                 assert!(!no_cache);
             }
             _ => panic!("expected Scan command"),
@@ -2423,32 +2555,32 @@ mod tests {
     }
 
     #[test]
-    fn cli_scan_output_dir_flag() {
+    fn cli_scan_output_flag() {
         let cli = Cli::parse_from([
             "shatter",
             "scan",
-            "--output-dir", "/tmp/report",
-            "test.ts",
+            "--output", "/tmp/report",
+            "src/",
         ]);
         match cli.command {
-            CliCommand::Scan { output_dir, .. } => {
-                assert_eq!(output_dir, Some(PathBuf::from("/tmp/report")));
+            CliCommand::Scan { output, .. } => {
+                assert_eq!(output, Some(PathBuf::from("/tmp/report")));
             }
             _ => panic!("expected Scan command"),
         }
 
-        // Default: no output_dir
-        let cli = Cli::parse_from(["shatter", "scan", "test.ts"]);
+        // Default: no output
+        let cli = Cli::parse_from(["shatter", "scan", "src/"]);
         match cli.command {
-            CliCommand::Scan { output_dir, .. } => {
-                assert!(output_dir.is_none());
+            CliCommand::Scan { output, .. } => {
+                assert!(output.is_none());
             }
             _ => panic!("expected Scan command"),
         }
     }
 
     #[test]
-    fn cli_scan_requires_at_least_one_target() {
+    fn cli_scan_requires_directory() {
         let result = Cli::try_parse_from(["shatter", "scan"]);
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -2504,7 +2636,7 @@ mod tests {
             "shatter",
             "scan",
             "--no-cache",
-            "test.ts",
+            "src/",
         ]);
         match cli.command {
             CliCommand::Scan { no_cache, .. } => {
@@ -2534,7 +2666,7 @@ mod tests {
         let cli = Cli::parse_from([
             "shatter",
             "scan",
-            "test.ts",
+            "src/",
         ]);
         match cli.command {
             CliCommand::Scan { no_cache, .. } => {
@@ -2807,30 +2939,11 @@ mod tests {
             "shatter",
             "scan",
             "--emit-tests", "jest",
-            "test.ts",
+            "src/",
         ]);
         match cli.command {
-            CliCommand::Scan { emit_tests, emit_tests_dir, .. } => {
+            CliCommand::Scan { emit_tests, .. } => {
                 assert_eq!(emit_tests, Some("jest".to_string()));
-                assert!(emit_tests_dir.is_none());
-            }
-            _ => panic!("expected Scan command"),
-        }
-    }
-
-    #[test]
-    fn cli_scan_emit_tests_with_dir() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "scan",
-            "--emit-tests", "vitest",
-            "--emit-tests-dir", "/tmp/tests",
-            "test.ts",
-        ]);
-        match cli.command {
-            CliCommand::Scan { emit_tests, emit_tests_dir, .. } => {
-                assert_eq!(emit_tests, Some("vitest".to_string()));
-                assert_eq!(emit_tests_dir, Some(PathBuf::from("/tmp/tests")));
             }
             _ => panic!("expected Scan command"),
         }
@@ -2842,7 +2955,7 @@ mod tests {
             "shatter",
             "scan",
             "--emit-tests", "gotest",
-            "test.go",
+            "src/",
         ]);
         match cli.command {
             CliCommand::Scan { emit_tests, .. } => {
@@ -2854,11 +2967,38 @@ mod tests {
 
     #[test]
     fn cli_scan_emit_tests_defaults_to_none() {
-        let cli = Cli::parse_from(["shatter", "scan", "test.ts"]);
+        let cli = Cli::parse_from(["shatter", "scan", "src/"]);
         match cli.command {
-            CliCommand::Scan { emit_tests, emit_tests_dir, .. } => {
+            CliCommand::Scan { emit_tests, .. } => {
                 assert!(emit_tests.is_none());
-                assert!(emit_tests_dir.is_none());
+            }
+            _ => panic!("expected Scan command"),
+        }
+    }
+
+    #[test]
+    fn cli_scan_new_flags() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "scan",
+            "--progress",
+            "--format", "markdown",
+            "--resume", "/tmp/state.json",
+            "--mock-config", "/tmp/mocks.yaml",
+            "src/",
+        ]);
+        match cli.command {
+            CliCommand::Scan {
+                progress,
+                format,
+                resume,
+                mock_config,
+                ..
+            } => {
+                assert!(progress);
+                assert_eq!(format, "markdown");
+                assert_eq!(resume, Some(PathBuf::from("/tmp/state.json")));
+                assert_eq!(mock_config, Some(PathBuf::from("/tmp/mocks.yaml")));
             }
             _ => panic!("expected Scan command"),
         }
