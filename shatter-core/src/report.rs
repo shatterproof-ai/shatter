@@ -729,6 +729,7 @@ mod tests {
             behavior_map: BehaviorMap {
                 function_id: name.to_string(),
                 behaviors,
+                fingerprint: None,
             },
             behavior_coverage: vec![],
             mocks_used: mocks,

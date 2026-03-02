@@ -211,6 +211,11 @@ pub struct Behavior {
 pub struct BehaviorMap {
     pub function_id: String,
     pub behaviors: Vec<Behavior>,
+    /// SHA-256 fingerprint of the function's source, params, and branches.
+    /// Used for staleness detection: if the fingerprint matches a cached value,
+    /// the function is unchanged and can be skipped during re-exploration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
 }
 
 impl BehaviorMap {
@@ -245,6 +250,7 @@ impl BehaviorMap {
         Self {
             function_id: function_id.into(),
             behaviors,
+            fingerprint: None,
         }
     }
 
@@ -292,6 +298,7 @@ impl BehaviorMap {
         Self {
             function_id: function_id.into(),
             behaviors,
+            fingerprint: None,
         }
     }
 
@@ -960,6 +967,7 @@ mod tests {
                     side_effects: vec![],
                     dependency_trace: None,
                 }],
+                fingerprint: None,
             },
             behavior_coverage: vec![BehaviorCoverage {
                 caller: "calculateTotal".to_string(),

@@ -107,6 +107,10 @@ pub struct FunctionSpec {
     /// Function-wide invariants (across all classes). Empty if invariant detection is disabled.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub invariants: Vec<ClassifiedInvariant>,
+    /// SHA-256 fingerprint of the function's source, params, and branches.
+    /// Used for staleness detection across runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
 }
 
 /// Build a [`FunctionSpec`] from an exploration result and its equivalence classes.
@@ -117,6 +121,7 @@ pub fn build_spec(
     result: &ExplorationResult,
     eq_classes: &[EquivalenceClass],
     location: Option<String>,
+    fingerprint: Option<String>,
 ) -> FunctionSpec {
     let classes = eq_classes
         .iter()
@@ -132,6 +137,7 @@ pub fn build_spec(
         lines_covered: result.lines_covered,
         total_lines: result.total_lines,
         invariants: vec![],
+        fingerprint,
     }
 }
 
@@ -143,6 +149,7 @@ pub fn build_spec_with_invariants(
     result: &ExplorationResult,
     eq_classes: &[EquivalenceClass],
     location: Option<String>,
+    fingerprint: Option<String>,
 ) -> FunctionSpec {
     use crate::invariants::{
         detect_classified_invariants, records_from_raw_results, InvariantTarget,
@@ -195,6 +202,7 @@ pub fn build_spec_with_invariants(
         lines_covered: result.lines_covered,
         total_lines: result.total_lines,
         invariants: function_invariants,
+        fingerprint,
     }
 }
 
@@ -577,7 +585,7 @@ mod tests {
             ),
         ];
 
-        let spec = build_spec(&result, &classes, Some("math.ts:10".to_string()));
+        let spec = build_spec(&result, &classes, Some("math.ts:10".to_string()), None);
 
         assert_eq!(spec.function_name, "classifyNumber");
         assert_eq!(spec.location.as_deref(), Some("math.ts:10"));
@@ -622,7 +630,7 @@ mod tests {
             ),
         ];
 
-        let spec = build_spec(&result, &classes, None);
+        let spec = build_spec(&result, &classes, None, None);
 
         assert_eq!(spec.classes.len(), 2);
 
@@ -647,7 +655,7 @@ mod tests {
             10,
         )];
 
-        let spec = build_spec(&result, &classes, None);
+        let spec = build_spec(&result, &classes, None, None);
         assert_eq!(spec.classes[0].postcondition, Postcondition::ReturnsVoid);
         assert!(spec.classes[0].label.contains("void"));
     }
@@ -655,7 +663,7 @@ mod tests {
     #[test]
     fn build_spec_empty_classes() {
         let result = make_exploration_result("unused", 0, 0);
-        let spec = build_spec(&result, &[], None);
+        let spec = build_spec(&result, &[], None, None);
 
         assert!(spec.classes.is_empty());
         assert_eq!(spec.function_name, "unused");
@@ -683,7 +691,7 @@ mod tests {
             ),
         ];
 
-        let spec = build_spec(&result, &classes, Some("math.ts:5".to_string()));
+        let spec = build_spec(&result, &classes, Some("math.ts:5".to_string()), None);
         let md = format_spec_markdown(&spec);
 
         assert!(md.contains("# Specification: `classify`"), "missing title");
@@ -717,7 +725,7 @@ mod tests {
             3,
         )];
 
-        let spec = build_spec(&result, &classes, None);
+        let spec = build_spec(&result, &classes, None, None);
         let md = format_spec_markdown(&spec);
 
         assert!(md.contains("throws TypeError: null input"), "missing error");
@@ -736,7 +744,7 @@ mod tests {
             15,
         )];
 
-        let spec = build_spec(&result, &classes, Some("math.ts:1".to_string()));
+        let spec = build_spec(&result, &classes, Some("math.ts:1".to_string()), None);
         let json_str = format_spec_json(&spec).expect("json serialization");
 
         let deserialized: FunctionSpec =
@@ -763,7 +771,7 @@ mod tests {
             5,
         )];
 
-        let spec = build_spec(&result, &classes, None);
+        let spec = build_spec(&result, &classes, None, None);
         let json_str = format_spec_json(&spec).expect("json serialization");
         let parsed: serde_json::Value =
             serde_json::from_str(&json_str).expect("json parse");
@@ -890,7 +898,7 @@ mod tests {
             5,
         )];
 
-        let spec = build_spec(&result, &classes, None);
+        let spec = build_spec(&result, &classes, None, None);
         let md = format_spec_markdown(&spec);
 
         assert!(md.contains("_(none derived)_"), "should note no preconditions");
@@ -899,7 +907,7 @@ mod tests {
     #[test]
     fn format_spec_markdown_no_location() {
         let result = make_exploration_result("fn1", 10, 1);
-        let spec = build_spec(&result, &[], None);
+        let spec = build_spec(&result, &[], None, None);
         let md = format_spec_markdown(&spec);
 
         assert!(!md.contains("**Location:**"), "should not have location");
@@ -967,6 +975,7 @@ mod tests {
             lines_covered: 15,
             total_lines: 20,
             invariants: vec![],
+            fingerprint: None,
         };
 
         let json_str = serde_json::to_string_pretty(&spec).expect("serialize");
@@ -984,6 +993,7 @@ mod tests {
         let mut spec = build_spec(
             &make_exploration_result("fn1", 10, 1),
             &[make_eq_class(vec![], vec![json!(1)], Some(json!(2)), None, vec![], 5)],
+            None,
             None,
         );
         spec.invariants = vec![ClassifiedInvariant {
@@ -1018,6 +1028,7 @@ mod tests {
             &make_exploration_result("fn1", 10, 1),
             &[make_eq_class(vec![], vec![json!(1)], Some(json!(2)), None, vec![], 5)],
             None,
+            None,
         );
         spec.classes[0].invariants = vec![ClassifiedInvariant {
             invariant: Invariant {
@@ -1047,6 +1058,7 @@ mod tests {
             &make_exploration_result("fn1", 10, 1),
             &[make_eq_class(vec![], vec![json!(1)], Some(json!(2)), None, vec![], 5)],
             None,
+            None,
         );
 
         let json_str = format_spec_json(&spec).expect("json serialization");
@@ -1068,6 +1080,7 @@ mod tests {
         let mut spec = build_spec(
             &make_exploration_result("fn1", 10, 1),
             &[make_eq_class(vec![], vec![json!(1)], Some(json!(2)), None, vec![], 5)],
+            None,
             None,
         );
         spec.invariants = vec![ClassifiedInvariant {
@@ -1100,6 +1113,7 @@ mod tests {
             &make_exploration_result("add", 10, 2),
             &[],
             Some("src/math.ts:1".to_string()),
+            None,
         );
         let bundle = FileSpecBundle {
             file: "src/math.ts".to_string(),

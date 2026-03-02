@@ -507,6 +507,7 @@ mod tests {
         let map = BehaviorMap {
             function_id: "add".to_string(),
             behaviors: vec![],
+            fingerprint: None,
         };
         let output = generate_jest_tests(&map, "add", "./src/math");
         assert!(output.starts_with("import { add } from './src/math';\n"));
@@ -517,6 +518,7 @@ mod tests {
         let map = BehaviorMap {
             function_id: "add".to_string(),
             behaviors: vec![],
+            fingerprint: None,
         };
         let output = generate_jest_tests(&map, "add", "./src/math");
         assert!(output.contains("describe('add', () => {"));
@@ -528,6 +530,7 @@ mod tests {
         let map = BehaviorMap {
             function_id: "add".to_string(),
             behaviors: vec![make_behavior(0, vec![json!(1), json!(2)], Some(json!(3)), None)],
+            fingerprint: None,
         };
         let output = generate_jest_tests(&map, "add", "./src/math");
 
@@ -546,6 +549,7 @@ mod tests {
                 Some(json!("positive")),
                 None,
             )],
+            fingerprint: None,
         };
         let output = generate_jest_tests(&map, "classify", "./src/classifier");
         assert!(output.contains("expect(result).toEqual('positive');"));
@@ -565,6 +569,7 @@ mod tests {
                     stack: None,
                 }),
             )],
+            fingerprint: None,
         };
         let output = generate_jest_tests(&map, "divide", "./src/math");
         assert!(output.contains("throws division by zero for input (1, 0)"), "output: {output}");
@@ -580,6 +585,7 @@ mod tests {
                 make_behavior(1, vec![json!(-3)], Some(json!(3)), None),
                 make_behavior(2, vec![json!(0)], Some(json!(0)), None),
             ],
+            fingerprint: None,
         };
         let output = generate_jest_tests(&map, "abs", "./src/math");
 
@@ -593,6 +599,7 @@ mod tests {
         let map = BehaviorMap {
             function_id: "doSomething".to_string(),
             behaviors: vec![make_behavior(0, vec![json!("input")], None, None)],
+            fingerprint: None,
         };
         let output = generate_jest_tests(&map, "doSomething", "./src/actions");
         assert!(output.contains("returns undefined for input"));
@@ -609,6 +616,7 @@ mod tests {
                 Some(json!("hello it's")),
                 None,
             )],
+            fingerprint: None,
         };
         let output = generate_jest_tests(&map, "greet", "./src/greet");
         assert!(output.contains("'it\\'s'"), "output: {output}");
@@ -632,6 +640,7 @@ mod tests {
         let map = BehaviorMap {
             function_id: "add".to_string(),
             behaviors: vec![],
+            fingerprint: None,
         };
         let output = generate_go_tests(&map, "add", "examples");
         assert!(output.starts_with("package examples\n"), "output: {output}");
@@ -643,6 +652,7 @@ mod tests {
         let map = BehaviorMap {
             function_id: "classifyNumber".to_string(),
             behaviors: vec![make_behavior(0, vec![json!(5)], Some(json!("positive")), None)],
+            fingerprint: None,
         };
         let output = generate_go_tests(&map, "classifyNumber", "examples");
         assert!(
@@ -656,6 +666,7 @@ mod tests {
         let map = BehaviorMap {
             function_id: "noop".to_string(),
             behaviors: vec![],
+            fingerprint: None,
         };
         let output = generate_go_tests(&map, "noop", "main");
         assert!(output.contains("// No behaviors observed"), "output: {output}");
@@ -670,6 +681,7 @@ mod tests {
                 make_behavior(1, vec![json!(-3)], Some(json!(3)), None),
                 make_behavior(2, vec![json!(0)], Some(json!(0)), None),
             ],
+            fingerprint: None,
         };
         let output = generate_go_tests(&map, "abs", "math");
 
@@ -694,6 +706,7 @@ mod tests {
                 make_behavior(0, vec![json!(5)], Some(json!("positive")), None),
                 make_behavior(1, vec![json!(-3)], Some(json!("negative")), None),
             ],
+            fingerprint: None,
         };
         let output = generate_go_tests(&map, "classifyNumber", "examples");
 
@@ -710,6 +723,7 @@ mod tests {
                 make_behavior(0, vec![json!(5)], Some(json!(true)), None),
                 make_behavior(1, vec![json!(-1)], Some(json!(false)), None),
             ],
+            fingerprint: None,
         };
         let output = generate_go_tests(&map, "isPositive", "math");
 
@@ -723,6 +737,7 @@ mod tests {
         let map = BehaviorMap {
             function_id: "half".to_string(),
             behaviors: vec![make_behavior(0, vec![json!(3.14)], Some(json!(1.57)), None)],
+            fingerprint: None,
         };
         let output = generate_go_tests(&map, "half", "math");
 
@@ -735,6 +750,7 @@ mod tests {
         let map = BehaviorMap {
             function_id: "maybeNil".to_string(),
             behaviors: vec![make_behavior(0, vec![json!(null)], Some(json!(null)), None)],
+            fingerprint: None,
         };
         let output = generate_go_tests(&map, "maybeNil", "main");
 
@@ -746,6 +762,7 @@ mod tests {
         let map = BehaviorMap {
             function_id: "add".to_string(),
             behaviors: vec![make_behavior(0, vec![json!(1), json!(2)], Some(json!(3)), None)],
+            fingerprint: None,
         };
         let output = generate_go_tests(&map, "add", "math");
 
@@ -768,6 +785,7 @@ mod tests {
                     stack: None,
                 }),
             )],
+            fingerprint: None,
         };
         let output = generate_go_tests(&map, "divide", "math");
 
@@ -797,6 +815,7 @@ mod tests {
                     }),
                 ),
             ],
+            fingerprint: None,
         };
         let output = generate_go_tests(&map, "safeDivide", "math");
 

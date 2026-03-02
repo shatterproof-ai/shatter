@@ -434,6 +434,7 @@ mod tests {
         BehaviorMap {
             function_id: function_id.to_string(),
             behaviors,
+            fingerprint: None,
         }
     }
 
