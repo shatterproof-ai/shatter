@@ -419,6 +419,100 @@ func TestExecTimeoutIgnoresNegative(t *testing.T) {
 	}
 }
 
+func TestSanitizeMockName(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"readFile", "readFile"},
+		{"fs.readFile", "fs_readFile"},
+		{"@prisma/client.findMany", "_prisma_client_findMany"},
+		{"http:get", "http_get"},
+	}
+	for _, tc := range tests {
+		got := sanitizeMockName(tc.input)
+		if got != tc.want {
+			t.Errorf("sanitizeMockName(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestGenerateMockFileContainsMockFunctions(t *testing.T) {
+	mocks := []MockConfig{
+		{
+			Symbol:           "fs.readFile",
+			ReturnValues:     []any{"file contents"},
+			ShouldTrackCalls: true,
+			DefaultBehavior:  "repeat_last",
+		},
+		{
+			Symbol:           "lodash.map",
+			ReturnValues:     nil,
+			ShouldTrackCalls: false,
+			DefaultBehavior:  "passthrough",
+		},
+	}
+
+	source := generateMockFile(mocks, "/tmp/calls.json")
+
+	// Should contain a mock function for fs.readFile
+	if !contains(source, "ShatterMock_fs_readFile") {
+		t.Error("expected ShatterMock_fs_readFile in generated source")
+	}
+
+	// Should NOT contain a mock function for passthrough mocks
+	if contains(source, "ShatterMock_lodash_map") {
+		t.Error("passthrough mock should not generate a function")
+	}
+
+	// Should contain call tracking for fs.readFile
+	if !contains(source, `shatterRecordMockCall("fs.readFile"`) {
+		t.Error("expected call tracking for fs.readFile")
+	}
+
+	// Should contain the dump function
+	if !contains(source, "shatterDumpMockCalls") {
+		t.Error("expected shatterDumpMockCalls function")
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) > 0 && len(substr) > 0 && // prevent trivial matches
+		len(s) >= len(substr) &&
+		indexOf(s, substr) >= 0
+}
+
+func indexOf(s, substr string) int {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return i
+		}
+	}
+	return -1
+}
+
+func TestFlattenMocksEmpty(t *testing.T) {
+	result := flattenMocks(nil)
+	if result != nil {
+		t.Errorf("expected nil for empty mocks, got %v", result)
+	}
+
+	result = flattenMocks([][]MockConfig{{}})
+	if result != nil {
+		t.Errorf("expected nil for empty inner slice, got %v", result)
+	}
+}
+
+func TestFlattenMocksReturnsFirst(t *testing.T) {
+	mocks := [][]MockConfig{{
+		{Symbol: "test", ReturnValues: []any{1}},
+	}}
+	result := flattenMocks(mocks)
+	if len(result) != 1 || result[0].Symbol != "test" {
+		t.Errorf("expected single mock, got %v", result)
+	}
+}
+
 func TestBuildTimeoutDefaultIs30s(t *testing.T) {
 	os.Unsetenv("SHATTER_BUILD_TIMEOUT")
 	if d := buildTimeout(); d != 30*time.Second {

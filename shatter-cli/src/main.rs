@@ -889,7 +889,7 @@ async fn run_scan(
     emit_tests: Option<&str>,
     dry_run: bool,
     _resume: Option<&Path>,
-    _mock_config: Option<&Path>,
+    mock_config: Option<&Path>,
     core_sample_spec: Option<&str>,
     core_sample_seed: Option<u64>,
     stratum_spec: Option<&str>,
@@ -1156,6 +1156,7 @@ async fn run_scan(
             timeout_per_fn: Duration::from_secs(timeout_per_fn),
             cache: None,
             stratum: parsed_stratum.clone(),
+            mock_overrides: HashMap::new(),
         };
         let plan = scan_orchestrator::format_dry_run_plan(
             &all_analyses,
@@ -1194,6 +1195,24 @@ async fn run_scan(
         .ok_or_else(|| format!("no frontend for {first_lang:?}"))?;
     let fe_config = frontend_config(cli_lang, req_timeout, log_level, exec_timeout, build_timeout)?;
 
+    // Load mock overrides from --mock-config (or .shatter/config.yaml defaults).
+    let mock_overrides = if let Some(mc_path) = mock_config {
+        let cfg = shatter_config::parse_config(mc_path)
+            .map_err(|e| format!("failed to load mock config: {e}"))?;
+        cfg.defaults.mocks.unwrap_or_default()
+    } else {
+        // Try loading from the scanned directory's .shatter/config.yaml
+        let config_path = PathBuf::from(directory).join(".shatter").join("config.yaml");
+        if config_path.exists() {
+            shatter_config::parse_config(&config_path)
+                .ok()
+                .and_then(|cfg| cfg.defaults.mocks)
+                .unwrap_or_default()
+        } else {
+            HashMap::new()
+        }
+    };
+
     let scan_config = ScanConfig {
         max_iterations_per_function: max_iterations,
         seed: None,
@@ -1202,6 +1221,7 @@ async fn run_scan(
         timeout_per_fn: Duration::from_secs(timeout_per_fn),
         cache,
         stratum: parsed_stratum,
+        mock_overrides,
     };
 
     let scan_start = Instant::now();

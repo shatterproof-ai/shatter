@@ -139,6 +139,7 @@ async fn concolic_classifynumber_discovers_all_branches() {
         max_iterations: 20,
         max_executions: 100,
         plateau_threshold: 15,
+        ..Default::default()
     };
 
     // Seed with a few diverse values to start exploration.
@@ -224,6 +225,7 @@ async fn concolic_comparemagnitudes_discovers_compound_branches() {
         max_iterations: 30,
         max_executions: 200,
         plateau_threshold: 20,
+        ..Default::default()
     };
 
     let seed_inputs = vec![
@@ -298,6 +300,7 @@ async fn concolic_safedivide_discovers_error_paths() {
         max_iterations: 20,
         max_executions: 100,
         plateau_threshold: 15,
+        ..Default::default()
     };
 
     // Start with a normal case — Z3 should find the error paths.

@@ -52,6 +52,9 @@ pub struct ScanConfig {
     /// Optional stratum filter. When set, only functions in the matching
     /// call graph layers are explored; callees outside are mocked.
     pub stratum: Option<crate::stratum::StratumSpec>,
+    /// User-provided mock overrides from `.shatter/config.yaml`.
+    /// Keys are dependency symbol names; values override auto-generated defaults.
+    pub mock_overrides: HashMap<String, crate::auto_mock::MockOverride>,
 }
 
 /// Result of exploring a single function during a scan.
@@ -251,7 +254,7 @@ pub async fn scan(
         let auto_mocks = crate::auto_mock::generate_auto_mocks(
             &analysis.dependencies,
             None,
-            &std::collections::HashMap::new(),
+            &config.mock_overrides,
             &mocks,
         );
         for am in &auto_mocks {
@@ -494,7 +497,7 @@ pub async fn parallel_scan(
             let auto_mocks = crate::auto_mock::generate_auto_mocks(
                 &analysis.dependencies,
                 None,
-                &std::collections::HashMap::new(),
+                &config.mock_overrides,
                 &mocks,
             );
             for am in &auto_mocks {
@@ -1514,6 +1517,7 @@ mod tests {
             timeout_per_fn: Duration::from_secs(10),
             cache: None,
             stratum: None,
+            mock_overrides: HashMap::new(),
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -1576,6 +1580,7 @@ mod tests {
             timeout_per_fn: Duration::from_secs(10),
             cache: None,
             stratum: None,
+            mock_overrides: HashMap::new(),
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -1634,6 +1639,7 @@ mod tests {
             timeout_per_fn: Duration::from_secs(10),
             cache: Some(cache.clone()),
             stratum: None,
+            mock_overrides: HashMap::new(),
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -1691,6 +1697,7 @@ mod tests {
             timeout_per_fn: Duration::from_secs(30),
             cache: None,
             stratum: None,
+            mock_overrides: HashMap::new(),
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -1735,6 +1742,7 @@ mod tests {
             timeout_per_fn: Duration::from_secs(30),
             cache: None,
             stratum: None,
+            mock_overrides: HashMap::new(),
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -1762,6 +1770,7 @@ mod tests {
             timeout_per_fn: Duration::from_secs(30),
             cache: None,
             stratum: None,
+            mock_overrides: HashMap::new(),
         };
 
         let plan = format_dry_run_plan(&analyses, &skipped, &config).expect("should succeed");
@@ -1780,6 +1789,7 @@ mod tests {
             timeout_per_fn: Duration::from_secs(30),
             cache: None,
             stratum: None,
+            mock_overrides: HashMap::new(),
         };
 
         let plan = format_dry_run_plan(&[], &[], &config).expect("should succeed");
