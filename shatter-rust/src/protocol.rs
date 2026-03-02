@@ -281,6 +281,12 @@ pub struct Response {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<serde_json::Value>,
 
+    // Instrument fields
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instrumented: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_file: Option<String>,
+
     // Analyze fields
     #[serde(skip_serializing_if = "Option::is_none")]
     pub functions: Option<Vec<FunctionAnalysis>>,
@@ -304,6 +310,8 @@ impl Response {
             capabilities: None,
             setup_context: None,
             value: None,
+            instrumented: None,
+            output_file: None,
             functions: None,
             code: None,
             message: None,
@@ -518,6 +526,8 @@ mod tests {
             capabilities: None,
             setup_context: Some(serde_json::json!({"db_handle": "conn_42"})),
             value: None,
+            instrumented: None,
+            output_file: None,
             functions: None,
             code: None,
             message: None,
@@ -536,6 +546,8 @@ mod tests {
             capabilities: None,
             setup_context: None,
             value: None,
+            instrumented: None,
+            output_file: None,
             functions: None,
             code: None,
             message: None,
@@ -554,6 +566,8 @@ mod tests {
             capabilities: None,
             setup_context: None,
             value: Some(serde_json::json!({"id": 1, "name": "Alice"})),
+            instrumented: None,
+            output_file: None,
             functions: None,
             code: None,
             message: None,
@@ -572,6 +586,8 @@ mod tests {
             capabilities: None,
             setup_context: None,
             value: Some(serde_json::json!("tok_abc123")),
+            instrumented: None,
+            output_file: None,
             functions: None,
             code: None,
             message: None,
@@ -590,6 +606,8 @@ mod tests {
             capabilities: None,
             setup_context: None,
             value: None,
+            instrumented: None,
+            output_file: None,
             functions: None,
             code: Some("internal_error".to_string()),
             message: Some("something broke".to_string()),
@@ -608,6 +626,8 @@ mod tests {
             capabilities: Some(vec!["analyze".to_string()]),
             setup_context: None,
             value: None,
+            instrumented: None,
+            output_file: None,
             functions: None,
             code: None,
             message: None,

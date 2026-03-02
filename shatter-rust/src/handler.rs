@@ -30,6 +30,18 @@ impl FrontendLogLevel {
     }
 }
 
+/// Write instrumented source to a temp directory and return the output path.
+fn write_instrumented_temp(filename: &str, source: &str) -> io::Result<String> {
+    let dir = std::env::temp_dir().join(format!(
+        "shatter-instrument-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir)?;
+    let out_path = dir.join(filename);
+    std::fs::write(&out_path, source)?;
+    Ok(out_path.to_string_lossy().into_owned())
+}
+
 /// Processes protocol requests from stdin and writes responses to stdout.
 pub struct Handler<R, W, L> {
     reader: BufReader<R>,
@@ -187,17 +199,61 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
     }
 
     fn handle_instrument(&self, mut resp: Response, req: &Request) -> Response {
-        if req.file.is_none() {
+        let file_path = match &req.file {
+            Some(f) => f,
+            None => {
+                resp.status = "error".to_string();
+                resp.code = Some("invalid_request".to_string());
+                resp.message = Some("instrument command requires a file path".to_string());
+                return resp;
+            }
+        };
+
+        let path = std::path::Path::new(file_path);
+        if !path.exists() {
             resp.status = "error".to_string();
-            resp.code = Some("invalid_request".to_string());
-            resp.message = Some("instrument command requires a file path".to_string());
+            resp.code = Some("file_not_found".to_string());
+            resp.message = Some(format!("file not found: {file_path}"));
             return resp;
         }
 
-        resp.status = "error".to_string();
-        resp.code = Some("internal_error".to_string());
-        resp.message = Some("instrument command not yet implemented".to_string());
-        resp
+        match crate::instrument::instrument_file(path, req.function.as_deref()) {
+            Ok(result) => {
+                // Write instrumented source to a temp file
+                let source_name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("instrumented.rs");
+                match write_instrumented_temp(source_name, &result.source) {
+                    Ok(output_path) => {
+                        resp.status = "instrument".to_string();
+                        resp.instrumented = Some(true);
+                        resp.output_file = Some(output_path);
+                        resp.message = Some(format!(
+                            "instrumented {} branch points",
+                            result.branch_count
+                        ));
+                        resp
+                    }
+                    Err(e) => {
+                        resp.status = "error".to_string();
+                        resp.code = Some("internal_error".to_string());
+                        resp.message = Some(format!("failed to write instrumented output: {e}"));
+                        resp
+                    }
+                }
+            }
+            Err(e) => {
+                resp.status = "error".to_string();
+                resp.code = Some(match &e {
+                    crate::instrument::InstrumentError::FileNotFound(_) => "file_not_found",
+                    crate::instrument::InstrumentError::ReadError(_) => "internal_error",
+                    crate::instrument::InstrumentError::ParseError(_) => "parse_error",
+                }.to_string());
+                resp.message = Some(e.to_string());
+                resp
+            }
+        }
     }
 
     fn handle_execute(&self, mut resp: Response) -> Response {
@@ -409,12 +465,34 @@ mod tests {
     }
 
     #[test]
-    fn instrument_with_file_returns_not_implemented() {
+    fn instrument_with_nonexistent_file_returns_file_not_found() {
         let resp = send_recv(
-            r#"{"protocol_version":"0.1.0","id":3,"command":"instrument","file":"test.rs"}"#,
+            r#"{"protocol_version":"0.1.0","id":3,"command":"instrument","file":"nonexistent.rs"}"#,
         );
         assert_eq!(resp.status, "error");
-        assert_eq!(resp.code.as_deref(), Some("internal_error"));
+        assert_eq!(resp.code.as_deref(), Some("file_not_found"));
+    }
+
+    #[test]
+    fn instrument_with_valid_file_returns_success() {
+        // Create a temp file with valid Rust source
+        let dir = std::env::temp_dir().join("shatter-test-instrument");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("sample.rs");
+        std::fs::write(&file, "fn foo(x: i32) -> bool { if x > 0 { true } else { false } }").unwrap();
+
+        let file_path = file.to_string_lossy();
+        let req = format!(
+            r#"{{"protocol_version":"0.1.0","id":3,"command":"instrument","file":"{}"}}"#,
+            file_path.replace('\\', "\\\\")
+        );
+        let resp = send_recv(&req);
+        assert_eq!(resp.status, "instrument", "expected instrument status, got: {:?}", resp.message);
+        assert_eq!(resp.instrumented, Some(true));
+        assert!(resp.output_file.is_some());
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

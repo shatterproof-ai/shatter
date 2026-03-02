@@ -1,5 +1,6 @@
 mod analyzer;
 mod handler;
+mod instrument;
 mod protocol;
 
 use std::io;
