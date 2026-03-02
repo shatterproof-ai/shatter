@@ -78,6 +78,8 @@ pub struct ExploreConfig {
     /// Stop after this many consecutive executions without discovering a new path.
     /// Set to 0 to disable plateau detection.
     pub plateau_threshold: usize,
+    /// Mock configurations to pass through to Execute commands.
+    pub mocks: Vec<crate::protocol::MockConfig>,
 }
 
 impl Default for ExploreConfig {
@@ -86,6 +88,7 @@ impl Default for ExploreConfig {
             max_iterations: 100,
             max_executions: 500,
             plateau_threshold: 20,
+            mocks: vec![],
         }
     }
 }
@@ -328,7 +331,7 @@ pub async fn explore(
             .send(Command::Execute {
                 function: function_name.to_string(),
                 inputs: entry.inputs.clone(),
-                mocks: vec![],
+                mocks: config.mocks.clone(),
                 setup_context: None,
             })
             .await?;
@@ -1013,6 +1016,7 @@ mod tests {
             max_iterations: 10,
             max_executions: 50,
             plateau_threshold: 5,
+            ..Default::default()
         };
 
         let result = explore(
@@ -1046,6 +1050,7 @@ mod tests {
             max_iterations: 20,
             max_executions: 100,
             plateau_threshold: 10,
+            ..Default::default()
         };
 
         // Start with x=0 (hits the x<=10 path).
@@ -1085,6 +1090,7 @@ mod tests {
             max_executions: 100,
             // Low threshold so plateau triggers quickly.
             plateau_threshold: 3,
+            ..Default::default()
         };
 
         // Provide multiple identical seeds so the worklist doesn't empty first.
@@ -1123,6 +1129,7 @@ mod tests {
             max_iterations: 100,
             max_executions: 3,
             plateau_threshold: 0, // disable plateau
+            ..Default::default()
         };
 
         let seeds = (0..10)
@@ -1156,6 +1163,7 @@ mod tests {
             max_iterations: 1,
             max_executions: 100,
             plateau_threshold: 0,
+            ..Default::default()
         };
 
         // Provide seeds that will hit different paths.

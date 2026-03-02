@@ -290,7 +290,7 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 	resp.LinesExecuted = toIntSlice(result.LinesExecuted)
 	resp.BranchPath = convertBranchPath(result.BranchPath)
 	resp.PathConstraints = extractPathConstraints(result.BranchPath)
-	resp.CallsToExternal = []ExternalCall{}
+	resp.CallsToExternal = convertExternalCalls(result.ExternalCalls)
 	resp.SideEffects = []SideEffect{}
 	resp.Performance = &PerfMetrics{
 		WallTimeMs:         result.Performance.WallTimeMs,
@@ -359,6 +359,30 @@ func extractPathConstraints(branches []instrument.BranchDecision) []SymConstrain
 		return []SymConstraint{}
 	}
 	return constraints
+}
+
+// convertExternalCalls converts executor ExternalCall records to protocol format.
+func convertExternalCalls(calls []instrument.ExternalCall) []ExternalCall {
+	if len(calls) == 0 {
+		return []ExternalCall{}
+	}
+	result := make([]ExternalCall, len(calls))
+	for i, c := range calls {
+		var args []any
+		if c.Args != nil {
+			json.Unmarshal(c.Args, &args) //nolint:errcheck
+		}
+		var retVal any
+		if c.ReturnValue != nil {
+			json.Unmarshal(c.ReturnValue, &retVal) //nolint:errcheck
+		}
+		result[i] = ExternalCall{
+			Symbol:      c.Symbol,
+			Args:        args,
+			ReturnValue: retVal,
+		}
+	}
+	return result
 }
 
 func (h *Handler) handleSetup(resp Response, req Request) Response {

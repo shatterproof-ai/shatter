@@ -47,7 +47,15 @@ type ExecuteResult struct {
 	ThrownError   *ErrorInfo       `json:"thrown_error,omitempty"`
 	BranchPath    []BranchDecision `json:"branch_path"`
 	LinesExecuted []int            `json:"lines_executed"`
+	ExternalCalls []ExternalCall   `json:"external_calls,omitempty"`
 	Performance   PerfMetrics      `json:"performance"`
+}
+
+// ExternalCall records one call to a mocked external dependency.
+type ExternalCall struct {
+	Symbol      string          `json:"symbol"`
+	Args        json.RawMessage `json:"args"`
+	ReturnValue json.RawMessage `json:"return_value"`
 }
 
 // ErrorInfo describes an error thrown during execution.
@@ -81,11 +89,18 @@ type MockConfig struct {
 	DefaultBehavior  string `json:"default_behavior"`
 }
 
+// flattenMocks extracts the first MockConfig slice from the variadic parameter.
+func flattenMocks(mocks [][]MockConfig) []MockConfig {
+	if len(mocks) > 0 && len(mocks[0]) > 0 {
+		return mocks[0]
+	}
+	return nil
+}
+
 // ExecuteFunction instruments the given source file for the target function,
 // generates a main harness that calls it with the given JSON inputs, compiles,
 // runs, and returns the collected results.
-// The mocks parameter provides mock configurations for external dependencies
-// (reserved for future harness injection support).
+// The mocks parameter provides mock configurations for external dependencies.
 func ExecuteFunction(sourcePath, funcName string, inputs []json.RawMessage, mocks ...[]MockConfig) (*ExecuteResult, error) {
 	// Analyze the function to get parameter types
 	params, returnInfo, err := analyzeForExecution(sourcePath, funcName)
@@ -109,11 +124,22 @@ func ExecuteFunction(sourcePath, funcName string, inputs []json.RawMessage, mock
 		return nil, fmt.Errorf("rewriting package: %w", err)
 	}
 
+	// Generate mock support file if mocks are provided.
+	activeMocks := flattenMocks(mocks)
+	mocksPath := filepath.Join(outputDir, "shatter_external_calls.json")
+	if len(activeMocks) > 0 {
+		mockSource := generateMockFile(activeMocks, mocksPath)
+		mockFilePath := filepath.Join(outputDir, "shatter_mocks.go")
+		if err := os.WriteFile(mockFilePath, []byte(mockSource), 0644); err != nil {
+			return nil, fmt.Errorf("writing shatter_mocks.go: %w", err)
+		}
+	}
+
 	// Generate the main harness
 	resultsPath := filepath.Join(outputDir, "shatter_results.json")
 	returnPath := filepath.Join(outputDir, "shatter_return.json")
 	perfPath := filepath.Join(outputDir, "shatter_perf.json")
-	harness, err := generateHarness(funcName, params, returnInfo, inputs, resultsPath, returnPath, perfPath)
+	harness, err := generateHarness(funcName, params, returnInfo, inputs, resultsPath, returnPath, perfPath, len(activeMocks) > 0)
 	if err != nil {
 		return nil, fmt.Errorf("generating harness: %w", err)
 	}
@@ -172,6 +198,16 @@ func ExecuteFunction(sourcePath, funcName string, inputs []json.RawMessage, mock
 	// Try to parse the return value
 	if data, err := os.ReadFile(returnPath); err == nil {
 		result.ReturnValue = json.RawMessage(data)
+	}
+
+	// Try to parse external call records from mock execution
+	if len(activeMocks) > 0 {
+		if data, err := os.ReadFile(mocksPath); err == nil {
+			var calls []ExternalCall
+			if err := json.Unmarshal(data, &calls); err == nil {
+				result.ExternalCalls = calls
+			}
+		}
 	}
 
 	// Try to parse performance metrics from the harness
@@ -330,7 +366,7 @@ func astTypeString(expr ast.Expr) string {
 
 // generateHarness creates a main.go that deserializes inputs, calls the function,
 // captures results, and writes output files.
-func generateHarness(funcName string, params []paramInfo, retInfo returnTypeInfo, inputs []json.RawMessage, resultsPath, returnPath, perfPath string) (string, error) {
+func generateHarness(funcName string, params []paramInfo, retInfo returnTypeInfo, inputs []json.RawMessage, resultsPath, returnPath, perfPath string, hasMocks bool) (string, error) {
 	var b strings.Builder
 
 	b.WriteString("package main\n\n")
@@ -343,6 +379,11 @@ func generateHarness(funcName string, params []paramInfo, retInfo returnTypeInfo
 	b.WriteString(")\n\n")
 
 	b.WriteString("func main() {\n")
+
+	// If mocks are active, defer dumping external call records
+	if hasMocks {
+		b.WriteString("\tdefer shatterDumpMockCalls()\n\n")
+	}
 	b.WriteString("\tvar memBefore runtime.MemStats\n")
 	b.WriteString("\truntime.ReadMemStats(&memBefore)\n")
 	b.WriteString("\tcpuStart := time.Now()\n\n")
@@ -446,6 +487,131 @@ func generateHarness(funcName string, params []paramInfo, retInfo returnTypeInfo
 	b.WriteString("}\n")
 
 	return b.String(), nil
+}
+
+// generateMockFile creates a Go source file providing a mock registry and call
+// tracking. Each mock symbol gets a package-level function variable that returns
+// pre-configured values and records calls to a JSON file.
+func generateMockFile(mocks []MockConfig, externalCallsPath string) string {
+	var b strings.Builder
+
+	b.WriteString("package main\n\n")
+	b.WriteString("import (\n")
+	b.WriteString("\t\"encoding/json\"\n")
+	b.WriteString("\t\"os\"\n")
+	b.WriteString("\t\"sync\"\n")
+	b.WriteString(")\n\n")
+
+	// Mock call record type
+	b.WriteString("type shatterMockCall struct {\n")
+	b.WriteString("\tSymbol      string          `json:\"symbol\"`\n")
+	b.WriteString("\tArgs        json.RawMessage `json:\"args\"`\n")
+	b.WriteString("\tReturnValue json.RawMessage `json:\"return_value\"`\n")
+	b.WriteString("}\n\n")
+
+	// Global call recorder
+	b.WriteString("var (\n")
+	b.WriteString("\tshatterMockCalls   []shatterMockCall\n")
+	b.WriteString("\tshatterMockCallsMu sync.Mutex\n")
+	b.WriteString(")\n\n")
+
+	// Record helper
+	b.WriteString("func shatterRecordMockCall(symbol string, args any, retVal any) {\n")
+	b.WriteString("\targsJSON, _ := json.Marshal(args)\n")
+	b.WriteString("\tretJSON, _ := json.Marshal(retVal)\n")
+	b.WriteString("\tshatterMockCallsMu.Lock()\n")
+	b.WriteString("\tshatterMockCalls = append(shatterMockCalls, shatterMockCall{\n")
+	b.WriteString("\t\tSymbol:      symbol,\n")
+	b.WriteString("\t\tArgs:        argsJSON,\n")
+	b.WriteString("\t\tReturnValue: retJSON,\n")
+	b.WriteString("\t})\n")
+	b.WriteString("\tshatterMockCallsMu.Unlock()\n")
+	b.WriteString("}\n\n")
+
+	// Dump function
+	pathEscaped := strings.ReplaceAll(externalCallsPath, `\`, `\\`)
+	b.WriteString("func shatterDumpMockCalls() {\n")
+	b.WriteString("\tshatterMockCallsMu.Lock()\n")
+	b.WriteString("\tdefer shatterMockCallsMu.Unlock()\n")
+	b.WriteString("\tdata, _ := json.Marshal(shatterMockCalls)\n")
+	b.WriteString(fmt.Sprintf("\tos.WriteFile(%q, data, 0644)\n", pathEscaped))
+	b.WriteString("}\n\n")
+
+	// Generate a mock function variable for each symbol.
+	// The mock returns the pre-configured return values in order,
+	// repeating the last one when exhausted (repeat_last behavior).
+	for i, mock := range mocks {
+		if mock.DefaultBehavior == "passthrough" {
+			continue
+		}
+
+		// Sanitize symbol to valid Go identifier
+		safeName := sanitizeMockName(mock.Symbol)
+
+		// Serialize return values as JSON array
+		retValsJSON, _ := json.Marshal(mock.ReturnValues)
+
+		b.WriteString(fmt.Sprintf("// Mock for %s\n", mock.Symbol))
+		b.WriteString(fmt.Sprintf("var shatterMock%d_retvals = func() []json.RawMessage {\n", i))
+		b.WriteString(fmt.Sprintf("\tvar vals []any\n"))
+		b.WriteString(fmt.Sprintf("\tjson.Unmarshal([]byte(`%s`), &vals)\n", string(retValsJSON)))
+		b.WriteString("\tresult := make([]json.RawMessage, len(vals))\n")
+		b.WriteString("\tfor i, v := range vals {\n")
+		b.WriteString("\t\tresult[i], _ = json.Marshal(v)\n")
+		b.WriteString("\t}\n")
+		b.WriteString("\treturn result\n")
+		b.WriteString("}()\n")
+		b.WriteString(fmt.Sprintf("var shatterMock%d_callIdx int\n\n", i))
+
+		// Generate the mock function
+		b.WriteString(fmt.Sprintf("// ShatterMock_%s returns pre-configured values for %s.\n", safeName, mock.Symbol))
+		b.WriteString(fmt.Sprintf("func ShatterMock_%s(args ...any) any {\n", safeName))
+		b.WriteString(fmt.Sprintf("\tretvals := shatterMock%d_retvals\n", i))
+		b.WriteString(fmt.Sprintf("\tidx := shatterMock%d_callIdx\n", i))
+
+		if mock.DefaultBehavior == "repeat_last" || mock.DefaultBehavior == "" {
+			b.WriteString("\tif idx >= len(retvals) && len(retvals) > 0 {\n")
+			b.WriteString("\t\tidx = len(retvals) - 1\n")
+			b.WriteString("\t}\n")
+		} else {
+			b.WriteString("\tif len(retvals) > 0 {\n")
+			b.WriteString("\t\tidx = idx % len(retvals)\n")
+			b.WriteString("\t}\n")
+		}
+
+		b.WriteString(fmt.Sprintf("\tshatterMock%d_callIdx++\n", i))
+		b.WriteString("\n")
+		b.WriteString("\tvar retVal any\n")
+		b.WriteString("\tif idx < len(retvals) {\n")
+		b.WriteString("\t\tjson.Unmarshal(retvals[idx], &retVal)\n")
+		b.WriteString("\t}\n")
+
+		if mock.ShouldTrackCalls {
+			b.WriteString(fmt.Sprintf("\tshatterRecordMockCall(%q, args, retVal)\n", mock.Symbol))
+		}
+
+		b.WriteString("\treturn retVal\n")
+		b.WriteString("}\n\n")
+	}
+
+	// Use safeName to avoid "declared but not used" (it's used in the function name)
+	b.WriteString("// Ensure shatter mock infrastructure is referenced.\n")
+	b.WriteString("var _ = shatterDumpMockCalls\n")
+
+	return b.String()
+}
+
+// sanitizeMockName converts a symbol name (e.g. "fs.readFile") to a valid Go identifier.
+func sanitizeMockName(symbol string) string {
+	result := make([]byte, 0, len(symbol))
+	for _, c := range symbol {
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' {
+			result = append(result, byte(c))
+		} else {
+			result = append(result, '_')
+		}
+	}
+	return string(result)
 }
 
 // rewritePackageToMain rewrites the package declaration in all Go files in dir
