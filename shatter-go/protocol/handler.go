@@ -194,6 +194,9 @@ func (h *Handler) handleAnalyze(resp Response, req Request) Response {
 	}
 
 	resp.Status = "analyze"
+	if functions == nil {
+		functions = []FunctionAnalysis{}
+	}
 	resp.Functions = functions
 	return resp
 }
