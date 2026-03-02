@@ -267,6 +267,7 @@ pub enum BranchType {
     LogicalOr,
     While,
     For,
+    Select,
 }
 
 /// An external dependency detected during analysis.
@@ -701,6 +702,13 @@ mod tests {
     }
 
     #[test]
+    fn select_branch_type_deserializes() {
+        let json = r#""select""#;
+        let bt: BranchType = serde_json::from_str(json).expect("select should deserialize");
+        assert_eq!(bt, BranchType::Select);
+    }
+
+    #[test]
     fn all_branch_types_round_trip() {
         let types = [
             BranchType::If,
@@ -711,6 +719,7 @@ mod tests {
             BranchType::LogicalOr,
             BranchType::While,
             BranchType::For,
+            BranchType::Select,
         ];
         for bt in types {
             round_trip(&bt);
