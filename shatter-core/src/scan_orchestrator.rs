@@ -150,6 +150,29 @@ fn execution_record_from_result(
     }
 }
 
+/// Compute the fingerprint for a function using its source text and analysis.
+///
+/// Reads the function's source from disk (using `file_map` + line range) and
+/// hashes it with the analysis metadata. Returns `None` if the source cannot
+/// be read (e.g., file not found or line range missing).
+fn compute_fingerprint_for_function(
+    func_name: &str,
+    analysis: &FunctionAnalysis,
+    config: &ScanConfig,
+) -> Option<String> {
+    let file_path = config.file_map.get(func_name)?;
+    if analysis.start_line == 0 || analysis.end_line == 0 {
+        return None;
+    }
+    let source = crate::fingerprint::extract_function_source(
+        std::path::Path::new(file_path),
+        analysis.start_line,
+        analysis.end_line,
+    )
+    .ok()?;
+    Some(crate::fingerprint::compute_function_fingerprint(&source, analysis))
+}
+
 /// Run a multi-function scan in dependency order.
 ///
 /// Builds a call graph from the analyses, determines test order (leaves first),
@@ -178,12 +201,28 @@ pub async fn scan(
 
     let mut behavior_maps: HashMap<String, BehaviorMap> = HashMap::new();
     let mut function_results: Vec<FunctionResult> = Vec::new();
+    let mut skipped_functions: Vec<SkippedFunction> = Vec::new();
 
     for func_name in &test_order {
         let analysis = match analysis_map.get(func_name.as_str()) {
             Some(a) => *a,
             None => continue,
         };
+
+        // Compute fingerprint and check freshness against cache.
+        let current_fingerprint = compute_fingerprint_for_function(func_name, analysis, config);
+
+        if let (Some(cache), Some(fp)) = (&config.cache, &current_fingerprint)
+            && let Ok(true) = cache.is_fresh(func_name, fp)
+            && let Ok(Some(cached_map)) = cache.load(func_name)
+        {
+            behavior_maps.insert(func_name.clone(), cached_map);
+            skipped_functions.push(SkippedFunction {
+                function_name: func_name.clone(),
+                reason: "unchanged (fingerprint match)".into(),
+            });
+            continue;
+        }
 
         // Try loading a cached behavior map for callees that aren't yet in memory.
         if let Some(ref cache) = config.cache {
@@ -247,7 +286,8 @@ pub async fn scan(
             .map(|(inputs, result)| execution_record_from_result(func_name, inputs, result))
             .collect();
 
-        let behavior_map = BehaviorMap::from_records(func_name, &records);
+        let mut behavior_map = BehaviorMap::from_records(func_name, &records);
+        behavior_map.fingerprint = current_fingerprint;
 
         // Persist the behavior map to cache for reuse across runs.
         if let Some(ref cache) = config.cache {
@@ -277,7 +317,7 @@ pub async fn scan(
     Ok(ScanResult {
         function_results,
         test_order,
-        skipped_functions: Vec::new(),
+        skipped_functions,
     })
 }
 
@@ -406,6 +446,24 @@ pub async fn parallel_scan(
                 }
             };
 
+            // Compute fingerprint and check freshness against cache.
+            let current_fingerprint =
+                compute_fingerprint_for_function(func_name, analysis, config);
+
+            if let (Some(cache), Some(fp)) = (&config.cache, &current_fingerprint)
+                && let Ok(true) = cache.is_fresh(func_name, fp)
+                && let Ok(Some(cached_map)) = cache.load(func_name)
+            {
+                let mut maps = behavior_maps.lock().await;
+                maps.insert(func_name.clone(), cached_map);
+                drop(maps);
+                skipped.push(SkippedFunction {
+                    function_name: func_name.clone(),
+                    reason: "unchanged (fingerprint match)".into(),
+                });
+                continue;
+            }
+
             // Try loading cached behavior maps for callees not yet in memory.
             if let Some(ref cache) = config.cache {
                 let mut maps = behavior_maps.lock().await;
@@ -462,14 +520,14 @@ pub async fn parallel_scan(
                 capabilities: crate::orchestrator::FrontendCapabilities::default(),
             };
 
-            tasks.push((func_name.clone(), analysis.clone(), explore_config, mocks_used, callees));
+            tasks.push((func_name.clone(), analysis.clone(), explore_config, mocks_used, callees, current_fingerprint));
         }
 
         // Execute tasks in parallel across the worker pool.
         // Each task checks out a worker, explores, then returns the worker.
         let mut handles = Vec::new();
 
-        for (func_name, analysis, explore_config, mocks_used, callees) in tasks {
+        for (func_name, analysis, explore_config, mocks_used, callees, fingerprint) in tasks {
             let pool = Arc::clone(&pool);
             let behavior_maps = Arc::clone(&behavior_maps);
             let timeout = config.timeout_per_fn;
@@ -488,6 +546,7 @@ pub async fn parallel_scan(
                         &mocks_used,
                         &callees,
                         &behavior_maps,
+                        fingerprint,
                     ),
                 )
                 .await;
@@ -623,6 +682,7 @@ fn build_layers(order_entries: &[TestOrderEntry], call_graph: &CallGraph) -> Vec
 /// Explore a single function and build its result.
 ///
 /// This is the core work unit for both sequential and parallel scanning.
+#[allow(clippy::too_many_arguments)]
 async fn explore_single_function(
     frontend: &mut Frontend,
     func_name: &str,
@@ -631,6 +691,7 @@ async fn explore_single_function(
     mocks_used: &[String],
     callees: &std::collections::HashSet<String>,
     behavior_maps: &Mutex<HashMap<String, BehaviorMap>>,
+    fingerprint: Option<String>,
 ) -> Result<FunctionResult, ScanError> {
     let exploration = explorer::explore_function(frontend, analysis, explore_config).await?;
 
@@ -641,7 +702,8 @@ async fn explore_single_function(
         .map(|(inputs, result)| execution_record_from_result(func_name, inputs, result))
         .collect();
 
-    let behavior_map = BehaviorMap::from_records(func_name, &records);
+    let mut behavior_map = BehaviorMap::from_records(func_name, &records);
+    behavior_map.fingerprint = fingerprint;
 
     // Compute behavior coverage for each callee.
     let maps = behavior_maps.lock().await;
@@ -1097,6 +1159,7 @@ mod tests {
                     behavior_map: BehaviorMap {
                         function_id: "leaf".into(),
                         behaviors: vec![],
+                        fingerprint: None,
                     },
                     behavior_coverage: vec![],
                     mocks_used: vec![],
@@ -1115,6 +1178,7 @@ mod tests {
                     behavior_map: BehaviorMap {
                         function_id: "caller".into(),
                         behaviors: vec![],
+                        fingerprint: None,
                     },
                     behavior_coverage: vec![BehaviorCoverage {
                         caller: "caller".into(),
@@ -1153,6 +1217,7 @@ mod tests {
                 behavior_map: BehaviorMap {
                     function_id: "standalone".into(),
                     behaviors: vec![],
+                    fingerprint: None,
                 },
                 behavior_coverage: vec![],
                 mocks_used: vec![],
@@ -1184,6 +1249,7 @@ mod tests {
                 behavior_map: BehaviorMap {
                     function_id: "good_func".into(),
                     behaviors: vec![],
+                    fingerprint: None,
                 },
                 behavior_coverage: vec![],
                 mocks_used: vec![],
@@ -1225,6 +1291,7 @@ mod tests {
                 behavior_map: BehaviorMap {
                     function_id: "func".into(),
                     behaviors: vec![],
+                    fingerprint: None,
                 },
                 behavior_coverage: vec![],
                 mocks_used: vec![],
@@ -1327,6 +1394,7 @@ mod tests {
                 behavior_map: BehaviorMap {
                     function_id: "f1".into(),
                     behaviors: vec![],
+                    fingerprint: None,
                 },
                 behavior_coverage: vec![],
                 mocks_used: vec![],
@@ -1365,6 +1433,7 @@ mod tests {
                 behavior_map: BehaviorMap {
                     function_id: "f1".into(),
                     behaviors: vec![],
+                    fingerprint: None,
                 },
                 behavior_coverage: vec![],
                 mocks_used: vec![],

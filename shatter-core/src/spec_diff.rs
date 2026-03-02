@@ -351,6 +351,7 @@ mod tests {
             lines_covered: 8,
             total_lines: 10,
             invariants: vec![],
+            fingerprint: None,
         }
     }
 

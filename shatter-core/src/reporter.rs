@@ -844,6 +844,7 @@ mod tests {
                     dependency_trace: None,
                 },
             ],
+            fingerprint: None,
         };
 
         let md = generate_markdown_from_behavior_map(&analysis, &map);

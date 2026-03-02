@@ -53,6 +53,11 @@ impl BehaviorMapCache {
         let path = self.path_for(&map.function_id);
         let json = serde_json::to_string_pretty(map)?;
 
+        // Ensure parent directories exist for hierarchical cache paths.
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
         // Atomic write: write to a temp file in the same directory, then rename.
         let tmp_path = path.with_extension("json.tmp");
         fs::write(&tmp_path, json)?;
@@ -61,27 +66,80 @@ impl BehaviorMapCache {
         Ok(())
     }
 
+    /// Check whether a cached behavior map exists and its fingerprint matches.
+    ///
+    /// Returns `true` if the cache contains a map for `function_id` whose
+    /// fingerprint equals `current_fingerprint`. Returns `false` if no cached
+    /// map exists, the cached map has no fingerprint, or the fingerprints differ.
+    pub fn is_fresh(
+        &self,
+        function_id: &str,
+        current_fingerprint: &str,
+    ) -> Result<bool, CacheError> {
+        match self.load(function_id)? {
+            Some(map) => Ok(map
+                .fingerprint
+                .as_deref()
+                .is_some_and(|fp| fp == current_fingerprint)),
+            None => Ok(false),
+        }
+    }
+
     /// Default cache directory relative to a project root: `<project_root>/.shatter/cache/`.
     pub fn default_dir(project_root: &Path) -> PathBuf {
         project_root.join(".shatter").join("cache")
     }
 
     /// Compute the file path for a given function ID.
+    ///
+    /// Mirrors the source tree structure:
+    /// - `src/auth.ts:validateToken` → `src/auth.ts/validateToken.json`
+    /// - `src/auth.ts:TokenValidator.validate` → `src/auth.ts/TokenValidator/validate.json`
+    /// - `simpleFunc` (no colon) → `simpleFunc.json`
     fn path_for(&self, function_id: &str) -> PathBuf {
-        let sanitized = sanitize_filename(function_id);
-        self.cache_dir.join(format!("{sanitized}.json"))
+        let mut path = self.cache_dir.clone();
+
+        let (file_part, func_part) = match function_id.split_once(':') {
+            Some((f, func)) => (Some(f), func),
+            None => (None, function_id),
+        };
+
+        // Append file path components (each sanitized individually).
+        if let Some(file) = file_part {
+            for component in file.split('/') {
+                if !component.is_empty() {
+                    path.push(sanitize_component(component));
+                }
+            }
+        }
+
+        // Split func_part on '.' for class.method.
+        match func_part.split_once('.') {
+            Some((class_name, method_name)) => {
+                path.push(sanitize_component(class_name));
+                path.push(format!("{}.json", sanitize_component(method_name)));
+            }
+            None => {
+                path.push(format!("{}.json", sanitize_component(func_part)));
+            }
+        }
+
+        path
     }
 }
 
-/// Sanitize a function ID for use as a filename.
+/// Sanitize a single path component for safe use as a filename.
 ///
-/// Replaces path separators and other unsafe characters with underscores
-/// to prevent path traversal attacks.
-fn sanitize_filename(id: &str) -> String {
-    id.chars()
-        .map(|c| match c {
-            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0' => '_',
-            '.' if id.starts_with('.') => '_', // prevent hidden files for leading dots
+/// Replaces unsafe characters with underscores to prevent path traversal attacks.
+/// Called per-component after splitting on `/` and `:`, so those delimiters
+/// are not expected in the input.
+fn sanitize_component(component: &str) -> String {
+    component
+        .chars()
+        .enumerate()
+        .map(|(i, c)| match c {
+            '\\' | '*' | '?' | '"' | '<' | '>' | '|' | '\0' => '_',
+            '.' if i == 0 => '_', // prevent hidden files for leading dots
             _ => c,
         })
         .collect()
@@ -105,6 +163,7 @@ mod tests {
                 side_effects: vec![],
                 dependency_trace: None,
             }],
+            fingerprint: None,
         }
     }
 
@@ -155,20 +214,72 @@ mod tests {
     }
 
     #[test]
-    fn sanitizes_function_id() {
+    fn hierarchical_path_free_function() {
         let dir = tempfile::tempdir().unwrap();
         let cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
 
-        // Function ID with path separators should be sanitized
         let map = sample_map("src/utils:helper");
         cache.store(&map).unwrap();
 
         let loaded = cache.load("src/utils:helper").unwrap();
         assert_eq!(loaded, Some(map));
 
-        // Verify the actual file uses sanitized name
-        let expected_file = dir.path().join("src_utils_helper.json");
+        // src/utils:helper → src/utils/helper.json
+        let expected_file = dir.path().join("src").join("utils").join("helper.json");
         assert!(expected_file.exists());
+    }
+
+    #[test]
+    fn hierarchical_path_class_method() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
+
+        let map = sample_map("src/auth.ts:TokenValidator.validate");
+        cache.store(&map).unwrap();
+
+        let loaded = cache.load("src/auth.ts:TokenValidator.validate").unwrap();
+        assert_eq!(loaded, Some(map));
+
+        // src/auth.ts:TokenValidator.validate → src/auth.ts/TokenValidator/validate.json
+        let expected_file = dir
+            .path()
+            .join("src")
+            .join("auth.ts")
+            .join("TokenValidator")
+            .join("validate.json");
+        assert!(expected_file.exists());
+    }
+
+    #[test]
+    fn hierarchical_path_no_colon() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
+
+        // No colon → simple file directly in cache_dir
+        let map = sample_map("simpleFunc");
+        cache.store(&map).unwrap();
+
+        let loaded = cache.load("simpleFunc").unwrap();
+        assert_eq!(loaded, Some(map));
+
+        let expected_file = dir.path().join("simpleFunc.json");
+        assert!(expected_file.exists());
+    }
+
+    #[test]
+    fn no_collision_same_func_different_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
+
+        let map_a = sample_map("src/a.ts:parse");
+        let map_b = sample_map("src/b.ts:parse");
+        cache.store(&map_a).unwrap();
+        cache.store(&map_b).unwrap();
+
+        let loaded_a = cache.load("src/a.ts:parse").unwrap();
+        let loaded_b = cache.load("src/b.ts:parse").unwrap();
+        assert_eq!(loaded_a, Some(map_a));
+        assert_eq!(loaded_b, Some(map_b));
     }
 
     #[test]
@@ -186,5 +297,49 @@ mod tests {
 
         let _cache = BehaviorMapCache::new(nested.clone()).unwrap();
         assert!(nested.exists());
+    }
+
+    #[test]
+    fn is_fresh_returns_true_when_fingerprint_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
+
+        let mut map = sample_map("myFunc");
+        map.fingerprint = Some("abc123".to_string());
+        cache.store(&map).unwrap();
+
+        assert!(cache.is_fresh("myFunc", "abc123").unwrap());
+    }
+
+    #[test]
+    fn is_fresh_returns_false_when_fingerprint_differs() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
+
+        let mut map = sample_map("myFunc");
+        map.fingerprint = Some("abc123".to_string());
+        cache.store(&map).unwrap();
+
+        assert!(!cache.is_fresh("myFunc", "different").unwrap());
+    }
+
+    #[test]
+    fn is_fresh_returns_false_when_no_cached_fingerprint() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
+
+        // Map without fingerprint
+        let map = sample_map("myFunc");
+        cache.store(&map).unwrap();
+
+        assert!(!cache.is_fresh("myFunc", "abc123").unwrap());
+    }
+
+    #[test]
+    fn is_fresh_returns_false_when_no_cached_map() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
+
+        assert!(!cache.is_fresh("nonexistent", "abc123").unwrap());
     }
 }

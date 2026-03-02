@@ -21,6 +21,7 @@ use shatter_core::log_level::LogLevel;
 use shatter_core::protocol::{Command as ProtoCommand, ResponseResult};
 use shatter_core::report;
 use shatter_core::scan_orchestrator::{self, ScanConfig, SkippedFunction};
+use shatter_core::spec::FileSpecBundle;
 use shatter_core::scope::{ScopeConfig, ScopeMatcher};
 use shatter_core::snapshot;
 
@@ -150,6 +151,10 @@ enum CliCommand {
         #[arg(long = "config")]
         config_path: Option<PathBuf>,
 
+        /// Write per-file spec JSON to a file (implies --spec-json).
+        #[arg(long, short)]
+        output: Option<PathBuf>,
+
         /// Output a behavioral specification (markdown by default, JSON with --spec-json).
         #[arg(long)]
         spec: bool,
@@ -235,6 +240,16 @@ enum CliCommand {
         /// Emit progress events to stderr during scan.
         #[arg(long)]
         progress: bool,
+
+        /// Select a representative core sample of functions to explore.
+        /// Accepts a percentage (e.g. "50%") or absolute count (e.g. "20").
+        #[arg(long)]
+        core_sample: Option<String>,
+
+        /// Seed for deterministic core sample selection.
+        /// Default: hash of (directory + git HEAD).
+        #[arg(long)]
+        seed: Option<u64>,
 
         /// Stratum filter: explore only specific call graph layers.
         /// Examples: "0" (leaves), "0..3", "-2..-0" (top 3 layers), "3.."
@@ -520,6 +535,7 @@ async fn run_explore(
     build_timeout: u64,
     inputs_path: Option<&Path>,
     config_path: Option<&Path>,
+    output_path: Option<&Path>,
     log_level: LogLevel,
     show_perf: bool,
     colors: &Colors,
@@ -558,6 +574,8 @@ async fn run_explore(
         .collect::<Result<Vec<_>, _>>()?;
 
     let req_timeout = Duration::from_secs(request_timeout);
+
+    let mut file_spec_bundles: Vec<FileSpecBundle> = Vec::new();
 
     for target in &parsed {
         let file_str = target.file.to_string_lossy();
@@ -665,6 +683,7 @@ async fn run_explore(
 
         // Exploration phase: generate random inputs and execute
         let mut skipped_unexecutable: Vec<(String, Vec<executability::SkipReason>)> = Vec::new();
+        let mut file_specs: Vec<shatter_core::spec::FunctionSpec> = Vec::new();
         for func in &functions {
             let function_id = format!("{}:{}", file_str, func.name);
 
@@ -767,12 +786,15 @@ async fn run_explore(
                         let location = Some(format!("{file_str}:{}", func.start_line));
                         let spec = if detect_invariants {
                             shatter_core::spec::build_spec_with_invariants(
-                                &result, &eq_classes, location,
+                                &result, &eq_classes, location, None,
                             )
                         } else {
-                            shatter_core::spec::build_spec(&result, &eq_classes, location)
+                            shatter_core::spec::build_spec(&result, &eq_classes, location, None)
                         };
-                        if spec_as_json {
+                        if output_path.is_some() {
+                            // Collect for file-level bundle output
+                            file_specs.push(spec);
+                        } else if spec_as_json {
                             match shatter_core::spec::format_spec_json(&spec) {
                                 Ok(json) => println!("{json}"),
                                 Err(e) => eprintln!("  Error serializing spec: {e}"),
@@ -812,7 +834,32 @@ async fn run_explore(
             }
         }
 
+        // Collect file-level spec bundle when --output is set.
+        if output_path.is_some() && !file_specs.is_empty() {
+            file_spec_bundles.push(FileSpecBundle {
+                file: file_str.to_string(),
+                functions: file_specs,
+            });
+        }
+
         shutdown_frontend(frontend).await;
+    }
+
+    // Write collected file spec bundles to the output path.
+    if let Some(out) = output_path
+        && !file_spec_bundles.is_empty()
+    {
+        let json = shatter_core::spec::format_file_spec_json(&file_spec_bundles)
+            .map_err(|e| format!("failed to serialize file spec bundles: {e}"))?;
+        std::fs::write(out, &json)
+            .map_err(|e| format!("failed to write output file {}: {e}", out.display()))?;
+        if log_level >= LogLevel::Info {
+            eprintln!(
+                "Wrote {} file spec bundle(s) to {}",
+                file_spec_bundles.len(),
+                out.display()
+            );
+        }
     }
 
     Ok(())
@@ -843,6 +890,8 @@ async fn run_scan(
     dry_run: bool,
     _resume: Option<&Path>,
     _mock_config: Option<&Path>,
+    core_sample_spec: Option<&str>,
+    core_sample_seed: Option<u64>,
     stratum_spec: Option<&str>,
     log_level: LogLevel,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -1029,6 +1078,39 @@ async fn run_scan(
         );
         for skip in &skipped_for_executability {
             eprintln!("  {}: {}", skip.function_name, skip.reason);
+        }
+    }
+
+    // Apply core sample selection if --core-sample is set.
+    if let Some(spec) = core_sample_spec {
+        let budget = shatter_core::core_sample::parse_sample_budget(spec)
+            .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+        let cg = CallGraph::from_registry(&registry);
+        let seed = core_sample_seed
+            .unwrap_or_else(|| shatter_core::core_sample::default_seed(directory));
+        let cs_config = shatter_core::core_sample::CoreSampleConfig {
+            budget,
+            seed,
+            scan_root: directory.to_string(),
+        };
+        let entries: Vec<shatter_core::batch_analyze::FunctionEntry> = registry
+            .entries()
+            .iter()
+            .filter(|e| all_analyses.iter().any(|a| a.name == e.name))
+            .cloned()
+            .collect();
+        let result = shatter_core::core_sample::select_core_sample(&entries, &cg, &cs_config);
+        let included = result.all_included();
+        let before = all_analyses.len();
+        all_analyses.retain(|a| included.contains(&a.name));
+        if log_level >= LogLevel::Info {
+            eprintln!(
+                "Core sample: selected {} of {} function(s) ({} sampled + {} dependency closure)",
+                included.len(),
+                before,
+                result.selected.len(),
+                result.dependency_closure.len(),
+            );
         }
     }
 
@@ -1974,6 +2056,7 @@ async fn main() -> ExitCode {
             build_timeout,
             inputs,
             config_path,
+            output,
             spec,
             spec_json,
             invariants,
@@ -1993,11 +2076,12 @@ async fn main() -> ExitCode {
                 build_timeout,
                 inputs.as_deref(),
                 config_path.as_deref(),
+                output.as_deref(),
                 log_level,
                 cli.perf,
                 &colors,
-                spec || spec_json || invariants,
-                spec_json,
+                spec || spec_json || output.is_some() || invariants,
+                spec_json || output.is_some(),
                 invariants,
             )
             .await
@@ -2019,6 +2103,8 @@ async fn main() -> ExitCode {
             dry_run,
             resume,
             progress,
+            core_sample,
+            seed,
             max_iterations,
             cache_dir,
             no_cache,
@@ -2050,6 +2136,8 @@ async fn main() -> ExitCode {
                 dry_run,
                 resume.as_deref(),
                 mock_config.as_deref(),
+                core_sample.as_deref(),
+                seed,
                 stratum.as_deref(),
                 log_level,
             )
@@ -3032,6 +3120,96 @@ mod tests {
                 assert_eq!(mock_config, Some(PathBuf::from("/tmp/mocks.yaml")));
             }
             _ => panic!("expected Scan command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_scan_with_core_sample() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "scan",
+            "--core-sample", "50%",
+            "src/",
+        ]);
+        match cli.command {
+            CliCommand::Scan { core_sample, seed, .. } => {
+                assert_eq!(core_sample, Some("50%".to_string()));
+                assert!(seed.is_none());
+            }
+            _ => panic!("expected Scan command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_scan_with_core_sample_absolute() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "scan",
+            "--core-sample", "20",
+            "src/",
+        ]);
+        match cli.command {
+            CliCommand::Scan { core_sample, .. } => {
+                assert_eq!(core_sample, Some("20".to_string()));
+            }
+            _ => panic!("expected Scan command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_scan_with_seed() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "scan",
+            "--core-sample", "50%",
+            "--seed", "12345",
+            "src/",
+        ]);
+        match cli.command {
+            CliCommand::Scan { core_sample, seed, .. } => {
+                assert_eq!(core_sample, Some("50%".to_string()));
+                assert_eq!(seed, Some(12345));
+            }
+            _ => panic!("expected Scan command"),
+        }
+    }
+
+    #[test]
+    fn cli_core_sample_defaults_to_none() {
+        let cli = Cli::parse_from(["shatter", "scan", "src/"]);
+        match cli.command {
+            CliCommand::Scan { core_sample, seed, .. } => {
+                assert!(core_sample.is_none());
+                assert!(seed.is_none());
+            }
+            _ => panic!("expected Scan command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_explore_with_output_flag() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "explore",
+            "--output", "spec.json",
+            "src/app.ts:foo",
+        ]);
+        match cli.command {
+            CliCommand::Explore { output, .. } => {
+                assert_eq!(output, Some(PathBuf::from("spec.json")));
+            }
+            _ => panic!("expected Explore command"),
+        }
+    }
+
+    #[test]
+    fn cli_output_defaults_to_none() {
+        let cli = Cli::parse_from(["shatter", "explore", "src/app.ts:foo"]);
+        match cli.command {
+            CliCommand::Explore { output, .. } => {
+                assert!(output.is_none());
+            }
+            _ => panic!("expected Explore command"),
         }
     }
 }
