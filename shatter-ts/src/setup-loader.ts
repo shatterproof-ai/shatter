@@ -9,6 +9,7 @@ import * as ts from "typescript";
 import * as fs from "node:fs";
 import * as vm from "node:vm";
 import * as path from "node:path";
+import { createRequire } from "node:module";
 import type { SetupMode, GeneratorKind } from "./protocol.js";
 
 /** A loaded setup module with its exports available for calling. */
@@ -39,13 +40,14 @@ function loadAndTranspile(filePath: string): Record<string, unknown> {
     fileName: absolutePath,
   });
 
+  const targetRequire = createRequire(absolutePath);
   const moduleExports: Record<string, unknown> = {};
   const moduleObj = { exports: moduleExports };
 
   const sandbox = vm.createContext({
     module: moduleObj,
     exports: moduleExports,
-    require,
+    require: targetRequire,
     console,
     process,
     Buffer,

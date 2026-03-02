@@ -353,6 +353,35 @@ describe("executeInstrumented side effect capture", () => {
   });
 });
 
+describe("intra-package module resolution", () => {
+  it("loadModule resolves relative imports from the target file directory", () => {
+    const depsFixture = path.join(FIXTURES_DIR, "dependencies.ts");
+    const result = executeFunction(depsFixture, "usesExternal", [3, 4]);
+    expect(result.thrown_error).toBeNull();
+    expect(result.return_value).toBe("7");
+  });
+
+  it("executeInstrumented resolves relative imports from the source file", () => {
+    const depsFixture = path.join(FIXTURES_DIR, "dependencies.ts");
+    const source = fs.readFileSync(depsFixture, "utf-8");
+    const instrumentResult = instrumentFunction(source, "usesExternal", depsFixture);
+
+    if ("error" in instrumentResult) {
+      throw new Error(`Instrumentation failed: ${instrumentResult.error}`);
+    }
+
+    const result = executeInstrumented(
+      instrumentResult.instrumentedSource,
+      "usesExternal",
+      [3, 4],
+      [],
+      depsFixture,
+    );
+    expect(result.thrown_error).toBeNull();
+    expect(result.return_value).toBe("7");
+  });
+});
+
 describe("buildExecuteResponse side effects", () => {
   it("passes side_effects through to the response", () => {
     const result = executeFunction(SIDE_EFFECTS_FIXTURE, "logsAndReturns", [7]);

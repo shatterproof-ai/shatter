@@ -10,6 +10,7 @@ import * as ts from "typescript";
 import * as fs from "node:fs";
 import * as vm from "node:vm";
 import * as path from "node:path";
+import { createRequire } from "node:module";
 import { reconstructValue } from "./reconstruct.js";
 import type {
   ExecuteResponse,
@@ -63,13 +64,14 @@ function loadModule(filePath: string): Record<string, unknown> {
     fileName: absolutePath,
   });
 
+  const targetRequire = createRequire(absolutePath);
   const moduleExports: Record<string, unknown> = {};
   const moduleObj = { exports: moduleExports };
 
   const sandbox = vm.createContext({
     module: moduleObj,
     exports: moduleExports,
-    require,
+    require: targetRequire,
     console: consoleProxy,
     process,
     Buffer,
@@ -291,6 +293,7 @@ export function executeInstrumented(
   functionName: string,
   inputs: unknown[],
   mocks: MockConfig[] = [],
+  sourceFilePath?: string,
 ): RawExecuteResult {
   // Transpile instrumented TS to JS
   const jsResult = ts.transpileModule(instrumentedSource, {
@@ -300,6 +303,7 @@ export function executeInstrumented(
       esModuleInterop: true,
       strict: true,
     },
+    ...(sourceFilePath ? { fileName: sourceFilePath } : {}),
   });
 
   const linesExecuted: number[] = [];
@@ -368,13 +372,14 @@ export function executeInstrumented(
 
   // Build the execution context with capturing console
   const capturingConsole = createCapturingConsole(sideEffects);
+  const sandboxRequire = sourceFilePath ? createRequire(sourceFilePath) : require;
   const moduleExports: Record<string, unknown> = {};
   const moduleObj = { exports: moduleExports };
 
   const sandbox = vm.createContext({
     module: moduleObj,
     exports: moduleExports,
-    require,
+    require: sandboxRequire,
     console: capturingConsole,
     process,
     Buffer,
@@ -382,13 +387,14 @@ export function executeInstrumented(
     clearTimeout,
     setInterval,
     clearInterval,
+    ...(sourceFilePath ? { __filename: sourceFilePath, __dirname: path.dirname(sourceFilePath) } : {}),
     [RECORD_FUNCTION]: recordFn,
     [BRANCH_FUNCTION]: branchFn,
     [MOCK_REGISTRY]: mockRegistry,
     [MOCK_CALL_FUNCTION]: mockCallFn,
   });
 
-  vm.runInContext(jsResult.outputText, sandbox, { filename: "instrumented.js" });
+  vm.runInContext(jsResult.outputText, sandbox, { filename: sourceFilePath ?? "instrumented.js" });
 
   // Resolve the function from the module exports
   const finalExports = (sandbox as Record<string, unknown>)["module"] as { exports: Record<string, unknown> };
