@@ -498,4 +498,56 @@ describe("analyzeFile", () => {
       expect(okCount).toBe(1);
     });
   });
+
+  describe("function expression patterns", () => {
+    it("detects FunctionExpression in variable declaration", () => {
+      const results = analyzeFile(path.join(fixtures, "function-patterns.ts"), "square");
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(fn.name).toBe("square");
+      expect(fn.exported).toBe(true);
+      expect(fn.params[0]!.type).toEqual({ kind: "float" });
+      expect(fn.return_type).toEqual({ kind: "float" });
+    });
+
+    it("detects named default export function", () => {
+      const results = analyzeFile(path.join(fixtures, "function-patterns.ts"), "defaultGreet");
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(fn.name).toBe("defaultGreet");
+      expect(fn.exported).toBe(true);
+      expect(fn.params[0]!.type).toEqual({ kind: "str" });
+    });
+
+    it("detects unnamed default export function as \'<default>\'", () => {
+      const results = analyzeFile(path.join(fixtures, "unnamed-default.ts"));
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(fn.name).toBe("<default>");
+      expect(fn.exported).toBe(true);
+      expect(fn.params[0]!.type).toEqual({ kind: "float" });
+    });
+
+    it("returns all functions including FunctionExpression and default exports", () => {
+      const results = analyzeFile(path.join(fixtures, "function-patterns.ts"));
+      const names = results.map((f) => f.name);
+      expect(names).toContain("square");
+      expect(names).toContain("defaultGreet");
+    });
+  });
+
+  describe("CommonJS patterns", () => {
+    it("detects functions referenced in module.exports object", () => {
+      const results = analyzeFile(path.join(fixtures, "commonjs-patterns.js"));
+      const names = results.map((f) => f.name);
+      expect(names).toContain("helperA");
+      expect(names).toContain("helperB");
+    });
+
+    it("detects exports.name = function pattern", () => {
+      const results = analyzeFile(path.join(fixtures, "commonjs-patterns.js"));
+      const names = results.map((f) => f.name);
+      expect(names).toContain("standalone");
+    });
+  });
 });

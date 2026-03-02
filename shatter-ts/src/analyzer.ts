@@ -39,6 +39,7 @@ export function analyzeFile(filePath: string, functionName?: string | null): Fun
     module: ts.ModuleKind.Node16,
     strict: true,
     noEmit: true,
+    allowJs: true,
   });
 
   const sourceFile = program.getSourceFile(absolutePath);
@@ -49,17 +50,33 @@ export function analyzeFile(filePath: string, functionName?: string | null): Fun
   const checker = program.getTypeChecker();
   const results: FunctionAnalysis[] = [];
 
+  // Collect CommonJS-exported names so we can mark them as exported
+  const commonJsExportedNames = collectCommonJsExports(sourceFile);
+
   ts.forEachChild(sourceFile, (node) => {
-    if (ts.isFunctionDeclaration(node) && node.name) {
-      const name = node.name.text;
-      if (functionName != null && name !== functionName) {
-        return;
+    if (ts.isFunctionDeclaration(node)) {
+      if (node.name) {
+        const name = node.name.text;
+        if (functionName != null && name !== functionName) {
+          return;
+        }
+        const exported = hasExportModifier(node) || commonJsExportedNames.has(name);
+        const analysis = analyzeFunctionDeclaration(node, checker, sourceFile, exported);
+        if (analysis) {
+          results.push(analysis);
+        }
+      } else if (hasExportModifier(node)) {
+        // Unnamed default export: export default function(...) {}
+        const syntheticName = "<default>";
+        if (functionName != null && syntheticName !== functionName) {
+          return;
+        }
+        const analysis = analyzeFunctionDeclarationUnnamed(node, syntheticName, checker, sourceFile);
+        if (analysis) {
+          results.push(analysis);
+        }
       }
-      const exported = hasExportModifier(node);
-      const analysis = analyzeFunctionDeclaration(node, checker, sourceFile, exported);
-      if (analysis) {
-        results.push(analysis);
-      }
+      return;
     }
 
     if (ts.isVariableStatement(node)) {
@@ -74,6 +91,31 @@ export function analyzeFile(filePath: string, functionName?: string | null): Fun
           if (analysis) {
             results.push(analysis);
           }
+        } else if (decl.initializer && ts.isFunctionExpression(decl.initializer)) {
+          const analysis = analyzeFunctionExpression(name, decl.initializer, checker, sourceFile, exported);
+          if (analysis) {
+            results.push(analysis);
+          }
+        }
+      }
+      return;
+    }
+
+    // CommonJS: exports.foo = function(...) {}
+    if (ts.isExpressionStatement(node) && ts.isBinaryExpression(node.expression)) {
+      const bin = node.expression;
+      if (bin.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+          ts.isPropertyAccessExpression(bin.left) &&
+          ts.isIdentifier(bin.left.expression) &&
+          bin.left.expression.text === "exports") {
+        const name = bin.left.name.text;
+        if (functionName != null && name !== functionName) return;
+        if (ts.isFunctionExpression(bin.right)) {
+          const analysis = analyzeFunctionExpression(name, bin.right, checker, sourceFile, true);
+          if (analysis) results.push(analysis);
+        } else if (ts.isArrowFunction(bin.right)) {
+          const analysis = analyzeArrowFunction(name, bin.right, checker, sourceFile, true);
+          if (analysis) results.push(analysis);
         }
       }
     }
@@ -153,6 +195,101 @@ function analyzeArrowFunction(
     end_line: endLine,
     ...(literals.length > 0 ? { literals } : {}),
   };
+}
+
+function analyzeFunctionDeclarationUnnamed(
+  node: ts.FunctionDeclaration,
+  syntheticName: string,
+  checker: ts.TypeChecker,
+  sourceFile: ts.SourceFile,
+): FunctionAnalysis {
+  const params = node.parameters.map((p) => analyzeParameter(p, checker));
+  const paramNames = new Set(params.map((p) => p.name));
+
+  const sig = checker.getSignatureFromDeclaration(node);
+  const returnType = sig
+    ? convertType(checker.getReturnTypeOfSignature(sig), checker)
+    : { kind: "unknown" as const };
+
+  const startLine = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
+  const endLine = sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line + 1;
+
+  const branches = node.body ? extractBranches(node.body, sourceFile, paramNames) : [];
+  const dependencies = node.body ? extractDependencies(node.body, checker, sourceFile, paramNames) : [];
+  const literals = extractLiterals(node, sourceFile);
+
+  return {
+    name: syntheticName,
+    exported: true,
+    params,
+    branches,
+    dependencies,
+    return_type: returnType,
+    start_line: startLine,
+    end_line: endLine,
+    ...(literals.length > 0 ? { literals } : {}),
+  };
+}
+
+function analyzeFunctionExpression(
+  name: string,
+  node: ts.FunctionExpression,
+  checker: ts.TypeChecker,
+  sourceFile: ts.SourceFile,
+  exported: boolean,
+): FunctionAnalysis {
+  const params = node.parameters.map((p) => analyzeParameter(p, checker));
+  const paramNames = new Set(params.map((p) => p.name));
+
+  const sig = checker.getSignatureFromDeclaration(node);
+  const returnType = sig
+    ? convertType(checker.getReturnTypeOfSignature(sig), checker)
+    : { kind: "unknown" as const };
+
+  const startLine = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
+  const endLine = sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line + 1;
+
+  const body = node.body;
+  const branches = extractBranches(body, sourceFile, paramNames);
+  const dependencies = extractDependencies(body, checker, sourceFile, paramNames);
+  const literals = extractLiterals(node, sourceFile);
+
+  return {
+    name,
+    exported,
+    params,
+    branches,
+    dependencies,
+    return_type: returnType,
+    start_line: startLine,
+    end_line: endLine,
+    ...(literals.length > 0 ? { literals } : {}),
+  };
+}
+
+function collectCommonJsExports(sourceFile: ts.SourceFile): Set<string> {
+  const names = new Set<string>();
+  ts.forEachChild(sourceFile, (node) => {
+    if (!ts.isExpressionStatement(node)) return;
+    if (!ts.isBinaryExpression(node.expression)) return;
+    const bin = node.expression;
+    if (bin.operatorToken.kind !== ts.SyntaxKind.EqualsToken) return;
+
+    if (ts.isPropertyAccessExpression(bin.left) &&
+        ts.isIdentifier(bin.left.expression) &&
+        bin.left.expression.text === "module" &&
+        bin.left.name.text === "exports" &&
+        ts.isObjectLiteralExpression(bin.right)) {
+      for (const prop of bin.right.properties) {
+        if (ts.isShorthandPropertyAssignment(prop)) {
+          names.add(prop.name.text);
+        } else if (ts.isPropertyAssignment(prop) && ts.isIdentifier(prop.name)) {
+          names.add(prop.name.text);
+        }
+      }
+    }
+  });
+  return names;
 }
 
 function analyzeParameter(param: ts.ParameterDeclaration, checker: ts.TypeChecker): ParamInfo {
@@ -909,7 +1046,7 @@ function mapUnaryOp(kind: ts.PrefixUnaryOperator): UnOpKind | null {
  * test inputs by the core engine.
  */
 function extractLiterals(
-  node: ts.FunctionDeclaration | ts.ArrowFunction,
+  node: ts.FunctionDeclaration | ts.ArrowFunction | ts.FunctionExpression,
   sourceFile: ts.SourceFile,
 ): LiteralValue[] {
   const seen = new Set<string>();
