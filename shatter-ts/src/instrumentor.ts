@@ -703,7 +703,13 @@ function wrapBranchCondition(
     [
       ctx.factory.createNumericLiteral(branchId),
       ctx.factory.createNumericLiteral(line),
-      condition,
+      ctx.factory.createPrefixUnaryExpression(
+        ts.SyntaxKind.ExclamationToken,
+        ctx.factory.createPrefixUnaryExpression(
+          ts.SyntaxKind.ExclamationToken,
+          condition,
+        ),
+      ),
       symExprLiteral,
     ],
   );
