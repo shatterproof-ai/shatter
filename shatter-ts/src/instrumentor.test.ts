@@ -630,6 +630,35 @@ describe("symbolic branch instrumentation", () => {
     expect(branches[0]!.branch_id).toBe(0);
     expect(branches[1]!.branch_id).toBe(1);
   });
+
+  it("coerces non-boolean branch conditions to boolean (str-o7a)", () => {
+    const source = `function check(x: number): string {
+  if (x) {
+    return "truthy";
+  }
+  return "falsy";
+}`;
+    const result = instrumentFunction(source, "check");
+    if ("error" in result) throw new Error(result.error);
+
+    // Truthy numeric value (42) — taken must be true, not 42
+    const truthy = executeAndCollect(result.instrumentedSource, "check", [42]);
+    expect(truthy.branches.length).toBeGreaterThanOrEqual(1);
+    expect(truthy.branches[0]!.taken).toBe(true);
+    expect(typeof truthy.branches[0]!.taken).toBe("boolean");
+
+    // Falsy numeric value (0) — taken must be false, not 0
+    const falsy = executeAndCollect(result.instrumentedSource, "check", [0]);
+    expect(falsy.branches.length).toBeGreaterThanOrEqual(1);
+    expect(falsy.branches[0]!.taken).toBe(false);
+    expect(typeof falsy.branches[0]!.taken).toBe("boolean");
+
+    // Null — taken must be false, not null
+    const nullCase = executeAndCollect(result.instrumentedSource, "check", [null as unknown as number]);
+    expect(nullCase.branches.length).toBeGreaterThanOrEqual(1);
+    expect(nullCase.branches[0]!.taken).toBe(false);
+    expect(typeof nullCase.branches[0]!.taken).toBe("boolean");
+  });
 });
 
 describe("buildSymExpr", () => {
