@@ -1,6 +1,0 @@
-[
-  { "args": [42], "label": "the answer" },
-  { "args": [0], "label": "zero" },
-  { "args": [-1], "label": "negative" },
-  { "args": [100], "label": "boundary: three digits" }
-]

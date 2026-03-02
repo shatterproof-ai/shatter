@@ -1,0 +1,10 @@
+[
+  { "args": [0],            "label": "boundary: zero" },
+  { "args": [1],            "label": "boundary: smallest positive" },
+  { "args": [-1],           "label": "boundary: smallest negative" },
+  { "args": [100],          "label": "boundary: three-digit threshold" },
+  { "args": [-100],         "label": "boundary: negative three-digit" },
+  { "args": [2147483647],   "label": "boundary: i32::MAX" },
+  { "args": [-2147483648],  "label": "boundary: i32::MIN" },
+  { "args": [42],           "label": "production: typical positive" }
+]

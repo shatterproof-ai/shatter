@@ -1,0 +1,29 @@
+# Shatter project configuration for Rust examples
+#
+# Place a `.shatter/` directory in your crate root (next to Cargo.toml).
+# Shatter discovers config files by walking upward from each target file.
+#
+# Copy this file as a starting point for your own Rust project.
+
+# ── Global defaults ──────────────────────────────────────────────────────
+defaults:
+  max_iterations: 100
+  timeout: 60
+
+# ── Per-function overrides ───────────────────────────────────────────────
+# Keys are "relative/path.rs:function_name" patterns (globs supported).
+functions:
+  # Simple function — fewer iterations are sufficient
+  "src/arithmetic.rs:classify_number":
+    max_iterations: 50
+    inputs: ./inputs/classify_number/candidates.json
+
+  # Complex multi-step validation with Result chaining — needs more iterations
+  "src/error_propagation.rs:validate_and_process":
+    max_iterations: 300
+    timeout: 120
+
+  # Skip trait-dependent functions — requires a trait object (DataStore)
+  # that Shatter cannot construct automatically
+  "src/traits.rs:authenticate":
+    skip: true

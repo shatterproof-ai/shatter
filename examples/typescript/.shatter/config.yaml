@@ -1,41 +1,44 @@
-# Example .shatter/config.yaml
+# Shatter project configuration for TypeScript examples
 #
-# Place this file in a `.shatter/` directory alongside your source code.
-# Shatter discovers config files by walking upward from each target file.
-# The nearest config wins on conflicts (closest to the target takes precedence).
+# Place a `.shatter/` directory alongside your source code.
+# Shatter discovers config files by walking upward from each target file;
+# the nearest config wins when settings conflict.
+#
+# Copy this file as a starting point for your own project.
 
+# ── Global defaults ──────────────────────────────────────────────────────
+# These apply to every function unless overridden below.
 defaults:
-  max_iterations: 100
-  timeout: 60
+  max_iterations: 100        # exploration iterations per function
+  timeout: 60                # seconds before a single exploration times out
 
-  # Run a setup file before exploration to initialize shared state (e.g. DB).
-  # The setup() return value is passed as setup_context to each execute call.
-  # teardown() is called after exploration completes.
-  setup: ./setup/global.ts
-  setup_mode: per_function
-
-  # Type-name generators: map a type name to a file exporting a function
-  # of the same name that returns a seed value for that type.
-  generators:
-    UserProfile: ./generators/user.ts
-
-  # Param-name generators: map a parameter name to a file exporting a
-  # function of the same name that returns a seed value for that parameter.
-  param_generators:
-    authToken: ./generators/token.ts
-
+# ── Per-function overrides ───────────────────────────────────────────────
+# Keys are "relative/path.ts:functionName" patterns (globs supported).
 functions:
-  # Override settings for a specific function
-  "src/classify.ts:classify":
+  # Simple function — fewer iterations are fine
+  "src/01-arithmetic.ts:classifyNumber":
+    max_iterations: 50
+    inputs: ./inputs/classifyNumber/candidates.json
+
+  # Complex multi-field validation — needs more iterations to cover
+  # all JWT format/expiry/scope branches
+  "src/07-auth-validation.ts:validateJwt":
     max_iterations: 500
     timeout: 120
-    inputs: ./inputs/validateToken/candidates.json
+    inputs: ./inputs/validateJwt/candidates.json
 
-  # Per-execution setup: run setup/teardown around each individual execution
+  # Object-oriented setup example: run setup/teardown around each execution
   "src/03-objects.ts:categorizeUser":
     setup: ./setup/global.ts
     setup_mode: per_execution
 
-  # Skip generated code
+  # Skip functions that depend entirely on opaque types (database connections,
+  # sockets) — Shatter cannot generate meaningful inputs for these.
+  "src/11-opaque-types.ts:processWithDbConnection":
+    skip: true
+  "src/11-opaque-types.ts:processWithSocket":
+    skip: true
+
+  # Skip generated code with a glob pattern
   "src/generated/**":
     skip: true
