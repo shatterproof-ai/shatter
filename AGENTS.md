@@ -98,6 +98,19 @@ bd dep add str-child str-dependency   # str-child is blocked by str-dependency
 
 Only add dependencies where there is a real technical ordering constraint (e.g., "the executor cannot be built before the instrumentor exists"). Do not add dependencies for soft preferences or nice-to-have ordering.
 
+### Bug Fix Policy: Reproduce Before Fixing
+
+All bugs must be reproduced in a good automated test **before** attempting any fix.
+The workflow is:
+
+1. Write a test that demonstrates the bug (the test must **fail**)
+2. Verify the test fails for the right reason
+3. Implement the fix
+4. Verify the test now **passes**
+
+This ensures every bug fix is validated by a regression test and prevents
+"fixes" that don't actually address the root cause.
+
 ### Completing an Issue
 
 An issue is not complete until:

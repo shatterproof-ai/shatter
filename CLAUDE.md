@@ -19,6 +19,7 @@ For local dev: Rust toolchain, Node.js 22+, Go 1.24+, libclang. Run `./scripts/c
 - Integration tests use known-answer functions with expected branches and triggering inputs
 - Frontend protocol handlers have round-trip tests (serialize → deserialize → verify)
 - Regression snapshots are checked into the repo and verified in CI
+- **Bug fixes require a reproduction test first** — write an automated test that demonstrates the bug (must fail), then fix the code and verify the test passes. Never attempt a fix without a failing test.
 
 See `/rust-conventions`, `/ts-conventions`, `/go-conventions` skills for detailed per-language standards.
 
