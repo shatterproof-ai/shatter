@@ -213,9 +213,10 @@ type MockConfig struct {
 
 // ErrorInfo describes an error thrown during execution.
 type ErrorInfo struct {
-	ErrorType string  `json:"error_type"`
-	Message   string  `json:"message"`
-	Stack     *string `json:"stack"`
+	ErrorType     string  `json:"error_type"`
+	Message       string  `json:"message"`
+	Stack         *string `json:"stack"`
+	ErrorCategory *string `json:"error_category,omitempty"`
 }
 
 // SideEffect represents an observed side effect.

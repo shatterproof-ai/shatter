@@ -353,8 +353,7 @@ mod tests {
         record.thrown_error = Some(crate::execution_record::ErrorInfo {
             error_type: "Error".to_string(),
             message: "boom".to_string(),
-            stack: None,
-        });
+            stack: None, error_category: None });
 
         let result = cluster_by_branch_path("f", &[record]);
         assert!(result.clusters[0].stats.output_range.is_none());

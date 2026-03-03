@@ -546,8 +546,7 @@ mod tests {
                     error: ErrorInfo {
                         error_type: "ValidationError".to_string(),
                         message: "invalid input".to_string(),
-                        stack: None,
-                    },
+                        stack: None, error_category: None },
                 },
             )],
         );
@@ -800,8 +799,7 @@ mod tests {
                         error: ErrorInfo {
                             error_type: "Error".to_string(),
                             message: "boom".to_string(),
-                            stack: None,
-                        },
+                            stack: None, error_category: None },
                     },
                 ),
             ],

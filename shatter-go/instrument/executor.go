@@ -62,9 +62,10 @@ type ExternalCall struct {
 
 // ErrorInfo describes an error thrown during execution.
 type ErrorInfo struct {
-	ErrorType string `json:"error_type"`
-	Message   string `json:"message"`
-	Stack     string `json:"stack"`
+	ErrorType     string  `json:"error_type"`
+	Message       string  `json:"message"`
+	Stack         string  `json:"stack"`
+	ErrorCategory *string `json:"error_category,omitempty"`
 }
 
 // BranchDecision records which way a branch was taken during execution.
@@ -229,15 +230,19 @@ func ExecuteFunction(sourcePath, funcName string, inputs []json.RawMessage, mock
 	// Handle execution errors
 	if runErr != nil {
 		if runCtx.Err() == context.DeadlineExceeded {
+			cat := "infrastructure"
 			result.ThrownError = &ErrorInfo{
-				ErrorType: "timeout",
-				Message:   fmt.Sprintf("execution timed out after %s", execDur),
+				ErrorType:     "timeout",
+				Message:       fmt.Sprintf("execution timed out after %s", execDur),
+				ErrorCategory: &cat,
 			}
 		} else {
+			cat := "runtime"
 			result.ThrownError = &ErrorInfo{
-				ErrorType: "runtime_error",
-				Message:   runErr.Error(),
-				Stack:     string(runOut),
+				ErrorType:     "runtime_error",
+				Message:       runErr.Error(),
+				Stack:         string(runOut),
+				ErrorCategory: &cat,
 			}
 		}
 	}

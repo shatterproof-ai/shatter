@@ -271,8 +271,7 @@ impl BehaviorMap {
                 let thrown_error = exec.thrown_error.as_ref().map(|msg| ErrorInfo {
                     error_type: "Error".to_string(),
                     message: msg.clone(),
-                    stack: None,
-                });
+                    stack: None, error_category: None });
                 // Try to find the matching raw result for this execution to
                 // extract the dependency trace.
                 let dependency_trace = result

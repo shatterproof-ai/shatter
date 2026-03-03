@@ -587,8 +587,7 @@ mod tests {
                 Some(ErrorInfo {
                     error_type: "TypeError".to_string(),
                     message: "input is null".to_string(),
-                    stack: None,
-                }),
+                    stack: None, error_category: None }),
             )],
             input_invariants: vec![],
             output_invariants: vec![make_invariant("always throws, never returns", InvariantTarget::Output)],

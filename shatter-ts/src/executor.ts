@@ -15,6 +15,7 @@ import { reconstructValue } from "./reconstruct.js";
 import type {
   ExecuteResponse,
   ErrorInfo,
+  ErrorCategory,
   PerformanceMetrics,
   BranchDecision,
   SymConstraint,
@@ -39,6 +40,28 @@ export function getExecTimeoutMs(): number {
     }
   }
   return DEFAULT_EXEC_TIMEOUT_MS;
+}
+
+const VALIDATION_ERROR_PATTERNS = /Validation|Invalid|BadRequest|Forbidden|Unauthorized|NotFound/i;
+const RUNTIME_ERROR_TYPES = new Set(["TypeError", "ReferenceError", "SyntaxError", "RangeError", "URIError"]);
+
+/**
+ * Classify an error into a structured category using language-level signals.
+ * - validation: custom error subclasses or names suggesting deliberate input rejection
+ * - runtime: JS built-in error types indicating accidental failures
+ * - infrastructure: timeouts and system-level failures
+ */
+export function classifyError(errorType: string, message: string): ErrorCategory {
+  if (/timed?\s*out/i.test(message) || errorType === "ERR_SCRIPT_EXECUTION_TIMEOUT") {
+    return "infrastructure";
+  }
+  if (VALIDATION_ERROR_PATTERNS.test(errorType) || VALIDATION_ERROR_PATTERNS.test(message)) {
+    return "validation";
+  }
+  if (RUNTIME_ERROR_TYPES.has(errorType)) {
+    return "runtime";
+  }
+  return "unknown";
 }
 
 /** Cache of compiled modules to avoid re-transpiling on every execute call. */
@@ -178,10 +201,13 @@ function measureExecution(fn: () => unknown): MeasuredExecution {
     returnValue = fn();
   } catch (e: unknown) {
     const err = e as { constructor?: { name?: string }; message?: string; stack?: string };
+    const errorType = err.constructor?.name ?? "Error";
+    const errorMessage = String(err.message ?? e);
     thrownError = {
-      error_type: err.constructor?.name ?? "Error",
-      message: String(err.message ?? e),
+      error_type: errorType,
+      message: errorMessage,
       stack: err.stack ?? null,
+      error_category: classifyError(errorType, errorMessage),
     };
   }
 

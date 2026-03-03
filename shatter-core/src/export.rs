@@ -590,8 +590,7 @@ mod tests {
                 Some(ErrorInfo {
                     error_type: "Error".to_string(),
                     message: "division by zero".to_string(),
-                    stack: None,
-                }),
+                    stack: None, error_category: None }),
             )],
             fingerprint: None,
         };
@@ -806,8 +805,7 @@ mod tests {
                 Some(ErrorInfo {
                     error_type: "Error".to_string(),
                     message: "division by zero".to_string(),
-                    stack: None,
-                }),
+                    stack: None, error_category: None }),
             )],
             fingerprint: None,
         };
@@ -835,8 +833,7 @@ mod tests {
                     Some(ErrorInfo {
                         error_type: "Error".to_string(),
                         message: "division by zero".to_string(),
-                        stack: None,
-                    }),
+                        stack: None, error_category: None }),
                 ),
             ],
             fingerprint: None,
@@ -1040,8 +1037,7 @@ mod tests {
                 Some(ErrorInfo {
                     error_type: "Error".to_string(),
                     message: "division by zero".to_string(),
-                    stack: None,
-                }),
+                    stack: None, error_category: None }),
             )],
             fingerprint: None,
         };

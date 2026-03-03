@@ -260,8 +260,7 @@ fn build_spec_class(index: usize, ec: &EquivalenceClass) -> SpecClass {
             error: ErrorInfo {
                 error_type,
                 message,
-                stack: None,
-            },
+                stack: None, error_category: None },
         }
     } else {
         match &ec.canonical_return_value {
@@ -283,8 +282,7 @@ fn build_spec_class(index: usize, ec: &EquivalenceClass) -> SpecClass {
             ErrorInfo {
                 error_type,
                 message,
-                stack: None,
-            }
+                stack: None, error_category: None }
         }),
     };
 
@@ -876,8 +874,7 @@ mod tests {
                 error: ErrorInfo {
                     error_type: "Error".to_string(),
                     message: "boom".to_string(),
-                    stack: None,
-                },
+                    stack: None, error_category: None },
             },
             Postcondition::ReturnsVoid,
         ];
@@ -1018,8 +1015,7 @@ mod tests {
                         error: ErrorInfo {
                             error_type: "Error".to_string(),
                             message: "bad input".to_string(),
-                            stack: None,
-                        },
+                            stack: None, error_category: None },
                     },
                     side_effects: vec![],
                     examples: vec![ConcreteExample {
@@ -1028,8 +1024,7 @@ mod tests {
                         thrown_error: Some(ErrorInfo {
                             error_type: "Error".to_string(),
                             message: "bad input".to_string(),
-                            stack: None,
-                        }),
+                            stack: None, error_category: None }),
                     }],
                     sample_count: 5,
                     precondition_provenance: Provenance::Observed,

@@ -980,8 +980,7 @@ mod tests {
             thrown_error: Some(ErrorInfo {
                 error_type: "TypeError".to_string(),
                 message: "cannot read null".to_string(),
-                stack: None,
-            }),
+                stack: None, error_category: None }),
             branch_path: vec![],
             side_effects: vec![],
             dependency_trace: None,

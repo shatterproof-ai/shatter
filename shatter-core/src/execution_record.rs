@@ -36,6 +36,10 @@ pub struct ErrorInfo {
     pub message: String,
     /// Optional stack trace.
     pub stack: Option<String>,
+    /// Structured error category: "validation", "runtime", "infrastructure", or "unknown".
+    /// Classified by the frontend using language-level signals.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_category: Option<String>,
 }
 
 /// A side effect observed during execution.
@@ -173,6 +177,7 @@ mod tests {
             error_type: "TypeError".into(),
             message: "Cannot read property of null".into(),
             stack: Some("at foo (main.ts:10)".into()),
+            error_category: None,
         });
     }
 
@@ -182,7 +187,30 @@ mod tests {
             error_type: "ValidationError".into(),
             message: "Invalid input".into(),
             stack: None,
+            error_category: None,
         });
+    }
+
+    #[test]
+    fn error_info_with_category_round_trips() {
+        round_trip(&ErrorInfo {
+            error_type: "TypeError".into(),
+            message: "null is not an object".into(),
+            stack: None,
+            error_category: Some("runtime".into()),
+        });
+    }
+
+    #[test]
+    fn error_info_category_none_omitted_in_json() {
+        let info = ErrorInfo {
+            error_type: "Error".into(),
+            message: "oops".into(),
+            stack: None,
+            error_category: None,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(!json.contains("error_category"));
     }
 
     #[test]
@@ -328,8 +356,7 @@ mod tests {
             thrown_error: Some(ErrorInfo {
                 error_type: "TypeError".into(),
                 message: "input is null".into(),
-                stack: None,
-            }),
+                stack: None, error_category: None }),
             side_effects: vec![],
             wall_time_ms: 0.01,
             cpu_time_us: 8,

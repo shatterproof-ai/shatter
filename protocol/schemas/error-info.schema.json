@@ -17,6 +17,11 @@
     "stack": {
       "type": ["string", "null"],
       "description": "Optional stack trace."
+    },
+    "error_category": {
+      "type": ["string", "null"],
+      "description": "Structured error category: validation, runtime, infrastructure, or unknown. Classified by the frontend.",
+      "enum": ["validation", "runtime", "infrastructure", "unknown", null]
     }
   }
 }

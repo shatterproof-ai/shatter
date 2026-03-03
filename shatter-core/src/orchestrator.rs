@@ -350,7 +350,7 @@ pub async fn explore(
         total_executions += 1;
 
         let exec_result = match response.result {
-            ResponseResult::Execute(result) => result,
+            ResponseResult::Execute(result) => *result,
             ResponseResult::Error { message, .. } => {
                 // Frontend reported an error — skip this input but continue exploring.
                 eprintln!("frontend error during execute: {message}");

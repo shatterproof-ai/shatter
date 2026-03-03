@@ -175,8 +175,8 @@ pub enum ResponseResult {
         /// Path to the instrumented output file, if applicable.
         output_file: Option<String>,
     },
-    /// Successful execution result.
-    Execute(ExecuteResult),
+    /// Successful execution result (boxed to reduce enum size).
+    Execute(Box<ExecuteResult>),
     /// Successful setup result.
     Setup {
         /// Opaque context to pass to subsequent Execute commands.
@@ -554,7 +554,7 @@ mod tests {
     fn execute_response_round_trips() {
         round_trip(&Response::new(
             4,
-            ResponseResult::Execute(ExecuteResult {
+            ResponseResult::Execute(Box::new(ExecuteResult {
                 return_value: Some(serde_json::json!({"cost": 12.99, "method": "express"})),
                 thrown_error: None,
                 branch_path: vec![BranchDecision {
@@ -598,7 +598,7 @@ mod tests {
                     heap_used_bytes: 1024,
                     heap_allocated_bytes: 2048,
                 },
-            }),
+            })),
         ));
     }
 
@@ -606,12 +606,13 @@ mod tests {
     fn execute_response_with_error_round_trips() {
         round_trip(&Response::new(
             5,
-            ResponseResult::Execute(ExecuteResult {
+            ResponseResult::Execute(Box::new(ExecuteResult {
                 return_value: None,
                 thrown_error: Some(ErrorInfo {
                     error_type: "ValidationError".into(),
                     message: "Invalid zip code".into(),
                     stack: Some("at validateZip (shipping.ts:15)".into()),
+                    error_category: None,
                 }),
                 branch_path: vec![],
                 lines_executed: vec![10, 15],
@@ -624,7 +625,7 @@ mod tests {
                     heap_used_bytes: 256,
                     heap_allocated_bytes: 256,
                 },
-            }),
+            })),
         ));
     }
 

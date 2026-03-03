@@ -341,8 +341,7 @@ mod tests {
             thrown_error: Some(ErrorInfo {
                 error_type: error_type.into(),
                 message: message.into(),
-                stack: None,
-            }),
+                stack: None, error_category: None }),
             branch_path,
             lines_executed: vec![],
             calls_to_external: vec![],

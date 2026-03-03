@@ -340,10 +340,13 @@ export type SideEffect =
   | { kind: "thrown_error"; error_type: string; message: string; stack: string | null }
   | { kind: "global_state_change"; variable: string; before: unknown; after: unknown };
 
+export type ErrorCategory = "validation" | "runtime" | "infrastructure" | "unknown";
+
 export interface ErrorInfo {
   error_type: string;
   message: string;
   stack: string | null;
+  error_category?: ErrorCategory;
 }
 
 export interface PerformanceMetrics {

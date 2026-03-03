@@ -499,8 +499,7 @@ mod tests {
                 Some(ErrorInfo {
                     error_type: "Error".to_string(),
                     message: "division by zero".to_string(),
-                    stack: None,
-                }),
+                    stack: None, error_category: None }),
             )],
         );
 
@@ -539,8 +538,7 @@ mod tests {
                     Some(ErrorInfo {
                         error_type: "RangeError".to_string(),
                         message: "negative input".to_string(),
-                        stack: None,
-                    }),
+                        stack: None, error_category: None }),
                 ),
             ],
         );
@@ -966,8 +964,7 @@ mod tests {
                     Some(ErrorInfo {
                         error_type: "ValidationError".to_string(),
                         message: "invalid tier".to_string(),
-                        stack: None,
-                    }),
+                        stack: None, error_category: None }),
                 ),
             ],
         );

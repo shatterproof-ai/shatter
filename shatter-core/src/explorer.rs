@@ -291,7 +291,7 @@ pub async fn explore_function(
             .await?;
 
         let exec_result = match response.result {
-            ResponseResult::Execute(result) => result,
+            ResponseResult::Execute(result) => *result,
             ResponseResult::Error { code, message, .. } => {
                 return Err(ExploreError::UnexpectedResponse(format!(
                     "execute error ({code:?}): {message}"
@@ -563,7 +563,7 @@ mod tests {
         };
         let err = ExecuteResult {
             return_value: None,
-            thrown_error: Some(ErrorInfo { error_type: "Error".into(), message: "boom".into(), stack: None }),
+            thrown_error: Some(ErrorInfo { error_type: "Error".into(), message: "boom".into(), stack: None, error_category: None }),
             branch_path: vec![], lines_executed: vec![],
             calls_to_external: vec![], path_constraints: vec![], side_effects: vec![],
             performance: empty_perf(),
