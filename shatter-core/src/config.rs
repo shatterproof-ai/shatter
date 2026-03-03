@@ -75,6 +75,55 @@ pub struct ShatterConfig {
 }
 
 
+/// Configuration for the genetic algorithm explorer.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct GeneticConfig {
+    /// Whether the genetic algorithm explorer is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Number of individuals in each generation.
+    #[serde(default = "GeneticConfig::default_population_size")]
+    pub population_size: u32,
+
+    /// Maximum number of generations to evolve.
+    #[serde(default = "GeneticConfig::default_max_generations")]
+    pub max_generations: u32,
+
+    /// Probability of mutating an individual (0.0–1.0).
+    #[serde(default = "GeneticConfig::default_mutation_rate")]
+    pub mutation_rate: f64,
+
+    /// Probability of crossover between two individuals (0.0–1.0).
+    #[serde(default = "GeneticConfig::default_crossover_rate")]
+    pub crossover_rate: f64,
+
+    /// Timeout in seconds for the entire genetic exploration.
+    #[serde(default = "GeneticConfig::default_timeout_secs")]
+    pub timeout_secs: u32,
+}
+
+impl GeneticConfig {
+    fn default_population_size() -> u32 { 50 }
+    fn default_max_generations() -> u32 { 100 }
+    fn default_mutation_rate() -> f64 { 0.3 }
+    fn default_crossover_rate() -> f64 { 0.7 }
+    fn default_timeout_secs() -> u32 { 300 }
+}
+
+impl Default for GeneticConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            population_size: Self::default_population_size(),
+            max_generations: Self::default_max_generations(),
+            mutation_rate: Self::default_mutation_rate(),
+            crossover_rate: Self::default_crossover_rate(),
+            timeout_secs: Self::default_timeout_secs(),
+        }
+    }
+}
+
 /// Default settings for all functions.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 pub struct DefaultsConfig {
@@ -105,11 +154,15 @@ pub struct DefaultsConfig {
     /// Per-symbol mock overrides for auto-mocking (e.g. `"db.query": { return_values: [...] }`).
     #[serde(default)]
     pub mocks: Option<HashMap<String, crate::auto_mock::MockOverride>>,
+
+    /// Genetic algorithm explorer settings.
+    #[serde(default)]
+    pub genetic: Option<GeneticConfig>,
 }
 
 
 /// Per-function configuration, matched by glob pattern against function identifiers.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 pub struct FunctionConfig {
     /// Maximum iterations for this function.
     #[serde(default)]
@@ -146,6 +199,10 @@ pub struct FunctionConfig {
     /// Per-symbol mock overrides, overriding defaults.
     #[serde(default)]
     pub mocks: Option<HashMap<String, crate::auto_mock::MockOverride>>,
+
+    /// Genetic algorithm explorer settings, overriding defaults.
+    #[serde(default)]
+    pub genetic: Option<GeneticConfig>,
 }
 
 /// A single candidate input for a function.
@@ -1350,5 +1407,68 @@ opaque_types:
         let b = ShatterConfig::default();
         let merged = merge_configs(&[a, b]);
         assert!(merged.opaque_types.is_empty());
+    }
+
+    #[test]
+    fn genetic_config_defaults() {
+        let config = GeneticConfig::default();
+        assert!(!config.enabled);
+        assert_eq!(config.population_size, 50);
+        assert_eq!(config.max_generations, 100);
+        assert!((config.mutation_rate - 0.3).abs() < f64::EPSILON);
+        assert!((config.crossover_rate - 0.7).abs() < f64::EPSILON);
+        assert_eq!(config.timeout_secs, 300);
+    }
+
+    #[test]
+    fn genetic_config_serde_roundtrip() {
+        let config = GeneticConfig {
+            enabled: true,
+            population_size: 200,
+            max_generations: 500,
+            mutation_rate: 0.5,
+            crossover_rate: 0.8,
+            timeout_secs: 600,
+        };
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        let parsed: GeneticConfig = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(config, parsed);
+    }
+
+    #[test]
+    fn genetic_config_partial_yaml_uses_defaults() {
+        let yaml = "enabled: true\npopulation_size: 75\n";
+        let config: GeneticConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.enabled);
+        assert_eq!(config.population_size, 75);
+        assert_eq!(config.max_generations, 100);
+        assert!((config.mutation_rate - 0.3).abs() < f64::EPSILON);
+        assert!((config.crossover_rate - 0.7).abs() < f64::EPSILON);
+        assert_eq!(config.timeout_secs, 300);
+    }
+
+    #[test]
+    fn shatter_config_with_genetic_section() {
+        let yaml = r#"
+defaults:
+  max_iterations: 50
+  genetic:
+    enabled: true
+    population_size: 100
+functions:
+  "src/math.ts:add":
+    genetic:
+      enabled: true
+      max_generations: 200
+"#;
+        let config: ShatterConfig = serde_yaml::from_str(yaml).unwrap();
+        let defaults_genetic = config.defaults.genetic.unwrap();
+        assert!(defaults_genetic.enabled);
+        assert_eq!(defaults_genetic.population_size, 100);
+
+        let func_config = config.functions.get("src/math.ts:add").unwrap();
+        let func_genetic = func_config.genetic.as_ref().unwrap();
+        assert!(func_genetic.enabled);
+        assert_eq!(func_genetic.max_generations, 200);
     }
 }
