@@ -772,7 +772,7 @@ mod tests {
     #[test]
     fn exec_timeout_default_is_5000ms() {
         unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
-        assert_eq!(exec_timeout_from_env(), 5000);
+        assert_eq!(exec_timeout_from_env(), DEFAULT_EXEC_TIMEOUT_MS);
     }
 
     #[test]
@@ -796,7 +796,7 @@ mod tests {
         unsafe { std::env::set_var("SHATTER_EXEC_TIMEOUT", "not-a-number") };
         let result = exec_timeout_from_env();
         unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
-        assert_eq!(result, 5000);
+        assert_eq!(result, DEFAULT_EXEC_TIMEOUT_MS);
     }
 
     #[test]
@@ -804,7 +804,7 @@ mod tests {
         unsafe { std::env::set_var("SHATTER_EXEC_TIMEOUT", "0") };
         let result = exec_timeout_from_env();
         unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
-        assert_eq!(result, 5000);
+        assert_eq!(result, DEFAULT_EXEC_TIMEOUT_MS);
     }
 
     #[test]
@@ -812,6 +812,6 @@ mod tests {
         unsafe { std::env::set_var("SHATTER_EXEC_TIMEOUT", "-5") };
         let result = exec_timeout_from_env();
         unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
-        assert_eq!(result, 5000);
+        assert_eq!(result, DEFAULT_EXEC_TIMEOUT_MS);
     }
 }
