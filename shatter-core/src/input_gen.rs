@@ -723,14 +723,28 @@ pub fn resolve_value_sources(
         .collect()
 }
 
+/// A single value produced by a custom generator, with replay metadata.
+#[derive(Debug, Clone)]
+pub struct GeneratedEntry {
+    /// The generated value (JSON).
+    pub value: Value,
+    /// Human-readable label from the generator.
+    pub generator_id: String,
+    /// Serializable recipe for replaying this generation.
+    /// For WASM generators where value IS the recipe, this is `None`.
+    pub recipe: Option<Value>,
+    /// Composite ID: `"{generator_id}@{recipe_hash}"`.
+    pub composite_id: String,
+}
+
 /// Pre-fetched values from custom generators, keyed by `(generator_file, generator_name)`.
 ///
-/// Each entry holds a queue of values that can be drawn from during input generation.
-/// When the queue is empty, generation falls back to built-in.
+/// Each entry holds a queue of generated entries that can be drawn from during
+/// input generation. When the queue is empty, generation falls back to built-in.
 #[derive(Debug, Default)]
 pub struct PrefetchedValues {
-    /// Map from (generator file path as string, generator name) to queued values.
-    values: std::collections::HashMap<(String, String), Vec<Value>>,
+    /// Map from (generator file path as string, generator name) to queued entries.
+    entries: std::collections::HashMap<(String, String), Vec<GeneratedEntry>>,
 }
 
 impl PrefetchedValues {
@@ -738,19 +752,41 @@ impl PrefetchedValues {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            values: std::collections::HashMap::new(),
+            entries: std::collections::HashMap::new(),
         }
     }
 
-    /// Insert generated values for a specific generator.
+    /// Insert generated values for a specific generator (legacy API, no metadata).
     pub fn insert(&mut self, file: String, name: String, vals: Vec<Value>) {
-        self.values.entry((file, name)).or_default().extend(vals);
+        let entries: Vec<GeneratedEntry> = vals
+            .into_iter()
+            .map(|v| {
+                let composite = crate::canonical_json::composite_id("unknown", &v);
+                GeneratedEntry {
+                    value: v,
+                    generator_id: "unknown".into(),
+                    recipe: None,
+                    composite_id: composite,
+                }
+            })
+            .collect();
+        self.entries.entry((file, name)).or_default().extend(entries);
+    }
+
+    /// Insert a fully-formed generated entry with metadata.
+    pub fn insert_entry(&mut self, file: String, name: String, entry: GeneratedEntry) {
+        self.entries.entry((file, name)).or_default().push(entry);
     }
 
     /// Take the next value for a generator, if available.
     pub fn take(&mut self, file: &str, name: &str) -> Option<Value> {
+        self.take_entry(file, name).map(|e| e.value)
+    }
+
+    /// Take the next entry (value + metadata) for a generator, if available.
+    pub fn take_entry(&mut self, file: &str, name: &str) -> Option<GeneratedEntry> {
         let key = (file.to_string(), name.to_string());
-        let queue = self.values.get_mut(&key)?;
+        let queue = self.entries.get_mut(&key)?;
         if queue.is_empty() {
             None
         } else {
@@ -761,7 +797,7 @@ impl PrefetchedValues {
     /// Check whether a generator has remaining values.
     #[must_use]
     pub fn has_values(&self, file: &str, name: &str) -> bool {
-        self.values
+        self.entries
             .get(&(file.to_string(), name.to_string()))
             .is_some_and(|q| !q.is_empty())
     }
@@ -819,8 +855,15 @@ pub async fn prefetch_custom_values(
                 .await?;
 
             match response.result {
-                crate::protocol::ResponseResult::Generate { value, .. } => {
-                    store.insert(file.clone(), name.clone(), vec![value]);
+                crate::protocol::ResponseResult::Generate { value, generator_id, recipe } => {
+                    let effective_recipe = recipe.as_ref().unwrap_or(&value);
+                    let composite = crate::canonical_json::composite_id(&generator_id, effective_recipe);
+                    store.insert_entry(file.clone(), name.clone(), GeneratedEntry {
+                        value,
+                        generator_id,
+                        recipe,
+                        composite_id: composite,
+                    });
                 }
                 crate::protocol::ResponseResult::Error { message, .. } => {
                     // Log but don't fail -- we'll fall back to built-in generation.
