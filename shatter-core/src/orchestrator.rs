@@ -81,6 +81,8 @@ pub struct ExploreConfig {
     pub plateau_threshold: usize,
     /// Mock configurations to pass through to Execute commands.
     pub mocks: Vec<crate::protocol::MockConfig>,
+    /// Z3 solver timeout in milliseconds per query. None means no limit.
+    pub solver_timeout_ms: Option<u64>,
 }
 
 impl Default for ExploreConfig {
@@ -90,6 +92,7 @@ impl Default for ExploreConfig {
             max_executions: 500,
             plateau_threshold: 20,
             mocks: vec![],
+            solver_timeout_ms: None,
         }
     }
 }
@@ -393,7 +396,7 @@ pub async fn explore(
         // solvable constraints and negate the i-th one.
         if !solvable.is_empty() {
             for negate_idx in 0..solvable.len() {
-                match solver::solve_for_new_path(&solvable, negate_idx) {
+                match solver::solve_for_new_path(&solvable, negate_idx, config.solver_timeout_ms) {
                     Ok(SolveResult::Sat(values)) => {
                         let new_inputs =
                             overlay_solved_values(&entry.inputs, &values, param_names);
@@ -850,7 +853,7 @@ mod tests {
         // Then negating it gives x == 42. ✓
         //
         // For this test, let's just use solve_constraints directly to verify Z3 can find x=42.
-        let result = solver::solve_constraints(&[x_eq_42]).expect("solver should not error");
+        let result = solver::solve_constraints(&[x_eq_42], None).expect("solver should not error");
 
         match result {
             SolveResult::Sat(values) => {
@@ -883,7 +886,7 @@ mod tests {
 
         // Negate constraint[0] to flip the branch: NOT(NOT(x == 42)) → x == 42.
         let result =
-            solver::solve_for_new_path(&[not_x_eq_42], 0).expect("solver should not error");
+            solver::solve_for_new_path(&[not_x_eq_42], 0, None).expect("solver should not error");
 
         match result {
             SolveResult::Sat(values) => {
@@ -938,7 +941,7 @@ mod tests {
 
         // Negate constraint[0]: flip NOT(x>10) → x>10. With prefix empty, just x>10.
         let result =
-            solver::solve_for_new_path(&constraints, 0).expect("should solve for branch 0");
+            solver::solve_for_new_path(&constraints, 0, None).expect("should solve for branch 0");
         match result {
             SolveResult::Sat(values) => {
                 let x = match values.get("x") {
@@ -953,7 +956,7 @@ mod tests {
         // Negate constraint[1]: keep prefix NOT(x>10) i.e. x<=10, then flip NOT(x==42) → x==42.
         // But x<=10 AND x==42 is UNSAT (can't be both ≤10 and =42).
         let result =
-            solver::solve_for_new_path(&constraints, 1).expect("should solve for branch 1");
+            solver::solve_for_new_path(&constraints, 1, None).expect("should solve for branch 1");
         assert!(
             matches!(result, SolveResult::Unsat),
             "x<=10 AND x==42 should be unsat"
@@ -962,7 +965,7 @@ mod tests {
         // Negate constraint[2]: keep prefix NOT(x>10), NOT(x==42), flip x<100 → x>=100.
         // x<=10 AND x!=42 AND x>=100 is UNSAT.
         let result =
-            solver::solve_for_new_path(&constraints, 2).expect("should solve for branch 2");
+            solver::solve_for_new_path(&constraints, 2, None).expect("should solve for branch 2");
         assert!(
             matches!(result, SolveResult::Unsat),
             "x<=10 AND x>=100 should be unsat"
