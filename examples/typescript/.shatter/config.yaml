@@ -42,3 +42,25 @@ functions:
   # Skip generated code with a glob pattern
   "src/generated/**":
     skip: true
+
+  # External dependency example — override auto-mock defaults for specific symbols.
+  # By default, Shatter generates sensible stubs for fs, network, and database calls.
+  # Use `mocks` to provide custom return values or change behavior.
+  "src/12-external-deps.ts:loadConfig":
+    mocks:
+      existsSync:
+        return_values: [true]       # always pretend the file exists
+      readFileSync:
+        return_values: ['{"key": "value"}']   # return a known JSON string
+
+# ── Global mock overrides ──────────────────────────────────────────────
+# Applied to ALL functions unless a per-function `mocks` section overrides them.
+# Useful for project-wide stubs (e.g., always mock your database client).
+#
+# defaults:
+#   mocks:
+#     query:
+#       return_values: [{"rows": [{"id": 1, "name": "test"}]}]
+#       behavior: repeat_last      # repeat_last | passthrough
+#     fetch:
+#       return_values: [{"status": 200, "data": {"ok": true}}]

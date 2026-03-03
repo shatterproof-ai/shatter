@@ -30,3 +30,22 @@ functions:
   # Skip test files — they are not exploration targets
   "*_test.go:*":
     skip: true
+
+  # External dependency example — override auto-mock defaults for specific symbols.
+  # By default, Shatter generates sensible stubs for os (filesystem), net/http
+  # (network), and database/sql (database) calls. Use `mocks` to customize.
+  "06-external-deps.go:LoadConfigFile":
+    mocks:
+      os.ReadFile:
+        return_values: ['config_data']   # return a known config string
+
+# ── Global mock overrides ──────────────────────────────────────────────
+# Applied to ALL functions unless a per-function `mocks` section overrides them.
+#
+# defaults:
+#   mocks:
+#     sql.Query:
+#       return_values: [{"rows": []}]
+#       behavior: repeat_last      # repeat_last | passthrough
+#     os.ReadFile:
+#       return_values: ["default content"]

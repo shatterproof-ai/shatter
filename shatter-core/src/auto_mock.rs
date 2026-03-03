@@ -28,7 +28,11 @@ pub enum IoCategory {
 }
 
 /// Known module prefixes for each category.
-const FS_MODULES: &[&str] = &["fs", "node:fs", "fs/promises", "node:fs/promises", "path", "node:path"];
+const FS_MODULES: &[&str] = &[
+    "fs", "node:fs", "fs/promises", "node:fs/promises", "path", "node:path",
+    // Go stdlib
+    "os", "io", "io/ioutil", "bufio",
+];
 const NETWORK_MODULES: &[&str] = &[
     "http", "https", "node:http", "node:https", "net", "node:net",
     "axios", "node-fetch", "fetch", "got", "superagent", "request",
@@ -410,6 +414,147 @@ mod tests {
 
         let result = generate_auto_mocks(&deps, Some(&matcher), &HashMap::new(), &[]);
         assert!(result.is_empty());
+    }
+
+    /// Integration test: full auto-mock pipeline for a function with mixed dependencies.
+    /// Validates that dependencies are classified, mocks are generated with correct
+    /// return values, pure utilities are skipped, and user overrides are applied.
+    #[test]
+    fn auto_mock_pipeline_mixed_dependencies() {
+        // Simulate a function that depends on fs.readFileSync, axios.get,
+        // pg.query, lodash.map, and a custom library.
+        let deps = vec![
+            make_dep("readFileSync", "fs", TypeInfo::Str),
+            make_dep("get", "axios", TypeInfo::Unknown),
+            make_dep("query", "pg", TypeInfo::Unknown),
+            make_dep("map", "lodash", TypeInfo::Unknown),
+            make_dep("compute", "my-analytics-lib", TypeInfo::Int),
+        ];
+
+        // User override: custom return value for the database query mock
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            "query".to_string(),
+            MockOverride {
+                return_values: Some(vec![json!({"rows": [{"id": 1, "name": "alice"}]})]),
+                behavior: None,
+            },
+        );
+
+        let mocks = generate_auto_mocks(&deps, None, &overrides, &[]);
+
+        // 4 mocks generated: fs, network, db (overridden), and external other.
+        // lodash (pure utility) is skipped.
+        assert_eq!(mocks.len(), 4, "expected 4 mocks (lodash skipped)");
+
+        let by_symbol: HashMap<&str, &MockConfig> =
+            mocks.iter().map(|m| (m.symbol.as_str(), m)).collect();
+
+        // fs.readFileSync → filesystem category, returns ""
+        let fs_mock = by_symbol["readFileSync"];
+        assert_eq!(fs_mock.return_values, vec![json!("")]);
+        assert!(fs_mock.should_track_calls);
+        assert_eq!(fs_mock.default_behavior, MockBehavior::RepeatLast);
+
+        // axios.get → network category, returns {status: 200, data: {}}
+        let net_mock = by_symbol["get"];
+        assert_eq!(net_mock.return_values, vec![json!({"status": 200, "data": {}})]);
+        assert!(net_mock.should_track_calls);
+
+        // pg.query → database category, but overridden with custom rows
+        let db_mock = by_symbol["query"];
+        assert_eq!(
+            db_mock.return_values,
+            vec![json!({"rows": [{"id": 1, "name": "alice"}]})]
+        );
+        assert!(db_mock.should_track_calls);
+
+        // my-analytics-lib.compute → external other, type-aware default for Int
+        let ext_mock = by_symbol["compute"];
+        assert_eq!(ext_mock.return_values, vec![json!(0)]);
+        assert!(ext_mock.should_track_calls);
+
+        // Verify lodash.map is NOT in the mock list
+        assert!(!by_symbol.contains_key("map"));
+    }
+
+    /// Integration test: auto-mocks are compatible with the Instrument command format.
+    /// Verifies that generated MockConfig values serialize correctly for the protocol.
+    #[test]
+    fn auto_mock_configs_serialize_for_protocol() {
+        let deps = vec![
+            make_dep("existsSync", "fs", TypeInfo::Bool),
+            make_dep("query", "pg", TypeInfo::Unknown),
+        ];
+
+        let mocks = generate_auto_mocks(&deps, None, &HashMap::new(), &[]);
+        assert_eq!(mocks.len(), 2);
+
+        // Verify each mock serializes to valid JSON (required for protocol)
+        for mock in &mocks {
+            let json = serde_json::to_value(mock).expect("mock should serialize");
+            assert!(json.get("symbol").is_some());
+            assert!(json.get("return_values").is_some());
+            assert!(json.get("should_track_calls").is_some());
+            assert!(json.get("default_behavior").is_some());
+        }
+    }
+
+    /// Integration test: auto-mocks respect scope configuration.
+    /// Dependencies marked as passthrough in scope config are excluded from mocking.
+    #[test]
+    fn auto_mock_pipeline_with_scope_rules() {
+        let deps = vec![
+            make_dep("readFile", "fs", TypeInfo::Str),
+            make_dep("get", "axios", TypeInfo::Unknown),
+            make_dep("query", "pg", TypeInfo::Unknown),
+        ];
+
+        // Scope config: mark axios.get as passthrough (e.g., user wants real HTTP)
+        let scope_config = crate::scope::ScopeConfig {
+            include: vec![],
+            exclude: vec![],
+            mock: vec![],
+            passthrough: vec!["get".to_string()],
+        };
+        let matcher = ScopeMatcher::new(&scope_config).unwrap();
+
+        let mocks = generate_auto_mocks(&deps, Some(&matcher), &HashMap::new(), &[]);
+
+        // Only 2 mocks: fs.readFile and pg.query. axios.get is passthrough.
+        assert_eq!(mocks.len(), 2);
+        let symbols: Vec<&str> = mocks.iter().map(|m| m.symbol.as_str()).collect();
+        assert!(symbols.contains(&"readFile"));
+        assert!(symbols.contains(&"query"));
+        assert!(!symbols.contains(&"get"));
+    }
+
+    #[test]
+    fn classify_go_stdlib_modules() {
+        // Go filesystem
+        let dep = make_dep("os.ReadFile", "os", TypeInfo::Str);
+        assert_eq!(classify_dependency(&dep), IoCategory::FileSystem);
+
+        let dep2 = make_dep("io.Copy", "io", TypeInfo::Unknown);
+        assert_eq!(classify_dependency(&dep2), IoCategory::FileSystem);
+
+        // Go network (net/http matches via "net" prefix)
+        let dep3 = make_dep("http.Get", "net/http", TypeInfo::Unknown);
+        assert_eq!(classify_dependency(&dep3), IoCategory::Network);
+
+        // Go database
+        let dep4 = make_dep("sql.Open", "database/sql", TypeInfo::Unknown);
+        assert_eq!(classify_dependency(&dep4), IoCategory::Database);
+
+        // Go pure utilities
+        let dep5 = make_dep("strings.TrimSpace", "strings", TypeInfo::Str);
+        assert_eq!(classify_dependency(&dep5), IoCategory::PureUtility);
+
+        let dep6 = make_dep("strconv.Atoi", "strconv", TypeInfo::Int);
+        assert_eq!(classify_dependency(&dep6), IoCategory::PureUtility);
+
+        let dep7 = make_dep("fmt.Sprintf", "fmt", TypeInfo::Str);
+        assert_eq!(classify_dependency(&dep7), IoCategory::PureUtility);
     }
 
     #[test]

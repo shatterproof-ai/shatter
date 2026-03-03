@@ -721,6 +721,7 @@ async fn run_explore(
                 &resolved.mock_overrides,
                 &[],
             );
+            let mock_symbols: Vec<String> = auto_mocks.iter().map(|m| m.symbol.clone()).collect();
 
             let explore_config = ExploreConfig {
                 file: file_str.to_string(),
@@ -775,6 +776,9 @@ async fn run_explore(
                                 coverage_metrics: None,
                             };
                             eprint!("{}", explorer::format_exploration_report(&result, &report_opts));
+                        }
+                        if !mock_symbols.is_empty() {
+                            eprintln!("  Mocks used: {}", mock_symbols.join(", "));
                         }
                         eprintln!();
                     }
