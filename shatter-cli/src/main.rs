@@ -992,7 +992,7 @@ async fn run_scan(
     progress: bool,
     emit_tests: Option<&str>,
     dry_run: bool,
-    _resume: Option<&Path>,
+    resume: Option<&Path>,
     mock_config: Option<&Path>,
     core_sample_spec: Option<&str>,
     core_sample_seed: Option<u64>,
@@ -1355,6 +1355,7 @@ async fn run_scan(
             cache: None,
             stratum: if stratum_pre_applied { None } else { parsed_stratum.clone() },
             mock_overrides: HashMap::new(),
+            resume_path: None,
         };
         let plan = scan_orchestrator::format_dry_run_plan(
             &all_analyses,
@@ -1420,6 +1421,7 @@ async fn run_scan(
         cache,
         stratum: if stratum_pre_applied { None } else { parsed_stratum },
         mock_overrides,
+        resume_path: resume.map(|p| p.to_path_buf()),
     };
 
     let scan_start = Instant::now();

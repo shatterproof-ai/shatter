@@ -8,6 +8,7 @@ pub mod behavior;
 pub mod boundary_dict;
 pub mod call_graph;
 pub mod cache;
+pub mod checkpoint;
 pub mod config;
 pub mod core_sample;
 pub mod coverage_metrics;

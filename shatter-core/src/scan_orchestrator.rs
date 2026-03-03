@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -55,6 +56,10 @@ pub struct ScanConfig {
     /// User-provided mock overrides from `.shatter/config.yaml`.
     /// Keys are dependency symbol names; values override auto-generated defaults.
     pub mock_overrides: HashMap<String, crate::auto_mock::MockOverride>,
+    /// Path to checkpoint file for resume support.
+    /// When `Some`, completed functions are loaded on startup and the
+    /// checkpoint is updated after each layer completes.
+    pub resume_path: Option<PathBuf>,
 }
 
 /// Context about sampling mode, for report headers.
@@ -251,6 +256,29 @@ pub async fn scan(
     let mut behavior_maps: HashMap<String, BehaviorMap> = HashMap::new();
     let mut function_results: Vec<FunctionResult> = Vec::new();
     let mut skipped_functions: Vec<SkippedFunction> = Vec::new();
+    let mut deep_fingerprints: HashMap<String, String> = HashMap::new();
+
+    // Load checkpoint for resume support.
+    let scan_id = crate::checkpoint::ScanCheckpoint::compute_scan_id(
+        &config.file_map.values().map(|s| s.as_str()).collect::<Vec<_>>(),
+    );
+    let mut checkpoint = match &config.resume_path {
+        Some(path) => {
+            match crate::checkpoint::ScanCheckpoint::load(path) {
+                Ok(Some(cp)) if cp.scan_id == scan_id => cp,
+                Ok(Some(_)) => {
+                    eprintln!("[shatter] checkpoint scan_id mismatch, starting fresh");
+                    crate::checkpoint::ScanCheckpoint::new(scan_id)
+                }
+                Ok(None) => crate::checkpoint::ScanCheckpoint::new(scan_id),
+                Err(e) => {
+                    eprintln!("[shatter] failed to load checkpoint: {e}, starting fresh");
+                    crate::checkpoint::ScanCheckpoint::new(scan_id)
+                }
+            }
+        }
+        None => crate::checkpoint::ScanCheckpoint::new(scan_id),
+    };
 
     for func_name in &test_order {
         let analysis = match analysis_map.get(func_name.as_str()) {
@@ -258,14 +286,34 @@ pub async fn scan(
             None => continue,
         };
 
-        // Compute fingerprint and check freshness against cache.
-        let current_fingerprint = compute_fingerprint_for_function(func_name, analysis, config);
+        // Compute shallow fingerprint, then deep fingerprint incorporating callees.
+        let shallow_fingerprint = compute_fingerprint_for_function(func_name, analysis, config);
+        let callees = call_graph.callees(func_name);
+        let current_deep_fp = shallow_fingerprint.as_ref().map(|sfp| {
+            crate::fingerprint::compute_deep_fingerprint(sfp, &deep_fingerprints, &callees)
+        });
 
-        if let (Some(cache), Some(fp)) = (&config.cache, &current_fingerprint)
-            && let Ok(true) = cache.is_fresh(func_name, fp)
+        // Check resume checkpoint first (uses deep FP).
+        if let (Some(cache), Some(dfp)) = (&config.cache, &current_deep_fp)
+            && checkpoint.is_completed(func_name, dfp, cache)
             && let Ok(Some(cached_map)) = cache.load(func_name)
         {
             behavior_maps.insert(func_name.clone(), cached_map);
+            deep_fingerprints.insert(func_name.clone(), dfp.clone());
+            skipped_functions.push(SkippedFunction {
+                function_name: func_name.clone(),
+                reason: "resumed from checkpoint".into(),
+            });
+            continue;
+        }
+
+        // Check cache freshness using deep fingerprint.
+        if let (Some(cache), Some(dfp)) = (&config.cache, &current_deep_fp)
+            && let Ok(true) = cache.is_fresh(func_name, dfp)
+            && let Ok(Some(cached_map)) = cache.load(func_name)
+        {
+            behavior_maps.insert(func_name.clone(), cached_map);
+            deep_fingerprints.insert(func_name.clone(), dfp.clone());
             skipped_functions.push(SkippedFunction {
                 function_name: func_name.clone(),
                 reason: "unchanged (fingerprint match)".into(),
@@ -285,7 +333,6 @@ pub async fn scan(
         }
 
         // Build mocks from callees that have already been tested.
-        let callees = call_graph.callees(func_name);
         let mut mocks: Vec<MockConfig> = Vec::new();
         let mut mocks_used: Vec<MockUsage> = Vec::new();
 
@@ -336,11 +383,22 @@ pub async fn scan(
 
         // Run the Analyze stage to produce behavior map and coverage metrics.
         let mut analyze_out = crate::pipeline::analyze(&exploration, analysis);
-        analyze_out.behavior_map.fingerprint = current_fingerprint;
+        analyze_out.behavior_map.fingerprint = current_deep_fp.clone();
 
         // Persist the behavior map to cache for reuse across runs.
         if let Some(ref cache) = config.cache {
             let _ = cache.store(&analyze_out.behavior_map);
+        }
+
+        // Record deep fingerprint for downstream functions.
+        if let Some(ref dfp) = current_deep_fp {
+            deep_fingerprints.insert(func_name.clone(), dfp.clone());
+            checkpoint.mark_completed(func_name, dfp);
+        }
+
+        // Save checkpoint periodically.
+        if let Some(ref path) = config.resume_path {
+            let _ = checkpoint.save(path);
         }
 
         // Compute behavior coverage for each callee (cross-function concern).
@@ -483,13 +541,43 @@ pub async fn parallel_scan(
     let behavior_maps: Arc<Mutex<HashMap<String, BehaviorMap>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
+    // Deep fingerprints: accumulated across layers. Since functions within a
+    // layer have no cross-dependencies, callee deep FPs are always from prior
+    // layers and this map is immutable during within-layer parallel execution.
+    let mut deep_fingerprints: HashMap<String, String> = HashMap::new();
+
+    // Load checkpoint for resume support.
+    let scan_id = crate::checkpoint::ScanCheckpoint::compute_scan_id(
+        &config.file_map.values().map(|s| s.as_str()).collect::<Vec<_>>(),
+    );
+    let mut checkpoint = match &config.resume_path {
+        Some(path) => {
+            match crate::checkpoint::ScanCheckpoint::load(path) {
+                Ok(Some(cp)) if cp.scan_id == scan_id => cp,
+                Ok(Some(_)) => {
+                    eprintln!("[shatter] checkpoint scan_id mismatch, starting fresh");
+                    crate::checkpoint::ScanCheckpoint::new(scan_id)
+                }
+                Ok(None) => crate::checkpoint::ScanCheckpoint::new(scan_id),
+                Err(e) => {
+                    eprintln!("[shatter] failed to load checkpoint: {e}, starting fresh");
+                    crate::checkpoint::ScanCheckpoint::new(scan_id)
+                }
+            }
+        }
+        None => crate::checkpoint::ScanCheckpoint::new(scan_id),
+    };
+
     let mut all_results: Vec<FunctionResult> = Vec::new();
     let mut test_order: Vec<String> = Vec::new();
     let mut skipped: Vec<SkippedFunction> = Vec::new();
 
-    for layer in &layers {
+    for (layer_idx, layer) in layers.iter().enumerate() {
         // Build tasks for this layer: each function paired with its mocks.
         let mut tasks = Vec::new();
+        // Track deep FPs computed in this layer (added after the layer completes).
+        let mut layer_deep_fps: Vec<(String, String)> = Vec::new();
+
         for func_name in layer {
             test_order.push(func_name.clone());
 
@@ -504,17 +592,40 @@ pub async fn parallel_scan(
                 }
             };
 
-            // Compute fingerprint and check freshness against cache.
-            let current_fingerprint =
+            // Compute shallow fingerprint, then deep fingerprint incorporating callees.
+            let shallow_fingerprint =
                 compute_fingerprint_for_function(func_name, analysis, config);
 
-            if let (Some(cache), Some(fp)) = (&config.cache, &current_fingerprint)
-                && let Ok(true) = cache.is_fresh(func_name, fp)
+            let callees = call_graph.callees(func_name);
+            let current_deep_fp = shallow_fingerprint.as_ref().map(|sfp| {
+                crate::fingerprint::compute_deep_fingerprint(sfp, &deep_fingerprints, &callees)
+            });
+
+            // Check resume checkpoint first (uses deep FP).
+            if let (Some(cache), Some(dfp)) = (&config.cache, &current_deep_fp)
+                && checkpoint.is_completed(func_name, dfp, cache)
                 && let Ok(Some(cached_map)) = cache.load(func_name)
             {
                 let mut maps = behavior_maps.lock().await;
                 maps.insert(func_name.clone(), cached_map);
                 drop(maps);
+                layer_deep_fps.push((func_name.clone(), dfp.clone()));
+                skipped.push(SkippedFunction {
+                    function_name: func_name.clone(),
+                    reason: "resumed from checkpoint".into(),
+                });
+                continue;
+            }
+
+            // Check cache freshness using deep fingerprint.
+            if let (Some(cache), Some(dfp)) = (&config.cache, &current_deep_fp)
+                && let Ok(true) = cache.is_fresh(func_name, dfp)
+                && let Ok(Some(cached_map)) = cache.load(func_name)
+            {
+                let mut maps = behavior_maps.lock().await;
+                maps.insert(func_name.clone(), cached_map);
+                drop(maps);
+                layer_deep_fps.push((func_name.clone(), dfp.clone()));
                 skipped.push(SkippedFunction {
                     function_name: func_name.clone(),
                     reason: "unchanged (fingerprint match)".into(),
@@ -536,7 +647,6 @@ pub async fn parallel_scan(
             }
 
             // Build mocks from callees that have already been tested.
-            let callees = call_graph.callees(func_name);
             let maps = behavior_maps.lock().await;
             let mut mocks: Vec<MockConfig> = Vec::new();
             let mut mocks_used: Vec<MockUsage> = Vec::new();
@@ -584,14 +694,14 @@ pub async fn parallel_scan(
                 capabilities: crate::orchestrator::FrontendCapabilities::default(),
             };
 
-            tasks.push((func_name.clone(), analysis.clone(), explore_config, mocks_used, callees, current_fingerprint));
+            tasks.push((func_name.clone(), analysis.clone(), explore_config, mocks_used, callees, current_deep_fp));
         }
 
         // Execute tasks in parallel across the worker pool.
         // Each task checks out a worker, explores, then returns the worker.
         let mut handles = Vec::new();
 
-        for (func_name, analysis, explore_config, mocks_used, callees, fingerprint) in tasks {
+        for (func_name, analysis, explore_config, mocks_used, callees, deep_fp) in tasks {
             let pool = Arc::clone(&pool);
             let behavior_maps = Arc::clone(&behavior_maps);
             let timeout = config.timeout_per_fn;
@@ -610,7 +720,7 @@ pub async fn parallel_scan(
                         &mocks_used,
                         &callees,
                         &behavior_maps,
-                        fingerprint,
+                        deep_fp.clone(),
                     ),
                 )
                 .await;
@@ -650,6 +760,11 @@ pub async fn parallel_scan(
         for handle in handles {
             match handle.await {
                 Ok(FunctionOutcome::Success(result)) => {
+                    // Record deep FP for this function so downstream layers
+                    // can incorporate it into their deep fingerprints.
+                    if let Some(ref fp) = result.behavior_map.fingerprint {
+                        layer_deep_fps.push((result.function_name.clone(), fp.clone()));
+                    }
                     all_results.push(*result);
                 }
                 Ok(FunctionOutcome::Timeout { function_name, limit }) => {
@@ -672,6 +787,18 @@ pub async fn parallel_scan(
                     });
                 }
             }
+        }
+
+        // Merge this layer's deep fingerprints into the accumulated map.
+        for (name, fp) in layer_deep_fps {
+            checkpoint.mark_completed(&name, &fp);
+            deep_fingerprints.insert(name, fp);
+        }
+
+        // Persist checkpoint after each layer completes.
+        checkpoint.layer_index = layer_idx;
+        if let Some(ref path) = config.resume_path {
+            let _ = checkpoint.save(path);
         }
     }
 
@@ -1719,6 +1846,7 @@ mod tests {
             cache: None,
             stratum: None,
             mock_overrides: HashMap::new(),
+            resume_path: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -1782,6 +1910,7 @@ mod tests {
             cache: None,
             stratum: None,
             mock_overrides: HashMap::new(),
+            resume_path: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -1841,6 +1970,7 @@ mod tests {
             cache: Some(cache.clone()),
             stratum: None,
             mock_overrides: HashMap::new(),
+            resume_path: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -1899,6 +2029,7 @@ mod tests {
             cache: None,
             stratum: None,
             mock_overrides: HashMap::new(),
+            resume_path: None,
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -1944,6 +2075,7 @@ mod tests {
             cache: None,
             stratum: None,
             mock_overrides: HashMap::new(),
+            resume_path: None,
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -1972,6 +2104,7 @@ mod tests {
             cache: None,
             stratum: None,
             mock_overrides: HashMap::new(),
+            resume_path: None,
         };
 
         let plan = format_dry_run_plan(&analyses, &skipped, &config).expect("should succeed");
@@ -1991,6 +2124,7 @@ mod tests {
             cache: None,
             stratum: None,
             mock_overrides: HashMap::new(),
+            resume_path: None,
         };
 
         let plan = format_dry_run_plan(&[], &[], &config).expect("should succeed");
