@@ -325,7 +325,7 @@ pub struct ExecuteResult {
 }
 
 /// Performance metrics from a single execution.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PerformanceMetrics {
     /// Wall clock time in milliseconds.
     pub wall_time_ms: f64,

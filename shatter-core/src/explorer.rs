@@ -5,6 +5,7 @@
 //! unique execution paths. This module implements the random exploration phase
 //! (no symbolic solving).
 
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
@@ -57,6 +58,8 @@ pub struct ExecutionSummary {
     pub lines_executed: Vec<u32>,
     /// Whether this execution discovered a new unique path.
     pub is_new_path: bool,
+    /// Inferred error intent (validation vs runtime), if an error was thrown.
+    pub error_intent: Option<ErrorIntentLabel>,
 }
 
 /// Result of exploring a single function.
@@ -113,6 +116,81 @@ fn path_hash(result: &crate::protocol::ExecuteResult) -> u64 {
             ret_str.hash(&mut hasher);
         }
     hasher.finish()
+}
+
+/// Confidence-scored label for error intent classification.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ErrorIntentLabel {
+    /// "likely_validation", "likely_runtime", or "unknown"
+    pub label: String,
+    /// Confidence score 0.0–1.0
+    pub confidence: f64,
+}
+
+/// Classify whether a thrown error is a deliberate validation rejection or an
+/// accidental runtime failure by examining the branch path immediately before the error.
+///
+/// Pattern: a guard branch taken=true followed immediately by the error (no intervening
+/// branches) suggests intentional input rejection. Errors without a preceding guard
+/// or deep in the branch path are more likely accidental.
+pub fn classify_error_intent(result: &crate::protocol::ExecuteResult) -> Option<ErrorIntentLabel> {
+    let error = result.thrown_error.as_ref()?;
+
+    // If the frontend already classified this as infrastructure, trust it
+    if error.error_category.as_deref() == Some("infrastructure") {
+        return Some(ErrorIntentLabel {
+            label: "likely_runtime".into(),
+            confidence: 0.9,
+        });
+    }
+
+    let branch_path = &result.branch_path;
+    if branch_path.is_empty() {
+        // No branch data — can't infer intent
+        return Some(ErrorIntentLabel {
+            label: "unknown".into(),
+            confidence: 0.0,
+        });
+    }
+
+    // Check the last branch before the error
+    let last_branch = branch_path.last().unwrap();
+
+    // Guard pattern: last branch taken=true, suggesting an if-guard that led to a throw.
+    // Shallow depth (few branches) + guard = likely validation.
+    if last_branch.taken && branch_path.len() <= 3 {
+        return Some(ErrorIntentLabel {
+            label: "likely_validation".into(),
+            confidence: 0.7,
+        });
+    }
+
+    // Deep branch path with error = likely accidental runtime failure
+    if branch_path.len() > 5 {
+        return Some(ErrorIntentLabel {
+            label: "likely_runtime".into(),
+            confidence: 0.6,
+        });
+    }
+
+    // Frontend-level classification can help disambiguate
+    if error.error_category.as_deref() == Some("validation") {
+        return Some(ErrorIntentLabel {
+            label: "likely_validation".into(),
+            confidence: 0.8,
+        });
+    }
+    if error.error_category.as_deref() == Some("runtime") {
+        return Some(ErrorIntentLabel {
+            label: "likely_runtime".into(),
+            confidence: 0.7,
+        });
+    }
+
+    Some(ErrorIntentLabel {
+        label: "unknown".into(),
+        confidence: 0.3,
+    })
 }
 
 /// Check whether the frontend declared support for a specific command.
@@ -323,6 +401,7 @@ pub async fn explore_function(
         }
 
         if is_new {
+            let error_intent = classify_error_intent(&exec_result);
             new_path_executions.push(ExecutionSummary {
                 inputs: inputs.clone(),
                 return_value: exec_result.return_value.clone(),
@@ -332,6 +411,7 @@ pub async fn explore_function(
                     .map(|e| format!("{}: {}", e.error_type, e.message)),
                 lines_executed: exec_result.lines_executed.clone(),
                 is_new_path: true,
+                error_intent,
             });
         }
 
@@ -454,7 +534,11 @@ pub fn format_exploration_report_verbose(result: &ExplorationResult) -> String {
 
 fn format_outcome_label(exec: &ExecutionSummary) -> String {
     if let Some(ref err) = exec.thrown_error {
-        format!("throws {err}")
+        let intent_suffix = match &exec.error_intent {
+            Some(label) if label.label != "unknown" => format!(" [{}]", label.label),
+            _ => String::new(),
+        };
+        format!("throws {err}{intent_suffix}")
     } else {
         match &exec.return_value {
             Some(v) if !v.is_null() => format!("returns {}", format_value_short(v)),
@@ -615,13 +699,11 @@ mod tests {
                 ExecutionSummary {
                     inputs: vec![serde_json::json!(5)],
                     return_value: Some(serde_json::json!("positive-odd")),
-                    thrown_error: None, lines_executed: vec![1, 2, 3], is_new_path: true,
-                },
+                    thrown_error: None, lines_executed: vec![1, 2, 3], is_new_path: true, error_intent: None },
                 ExecutionSummary {
                     inputs: vec![serde_json::json!(-3)],
                     return_value: Some(serde_json::json!("negative")),
-                    thrown_error: None, lines_executed: vec![1, 4, 5], is_new_path: true,
-                },
+                    thrown_error: None, lines_executed: vec![1, 4, 5], is_new_path: true, error_intent: None },
             ],
             raw_results: vec![], discoveries: vec![],
         };
@@ -643,8 +725,7 @@ mod tests {
             new_path_executions: vec![ExecutionSummary {
                 inputs: vec![serde_json::json!(10)],
                 return_value: Some(serde_json::json!(5)),
-                thrown_error: None, lines_executed: vec![1, 2, 3], is_new_path: true,
-            }],
+                thrown_error: None, lines_executed: vec![1, 2, 3], is_new_path: true, error_intent: None }],
             raw_results: vec![], discoveries: vec![],
         };
         let report = format_exploration_report(&result, &ReportOptions {
@@ -662,8 +743,7 @@ mod tests {
                 inputs: vec![serde_json::json!(null)],
                 return_value: None,
                 thrown_error: Some("TypeError: cannot read null".into()),
-                lines_executed: vec![], is_new_path: true,
-            }],
+                lines_executed: vec![], is_new_path: true, error_intent: None }],
             raw_results: vec![], discoveries: vec![],
         };
         let report = format_exploration_report(&result, &ReportOptions::default());
@@ -713,8 +793,7 @@ mod tests {
             new_path_executions: vec![ExecutionSummary {
                 inputs: vec![serde_json::json!(5)],
                 return_value: Some(serde_json::json!("positive-odd")),
-                thrown_error: None, lines_executed: vec![1, 2, 3], is_new_path: true,
-            }],
+                thrown_error: None, lines_executed: vec![1, 2, 3], is_new_path: true, error_intent: None }],
             raw_results: vec![], discoveries: vec![],
         };
         let report = format_exploration_report_verbose(&result);
@@ -722,6 +801,79 @@ mod tests {
         assert!(report.contains("2 unique path(s)"));
         assert!(report.contains("positive-odd"));
         assert!(report.contains("Discovered paths:"));
+    }
+
+    #[test]
+    fn classify_error_intent_guard_branch_is_validation() {
+        use crate::execution_record::{BranchDecision, ErrorInfo, SymConstraint};
+        let result = crate::protocol::ExecuteResult {
+            return_value: None,
+            thrown_error: Some(ErrorInfo {
+                error_type: "ValidationError".into(),
+                message: "invalid input".into(),
+                stack: None,
+                error_category: None,
+            }),
+            branch_path: vec![BranchDecision {
+                branch_id: 1,
+                line: 5,
+                taken: true,
+                constraint: SymConstraint::Unknown { hint: String::new() },
+            }],
+            lines_executed: vec![1, 5, 6],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
+            performance: Default::default(),
+        };
+        let label = classify_error_intent(&result).unwrap();
+        assert_eq!(label.label, "likely_validation");
+        assert!(label.confidence > 0.5);
+    }
+
+    #[test]
+    fn classify_error_intent_no_error_returns_none() {
+        let result = crate::protocol::ExecuteResult {
+            return_value: Some(serde_json::json!(42)),
+            thrown_error: None,
+            branch_path: vec![],
+            lines_executed: vec![1],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
+            performance: Default::default(),
+        };
+        assert!(classify_error_intent(&result).is_none());
+    }
+
+    #[test]
+    fn classify_error_intent_deep_path_is_runtime() {
+        use crate::execution_record::{BranchDecision, ErrorInfo, SymConstraint};
+        let branches: Vec<BranchDecision> = (0..8)
+            .map(|i| BranchDecision {
+                branch_id: i,
+                line: 10 + i,
+                taken: true,
+                constraint: SymConstraint::Unknown { hint: String::new() },
+            })
+            .collect();
+        let result = crate::protocol::ExecuteResult {
+            return_value: None,
+            thrown_error: Some(ErrorInfo {
+                error_type: "TypeError".into(),
+                message: "null deref".into(),
+                stack: None,
+                error_category: None,
+            }),
+            branch_path: branches,
+            lines_executed: vec![],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
+            performance: Default::default(),
+        };
+        let label = classify_error_intent(&result).unwrap();
+        assert_eq!(label.label, "likely_runtime");
     }
 
     async fn spawn_noop_frontend() -> Frontend {

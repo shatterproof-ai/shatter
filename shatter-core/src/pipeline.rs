@@ -209,6 +209,7 @@ impl From<crate::orchestrator::ExploreResult> for ObservationOutput {
                     .map(|e| format!("{}: {}", e.error_type, e.message)),
                 lines_executed: exec.lines_executed.clone(),
                 is_new_path: true,
+                error_intent: crate::explorer::classify_error_intent(exec),
             })
             .collect();
 
