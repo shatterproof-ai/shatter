@@ -335,7 +335,6 @@ pub fn write_report(report: &ScanReport, output_dir: &Path) -> Result<PathBuf, R
     Ok(report_path)
 }
 
-<<<<<<< HEAD
 /// Write a [`ScanReport`] as a markdown file to a directory.
 ///
 /// Creates the output directory if it does not exist. Writes to

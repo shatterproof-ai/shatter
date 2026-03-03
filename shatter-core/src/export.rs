@@ -46,17 +46,6 @@ pub fn generate_jest_tests(
     out
 }
 
-/// Generate Vitest test source from a behavior map.
-///
-/// Identical to Jest output (both use ES module imports and describe/it blocks).
-pub fn generate_vitest_tests(
-    behavior_map: &BehaviorMap,
-    function_name: &str,
-    module_path: &str,
-) -> String {
-    generate_jest_tests(behavior_map, function_name, module_path)
-}
-
 /// Generate Go table-driven test source from a behavior map.
 ///
 /// Each behavior becomes a test case in a table-driven `t.Run()` subtest.

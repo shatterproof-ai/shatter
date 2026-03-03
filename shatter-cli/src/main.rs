@@ -1000,7 +1000,7 @@ async fn run_scan(
     stratum_spec: Option<&str>,
     log_level: LogLevel,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let _report_format: report::ReportFormat = report_format_str
+    let report_format: report::ReportFormat = report_format_str
         .parse()
         .map_err(|e: String| -> Box<dyn std::error::Error> { e.into() })?;
 
@@ -1474,38 +1474,6 @@ async fn run_scan(
         Err(e) => {
             eprintln!("Scan error: {e}");
         }
-    }
-
-    Ok(())
-}
-
-/// Emit test files from a parallel scan result.
-fn emit_test_files(
-    result: &scan_orchestrator::ParallelScanResult,
-    file_map: &std::collections::HashMap<String, String>,
-    framework: &str,
-    output_dir: &Path,
-) -> Result<(), Box<dyn std::error::Error>> {
-    std::fs::create_dir_all(output_dir)?;
-
-    for func_result in &result.function_results {
-        let module_path = file_map
-            .get(&func_result.function_name)
-            .map(|s| s.as_str())
-            .unwrap_or("./module");
-
-        let test_code = match framework {
-            "jest" => export::generate_jest_tests(&func_result.behavior_map, &func_result.function_name, module_path),
-            "vitest" => export::generate_vitest_tests(&func_result.behavior_map, &func_result.function_name, module_path),
-            "gotest" => export::generate_go_tests(&func_result.behavior_map, &func_result.function_name, module_path),
-            _ => continue,
-        };
-
-        let ext = if framework == "gotest" { "go" } else { "ts" };
-        let filename = format!("{}.test.{ext}", func_result.function_name);
-        let path = output_dir.join(&filename);
-        std::fs::write(&path, &test_code)?;
-        eprintln!("  Wrote {}", path.display());
     }
 
     Ok(())

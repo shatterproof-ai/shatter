@@ -292,14 +292,10 @@ pub async fn scan(
         for callee in &callees {
             if let Some(bmap) = behavior_maps.get(callee) {
                 mocks.push(mock_config_from_behavior_map(bmap));
-<<<<<<< HEAD
                 mocks_used.push(MockUsage {
                     name: callee.clone(),
                     source: MockSource::CachedBehaviorMap,
                 });
-=======
-                mocks_used.push(callee.clone());
->>>>>>> str-0mz-explorer-setup-generators
             }
         }
 
