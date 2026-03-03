@@ -979,7 +979,7 @@ async fn run_scan(
     all_functions: bool,
     max_depth: Option<usize>,
     max_iterations: u32,
-    _timeout_total: u64,
+    timeout_total: u64,
     cache_dir: Option<&Path>,
     no_cache: bool,
     request_timeout: u64,
@@ -1356,6 +1356,7 @@ async fn run_scan(
             stratum: if stratum_pre_applied { None } else { parsed_stratum.clone() },
             mock_overrides: HashMap::new(),
             resume_path: None,
+            timeout_total: None,
         };
         let plan = scan_orchestrator::format_dry_run_plan(
             &all_analyses,
@@ -1422,6 +1423,7 @@ async fn run_scan(
         stratum: if stratum_pre_applied { None } else { parsed_stratum },
         mock_overrides,
         resume_path: resume.map(|p| p.to_path_buf()),
+        timeout_total: if timeout_total == 0 { None } else { Some(Duration::from_secs(timeout_total)) },
     };
 
     let scan_start = Instant::now();
