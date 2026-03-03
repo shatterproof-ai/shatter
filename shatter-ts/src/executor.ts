@@ -24,7 +24,7 @@ import type {
 import { RECORD_FUNCTION, BRANCH_FUNCTION, MOCK_REGISTRY, MOCK_CALL_FUNCTION } from "./instrumentor.js";
 import type { MockConfig, ExternalCall } from "./protocol.js";
 
-const DEFAULT_EXEC_TIMEOUT_MS = 15_000;
+export const DEFAULT_EXEC_TIMEOUT_MS = 15_000;
 
 /**
  * Read SHATTER_EXEC_TIMEOUT env var (seconds) and return milliseconds.
