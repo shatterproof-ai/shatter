@@ -70,14 +70,22 @@ func exprToSymExpr(expr ast.Expr, params map[string]bool) *symExpr {
 		}
 
 	case *ast.UnaryExpr:
-		if e.Op == token.NOT {
-			return &symExpr{
-				Kind:    "un_op",
-				Op:      "not",
-				Operand: exprToSymExpr(e.X, params),
-			}
+		var op string
+		switch e.Op {
+		case token.NOT:
+			op = "not"
+		case token.SUB:
+			op = "neg"
+		case token.XOR:
+			op = "bitwise_not"
+		default:
+			return &symExpr{Kind: "unknown"}
 		}
-		return &symExpr{Kind: "unknown"}
+		return &symExpr{
+			Kind:    "un_op",
+			Op:      op,
+			Operand: exprToSymExpr(e.X, params),
+		}
 
 	case *ast.SelectorExpr:
 		if ident, ok := e.X.(*ast.Ident); ok && params[ident.Name] {
@@ -179,6 +187,20 @@ func tokenToOp(tok token.Token) string {
 		return "div"
 	case token.REM:
 		return "mod"
+	case token.NOT:
+		return "not"
+	case token.AND:
+		return "bitwise_and"
+	case token.OR:
+		return "bitwise_or"
+	case token.XOR:
+		return "bitwise_xor"
+	case token.SHL:
+		return "shl"
+	case token.SHR:
+		return "shr"
+	case token.AND_NOT:
+		return "bit_clear"
 	default:
 		return ""
 	}

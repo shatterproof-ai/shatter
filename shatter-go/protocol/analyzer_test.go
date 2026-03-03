@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"go/token"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -437,6 +438,26 @@ func TestAnalyzeSwitchCaseHasEqSymExpr(t *testing.T) {
 	}
 	if br.Condition.Kind != "bin_op" || br.Condition.Op != "eq" {
 		t.Errorf("condition = %+v, want bin_op eq", br.Condition)
+	}
+}
+
+func TestTokenToOpBitwise(t *testing.T) {
+	tests := []struct {
+		tok token.Token
+		op  string
+	}{
+		{token.AND, "bitwise_and"},
+		{token.OR, "bitwise_or"},
+		{token.XOR, "bitwise_xor"},
+		{token.SHL, "shl"},
+		{token.SHR, "shr"},
+		{token.AND_NOT, "bit_clear"},
+	}
+	for _, tc := range tests {
+		got := tokenToOp(tc.tok)
+		if got != tc.op {
+			t.Errorf("tokenToOp(%v) = %q, want %q", tc.tok, got, tc.op)
+		}
 	}
 }
 

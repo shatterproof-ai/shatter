@@ -529,7 +529,15 @@ func buildBinOp(expr *ast.BinaryExpr, params map[string]bool) *SymExpr {
 }
 
 func buildUnOp(expr *ast.UnaryExpr, params map[string]bool) *SymExpr {
-	op := tokenToOp(expr.Op)
+	var op string
+	switch expr.Op {
+	case token.SUB:
+		op = "neg"
+	case token.XOR:
+		op = "bitwise_not"
+	default:
+		op = tokenToOp(expr.Op)
+	}
 	operand := buildSymExpr(expr.X, params)
 	return &SymExpr{
 		Kind:    "un_op",
@@ -669,6 +677,18 @@ func tokenToOp(tok token.Token) string {
 		return "or"
 	case token.NOT:
 		return "not"
+	case token.AND:
+		return "bitwise_and"
+	case token.OR:
+		return "bitwise_or"
+	case token.XOR:
+		return "bitwise_xor"
+	case token.SHL:
+		return "shl"
+	case token.SHR:
+		return "shr"
+	case token.AND_NOT:
+		return "bit_clear"
 	default:
 		return tok.String()
 	}

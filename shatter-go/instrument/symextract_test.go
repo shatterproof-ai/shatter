@@ -168,6 +168,53 @@ func TestExtractConstraintUnknown(t *testing.T) {
 	}
 }
 
+func TestTokenToOpBitwise(t *testing.T) {
+	tests := []struct {
+		expr string
+		op   string
+	}{
+		{"x & y", "bitwise_and"},
+		{"x | y", "bitwise_or"},
+		{"x ^ y", "bitwise_xor"},
+		{"x << y", "shl"},
+		{"x >> y", "shr"},
+		{"x &^ y", "bit_clear"},
+	}
+	params := map[string]bool{"x": true, "y": true}
+	for _, tc := range tests {
+		expr, err := parser.ParseExpr(tc.expr)
+		if err != nil {
+			t.Fatalf("parse %q: %v", tc.expr, err)
+		}
+		sym := exprToSymExpr(expr, params)
+		if sym.Kind != "bin_op" {
+			t.Errorf("%s: kind = %q, want bin_op", tc.expr, sym.Kind)
+			continue
+		}
+		if sym.Op != tc.op {
+			t.Errorf("%s: op = %q, want %q", tc.expr, sym.Op, tc.op)
+		}
+	}
+}
+
+func TestUnaryMinusAndBitwiseNot(t *testing.T) {
+	params := map[string]bool{"x": true}
+
+	// Unary minus
+	expr, _ := parser.ParseExpr("-x")
+	sym := exprToSymExpr(expr, params)
+	if sym.Kind != "un_op" || sym.Op != "neg" {
+		t.Errorf("-x: got kind=%q op=%q, want un_op neg", sym.Kind, sym.Op)
+	}
+
+	// Bitwise NOT (^x in Go)
+	expr, _ = parser.ParseExpr("^x")
+	sym = exprToSymExpr(expr, params)
+	if sym.Kind != "un_op" || sym.Op != "bitwise_not" {
+		t.Errorf("^x: got kind=%q op=%q, want un_op bitwise_not", sym.Kind, sym.Op)
+	}
+}
+
 func TestBoolLiterals(t *testing.T) {
 	for _, tc := range []struct {
 		input string

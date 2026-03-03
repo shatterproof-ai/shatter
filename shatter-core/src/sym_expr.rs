@@ -81,6 +81,10 @@ pub enum BinOpKind {
     BitwiseAnd,
     BitwiseOr,
     BitwiseXor,
+    // Shifts and bit-clear (Go-specific)
+    Shl,
+    Shr,
+    BitClear,
     // JS-specific
     In,
     InstanceOf,
@@ -230,6 +234,9 @@ mod tests {
             BinOpKind::BitwiseAnd,
             BinOpKind::BitwiseOr,
             BinOpKind::BitwiseXor,
+            BinOpKind::Shl,
+            BinOpKind::Shr,
+            BinOpKind::BitClear,
             BinOpKind::In,
             BinOpKind::InstanceOf,
         ];
@@ -302,5 +309,30 @@ mod tests {
         let from_rust: UnOpKind =
             serde_json::from_str(r#""type_of""#).expect("type_of should deserialize");
         assert_eq!(from_rust, UnOpKind::TypeOf);
+    }
+
+    /// Reproduction test for str-a4c: Go frontend sends "bit_clear", "shl", "shr"
+    /// which must deserialize into BinOpKind variants.
+    #[test]
+    fn go_bitwise_ops_deserialize() {
+        let bit_clear: BinOpKind =
+            serde_json::from_str(r#""bit_clear""#).expect("bit_clear should deserialize");
+        assert_eq!(bit_clear, BinOpKind::BitClear);
+
+        let shl: BinOpKind =
+            serde_json::from_str(r#""shl""#).expect("shl should deserialize");
+        assert_eq!(shl, BinOpKind::Shl);
+
+        let shr: BinOpKind =
+            serde_json::from_str(r#""shr""#).expect("shr should deserialize");
+        assert_eq!(shr, BinOpKind::Shr);
+
+        // Full BinOp expression with bit_clear, as sent by the Go frontend
+        let json = r#"{"kind":"bin_op","op":"bit_clear","left":{"kind":"param","name":"x","path":[]},"right":{"kind":"const","type":"int","value":255}}"#;
+        let expr: SymExpr = serde_json::from_str(json).expect("bit_clear binop should deserialize");
+        match expr {
+            SymExpr::BinOp { op, .. } => assert_eq!(op, BinOpKind::BitClear),
+            other => panic!("expected BinOp, got {other:?}"),
+        }
     }
 }

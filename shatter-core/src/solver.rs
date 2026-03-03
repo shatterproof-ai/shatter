@@ -285,7 +285,8 @@ fn convert_binop(
             convert_arithmetic(vars, op, left, right, arith_sort)
         }
 
-        BinOpKind::BitwiseAnd | BinOpKind::BitwiseOr | BinOpKind::BitwiseXor => {
+        BinOpKind::BitwiseAnd | BinOpKind::BitwiseOr | BinOpKind::BitwiseXor
+        | BinOpKind::Shl | BinOpKind::Shr | BinOpKind::BitClear => {
             Err(SolverError::Unsupported(format!(
                 "bitwise operator {op:?} not yet supported in Z3 solver"
             )))
