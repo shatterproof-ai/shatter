@@ -34,6 +34,12 @@ user-invocable: true
 - Define types explicitly; don't infer from external data
 - `readonly` on properties that shouldn't change
 
+## Constants
+- Define named constants for default values, timeouts, and any value shared between production and test code
+- Protocol constants live in `src/protocol.ts` (e.g., `PROTOCOL_VERSION`, `ErrorCode`)
+- Execution constants live in respective modules (e.g., `DEFAULT_EXEC_TIMEOUT_MS` in `src/executor.ts`)
+- Tests import and reference constants, never duplicate the literal value
+
 ## Code Style
 - Short, focused functions
 - Precise names that don't need explaining comments

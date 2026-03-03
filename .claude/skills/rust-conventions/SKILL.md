@@ -26,6 +26,13 @@ user-invocable: true
 - `#[must_use]` on functions returning values callers shouldn't ignore
 - Prefer `impl Trait` over `dyn Trait`
 
+## Constants
+- Define named constants for default values, timeouts, and configuration defaults
+- Place constants at the top of the module that owns the concept (e.g., `DEFAULT_REQUEST_TIMEOUT` in `frontend.rs`)
+- Use `pub const` for values referenced across modules; module-private `const` otherwise
+- Tests reference constants, never duplicate the literal value
+- Struct `Default` impls reference the constant, not a bare literal
+
 ## Module Structure
 - One module = one responsibility
 - Minimal `lib.rs` re-exports

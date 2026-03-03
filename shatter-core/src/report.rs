@@ -704,8 +704,7 @@ mod tests {
                 return_value: Some(serde_json::json!(i * 10)),
                 thrown_error: None,
                 lines_executed: vec![1, 2, 3],
-                is_new_path: true,
-            })
+                is_new_path: true, error_intent: None })
             .collect();
 
         let behaviors: Vec<Behavior> = (0..unique_paths)
@@ -993,8 +992,7 @@ mod tests {
                 return_value: None,
                 thrown_error: Some("TypeError: cannot read null".to_string()),
                 lines_executed: vec![1],
-                is_new_path: true,
-            });
+                is_new_path: true, error_intent: None });
 
         let parallel_result = ParallelScanResult {
             function_results: vec![func_result],

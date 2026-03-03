@@ -31,6 +31,13 @@ user-invocable: true
 - `json.Decoder` for streaming input, `json.Encoder` for output
 - Dispatch by message type in handler
 
+## Constants
+- Define named constants for default values, timeouts, error codes, and capability lists
+- Constants file per package: `protocol/constants.go`, `instrument/constants.go`
+- Error codes: `const ErrInvalidRequest = "invalid_request"` — never bare strings in handler logic
+- Capability lists: define as a package-level slice variable
+- Tests reference constants, never duplicate the literal value
+
 ## Module Layout
 - Module root: `shatter-go/` (`go.mod`)
 - Packages: `protocol/` (types + handler), `instrument/` (AST, recorder, sym extraction)
