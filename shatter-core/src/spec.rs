@@ -5,12 +5,55 @@
 //! concrete examples, and provenance (proven vs observed). The spec can be
 //! rendered as human-readable markdown or machine-readable JSON.
 
+use std::fmt;
+use std::fs;
+use std::path::Path;
+
 use serde::{Deserialize, Serialize};
 
 use crate::equivalence::{BranchPath, EquivalenceClass, Precondition};
 use crate::execution_record::{ErrorInfo, SideEffect};
 use crate::explorer::ExplorationResult;
 use crate::invariants::ClassifiedInvariant;
+
+/// Error type for spec bundle I/O operations.
+#[derive(Debug)]
+pub enum SpecIoError {
+    /// Filesystem I/O error.
+    Io(std::io::Error),
+    /// JSON serialization or deserialization error.
+    Json(serde_json::Error),
+}
+
+impl fmt::Display for SpecIoError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(e) => write!(f, "spec I/O error: {e}"),
+            Self::Json(e) => write!(f, "spec JSON error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for SpecIoError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(e) => Some(e),
+            Self::Json(e) => Some(e),
+        }
+    }
+}
+
+impl From<std::io::Error> for SpecIoError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
+}
+
+impl From<serde_json::Error> for SpecIoError {
+    fn from(e: serde_json::Error) -> Self {
+        Self::Json(e)
+    }
+}
 
 /// Whether a property was proven by constraint solving or merely observed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -408,6 +451,28 @@ pub fn format_spec_json(spec: &FunctionSpec) -> Result<String, serde_json::Error
 /// Format a collection of per-file spec bundles as machine-readable JSON.
 pub fn format_file_spec_json(bundles: &[FileSpecBundle]) -> Result<String, serde_json::Error> {
     serde_json::to_string_pretty(bundles)
+}
+
+/// Write a [`FileSpecBundle`] to disk using atomic write (temp file + rename).
+///
+/// Creates parent directories if they don't exist. Writes to a `.json.tmp`
+/// sibling first, then renames to the final path to avoid partial reads.
+pub fn write_file_spec_bundle(bundle: &FileSpecBundle, path: &Path) -> Result<(), SpecIoError> {
+    let json = serde_json::to_string_pretty(bundle)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let tmp_path = path.with_extension("json.tmp");
+    fs::write(&tmp_path, &json)?;
+    fs::rename(&tmp_path, path)?;
+    Ok(())
+}
+
+/// Read a [`FileSpecBundle`] from disk.
+pub fn read_file_spec_bundle(path: &Path) -> Result<FileSpecBundle, SpecIoError> {
+    let contents = fs::read_to_string(path)?;
+    let bundle = serde_json::from_str(&contents)?;
+    Ok(bundle)
 }
 
 /// Badge text for provenance level.
@@ -1127,5 +1192,89 @@ mod tests {
         assert_eq!(parsed[0].file, "src/math.ts");
         assert_eq!(parsed[0].functions.len(), 1);
         assert_eq!(parsed[0].functions[0].function_name, "add");
+    }
+
+    #[test]
+    fn write_and_read_file_spec_bundle_round_trip() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let path = dir.path().join("spec.json");
+
+        let bundle = FileSpecBundle {
+            file: "src/math.ts".to_string(),
+            functions: vec![build_spec(
+                &make_exploration_result("add", 10, 2),
+                &[make_eq_class(
+                    vec![(0, true)],
+                    vec![json!(1), json!(2)],
+                    Some(json!(3)),
+                    None,
+                    vec![Precondition::AllPositive { param_index: 0 }],
+                    5,
+                )],
+                Some("src/math.ts:1".to_string()),
+                Some("abc123".to_string()),
+            )],
+        };
+
+        write_file_spec_bundle(&bundle, &path).expect("write");
+        assert!(path.exists(), "output file should exist");
+
+        // No temp file left behind
+        let tmp_path = path.with_extension("json.tmp");
+        assert!(!tmp_path.exists(), "temp file should be cleaned up");
+
+        let loaded = read_file_spec_bundle(&path).expect("read");
+        assert_eq!(bundle, loaded);
+    }
+
+    #[test]
+    fn write_file_spec_bundle_creates_parent_dirs() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let path = dir.path().join("nested").join("deep").join("spec.json");
+
+        let bundle = FileSpecBundle {
+            file: "src/lib.ts".to_string(),
+            functions: vec![],
+        };
+
+        write_file_spec_bundle(&bundle, &path).expect("write with nested dirs");
+        let loaded = read_file_spec_bundle(&path).expect("read");
+        assert_eq!(loaded.file, "src/lib.ts");
+    }
+
+    #[test]
+    fn read_file_spec_bundle_nonexistent_file() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let path = dir.path().join("does_not_exist.json");
+
+        let err = read_file_spec_bundle(&path).unwrap_err();
+        assert!(
+            matches!(err, SpecIoError::Io(ref e) if e.kind() == std::io::ErrorKind::NotFound),
+            "expected NotFound, got: {err}"
+        );
+    }
+
+    #[test]
+    fn read_file_spec_bundle_invalid_json() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let path = dir.path().join("bad.json");
+        std::fs::write(&path, "not valid json {{{").expect("write bad json");
+
+        let err = read_file_spec_bundle(&path).unwrap_err();
+        assert!(matches!(err, SpecIoError::Json(_)), "expected Json error, got: {err}");
+    }
+
+    #[test]
+    fn spec_io_error_display() {
+        let io_err = SpecIoError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "file not found",
+        ));
+        assert!(io_err.to_string().contains("spec I/O error"));
+
+        let json_err = SpecIoError::from(
+            serde_json::from_str::<FileSpecBundle>("bad").unwrap_err(),
+        );
+        assert!(json_err.to_string().contains("spec JSON error"));
     }
 }
