@@ -497,10 +497,6 @@ fn parse_target(target: &str) -> Result<Target, String> {
 
     let file = PathBuf::from(file_str);
 
-    if !file.exists() {
-        return Err(format!("file not found: '{file_str}'"));
-    }
-
     let ext = file
         .extension()
         .and_then(|e| e.to_str())
