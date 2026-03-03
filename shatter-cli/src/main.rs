@@ -94,9 +94,10 @@ impl Colors {
 #[derive(Subcommand, Debug)]
 #[allow(clippy::large_enum_variant)] // CLI command enums are parsed once, size is not a concern
 enum CliCommand {
-    /// Explore a function by analyzing its branches and generating test inputs.
+    /// Explore functions by analyzing their branches and generating test inputs.
     Explore {
-        /// Targets to explore, in <file>:<function> format.
+        /// Targets to explore: <file>:<function> for a single function, or just
+        /// <file> to explore all exported functions.
         /// The file extension determines the language frontend (.ts = TypeScript, .go = Go).
         #[arg(required = true)]
         targets: Vec<String>,
@@ -175,6 +176,22 @@ enum CliCommand {
         /// Use the concolic (Z3-backed) explorer instead of the random explorer.
         #[arg(long)]
         concolic: bool,
+
+        /// Enable the genetic algorithm explorer.
+        #[arg(long)]
+        genetic: bool,
+
+        /// Population size for the genetic algorithm (default: 50).
+        #[arg(long)]
+        genetic_population: Option<u32>,
+
+        /// Maximum generations for the genetic algorithm (default: 100).
+        #[arg(long)]
+        genetic_generations: Option<u32>,
+
+        /// Timeout in seconds for the genetic algorithm (default: 300).
+        #[arg(long)]
+        genetic_timeout: Option<u32>,
     },
 
     /// Scan a directory for source files, analyze and explore all functions in
@@ -293,6 +310,22 @@ enum CliCommand {
         /// Default: 30s.
         #[arg(long, default_value_t = 30)]
         build_timeout: u64,
+
+        /// Enable the genetic algorithm explorer.
+        #[arg(long)]
+        genetic: bool,
+
+        /// Population size for the genetic algorithm (default: 50).
+        #[arg(long)]
+        genetic_population: Option<u32>,
+
+        /// Maximum generations for the genetic algorithm (default: 100).
+        #[arg(long)]
+        genetic_generations: Option<u32>,
+
+        /// Timeout in seconds for the genetic algorithm (default: 300).
+        #[arg(long)]
+        genetic_timeout: Option<u32>,
     },
 
     /// Export generated tests from behavior maps produced by exploration.
@@ -421,7 +454,7 @@ enum CliCommand {
     },
 }
 
-/// A parsed `<file>:<function>` target.
+/// A parsed target: `<file>:<function>` for a single function, or `<file>` for all.
 #[derive(Debug, Clone, PartialEq)]
 struct Target {
     file: PathBuf,
@@ -453,7 +486,7 @@ impl Language {
     }
 }
 
-/// Parse a `<file>:<function>` target string.
+/// Parse a target string: `<file>:<function>` or just `<file>`.
 ///
 /// If there is no colon, the entire string is treated as a file path (analyze all functions).
 fn parse_target(target: &str) -> Result<Target, String> {
@@ -463,6 +496,11 @@ fn parse_target(target: &str) -> Result<Target, String> {
     };
 
     let file = PathBuf::from(file_str);
+
+    if !file.exists() {
+        return Err(format!("file not found: '{file_str}'"));
+    }
+
     let ext = file
         .extension()
         .and_then(|e| e.to_str())
@@ -2204,6 +2242,10 @@ async fn main() -> ExitCode {
             invariants,
             no_boundary_values: _,
             concolic,
+            genetic: _,
+            genetic_population: _,
+            genetic_generations: _,
+            genetic_timeout: _,
         } => {
             run_explore(
                 &targets,
@@ -2257,6 +2299,10 @@ async fn main() -> ExitCode {
             exec_timeout,
             build_timeout,
             stratum,
+            genetic: _,
+            genetic_population: _,
+            genetic_generations: _,
+            genetic_timeout: _,
         } => {
             run_scan(
                 &directory,
@@ -3387,6 +3433,82 @@ mod tests {
                 assert!(output.is_none());
             }
             _ => panic!("expected Explore command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_explore_with_genetic_flag() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "explore",
+            "--genetic",
+            "test.ts:myFunc",
+        ]);
+        match cli.command {
+            CliCommand::Explore { genetic, genetic_population, genetic_generations, genetic_timeout, .. } => {
+                assert!(genetic);
+                assert!(genetic_population.is_none());
+                assert!(genetic_generations.is_none());
+                assert!(genetic_timeout.is_none());
+            }
+            _ => panic!("expected Explore command"),
+        }
+    }
+
+    #[test]
+    fn cli_genetic_defaults_to_false() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "explore",
+            "test.ts:myFunc",
+        ]);
+        match cli.command {
+            CliCommand::Explore { genetic, .. } => {
+                assert!(!genetic);
+            }
+            _ => panic!("expected Explore command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_explore_with_genetic_options() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "explore",
+            "--genetic",
+            "--genetic-population", "200",
+            "--genetic-generations", "500",
+            "--genetic-timeout", "600",
+            "test.ts:myFunc",
+        ]);
+        match cli.command {
+            CliCommand::Explore { genetic, genetic_population, genetic_generations, genetic_timeout, .. } => {
+                assert!(genetic);
+                assert_eq!(genetic_population, Some(200));
+                assert_eq!(genetic_generations, Some(500));
+                assert_eq!(genetic_timeout, Some(600));
+            }
+            _ => panic!("expected Explore command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_scan_with_genetic_flag() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "scan",
+            "--genetic",
+            "--genetic-population", "100",
+            "test_dir",
+        ]);
+        match cli.command {
+            CliCommand::Scan { genetic, genetic_population, genetic_generations, genetic_timeout, .. } => {
+                assert!(genetic);
+                assert_eq!(genetic_population, Some(100));
+                assert!(genetic_generations.is_none());
+                assert!(genetic_timeout.is_none());
+            }
+            _ => panic!("expected Scan command"),
         }
     }
 }
