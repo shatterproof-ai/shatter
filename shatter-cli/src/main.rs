@@ -478,6 +478,16 @@ fn parse_target(target: &str) -> Result<Target, String> {
     })
 }
 
+/// Validate that all parsed targets refer to existing files.
+fn validate_targets(targets: &[Target]) -> Result<(), String> {
+    for target in targets {
+        if !target.file.exists() {
+            return Err(format!("file not found: '{}'", target.file.display()));
+        }
+    }
+    Ok(())
+}
+
 /// Build a `FrontendConfig` for the given language, with log level propagation.
 fn frontend_config(
     language: Language,
@@ -584,6 +594,7 @@ async fn run_explore(
         .iter()
         .map(|t| parse_target(t))
         .collect::<Result<Vec<_>, _>>()?;
+    validate_targets(&parsed)?;
 
     let req_timeout = Duration::from_secs(request_timeout);
 
@@ -1557,6 +1568,7 @@ async fn run_export_tests(
         .iter()
         .map(|t| parse_target(t))
         .collect::<Result<Vec<_>, _>>()?;
+    validate_targets(&parsed)?;
 
     let req_timeout = Duration::from_secs(request_timeout);
     let mut all_output = String::new();
@@ -2400,11 +2412,27 @@ mod tests {
     }
 
     #[test]
-    fn parse_target_go_file() {
+    fn parse_target_go_file_and_function() {
         let target = parse_target("pkg/math.go:Add").unwrap();
         assert_eq!(target.file, PathBuf::from("pkg/math.go"));
         assert_eq!(target.function.as_deref(), Some("Add"));
         assert_eq!(target.language, Language::Go);
+    }
+
+    #[test]
+    fn parse_target_go_file_only() {
+        let target = parse_target("pkg/math.go").unwrap();
+        assert_eq!(target.file, PathBuf::from("pkg/math.go"));
+        assert!(target.function.is_none());
+        assert_eq!(target.language, Language::Go);
+    }
+
+    #[test]
+    fn parse_target_trailing_colon_treated_as_file_only() {
+        // A trailing colon with empty function name falls through to the file-only path.
+        // "src/app.ts:" becomes the file path; OS sees ".ts:" as extension → unsupported.
+        let err = parse_target("src/app.ts:").unwrap_err();
+        assert!(err.contains("unsupported file extension"), "expected extension error, got: {err}");
     }
 
     #[test]
@@ -2421,10 +2449,33 @@ mod tests {
 
     #[test]
     fn parse_target_path_with_colons_uses_last_colon() {
-        // Windows-style paths or weird filenames: rsplit_once picks the last colon
         let target = parse_target("examples/typescript/src/01-arithmetic.ts:classifyNumber").unwrap();
         assert_eq!(target.file, PathBuf::from("examples/typescript/src/01-arithmetic.ts"));
         assert_eq!(target.function.as_deref(), Some("classifyNumber"));
+    }
+
+    #[test]
+    fn validate_targets_rejects_nonexistent_file() {
+        let targets = vec![Target {
+            file: PathBuf::from("nonexistent.ts"),
+            function: None,
+            language: Language::TypeScript,
+        }];
+        let err = validate_targets(&targets).unwrap_err();
+        assert!(err.contains("file not found"), "expected 'file not found', got: {err}");
+    }
+
+    #[test]
+    fn validate_targets_accepts_existing_file() {
+        let tmp = std::env::temp_dir().join("shatter_test_validate.ts");
+        std::fs::write(&tmp, "").unwrap();
+        let targets = vec![Target {
+            file: tmp.clone(),
+            function: None,
+            language: Language::TypeScript,
+        }];
+        assert!(validate_targets(&targets).is_ok());
+        std::fs::remove_file(&tmp).ok();
     }
 
     #[test]
