@@ -92,6 +92,7 @@ impl Colors {
 }
 
 #[derive(Subcommand, Debug)]
+#[allow(clippy::large_enum_variant)] // CLI command enums are parsed once, size is not a concern
 enum CliCommand {
     /// Explore a function by analyzing its branches and generating test inputs.
     Explore {
@@ -250,6 +251,12 @@ enum CliCommand {
         /// Default: hash of (directory + git HEAD).
         #[arg(long)]
         seed: Option<u64>,
+
+        /// Progressive batch index for core sample.
+        /// "0" (first batch), "next" (auto-detect), "0-2" (run batches 0 through 2).
+        /// Requires --core-sample.
+        #[arg(long)]
+        batch: Option<String>,
 
         /// Stratum filter: explore only specific call graph layers.
         /// Examples: "0" (leaves), "0..3", "-2..-0" (top 3 layers), "3.."
@@ -765,6 +772,9 @@ async fn run_explore(
                 Ok(result) => {
                     let wall_time = func_start.elapsed();
 
+                    // Run the Analyze stage to get coverage metrics and eq classes.
+                    let analyze_output = shatter_core::pipeline::analyze(&result, func);
+
                     if log_level >= LogLevel::Info {
                         if log_level >= LogLevel::Trace {
                             eprint!("{}", explorer::format_exploration_report_verbose(&result));
@@ -773,7 +783,7 @@ async fn run_explore(
                                 location: Some(format!("{file_str}:{}", func.start_line)),
                                 show_perf,
                                 wall_time: Some(wall_time),
-                                coverage_metrics: None,
+                                coverage_metrics: Some(analyze_output.coverage_metrics.clone()),
                             };
                             eprint!("{}", explorer::format_exploration_report(&result, &report_opts));
                         }
@@ -783,17 +793,16 @@ async fn run_explore(
                         eprintln!();
                     }
 
-                    // Spec output: build equivalence classes and spec
+                    // Spec output: use eq classes from analyze stage
                     if show_spec || detect_invariants {
-                        let eq_classes =
-                            shatter_core::equivalence::group_into_classes(&result.raw_results);
+                        let eq_classes = &analyze_output.eq_classes;
                         let location = Some(format!("{file_str}:{}", func.start_line));
                         let spec = if detect_invariants {
                             shatter_core::spec::build_spec_with_invariants(
-                                &result, &eq_classes, location, None,
+                                &result, eq_classes, location, None,
                             )
                         } else {
-                            shatter_core::spec::build_spec(&result, &eq_classes, location, None)
+                            shatter_core::spec::build_spec(&result, eq_classes, location, None)
                         };
                         if output_path.is_some() {
                             // Collect for file-level bundle output
@@ -896,6 +905,7 @@ async fn run_scan(
     mock_config: Option<&Path>,
     core_sample_spec: Option<&str>,
     core_sample_seed: Option<u64>,
+    batch_spec: Option<&str>,
     stratum_spec: Option<&str>,
     log_level: LogLevel,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -1086,7 +1096,7 @@ async fn run_scan(
     }
 
     // Apply core sample selection if --core-sample is set.
-    if let Some(spec) = core_sample_spec {
+    let sampling_context = if let Some(spec) = core_sample_spec {
         let budget = shatter_core::core_sample::parse_sample_budget(spec)
             .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
         let cg = CallGraph::from_registry(&registry);
@@ -1103,10 +1113,60 @@ async fn run_scan(
             .filter(|e| all_analyses.iter().any(|a| a.name == e.name))
             .cloned()
             .collect();
-        let result = shatter_core::core_sample::select_core_sample(&entries, &cg, &cs_config);
+        // Select using batch mode or standard core sample.
+        let result = if let Some(batch_str) = batch_spec {
+            let parsed_batch = shatter_core::core_sample::parse_batch_spec(batch_str)
+                .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+            let batch_index = match parsed_batch {
+                shatter_core::core_sample::BatchSpec::Single(idx) => idx,
+                shatter_core::core_sample::BatchSpec::Next => {
+                    let cache_for_detect = if no_cache {
+                        None
+                    } else {
+                        let dir = match cache_dir {
+                            Some(d) => d.to_path_buf(),
+                            None => shatter_core::cache::BehaviorMapCache::default_dir(
+                                &std::env::current_dir()?,
+                            ),
+                        };
+                        shatter_core::cache::BehaviorMapCache::new(dir).ok()
+                    };
+                    shatter_core::core_sample::detect_next_batch(
+                        &entries,
+                        &cs_config,
+                        cache_for_detect.as_ref(),
+                    )
+                }
+                shatter_core::core_sample::BatchSpec::Range(start, end) => {
+                    if log_level >= LogLevel::Info {
+                        eprintln!(
+                            "Batch range {start}-{end}: running batch {start} \
+                             (run subsequent batches with --batch {}..{})",
+                            start + 1, end,
+                        );
+                    }
+                    start
+                }
+            };
+            if log_level >= LogLevel::Info {
+                eprintln!("Using batch {batch_index} of core sample");
+            }
+            shatter_core::core_sample::select_batch(&entries, &cg, &cs_config, batch_index)
+        } else {
+            shatter_core::core_sample::select_core_sample(&entries, &cg, &cs_config)
+        };
         let included = result.all_included();
         let before = all_analyses.len();
-        all_analyses.retain(|a| included.contains(&a.name));
+        // included contains qualified names (file_path::name); match using file_map.
+        all_analyses.retain(|a| {
+            if let Some(file) = file_map.get(&a.name) {
+                let qn = format!("{}::{}", file, a.name);
+                included.contains(&qn)
+            } else {
+                // No file mapping — fall back to bare name match.
+                included.contains(&a.name)
+            }
+        });
         if log_level >= LogLevel::Info {
             eprintln!(
                 "Core sample: selected {} of {} function(s) ({} sampled + {} dependency closure)",
@@ -1116,7 +1176,18 @@ async fn run_scan(
                 result.dependency_closure.len(),
             );
         }
-    }
+        Some(scan_orchestrator::SamplingContext {
+            total_functions: before,
+            sampled_functions: result.selected.len(),
+            closure_functions: result.dependency_closure.len(),
+            strata_summary: result.strata_summary,
+        })
+    } else {
+        if batch_spec.is_some() {
+            eprintln!("Warning: --batch requires --core-sample; ignoring --batch");
+        }
+        None
+    };
 
     if all_analyses.is_empty() {
         eprintln!("No functions found to scan.");
@@ -1239,7 +1310,8 @@ async fn run_scan(
     }
 
     match scan_orchestrator::parallel_scan(&fe_config, &all_analyses, &scan_config).await {
-        Ok(result) => {
+        Ok(mut result) => {
+            result.sampling = sampling_context;
             let elapsed = scan_start.elapsed();
 
             for (i, fr) in result.function_results.iter().enumerate() {
@@ -2129,6 +2201,7 @@ async fn main() -> ExitCode {
             progress,
             core_sample,
             seed,
+            batch,
             max_iterations,
             cache_dir,
             no_cache,
@@ -2162,6 +2235,7 @@ async fn main() -> ExitCode {
                 mock_config.as_deref(),
                 core_sample.as_deref(),
                 seed,
+                batch.as_deref(),
                 stratum.as_deref(),
                 log_level,
             )

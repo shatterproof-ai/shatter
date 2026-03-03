@@ -707,6 +707,7 @@ mod tests {
                 },
             ],
             raw_results: vec![],
+            discoveries: vec![],
         };
 
         let map = BehaviorMap::from_exploration_result("classify", &result);
@@ -1311,6 +1312,7 @@ mod tests {
                 is_new_path: true,
             }],
             raw_results: vec![(vec![json!(5)], raw_result)],
+            discoveries: vec![],
         };
 
         let map = BehaviorMap::from_exploration_result("classify", &result);

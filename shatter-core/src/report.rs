@@ -193,7 +193,7 @@ fn build_function_report(result: &FunctionResult, file_path: &str) -> FunctionRe
         iterations: exploration.iterations,
         lines_covered: exploration.lines_covered,
         total_lines: exploration.total_lines,
-        mocks_used: result.mocks_used.clone(),
+        mocks_used: result.mocks_used.iter().map(|m| m.name.clone()).collect(),
     }
 }
 
@@ -204,7 +204,7 @@ fn build_dependency_edges(function_results: &[FunctionResult]) -> Vec<Dependency
         for mock in &result.mocks_used {
             edges.push(DependencyEdge {
                 caller: result.function_name.clone(),
-                callee: mock.clone(),
+                callee: mock.name.clone(),
             });
         }
     }
@@ -693,6 +693,11 @@ mod tests {
         total_lines: u32,
         mocks: Vec<String>,
     ) -> FunctionResult {
+        use crate::scan_orchestrator::{MockSource, MockUsage};
+        let mocks: Vec<MockUsage> = mocks
+            .into_iter()
+            .map(|name| MockUsage { name, source: MockSource::CachedBehaviorMap })
+            .collect();
         let new_path_executions: Vec<ExecutionSummary> = (0..unique_paths)
             .map(|i| ExecutionSummary {
                 inputs: vec![serde_json::json!(i)],
@@ -725,6 +730,7 @@ mod tests {
                 total_lines,
                 new_path_executions,
                 raw_results: vec![],
+                discoveries: vec![],
             },
             behavior_map: BehaviorMap {
                 function_id: name.to_string(),
@@ -733,6 +739,7 @@ mod tests {
             },
             behavior_coverage: vec![],
             mocks_used: mocks,
+            coverage_metrics: Default::default(),
         }
     }
 
@@ -745,7 +752,7 @@ mod tests {
             ],
             test_order: vec!["leaf".into(), "caller".into()],
             skipped: vec![],
-            workers_used: 2,
+            workers_used: 2, sampling: None,
         };
 
         let mut file_map = HashMap::new();
@@ -796,7 +803,7 @@ mod tests {
                 function_name: "slow".to_string(),
                 reason: "timed out after 30s".to_string(),
             }],
-            workers_used: 1,
+            workers_used: 1, sampling: None,
         };
 
         let file_map = HashMap::new();
@@ -816,7 +823,7 @@ mod tests {
             function_results: vec![],
             test_order: vec![],
             skipped: vec![],
-            workers_used: 1,
+            workers_used: 1, sampling: None,
         };
 
         let file_map = HashMap::new();
@@ -838,7 +845,7 @@ mod tests {
             function_results: vec![make_function_result("f", 10, 2, 7, 10, vec![])],
             test_order: vec!["f".into()],
             skipped: vec![],
-            workers_used: 1,
+            workers_used: 1, sampling: None,
         };
 
         let file_map = HashMap::new();
@@ -854,7 +861,7 @@ mod tests {
             function_results: vec![make_function_result("f", 10, 1, 0, 0, vec![])],
             test_order: vec!["f".into()],
             skipped: vec![],
-            workers_used: 1,
+            workers_used: 1, sampling: None,
         };
 
         let file_map = HashMap::new();
@@ -875,7 +882,7 @@ mod tests {
                 function_name: "f3".to_string(),
                 reason: "error: boom".to_string(),
             }],
-            workers_used: 2,
+            workers_used: 2, sampling: None,
         };
 
         let mut file_map = HashMap::new();
@@ -894,7 +901,7 @@ mod tests {
             function_results: vec![make_function_result("f", 10, 2, 5, 10, vec![])],
             test_order: vec!["f".into()],
             skipped: vec![],
-            workers_used: 1,
+            workers_used: 1, sampling: None,
         };
 
         let file_map = HashMap::new();
@@ -994,7 +1001,7 @@ mod tests {
             function_results: vec![func_result],
             test_order: vec!["risky".into()],
             skipped: vec![],
-            workers_used: 1,
+            workers_used: 1, sampling: None,
         };
 
         let file_map = HashMap::new();
@@ -1027,6 +1034,7 @@ mod tests {
             ],
             test_order: vec!["a".into(), "b".into()],
             skipped_functions: vec![],
+            sampling: None,
         };
 
         let mut file_map = HashMap::new();
@@ -1053,7 +1061,7 @@ mod tests {
             ],
             test_order: vec!["a".into(), "b".into()],
             skipped: vec![],
-            workers_used: 1,
+            workers_used: 1, sampling: None,
         };
 
         let file_map = HashMap::new();
@@ -1075,7 +1083,7 @@ mod tests {
             ],
             test_order: vec!["leaf".into(), "caller".into()],
             skipped: vec![],
-            workers_used: 2,
+            workers_used: 2, sampling: None,
         };
 
         let mut file_map = HashMap::new();

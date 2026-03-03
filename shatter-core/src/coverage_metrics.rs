@@ -35,7 +35,7 @@ pub struct MethodPercentages {
 }
 
 /// Coverage metrics summarizing how effective the concolic approach was.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CoverageMetrics {
     /// Total number of branch points in the function.
     pub total_branches: usize,

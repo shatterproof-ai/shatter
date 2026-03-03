@@ -13,6 +13,7 @@
 use std::collections::{BinaryHeap, HashSet};
 use std::hash::{Hash, Hasher};
 
+use crate::coverage_metrics::DiscoveryMethod;
 use crate::execution_record::SymConstraint;
 use crate::frontend::{Frontend, FrontendError};
 use crate::protocol::{Command, ExecuteResult, ResponseResult};
@@ -163,6 +164,10 @@ pub struct ExploreResult {
     pub fuzz_generated: usize,
     /// Why the exploration loop stopped.
     pub termination_reason: TerminationReason,
+    /// Raw execution results paired with inputs for pipeline composability.
+    pub raw_results: Vec<(Vec<serde_json::Value>, ExecuteResult)>,
+    /// Per-branch discovery attribution with method (Z3, Random, UserProvided).
+    pub discoveries: Vec<(u32, DiscoveryMethod)>,
 }
 
 /// Errors that can occur during concolic exploration.
@@ -290,6 +295,9 @@ pub async fn explore(
     let mut worklist = BinaryHeap::new();
     let mut covered_paths: HashSet<u64> = HashSet::new();
     let mut executions = Vec::new();
+    let mut raw_results: Vec<(Vec<serde_json::Value>, ExecuteResult)> = Vec::new();
+    let mut seen_branch_ids: HashSet<u32> = HashSet::new();
+    let mut discoveries: Vec<(u32, DiscoveryMethod)> = Vec::new();
     let mut total_executions: usize = 0;
     let mut z3_generated: usize = 0;
     let mut fuzz_generated: usize = 0;
@@ -348,6 +356,9 @@ pub async fn explore(
             _ => continue,
         };
 
+        // Record raw result for pipeline composability.
+        raw_results.push((entry.inputs.clone(), exec_result.clone()));
+
         let path_id = hash_branch_path(&exec_result.branch_path);
 
         if !covered_paths.insert(path_id) {
@@ -358,6 +369,18 @@ pub async fn explore(
 
         // New path discovered — reset plateau counter.
         plateau_counter = 0;
+
+        // Track per-branch discovery attribution from input source.
+        let method = match entry.source {
+            InputSource::Z3Solved => DiscoveryMethod::Z3,
+            InputSource::UserProvided => DiscoveryMethod::UserProvided,
+            InputSource::Seed | InputSource::Fuzzed => DiscoveryMethod::Random,
+        };
+        for decision in &exec_result.branch_path {
+            if seen_branch_ids.insert(decision.branch_id) {
+                discoveries.push((decision.branch_id, method));
+            }
+        }
 
         // Extract symbolic constraints from the branch path.
         let sym_constraints = extract_sym_constraints(&exec_result);
@@ -418,6 +441,8 @@ pub async fn explore(
         z3_generated,
         fuzz_generated,
         termination_reason,
+        raw_results,
+        discoveries,
     })
 }
 

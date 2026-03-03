@@ -12,6 +12,7 @@ use rand::rngs::StdRng;
 use rand::SeedableRng;
 
 use crate::config::SetupMode;
+use crate::coverage_metrics::DiscoveryMethod;
 use crate::frontend::{Frontend, FrontendError};
 use crate::input_gen::{
     generate_inputs_with_custom, generate_random_inputs, literals_to_candidate_inputs,
@@ -75,7 +76,13 @@ pub struct ExplorationResult {
     pub new_path_executions: Vec<ExecutionSummary>,
     /// Raw execution results paired with their inputs, for building BehaviorMaps.
     pub raw_results: Vec<(Vec<serde_json::Value>, ExecuteResult)>,
+    /// Per-branch discovery attribution: which branch_id was first found by which method.
+    pub discoveries: Vec<(u32, DiscoveryMethod)>,
 }
+
+/// Type alias for pipeline composability. `ObserveResult` is the output of
+/// the Observe stage (random exploration).
+pub type ObserveResult = ExplorationResult;
 
 /// Errors that can occur during exploration.
 #[derive(Debug, thiserror::Error)]
@@ -236,6 +243,8 @@ pub async fn explore_function(
     let mut raw_results: Vec<(Vec<serde_json::Value>, ExecuteResult)> = Vec::new();
     let mut iterations: u32 = 0;
     let mut path_counts: HashMap<u64, u32> = HashMap::new();
+    let mut seen_branch_ids: HashSet<u32> = HashSet::new();
+    let mut discoveries: Vec<(u32, DiscoveryMethod)> = Vec::new();
 
     // --- Literal-derived seed inputs ---
     // Execute extracted literals first to cover magic-value branches before random exploration.
@@ -306,6 +315,13 @@ pub async fn explore_function(
         *path_counts.entry(hash).or_insert(0) += 1;
         let is_new = seen_paths.insert(hash);
 
+        // Track per-branch discovery attribution.
+        for decision in &exec_result.branch_path {
+            if seen_branch_ids.insert(decision.branch_id) {
+                discoveries.push((decision.branch_id, DiscoveryMethod::Random));
+            }
+        }
+
         if is_new {
             new_path_executions.push(ExecutionSummary {
                 inputs: inputs.clone(),
@@ -337,6 +353,7 @@ pub async fn explore_function(
         total_lines,
         new_path_executions,
         raw_results,
+        discoveries,
     })
 }
 
@@ -606,7 +623,7 @@ mod tests {
                     thrown_error: None, lines_executed: vec![1, 4, 5], is_new_path: true,
                 },
             ],
-            raw_results: vec![],
+            raw_results: vec![], discoveries: vec![],
         };
         let report = format_exploration_report(&result, &ReportOptions::default());
         assert!(report.contains("classify"));
@@ -628,7 +645,7 @@ mod tests {
                 return_value: Some(serde_json::json!(5)),
                 thrown_error: None, lines_executed: vec![1, 2, 3], is_new_path: true,
             }],
-            raw_results: vec![],
+            raw_results: vec![], discoveries: vec![],
         };
         let report = format_exploration_report(&result, &ReportOptions {
             location: Some("src/math.ts:10".into()), ..Default::default()
@@ -647,7 +664,7 @@ mod tests {
                 thrown_error: Some("TypeError: cannot read null".into()),
                 lines_executed: vec![], is_new_path: true,
             }],
-            raw_results: vec![],
+            raw_results: vec![], discoveries: vec![],
         };
         let report = format_exploration_report(&result, &ReportOptions::default());
         assert!(report.contains("throws"));
@@ -658,7 +675,7 @@ mod tests {
     fn format_exploration_report_with_perf() {
         let result = ExplorationResult {
             function_name: "fast".into(), iterations: 10, unique_paths: 1,
-            lines_covered: 0, total_lines: 0, new_path_executions: vec![], raw_results: vec![],
+            lines_covered: 0, total_lines: 0, new_path_executions: vec![], raw_results: vec![], discoveries: vec![],
         };
         let report = format_exploration_report(&result, &ReportOptions {
             show_perf: true, wall_time: Some(std::time::Duration::from_millis(42)),
@@ -673,7 +690,7 @@ mod tests {
     fn format_exploration_report_includes_coverage_metrics() {
         let result = ExplorationResult {
             function_name: "analyze".into(), iterations: 20, unique_paths: 3,
-            lines_covered: 8, total_lines: 10, new_path_executions: vec![], raw_results: vec![],
+            lines_covered: 8, total_lines: 10, new_path_executions: vec![], raw_results: vec![], discoveries: vec![],
         };
         let metrics = crate::coverage_metrics::CoverageMetrics {
             total_branches: 4, z3_solved: 2, random_found: 1, user_provided: 0,
@@ -698,7 +715,7 @@ mod tests {
                 return_value: Some(serde_json::json!("positive-odd")),
                 thrown_error: None, lines_executed: vec![1, 2, 3], is_new_path: true,
             }],
-            raw_results: vec![],
+            raw_results: vec![], discoveries: vec![],
         };
         let report = format_exploration_report_verbose(&result);
         assert!(report.contains("10 iteration(s)"));

@@ -57,6 +57,37 @@ pub struct ScanConfig {
     pub mock_overrides: HashMap<String, crate::auto_mock::MockOverride>,
 }
 
+/// Context about sampling mode, for report headers.
+#[derive(Debug, Clone, Default)]
+pub struct SamplingContext {
+    /// Total functions before sampling.
+    pub total_functions: usize,
+    /// Functions selected by core sample (0 if no sampling).
+    pub sampled_functions: usize,
+    /// Functions added via dependency closure.
+    pub closure_functions: usize,
+    /// Per-stratum breakdown.
+    pub strata_summary: Vec<crate::core_sample::StratumInfo>,
+}
+
+/// Source of a mock used during exploration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MockSource {
+    /// Mock derived from a previously computed behavior map.
+    CachedBehaviorMap,
+    /// Auto-generated type-aware stub (no behavior map available).
+    TypeAwareStub,
+}
+
+/// A mock that was used during function exploration.
+#[derive(Debug, Clone)]
+pub struct MockUsage {
+    /// Symbol name of the mocked dependency.
+    pub name: String,
+    /// How the mock was sourced.
+    pub source: MockSource,
+}
+
 /// Result of exploring a single function during a scan.
 #[derive(Debug)]
 pub struct FunctionResult {
@@ -68,8 +99,10 @@ pub struct FunctionResult {
     pub behavior_map: BehaviorMap,
     /// Coverage of callee behaviors exercised by this function.
     pub behavior_coverage: Vec<BehaviorCoverage>,
-    /// Names of functions that were mocked during exploration.
-    pub mocks_used: Vec<String>,
+    /// Mocks used during exploration, with source attribution.
+    pub mocks_used: Vec<MockUsage>,
+    /// Branch coverage metrics from the analyze stage.
+    pub coverage_metrics: crate::coverage_metrics::CoverageMetrics,
 }
 
 /// Result of a full scan across multiple functions.
@@ -81,6 +114,8 @@ pub struct ScanResult {
     pub test_order: Vec<String>,
     /// Functions that were skipped before exploration (e.g. unexecutable parameter types).
     pub skipped_functions: Vec<SkippedFunction>,
+    /// Sampling context (populated when --core-sample is active).
+    pub sampling: Option<SamplingContext>,
 }
 
 /// Errors that can occur during a scan.
@@ -100,7 +135,7 @@ pub enum ScanError {
 #[derive(Debug)]
 enum FunctionOutcome {
     /// Exploration succeeded.
-    Success(FunctionResult),
+    Success(Box<FunctionResult>),
     /// Exploration timed out.
     Timeout {
         function_name: String,
@@ -189,14 +224,25 @@ pub async fn scan(
     let call_graph = CallGraph::from_analyses(analyses);
     let order_entries = call_graph.test_order()?;
 
-    // Flatten test order entries into function names for iteration.
-    // MutualGroup entries are flattened in order (handled as a group is future work).
-    let test_order: Vec<String> = order_entries
-        .iter()
-        .flat_map(|entry| match entry {
-            TestOrderEntry::Single { function_id, .. } => vec![function_id.clone()],
-            TestOrderEntry::MutualGroup { function_ids } => function_ids.clone(),
-        })
+    // Flatten test order entries into layers for stratum filtering.
+    let all_layers = build_layers(&order_entries, &call_graph);
+
+    // Apply stratum filter: only explore functions in selected layers.
+    let filtered_layers: Vec<Vec<String>> = if let Some(ref spec) = config.stratum {
+        let max_layer = if all_layers.is_empty() { 0 } else { all_layers.len() - 1 };
+        let range = crate::stratum::resolve_range(spec, max_layer)?;
+        crate::stratum::filter_layers(&all_layers, &range)
+            .into_iter()
+            .map(|(_, funcs)| funcs.clone())
+            .collect()
+    } else {
+        all_layers
+    };
+
+    // Flatten filtered layers into function names for iteration.
+    let test_order: Vec<String> = filtered_layers
+        .into_iter()
+        .flat_map(|layer| layer.into_iter())
         .collect();
 
     let analysis_map: HashMap<&str, &FunctionAnalysis> =
@@ -241,12 +287,15 @@ pub async fn scan(
         // Build mocks from callees that have already been tested.
         let callees = call_graph.callees(func_name);
         let mut mocks: Vec<MockConfig> = Vec::new();
-        let mut mocks_used: Vec<String> = Vec::new();
+        let mut mocks_used: Vec<MockUsage> = Vec::new();
 
         for callee in &callees {
             if let Some(bmap) = behavior_maps.get(callee) {
                 mocks.push(mock_config_from_behavior_map(bmap));
-                mocks_used.push(callee.clone());
+                mocks_used.push(MockUsage {
+                    name: callee.clone(),
+                    source: MockSource::CachedBehaviorMap,
+                });
             }
         }
 
@@ -258,10 +307,13 @@ pub async fn scan(
             &mocks,
         );
         for am in &auto_mocks {
-            mocks_used.push(am.symbol.clone());
+            mocks_used.push(MockUsage {
+                name: am.symbol.clone(),
+                source: MockSource::TypeAwareStub,
+            });
         }
         mocks.extend(auto_mocks);
-        mocks_used.sort();
+        mocks_used.sort_by(|a, b| a.name.cmp(&b.name));
 
         let file = config
             .file_map
@@ -282,22 +334,21 @@ pub async fn scan(
 
         let exploration = explorer::explore_function(frontend, analysis, &explore_config).await?;
 
-        // Build ExecutionRecords from raw results for BehaviorMap construction.
+        // Run the Analyze stage to produce behavior map and coverage metrics.
+        let mut analyze_out = crate::pipeline::analyze(&exploration, analysis);
+        analyze_out.behavior_map.fingerprint = current_fingerprint;
+
+        // Persist the behavior map to cache for reuse across runs.
+        if let Some(ref cache) = config.cache {
+            let _ = cache.store(&analyze_out.behavior_map);
+        }
+
+        // Compute behavior coverage for each callee (cross-function concern).
         let records: Vec<ExecutionRecord> = exploration
             .raw_results
             .iter()
             .map(|(inputs, result)| execution_record_from_result(func_name, inputs, result))
             .collect();
-
-        let mut behavior_map = BehaviorMap::from_records(func_name, &records);
-        behavior_map.fingerprint = current_fingerprint;
-
-        // Persist the behavior map to cache for reuse across runs.
-        if let Some(ref cache) = config.cache {
-            let _ = cache.store(&behavior_map);
-        }
-
-        // Compute behavior coverage for each callee.
         let mut behavior_coverage: Vec<BehaviorCoverage> = Vec::new();
         for callee in &callees {
             if let Some(callee_map) = behavior_maps.get(callee) {
@@ -306,14 +357,15 @@ pub async fn scan(
             }
         }
 
-        behavior_maps.insert(func_name.clone(), behavior_map.clone());
+        behavior_maps.insert(func_name.clone(), analyze_out.behavior_map.clone());
 
         function_results.push(FunctionResult {
             function_name: func_name.clone(),
             exploration,
-            behavior_map,
+            behavior_map: analyze_out.behavior_map,
             behavior_coverage,
             mocks_used,
+            coverage_metrics: analyze_out.coverage_metrics,
         });
     }
 
@@ -321,6 +373,7 @@ pub async fn scan(
         function_results,
         test_order,
         skipped_functions,
+        sampling: None,
     })
 }
 
@@ -335,6 +388,8 @@ pub struct ParallelScanResult {
     pub skipped: Vec<SkippedFunction>,
     /// Number of worker subprocesses used.
     pub workers_used: usize,
+    /// Sampling context (populated when --core-sample is active).
+    pub sampling: Option<SamplingContext>,
 }
 
 /// A channel-based pool of frontend worker subprocesses.
@@ -484,11 +539,14 @@ pub async fn parallel_scan(
             let callees = call_graph.callees(func_name);
             let maps = behavior_maps.lock().await;
             let mut mocks: Vec<MockConfig> = Vec::new();
-            let mut mocks_used: Vec<String> = Vec::new();
+            let mut mocks_used: Vec<MockUsage> = Vec::new();
             for callee in &callees {
                 if let Some(bmap) = maps.get(callee) {
                     mocks.push(mock_config_from_behavior_map(bmap));
-                    mocks_used.push(callee.clone());
+                    mocks_used.push(MockUsage {
+                        name: callee.clone(),
+                        source: MockSource::CachedBehaviorMap,
+                    });
                 }
             }
             drop(maps);
@@ -501,10 +559,13 @@ pub async fn parallel_scan(
                 &mocks,
             );
             for am in &auto_mocks {
-                mocks_used.push(am.symbol.clone());
+                mocks_used.push(MockUsage {
+                    name: am.symbol.clone(),
+                    source: MockSource::TypeAwareStub,
+                });
             }
             mocks.extend(auto_mocks);
-            mocks_used.sort();
+            mocks_used.sort_by(|a, b| a.name.cmp(&b.name));
 
             let file = config
                 .file_map
@@ -569,7 +630,7 @@ pub async fn parallel_scan(
                             let _ = cache.store(&func_result.behavior_map);
                         }
 
-                        FunctionOutcome::Success(func_result)
+                        FunctionOutcome::Success(Box::new(func_result))
                     }
                     Ok(Err(e)) => FunctionOutcome::Error {
                         function_name: func_name,
@@ -589,7 +650,7 @@ pub async fn parallel_scan(
         for handle in handles {
             match handle.await {
                 Ok(FunctionOutcome::Success(result)) => {
-                    all_results.push(result);
+                    all_results.push(*result);
                 }
                 Ok(FunctionOutcome::Timeout { function_name, limit }) => {
                     skipped.push(SkippedFunction {
@@ -625,6 +686,7 @@ pub async fn parallel_scan(
         test_order,
         skipped,
         workers_used: effective_parallelism,
+        sampling: None,
     })
 }
 
@@ -691,24 +753,23 @@ async fn explore_single_function(
     func_name: &str,
     analysis: &FunctionAnalysis,
     explore_config: &ExploreConfig,
-    mocks_used: &[String],
+    mocks_used: &[MockUsage],
     callees: &std::collections::HashSet<String>,
     behavior_maps: &Mutex<HashMap<String, BehaviorMap>>,
     fingerprint: Option<String>,
 ) -> Result<FunctionResult, ScanError> {
     let exploration = explorer::explore_function(frontend, analysis, explore_config).await?;
 
-    // Build ExecutionRecords from raw results for BehaviorMap construction.
+    // Run the Analyze stage to produce behavior map and coverage metrics.
+    let mut analyze_out = crate::pipeline::analyze(&exploration, analysis);
+    analyze_out.behavior_map.fingerprint = fingerprint;
+
+    // Compute behavior coverage for each callee (cross-function concern).
     let records: Vec<ExecutionRecord> = exploration
         .raw_results
         .iter()
         .map(|(inputs, result)| execution_record_from_result(func_name, inputs, result))
         .collect();
-
-    let mut behavior_map = BehaviorMap::from_records(func_name, &records);
-    behavior_map.fingerprint = fingerprint;
-
-    // Compute behavior coverage for each callee.
     let maps = behavior_maps.lock().await;
     let mut behavior_coverage: Vec<BehaviorCoverage> = Vec::new();
     for callee in callees {
@@ -722,15 +783,54 @@ async fn explore_single_function(
     Ok(FunctionResult {
         function_name: func_name.to_string(),
         exploration,
-        behavior_map,
+        behavior_map: analyze_out.behavior_map,
         behavior_coverage,
         mocks_used: mocks_used.to_vec(),
+        coverage_metrics: analyze_out.coverage_metrics,
     })
+}
+
+/// Format mock usages as a human-readable string with source attribution.
+fn format_mocks_used(mocks: &[MockUsage]) -> String {
+    let cached: Vec<&str> = mocks
+        .iter()
+        .filter(|m| m.source == MockSource::CachedBehaviorMap)
+        .map(|m| m.name.as_str())
+        .collect();
+    let stubs: Vec<&str> = mocks
+        .iter()
+        .filter(|m| m.source == MockSource::TypeAwareStub)
+        .map(|m| m.name.as_str())
+        .collect();
+
+    let mut parts = Vec::new();
+    if !cached.is_empty() {
+        parts.push(format!("{} via behavior map ({})", cached.len(), cached.join(", ")));
+    }
+    if !stubs.is_empty() {
+        parts.push(format!("{} via type-aware stub ({})", stubs.len(), stubs.join(", ")));
+    }
+    parts.join("; ")
 }
 
 /// Format a parallel scan result as a human-readable report.
 pub fn format_parallel_scan_report(result: &ParallelScanResult) -> String {
     let mut out = String::new();
+
+    if let Some(ref ctx) = result.sampling {
+        let pct = if ctx.total_functions > 0 {
+            (ctx.sampled_functions as f64 / ctx.total_functions as f64 * 100.0).round() as usize
+        } else {
+            0
+        };
+        out.push_str(&format!(
+            "Explored {}/{} functions ({}% core sample, {} via dependency closure)\n",
+            ctx.sampled_functions + ctx.closure_functions,
+            ctx.total_functions,
+            pct,
+            ctx.closure_functions,
+        ));
+    }
 
     out.push_str(&format!(
         "Scan complete: {} function(s) tested, {} skipped ({} worker(s))\n",
@@ -752,7 +852,7 @@ pub fn format_parallel_scan_report(result: &ParallelScanResult) -> String {
         if !func_result.mocks_used.is_empty() {
             out.push_str(&format!(
                 "  Mocks used: {}\n",
-                func_result.mocks_used.join(", ")
+                format_mocks_used(&func_result.mocks_used)
             ));
         }
 
@@ -785,6 +885,21 @@ pub fn format_parallel_scan_report(result: &ParallelScanResult) -> String {
 pub fn format_scan_report(result: &ScanResult) -> String {
     let mut out = String::new();
 
+    if let Some(ref ctx) = result.sampling {
+        let pct = if ctx.total_functions > 0 {
+            (ctx.sampled_functions as f64 / ctx.total_functions as f64 * 100.0).round() as usize
+        } else {
+            0
+        };
+        out.push_str(&format!(
+            "Explored {}/{} functions ({}% core sample, {} via dependency closure)\n",
+            ctx.sampled_functions + ctx.closure_functions,
+            ctx.total_functions,
+            pct,
+            ctx.closure_functions,
+        ));
+    }
+
     out.push_str(&format!(
         "Scan complete: {} function(s) tested\n",
         result.function_results.len()
@@ -802,7 +917,7 @@ pub fn format_scan_report(result: &ScanResult) -> String {
         if !func_result.mocks_used.is_empty() {
             out.push_str(&format!(
                 "  Mocks used: {}\n",
-                func_result.mocks_used.join(", ")
+                format_mocks_used(&func_result.mocks_used)
             ));
         }
 
@@ -1157,7 +1272,7 @@ mod tests {
                         lines_covered: 3,
                         total_lines: 5,
                         new_path_executions: vec![],
-                        raw_results: vec![],
+                        raw_results: vec![], discoveries: vec![],
                     },
                     behavior_map: BehaviorMap {
                         function_id: "leaf".into(),
@@ -1166,6 +1281,7 @@ mod tests {
                     },
                     behavior_coverage: vec![],
                     mocks_used: vec![],
+                    coverage_metrics: Default::default(),
                 },
                 FunctionResult {
                     function_name: "caller".into(),
@@ -1176,7 +1292,7 @@ mod tests {
                         lines_covered: 8,
                         total_lines: 10,
                         new_path_executions: vec![],
-                        raw_results: vec![],
+                        raw_results: vec![], discoveries: vec![],
                     },
                     behavior_map: BehaviorMap {
                         function_id: "caller".into(),
@@ -1189,16 +1305,18 @@ mod tests {
                         exercised_behavior_ids: vec![0, 1],
                         total_behaviors: 3,
                     }],
-                    mocks_used: vec!["leaf".into()],
+                    mocks_used: vec![MockUsage { name: "leaf".into(), source: MockSource::CachedBehaviorMap }],
+                    coverage_metrics: Default::default(),
                 },
             ],
             skipped_functions: vec![],
+            sampling: None,
         };
 
         let report = format_scan_report(&result);
         assert!(report.contains("2 function(s) tested"));
         assert!(report.contains("leaf → caller"));
-        assert!(report.contains("Mocks used: leaf"));
+        assert!(report.contains("Mocks used: 1 via behavior map (leaf)"));
         assert!(report.contains("Behavior coverage of leaf: 2/3"));
     }
 
@@ -1215,7 +1333,7 @@ mod tests {
                     lines_covered: 5,
                     total_lines: 5,
                     new_path_executions: vec![],
-                    raw_results: vec![],
+                    raw_results: vec![], discoveries: vec![],
                 },
                 behavior_map: BehaviorMap {
                     function_id: "standalone".into(),
@@ -1224,8 +1342,10 @@ mod tests {
                 },
                 behavior_coverage: vec![],
                 mocks_used: vec![],
+                    coverage_metrics: Default::default(),
             }],
             skipped_functions: vec![],
+            sampling: None,
         };
 
         let report = format_scan_report(&result);
@@ -1247,7 +1367,7 @@ mod tests {
                     lines_covered: 3,
                     total_lines: 5,
                     new_path_executions: vec![],
-                    raw_results: vec![],
+                    raw_results: vec![], discoveries: vec![],
                 },
                 behavior_map: BehaviorMap {
                     function_id: "good_func".into(),
@@ -1256,6 +1376,7 @@ mod tests {
                 },
                 behavior_coverage: vec![],
                 mocks_used: vec![],
+                    coverage_metrics: Default::default(),
             }],
             skipped_functions: vec![
                 SkippedFunction {
@@ -1267,6 +1388,7 @@ mod tests {
                     reason: "param \"input\" has opaque type stream.Readable".into(),
                 },
             ],
+            sampling: None,
         };
 
         let report = format_scan_report(&result);
@@ -1289,7 +1411,7 @@ mod tests {
                     lines_covered: 1,
                     total_lines: 1,
                     new_path_executions: vec![],
-                    raw_results: vec![],
+                    raw_results: vec![], discoveries: vec![],
                 },
                 behavior_map: BehaviorMap {
                     function_id: "func".into(),
@@ -1298,12 +1420,87 @@ mod tests {
                 },
                 behavior_coverage: vec![],
                 mocks_used: vec![],
+                    coverage_metrics: Default::default(),
             }],
             skipped_functions: vec![],
+            sampling: None,
         };
 
         let report = format_scan_report(&result);
         assert!(!report.contains("Skipped functions:"));
+    }
+
+    #[test]
+    fn format_scan_report_includes_sampling_context() {
+        let result = ScanResult {
+            test_order: vec!["func".into()],
+            function_results: vec![FunctionResult {
+                function_name: "func".into(),
+                exploration: ExplorationResult {
+                    function_name: "func".into(),
+                    iterations: 1,
+                    unique_paths: 1,
+                    lines_covered: 1,
+                    total_lines: 1,
+                    new_path_executions: vec![],
+                    raw_results: vec![],
+                    discoveries: vec![],
+                },
+                behavior_map: BehaviorMap {
+                    function_id: "func".into(),
+                    behaviors: vec![],
+                    fingerprint: None,
+                },
+                behavior_coverage: vec![],
+                mocks_used: vec![],
+                    coverage_metrics: Default::default(),
+            }],
+            skipped_functions: vec![],
+            sampling: Some(SamplingContext {
+                total_functions: 100,
+                sampled_functions: 10,
+                closure_functions: 3,
+                strata_summary: vec![],
+            }),
+        };
+        let report = format_scan_report(&result);
+        assert!(
+            report.contains("Explored 13/100 functions"),
+            "report should show sampling context: {report}"
+        );
+        assert!(report.contains("10% core sample"));
+    }
+
+    #[test]
+    fn format_scan_report_no_sampling_context_omits_header() {
+        let result = ScanResult {
+            test_order: vec!["func".into()],
+            function_results: vec![FunctionResult {
+                function_name: "func".into(),
+                exploration: ExplorationResult {
+                    function_name: "func".into(),
+                    iterations: 1,
+                    unique_paths: 1,
+                    lines_covered: 1,
+                    total_lines: 1,
+                    new_path_executions: vec![],
+                    raw_results: vec![],
+                    discoveries: vec![],
+                },
+                behavior_map: BehaviorMap {
+                    function_id: "func".into(),
+                    behaviors: vec![],
+                    fingerprint: None,
+                },
+                behavior_coverage: vec![],
+                mocks_used: vec![],
+                    coverage_metrics: Default::default(),
+            }],
+            skipped_functions: vec![],
+            sampling: None,
+        };
+        let report = format_scan_report(&result);
+        assert!(!report.contains("Explored"), "no sampling context should omit Explored header");
     }
 
     // ── build_layers tests ──────────────────────────────────────────
@@ -1392,7 +1589,7 @@ mod tests {
                     lines_covered: 3,
                     total_lines: 5,
                     new_path_executions: vec![],
-                    raw_results: vec![],
+                    raw_results: vec![], discoveries: vec![],
                 },
                 behavior_map: BehaviorMap {
                     function_id: "f1".into(),
@@ -1401,12 +1598,14 @@ mod tests {
                 },
                 behavior_coverage: vec![],
                 mocks_used: vec![],
+                    coverage_metrics: Default::default(),
             }],
             skipped: vec![SkippedFunction {
                 function_name: "f2".into(),
                 reason: "timed out after 30s".into(),
             }],
             workers_used: 4,
+            sampling: None,
         };
 
         let report = format_parallel_scan_report(&result);
@@ -1431,7 +1630,7 @@ mod tests {
                     lines_covered: 5,
                     total_lines: 5,
                     new_path_executions: vec![],
-                    raw_results: vec![],
+                    raw_results: vec![], discoveries: vec![],
                 },
                 behavior_map: BehaviorMap {
                     function_id: "f1".into(),
@@ -1440,9 +1639,11 @@ mod tests {
                 },
                 behavior_coverage: vec![],
                 mocks_used: vec![],
+                    coverage_metrics: Default::default(),
             }],
             skipped: vec![],
             workers_used: 1,
+            sampling: None,
         };
 
         let report = format_parallel_scan_report(&result);
@@ -1537,7 +1738,7 @@ mod tests {
             .iter()
             .find(|r| r.function_name == "caller")
             .expect("caller should be in results");
-        assert!(caller_result.mocks_used.contains(&"leaf".to_string()));
+        assert!(caller_result.mocks_used.iter().any(|m| m.name == "leaf"));
     }
 
     #[tokio::test]

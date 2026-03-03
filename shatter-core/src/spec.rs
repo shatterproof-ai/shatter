@@ -520,6 +520,7 @@ mod tests {
             total_lines: 10,
             new_path_executions: vec![],
             raw_results: vec![],
+            discoveries: vec![],
         }
     }
 
