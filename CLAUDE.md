@@ -79,6 +79,10 @@ See `AGENTS.md` for issue tracking (beads), git workflow, and agent operational 
 
 When asked to work on ready issues in parallel, **always invoke `/swarm`**. Do not manually re-implement the team/worktree workflow. The swarm skill handles triage, team setup, plan review, safe merge-before-shutdown, and quality gates.
 
+### Research Memory
+
+After researching codebase architecture or feature implementation status, save factual findings to project memory proactively — don't wait for the user to ask. Tag entries with date so stale facts can be identified later. This applies to any confirmed facts learned by reading code: what's implemented vs stubbed, how mechanisms work, which frontends support which features, etc.
+
 ### Efficiency Rules
 
 - **Batch `bd show` calls**: `bd show X && echo --- && bd show Y && echo --- && bd show Z` — never sequential individual calls.
