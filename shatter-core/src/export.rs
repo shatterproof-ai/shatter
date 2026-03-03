@@ -987,6 +987,7 @@ mod tests {
         let map = BehaviorMap {
             function_id: "add".to_string(),
             behaviors: vec![],
+            fingerprint: None,
         };
         let output = generate_vitest_tests(&map, "add", "./src/math");
         assert!(output.contains("import { describe, it, expect } from 'vitest';"));
@@ -997,6 +998,7 @@ mod tests {
         let map = BehaviorMap {
             function_id: "add".to_string(),
             behaviors: vec![],
+            fingerprint: None,
         };
         let output = generate_vitest_tests(&map, "add", "./src/math");
         assert!(output.contains("import { add } from './src/math';"));
@@ -1007,6 +1009,7 @@ mod tests {
         let map = BehaviorMap {
             function_id: "add".to_string(),
             behaviors: vec![],
+            fingerprint: None,
         };
         let output = generate_vitest_tests(&map, "add", "./src/math");
         assert!(output.contains("describe('add', () => {"));
@@ -1018,6 +1021,7 @@ mod tests {
         let map = BehaviorMap {
             function_id: "add".to_string(),
             behaviors: vec![make_behavior(0, vec![json!(1), json!(2)], Some(json!(3)), None)],
+            fingerprint: None,
         };
         let output = generate_vitest_tests(&map, "add", "./src/math");
         assert!(output.contains("it('returns 3 for input (1, 2)'"));
@@ -1039,6 +1043,7 @@ mod tests {
                     stack: None,
                 }),
             )],
+            fingerprint: None,
         };
         let output = generate_vitest_tests(&map, "divide", "./src/math");
         assert!(output.contains("expect(() => divide(1, 0)).toThrow();"));
@@ -1053,6 +1058,7 @@ mod tests {
                 make_behavior(1, vec![json!(-3)], Some(json!(3)), None),
                 make_behavior(2, vec![json!(0)], Some(json!(0)), None),
             ],
+            fingerprint: None,
         };
         let output = generate_vitest_tests(&map, "abs", "./src/math");
         let it_count = output.matches("  it('").count();
