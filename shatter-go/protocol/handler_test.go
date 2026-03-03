@@ -73,7 +73,7 @@ func TestHandshakeReturnsAllCapabilities(t *testing.T) {
 	for _, c := range resp.Capabilities {
 		caps[c] = true
 	}
-	for _, want := range []string{"analyze", "execute", "instrument"} {
+	for _, want := range []string{"analyze", "execute", "instrument", "generate"} {
 		if !caps[want] {
 			t.Errorf("missing capability %q in %v", want, resp.Capabilities)
 		}
@@ -606,7 +606,7 @@ func TestTeardownReturnsNotImplementedError(t *testing.T) {
 	}
 }
 
-func TestGenerateReturnsNotImplementedError(t *testing.T) {
+func TestGenerateWithUnsupportedExtensionReturnsError(t *testing.T) {
 	resp := sendRecv(t, `{"protocol_version":"0.1.0","id":12,"command":"generate","file":"./gen.ts","name":"User","kind":"type_name"}`)
 	if resp.Status != "error" {
 		t.Errorf("status = %q, want error", resp.Status)
@@ -614,15 +614,35 @@ func TestGenerateReturnsNotImplementedError(t *testing.T) {
 	if resp.Code != "internal_error" {
 		t.Errorf("code = %q, want internal_error", resp.Code)
 	}
-	if !strings.Contains(resp.Message, "not yet implemented") {
-		t.Errorf("message = %q, want 'not yet implemented'", resp.Message)
+	if !strings.Contains(resp.Message, "unsupported generator type") {
+		t.Errorf("message = %q, want 'unsupported generator type'", resp.Message)
 	}
 	if resp.ID != 12 {
 		t.Errorf("id = %d, want 12", resp.ID)
 	}
 }
 
-func TestNewCommandStubsTableDriven(t *testing.T) {
+func TestGenerateWithoutFileReturnsError(t *testing.T) {
+	resp := sendRecv(t, `{"protocol_version":"0.1.0","id":13,"command":"generate","name":"User","kind":"type_name"}`)
+	if resp.Status != "error" {
+		t.Errorf("status = %q, want error", resp.Status)
+	}
+	if resp.Code != "invalid_request" {
+		t.Errorf("code = %q, want invalid_request", resp.Code)
+	}
+}
+
+func TestGenerateWithoutNameReturnsError(t *testing.T) {
+	resp := sendRecv(t, `{"protocol_version":"0.1.0","id":14,"command":"generate","file":"./gen.wasm","kind":"type_name"}`)
+	if resp.Status != "error" {
+		t.Errorf("status = %q, want error", resp.Status)
+	}
+	if resp.Code != "invalid_request" {
+		t.Errorf("code = %q, want invalid_request", resp.Code)
+	}
+}
+
+func TestSetupTeardownStubsTableDriven(t *testing.T) {
 	tests := []struct {
 		name    string
 		request string
@@ -643,13 +663,43 @@ func TestNewCommandStubsTableDriven(t *testing.T) {
 			request: `{"protocol_version":"0.1.0","id":22,"command":"teardown","function":"fn1"}`,
 			wantID:  22,
 		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := sendRecv(t, tt.request)
+			if resp.Status != "error" {
+				t.Errorf("status = %q, want error", resp.Status)
+			}
+			if resp.Code != "internal_error" {
+				t.Errorf("code = %q, want internal_error", resp.Code)
+			}
+			if !strings.Contains(resp.Message, "not yet implemented") {
+				t.Errorf("message = %q, should contain 'not yet implemented'", resp.Message)
+			}
+			if resp.ID != tt.wantID {
+				t.Errorf("id = %d, want %d", resp.ID, tt.wantID)
+			}
+			if resp.ProtocolVersion != "0.1.0" {
+				t.Errorf("protocol_version = %q, want 0.1.0", resp.ProtocolVersion)
+			}
+		})
+	}
+}
+
+func TestGenerateUnsupportedExtensionTableDriven(t *testing.T) {
+	tests := []struct {
+		name    string
+		request string
+		wantID  int
+	}{
 		{
-			name:    "generate type_name",
+			name:    "generate type_name with .ts file",
 			request: `{"protocol_version":"0.1.0","id":23,"command":"generate","file":"./gen.ts","name":"User","kind":"type_name"}`,
 			wantID:  23,
 		},
 		{
-			name:    "generate param_name",
+			name:    "generate param_name with .ts file",
 			request: `{"protocol_version":"0.1.0","id":24,"command":"generate","file":"./gen.ts","name":"authToken","kind":"param_name"}`,
 			wantID:  24,
 		},
@@ -664,8 +714,8 @@ func TestNewCommandStubsTableDriven(t *testing.T) {
 			if resp.Code != "internal_error" {
 				t.Errorf("code = %q, want internal_error", resp.Code)
 			}
-			if !strings.Contains(resp.Message, "not yet implemented") {
-				t.Errorf("message = %q, should contain 'not yet implemented'", resp.Message)
+			if !strings.Contains(resp.Message, "unsupported generator type") {
+				t.Errorf("message = %q, should contain 'unsupported generator type'", resp.Message)
 			}
 			if resp.ID != tt.wantID {
 				t.Errorf("id = %d, want %d", resp.ID, tt.wantID)

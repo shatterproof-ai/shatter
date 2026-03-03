@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/shatter-dev/shatter/shatter-go/generators"
 	"github.com/shatter-dev/shatter/shatter-go/instrument"
 )
 
@@ -39,6 +40,7 @@ type Handler struct {
 	log              io.Writer
 	logLevel         string
 	lastAnalyzedFile string // remembered from the most recent analyze command
+	registry         *generators.Registry
 }
 
 // NewHandler creates a handler reading from r, writing responses to w,
@@ -51,6 +53,7 @@ func NewHandler(r io.Reader, w io.Writer, logw io.Writer) *Handler {
 		writer:   w,
 		log:      logw,
 		logLevel: getLogLevel(),
+		registry: generators.NewRegistry(),
 	}
 }
 
@@ -63,6 +66,7 @@ func NewHandlerWithLogLevel(r io.Reader, w io.Writer, logw io.Writer, level stri
 		writer:   w,
 		log:      logw,
 		logLevel: level,
+		registry: generators.NewRegistry(),
 	}
 }
 
@@ -149,7 +153,7 @@ func (h *Handler) handleHandshake(resp Response, req Request) Response {
 	resp.FrontendVersion = frontendVersion
 	resp.Language = frontendLanguage
 	resp.Capabilities = []string{
-		"analyze", "execute", "instrument",
+		"analyze", "execute", "instrument", "generate",
 		"complex_type:date", "complex_type:duration", "complex_type:url",
 		"complex_type:reg_exp", "complex_type:ip_address", "complex_type:big_int",
 		"complex_type:rational", "complex_type:big_decimal", "complex_type:error",
@@ -403,13 +407,45 @@ func (h *Handler) handleTeardown(resp Response, req Request) Response {
 }
 
 func (h *Handler) handleGenerate(resp Response, req Request) Response {
-	resp.Status = "error"
-	resp.Code = "internal_error"
-	resp.Message = "generate command not yet implemented"
+	if req.File == "" {
+		resp.Status = "error"
+		resp.Code = "invalid_request"
+		resp.Message = "generate command requires a file path"
+		return resp
+	}
+	if req.Name == "" {
+		resp.Status = "error"
+		resp.Code = "invalid_request"
+		resp.Message = "generate command requires a name"
+		return resp
+	}
+
+	var recipe json.RawMessage
+	if req.Recipe != nil {
+		recipe = *req.Recipe
+	}
+
+	value, generatorID, outRecipe, err := h.registry.Generate(req.File, req.Name, recipe)
+	if err != nil {
+		resp.Status = "error"
+		resp.Code = "internal_error"
+		resp.Message = fmt.Sprintf("generate failed: %v", err)
+		return resp
+	}
+
+	resp.Status = "generate"
+	valCopy := json.RawMessage(value)
+	resp.Value = &valCopy
+	resp.GeneratorID = generatorID
+	if outRecipe != nil {
+		recipeCopy := json.RawMessage(outRecipe)
+		resp.Recipe = &recipeCopy
+	}
 	return resp
 }
 
 func (h *Handler) handleShutdown(resp Response) Response {
+	h.registry.Close()
 	resp.Status = "shutdown_ack"
 	return resp
 }
