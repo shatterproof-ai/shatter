@@ -56,6 +56,38 @@ is limited. The **first ~20 characters** must be meaningfully descriptive:
 
 ## Creating Issues
 
+### Issue Sizing: Keep Issues Small
+
+Every issue should represent **one focused, independently completable unit of work**.
+A well-sized issue can be implemented, tested, and merged in a single session.
+
+**Target size:** 1–3 files changed, under ~200 lines of diff. If an issue looks
+bigger, break it down.
+
+**How to tell an issue is too big:**
+- It touches more than one module or subsystem
+- The description has multiple distinct deliverables or bullet points
+- It requires changes in both core and a frontend
+- You find yourself thinking "first I need to X, then Y, then Z" — each of those is its own issue
+- The acceptance criteria have more than 3 items
+
+**What to do instead:**
+- Create an **epic** for the larger goal, then create small child issues under it
+- Each child issue should be one logical step: "add the type", "implement the handler", "write the tests", "update the CLI"
+- Use `--parent` and `--waits-for` to link children to the epic
+- Use `bd dep add` for ordering constraints between children
+
+**Examples:**
+
+| Too big | Break into |
+|---|---|
+| `Add symbolic integer support` | Epic + `Int symbolic type`, `Int constraint gen`, `Int solver integration`, `Int round-trip tests` |
+| `Protocol message for branch data` | `Branch data Rust types`, `Branch data TS handler`, `Branch data Go handler` |
+| `Fix and test path constraint bug` | `Repro test for path constraints`, `Fix path constraint drop` |
+
+**Rule of thumb:** If you can't describe the issue in one sentence without "and",
+it's two issues.
+
 Use the correct issue type:
 - `epic` — a grouping container for related features/tasks. Not directly workable.
 - `feature` — delivers new user-visible or agent-visible capability
