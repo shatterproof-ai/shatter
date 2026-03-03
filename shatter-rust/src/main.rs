@@ -2,6 +2,7 @@ mod analyzer;
 mod handler;
 mod instrument;
 mod protocol;
+mod wasm_generator;
 
 use std::io;
 

@@ -249,13 +249,15 @@ pub struct Request {
 
     // Generate fields
     /// Name of the type or parameter to generate a value for.
-    #[allow(dead_code)] // will be used when generate is implemented
     #[serde(default)]
     pub name: Option<String>,
     /// Whether the generator targets a type name or a parameter name.
-    #[allow(dead_code)] // will be used when generate is implemented
+    #[allow(dead_code)] // parsed from protocol but not used in dispatch logic yet
     #[serde(default)]
     pub kind: Option<String>,
+    /// Opaque recipe state from a prior generate call, enabling stateful generators.
+    #[serde(default)]
+    pub recipe: Option<serde_json::Value>,
 }
 
 /// A response message from this frontend to the core engine.
@@ -280,6 +282,10 @@ pub struct Response {
     // Generate fields
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generator_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recipe: Option<serde_json::Value>,
 
     // Instrument fields
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -310,6 +316,8 @@ impl Response {
             capabilities: None,
             setup_context: None,
             value: None,
+            generator_id: None,
+            recipe: None,
             instrumented: None,
             output_file: None,
             functions: None,
@@ -526,6 +534,8 @@ mod tests {
             capabilities: None,
             setup_context: Some(serde_json::json!({"db_handle": "conn_42"})),
             value: None,
+            generator_id: None,
+            recipe: None,
             instrumented: None,
             output_file: None,
             functions: None,
@@ -546,6 +556,8 @@ mod tests {
             capabilities: None,
             setup_context: None,
             value: None,
+            generator_id: None,
+            recipe: None,
             instrumented: None,
             output_file: None,
             functions: None,
@@ -566,6 +578,8 @@ mod tests {
             capabilities: None,
             setup_context: None,
             value: Some(serde_json::json!({"id": 1, "name": "Alice"})),
+            generator_id: None,
+            recipe: None,
             instrumented: None,
             output_file: None,
             functions: None,
@@ -586,6 +600,8 @@ mod tests {
             capabilities: None,
             setup_context: None,
             value: Some(serde_json::json!("tok_abc123")),
+            generator_id: None,
+            recipe: None,
             instrumented: None,
             output_file: None,
             functions: None,
@@ -606,6 +622,8 @@ mod tests {
             capabilities: None,
             setup_context: None,
             value: None,
+            generator_id: None,
+            recipe: None,
             instrumented: None,
             output_file: None,
             functions: None,
@@ -626,6 +644,8 @@ mod tests {
             capabilities: Some(vec!["analyze".to_string()]),
             setup_context: None,
             value: None,
+            generator_id: None,
+            recipe: None,
             instrumented: None,
             output_file: None,
             functions: None,

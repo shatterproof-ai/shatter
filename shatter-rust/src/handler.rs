@@ -3,6 +3,7 @@ use std::io::{self, BufRead, BufReader};
 use crate::protocol::{
     self, Request, Response, FRONTEND_LANGUAGE, FRONTEND_VERSION, PROTOCOL_VERSION,
 };
+use crate::wasm_generator::WasmCache;
 
 /// Log level for the frontend, controlled by SHATTER_LOG_LEVEL env var.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -64,6 +65,7 @@ pub struct Handler<R, W, L> {
     log_level: FrontendLogLevel,
     #[allow(dead_code)] // will be used when execute is implemented
     exec_timeout_ms: u64,
+    wasm_cache: WasmCache,
 }
 
 impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
@@ -74,6 +76,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             log,
             log_level: FrontendLogLevel::from_env(),
             exec_timeout_ms: exec_timeout_from_env(),
+            wasm_cache: WasmCache::new(),
         }
     }
 
@@ -86,6 +89,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             log,
             log_level: level,
             exec_timeout_ms: exec_timeout_from_env(),
+            wasm_cache: WasmCache::new(),
         }
     }
 
@@ -130,7 +134,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
         }
     }
 
-    fn dispatch(&self, req: &Request) -> (Response, bool) {
+    fn dispatch(&mut self, req: &Request) -> (Response, bool) {
         let mut resp = Response::base(req.id);
 
         if req.protocol_version != protocol::PROTOCOL_VERSION {
@@ -169,6 +173,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
         resp.capabilities = Some(vec![
             "analyze".to_string(),
             "execute".to_string(),
+            "generate".to_string(),
             "instrument".to_string(),
         ]);
         resp
@@ -308,24 +313,52 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
         resp
     }
 
-    fn handle_generate(&self, mut resp: Response, req: &Request) -> Response {
-        if req.file.is_none() {
-            resp.status = "error".to_string();
-            resp.code = Some("invalid_request".to_string());
-            resp.message = Some("generate command requires a file path".to_string());
-            return resp;
-        }
-        if req.name.is_none() {
-            resp.status = "error".to_string();
-            resp.code = Some("invalid_request".to_string());
-            resp.message = Some("generate command requires a name".to_string());
-            return resp;
-        }
+    fn handle_generate(&mut self, mut resp: Response, req: &Request) -> Response {
+        let file_path = match &req.file {
+            Some(f) => f,
+            None => {
+                resp.status = "error".to_string();
+                resp.code = Some("invalid_request".to_string());
+                resp.message = Some("generate command requires a file path".to_string());
+                return resp;
+            }
+        };
+        let func_name = match &req.name {
+            Some(n) => n.clone(),
+            None => {
+                resp.status = "error".to_string();
+                resp.code = Some("invalid_request".to_string());
+                resp.message = Some("generate command requires a name".to_string());
+                return resp;
+            }
+        };
 
-        resp.status = "error".to_string();
-        resp.code = Some("internal_error".to_string());
-        resp.message = Some("generate command not yet implemented".to_string());
-        resp
+        let path = std::path::Path::new(file_path);
+        if path.extension().and_then(|e| e.to_str()) == Some("wasm") {
+            match self.wasm_cache.generate(path, &func_name, req.recipe.as_ref()) {
+                Ok((value, generator_id, recipe)) => {
+                    resp.status = "generate".to_string();
+                    resp.value = Some(value);
+                    resp.generator_id = Some(generator_id);
+                    resp.recipe = recipe;
+                    resp
+                }
+                Err(e) => {
+                    resp.status = "error".to_string();
+                    resp.code = Some("internal_error".to_string());
+                    resp.message = Some(e);
+                    resp
+                }
+            }
+        } else {
+            resp.status = "error".to_string();
+            resp.code = Some("invalid_request".to_string());
+            resp.message = Some(format!(
+                "unsupported generator file type: {}",
+                file_path
+            ));
+            resp
+        }
     }
 
     fn handle_shutdown(&self, mut resp: Response) -> Response {
@@ -409,6 +442,7 @@ mod tests {
         let caps = resp.capabilities.expect("capabilities present");
         assert!(caps.contains(&"analyze".to_string()));
         assert!(caps.contains(&"execute".to_string()));
+        assert!(caps.contains(&"generate".to_string()));
         assert!(caps.contains(&"instrument".to_string()));
     }
 
@@ -712,22 +746,23 @@ mod tests {
     }
 
     #[test]
-    fn generate_with_valid_fields_returns_not_implemented() {
+    fn generate_non_wasm_file_returns_unsupported() {
         let resp = send_recv(
             r#"{"protocol_version":"0.1.0","id":14,"command":"generate","file":"./gen.ts","name":"User","kind":"type_name"}"#,
         );
         assert_eq!(resp.status, "error");
-        assert_eq!(resp.code.as_deref(), Some("internal_error"));
-        assert!(resp.message.as_deref().unwrap_or("").contains("not yet implemented"));
+        assert_eq!(resp.code.as_deref(), Some("invalid_request"));
+        assert!(resp.message.as_deref().unwrap_or("").contains("unsupported generator file type"));
     }
 
     #[test]
-    fn generate_param_name_kind_returns_not_implemented() {
+    fn generate_wasm_missing_file_returns_error() {
         let resp = send_recv(
-            r#"{"protocol_version":"0.1.0","id":15,"command":"generate","file":"./gen.ts","name":"authToken","kind":"param_name"}"#,
+            r#"{"protocol_version":"0.1.0","id":15,"command":"generate","file":"/nonexistent/gen.wasm","name":"gen","kind":"type_name"}"#,
         );
         assert_eq!(resp.status, "error");
         assert_eq!(resp.code.as_deref(), Some("internal_error"));
+        assert!(resp.message.as_deref().unwrap_or("").contains("not found"));
     }
 
     // -- Integration: new commands in conversation --
@@ -744,11 +779,14 @@ mod tests {
         assert_eq!(responses.len(), 5);
         assert_eq!(responses[0].status, "handshake");
         assert_eq!(responses[0].id, 1);
-        // setup, teardown, generate all return "not yet implemented" errors
-        for i in 1..=3 {
+        // setup and teardown return "not yet implemented" errors
+        for i in 1..=2 {
             assert_eq!(responses[i].status, "error");
             assert_eq!(responses[i].code.as_deref(), Some("internal_error"));
         }
+        // generate with non-wasm file returns "unsupported generator file type"
+        assert_eq!(responses[3].status, "error");
+        assert_eq!(responses[3].code.as_deref(), Some("invalid_request"));
         assert_eq!(responses[4].status, "shutdown_ack");
         assert_eq!(responses[4].id, 5);
     }
