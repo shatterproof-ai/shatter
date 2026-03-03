@@ -23,6 +23,57 @@ For local dev: Rust toolchain, Node.js 22+, Go 1.24+, libclang. Run `./scripts/c
 
 See `/rust-conventions`, `/ts-conventions`, `/go-conventions` skills for detailed per-language standards.
 
+### Inline Documentation
+
+Comments explain **why** or document **non-obvious contracts** — never restate what the code already says. If a name needs a comment, choose a better name first.
+
+**What to document:**
+- Public API contracts: preconditions, postconditions, error behavior, ownership semantics
+- Non-obvious design choices: why an algorithm was chosen, why a field exists, why ordering matters
+- Known-answer test fixtures: expected branches, triggering inputs, and edge cases (see `examples/go/04-nested-control-flow.go` for the model)
+- `#[allow(...)]` / `@ts-ignore`: always explain why the suppression is needed
+
+**What NOT to document:**
+- What the code does when the code already says it (`// returns the sum` above `fn sum()`)
+- Type information visible in the signature (`// takes a string` above `fn foo(s: string)`)
+- Existence of language constructs (`// uses a switch statement`, `// is a simple struct`)
+
+**The delete test:** If you can delete a comment and the code is equally clear, delete it.
+
+**Bad → Good examples (from this codebase):**
+
+```go
+// BAD: restates syntax
+// SwitchOnString uses a switch statement.
+func SwitchOnString(color string) int {
+
+// GOOD: documents the test contract
+// SwitchOnString — 4 branches: "red"→1, "green"→2, "blue"→3, default→0.
+// Analyzer should detect all four arms and the string-equality conditions.
+func SwitchOnString(color string) int {
+```
+
+```go
+// BAD: restates the type definition
+// Point is a simple struct.
+type Point struct {
+
+// GOOD: no comment (the struct is self-describing). Or if it's testdata:
+// Point — test fixture for struct-field access analysis.
+type Point struct {
+```
+
+```rust
+// BAD: restates the signature
+/// Returns boundary values for the given type.
+pub fn boundaries_for(ty: &ParamType) -> Vec<BoundaryValue> {
+
+// GOOD: documents the contract
+/// Returns boundary values applicable to `ty`, ordered by category
+/// (limits first, then zeroes, then special values like NaN/empty).
+pub fn boundaries_for(ty: &ParamType) -> Vec<BoundaryValue> {
+```
+
 ### Test Tiers
 
 | Tier | Command | Use when |
