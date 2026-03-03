@@ -5,6 +5,7 @@ import {
   buildExecuteResponse,
   clearModuleCache,
   getExecTimeoutMs,
+  DEFAULT_EXEC_TIMEOUT_MS,
 } from "./executor.js";
 import { instrumentFunction } from "./instrumentor.js";
 import * as fs from "node:fs";
@@ -419,9 +420,9 @@ describe("getExecTimeoutMs", () => {
     }
   });
 
-  it("returns 15000 when env var is not set", () => {
+  it("returns default when env var is not set", () => {
     delete process.env["SHATTER_EXEC_TIMEOUT"];
-    expect(getExecTimeoutMs()).toBe(15000);
+    expect(getExecTimeoutMs()).toBe(DEFAULT_EXEC_TIMEOUT_MS);
   });
 
   it("parses integer seconds to milliseconds", () => {
@@ -436,17 +437,17 @@ describe("getExecTimeoutMs", () => {
 
   it("ignores non-numeric values and returns default", () => {
     process.env["SHATTER_EXEC_TIMEOUT"] = "not-a-number";
-    expect(getExecTimeoutMs()).toBe(15000);
+    expect(getExecTimeoutMs()).toBe(DEFAULT_EXEC_TIMEOUT_MS);
   });
 
   it("ignores zero and returns default", () => {
     process.env["SHATTER_EXEC_TIMEOUT"] = "0";
-    expect(getExecTimeoutMs()).toBe(15000);
+    expect(getExecTimeoutMs()).toBe(DEFAULT_EXEC_TIMEOUT_MS);
   });
 
   it("ignores negative values and returns default", () => {
     process.env["SHATTER_EXEC_TIMEOUT"] = "-5";
-    expect(getExecTimeoutMs()).toBe(15000);
+    expect(getExecTimeoutMs()).toBe(DEFAULT_EXEC_TIMEOUT_MS);
   });
 });
 
