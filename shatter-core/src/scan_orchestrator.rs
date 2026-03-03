@@ -1999,4 +1999,262 @@ mod tests {
         assert!(plan.contains("0 layer(s)"));
         assert!(!plan.contains("Layer 0"));
     }
+
+    // ── stratum + core-sample composability tests ──────────────────
+
+    /// Verify that when stratum filter is applied before core-sample,
+    /// the budget operates on the stratum-filtered set, not the full population.
+    ///
+    /// This is the reproduction test for str-bwv: previously core-sample was
+    /// applied first on all functions, then stratum filtered the result,
+    /// causing the budget to be computed against the wrong population.
+    #[test]
+    fn stratum_then_core_sample_budget_on_filtered_set() {
+        use crate::core_sample::{self, CoreSampleConfig, SampleBudget};
+        use crate::call_graph::CallGraph as CgCallGraph;
+        use crate::batch_analyze::FunctionEntry;
+        use crate::types::TypeInfo;
+        use std::path::PathBuf;
+
+        // Create 30 functions: 10 leaves (layer 0), 10 mid (layer 1), 10 top (layer 2).
+        // layer 0: leaf_0..leaf_9 (no deps)
+        // layer 1: mid_0..mid_9 (each calls a leaf)
+        // layer 2: top_0..top_9 (each calls a mid)
+        let mut entries = Vec::new();
+        for i in 0..10 {
+            entries.push(FunctionEntry {
+                file_path: PathBuf::from(format!("/src/leaf{i}.ts")),
+                name: format!("leaf_{i}"),
+                exported: true,
+                params: vec![],
+                return_type: TypeInfo::Int,
+                dependencies: vec![],
+                branch_count: 2,
+            });
+        }
+        for i in 0..10 {
+            entries.push(FunctionEntry {
+                file_path: PathBuf::from(format!("/src/mid{i}.ts")),
+                name: format!("mid_{i}"),
+                exported: true,
+                params: vec![],
+                return_type: TypeInfo::Int,
+                dependencies: vec![crate::protocol::ExternalDependency {
+                    symbol: format!("leaf_{i}"),
+                    kind: crate::protocol::DependencyKind::FunctionCall,
+                    source_module: String::new(),
+                    return_type: TypeInfo::Int,
+                    param_types: vec![],
+                    call_sites: vec![],
+                }],
+                branch_count: 3,
+            });
+        }
+        for i in 0..10 {
+            entries.push(FunctionEntry {
+                file_path: PathBuf::from(format!("/src/top{i}.ts")),
+                name: format!("top_{i}"),
+                exported: true,
+                params: vec![],
+                return_type: TypeInfo::Int,
+                dependencies: vec![crate::protocol::ExternalDependency {
+                    symbol: format!("mid_{i}"),
+                    kind: crate::protocol::DependencyKind::FunctionCall,
+                    source_module: String::new(),
+                    return_type: TypeInfo::Int,
+                    param_types: vec![],
+                    call_sites: vec![],
+                }],
+                branch_count: 5,
+            });
+        }
+
+        let registry = {
+                let mut index = std::collections::HashMap::new();
+                for (i, e) in entries.iter().enumerate() {
+                    index.insert(e.name.clone(), i);
+                }
+                crate::batch_analyze::FunctionRegistry::from_raw(entries.clone(), index)
+            };
+        let cg = CgCallGraph::from_registry(&registry);
+
+        // Step 1: Apply stratum filter for layer 0 only (the 10 leaf functions).
+        let layers = cg.topological_layers();
+        let max_layer = layers.len() - 1;
+        let stratum_spec = crate::stratum::parse_stratum_spec("0").unwrap();
+        let range = crate::stratum::resolve_range(&stratum_spec, max_layer).unwrap();
+        let stratum_names: std::collections::HashSet<String> =
+            crate::stratum::filter_layers(&layers, &range)
+                .into_iter()
+                .flat_map(|(_, funcs)| funcs.iter().cloned())
+                .map(|qn| qn.rsplit_once("::").map_or(qn.clone(), |(_, n)| n.to_string()))
+                .collect();
+
+        // Should have exactly 10 leaf functions.
+        assert_eq!(stratum_names.len(), 10, "stratum should select 10 leaf functions");
+
+        // Step 2: Filter entries to stratum set.
+        let filtered_entries: Vec<FunctionEntry> = entries
+            .iter()
+            .filter(|e| stratum_names.contains(&e.name))
+            .cloned()
+            .collect();
+        assert_eq!(filtered_entries.len(), 10);
+
+        // Step 3: Apply core sample at 50% on the FILTERED set.
+        let filtered_registry = {
+                let mut index = std::collections::HashMap::new();
+                for (i, e) in filtered_entries.iter().enumerate() {
+                    index.insert(e.name.clone(), i);
+                }
+                crate::batch_analyze::FunctionRegistry::from_raw(filtered_entries.clone(), index)
+            };
+        let filtered_cg = CgCallGraph::from_registry(&filtered_registry);
+        let cs_config = CoreSampleConfig {
+            budget: SampleBudget::Percentage(50.0),
+            seed: 42,
+            scan_root: "/".to_string(),
+        };
+        let result = core_sample::select_core_sample(&filtered_entries, &filtered_cg, &cs_config);
+
+        // 50% of 10 = 5 functions. With stratum-first ordering, we get ~5.
+        assert!(
+            result.selected.len() <= 7 && result.selected.len() >= 3,
+            "core sample of 50% of 10 stratum-filtered functions should select ~5, got {}",
+            result.selected.len(),
+        );
+
+        // BUG REPRODUCTION: If core-sample ran on ALL 30 first, it would select
+        // ~15, then stratum would filter to only those in layer 0 — potentially
+        // far fewer or a mismatch. Verify that all selected are leaf functions.
+        for name in &result.selected {
+            let bare = name.rsplit_once("::").map_or(name.as_str(), |(_, n)| n);
+            assert!(
+                bare.starts_with("leaf_"),
+                "selected function should be a leaf (stratum 0), got: {name}"
+            );
+        }
+    }
+
+    /// Verify core-sample on full population (without stratum) still works.
+    #[test]
+    fn core_sample_without_stratum_uses_full_population() {
+        use crate::core_sample::{self, CoreSampleConfig, SampleBudget};
+        use crate::call_graph::CallGraph as CgCallGraph;
+        use crate::batch_analyze::FunctionEntry;
+        use crate::types::TypeInfo;
+        use std::path::PathBuf;
+
+        let entries: Vec<FunctionEntry> = (0..20)
+            .map(|i| FunctionEntry {
+                file_path: PathBuf::from(format!("/src/f{i}.ts")),
+                name: format!("fn_{i}"),
+                exported: true,
+                params: vec![],
+                return_type: TypeInfo::Int,
+                dependencies: vec![],
+                branch_count: i % 10,
+            })
+            .collect();
+
+        let registry = {
+                let mut index = std::collections::HashMap::new();
+                for (i, e) in entries.iter().enumerate() {
+                    index.insert(e.name.clone(), i);
+                }
+                crate::batch_analyze::FunctionRegistry::from_raw(entries.clone(), index)
+            };
+        let cg = CgCallGraph::from_registry(&registry);
+        let cs_config = CoreSampleConfig {
+            budget: SampleBudget::Percentage(50.0),
+            seed: 42,
+            scan_root: "/".to_string(),
+        };
+        let result = core_sample::select_core_sample(&entries, &cg, &cs_config);
+
+        // 50% of 20 = 10.
+        assert!(
+            result.selected.len() >= 8 && result.selected.len() <= 12,
+            "50% of 20 should select ~10, got {}",
+            result.selected.len(),
+        );
+    }
+
+    /// Verify stratum-only filtering works (no core-sample).
+    #[test]
+    fn stratum_only_filters_layers_correctly() {
+        use crate::call_graph::CallGraph as CgCallGraph;
+        use crate::batch_analyze::FunctionEntry;
+        use crate::types::TypeInfo;
+        use std::path::PathBuf;
+
+        // 3-layer chain: c (leaf) -> b -> a
+        let entries = vec![
+            FunctionEntry {
+                file_path: PathBuf::from("/src/c.ts"),
+                name: "fn_c".to_string(),
+                exported: true,
+                params: vec![],
+                return_type: TypeInfo::Int,
+                dependencies: vec![],
+                branch_count: 0,
+            },
+            FunctionEntry {
+                file_path: PathBuf::from("/src/b.ts"),
+                name: "fn_b".to_string(),
+                exported: true,
+                params: vec![],
+                return_type: TypeInfo::Int,
+                dependencies: vec![crate::protocol::ExternalDependency {
+                    symbol: "fn_c".to_string(),
+                    kind: crate::protocol::DependencyKind::FunctionCall,
+                    source_module: String::new(),
+                    return_type: TypeInfo::Int,
+                    param_types: vec![],
+                    call_sites: vec![],
+                }],
+                branch_count: 3,
+            },
+            FunctionEntry {
+                file_path: PathBuf::from("/src/a.ts"),
+                name: "fn_a".to_string(),
+                exported: true,
+                params: vec![],
+                return_type: TypeInfo::Int,
+                dependencies: vec![crate::protocol::ExternalDependency {
+                    symbol: "fn_b".to_string(),
+                    kind: crate::protocol::DependencyKind::FunctionCall,
+                    source_module: String::new(),
+                    return_type: TypeInfo::Int,
+                    param_types: vec![],
+                    call_sites: vec![],
+                }],
+                branch_count: 5,
+            },
+        ];
+
+        let registry = {
+                let mut index = std::collections::HashMap::new();
+                for (i, e) in entries.iter().enumerate() {
+                    index.insert(e.name.clone(), i);
+                }
+                crate::batch_analyze::FunctionRegistry::from_raw(entries, index)
+            };
+        let cg = CgCallGraph::from_registry(&registry);
+        let layers = cg.topological_layers();
+
+        // Stratum "0" should select only the leaf (fn_c).
+        let stratum_spec = crate::stratum::parse_stratum_spec("0").unwrap();
+        let max_layer = layers.len() - 1;
+        let range = crate::stratum::resolve_range(&stratum_spec, max_layer).unwrap();
+        let selected: std::collections::HashSet<String> =
+            crate::stratum::filter_layers(&layers, &range)
+                .into_iter()
+                .flat_map(|(_, funcs)| funcs.iter().cloned())
+                .map(|qn| qn.rsplit_once("::").map_or(qn.clone(), |(_, n)| n.to_string()))
+                .collect();
+
+        assert_eq!(selected.len(), 1);
+        assert!(selected.contains("fn_c"));
+    }
 }

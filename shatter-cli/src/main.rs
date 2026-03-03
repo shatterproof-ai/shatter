@@ -1186,6 +1186,48 @@ async fn run_scan(
         }
     }
 
+    // Parse --stratum spec early so core-sample budget operates on the
+    // stratum-filtered set (not the full population).
+    let parsed_stratum = if let Some(spec_str) = stratum_spec {
+        Some(
+            shatter_core::stratum::parse_stratum_spec(spec_str)
+                .map_err(|e| e.to_string())?,
+        )
+    } else {
+        None
+    };
+
+    // When both --stratum and --core-sample are set, pre-filter analyses by
+    // stratum so the core-sample budget is computed against the narrowed set.
+    let stratum_pre_applied = if let (Some(spec), Some(_)) = (&parsed_stratum, &core_sample_spec) {
+        let cg = CallGraph::from_registry(&registry);
+        let layers = cg.topological_layers();
+        let max_layer = if layers.is_empty() { 0 } else { layers.len() - 1 };
+        let range = shatter_core::stratum::resolve_range(spec, max_layer)?;
+        // filter_layers returns qualified names (file::func); extract bare names.
+        let selected: std::collections::HashSet<String> =
+            shatter_core::stratum::filter_layers(&layers, &range)
+                .into_iter()
+                .flat_map(|(_, funcs)| funcs.iter().cloned())
+                .map(|qn| {
+                    // Qualified names are "file_path::name"; extract the bare name.
+                    qn.rsplit_once("::").map_or(qn.clone(), |(_, name)| name.to_string())
+                })
+                .collect();
+        let before = all_analyses.len();
+        all_analyses.retain(|a| selected.contains(&a.name));
+        if log_level >= LogLevel::Info {
+            eprintln!(
+                "Stratum filter: {} of {} function(s) in selected layers",
+                all_analyses.len(),
+                before,
+            );
+        }
+        true
+    } else {
+        false
+    };
+
     // Apply core sample selection if --core-sample is set.
     let sampling_context = if let Some(spec) = core_sample_spec {
         let budget = shatter_core::core_sample::parse_sample_budget(spec)
@@ -1302,16 +1344,6 @@ async fn run_scan(
         parallelism
     };
 
-    // Parse --stratum spec if provided.
-    let parsed_stratum = if let Some(spec_str) = stratum_spec {
-        Some(
-            shatter_core::stratum::parse_stratum_spec(spec_str)
-                .map_err(|e| e.to_string())?,
-        )
-    } else {
-        None
-    };
-
     // Dry run: show the full exploration plan without executing.
     if dry_run {
         let scan_config = ScanConfig {
@@ -1321,7 +1353,7 @@ async fn run_scan(
             parallelism: effective_parallelism,
             timeout_per_fn: Duration::from_secs(timeout_per_fn),
             cache: None,
-            stratum: parsed_stratum.clone(),
+            stratum: if stratum_pre_applied { None } else { parsed_stratum.clone() },
             mock_overrides: HashMap::new(),
         };
         let plan = scan_orchestrator::format_dry_run_plan(
@@ -1386,7 +1418,7 @@ async fn run_scan(
         parallelism: effective_parallelism,
         timeout_per_fn: Duration::from_secs(timeout_per_fn),
         cache,
-        stratum: parsed_stratum,
+        stratum: if stratum_pre_applied { None } else { parsed_stratum },
         mock_overrides,
     };
 
