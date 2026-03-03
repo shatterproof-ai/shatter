@@ -20,6 +20,7 @@ For local dev: Rust toolchain, Node.js 22+, Go 1.24+, libclang. Run `./scripts/c
 - Frontend protocol handlers have round-trip tests (serialize → deserialize → verify)
 - Regression snapshots are checked into the repo and verified in CI
 - **Bug fixes require a reproduction test first** — write an automated test that demonstrates the bug (must fail), then fix the code and verify the test passes. Never attempt a fix without a failing test.
+- **No magic numbers or string literals** — define named constants for default values, timeouts, error codes, capability lists, and any value that appears in both production code and tests. Tests must reference the constant, not duplicate the literal. Each language has a canonical location for constants (see per-language conventions below).
 
 See `/rust-conventions`, `/ts-conventions`, `/go-conventions` skills for detailed per-language standards.
 
