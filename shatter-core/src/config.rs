@@ -393,6 +393,7 @@ pub fn merge_configs(configs: &[ShatterConfig]) -> ShatterConfig {
             generators,
             param_generators,
             mocks: None,
+            genetic: None,
         },
         functions,
         opaque_types,
@@ -792,6 +793,7 @@ functions:
                 generators: None,
                 param_generators: None,
                 mocks: None,
+                genetic: None,
             },
         );
 
@@ -808,6 +810,7 @@ functions:
                 generators: None,
                 param_generators: None,
                 mocks: None,
+                genetic: None,
             },
         );
 
@@ -848,6 +851,7 @@ functions:
                 generators: None,
                 param_generators: None,
                 mocks: None,
+                genetic: None,
             },
         );
 
@@ -909,6 +913,7 @@ functions:
                 generators: None,
                 param_generators: None,
                 mocks: None,
+                genetic: None,
             },
         );
 
