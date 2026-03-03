@@ -178,7 +178,7 @@ pub enum ExploreError {
 }
 
 /// Compute a hash of the branch path (branch_id + taken pairs) to identify unique paths.
-fn hash_branch_path(branch_path: &[crate::execution_record::BranchDecision]) -> u64 {
+pub fn hash_branch_path(branch_path: &[crate::execution_record::BranchDecision]) -> u64 {
     let mut hasher = std::hash::DefaultHasher::new();
     for decision in branch_path {
         decision.branch_id.hash(&mut hasher);

@@ -20,6 +20,7 @@ pub mod explorer;
 pub mod export;
 pub mod fingerprint;
 pub mod frontend;
+pub mod genetic_fitness;
 pub mod input_gen;
 pub mod log_level;
 pub mod mock_gen;
