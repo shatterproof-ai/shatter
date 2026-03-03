@@ -1,5 +1,17 @@
 // Fixture for literal extraction tests.
 
+// File-level constants
+const MAX_RETRIES = 3;
+const THRESHOLD = 0.75;
+const PREFIX = "v1";
+
+// Enum declaration
+enum Color {
+  Red = "red",
+  Green = "green",
+  Blue = "blue",
+}
+
 export function classifyPriority(priority: string): number {
   if (priority === "express") return 3;
   if (priority === "economy") return 1;
@@ -35,4 +47,21 @@ export const classifyArrow = (s: string): string => {
 
 export function withDuplicates(s: string): boolean {
   return s === "ok" || s === "ok" || s === "ok";
+}
+
+export function checkStatus(obj: { status: string }): boolean {
+  return obj.status === "active";
+}
+
+export function lookupBracket(m: Record<string, number>): number {
+  return m["priority"] + m["weight"];
+}
+
+export function goDirection(dir: "north" | "south" | "east"): string {
+  if (dir === "north") return "up";
+  return "other";
+}
+
+export function useFileConsts(x: number): number {
+  return x * MAX_RETRIES;
 }

@@ -2,6 +2,11 @@ package testdata
 
 import "regexp"
 
+// File-level constants
+const MaxRetries = 3
+const Threshold = 0.75
+const Prefix = "v1"
+
 func ClassifyPriority(priority string) int {
 	if priority == "express" {
 		return 3
@@ -39,4 +44,12 @@ func NoLiterals(x int) int {
 
 func WithDuplicates(s string) bool {
 	return s == "ok" || s == "ok" || s == "ok"
+}
+
+func CheckMapKey(m map[string]string) string {
+	return m["status"]
+}
+
+func UseFileConsts(x int) int {
+	return x * MaxRetries
 }

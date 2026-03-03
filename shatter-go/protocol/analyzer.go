@@ -32,7 +32,7 @@ func AnalyzeFile(filePath string, functionName string) ([]FunctionAnalysis, erro
 		if functionName != "" && fn.Name.Name != functionName {
 			continue
 		}
-		analysis := analyzeFunc(fset, fn, info)
+		analysis := analyzeFunc(fset, fn, info, file)
 		results = append(results, analysis)
 	}
 
@@ -59,13 +59,13 @@ func typeCheck(fset *token.FileSet, file *ast.File) *types.Info {
 	return info
 }
 
-func analyzeFunc(fset *token.FileSet, fn *ast.FuncDecl, info *types.Info) FunctionAnalysis {
+func analyzeFunc(fset *token.FileSet, fn *ast.FuncDecl, info *types.Info, file *ast.File) FunctionAnalysis {
 	params := extractParams(fn, info)
 	returnType := extractReturnType(fn, info)
 	paramNames := paramNameSet(params)
 	branches := extractBranches(fset, fn.Body, paramNames)
 	deps := extractDependencies(fset, fn.Body, info)
-	literals := extractLiterals(fn)
+	literals := extractLiterals(fn, file)
 
 	startLine := fset.Position(fn.Pos()).Line
 	endLine := fset.Position(fn.End()).Line
@@ -793,9 +793,10 @@ func exprString(expr ast.Expr) string {
 
 // --- Literal Extraction ---
 
-// extractLiterals walks a function body collecting all literal constant values.
+// extractLiterals walks a function body, file-level const/var declarations,
+// and map key accesses to collect literal constant values as candidate test inputs.
 // Results are deduplicated by (type, value) pair.
-func extractLiterals(fn *ast.FuncDecl) []LiteralValue {
+func extractLiterals(fn *ast.FuncDecl, file *ast.File) []LiteralValue {
 	if fn.Body == nil {
 		return nil
 	}
@@ -842,6 +843,15 @@ func extractLiterals(fn *ast.FuncDecl) []LiteralValue {
 			case "false":
 				add(LiteralValue{Type: "bool", Value: false})
 			}
+		case *ast.IndexExpr:
+			// Extract map bracket-access string keys: m["status"]
+			if lit, ok := node.Index.(*ast.BasicLit); ok && (lit.Kind == token.STRING) {
+				s, err := strconv.Unquote(lit.Value)
+				if err != nil {
+					s = strings.Trim(lit.Value, "`\"'")
+				}
+				add(LiteralValue{Type: "str", Value: s})
+			}
 		case *ast.CallExpr:
 			// Detect regexp.Compile("pattern") and regexp.MustCompile("pattern")
 			if sel, ok := node.Fun.(*ast.SelectorExpr); ok {
@@ -864,6 +874,60 @@ func extractLiterals(fn *ast.FuncDecl) []LiteralValue {
 		}
 		return true
 	})
+
+	// Extract file-level const and var declarations with literal values
+	for _, decl := range file.Decls {
+		gd, ok := decl.(*ast.GenDecl)
+		if !ok {
+			continue
+		}
+		if gd.Tok != token.CONST && gd.Tok != token.VAR {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for _, val := range vs.Values {
+				switch lit := val.(type) {
+				case *ast.BasicLit:
+					switch lit.Kind {
+					case token.INT:
+						if v, err := strconv.ParseInt(lit.Value, 0, 64); err == nil {
+							add(LiteralValue{Type: "int", Value: v})
+						}
+					case token.FLOAT:
+						if v, err := strconv.ParseFloat(lit.Value, 64); err == nil {
+							add(LiteralValue{Type: "float", Value: v})
+						}
+					case token.STRING, token.CHAR:
+						s, err := strconv.Unquote(lit.Value)
+						if err != nil {
+							s = strings.Trim(lit.Value, "`\"'")
+						}
+						add(LiteralValue{Type: "str", Value: s})
+					}
+				case *ast.UnaryExpr:
+					// Handle negative constants: const MinVal = -100
+					if lit.Op == token.SUB {
+						if bl, ok := lit.X.(*ast.BasicLit); ok {
+							switch bl.Kind {
+							case token.INT:
+								if v, err := strconv.ParseInt(bl.Value, 0, 64); err == nil {
+									add(LiteralValue{Type: "int", Value: -v})
+								}
+							case token.FLOAT:
+								if v, err := strconv.ParseFloat(bl.Value, 64); err == nil {
+									add(LiteralValue{Type: "float", Value: -v})
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
 
 	if results == nil {
 		return []LiteralValue{}

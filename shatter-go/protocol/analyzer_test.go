@@ -706,14 +706,16 @@ func TestExtractLiterals_RegexpMustCompile(t *testing.T) {
 	}
 }
 
-func TestExtractLiterals_NoLiteralsReturnsEmpty(t *testing.T) {
+func TestExtractLiterals_NoBodyLiterals(t *testing.T) {
 	results, err := AnalyzeFile(testdataPath("literals.go"), "NoLiterals")
 	if err != nil {
 		t.Fatalf("AnalyzeFile: %v", err)
 	}
 	fn := results[0]
-	if len(fn.Literals) != 0 {
-		t.Errorf("expected 0 literals, got %d", len(fn.Literals))
+	// NoLiterals has no body literals, but file-level consts (MaxRetries=3,
+	// Threshold=0.75, Prefix="v1") are now included for all functions.
+	if len(fn.Literals) != 3 {
+		t.Errorf("expected 3 file-level literals, got %d", len(fn.Literals))
 	}
 }
 
@@ -731,6 +733,38 @@ func TestExtractLiterals_Deduplication(t *testing.T) {
 	}
 	if okCount != 1 {
 		t.Errorf("expected 1 'ok' literal, got %d", okCount)
+	}
+}
+
+func TestExtractLiterals_FileConstants(t *testing.T) {
+	results, err := AnalyzeFile(testdataPath("literals.go"), "UseFileConsts")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	fn := results[0]
+	ints := filterLiterals(fn.Literals, "int")
+	if !containsLitValue(ints, int64(3)) {
+		t.Error("expected file-level const MaxRetries=3 in literals")
+	}
+	strs := filterLiterals(fn.Literals, "str")
+	if !containsLitValue(strs, "v1") {
+		t.Error("expected file-level const Prefix=\"v1\" in literals")
+	}
+	floats := filterLiterals(fn.Literals, "float")
+	if !containsLitValue(floats, 0.75) {
+		t.Error("expected file-level const Threshold=0.75 in literals")
+	}
+}
+
+func TestExtractLiterals_MapKeyAccess(t *testing.T) {
+	results, err := AnalyzeFile(testdataPath("literals.go"), "CheckMapKey")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	fn := results[0]
+	strs := filterLiterals(fn.Literals, "str")
+	if !containsLitValue(strs, "status") {
+		t.Error("expected map key \"status\" in literals")
 	}
 }
 

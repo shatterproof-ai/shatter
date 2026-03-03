@@ -179,13 +179,13 @@ func TestAnalyzeEmptyFileJSONIncludesFunctionsField(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if resp.Status != "analyze" {
-		t.Errorf("status = %%q, want analyze", resp.Status)
+		t.Errorf("status = %q, want analyze", resp.Status)
 	}
 	if resp.Functions == nil {
 		t.Error("functions should be non-nil empty slice, got nil")
 	}
 	if len(resp.Functions) != 0 {
-		t.Errorf("functions len = %%d, want 0", len(resp.Functions))
+		t.Errorf("functions len = %d, want 0", len(resp.Functions))
 	}
 }
 

@@ -146,7 +146,7 @@ function analyzeFunctionDeclaration(
 
   const branches = node.body ? extractBranches(node.body, sourceFile, paramNames) : [];
   const dependencies = node.body ? extractDependencies(node.body, checker, sourceFile, paramNames) : [];
-  const literals = extractLiterals(node, sourceFile);
+  const literals = extractLiterals(node, sourceFile, checker);
 
   return {
     name,
@@ -182,7 +182,7 @@ function analyzeArrowFunction(
   const body = ts.isBlock(node.body) ? node.body : null;
   const branches = body ? extractBranches(body, sourceFile, paramNames) : [];
   const dependencies = body ? extractDependencies(body, checker, sourceFile, paramNames) : [];
-  const literals = extractLiterals(node, sourceFile);
+  const literals = extractLiterals(node, sourceFile, checker);
 
   return {
     name,
@@ -216,7 +216,7 @@ function analyzeFunctionDeclarationUnnamed(
 
   const branches = node.body ? extractBranches(node.body, sourceFile, paramNames) : [];
   const dependencies = node.body ? extractDependencies(node.body, checker, sourceFile, paramNames) : [];
-  const literals = extractLiterals(node, sourceFile);
+  const literals = extractLiterals(node, sourceFile, checker);
 
   return {
     name: syntheticName,
@@ -252,7 +252,7 @@ function analyzeFunctionExpression(
   const body = node.body;
   const branches = extractBranches(body, sourceFile, paramNames);
   const dependencies = extractDependencies(body, checker, sourceFile, paramNames);
-  const literals = extractLiterals(node, sourceFile);
+  const literals = extractLiterals(node, sourceFile, checker);
 
   return {
     name,
@@ -1037,17 +1037,18 @@ function mapUnaryOp(kind: ts.PrefixUnaryOperator): UnOpKind | null {
 }
 
 // ---------------------------------------------------------------------------
-// Literal extraction — collect all constant values from a function body
+// Literal extraction — collect all constant values from source code
 // ---------------------------------------------------------------------------
 
 /**
- * Walk a function's body (and default parameter values) to extract all literal
- * constant values. Results are deduplicated and returned for use as candidate
- * test inputs by the core engine.
+ * Walk a function's body (and default parameter values), plus file-level
+ * constants, enums, union type literal members, and property access keys
+ * to extract candidate test inputs. Results are deduplicated.
  */
 function extractLiterals(
   node: ts.FunctionDeclaration | ts.ArrowFunction | ts.FunctionExpression,
   sourceFile: ts.SourceFile,
+  checker: ts.TypeChecker,
 ): LiteralValue[] {
   const seen = new Set<string>();
   const results: LiteralValue[] = [];
@@ -1060,18 +1061,21 @@ function extractLiterals(
     }
   }
 
+  function addNumeric(num: number): void {
+    if (Number.isInteger(num)) {
+      add({ type: "int", value: num });
+    } else {
+      add({ type: "float", value: num });
+    }
+  }
+
   function walk(n: ts.Node): void {
     if (ts.isStringLiteral(n)) {
       add({ type: "str", value: n.text });
     } else if (ts.isNoSubstitutionTemplateLiteral(n)) {
       add({ type: "str", value: n.text });
     } else if (ts.isNumericLiteral(n)) {
-      const num = Number(n.text);
-      if (Number.isInteger(num)) {
-        add({ type: "int", value: num });
-      } else {
-        add({ type: "float", value: num });
-      }
+      addNumeric(Number(n.text));
     } else if (n.kind === ts.SyntaxKind.TrueKeyword) {
       add({ type: "bool", value: true });
     } else if (n.kind === ts.SyntaxKind.FalseKeyword) {
@@ -1081,6 +1085,16 @@ function extractLiterals(
       const lastSlash = text.lastIndexOf("/");
       const pattern = text.slice(1, lastSlash);
       add({ type: "regex", pattern });
+    } else if (ts.isPropertyAccessExpression(n)) {
+      // Extract property access keys as candidate string inputs
+      add({ type: "str", value: n.name.text });
+    } else if (
+      ts.isElementAccessExpression(n) &&
+      n.argumentExpression &&
+      ts.isStringLiteral(n.argumentExpression)
+    ) {
+      // Extract bracket-access string keys: obj["key"]
+      add({ type: "str", value: n.argumentExpression.text });
     }
     ts.forEachChild(n, walk);
   }
@@ -1095,6 +1109,52 @@ function extractLiterals(
   // Walk function body
   if (node.body) {
     walk(node.body);
+  }
+
+  // Extract file-level const declarations
+  ts.forEachChild(sourceFile, (child) => {
+    if (ts.isVariableStatement(child)) {
+      const isConst =
+        (child.declarationList.flags & ts.NodeFlags.Const) !== 0;
+      if (!isConst) return;
+      for (const decl of child.declarationList.declarations) {
+        if (!decl.initializer) continue;
+        // Skip function-valued consts (they're not literal candidates)
+        if (
+          ts.isArrowFunction(decl.initializer) ||
+          ts.isFunctionExpression(decl.initializer)
+        )
+          continue;
+        walk(decl.initializer);
+      }
+    }
+
+    // Extract enum member values
+    if (ts.isEnumDeclaration(child)) {
+      for (const member of child.members) {
+        if (member.initializer) {
+          if (ts.isStringLiteral(member.initializer)) {
+            add({ type: "str", value: member.initializer.text });
+          } else if (ts.isNumericLiteral(member.initializer)) {
+            addNumeric(Number(member.initializer.text));
+          }
+        }
+      }
+    }
+  });
+
+  // Extract union type literal members from parameter types
+  for (const param of node.parameters) {
+    const paramType = checker.getTypeAtLocation(param);
+    if (paramType.isUnion()) {
+      for (const variant of paramType.types) {
+        if (variant.isStringLiteral()) {
+          add({ type: "str", value: variant.value });
+        } else if (variant.isNumberLiteral()) {
+          addNumeric(variant.value);
+        }
+      }
+    }
   }
 
   return results;

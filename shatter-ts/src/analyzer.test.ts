@@ -472,10 +472,16 @@ describe("analyzeFile", () => {
       expect(strs).toContain("World");
     });
 
-    it("omits literals field when none found", () => {
+    it("includes file-level consts even when function body has no literals", () => {
       const results = analyzeFile(path.join(fixtures, "literals.ts"), "noLiterals");
       const fn = results[0]!;
-      expect(fn.literals).toBeUndefined();
+      // noLiterals has no body literals, but file-level consts and enums are included
+      const lits = fn.literals ?? [];
+      expect(lits.length).toBeGreaterThan(0);
+      const ints = lits
+        .filter((l): l is { type: "int"; value: number } => l.type === "int")
+        .map((l) => l.value);
+      expect(ints).toContain(3); // MAX_RETRIES
     });
 
     it("extracts literals from arrow functions", () => {
@@ -496,6 +502,64 @@ describe("analyzeFile", () => {
         (l) => l.type === "str" && (l as { type: "str"; value: string }).value === "ok",
       ).length;
       expect(okCount).toBe(1);
+    });
+
+    it("extracts file-level const values", () => {
+      const results = analyzeFile(path.join(fixtures, "literals.ts"), "useFileConsts");
+      const fn = results[0]!;
+      const ints = (fn.literals ?? [])
+        .filter((l): l is { type: "int"; value: number } => l.type === "int")
+        .map((l) => l.value);
+      expect(ints).toContain(3); // MAX_RETRIES
+      const strs = (fn.literals ?? [])
+        .filter((l): l is { type: "str"; value: string } => l.type === "str")
+        .map((l) => l.value);
+      expect(strs).toContain("v1"); // PREFIX
+      const floats = (fn.literals ?? [])
+        .filter((l): l is { type: "float"; value: number } => l.type === "float")
+        .map((l) => l.value);
+      expect(floats).toContain(0.75); // THRESHOLD
+    });
+
+    it("extracts enum member values", () => {
+      const results = analyzeFile(path.join(fixtures, "literals.ts"), "useFileConsts");
+      const fn = results[0]!;
+      const strs = (fn.literals ?? [])
+        .filter((l): l is { type: "str"; value: string } => l.type === "str")
+        .map((l) => l.value);
+      expect(strs).toContain("red");
+      expect(strs).toContain("green");
+      expect(strs).toContain("blue");
+    });
+
+    it("extracts property access keys", () => {
+      const results = analyzeFile(path.join(fixtures, "literals.ts"), "checkStatus");
+      const fn = results[0]!;
+      const strs = (fn.literals ?? [])
+        .filter((l): l is { type: "str"; value: string } => l.type === "str")
+        .map((l) => l.value);
+      expect(strs).toContain("status");
+    });
+
+    it("extracts bracket-access string keys", () => {
+      const results = analyzeFile(path.join(fixtures, "literals.ts"), "lookupBracket");
+      const fn = results[0]!;
+      const strs = (fn.literals ?? [])
+        .filter((l): l is { type: "str"; value: string } => l.type === "str")
+        .map((l) => l.value);
+      expect(strs).toContain("priority");
+      expect(strs).toContain("weight");
+    });
+
+    it("extracts union type literal members from parameters", () => {
+      const results = analyzeFile(path.join(fixtures, "literals.ts"), "goDirection");
+      const fn = results[0]!;
+      const strs = (fn.literals ?? [])
+        .filter((l): l is { type: "str"; value: string } => l.type === "str")
+        .map((l) => l.value);
+      expect(strs).toContain("north");
+      expect(strs).toContain("south");
+      expect(strs).toContain("east");
     });
   });
 
