@@ -126,7 +126,7 @@ GO_EXAMPLES=(
     "examples/go/03-errors.go:SafeDivide"
 )
 
-TOTAL=30
+TOTAL=31
 
 # ─── Walkthrough ──────────────────────────────────────────────────────
 
@@ -296,5 +296,10 @@ step 29 $TOTAL "File-Level Explore" \
 step 30 $TOTAL "Concolic Exploration (Z3)" \
     "Use the Z3-backed concolic explorer to solve branch constraints" \
     $SHATTER explore --concolic "${EXAMPLES[0]}"
+
+# Stage 31: Custom build-frontend help
+step 31 $TOTAL "Custom Build Frontend" \
+    "Show the build-frontend subcommand for compiling native generators into a custom frontend binary" \
+    $SHATTER build-frontend --help
 
 echo "${BOLD}${GREEN}Walkthrough complete.${RESET}"

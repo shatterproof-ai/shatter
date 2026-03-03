@@ -1,4 +1,5 @@
 mod analyzer;
+mod generators;
 mod handler;
 mod instrument;
 mod protocol;

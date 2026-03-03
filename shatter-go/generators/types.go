@@ -9,3 +9,14 @@ type GeneratorResult struct {
 	Value  json.RawMessage `json:"value"`
 	Recipe json.RawMessage `json:"recipe,omitempty"`
 }
+
+// NativeGeneratorResult is returned by compiled-in (custom build) generators.
+// Value holds a live in-process object; Recipe is a serializable blob for replay.
+type NativeGeneratorResult struct {
+	ID     string          // Human-readable label (required).
+	Value  any             // Live object for in-process use.
+	Recipe json.RawMessage // Serializable reconstruction params.
+}
+
+// NativeGeneratorFunc is the signature for custom-build generators.
+type NativeGeneratorFunc func(recipe json.RawMessage) NativeGeneratorResult

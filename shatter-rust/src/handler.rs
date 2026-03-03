@@ -1,5 +1,6 @@
 use std::io::{self, BufRead, BufReader};
 
+use crate::generators::NativeRegistry;
 use crate::protocol::{
     self, Request, Response, FRONTEND_LANGUAGE, FRONTEND_VERSION, PROTOCOL_VERSION,
 };
@@ -66,6 +67,7 @@ pub struct Handler<R, W, L> {
     #[allow(dead_code)] // will be used when execute is implemented
     exec_timeout_ms: u64,
     wasm_cache: WasmCache,
+    native_registry: Option<NativeRegistry>,
 }
 
 impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
@@ -77,6 +79,25 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             log_level: FrontendLogLevel::from_env(),
             exec_timeout_ms: exec_timeout_from_env(),
             wasm_cache: WasmCache::new(),
+            native_registry: None,
+        }
+    }
+
+    /// Create a handler with a native generator registry for custom builds.
+    pub fn new_with_native_registry(
+        reader: R,
+        writer: W,
+        log: L,
+        registry: NativeRegistry,
+    ) -> Self {
+        Self {
+            reader: BufReader::new(reader),
+            writer,
+            log,
+            log_level: FrontendLogLevel::from_env(),
+            exec_timeout_ms: exec_timeout_from_env(),
+            wasm_cache: WasmCache::new(),
+            native_registry: Some(registry),
         }
     }
 
@@ -90,6 +111,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             log_level: level,
             exec_timeout_ms: exec_timeout_from_env(),
             wasm_cache: WasmCache::new(),
+            native_registry: None,
         }
     }
 
@@ -334,30 +356,61 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
         };
 
         let path = std::path::Path::new(file_path);
-        if path.extension().and_then(|e| e.to_str()) == Some("wasm") {
-            match self.wasm_cache.generate(path, &func_name, req.recipe.as_ref()) {
-                Ok((value, generator_id, recipe)) => {
-                    resp.status = "generate".to_string();
-                    resp.value = Some(value);
-                    resp.generator_id = Some(generator_id);
-                    resp.recipe = recipe;
-                    resp
+        let ext = path.extension().and_then(|e| e.to_str());
+
+        match ext {
+            Some("wasm") => {
+                match self.wasm_cache.generate(path, &func_name, req.recipe.as_ref()) {
+                    Ok((value, generator_id, recipe)) => {
+                        resp.status = "generate".to_string();
+                        resp.value = Some(value);
+                        resp.generator_id = Some(generator_id);
+                        resp.recipe = recipe;
+                        resp
+                    }
+                    Err(e) => {
+                        resp.status = "error".to_string();
+                        resp.code = Some("internal_error".to_string());
+                        resp.message = Some(e);
+                        resp
+                    }
                 }
-                Err(e) => {
+            }
+            Some("rs") => {
+                if let Some(ref registry) = self.native_registry {
+                    match registry.generate(&func_name, req.recipe.clone()) {
+                        Ok((value, generator_id, recipe)) => {
+                            resp.status = "generate".to_string();
+                            resp.value = Some(value);
+                            resp.generator_id = Some(generator_id);
+                            resp.recipe = Some(recipe);
+                            resp
+                        }
+                        Err(e) => {
+                            resp.status = "error".to_string();
+                            resp.code = Some("internal_error".to_string());
+                            resp.message = Some(e);
+                            resp
+                        }
+                    }
+                } else {
                     resp.status = "error".to_string();
                     resp.code = Some("internal_error".to_string());
-                    resp.message = Some(e);
+                    resp.message = Some(format!(
+                        "native generator {func_name:?} requires a custom build (run `shatter build-frontend rust`)"
+                    ));
                     resp
                 }
             }
-        } else {
-            resp.status = "error".to_string();
-            resp.code = Some("invalid_request".to_string());
-            resp.message = Some(format!(
-                "unsupported generator file type: {}",
-                file_path
-            ));
-            resp
+            _ => {
+                resp.status = "error".to_string();
+                resp.code = Some("invalid_request".to_string());
+                resp.message = Some(format!(
+                    "unsupported generator file type: {}",
+                    file_path
+                ));
+                resp
+            }
         }
     }
 

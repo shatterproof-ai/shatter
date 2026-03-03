@@ -444,6 +444,12 @@ func (h *Handler) handleGenerate(resp Response, req Request) Response {
 	return resp
 }
 
+// Registry returns the generator registry, allowing custom builds to register
+// native generators before calling Run().
+func (h *Handler) Registry() *generators.Registry {
+	return h.registry
+}
+
 func (h *Handler) handleShutdown(resp Response) Response {
 	h.registry.Close()
 	resp.Status = "shutdown_ack"
