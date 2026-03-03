@@ -5,9 +5,14 @@
 //! and what fraction of branch conditions the frontend expressed as symbolic
 //! expressions vs opaque unknowns.
 
+use std::collections::{HashMap, HashSet};
+
 use serde::{Deserialize, Serialize};
 
 use crate::execution_record::SymConstraint;
+use crate::explorer::ExplorationResult;
+use crate::orchestrator::ExploreResult;
+use crate::protocol::{BranchInfo, ExecuteResult, FunctionAnalysis};
 
 /// How a branch was discovered during exploration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -188,6 +193,101 @@ pub fn format_coverage_metrics(metrics: &CoverageMetrics) -> String {
     }
 
     out
+}
+
+/// Why a branch was selected as a GA target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TargetReason {
+    /// Branch was never discovered by any method.
+    Uncovered,
+    /// Branch was observed but its constraint is Unknown (opaque to solver).
+    OpaqueConstraint,
+}
+
+/// A branch that the Genetic Algorithm should target for coverage.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TargetBranch {
+    /// Unique branch identifier within the function.
+    pub branch_id: u32,
+    /// Source line number of the branch.
+    pub line: u32,
+    /// Why this branch is targeted.
+    pub reason: TargetReason,
+    /// Hint about the constraint to guide mutation strategy.
+    pub constraint_hint: Option<String>,
+}
+
+/// Extract unsolved branch targets from a random exploration result.
+///
+/// Compares the static branch list from `analysis` against branches discovered
+/// during exploration to identify targets the GA should focus on.
+pub fn extract_targets(
+    analysis: &FunctionAnalysis,
+    result: &ExplorationResult,
+) -> Vec<TargetBranch> {
+    extract_targets_inner(&analysis.branches, &result.discoveries, &result.raw_results)
+}
+
+/// Extract unsolved branch targets from a concolic exploration result.
+///
+/// Same logic as [`extract_targets`] but accepts the orchestrator's result type.
+pub fn extract_targets_concolic(
+    analysis: &FunctionAnalysis,
+    result: &ExploreResult,
+) -> Vec<TargetBranch> {
+    extract_targets_inner(&analysis.branches, &result.discoveries, &result.raw_results)
+}
+
+/// Core target extraction logic operating on slices.
+///
+/// A branch is targeted if:
+/// - It was never discovered (not in `discoveries`) → `TargetReason::Uncovered`
+/// - It was discovered but its runtime constraint is `Unknown` → `TargetReason::OpaqueConstraint`
+fn extract_targets_inner(
+    branches: &[BranchInfo],
+    discoveries: &[(u32, DiscoveryMethod)],
+    raw_results: &[(Vec<serde_json::Value>, ExecuteResult)],
+) -> Vec<TargetBranch> {
+    let discovered: HashSet<u32> = discoveries.iter().map(|(id, _)| *id).collect();
+
+    // Collect opaque constraint hints from runtime branch decisions.
+    let mut opaque_hints: HashMap<u32, String> = HashMap::new();
+    for (_, exec) in raw_results {
+        for decision in &exec.branch_path {
+            if let SymConstraint::Unknown { hint } = &decision.constraint {
+                opaque_hints
+                    .entry(decision.branch_id)
+                    .or_insert_with(|| hint.clone());
+            }
+        }
+    }
+
+    let mut targets: Vec<TargetBranch> = Vec::new();
+    for branch in branches {
+        if !discovered.contains(&branch.id) {
+            targets.push(TargetBranch {
+                branch_id: branch.id,
+                line: branch.line,
+                reason: TargetReason::Uncovered,
+                constraint_hint: if branch.condition_text.is_empty() {
+                    None
+                } else {
+                    Some(branch.condition_text.clone())
+                },
+            });
+        } else if let Some(hint) = opaque_hints.get(&branch.id) {
+            targets.push(TargetBranch {
+                branch_id: branch.id,
+                line: branch.line,
+                reason: TargetReason::OpaqueConstraint,
+                constraint_hint: if hint.is_empty() { None } else { Some(hint.clone()) },
+            });
+        }
+    }
+
+    targets.sort_by_key(|t| t.branch_id);
+    targets
 }
 
 #[cfg(test)]
@@ -416,5 +516,247 @@ mod tests {
         let deserialized: CoverageMetrics =
             serde_json::from_str(&json).expect("deserialize");
         assert_eq!(metrics, deserialized);
+    }
+
+    // --- extract_targets tests ---
+
+    use crate::execution_record::BranchDecision;
+    use crate::protocol::{BranchInfo, BranchType, ExecuteResult, FunctionAnalysis, PerformanceMetrics};
+    use crate::types::{ParamInfo, TypeInfo};
+
+    fn make_branch(id: u32, line: u32, condition: &str) -> BranchInfo {
+        BranchInfo {
+            id,
+            line,
+            condition_text: condition.to_string(),
+            condition: None,
+            branch_type: BranchType::If,
+        }
+    }
+
+    fn make_analysis(branches: Vec<BranchInfo>) -> FunctionAnalysis {
+        FunctionAnalysis {
+            name: "test_fn".to_string(),
+            exported: true,
+            params: vec![ParamInfo {
+                name: "x".to_string(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            }],
+            branches,
+            dependencies: vec![],
+            return_type: TypeInfo::Int,
+            start_line: 1,
+            end_line: 20,
+            literals: vec![],
+        }
+    }
+
+    fn make_exec_with_branches(decisions: Vec<BranchDecision>) -> ExecuteResult {
+        ExecuteResult {
+            return_value: None,
+            thrown_error: None,
+            branch_path: decisions,
+            lines_executed: vec![],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
+            performance: PerformanceMetrics {
+                wall_time_ms: 0.0,
+                cpu_time_us: 0,
+                heap_used_bytes: 0,
+                heap_allocated_bytes: 0,
+            },
+        }
+    }
+
+    #[test]
+    fn extract_targets_all_uncovered() {
+        let analysis = make_analysis(vec![
+            make_branch(0, 5, "x > 0"),
+            make_branch(1, 10, "x < 100"),
+            make_branch(2, 15, "x == 42"),
+        ]);
+        let discoveries = vec![];
+        let raw_results = vec![];
+
+        let targets = extract_targets_inner(&analysis.branches, &discoveries, &raw_results);
+
+        assert_eq!(targets.len(), 3);
+        for target in &targets {
+            assert_eq!(target.reason, TargetReason::Uncovered);
+        }
+        assert_eq!(targets[0].branch_id, 0);
+        assert_eq!(targets[0].constraint_hint.as_deref(), Some("x > 0"));
+        assert_eq!(targets[1].branch_id, 1);
+        assert_eq!(targets[2].branch_id, 2);
+    }
+
+    #[test]
+    fn extract_targets_all_discovered_solvable() {
+        let analysis = make_analysis(vec![
+            make_branch(0, 5, "x > 0"),
+            make_branch(1, 10, "x < 100"),
+        ]);
+        let discoveries = vec![
+            (0, DiscoveryMethod::Z3),
+            (1, DiscoveryMethod::Random),
+        ];
+        // No Unknown constraints in executions
+        let expr = SymExpr::Const(ConstValue::Bool(true));
+        let exec = make_exec_with_branches(vec![
+            BranchDecision {
+                branch_id: 0,
+                line: 5,
+                taken: true,
+                constraint: SymConstraint::Expr { expr: expr.clone() },
+            },
+            BranchDecision {
+                branch_id: 1,
+                line: 10,
+                taken: true,
+                constraint: SymConstraint::Expr { expr },
+            },
+        ]);
+        let raw_results = vec![(vec![serde_json::json!(5)], exec)];
+
+        let targets = extract_targets_inner(&analysis.branches, &discoveries, &raw_results);
+        assert!(targets.is_empty());
+    }
+
+    #[test]
+    fn extract_targets_mixed_uncovered_and_opaque() {
+        let analysis = make_analysis(vec![
+            make_branch(0, 5, "x > 0"),
+            make_branch(1, 10, "x < 100"),
+            make_branch(2, 15, "isValid(x)"),
+            make_branch(3, 20, "x == 42"),
+            make_branch(4, 25, "x != 0"),
+        ]);
+        // Branches 0, 1, 2 discovered; 3 and 4 not discovered
+        let discoveries = vec![
+            (0, DiscoveryMethod::Z3),
+            (1, DiscoveryMethod::Random),
+            (2, DiscoveryMethod::Random),
+        ];
+        // Branch 2 has Unknown constraint at runtime
+        let exec = make_exec_with_branches(vec![
+            BranchDecision {
+                branch_id: 2,
+                line: 15,
+                taken: true,
+                constraint: SymConstraint::Unknown {
+                    hint: "dynamic validation call".to_string(),
+                },
+            },
+        ]);
+        let raw_results = vec![(vec![serde_json::json!(10)], exec)];
+
+        let targets = extract_targets_inner(&analysis.branches, &discoveries, &raw_results);
+
+        assert_eq!(targets.len(), 3);
+        // Branch 2: OpaqueConstraint
+        assert_eq!(targets[0].branch_id, 2);
+        assert_eq!(targets[0].reason, TargetReason::OpaqueConstraint);
+        assert_eq!(targets[0].constraint_hint.as_deref(), Some("dynamic validation call"));
+        // Branch 3: Uncovered
+        assert_eq!(targets[1].branch_id, 3);
+        assert_eq!(targets[1].reason, TargetReason::Uncovered);
+        assert_eq!(targets[1].constraint_hint.as_deref(), Some("x == 42"));
+        // Branch 4: Uncovered
+        assert_eq!(targets[2].branch_id, 4);
+        assert_eq!(targets[2].reason, TargetReason::Uncovered);
+    }
+
+    #[test]
+    fn extract_targets_empty_branches() {
+        let analysis = make_analysis(vec![]);
+        let discoveries = vec![(0, DiscoveryMethod::Z3)];
+        let raw_results = vec![];
+
+        let targets = extract_targets_inner(&analysis.branches, &discoveries, &raw_results);
+        assert!(targets.is_empty());
+    }
+
+    #[test]
+    fn extract_targets_opaque_hint_from_runtime_not_static() {
+        let analysis = make_analysis(vec![
+            make_branch(0, 5, "static condition text"),
+        ]);
+        let discoveries = vec![(0, DiscoveryMethod::Random)];
+        let exec = make_exec_with_branches(vec![
+            BranchDecision {
+                branch_id: 0,
+                line: 5,
+                taken: true,
+                constraint: SymConstraint::Unknown {
+                    hint: "runtime opaque hint".to_string(),
+                },
+            },
+        ]);
+        let raw_results = vec![(vec![serde_json::json!(1)], exec)];
+
+        let targets = extract_targets_inner(&analysis.branches, &discoveries, &raw_results);
+
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].reason, TargetReason::OpaqueConstraint);
+        // Hint comes from runtime Unknown, not from BranchInfo.condition_text
+        assert_eq!(targets[0].constraint_hint.as_deref(), Some("runtime opaque hint"));
+    }
+
+    #[test]
+    fn extract_targets_uncovered_hint_from_condition_text() {
+        let analysis = make_analysis(vec![
+            make_branch(0, 5, "x > threshold"),
+        ]);
+        let discoveries = vec![];
+        let raw_results = vec![];
+
+        let targets = extract_targets_inner(&analysis.branches, &discoveries, &raw_results);
+
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].reason, TargetReason::Uncovered);
+        assert_eq!(targets[0].constraint_hint.as_deref(), Some("x > threshold"));
+    }
+
+    #[test]
+    fn extract_targets_sorted_by_branch_id() {
+        let analysis = make_analysis(vec![
+            make_branch(5, 50, "e"),
+            make_branch(1, 10, "a"),
+            make_branch(3, 30, "c"),
+        ]);
+        let discoveries = vec![];
+        let raw_results = vec![];
+
+        let targets = extract_targets_inner(&analysis.branches, &discoveries, &raw_results);
+
+        assert_eq!(targets.len(), 3);
+        assert_eq!(targets[0].branch_id, 1);
+        assert_eq!(targets[1].branch_id, 3);
+        assert_eq!(targets[2].branch_id, 5);
+    }
+
+    #[test]
+    fn target_branch_serialization_round_trips() {
+        let target = TargetBranch {
+            branch_id: 7,
+            line: 42,
+            reason: TargetReason::OpaqueConstraint,
+            constraint_hint: Some("dynamic check".to_string()),
+        };
+        let json = serde_json::to_string(&target).expect("serialize");
+        let deserialized: TargetBranch = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(target, deserialized);
+
+        let target_uncovered = TargetBranch {
+            branch_id: 3,
+            line: 10,
+            reason: TargetReason::Uncovered,
+            constraint_hint: None,
+        };
+        let json = serde_json::to_string(&target_uncovered).expect("serialize");
+        let deserialized: TargetBranch = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(target_uncovered, deserialized);
     }
 }
