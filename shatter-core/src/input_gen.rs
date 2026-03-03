@@ -1193,6 +1193,144 @@ fn mutate_nullable(value: &Value, inner: &TypeInfo, rng: &mut impl Rng) -> Value
 }
 
 // ---------------------------------------------------------------------------
+// Type-aware crossover operators
+// ---------------------------------------------------------------------------
+
+/// Produce two children by crossing over two parent input vectors.
+///
+/// With probability `crossover_rate`, performs type-aware crossover; otherwise
+/// clones both parents unchanged. At the parameter level, uniform crossover
+/// randomly assigns each parameter from parent A or B. Object and array
+/// parameters use finer-grained strategies (field-level and single-point,
+/// respectively).
+pub fn crossover_inputs(
+    parent_a: &[Value],
+    parent_b: &[Value],
+    params: &[crate::types::ParamInfo],
+    crossover_rate: f64,
+    rng: &mut impl Rng,
+) -> (Vec<Value>, Vec<Value>) {
+    let len = parent_a.len().min(parent_b.len()).min(params.len());
+
+    // No crossover — clone parents
+    if rng.random_range(0.0..1.0_f64) >= crossover_rate {
+        return (parent_a.to_vec(), parent_b.to_vec());
+    }
+
+    let mut child1 = Vec::with_capacity(len);
+    let mut child2 = Vec::with_capacity(len);
+
+    for i in 0..len {
+        let (c1, c2) = crossover_value(&parent_a[i], &parent_b[i], &params[i].typ, rng);
+        child1.push(c1);
+        child2.push(c2);
+    }
+
+    (child1, child2)
+}
+
+/// Cross over two values according to their type.
+///
+/// - **Object**: field-level crossover (each field randomly from A or B).
+/// - **Array**: single-point crossover (prefix from one, suffix from the other).
+/// - **Other types**: uniform swap (randomly assign A→child1/B→child2 or vice versa).
+fn crossover_value(a: &Value, b: &Value, typ: &TypeInfo, rng: &mut impl Rng) -> (Value, Value) {
+    match typ {
+        TypeInfo::Object { fields } => crossover_object(a, b, fields, rng),
+        TypeInfo::Array { .. } => crossover_array(a, b, rng),
+        _ => {
+            if rng.random_bool(0.5) {
+                (a.clone(), b.clone())
+            } else {
+                (b.clone(), a.clone())
+            }
+        }
+    }
+}
+
+/// Field-level crossover for objects: each field independently chosen from A or B.
+fn crossover_object(
+    a: &Value,
+    b: &Value,
+    fields: &[(String, TypeInfo)],
+    rng: &mut impl Rng,
+) -> (Value, Value) {
+    let obj_a = a.as_object();
+    let obj_b = b.as_object();
+
+    // If either isn't actually an object, fall back to uniform swap
+    let (Some(obj_a), Some(obj_b)) = (obj_a, obj_b) else {
+        return if rng.random_bool(0.5) {
+            (a.clone(), b.clone())
+        } else {
+            (b.clone(), a.clone())
+        };
+    };
+
+    let mut c1 = serde_json::Map::new();
+    let mut c2 = serde_json::Map::new();
+
+    for (name, _typ) in fields {
+        let val_a = obj_a.get(name);
+        let val_b = obj_b.get(name);
+        match (val_a, val_b) {
+            (Some(va), Some(vb)) => {
+                if rng.random_bool(0.5) {
+                    c1.insert(name.clone(), va.clone());
+                    c2.insert(name.clone(), vb.clone());
+                } else {
+                    c1.insert(name.clone(), vb.clone());
+                    c2.insert(name.clone(), va.clone());
+                }
+            }
+            (Some(v), None) | (None, Some(v)) => {
+                // Only one parent has the field — give to one child
+                if rng.random_bool(0.5) {
+                    c1.insert(name.clone(), v.clone());
+                } else {
+                    c2.insert(name.clone(), v.clone());
+                }
+            }
+            (None, None) => {}
+        }
+    }
+
+    (Value::Object(c1), Value::Object(c2))
+}
+
+/// Single-point crossover for arrays: pick a crossover point, swap tails.
+fn crossover_array(a: &Value, b: &Value, rng: &mut impl Rng) -> (Value, Value) {
+    let arr_a = a.as_array();
+    let arr_b = b.as_array();
+
+    let (Some(arr_a), Some(arr_b)) = (arr_a, arr_b) else {
+        return if rng.random_bool(0.5) {
+            (a.clone(), b.clone())
+        } else {
+            (b.clone(), a.clone())
+        };
+    };
+
+    if arr_a.is_empty() && arr_b.is_empty() {
+        return (json!([]), json!([]));
+    }
+
+    // Crossover point chosen from 0..=min_len so both sides contribute
+    let min_len = arr_a.len().min(arr_b.len());
+    let point = rng.random_range(0..=min_len);
+
+    // child1 = arr_a[..point] ++ arr_b[point..]
+    // child2 = arr_b[..point] ++ arr_a[point..]
+    let mut c1: Vec<Value> = arr_a.iter().take(point).cloned().collect();
+    c1.extend(arr_b.iter().skip(point).cloned());
+
+    let mut c2: Vec<Value> = arr_b.iter().take(point).cloned().collect();
+    c2.extend(arr_a.iter().skip(point).cloned());
+
+    (json!(c1), json!(c2))
+}
+
+// ---------------------------------------------------------------------------
 // Literal-derived candidate inputs
 // ---------------------------------------------------------------------------
 
@@ -2155,5 +2293,166 @@ mod tests {
                 "expected int or string, got {mutated}"
             );
         }
+    }
+
+    // -- Crossover operator tests --
+
+    #[test]
+    fn crossover_inputs_respects_rate_zero() {
+        let mut rng = seeded_rng();
+        let params = vec![
+            ParamInfo { name: "a".into(), typ: TypeInfo::Int, type_name: None },
+            ParamInfo { name: "b".into(), typ: TypeInfo::Str, type_name: None },
+        ];
+        let parent_a = vec![json!(1), json!("hello")];
+        let parent_b = vec![json!(2), json!("world")];
+
+        let (c1, c2) = crossover_inputs(&parent_a, &parent_b, &params, 0.0, &mut rng);
+        assert_eq!(c1, parent_a);
+        assert_eq!(c2, parent_b);
+    }
+
+    #[test]
+    fn crossover_inputs_produces_mixed_children() {
+        let params = vec![
+            ParamInfo { name: "a".into(), typ: TypeInfo::Int, type_name: None },
+            ParamInfo { name: "b".into(), typ: TypeInfo::Str, type_name: None },
+            ParamInfo { name: "c".into(), typ: TypeInfo::Bool, type_name: None },
+            ParamInfo { name: "d".into(), typ: TypeInfo::Float, type_name: None },
+        ];
+        let parent_a = vec![json!(1), json!("aaa"), json!(true), json!(1.0)];
+        let parent_b = vec![json!(2), json!("bbb"), json!(false), json!(2.0)];
+
+        // Run many times — children should contain values from both parents
+        let mut saw_mix = false;
+        for seed in 0..100_u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let (c1, _c2) = crossover_inputs(&parent_a, &parent_b, &params, 1.0, &mut rng);
+            let from_a = c1.iter().zip(parent_a.iter()).filter(|(c, a)| c == a).count();
+            let from_b = c1.iter().zip(parent_b.iter()).filter(|(c, b)| c == b).count();
+            if from_a > 0 && from_b > 0 {
+                saw_mix = true;
+                break;
+            }
+        }
+        assert!(saw_mix, "expected children to mix values from both parents");
+    }
+
+    #[test]
+    fn crossover_inputs_handles_empty() {
+        let mut rng = seeded_rng();
+        let params: Vec<ParamInfo> = vec![];
+        let parent_a: Vec<Value> = vec![];
+        let parent_b: Vec<Value> = vec![];
+
+        let (c1, c2) = crossover_inputs(&parent_a, &parent_b, &params, 1.0, &mut rng);
+        assert!(c1.is_empty());
+        assert!(c2.is_empty());
+    }
+
+    #[test]
+    fn crossover_inputs_object_field_level() {
+        let params = vec![ParamInfo {
+            name: "obj".into(),
+            typ: TypeInfo::Object {
+                fields: vec![
+                    ("x".into(), TypeInfo::Int),
+                    ("y".into(), TypeInfo::Int),
+                    ("z".into(), TypeInfo::Int),
+                ],
+            },
+            type_name: None,
+        }];
+        let parent_a = vec![json!({"x": 1, "y": 2, "z": 3})];
+        let parent_b = vec![json!({"x": 10, "y": 20, "z": 30})];
+
+        let mut saw_field_mix = false;
+        for seed in 0..100_u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let (c1, _c2) = crossover_inputs(&parent_a, &parent_b, &params, 1.0, &mut rng);
+            let obj = c1[0].as_object().expect("expected object child");
+            let from_a = [obj.get("x") == Some(&json!(1)),
+                          obj.get("y") == Some(&json!(2)),
+                          obj.get("z") == Some(&json!(3))];
+            let from_b = [obj.get("x") == Some(&json!(10)),
+                          obj.get("y") == Some(&json!(20)),
+                          obj.get("z") == Some(&json!(30))];
+            let a_count = from_a.iter().filter(|&&v| v).count();
+            let b_count = from_b.iter().filter(|&&v| v).count();
+            if a_count > 0 && b_count > 0 {
+                saw_field_mix = true;
+                break;
+            }
+        }
+        assert!(saw_field_mix, "expected field-level crossover to mix object fields");
+    }
+
+    #[test]
+    fn crossover_inputs_array_single_point() {
+        let params = vec![ParamInfo {
+            name: "arr".into(),
+            typ: TypeInfo::Array {
+                element: Box::new(TypeInfo::Int),
+            },
+            type_name: None,
+        }];
+        let parent_a = vec![json!([1, 2, 3, 4])];
+        let parent_b = vec![json!([10, 20, 30, 40])];
+
+        let mut saw_prefix_suffix = false;
+        for seed in 0..100_u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let (c1, _c2) = crossover_inputs(&parent_a, &parent_b, &params, 1.0, &mut rng);
+            let arr = c1[0].as_array().expect("expected array child");
+            // For single-point crossover, prefix comes from A and suffix from B
+            // Check that first element(s) are from A and last from B, or vice versa
+            if arr.len() == 4 {
+                let first_from_a = arr[0] == json!(1);
+                let last_from_b = arr[3] == json!(40);
+                if first_from_a && last_from_b {
+                    saw_prefix_suffix = true;
+                    break;
+                }
+            }
+        }
+        assert!(saw_prefix_suffix, "expected single-point crossover with prefix/suffix split");
+    }
+
+    #[test]
+    fn crossover_inputs_preserves_types() {
+        let params = vec![
+            ParamInfo { name: "i".into(), typ: TypeInfo::Int, type_name: None },
+            ParamInfo { name: "s".into(), typ: TypeInfo::Str, type_name: None },
+            ParamInfo { name: "b".into(), typ: TypeInfo::Bool, type_name: None },
+        ];
+        let parent_a = vec![json!(1), json!("hello"), json!(true)];
+        let parent_b = vec![json!(2), json!("world"), json!(false)];
+
+        for seed in 0..100_u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let (c1, c2) = crossover_inputs(&parent_a, &parent_b, &params, 1.0, &mut rng);
+            assert!(c1[0].is_i64() || c1[0].is_u64(), "child1[0] not int: {}", c1[0]);
+            assert!(c1[1].is_string(), "child1[1] not string: {}", c1[1]);
+            assert!(c1[2].is_boolean(), "child1[2] not bool: {}", c1[2]);
+            assert!(c2[0].is_i64() || c2[0].is_u64(), "child2[0] not int: {}", c2[0]);
+            assert!(c2[1].is_string(), "child2[1] not string: {}", c2[1]);
+            assert!(c2[2].is_boolean(), "child2[2] not bool: {}", c2[2]);
+        }
+    }
+
+    #[test]
+    fn crossover_inputs_length_matches_params() {
+        let mut rng = seeded_rng();
+        let params = vec![
+            ParamInfo { name: "a".into(), typ: TypeInfo::Int, type_name: None },
+            ParamInfo { name: "b".into(), typ: TypeInfo::Str, type_name: None },
+            ParamInfo { name: "c".into(), typ: TypeInfo::Bool, type_name: None },
+        ];
+        let parent_a = vec![json!(1), json!("x"), json!(true)];
+        let parent_b = vec![json!(2), json!("y"), json!(false)];
+
+        let (c1, c2) = crossover_inputs(&parent_a, &parent_b, &params, 1.0, &mut rng);
+        assert_eq!(c1.len(), 3);
+        assert_eq!(c2.len(), 3);
     }
 }
