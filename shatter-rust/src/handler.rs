@@ -30,6 +30,20 @@ impl FrontendLogLevel {
     }
 }
 
+const DEFAULT_EXEC_TIMEOUT_MS: u64 = 5000;
+
+/// Read the execution timeout from `SHATTER_EXEC_TIMEOUT` env var (seconds).
+/// Returns milliseconds. Falls back to `DEFAULT_EXEC_TIMEOUT_MS` if unset, invalid, zero, or negative.
+fn exec_timeout_from_env() -> u64 {
+    match std::env::var("SHATTER_EXEC_TIMEOUT") {
+        Ok(val) => match val.parse::<f64>() {
+            Ok(secs) if secs > 0.0 => (secs * 1000.0) as u64,
+            _ => DEFAULT_EXEC_TIMEOUT_MS,
+        },
+        Err(_) => DEFAULT_EXEC_TIMEOUT_MS,
+    }
+}
+
 /// Write instrumented source to a temp directory and return the output path.
 fn write_instrumented_temp(filename: &str, source: &str) -> io::Result<String> {
     let dir = std::env::temp_dir().join(format!(
@@ -48,6 +62,8 @@ pub struct Handler<R, W, L> {
     writer: W,
     log: L,
     log_level: FrontendLogLevel,
+    #[allow(dead_code)] // will be used when execute is implemented
+    exec_timeout_ms: u64,
 }
 
 impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
@@ -57,6 +73,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             writer,
             log,
             log_level: FrontendLogLevel::from_env(),
+            exec_timeout_ms: exec_timeout_from_env(),
         }
     }
 
@@ -68,6 +85,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             writer,
             log,
             log_level: level,
+            exec_timeout_ms: exec_timeout_from_env(),
         }
     }
 
@@ -745,5 +763,55 @@ mod tests {
         assert_eq!(responses[0].id, 100);
         assert_eq!(responses[1].id, 200);
         assert_eq!(responses[2].id, 300);
+    }
+
+    // -- Exec timeout tests --
+    // SAFETY: env var mutations in tests are inherently racy but acceptable for unit tests.
+    // These tests exercise exec_timeout_from_env() which only reads SHATTER_EXEC_TIMEOUT.
+
+    #[test]
+    fn exec_timeout_default_is_5000ms() {
+        unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
+        assert_eq!(exec_timeout_from_env(), 5000);
+    }
+
+    #[test]
+    fn exec_timeout_reads_env_var() {
+        unsafe { std::env::set_var("SHATTER_EXEC_TIMEOUT", "3") };
+        let result = exec_timeout_from_env();
+        unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
+        assert_eq!(result, 3000);
+    }
+
+    #[test]
+    fn exec_timeout_reads_fractional_seconds() {
+        unsafe { std::env::set_var("SHATTER_EXEC_TIMEOUT", "2.5") };
+        let result = exec_timeout_from_env();
+        unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
+        assert_eq!(result, 2500);
+    }
+
+    #[test]
+    fn exec_timeout_ignores_invalid() {
+        unsafe { std::env::set_var("SHATTER_EXEC_TIMEOUT", "not-a-number") };
+        let result = exec_timeout_from_env();
+        unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
+        assert_eq!(result, 5000);
+    }
+
+    #[test]
+    fn exec_timeout_ignores_zero() {
+        unsafe { std::env::set_var("SHATTER_EXEC_TIMEOUT", "0") };
+        let result = exec_timeout_from_env();
+        unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
+        assert_eq!(result, 5000);
+    }
+
+    #[test]
+    fn exec_timeout_ignores_negative() {
+        unsafe { std::env::set_var("SHATTER_EXEC_TIMEOUT", "-5") };
+        let result = exec_timeout_from_env();
+        unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
+        assert_eq!(result, 5000);
     }
 }
