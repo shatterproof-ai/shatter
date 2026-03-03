@@ -1000,7 +1000,7 @@ async fn run_scan(
     stratum_spec: Option<&str>,
     log_level: LogLevel,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let report_format: report::ReportFormat = report_format_str
+    let _report_format: report::ReportFormat = report_format_str
         .parse()
         .map_err(|e: String| -> Box<dyn std::error::Error> { e.into() })?;
 
@@ -1690,6 +1690,71 @@ async fn run_export_tests(
         }
     }
 
+    Ok(())
+}
+
+/// Generate test files from scan results and write them to a directory.
+///
+/// Each function's behavior map produces a separate test file named after
+/// the function. The framework determines the format (jest, vitest, gotest).
+fn emit_test_files(
+    result: &scan_orchestrator::ParallelScanResult,
+    file_map: &HashMap<String, String>,
+    framework: &str,
+    output_dir: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    std::fs::create_dir_all(output_dir)
+        .map_err(|e| format!("failed to create test output directory '{}': {e}", output_dir.display()))?;
+
+    let mut files_written = 0u32;
+
+    for func_result in &result.function_results {
+        if func_result.behavior_map.behaviors.is_empty() {
+            continue;
+        }
+
+        let func_name = &func_result.function_name;
+        let module_path = file_map
+            .get(func_name)
+            .map(|p| {
+                let p = Path::new(p);
+                let stem = p.with_extension("");
+                format!("./{}", stem.display())
+            })
+            .unwrap_or_else(|| ".".to_string());
+
+        let (test_code, file_ext) = match framework {
+            "jest" => (
+                export::generate_jest_tests(&func_result.behavior_map, func_name, &module_path),
+                "test.ts",
+            ),
+            "vitest" => (
+                export::generate_vitest_tests(&func_result.behavior_map, func_name, &module_path),
+                "test.ts",
+            ),
+            "gotest" => {
+                let package = file_map
+                    .get(func_name)
+                    .and_then(|p| Path::new(p).parent())
+                    .and_then(|d| d.file_name())
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("main");
+                (
+                    export::generate_go_tests(&func_result.behavior_map, func_name, package),
+                    "test.go",
+                )
+            }
+            _ => return Err(format!("unsupported framework '{framework}'").into()),
+        };
+
+        let file_name = format!("{func_name}.{file_ext}");
+        let file_path = output_dir.join(&file_name);
+        std::fs::write(&file_path, &test_code)
+            .map_err(|e| format!("failed to write test file '{}': {e}", file_path.display()))?;
+        files_written += 1;
+    }
+
+    println!("Emitted {files_written} test file(s) to {}", output_dir.display());
     Ok(())
 }
 
