@@ -23,6 +23,7 @@ pub mod fingerprint;
 pub mod frontend;
 pub mod genetic_fitness;
 pub mod input_gen;
+pub mod interesting_pool;
 pub mod log_level;
 pub mod mock_gen;
 pub mod invariants;
