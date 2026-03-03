@@ -165,6 +165,7 @@ pub enum ResponseResult {
     /// Successful analysis result.
     Analyze {
         /// Functions found and analyzed.
+        #[serde(default)]
         functions: Vec<FunctionAnalysis>,
     },
     /// Successful instrumentation result.
@@ -895,6 +896,21 @@ mod tests {
     }
 
     #[test]
+    fn analyze_response_missing_functions_field_defaults_to_empty() {
+        // Regression test for str-xkb: Go frontend omitted "functions" field
+        // for files with no function definitions (e.g., doc.go).
+        let json = r#"{"protocol_version":"0.1.0","id":2,"status":"analyze"}"#;
+        let resp: Response = serde_json::from_str(json)
+            .expect("should deserialize analyze response without functions field");
+        assert_eq!(resp.id, 2);
+        if let ResponseResult::Analyze { functions } = &resp.result {
+            assert!(functions.is_empty(), "expected empty functions vec");
+        } else {
+            panic!("expected Analyze response");
+        }
+    }
+
+        #[test]
     fn noop_frontend_execute_response_deserializes() {
         let json = r#"{"protocol_version":"0.1.0","id":3,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}"#;
         let resp: Response = serde_json::from_str(json).expect("deserialize noop execute");

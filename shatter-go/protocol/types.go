@@ -53,7 +53,7 @@ type Response struct {
 	Capabilities    []string `json:"capabilities,omitempty"`
 
 	// Analyze
-	Functions []FunctionAnalysis `json:"functions,omitempty"`
+	Functions []FunctionAnalysis `json:"functions"`
 
 	// Instrument
 	Instrumented *bool   `json:"instrumented,omitempty"`

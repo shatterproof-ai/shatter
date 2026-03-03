@@ -147,6 +147,48 @@ func TestAnalyzeWithExistingFileReturnsEmptyFunctions(t *testing.T) {
 	}
 }
 
+func TestAnalyzeEmptyFileJSONIncludesFunctionsField(t *testing.T) {
+	// Regression test for str-xkb: doc-only files (no function definitions)
+	// must still emit "functions":[] in JSON, not omit the field entirely.
+	// The Rust core requires the field to be present for deserialization.
+	tmp := filepath.Join(t.TempDir(), "doc.go")
+	if err := os.WriteFile(tmp, []byte("// Package foo provides utilities.\npackage foo\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Send the analyze request and capture raw JSON output
+	input := strings.NewReader(`{"protocol_version":"0.1.0","id":3,"command":"analyze","file":"` + tmp + `"}` + "\n")
+	var output bytes.Buffer
+	handler := NewHandler(input, &output, io.Discard)
+	if err := handler.Run(); err != nil {
+		t.Fatalf("handler.Run: %v", err)
+	}
+	rawJSON := strings.TrimSpace(output.String())
+
+	// The raw JSON must contain "functions":[] -- not omit the field
+	if !strings.Contains(rawJSON, `"functions"`) {
+		t.Fatalf("JSON response omits functions field entirely: %s", rawJSON)
+	}
+	if !strings.Contains(rawJSON, `"functions":[]`) {
+		t.Fatalf("JSON response does not contain functions:[], got: %s", rawJSON)
+	}
+
+	// Also verify it deserializes correctly
+	var resp Response
+	if err := json.Unmarshal([]byte(rawJSON), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Status != "analyze" {
+		t.Errorf("status = %q, want analyze", resp.Status)
+	}
+	if resp.Functions == nil {
+		t.Error("functions should be non-nil empty slice, got nil")
+	}
+	if len(resp.Functions) != 0 {
+		t.Errorf("functions len = %d, want 0", len(resp.Functions))
+	}
+}
+
 func TestAnalyzeReturnsFunctionAnalysis(t *testing.T) {
 	tmp := filepath.Join(t.TempDir(), "add.go")
 	src := "package main\n\nfunc Add(a, b int) int { return a + b }\n"
