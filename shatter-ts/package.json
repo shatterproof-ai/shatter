@@ -13,6 +13,7 @@
     "test": "jest"
   },
   "dependencies": {
+    "@extism/extism": "^2.0.0-rc13",
     "typescript": "^5.9.3"
   },
   "devDependencies": {

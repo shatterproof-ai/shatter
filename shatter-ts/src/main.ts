@@ -68,13 +68,14 @@ function main(): void {
       return;
     }
 
-    const { response, shutdown } = handleRequest(result.request);
-    sendResponse(response);
+    void handleRequest(result.request).then(({ response, shutdown }) => {
+      sendResponse(response);
 
-    if (shutdown) {
-      log("Shutting down", "debug");
-      rl.close();
-    }
+      if (shutdown) {
+        log("Shutting down", "debug");
+        rl.close();
+      }
+    });
   });
 
   rl.on("close", () => {

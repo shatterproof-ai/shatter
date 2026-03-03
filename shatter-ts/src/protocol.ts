@@ -83,6 +83,7 @@ export interface GenerateRequest extends BaseRequest {
   file: string;
   name: string;
   kind: GeneratorKind;
+  recipe?: unknown;
 }
 
 export interface ShutdownRequest extends BaseRequest {
@@ -174,6 +175,8 @@ export interface TeardownAckResponse extends BaseResponse {
 export interface GenerateResponse extends BaseResponse {
   status: "generate";
   value: unknown;
+  generator_id: string;
+  recipe?: unknown;
 }
 
 export interface ShutdownAckResponse extends BaseResponse {

@@ -98,8 +98,8 @@ describe("handleRequest", () => {
   }
 
   describe("handshake", () => {
-    it("responds with frontend version and capabilities", () => {
-      const { response, shutdown } = handleRequest(
+    it("responds with frontend version and capabilities", async () => {
+      const { response, shutdown } = await handleRequest(
         makeRequest({ command: "handshake", capabilities: ["analyze", "execute"] })
       );
       expect(shutdown).toBe(false);
@@ -117,8 +117,8 @@ describe("handleRequest", () => {
   });
 
   describe("version mismatch", () => {
-    it("returns error for incompatible protocol version", () => {
-      const { response, shutdown } = handleRequest(
+    it("returns error for incompatible protocol version", async () => {
+      const { response, shutdown } = await handleRequest(
         makeRequest({ command: "handshake", capabilities: [], protocol_version: "1.0.0" })
       );
       expect(shutdown).toBe(false);
@@ -128,8 +128,8 @@ describe("handleRequest", () => {
       }
     });
 
-    it("accepts matching major.minor with different patch", () => {
-      const { response } = handleRequest(
+    it("accepts matching major.minor with different patch", async () => {
+      const { response } = await handleRequest(
         makeRequest({ command: "handshake", capabilities: [], protocol_version: "0.1.99" })
       );
       expect(response.status).toBe("handshake");
@@ -137,8 +137,8 @@ describe("handleRequest", () => {
   });
 
   describe("analyze", () => {
-    it("returns file_not_found error for missing file", () => {
-      const { response, shutdown } = handleRequest(
+    it("returns file_not_found error for missing file", async () => {
+      const { response, shutdown } = await handleRequest(
         makeRequest({ command: "analyze", file: "nonexistent.ts" })
       );
       expect(shutdown).toBe(false);
@@ -148,9 +148,9 @@ describe("handleRequest", () => {
       }
     });
 
-    it("returns function_not_found error for missing function in existing file", () => {
+    it("returns function_not_found error for missing function in existing file", async () => {
       const fixtureFile = require("path").join(__dirname, "__fixtures__", "primitives.ts");
-      const { response, shutdown } = handleRequest(
+      const { response, shutdown } = await handleRequest(
         makeRequest({ command: "analyze", file: fixtureFile, function: "nonexistent" })
       );
       expect(shutdown).toBe(false);
@@ -160,9 +160,9 @@ describe("handleRequest", () => {
       }
     });
 
-    it("returns function analysis for existing file and function", () => {
+    it("returns function analysis for existing file and function", async () => {
       const fixtureFile = require("path").join(__dirname, "__fixtures__", "primitives.ts");
-      const { response, shutdown } = handleRequest(
+      const { response, shutdown } = await handleRequest(
         makeRequest({ command: "analyze", file: fixtureFile, function: "add" })
       );
       expect(shutdown).toBe(false);
@@ -174,9 +174,9 @@ describe("handleRequest", () => {
       }
     });
 
-    it("returns all functions when no function name specified", () => {
+    it("returns all functions when no function name specified", async () => {
       const fixtureFile = require("path").join(__dirname, "__fixtures__", "primitives.ts");
-      const { response } = handleRequest(
+      const { response } = await handleRequest(
         makeRequest({ command: "analyze", file: fixtureFile })
       );
       expect(response.status).toBe("analyze");
@@ -187,8 +187,8 @@ describe("handleRequest", () => {
   });
 
   describe("instrument", () => {
-    it("returns file_not_found error for missing file", () => {
-      const { response, shutdown } = handleRequest(
+    it("returns file_not_found error for missing file", async () => {
+      const { response, shutdown } = await handleRequest(
         makeRequest({ command: "instrument", file: "nonexistent.ts", function: "foo", mocks: [] })
       );
       expect(shutdown).toBe(false);
@@ -198,9 +198,9 @@ describe("handleRequest", () => {
       }
     });
 
-    it("returns instrumentation_failed for missing function", () => {
+    it("returns instrumentation_failed for missing function", async () => {
       const fixtureFile = path.resolve(__dirname, "__fixtures__", "primitives.ts");
-      const { response, shutdown } = handleRequest(
+      const { response, shutdown } = await handleRequest(
         makeRequest({ command: "instrument", file: fixtureFile, function: "nonexistent", mocks: [] })
       );
       expect(shutdown).toBe(false);
@@ -210,9 +210,9 @@ describe("handleRequest", () => {
       }
     });
 
-    it("instruments a real function successfully", () => {
+    it("instruments a real function successfully", async () => {
       const exampleFile = path.resolve(__dirname, "../../examples/typescript/src/01-arithmetic.ts");
-      const { response, shutdown } = handleRequest(
+      const { response, shutdown } = await handleRequest(
         makeRequest({ command: "instrument", file: exampleFile, function: "classifyNumber", mocks: [] })
       );
       expect(shutdown).toBe(false);
@@ -225,19 +225,19 @@ describe("handleRequest", () => {
   });
 
   describe("execute", () => {
-    it("returns error when function cannot be resolved", () => {
-      const { response, shutdown } = handleRequest(
+    it("returns error when function cannot be resolved", async () => {
+      const { response, shutdown } = await handleRequest(
         makeRequest({ command: "execute", function: "foo", inputs: [], mocks: [] })
       );
       expect(shutdown).toBe(false);
       expect(response.status).toBe("error");
     });
 
-    it("executes a real function after analyze", () => {
+    it("executes a real function after analyze", async () => {
       const exampleFile = path.resolve(__dirname, "../../examples/typescript/src/01-arithmetic.ts");
 
       // First analyze so the handler knows the file
-      handleRequest(
+      await handleRequest(
         makeRequest({
           command: "analyze",
           file: exampleFile,
@@ -245,7 +245,7 @@ describe("handleRequest", () => {
         })
       );
 
-      const { response, shutdown } = handleRequest(
+      const { response, shutdown } = await handleRequest(
         makeRequest({
           command: "execute",
           function: "classifyNumber",
@@ -265,8 +265,8 @@ describe("handleRequest", () => {
   });
 
   describe("shutdown", () => {
-    it("returns shutdown_ack and signals shutdown", () => {
-      const { response, shutdown } = handleRequest(
+    it("returns shutdown_ack and signals shutdown", async () => {
+      const { response, shutdown } = await handleRequest(
         makeRequest({ command: "shutdown" })
       );
       expect(shutdown).toBe(true);
@@ -276,9 +276,9 @@ describe("handleRequest", () => {
   });
 
   describe("setup", () => {
-    it("loads setup file and returns setup_context", () => {
+    it("loads setup file and returns setup_context", async () => {
       const setupFile = path.resolve(__dirname, "__fixtures__", "setup-module.ts");
-      const { response, shutdown } = handleRequest(
+      const { response, shutdown } = await handleRequest(
         makeRequest({ command: "setup", file: setupFile, function: "myFunc", mode: "per_function" })
       );
       expect(shutdown).toBe(false);
@@ -292,9 +292,9 @@ describe("handleRequest", () => {
       }
     });
 
-    it("works with per_execution mode", () => {
+    it("works with per_execution mode", async () => {
       const setupFile = path.resolve(__dirname, "__fixtures__", "setup-module.ts");
-      const { response } = handleRequest(
+      const { response } = await handleRequest(
         makeRequest({ command: "setup", file: setupFile, function: "auth", mode: "per_execution" })
       );
       expect(response.status).toBe("setup");
@@ -307,8 +307,8 @@ describe("handleRequest", () => {
       }
     });
 
-    it("returns file_not_found for missing setup file", () => {
-      const { response } = handleRequest(
+    it("returns file_not_found for missing setup file", async () => {
+      const { response } = await handleRequest(
         makeRequest({ command: "setup", file: "/nonexistent/setup.ts", function: "f", mode: "per_function" })
       );
       expect(response.status).toBe("error");
@@ -317,9 +317,9 @@ describe("handleRequest", () => {
       }
     });
 
-    it("returns error when setup export is missing", () => {
+    it("returns error when setup export is missing", async () => {
       const fixtureFile = path.resolve(__dirname, "__fixtures__", "primitives.ts");
-      const { response } = handleRequest(
+      const { response } = await handleRequest(
         makeRequest({ command: "setup", file: fixtureFile, function: "f", mode: "per_function" })
       );
       expect(response.status).toBe("error");
@@ -331,22 +331,22 @@ describe("handleRequest", () => {
   });
 
   describe("teardown", () => {
-    it("tears down after a successful setup", () => {
+    it("tears down after a successful setup", async () => {
       const setupFile = path.resolve(__dirname, "__fixtures__", "setup-module.ts");
       // First do setup
-      handleRequest(
+      await handleRequest(
         makeRequest({ command: "setup", file: setupFile, function: "myFunc", mode: "per_function" })
       );
       // Then teardown
-      const { response, shutdown } = handleRequest(
+      const { response, shutdown } = await handleRequest(
         makeRequest({ command: "teardown", function: "myFunc" })
       );
       expect(shutdown).toBe(false);
       expect(response.status).toBe("teardown_ack");
     });
 
-    it("returns error when no setup context exists", () => {
-      const { response } = handleRequest(
+    it("returns error when no setup context exists", async () => {
+      const { response } = await handleRequest(
         makeRequest({ command: "teardown", function: "neverSetUp" })
       );
       expect(response.status).toBe("error");
@@ -356,16 +356,16 @@ describe("handleRequest", () => {
       }
     });
 
-    it("returns error when setup file has no teardown export", () => {
+    it("returns error when setup file has no teardown export", async () => {
       const setupFile = path.resolve(__dirname, "__fixtures__", "setup-no-teardown.ts");
       // Setup succeeds
-      const { response: setupResp } = handleRequest(
+      const { response: setupResp } = await handleRequest(
         makeRequest({ command: "setup", file: setupFile, function: "fn", mode: "per_function" })
       );
       expect(setupResp.status).toBe("setup");
 
       // Teardown fails because no teardown() export
-      const { response } = handleRequest(
+      const { response } = await handleRequest(
         makeRequest({ command: "teardown", function: "fn" })
       );
       expect(response.status).toBe("error");
@@ -377,42 +377,45 @@ describe("handleRequest", () => {
   });
 
   describe("generate", () => {
-    it("generates a value for type_name kind", () => {
+    it("generates a value for type_name kind", async () => {
       const genFile = path.resolve(__dirname, "__fixtures__", "generator-module.ts");
-      const { response, shutdown } = handleRequest(
+      const { response, shutdown } = await handleRequest(
         makeRequest({ command: "generate", file: genFile, name: "User", kind: "type_name" })
       );
       expect(shutdown).toBe(false);
       expect(response.status).toBe("generate");
       if (response.status === "generate") {
         expect(response.value).toEqual({ id: 1, name: "Alice", email: "alice@example.com" });
+        expect(response.generator_id).toBe("generated");
       }
     });
 
-    it("generates a value for param_name kind", () => {
+    it("generates a value for param_name kind", async () => {
       const genFile = path.resolve(__dirname, "__fixtures__", "generator-module.ts");
-      const { response } = handleRequest(
+      const { response } = await handleRequest(
         makeRequest({ command: "generate", file: genFile, name: "authToken", kind: "param_name" })
       );
       expect(response.status).toBe("generate");
       if (response.status === "generate") {
         expect(response.value).toBe("tok_test_abc123");
+        expect(response.generator_id).toBe("generated");
       }
     });
 
-    it("generates a numeric value", () => {
+    it("generates a numeric value", async () => {
       const genFile = path.resolve(__dirname, "__fixtures__", "generator-module.ts");
-      const { response } = handleRequest(
+      const { response } = await handleRequest(
         makeRequest({ command: "generate", file: genFile, name: "count", kind: "param_name" })
       );
       expect(response.status).toBe("generate");
       if (response.status === "generate") {
         expect(response.value).toBe(42);
+        expect(response.generator_id).toBe("generated");
       }
     });
 
-    it("returns file_not_found for missing generator file", () => {
-      const { response } = handleRequest(
+    it("returns file_not_found for missing generator file", async () => {
+      const { response } = await handleRequest(
         makeRequest({ command: "generate", file: "/nonexistent/gen.ts", name: "T", kind: "type_name" })
       );
       expect(response.status).toBe("error");
@@ -421,9 +424,9 @@ describe("handleRequest", () => {
       }
     });
 
-    it("returns error when generator export is missing", () => {
+    it("returns error when generator export is missing", async () => {
       const fixtureFile = path.resolve(__dirname, "__fixtures__", "primitives.ts");
-      const { response } = handleRequest(
+      const { response } = await handleRequest(
         makeRequest({ command: "generate", file: fixtureFile, name: "NonExistent", kind: "type_name" })
       );
       expect(response.status).toBe("error");
@@ -435,8 +438,8 @@ describe("handleRequest", () => {
   });
 
   describe("capabilities", () => {
-    it("includes setup and generate in capabilities", () => {
-      const { response } = handleRequest(
+    it("includes setup and generate in capabilities", async () => {
+      const { response } = await handleRequest(
         makeRequest({ command: "handshake", capabilities: [] })
       );
       if (response.status === "handshake") {
@@ -447,7 +450,7 @@ describe("handleRequest", () => {
   });
 
   describe("response format conformance", () => {
-    it("all responses include protocol_version and id", () => {
+    it("all responses include protocol_version and id", async () => {
       const commands: Request["command"][] = [
         "handshake", "analyze", "instrument", "execute",
         "setup", "teardown", "generate", "shutdown",
@@ -464,7 +467,7 @@ describe("handleRequest", () => {
           command === "generate" ? { command, file: "g.ts", name: "T", kind: "type_name" as const } :
           { command }
         );
-        const { response } = handleRequest(request);
+        const { response } = await handleRequest(request);
         expect(response.protocol_version).toBe(PROTOCOL_VERSION);
         expect(response.id).toBe(1);
       }
@@ -483,8 +486,8 @@ describe("protocol round-trip", () => {
     }
   });
 
-  it("handshake response serializes to valid JSON", () => {
-    const { response } = handleRequest({
+  it("handshake response serializes to valid JSON", async () => {
+    const { response } = await handleRequest({
       protocol_version: PROTOCOL_VERSION,
       id: 42,
       command: "handshake",
@@ -497,8 +500,8 @@ describe("protocol round-trip", () => {
     expect(parsed.status).toBe("handshake");
   });
 
-  it("error response matches protocol schema", () => {
-    const { response } = handleRequest({
+  it("error response matches protocol schema", async () => {
+    const { response } = await handleRequest({
       protocol_version: "9.9.9",
       id: 10,
       command: "handshake",
@@ -513,8 +516,8 @@ describe("protocol round-trip", () => {
     }
   });
 
-  it("shutdown_ack response matches protocol schema", () => {
-    const { response } = handleRequest({
+  it("shutdown_ack response matches protocol schema", async () => {
+    const { response } = await handleRequest({
       protocol_version: PROTOCOL_VERSION,
       id: 99,
       command: "shutdown",
@@ -561,6 +564,7 @@ describe("protocol round-trip", () => {
       id: 22,
       status: "generate",
       value: { id: 1, name: "Alice", email: "alice@example.com" },
+      generator_id: "generated",
     };
     const json = JSON.stringify(response);
     const parsed = JSON.parse(json) as Response;
@@ -568,6 +572,7 @@ describe("protocol round-trip", () => {
     expect(parsed.id).toBe(22);
     if (parsed.status === "generate") {
       expect(parsed.value).toEqual({ id: 1, name: "Alice", email: "alice@example.com" });
+      expect(parsed.generator_id).toBe("generated");
     }
   });
 
@@ -577,12 +582,31 @@ describe("protocol round-trip", () => {
       id: 23,
       status: "generate",
       value: "tok_abc123",
+      generator_id: "generated",
     };
     const json = JSON.stringify(response);
     const parsed = JSON.parse(json) as Response;
     expect(parsed.status).toBe("generate");
     if (parsed.status === "generate") {
       expect(parsed.value).toBe("tok_abc123");
+    }
+  });
+
+  it("generate response with recipe round-trips through JSON", () => {
+    const response: GenerateResponse = {
+      protocol_version: PROTOCOL_VERSION,
+      id: 24,
+      status: "generate",
+      value: { name: "Bob" },
+      generator_id: "wasm-user-gen",
+      recipe: { seed: 42, variant: "admin" },
+    };
+    const json = JSON.stringify(response);
+    const parsed = JSON.parse(json) as Response;
+    expect(parsed.status).toBe("generate");
+    if (parsed.status === "generate") {
+      expect(parsed.generator_id).toBe("wasm-user-gen");
+      expect(parsed.recipe).toEqual({ seed: 42, variant: "admin" });
     }
   });
 

@@ -29,6 +29,11 @@ import {
   runGenerator,
   type SetupModule,
 } from "./setup-loader.js";
+import {
+  loadWasmPlugin,
+  runWasmGenerator,
+  clearWasmCache,
+} from "./wasm-generator.js";
 
 /** Supported capabilities for this frontend. */
 const SUPPORTED_CAPABILITIES = [
@@ -62,10 +67,10 @@ const setupContexts = new Map<string, { module: SetupModule; context: unknown }>
 /**
  * Dispatch a parsed request to the appropriate handler.
  *
- * Returns a Response, or null if the frontend should shut down after
- * sending the response.
+ * Returns a Response and a shutdown flag. The handler is async because
+ * WASM generator loading requires awaiting plugin creation.
  */
-export function handleRequest(request: Request): { response: Response; shutdown: boolean } {
+export async function handleRequest(request: Request): Promise<{ response: Response; shutdown: boolean }> {
   if (!isVersionCompatible(request.protocol_version)) {
     return {
       response: errorResponse(request.id, "version_mismatch",
@@ -276,6 +281,23 @@ export function handleRequest(request: Request): { response: Response; shutdown:
       }
 
       try {
+        if (request.file.endsWith(".wasm")) {
+          const plugin = await loadWasmPlugin(request.file);
+          const result = await runWasmGenerator(plugin, request.name, request.recipe);
+
+          return {
+            response: {
+              protocol_version: PROTOCOL_VERSION,
+              id: request.id,
+              status: "generate",
+              value: result.value,
+              generator_id: result.id,
+              ...(result.recipe !== undefined ? { recipe: result.recipe } : {}),
+            },
+            shutdown: false,
+          };
+        }
+
         const generatorModule = loadGeneratorModule(request.file);
         const value = runGenerator(generatorModule, request.name, request.kind);
 
@@ -285,6 +307,7 @@ export function handleRequest(request: Request): { response: Response; shutdown:
             id: request.id,
             status: "generate",
             value,
+            generator_id: "generated",
           },
           shutdown: false,
         };
@@ -298,6 +321,7 @@ export function handleRequest(request: Request): { response: Response; shutdown:
     }
 
     case "shutdown":
+      await clearWasmCache();
       return {
         response: {
           protocol_version: PROTOCOL_VERSION,
