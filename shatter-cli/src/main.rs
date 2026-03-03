@@ -192,6 +192,10 @@ enum CliCommand {
         /// Timeout in seconds for the genetic algorithm (default: 300).
         #[arg(long)]
         genetic_timeout: Option<u32>,
+
+        /// Z3 solver timeout in seconds per query. Default: no limit.
+        #[arg(long)]
+        solver_timeout: Option<u64>,
     },
 
     /// Scan a directory for source files, analyze and explore all functions in
@@ -326,6 +330,10 @@ enum CliCommand {
         /// Timeout in seconds for the genetic algorithm (default: 300).
         #[arg(long)]
         genetic_timeout: Option<u32>,
+
+        /// Z3 solver timeout in seconds per query. Default: no limit.
+        #[arg(long)]
+        solver_timeout: Option<u64>,
     },
 
     /// Export generated tests from behavior maps produced by exploration.
@@ -415,6 +423,10 @@ enum CliCommand {
         /// Default: 30s.
         #[arg(long, default_value_t = 30)]
         build_timeout: u64,
+
+        /// Z3 solver timeout in seconds per query. Default: no limit.
+        #[arg(long)]
+        solver_timeout: Option<u64>,
     },
 
     /// Compare current behaviors against a previous snapshot to detect regressions.
@@ -598,6 +610,7 @@ async fn run_explore(
     spec_as_json: bool,
     detect_invariants: bool,
     use_concolic: bool,
+    solver_timeout: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let scope_config = match scope_path {
         Some(path) => {
@@ -832,6 +845,7 @@ async fn run_explore(
                     max_executions: (explore_config.max_iterations as usize) * 5,
                     plateau_threshold: 20,
                     mocks: explore_config.mocks.clone(),
+                    solver_timeout_ms: solver_timeout.map(|s| s * 1000),
                 };
 
                 match shatter_core::orchestrator::explore(
@@ -2323,6 +2337,7 @@ async fn main() -> ExitCode {
             genetic_population: _,
             genetic_generations: _,
             genetic_timeout: _,
+            solver_timeout,
         } => {
             run_explore(
                 &targets,
@@ -2346,6 +2361,7 @@ async fn main() -> ExitCode {
                 spec_json || output.is_some(),
                 invariants,
                 concolic,
+                solver_timeout,
             )
             .await
         }
@@ -2380,6 +2396,7 @@ async fn main() -> ExitCode {
             genetic_population: _,
             genetic_generations: _,
             genetic_timeout: _,
+            solver_timeout: _,
         } => {
             run_scan(
                 &directory,
@@ -2448,6 +2465,7 @@ async fn main() -> ExitCode {
             request_timeout,
             exec_timeout,
             build_timeout,
+            solver_timeout: _,
         } => {
             run_run(
                 &path,
