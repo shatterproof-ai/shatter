@@ -196,6 +196,10 @@ enum CliCommand {
         /// Z3 solver timeout in seconds per query. Default: no limit.
         #[arg(long)]
         solver_timeout: Option<u64>,
+
+        /// Memory limit in MB for the frontend process. For TS, sets --max-old-space-size; for Go, sets GOMEMLIMIT.
+        #[arg(long)]
+        memory_limit: Option<u64>,
     },
 
     /// Scan a directory for source files, analyze and explore all functions in
@@ -334,6 +338,10 @@ enum CliCommand {
         /// Z3 solver timeout in seconds per query. Default: no limit.
         #[arg(long)]
         solver_timeout: Option<u64>,
+
+        /// Memory limit in MB for the frontend process.
+        #[arg(long)]
+        memory_limit: Option<u64>,
     },
 
     /// Export generated tests from behavior maps produced by exploration.
@@ -382,6 +390,10 @@ enum CliCommand {
         /// Default: 30s.
         #[arg(long, default_value_t = 30)]
         build_timeout: u64,
+
+        /// Memory limit in MB for the frontend process.
+        #[arg(long)]
+        memory_limit: Option<u64>,
     },
 
     /// Discover, analyze, and explore an entire repository in one shot.
@@ -427,6 +439,10 @@ enum CliCommand {
         /// Z3 solver timeout in seconds per query. Default: no limit.
         #[arg(long)]
         solver_timeout: Option<u64>,
+
+        /// Memory limit in MB for the frontend process.
+        #[arg(long)]
+        memory_limit: Option<u64>,
     },
 
     /// Compare current behaviors against a previous snapshot to detect regressions.
@@ -541,8 +557,9 @@ fn frontend_config(
     log_level: LogLevel,
     exec_timeout: u64,
     build_timeout: u64,
+    memory_limit: Option<u64>,
 ) -> Result<FrontendConfig, String> {
-    let (command, args) = match language {
+    let (command, mut args) = match language {
         Language::TypeScript => {
             let bundle_path = embedded_frontend::ensure_extracted()?;
             (
@@ -556,10 +573,30 @@ fn frontend_config(
         }
     };
 
+    // Apply memory limit: for TS, --max-old-space-size must come before the script
+    if let Some(mb) = memory_limit {
+        match language {
+            Language::TypeScript => {
+                args.insert(0, format!("--max-old-space-size={mb}"));
+            }
+            Language::Go => {
+                // GOMEMLIMIT is set via env_vars below
+            }
+        }
+    }
+
     let mut config = FrontendConfig::new(command);
     config.args = args;
     config.request_timeout = timeout;
     apply_frontend_env(&mut config, log_level, exec_timeout, build_timeout);
+
+    if let Some(mb) = memory_limit
+        && language == Language::Go
+    {
+        let bytes = mb * 1024 * 1024;
+        config.env_vars.push(("GOMEMLIMIT".to_string(), format!("{bytes}B")));
+    }
+
     Ok(config)
 }
 
@@ -611,6 +648,7 @@ async fn run_explore(
     detect_invariants: bool,
     use_concolic: bool,
     solver_timeout: Option<u64>,
+    memory_limit: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let scope_config = match scope_path {
         Some(path) => {
@@ -661,7 +699,7 @@ async fn run_explore(
             );
         }
 
-        let config = frontend_config(target.language, req_timeout, log_level, exec_timeout, build_timeout)?;
+        let config = frontend_config(target.language, req_timeout, log_level, exec_timeout, build_timeout, memory_limit)?;
         let mut frontend = Frontend::spawn(&config).await.map_err(|e| {
             format!(
                 "failed to spawn {} frontend: {e}",
@@ -1013,6 +1051,7 @@ async fn run_scan(
     batch_spec: Option<&str>,
     stratum_spec: Option<&str>,
     log_level: LogLevel,
+    memory_limit: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let report_format: report::ReportFormat = report_format_str
         .parse()
@@ -1102,7 +1141,7 @@ async fn run_scan(
     for lang in &needed_langs {
         let cli_lang = discovery_lang_to_cli_lang(*lang)
             .ok_or_else(|| format!("no frontend for {lang:?}"))?;
-        let config = frontend_config(cli_lang, req_timeout, log_level, exec_timeout, build_timeout)?;
+        let config = frontend_config(cli_lang, req_timeout, log_level, exec_timeout, build_timeout, memory_limit)?;
         let frontend = Frontend::spawn(&config).await.map_err(|e| {
             format!("failed to spawn {lang:?} frontend: {e}")
         })?;
@@ -1407,7 +1446,7 @@ async fn run_scan(
     let first_lang = needed_langs.iter().next().copied().unwrap();
     let cli_lang = discovery_lang_to_cli_lang(first_lang)
         .ok_or_else(|| format!("no frontend for {first_lang:?}"))?;
-    let fe_config = frontend_config(cli_lang, req_timeout, log_level, exec_timeout, build_timeout)?;
+    let fe_config = frontend_config(cli_lang, req_timeout, log_level, exec_timeout, build_timeout, memory_limit)?;
 
     // Load mock overrides from --mock-config (or .shatter/config.yaml defaults).
     let mock_overrides = if let Some(mc_path) = mock_config {
@@ -1600,6 +1639,7 @@ async fn run_export_tests(
     exec_timeout: u64,
     build_timeout: u64,
     _log_level: LogLevel,
+    memory_limit: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Validate framework
     if framework != "jest" && framework != "vitest" && framework != "gotest" {
@@ -1631,7 +1671,7 @@ async fn run_export_tests(
 
         eprintln!("Exploring {file_str}:{func_display} for test export...");
 
-        let config = frontend_config(target.language, req_timeout, LogLevel::Warn, exec_timeout, build_timeout)?;
+        let config = frontend_config(target.language, req_timeout, LogLevel::Warn, exec_timeout, build_timeout, memory_limit)?;
         let mut frontend = Frontend::spawn(&config).await.map_err(|e| {
             format!("failed to spawn {} frontend: {e}", target.language.label())
         })?;
@@ -1797,6 +1837,7 @@ async fn run_run(
     exec_timeout: u64,
     build_timeout: u64,
     log_level: LogLevel,
+    memory_limit: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
 
@@ -1880,7 +1921,7 @@ async fn run_run(
     for lang in &needed_langs {
         let cli_lang = discovery_lang_to_cli_lang(*lang)
             .ok_or_else(|| format!("no frontend for {lang:?}"))?;
-        let config = frontend_config(cli_lang, req_timeout, log_level, exec_timeout, build_timeout)?;
+        let config = frontend_config(cli_lang, req_timeout, log_level, exec_timeout, build_timeout, memory_limit)?;
         let frontend = Frontend::spawn(&config).await.map_err(|e| {
             format!("failed to spawn {lang:?} frontend: {e}")
         })?;
@@ -2338,6 +2379,7 @@ async fn main() -> ExitCode {
             genetic_generations: _,
             genetic_timeout: _,
             solver_timeout,
+            memory_limit,
         } => {
             run_explore(
                 &targets,
@@ -2362,6 +2404,7 @@ async fn main() -> ExitCode {
                 invariants,
                 concolic,
                 solver_timeout,
+                memory_limit,
             )
             .await
         }
@@ -2397,6 +2440,7 @@ async fn main() -> ExitCode {
             genetic_generations: _,
             genetic_timeout: _,
             solver_timeout: _,
+            memory_limit,
         } => {
             run_scan(
                 &directory,
@@ -2426,6 +2470,7 @@ async fn main() -> ExitCode {
                 batch.as_deref(),
                 stratum.as_deref(),
                 log_level,
+                memory_limit,
             )
             .await
         }
@@ -2440,6 +2485,7 @@ async fn main() -> ExitCode {
             request_timeout,
             exec_timeout,
             build_timeout,
+            memory_limit,
         } => {
             run_export_tests(
                 &targets,
@@ -2453,6 +2499,7 @@ async fn main() -> ExitCode {
                 exec_timeout,
                 build_timeout,
                 log_level,
+                memory_limit,
             )
             .await
         }
@@ -2466,6 +2513,7 @@ async fn main() -> ExitCode {
             exec_timeout,
             build_timeout,
             solver_timeout: _,
+            memory_limit,
         } => {
             run_run(
                 &path,
@@ -2477,6 +2525,7 @@ async fn main() -> ExitCode {
                 exec_timeout,
                 build_timeout,
                 log_level,
+                memory_limit,
             )
             .await
         }
@@ -3065,7 +3114,7 @@ mod tests {
 
     #[test]
     fn frontend_config_typescript_uses_embedded_bundle() {
-        let config = frontend_config(Language::TypeScript, Duration::from_secs(30), LogLevel::Info, 10, 30).unwrap();
+        let config = frontend_config(Language::TypeScript, Duration::from_secs(30), LogLevel::Info, 10, 30, None).unwrap();
         assert_eq!(config.command, PathBuf::from("node"));
         assert_eq!(config.request_timeout, Duration::from_secs(30));
         // The arg should point to the extracted bundle, not a relative dev path
@@ -3079,7 +3128,7 @@ mod tests {
 
     #[test]
     fn frontend_config_go_uses_embedded_binary() {
-        let config = frontend_config(Language::Go, Duration::from_secs(45), LogLevel::Info, 10, 30).unwrap();
+        let config = frontend_config(Language::Go, Duration::from_secs(45), LogLevel::Info, 10, 30, None).unwrap();
         assert_eq!(config.request_timeout, Duration::from_secs(45));
         assert!(config.args.is_empty());
         // The command should point to the extracted binary, not a relative dev path
