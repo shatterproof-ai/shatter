@@ -21,7 +21,8 @@ user-invocable: true
 ## Clippy & Style
 - `cargo clippy -- -D warnings` must pass (zero warnings)
 - Short, focused functions — extract helpers over section comments
-- `///` doc comments on public APIs
+- `///` doc comments on public APIs — document contracts, not signatures (see root CLAUDE.md "Inline Documentation")
+- `//!` module-level doc comments when the module's purpose isn't obvious from its name
 - `#[must_use]` on functions returning values callers shouldn't ignore
 - Prefer `impl Trait` over `dyn Trait`
 

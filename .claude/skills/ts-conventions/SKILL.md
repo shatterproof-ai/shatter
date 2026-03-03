@@ -37,3 +37,4 @@ user-invocable: true
 ## Code Style
 - Short, focused functions
 - Precise names that don't need explaining comments
+- JSDoc on exported functions — document contracts and non-obvious behavior, not type signatures (see root CLAUDE.md "Inline Documentation")

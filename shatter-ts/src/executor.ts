@@ -24,6 +24,21 @@ import type {
 import { RECORD_FUNCTION, BRANCH_FUNCTION, MOCK_REGISTRY, MOCK_CALL_FUNCTION } from "./instrumentor.js";
 import type { MockConfig, ExternalCall } from "./protocol.js";
 
+/**
+ * Read SHATTER_EXEC_TIMEOUT env var (seconds) and return milliseconds.
+ * Default: 15000ms. Ignores non-positive or non-numeric values.
+ */
+export function getExecTimeoutMs(): number {
+  const raw = process.env["SHATTER_EXEC_TIMEOUT"];
+  if (raw !== undefined) {
+    const secs = parseFloat(raw);
+    if (Number.isFinite(secs) && secs > 0) {
+      return secs * 1000;
+    }
+  }
+  return 15000;
+}
+
 /** Cache of compiled modules to avoid re-transpiling on every execute call. */
 const compiledModuleCache = new Map<string, Record<string, unknown>>();
 
@@ -83,7 +98,7 @@ function loadModule(filePath: string): Record<string, unknown> {
     __dirname: path.dirname(absolutePath),
   });
 
-  vm.runInContext(result.outputText, sandbox, { filename: absolutePath });
+  vm.runInContext(result.outputText, sandbox, { filename: absolutePath, timeout: getExecTimeoutMs() });
 
   // After CommonJS execution, module.exports may have been reassigned
   const finalExports = (sandbox as Record<string, unknown>)["module"] as { exports: Record<string, unknown> };
@@ -394,7 +409,7 @@ export function executeInstrumented(
     [MOCK_CALL_FUNCTION]: mockCallFn,
   });
 
-  vm.runInContext(jsResult.outputText, sandbox, { filename: sourceFilePath ?? "instrumented.js" });
+  vm.runInContext(jsResult.outputText, sandbox, { filename: sourceFilePath ?? "instrumented.js", timeout: getExecTimeoutMs() });
 
   // Resolve the function from the module exports
   const finalExports = (sandbox as Record<string, unknown>)["module"] as { exports: Record<string, unknown> };

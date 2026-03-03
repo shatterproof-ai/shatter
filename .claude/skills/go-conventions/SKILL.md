@@ -9,6 +9,8 @@ user-invocable: true
 - `golangci-lint run` must pass
 - Follow effective Go and Go proverbs
 - `gofmt`/`goimports` for formatting
+- Godoc on exported symbols — document behavior and contracts, not syntax (see root CLAUDE.md "Inline Documentation")
+- Testdata fixtures document what the analyzer should detect, not what language construct they use
 
 ## Error Handling
 - Return `error` as last return value

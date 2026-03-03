@@ -4,6 +4,7 @@ import {
   executeInstrumented,
   buildExecuteResponse,
   clearModuleCache,
+  getExecTimeoutMs,
 } from "./executor.js";
 import { instrumentFunction } from "./instrumentor.js";
 import * as fs from "node:fs";
@@ -404,5 +405,76 @@ describe("buildExecuteResponse side effects", () => {
 
     expect(hasConsoleOutput).toBe(true);
     expect(hasThrownError).toBe(true);
+  });
+});
+
+describe("getExecTimeoutMs", () => {
+  const originalEnv = process.env["SHATTER_EXEC_TIMEOUT"];
+
+  afterEach(() => {
+    if (originalEnv === undefined) {
+      delete process.env["SHATTER_EXEC_TIMEOUT"];
+    } else {
+      process.env["SHATTER_EXEC_TIMEOUT"] = originalEnv;
+    }
+  });
+
+  it("returns 15000 when env var is not set", () => {
+    delete process.env["SHATTER_EXEC_TIMEOUT"];
+    expect(getExecTimeoutMs()).toBe(15000);
+  });
+
+  it("parses integer seconds to milliseconds", () => {
+    process.env["SHATTER_EXEC_TIMEOUT"] = "20";
+    expect(getExecTimeoutMs()).toBe(20000);
+  });
+
+  it("parses float seconds to milliseconds", () => {
+    process.env["SHATTER_EXEC_TIMEOUT"] = "2.5";
+    expect(getExecTimeoutMs()).toBe(2500);
+  });
+
+  it("ignores non-numeric values and returns default", () => {
+    process.env["SHATTER_EXEC_TIMEOUT"] = "not-a-number";
+    expect(getExecTimeoutMs()).toBe(15000);
+  });
+
+  it("ignores zero and returns default", () => {
+    process.env["SHATTER_EXEC_TIMEOUT"] = "0";
+    expect(getExecTimeoutMs()).toBe(15000);
+  });
+
+  it("ignores negative values and returns default", () => {
+    process.env["SHATTER_EXEC_TIMEOUT"] = "-5";
+    expect(getExecTimeoutMs()).toBe(15000);
+  });
+});
+
+describe("execution timeout enforcement", () => {
+  const infiniteLoopFixture = path.join(FIXTURES_DIR, "infinite-loop.ts");
+  const originalEnv = process.env["SHATTER_EXEC_TIMEOUT"];
+
+  beforeAll(() => {
+    fs.writeFileSync(
+      infiniteLoopFixture,
+      `while (true) {}\nexport function neverReached(): string { return "unreachable"; }\n`,
+    );
+  });
+
+  afterAll(() => {
+    fs.unlinkSync(infiniteLoopFixture);
+    if (originalEnv === undefined) {
+      delete process.env["SHATTER_EXEC_TIMEOUT"];
+    } else {
+      process.env["SHATTER_EXEC_TIMEOUT"] = originalEnv;
+    }
+  });
+
+  it("aborts module-level infinite loop via vm timeout", () => {
+    process.env["SHATTER_EXEC_TIMEOUT"] = "0.1";
+    clearModuleCache();
+    expect(() => {
+      executeFunction(infiniteLoopFixture, "neverReached", []);
+    }).toThrow(/Script execution timed out/);
   });
 });
