@@ -5,6 +5,7 @@
 //! previously cached value, the function is unchanged and can be skipped
 //! during re-exploration.
 
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -69,6 +70,44 @@ pub fn compute_function_fingerprint(source_text: &str, analysis: &FunctionAnalys
     format!("{:x}", hasher.finalize())
 }
 
+/// Compute a deep fingerprint that incorporates callee fingerprints.
+///
+/// Extends the shallow fingerprint by hashing in the deep fingerprints of all
+/// in-scope callees (sorted by name for determinism). Callees not present in
+/// `callee_deep_fingerprints` are ignored (they are out-of-scope and assumed stable).
+///
+/// Because scans process functions leaves-first, callee deep fingerprints are
+/// always available before the caller is processed.
+pub fn compute_deep_fingerprint(
+    shallow_fingerprint: &str,
+    callee_deep_fingerprints: &HashMap<String, String>,
+    callees: &HashSet<String>,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"shallow:");
+    hasher.update(shallow_fingerprint.as_bytes());
+
+    let mut callee_fps: Vec<(&str, &str)> = callees
+        .iter()
+        .filter_map(|c| {
+            callee_deep_fingerprints
+                .get(c)
+                .map(|fp| (c.as_str(), fp.as_str()))
+        })
+        .collect();
+    callee_fps.sort_by_key(|(name, _)| *name);
+
+    hasher.update(b"callees:");
+    for (name, fp) in &callee_fps {
+        hasher.update(name.as_bytes());
+        hasher.update(b"=");
+        hasher.update(fp.as_bytes());
+        hasher.update(b"\n");
+    }
+
+    format!("{:x}", hasher.finalize())
+}
+
 /// Extract the source text of a function from a file given line boundaries.
 ///
 /// Reads lines `start_line..=end_line` (1-indexed) from the file and joins
@@ -90,6 +129,7 @@ mod tests {
     use super::*;
     use crate::protocol::{BranchInfo, BranchType};
     use crate::types::{ParamInfo, TypeInfo};
+    use std::collections::{HashMap, HashSet};
 
     fn sample_analysis() -> FunctionAnalysis {
         FunctionAnalysis {
@@ -229,5 +269,73 @@ mod tests {
 
         let source = extract_function_source(&file, 1, 1).unwrap();
         assert_eq!(source, "only line");
+    }
+
+    // --- deep fingerprint tests ---
+
+    #[test]
+    fn deep_fp_same_inputs_same_output() {
+        let callee_fps: HashMap<String, String> =
+            [("leaf".into(), "aaa".into())].into_iter().collect();
+        let callees: HashSet<String> = ["leaf".into()].into_iter().collect();
+
+        let fp1 = compute_deep_fingerprint("shallow1", &callee_fps, &callees);
+        let fp2 = compute_deep_fingerprint("shallow1", &callee_fps, &callees);
+        assert_eq!(fp1, fp2);
+        assert_eq!(fp1.len(), 64);
+    }
+
+    #[test]
+    fn deep_fp_changes_when_callee_fp_changes() {
+        let callees: HashSet<String> = ["leaf".into()].into_iter().collect();
+
+        let fps1: HashMap<String, String> =
+            [("leaf".into(), "aaa".into())].into_iter().collect();
+        let fps2: HashMap<String, String> =
+            [("leaf".into(), "bbb".into())].into_iter().collect();
+
+        let fp1 = compute_deep_fingerprint("shallow1", &fps1, &callees);
+        let fp2 = compute_deep_fingerprint("shallow1", &fps2, &callees);
+        assert_ne!(fp1, fp2);
+    }
+
+    #[test]
+    fn deep_fp_ignores_out_of_scope_callees() {
+        let callees: HashSet<String> = ["leaf".into()].into_iter().collect();
+        let callee_fps: HashMap<String, String> =
+            [("leaf".into(), "aaa".into()), ("other".into(), "bbb".into())]
+                .into_iter()
+                .collect();
+
+        // "other" is in the map but not in callees — should be ignored
+        let fp_with_extra = compute_deep_fingerprint("shallow1", &callee_fps, &callees);
+
+        let callee_fps_minimal: HashMap<String, String> =
+            [("leaf".into(), "aaa".into())].into_iter().collect();
+        let fp_minimal = compute_deep_fingerprint("shallow1", &callee_fps_minimal, &callees);
+
+        assert_eq!(fp_with_extra, fp_minimal);
+    }
+
+    #[test]
+    fn deep_fp_no_callees_is_deterministic() {
+        let empty_fps: HashMap<String, String> = HashMap::new();
+        let empty_callees: HashSet<String> = HashSet::new();
+
+        let fp1 = compute_deep_fingerprint("shallow1", &empty_fps, &empty_callees);
+        let fp2 = compute_deep_fingerprint("shallow1", &empty_fps, &empty_callees);
+        assert_eq!(fp1, fp2);
+        // Deep FP differs from the shallow FP string itself (it's a hash).
+        assert_ne!(fp1, "shallow1");
+    }
+
+    #[test]
+    fn deep_fp_differs_with_different_shallow() {
+        let empty_fps: HashMap<String, String> = HashMap::new();
+        let empty_callees: HashSet<String> = HashSet::new();
+
+        let fp1 = compute_deep_fingerprint("shallow1", &empty_fps, &empty_callees);
+        let fp2 = compute_deep_fingerprint("shallow2", &empty_fps, &empty_callees);
+        assert_ne!(fp1, fp2);
     }
 }
