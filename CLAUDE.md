@@ -83,6 +83,10 @@ When asked to work on ready issues in parallel, **always invoke `/swarm`**. Do n
 
 After researching codebase architecture or feature implementation status, save factual findings to project memory proactively — don't wait for the user to ask. Tag entries with date so stale facts can be identified later. This applies to any confirmed facts learned by reading code: what's implemented vs stubbed, how mechanisms work, which frontends support which features, etc.
 
+### Plans
+
+When a planning session produces a plan worth preserving, copy it from `~/.claude/plans/` into `docs/plans/` with a filename including the issue key and a descriptive name (e.g., `str-kapl-resilience-timeouts-memory.md`). Reference the plan from the relevant beads issue(s) via `--notes`.
+
 ### Efficiency Rules
 
 - **Batch `bd show` calls**: `bd show X && echo --- && bd show Y && echo --- && bd show Z` — never sequential individual calls.
