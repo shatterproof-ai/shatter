@@ -384,10 +384,10 @@ func multiCheck(x int, y int) string {
 	}
 }
 
-func TestExecTimeoutDefaultIs10s(t *testing.T) {
+func TestExecTimeoutDefaultIs5s(t *testing.T) {
 	os.Unsetenv("SHATTER_EXEC_TIMEOUT")
-	if d := execTimeout(); d != 10*time.Second {
-		t.Errorf("expected 10s default, got %v", d)
+	if d := execTimeout(); d != defaultExecTimeout {
+		t.Errorf("expected %v default, got %v", defaultExecTimeout, d)
 	}
 }
 
@@ -400,22 +400,22 @@ func TestExecTimeoutReadsEnvVar(t *testing.T) {
 
 func TestExecTimeoutIgnoresInvalidEnvVar(t *testing.T) {
 	t.Setenv("SHATTER_EXEC_TIMEOUT", "not-a-number")
-	if d := execTimeout(); d != 10*time.Second {
-		t.Errorf("expected 10s fallback, got %v", d)
+	if d := execTimeout(); d != defaultExecTimeout {
+		t.Errorf("expected %v fallback, got %v", defaultExecTimeout, d)
 	}
 }
 
 func TestExecTimeoutIgnoresZero(t *testing.T) {
 	t.Setenv("SHATTER_EXEC_TIMEOUT", "0")
-	if d := execTimeout(); d != 10*time.Second {
-		t.Errorf("expected 10s fallback for zero, got %v", d)
+	if d := execTimeout(); d != defaultExecTimeout {
+		t.Errorf("expected %v fallback for zero, got %v", defaultExecTimeout, d)
 	}
 }
 
 func TestExecTimeoutIgnoresNegative(t *testing.T) {
 	t.Setenv("SHATTER_EXEC_TIMEOUT", "-5")
-	if d := execTimeout(); d != 10*time.Second {
-		t.Errorf("expected 10s fallback for negative, got %v", d)
+	if d := execTimeout(); d != defaultExecTimeout {
+		t.Errorf("expected %v fallback for negative, got %v", defaultExecTimeout, d)
 	}
 }
 

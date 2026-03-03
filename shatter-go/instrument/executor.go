@@ -19,15 +19,17 @@ import (
 	"time"
 )
 
+const defaultExecTimeout = 5 * time.Second
+
 // execTimeout returns the execution timeout, reading from SHATTER_EXEC_TIMEOUT
-// env var (in seconds) with a fallback to 10s.
+// env var (in seconds) with a fallback to defaultExecTimeout.
 func execTimeout() time.Duration {
 	if s := os.Getenv("SHATTER_EXEC_TIMEOUT"); s != "" {
 		if secs, err := strconv.ParseFloat(s, 64); err == nil && secs > 0 {
 			return time.Duration(secs * float64(time.Second))
 		}
 	}
-	return 10 * time.Second
+	return defaultExecTimeout
 }
 
 // buildTimeout returns the build timeout, reading from SHATTER_BUILD_TIMEOUT
