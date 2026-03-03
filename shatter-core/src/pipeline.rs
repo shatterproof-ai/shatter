@@ -97,6 +97,48 @@ fn execution_record_from_result(
     }
 }
 
+/// Run the Analyze stage on an [`ObservationOutput`] (adapter type).
+///
+/// This is the generic version of [`analyze`] that works with both random and
+/// concolic exploration output after conversion to `ObservationOutput`.
+pub fn analyze_observation(observe: &ObservationOutput, analysis: &FunctionAnalysis) -> AnalyzeOutput {
+    // Build equivalence classes from raw results.
+    let eq_classes = equivalence::group_into_classes(&observe.raw_results);
+
+    // Build execution records for BehaviorMap construction.
+    let records: Vec<ExecutionRecord> = observe
+        .raw_results
+        .iter()
+        .map(|(inputs, result)| execution_record_from_result(&observe.function_name, inputs, result))
+        .collect();
+
+    let behavior_map = BehaviorMap::from_records(&observe.function_name, &records);
+
+    // Collect all constraints observed across all executions for symexpr ratio.
+    let all_constraints: Vec<SymConstraint> = observe
+        .raw_results
+        .iter()
+        .flat_map(|(_, result)| {
+            result
+                .branch_path
+                .iter()
+                .map(|d| d.constraint.clone())
+        })
+        .collect();
+
+    let coverage_metrics = CoverageMetrics::from_exploration(
+        analysis.branches.len(),
+        &observe.discoveries,
+        &all_constraints,
+    );
+
+    AnalyzeOutput {
+        eq_classes,
+        behavior_map,
+        coverage_metrics,
+    }
+}
+
 /// Adapter type for pipeline composability: wraps either random or concolic
 /// exploration output into a common shape that `analyze()` can consume.
 ///
@@ -120,6 +162,21 @@ pub struct ObservationOutput {
     pub raw_results: Vec<(Vec<serde_json::Value>, ExecuteResult)>,
     /// Per-branch discovery attribution.
     pub discoveries: Vec<(u32, DiscoveryMethod)>,
+}
+
+impl From<ObservationOutput> for ExplorationResult {
+    fn from(o: ObservationOutput) -> Self {
+        Self {
+            function_name: o.function_name,
+            iterations: o.iterations,
+            unique_paths: o.unique_paths,
+            lines_covered: o.lines_covered,
+            total_lines: o.total_lines,
+            new_path_executions: o.new_path_executions,
+            raw_results: o.raw_results,
+            discoveries: o.discoveries,
+        }
+    }
 }
 
 impl From<ExplorationResult> for ObservationOutput {

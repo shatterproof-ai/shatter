@@ -171,6 +171,10 @@ enum CliCommand {
         /// Enable Daikon-style invariant detection on explored functions.
         #[arg(long)]
         invariants: bool,
+
+        /// Use the concolic (Z3-backed) explorer instead of the random explorer.
+        #[arg(long)]
+        concolic: bool,
     },
 
     /// Scan a directory for source files, analyze and explore all functions in
@@ -549,6 +553,7 @@ async fn run_explore(
     show_spec: bool,
     spec_as_json: bool,
     detect_invariants: bool,
+    use_concolic: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let scope_config = match scope_path {
         Some(path) => {
@@ -768,7 +773,45 @@ async fn run_explore(
 
             let func_start = Instant::now();
 
-            match explorer::explore_function(&mut frontend, func, &explore_config).await {
+            // Choose exploration strategy: concolic (Z3-backed) or random.
+            let explore_result: Result<shatter_core::explorer::ExplorationResult, shatter_core::explorer::ExploreError> = if use_concolic {
+                let param_names: Vec<String> = func.params.iter().map(|p| p.name.clone()).collect();
+                let seed_inputs = shatter_core::boundary_dict::generate_boundary_inputs(&func.params);
+                let user_inputs: Vec<Vec<serde_json::Value>> = resolved.candidate_inputs
+                    .iter()
+                    .map(|input| input.args.clone())
+                    .collect();
+
+                let concolic_config = shatter_core::orchestrator::ExploreConfig {
+                    max_iterations: explore_config.max_iterations as usize,
+                    max_executions: (explore_config.max_iterations as usize) * 5,
+                    plateau_threshold: 20,
+                    mocks: explore_config.mocks.clone(),
+                };
+
+                match shatter_core::orchestrator::explore(
+                    &mut frontend,
+                    &func.name,
+                    seed_inputs,
+                    user_inputs,
+                    &param_names,
+                    &concolic_config,
+                ).await {
+                    Ok(concolic_result) => {
+                        let mut obs: shatter_core::pipeline::ObservationOutput = concolic_result.into();
+                        obs.function_name = func.name.clone();
+                        obs.total_lines = func.end_line.saturating_sub(func.start_line) + 1;
+                        Ok(obs.into())
+                    }
+                    Err(shatter_core::orchestrator::ExploreError::Frontend(fe)) => {
+                        Err(shatter_core::explorer::ExploreError::Frontend(fe))
+                    }
+                }
+            } else {
+                explorer::explore_function(&mut frontend, func, &explore_config).await
+            };
+
+            match explore_result {
                 Ok(result) => {
                     let wall_time = func_start.elapsed();
 
@@ -789,6 +832,9 @@ async fn run_explore(
                         }
                         if !mock_symbols.is_empty() {
                             eprintln!("  Mocks used: {}", mock_symbols.join(", "));
+                        }
+                        if use_concolic && log_level >= LogLevel::Info {
+                            eprintln!("  Explorer: concolic (Z3-backed)");
                         }
                         eprintln!();
                     }
@@ -2157,6 +2203,7 @@ async fn main() -> ExitCode {
             spec_json,
             invariants,
             no_boundary_values: _,
+            concolic,
         } => {
             run_explore(
                 &targets,
@@ -2179,6 +2226,7 @@ async fn main() -> ExitCode {
                 spec || spec_json || output.is_some() || invariants,
                 spec_json || output.is_some(),
                 invariants,
+                concolic,
             )
             .await
         }
@@ -2648,6 +2696,37 @@ mod tests {
             CliCommand::Explore { exec_timeout, build_timeout, .. } => {
                 assert_eq!(exec_timeout, 10);
                 assert_eq!(build_timeout, 30);
+            }
+            _ => panic!("expected Explore command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_explore_with_concolic_flag() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "explore",
+            "--concolic",
+            "test.ts:myFunc",
+        ]);
+        match cli.command {
+            CliCommand::Explore { concolic, .. } => {
+                assert!(concolic);
+            }
+            _ => panic!("expected Explore command"),
+        }
+    }
+
+    #[test]
+    fn cli_concolic_defaults_to_false() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "explore",
+            "test.ts:myFunc",
+        ]);
+        match cli.command {
+            CliCommand::Explore { concolic, .. } => {
+                assert!(!concolic);
             }
             _ => panic!("expected Explore command"),
         }
