@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex;
 
@@ -60,6 +60,10 @@ pub struct ScanConfig {
     /// When `Some`, completed functions are loaded on startup and the
     /// checkpoint is updated after each layer completes.
     pub resume_path: Option<PathBuf>,
+    /// Total scan wall-clock timeout. When set, the scan checks elapsed
+    /// time at the start of each layer; if exceeded, remaining functions
+    /// are skipped with reason "total scan timeout exceeded".
+    pub timeout_total: Option<Duration>,
 }
 
 /// Context about sampling mode, for report headers.
@@ -572,7 +576,25 @@ pub async fn parallel_scan(
     let mut test_order: Vec<String> = Vec::new();
     let mut skipped: Vec<SkippedFunction> = Vec::new();
 
+    let scan_start = Instant::now();
+
     for (layer_idx, layer) in layers.iter().enumerate() {
+        // Check total scan timeout at layer boundary.
+        if let Some(total) = config.timeout_total
+            && scan_start.elapsed() >= total
+        {
+            // Skip all functions in this and remaining layers.
+            for remaining_layer in &layers[layer_idx..] {
+                for func_name in remaining_layer {
+                    skipped.push(SkippedFunction {
+                        function_name: func_name.clone(),
+                        reason: "total scan timeout exceeded".into(),
+                    });
+                }
+            }
+            break;
+        }
+
         // Build tasks for this layer: each function paired with its mocks.
         let mut tasks = Vec::new();
         // Track deep FPs computed in this layer (added after the layer completes).
@@ -1847,6 +1869,7 @@ mod tests {
             stratum: None,
             mock_overrides: HashMap::new(),
             resume_path: None,
+            timeout_total: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -1911,6 +1934,7 @@ mod tests {
             stratum: None,
             mock_overrides: HashMap::new(),
             resume_path: None,
+            timeout_total: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -1971,6 +1995,7 @@ mod tests {
             stratum: None,
             mock_overrides: HashMap::new(),
             resume_path: None,
+            timeout_total: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -1985,6 +2010,84 @@ mod tests {
             .expect("cache load should succeed");
         assert!(loaded.is_some(), "behavior map should be cached on disk");
         assert_eq!(loaded.as_ref().unwrap().function_id, "cached_fn");
+    }
+
+    #[tokio::test]
+    async fn parallel_scan_timeout_total_zero_skips_all() {
+        use crate::frontend::FrontendConfig;
+        use crate::types::{ParamInfo, TypeInfo};
+        use std::path::{Path, PathBuf};
+
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let noop_path = manifest_dir.join("../protocol/noop-frontend.sh");
+
+        let mut fe_config = FrontendConfig::new(PathBuf::from("bash"));
+        fe_config.args = vec![noop_path.to_string_lossy().into_owned()];
+        fe_config.request_timeout = Duration::from_secs(10);
+
+        let analyses = vec![
+            FunctionAnalysis {
+                name: "fn_a".to_string(),
+                exported: true,
+                params: vec![ParamInfo {
+                    name: "x".into(),
+                    typ: TypeInfo::Int,
+                    type_name: None,
+                }],
+                branches: vec![],
+                dependencies: vec![],
+                return_type: TypeInfo::Unknown,
+                start_line: 1,
+                end_line: 5,
+                literals: vec![],
+            },
+            FunctionAnalysis {
+                name: "fn_b".to_string(),
+                exported: true,
+                params: vec![ParamInfo {
+                    name: "y".into(),
+                    typ: TypeInfo::Int,
+                    type_name: None,
+                }],
+                branches: vec![],
+                dependencies: vec![],
+                return_type: TypeInfo::Unknown,
+                start_line: 1,
+                end_line: 5,
+                literals: vec![],
+            },
+        ];
+
+        let mut file_map = HashMap::new();
+        file_map.insert("fn_a".to_string(), "test.ts".to_string());
+        file_map.insert("fn_b".to_string(), "test.ts".to_string());
+
+        let config = ScanConfig {
+            max_iterations_per_function: 3,
+            seed: Some(42),
+            file_map,
+            parallelism: 1,
+            timeout_per_fn: Duration::from_secs(10),
+            cache: None,
+            stratum: None,
+            mock_overrides: HashMap::new(),
+            resume_path: None,
+            timeout_total: Some(Duration::ZERO),
+        };
+
+        let result = parallel_scan(&fe_config, &analyses, &config)
+            .await
+            .expect("parallel_scan should succeed");
+
+        // All functions should be skipped due to immediate timeout.
+        assert!(
+            result.function_results.is_empty(),
+            "no functions should be explored when timeout_total is zero"
+        );
+        assert_eq!(result.skipped.len(), 2);
+        for s in &result.skipped {
+            assert_eq!(s.reason, "total scan timeout exceeded");
+        }
     }
 
     // ── dry-run plan tests ──────────────────────────────────────────
@@ -2030,6 +2133,7 @@ mod tests {
             stratum: None,
             mock_overrides: HashMap::new(),
             resume_path: None,
+            timeout_total: None,
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -2076,6 +2180,7 @@ mod tests {
             stratum: None,
             mock_overrides: HashMap::new(),
             resume_path: None,
+            timeout_total: None,
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -2105,6 +2210,7 @@ mod tests {
             stratum: None,
             mock_overrides: HashMap::new(),
             resume_path: None,
+            timeout_total: None,
         };
 
         let plan = format_dry_run_plan(&analyses, &skipped, &config).expect("should succeed");
@@ -2125,6 +2231,7 @@ mod tests {
             stratum: None,
             mock_overrides: HashMap::new(),
             resume_path: None,
+            timeout_total: None,
         };
 
         let plan = format_dry_run_plan(&[], &[], &config).expect("should succeed");
