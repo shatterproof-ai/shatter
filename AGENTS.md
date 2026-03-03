@@ -115,20 +115,24 @@ This ensures every bug fix is validated by a regression test and prevents
 
 An issue is not complete until:
 1. All code changes pass quality gates (tests, clippy/lint, build)
-2. Changes are committed on a feature branch
-3. The branch is merged to `main`
+2. Changes are committed on a **dedicated branch for this issue only** (no other issues' changes)
+3. The branch is merged to `main` (one branch at a time — do not merge other branches simultaneously)
 4. The branch is deleted after merge
 5. The issue is closed with `bd close <id>`
 6. Changes are pushed to remote with `bd sync && git push`
 
 Do not leave stale branches. Merge and delete promptly.
 
+**Never** combine work for multiple issues on one branch. If you discover additional work while on an issue branch, create a new issue and address it on a separate branch after merging the current one.
+
 ## Git Workflow
 
 - Work on feature branches, not `main` directly
+- **One branch per issue** — never combine multiple issues in a single branch
 - Branch names should reference the issue: `str-<hash>-short-description`
 - Commits should be clean and atomic — one logical change per commit
 - Rebase feature branches onto `main` before merging
+- **Merge one branch at a time** — merge branch A to `main`, push, then merge branch B. Never batch-merge multiple branches in a single operation.
 - Merge to `main` directly — do NOT create pull requests
 - After merge, delete the feature branch both locally and remotely
 - Work is complete when changes are on `main` and pushed, not when a branch is pushed
@@ -207,9 +211,11 @@ team setup, plan review, merge, quality gates, and close protocol.
 ```
 1. Create tasks for each issue (TaskCreate)
 2. Spawn teammates with isolation: "worktree", mode: "plan" (Task tool)
-3. Each teammate researches and proposes a plan
-4. Team lead reviews and approves/rejects each plan
-5. Approved teammates implement, team lead merges results
+3. Each teammate works on exactly ONE issue on its own branch
+4. Each teammate researches and proposes a plan
+5. Team lead reviews and approves/rejects each plan
+6. Approved teammates implement, team lead merges results ONE AT A TIME
+   (merge branch A → main → push, then merge branch B → main → push, etc.)
 ```
 
 ### Worktree isolation for teammates
