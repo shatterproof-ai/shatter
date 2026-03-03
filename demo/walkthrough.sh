@@ -126,7 +126,7 @@ GO_EXAMPLES=(
     "examples/go/03-errors.go:SafeDivide"
 )
 
-TOTAL=29
+TOTAL=30
 
 # ─── Walkthrough ──────────────────────────────────────────────────────
 
@@ -287,8 +287,13 @@ step 28 $TOTAL "Setup + Generators (Debug)" \
     $SHATTER explore --config examples/typescript/.shatter/config.yaml \
     --log-level debug "examples/typescript/src/03-objects.ts:categorizeUser"
 
-# Stage 29: Concolic exploration (Z3-backed)
-step 29 $TOTAL "Concolic Exploration (Z3)" \
+# Stage 29: File-level explore (all exported functions)
+step 29 $TOTAL "File-Level Explore" \
+    "Explore all exported functions in a file by passing just the file path" \
+    $SHATTER explore examples/typescript/src/01-arithmetic.ts
+
+# Stage 30: Concolic exploration (Z3-backed)
+step 30 $TOTAL "Concolic Exploration (Z3)" \
     "Use the Z3-backed concolic explorer to solve branch constraints" \
     $SHATTER explore --concolic "${EXAMPLES[0]}"
 
