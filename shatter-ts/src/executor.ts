@@ -24,9 +24,11 @@ import type {
 import { RECORD_FUNCTION, BRANCH_FUNCTION, MOCK_REGISTRY, MOCK_CALL_FUNCTION } from "./instrumentor.js";
 import type { MockConfig, ExternalCall } from "./protocol.js";
 
+const DEFAULT_EXEC_TIMEOUT_MS = 15_000;
+
 /**
  * Read SHATTER_EXEC_TIMEOUT env var (seconds) and return milliseconds.
- * Default: 15000ms. Ignores non-positive or non-numeric values.
+ * Default: 15s. Ignores non-positive or non-numeric values.
  */
 export function getExecTimeoutMs(): number {
   const raw = process.env["SHATTER_EXEC_TIMEOUT"];
@@ -36,7 +38,7 @@ export function getExecTimeoutMs(): number {
       return secs * 1000;
     }
   }
-  return 15000;
+  return DEFAULT_EXEC_TIMEOUT_MS;
 }
 
 /** Cache of compiled modules to avoid re-transpiling on every execute call. */
