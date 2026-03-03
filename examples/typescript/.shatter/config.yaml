@@ -12,6 +12,22 @@ defaults:
   max_iterations: 100        # exploration iterations per function
   timeout: 60                # seconds before a single exploration times out
 
+  # Run a setup file before exploration to initialize shared state (e.g. DB).
+  # The setup() return value is passed as setup_context to each execute call.
+  # teardown() is called after exploration completes.
+  setup: ./setup/global.ts
+  setup_mode: per_function
+
+  # Type-name generators: map a type name to a file exporting a function
+  # of the same name that returns a seed value for that type.
+  generators:
+    UserProfile: ./generators/user.ts
+
+  # Param-name generators: map a parameter name to a file exporting a
+  # function of the same name that returns a seed value for that parameter.
+  param_generators:
+    authToken: ./generators/token.ts
+
 # ── Per-function overrides ───────────────────────────────────────────────
 # Keys are "relative/path.ts:functionName" patterns (globs supported).
 functions:
