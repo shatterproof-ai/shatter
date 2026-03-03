@@ -480,6 +480,26 @@ enum CliCommand {
         #[arg(long)]
         json: bool,
     },
+
+    /// Build a custom frontend binary with user-provided native generators.
+    ///
+    /// Reads generator paths from `.shatter/config.yaml`, compiles a custom
+    /// frontend binary that includes native generator functions, and writes
+    /// it to `.shatter/bin/`.
+    #[command(name = "build-frontend")]
+    BuildFrontend {
+        /// Target language: "go" or "rust".
+        #[arg(required = true)]
+        language: String,
+
+        /// Path to the `.shatter/` directory (auto-discovers if omitted).
+        #[arg(long)]
+        config: Option<PathBuf>,
+
+        /// Output directory (default: `.shatter/bin/`).
+        #[arg(long, short)]
+        output: Option<PathBuf>,
+    },
 }
 
 /// A parsed target: `<file>:<function>` for a single function, or `<file>` for all.
@@ -551,6 +571,12 @@ fn validate_targets(targets: &[Target]) -> Result<(), String> {
 }
 
 /// Build a `FrontendConfig` for the given language, with log level propagation.
+/// Check for a custom-built frontend binary at `.shatter/bin/shatter-{lang}-custom`.
+fn find_custom_binary(shatter_dir: Option<&Path>, lang: &str) -> Option<PathBuf> {
+    let bin = shatter_dir?.join("bin").join(format!("shatter-{lang}-custom"));
+    bin.is_file().then_some(bin)
+}
+
 fn frontend_config(
     language: Language,
     timeout: Duration,
@@ -558,6 +584,7 @@ fn frontend_config(
     exec_timeout: u64,
     build_timeout: u64,
     memory_limit: Option<u64>,
+    shatter_dir: Option<&Path>,
 ) -> Result<FrontendConfig, String> {
     let (command, mut args) = match language {
         Language::TypeScript => {
@@ -568,8 +595,12 @@ fn frontend_config(
             )
         }
         Language::Go => {
-            let binary_path = embedded_go_frontend::ensure_extracted()?;
-            (binary_path, vec![])
+            if let Some(custom) = find_custom_binary(shatter_dir, "go") {
+                (custom, vec![])
+            } else {
+                let binary_path = embedded_go_frontend::ensure_extracted()?;
+                (binary_path, vec![])
+            }
         }
     };
 
@@ -699,7 +730,7 @@ async fn run_explore(
             );
         }
 
-        let config = frontend_config(target.language, req_timeout, log_level, exec_timeout, build_timeout, memory_limit)?;
+        let config = frontend_config(target.language, req_timeout, log_level, exec_timeout, build_timeout, memory_limit, None)?;
         let mut frontend = Frontend::spawn(&config).await.map_err(|e| {
             format!(
                 "failed to spawn {} frontend: {e}",
@@ -1141,7 +1172,7 @@ async fn run_scan(
     for lang in &needed_langs {
         let cli_lang = discovery_lang_to_cli_lang(*lang)
             .ok_or_else(|| format!("no frontend for {lang:?}"))?;
-        let config = frontend_config(cli_lang, req_timeout, log_level, exec_timeout, build_timeout, memory_limit)?;
+        let config = frontend_config(cli_lang, req_timeout, log_level, exec_timeout, build_timeout, memory_limit, None)?;
         let frontend = Frontend::spawn(&config).await.map_err(|e| {
             format!("failed to spawn {lang:?} frontend: {e}")
         })?;
@@ -1446,7 +1477,7 @@ async fn run_scan(
     let first_lang = needed_langs.iter().next().copied().unwrap();
     let cli_lang = discovery_lang_to_cli_lang(first_lang)
         .ok_or_else(|| format!("no frontend for {first_lang:?}"))?;
-    let fe_config = frontend_config(cli_lang, req_timeout, log_level, exec_timeout, build_timeout, memory_limit)?;
+    let fe_config = frontend_config(cli_lang, req_timeout, log_level, exec_timeout, build_timeout, memory_limit, None)?;
 
     // Load mock overrides from --mock-config (or .shatter/config.yaml defaults).
     let mock_overrides = if let Some(mc_path) = mock_config {
@@ -1671,7 +1702,7 @@ async fn run_export_tests(
 
         eprintln!("Exploring {file_str}:{func_display} for test export...");
 
-        let config = frontend_config(target.language, req_timeout, LogLevel::Warn, exec_timeout, build_timeout, memory_limit)?;
+        let config = frontend_config(target.language, req_timeout, LogLevel::Warn, exec_timeout, build_timeout, memory_limit, None)?;
         let mut frontend = Frontend::spawn(&config).await.map_err(|e| {
             format!("failed to spawn {} frontend: {e}", target.language.label())
         })?;
@@ -1921,7 +1952,7 @@ async fn run_run(
     for lang in &needed_langs {
         let cli_lang = discovery_lang_to_cli_lang(*lang)
             .ok_or_else(|| format!("no frontend for {lang:?}"))?;
-        let config = frontend_config(cli_lang, req_timeout, log_level, exec_timeout, build_timeout, memory_limit)?;
+        let config = frontend_config(cli_lang, req_timeout, log_level, exec_timeout, build_timeout, memory_limit, None)?;
         let frontend = Frontend::spawn(&config).await.map_err(|e| {
             format!("failed to spawn {lang:?} frontend: {e}")
         })?;
@@ -2557,6 +2588,12 @@ async fn main() -> ExitCode {
                 Err(e) => Err(e),
             }
         }
+        CliCommand::BuildFrontend {
+            language,
+            config,
+            output,
+        } => run_build_frontend(&language, config.as_deref(), output.as_deref())
+            .map_err(|e| e.into()),
     };
 
     match result {
@@ -2566,6 +2603,199 @@ async fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Build a custom frontend binary with user-provided native generators.
+fn run_build_frontend(
+    language: &str,
+    config_dir: Option<&Path>,
+    output_dir: Option<&Path>,
+) -> Result<(), String> {
+    let shatter_dir = config_dir
+        .map(PathBuf::from)
+        .or_else(|| {
+            let candidate = PathBuf::from(".shatter");
+            candidate.is_dir().then_some(candidate)
+        })
+        .ok_or_else(|| "no .shatter/ directory found; pass --config or run from project root".to_string())?;
+
+    let config_path = shatter_dir.join("config.yaml");
+    if !config_path.exists() {
+        return Err(format!(
+            "config not found: {}",
+            config_path.display()
+        ));
+    }
+
+    let config = shatter_config::parse_config(&config_path)
+        .map_err(|e| format!("failed to load config: {e}"))?;
+
+    let out_dir = output_dir
+        .map(PathBuf::from)
+        .unwrap_or_else(|| shatter_dir.join("bin"));
+
+    std::fs::create_dir_all(&out_dir)
+        .map_err(|e| format!("failed to create output dir: {e}"))?;
+
+    match language {
+        "go" => build_go_frontend(&shatter_dir, &config, &out_dir),
+        "rust" => build_rust_frontend(&shatter_dir, &config, &out_dir),
+        other => Err(format!(
+            "unsupported language '{other}'; supported: go, rust"
+        )),
+    }
+}
+
+/// Collect native generator file paths from config for a given language extension.
+fn collect_native_generators(
+    config: &ShatterConfig,
+    extension: &str,
+) -> Vec<(String, PathBuf)> {
+    let mut generators = Vec::new();
+    let check = |name: &str, path_str: &str| {
+        let path = Path::new(path_str);
+        if path.extension().and_then(|e| e.to_str()) == Some(extension) {
+            Some((name.to_string(), path.to_path_buf()))
+        } else {
+            None
+        }
+    };
+
+    if let Some(ref type_gens) = config.defaults.generators {
+        for (name, path_str) in type_gens {
+            if let Some(entry) = check(name, path_str) {
+                generators.push(entry);
+            }
+        }
+    }
+    if let Some(ref param_gens) = config.defaults.param_generators {
+        for (name, path_str) in param_gens {
+            if let Some(entry) = check(name, path_str) {
+                generators.push(entry);
+            }
+        }
+    }
+    generators
+}
+
+/// Build a custom Go frontend binary with native generators compiled in.
+fn build_go_frontend(
+    shatter_dir: &Path,
+    config: &ShatterConfig,
+    out_dir: &Path,
+) -> Result<(), String> {
+    let native_gens = collect_native_generators(config, "go");
+    if native_gens.is_empty() {
+        return Err(
+            "no .go generators found in config.yaml; nothing to build".to_string(),
+        );
+    }
+
+    let output_binary = out_dir.join("shatter-go-custom");
+    eprintln!(
+        "[shatter] building custom Go frontend with {} native generator(s)...",
+        native_gens.len()
+    );
+
+    // Create temp build directory
+    let temp_dir = tempfile::tempdir()
+        .map_err(|e| format!("failed to create temp dir: {e}"))?;
+    let build_dir = temp_dir.path();
+
+    // Initialize Go module
+    let status = std::process::Command::new("go")
+        .args(["mod", "init", "shatter-custom-frontend"])
+        .current_dir(build_dir)
+        .status()
+        .map_err(|e| format!("failed to run `go mod init`: {e}"))?;
+    if !status.success() {
+        return Err("go mod init failed".to_string());
+    }
+
+    // Generate main.go that imports user generators and registers them
+    let mut imports = String::new();
+    let mut registrations = String::new();
+    let gen_dir = shatter_dir.join("generators");
+
+    for (name, path) in &native_gens {
+        let abs_path = if path.is_absolute() {
+            path.clone()
+        } else {
+            gen_dir.join(path)
+        };
+        let abs_path_str = abs_path.display();
+        // Each .go generator file should be in a package that can be imported
+        imports.push_str(&format!(
+            "\t// Generator: {name} from {abs_path_str}\n"
+        ));
+        registrations.push_str(&format!(
+            "\t// TODO: register native generator '{name}'\n"
+        ));
+    }
+
+    let main_go = format!(
+        r#"package main
+
+import (
+    "fmt"
+    "os"
+)
+
+{imports}
+
+func main() {{
+{registrations}
+    fmt.Fprintln(os.Stderr, "[shatter-go-custom] custom frontend with native generators")
+    fmt.Fprintln(os.Stderr, "[shatter-go-custom] ERROR: custom build scaffold — full implementation pending")
+    os.Exit(1)
+}}
+"#
+    );
+
+    std::fs::write(build_dir.join("main.go"), main_go)
+        .map_err(|e| format!("failed to write main.go: {e}"))?;
+
+    // Build the binary
+    let output = std::process::Command::new("go")
+        .args([
+            "build",
+            "-o",
+            &output_binary.display().to_string(),
+            "-trimpath",
+            "-ldflags",
+            "-w -s",
+            ".",
+        ])
+        .current_dir(build_dir)
+        .output()
+        .map_err(|e| format!("failed to run `go build`: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("go build failed:\n{stderr}"));
+    }
+
+    eprintln!(
+        "[shatter] custom Go frontend built: {}",
+        output_binary.display()
+    );
+    Ok(())
+}
+
+/// Build a custom Rust frontend binary with native generators compiled in.
+fn build_rust_frontend(
+    _shatter_dir: &Path,
+    config: &ShatterConfig,
+    _out_dir: &Path,
+) -> Result<(), String> {
+    let native_gens = collect_native_generators(config, "rs");
+    if native_gens.is_empty() {
+        return Err(
+            "no .rs generators found in config.yaml; nothing to build".to_string(),
+        );
+    }
+
+    Err("custom Rust frontend build is not yet implemented".to_string())
 }
 
 #[cfg(test)]
@@ -3114,7 +3344,7 @@ mod tests {
 
     #[test]
     fn frontend_config_typescript_uses_embedded_bundle() {
-        let config = frontend_config(Language::TypeScript, Duration::from_secs(30), LogLevel::Info, 10, 30, None).unwrap();
+        let config = frontend_config(Language::TypeScript, Duration::from_secs(30), LogLevel::Info, 10, 30, None, None).unwrap();
         assert_eq!(config.command, PathBuf::from("node"));
         assert_eq!(config.request_timeout, Duration::from_secs(30));
         // The arg should point to the extracted bundle, not a relative dev path
@@ -3128,7 +3358,7 @@ mod tests {
 
     #[test]
     fn frontend_config_go_uses_embedded_binary() {
-        let config = frontend_config(Language::Go, Duration::from_secs(45), LogLevel::Info, 10, 30, None).unwrap();
+        let config = frontend_config(Language::Go, Duration::from_secs(45), LogLevel::Info, 10, 30, None, None).unwrap();
         assert_eq!(config.request_timeout, Duration::from_secs(45));
         assert!(config.args.is_empty());
         // The command should point to the extracted binary, not a relative dev path

@@ -12,3 +12,4 @@ shatter-core = { path = "../shatter-core" }
 clap = { version = "4", features = ["derive", "env"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tempfile = "3"
