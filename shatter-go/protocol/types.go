@@ -36,8 +36,9 @@ type Request struct {
 	Mode string `json:"mode,omitempty"`
 
 	// Generate fields
-	Name string `json:"name,omitempty"`
-	Kind string `json:"kind,omitempty"`
+	Name   string           `json:"name,omitempty"`
+	Kind   string           `json:"kind,omitempty"`
+	Recipe *json.RawMessage `json:"recipe,omitempty"`
 }
 
 // Response is a message from the frontend to the core engine.
@@ -74,7 +75,9 @@ type Response struct {
 	SetupContext *json.RawMessage `json:"setup_context,omitempty"`
 
 	// Generate
-	Value *json.RawMessage `json:"value,omitempty"`
+	Value       *json.RawMessage `json:"value,omitempty"`
+	GeneratorID string           `json:"generator_id,omitempty"`
+	Recipe      *json.RawMessage `json:"recipe,omitempty"`
 
 	// Error
 	Code    string           `json:"code,omitempty"`
