@@ -18,7 +18,7 @@
     },
     "status": {
       "type": "string",
-      "enum": ["handshake", "analyze", "instrument", "execute", "shutdown_ack", "error"],
+      "enum": ["handshake", "analyze", "instrument", "execute", "setup", "teardown_ack", "generate", "shutdown_ack", "error"],
       "description": "The response type, matching the originating command."
     }
   },
@@ -27,6 +27,7 @@
     { "$ref": "#/$defs/analyze_response" },
     { "$ref": "#/$defs/instrument_response" },
     { "$ref": "#/$defs/execute_response" },
+    { "$ref": "#/$defs/generate_response" },
     { "$ref": "#/$defs/shutdown_ack_response" },
     { "$ref": "#/$defs/error_response" }
   ],
@@ -117,12 +118,50 @@
           "items": { "$ref": "side-effect.schema.json" },
           "description": "Side effects observed during execution."
         },
+        "capture_truncation": {
+          "type": "object",
+          "description": "Truncation metadata for captured side effects, present only when truncation was applied.",
+          "properties": {
+            "was_truncated": {
+              "type": "boolean",
+              "description": "Whether the side-effect output was truncated."
+            },
+            "original_lines": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Original number of console output lines before truncation."
+            },
+            "original_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Original byte count of console output before truncation."
+            }
+          },
+          "required": ["was_truncated", "original_lines", "original_bytes"]
+        },
         "performance": {
           "$ref": "performance-metrics.schema.json",
           "description": "Performance metrics."
         }
       },
       "required": ["status", "branch_path", "lines_executed", "calls_to_external", "path_constraints", "side_effects", "performance"]
+    },
+    "generate_response": {
+      "type": "object",
+      "properties": {
+        "status": { "const": "generate" },
+        "value": {
+          "description": "The generated value."
+        },
+        "generator_id": {
+          "type": "string",
+          "description": "Human-readable label for this generated value (e.g. 'postgres-test-db')."
+        },
+        "recipe": {
+          "description": "Serializable recipe for replaying this generation. For WASM generators where value is already JSON, this may be omitted."
+        }
+      },
+      "required": ["status", "value", "generator_id"]
     },
     "shutdown_ack_response": {
       "type": "object",

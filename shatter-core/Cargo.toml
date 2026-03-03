@@ -13,6 +13,9 @@ rayon = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["process", "io-util", "time", "rt", "macros", "sync"] }
 sha2 = "0.10"
+hex = "0.4"
+ryu = "1"
+unicode-normalization = "0.1"
 z3 = { version = "0.19", features = ["gh-release"] }
 
 [dev-dependencies]

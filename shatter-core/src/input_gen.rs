@@ -814,11 +814,12 @@ pub async fn prefetch_custom_values(
                     file: file.clone(),
                     name: name.clone(),
                     kind: kind.clone(),
+                    recipe: None,
                 })
                 .await?;
 
             match response.result {
-                crate::protocol::ResponseResult::Generate { value } => {
+                crate::protocol::ResponseResult::Generate { value, .. } => {
                     store.insert(file.clone(), name.clone(), vec![value]);
                 }
                 crate::protocol::ResponseResult::Error { message, .. } => {

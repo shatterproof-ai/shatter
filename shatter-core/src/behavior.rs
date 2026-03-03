@@ -1080,6 +1080,7 @@ mod tests {
             ],
             path_constraints: vec![],
             side_effects: vec![],
+            capture_truncation: None,
             performance: PerformanceMetrics {
                 wall_time_ms: 1.0,
                 cpu_time_us: 800,
@@ -1115,6 +1116,7 @@ mod tests {
                 level: "info".to_string(),
                 message: "fetching data".to_string(),
             }],
+            capture_truncation: None,
             performance: PerformanceMetrics {
                 wall_time_ms: 5.0,
                 cpu_time_us: 3000,
@@ -1187,6 +1189,7 @@ mod tests {
             calls_to_external: vec![],
             path_constraints: vec![],
             side_effects: vec![],
+            capture_truncation: None,
             performance: PerformanceMetrics {
                 wall_time_ms: 0.1,
                 cpu_time_us: 50,
@@ -1255,6 +1258,7 @@ mod tests {
                     body: None,
                 },
             ],
+            capture_truncation: None,
             performance: PerformanceMetrics {
                 wall_time_ms: 2.0,
                 cpu_time_us: 1500,
@@ -1287,6 +1291,7 @@ mod tests {
             }],
             path_constraints: vec![],
             side_effects: vec![],
+            capture_truncation: None,
             performance: PerformanceMetrics {
                 wall_time_ms: 0.5,
                 cpu_time_us: 300,

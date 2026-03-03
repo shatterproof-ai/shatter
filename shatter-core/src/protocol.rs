@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::SetupMode;
 use crate::execution_record::{
-    BranchDecision, ErrorInfo, ExternalCall, SideEffect, SymConstraint,
+    BranchDecision, ErrorInfo, ExternalCall, SideEffect, SymConstraint, TruncationInfo,
 };
 use crate::sym_expr::SymExpr;
 use crate::types::{ParamInfo, TypeInfo};
@@ -91,6 +91,9 @@ pub enum Command {
         name: String,
         /// Whether this generator targets a type name or a parameter name.
         kind: GeneratorKind,
+        /// Reconstruction recipe from a previous generation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        recipe: Option<serde_json::Value>,
     },
     /// Request graceful shutdown of the frontend process.
     Shutdown,
@@ -188,6 +191,11 @@ pub enum ResponseResult {
     Generate {
         /// The generated value.
         value: serde_json::Value,
+        /// Human-readable label for this generated value.
+        generator_id: String,
+        /// Serializable recipe for replaying this generation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        recipe: Option<serde_json::Value>,
     },
     /// Acknowledgment of shutdown request.
     ShutdownAck,
@@ -322,6 +330,9 @@ pub struct ExecuteResult {
     pub side_effects: Vec<SideEffect>,
     /// Performance metrics.
     pub performance: PerformanceMetrics,
+    /// Truncation metadata for captured side effects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_truncation: Option<TruncationInfo>,
 }
 
 /// Performance metrics from a single execution.
@@ -598,6 +609,7 @@ mod tests {
                     heap_used_bytes: 1024,
                     heap_allocated_bytes: 2048,
                 },
+                capture_truncation: None,
             })),
         ));
     }
@@ -625,6 +637,7 @@ mod tests {
                     heap_used_bytes: 256,
                     heap_allocated_bytes: 256,
                 },
+                capture_truncation: None,
             })),
         ));
     }
@@ -1055,6 +1068,7 @@ mod tests {
                 file: "./generators/user.ts".into(),
                 name: "User".into(),
                 kind: GeneratorKind::TypeName,
+                recipe: None,
             },
         ));
     }
@@ -1067,6 +1081,7 @@ mod tests {
                 file: "./generators/token.ts".into(),
                 name: "authToken".into(),
                 kind: GeneratorKind::ParamName,
+                recipe: None,
             },
         ));
     }
@@ -1092,6 +1107,8 @@ mod tests {
             22,
             ResponseResult::Generate {
                 value: serde_json::json!({"id": 1, "name": "Alice", "email": "alice@example.com"}),
+                generator_id: "generated".into(),
+                recipe: None,
             },
         ));
     }
@@ -1102,6 +1119,8 @@ mod tests {
             23,
             ResponseResult::Generate {
                 value: serde_json::json!("tok_abc123"),
+                generator_id: "generated".into(),
+                recipe: None,
             },
         ));
     }
@@ -1185,6 +1204,7 @@ mod tests {
                 file: "./gen.ts".into(),
                 name: "User".into(),
                 kind: GeneratorKind::TypeName,
+                recipe: None,
             },
         );
         let json = serde_json::to_value(&req).expect("serialize");
@@ -1220,6 +1240,8 @@ mod tests {
             32,
             ResponseResult::Generate {
                 value: serde_json::json!(42),
+                generator_id: "generated".into(),
+                recipe: None,
             },
         );
         let json = serde_json::to_value(&resp).expect("serialize");

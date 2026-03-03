@@ -21,11 +21,21 @@ import type {
   SymConstraint,
   SymExpr,
   SideEffect,
+  TruncationInfo,
 } from "./protocol.js";
 import { RECORD_FUNCTION, BRANCH_FUNCTION, MOCK_REGISTRY, MOCK_CALL_FUNCTION } from "./instrumentor.js";
 import type { MockConfig, ExternalCall } from "./protocol.js";
 
 export const DEFAULT_EXEC_TIMEOUT_MS = 15_000;
+
+/** Default number of head console lines to keep before truncation. */
+export const CAPTURE_HEAD_LINES = 50;
+/** Default number of tail console lines to keep after truncation. */
+export const CAPTURE_TAIL_LINES = 20;
+/** Maximum total bytes for captured console output before truncation. */
+export const CAPTURE_MAX_BYTES = 6144;
+/** Maximum bytes for a single side-effect message. */
+export const MESSAGE_MAX_BYTES = 4096;
 
 /**
  * Read SHATTER_EXEC_TIMEOUT env var (seconds) and return milliseconds.
@@ -244,13 +254,104 @@ interface RawExecuteResult {
 }
 
 /**
+ * Truncate a message string to fit within maxBytes.
+ * If truncated, appends a suffix indicating the message was cut.
+ */
+export function truncateMessage(msg: string, maxBytes: number = MESSAGE_MAX_BYTES): string {
+  const bytes = Buffer.byteLength(msg, "utf-8");
+  if (bytes <= maxBytes) return msg;
+  const suffix = "…[truncated]";
+  const suffixBytes = Buffer.byteLength(suffix, "utf-8");
+  const target = maxBytes - suffixBytes;
+  let end = Math.min(msg.length, target);
+  while (Buffer.byteLength(msg.slice(0, end), "utf-8") > target && end > 0) {
+    end--;
+  }
+  return msg.slice(0, end) + suffix;
+}
+
+/**
+ * Truncate console_output side effects if they exceed head+tail line limits.
+ * Returns the (possibly truncated) effects array and truncation metadata.
+ */
+export function truncateSideEffects(
+  effects: SideEffect[],
+  headLines: number = CAPTURE_HEAD_LINES,
+  tailLines: number = CAPTURE_TAIL_LINES,
+): { effects: SideEffect[]; truncation?: TruncationInfo } {
+  const consoleIndices: number[] = [];
+  for (let i = 0; i < effects.length; i++) {
+    const effect = effects[i];
+    if (effect !== undefined && effect.kind === "console_output") {
+      consoleIndices.push(i);
+    }
+  }
+
+  const consoleCount = consoleIndices.length;
+  if (consoleCount <= headLines + tailLines) {
+    return { effects };
+  }
+
+  let originalBytes = 0;
+  for (const idx of consoleIndices) {
+    const e = effects[idx];
+    if (e !== undefined && e.kind === "console_output") {
+      originalBytes += Buffer.byteLength(e.message, "utf-8");
+    }
+  }
+
+  const keepHead = new Set(consoleIndices.slice(0, headLines));
+  const keepTail = new Set(consoleIndices.slice(-tailLines));
+  const truncatedCount = consoleCount - headLines - tailLines;
+
+  let keptBytes = 0;
+  for (const idx of [...keepHead, ...keepTail]) {
+    const e = effects[idx];
+    if (e !== undefined && e.kind === "console_output") {
+      keptBytes += Buffer.byteLength(e.message, "utf-8");
+    }
+  }
+  const truncatedBytes = originalBytes - keptBytes;
+
+  const result: SideEffect[] = [];
+  let markerInserted = false;
+  for (let i = 0; i < effects.length; i++) {
+    const effect = effects[i];
+    if (effect === undefined) continue;
+    if (effect.kind !== "console_output") {
+      result.push(effect);
+    } else if (keepHead.has(i)) {
+      result.push(effect);
+    } else if (keepTail.has(i)) {
+      result.push(effect);
+    } else if (!markerInserted) {
+      result.push({
+        kind: "console_output",
+        level: "info",
+        message: `[…truncated ${truncatedCount} lines / ${truncatedBytes} bytes…]`,
+      });
+      markerInserted = true;
+    }
+  }
+
+  return {
+    effects: result,
+    truncation: {
+      was_truncated: true,
+      original_lines: consoleCount,
+      original_bytes: originalBytes,
+    },
+  };
+}
+
+/**
  * Create an intercepting console that records all output as side effects.
  */
 function createCapturingConsole(sideEffects: SideEffect[]): Console {
   const makeLogger = (level: string) => (...args: unknown[]): void => {
-    const message = args.map((a) =>
+    const message = truncateMessage(args.map((a) =>
       typeof a === "string" ? a : JSON.stringify(a) ?? String(a)
-    ).join(" ");
+    ).join(" "));
     sideEffects.push({ kind: "console_output", level, message });
   };
 
@@ -505,13 +606,16 @@ export function executeInstrumented(
 
 /**
  * Build a full ExecuteResponse from a raw execution result.
+ * Applies side-effect truncation before assembling the response.
  */
 export function buildExecuteResponse(
   id: number,
   protocolVersion: string,
   rawResult: RawExecuteResult,
 ): ExecuteResponse {
-  return {
+  const { effects, truncation } = truncateSideEffects(rawResult.side_effects);
+
+  const response: ExecuteResponse = {
     protocol_version: protocolVersion,
     id,
     status: "execute",
@@ -521,9 +625,15 @@ export function buildExecuteResponse(
     lines_executed: rawResult.lines_executed,
     calls_to_external: rawResult.calls_to_external,
     path_constraints: rawResult.path_constraints,
-    side_effects: rawResult.side_effects,
+    side_effects: effects,
     performance: rawResult.performance,
   };
+
+  if (truncation) {
+    response.capture_truncation = truncation;
+  }
+
+  return response;
 }
 
 /**

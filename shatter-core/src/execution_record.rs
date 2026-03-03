@@ -4,6 +4,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::sym_expr::SymExpr;
 
+/// Default number of head console lines to keep before truncation.
+pub const CAPTURE_HEAD_LINES: u32 = 50;
+/// Default number of tail console lines to keep after truncation.
+pub const CAPTURE_TAIL_LINES: u32 = 20;
+/// Maximum total bytes for captured console output before truncation.
+pub const CAPTURE_MAX_BYTES: u64 = 6144;
+/// Maximum bytes for a single side-effect message.
+pub const MESSAGE_MAX_BYTES: u64 = 4096;
+
 /// A symbolic constraint captured at a branch point.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -73,6 +82,14 @@ pub enum SideEffect {
         before: serde_json::Value,
         after: serde_json::Value,
     },
+}
+
+/// Metadata about truncation applied to captured side effects.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TruncationInfo {
+    pub was_truncated: bool,
+    pub original_lines: u32,
+    pub original_bytes: u64,
 }
 
 /// A call to an external (mocked or observed) dependency during execution.
@@ -211,6 +228,24 @@ mod tests {
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(!json.contains("error_category"));
+    }
+
+    #[test]
+    fn truncation_info_round_trips() {
+        round_trip(&TruncationInfo {
+            was_truncated: true,
+            original_lines: 200,
+            original_bytes: 8192,
+        });
+    }
+
+    #[test]
+    fn truncation_info_not_truncated_round_trips() {
+        round_trip(&TruncationInfo {
+            was_truncated: false,
+            original_lines: 10,
+            original_bytes: 256,
+        });
     }
 
     #[test]

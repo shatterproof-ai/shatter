@@ -18,7 +18,7 @@
     },
     "command": {
       "type": "string",
-      "enum": ["handshake", "analyze", "instrument", "execute", "shutdown"],
+      "enum": ["handshake", "analyze", "instrument", "execute", "setup", "teardown", "generate", "shutdown"],
       "description": "The command to execute."
     }
   },
@@ -27,6 +27,7 @@
     { "$ref": "#/$defs/analyze_request" },
     { "$ref": "#/$defs/instrument_request" },
     { "$ref": "#/$defs/execute_request" },
+    { "$ref": "#/$defs/generate_request" },
     { "$ref": "#/$defs/shutdown_request" }
   ],
   "$defs": {
@@ -96,6 +97,29 @@
         }
       },
       "required": ["command", "function", "inputs", "mocks"]
+    },
+    "generate_request": {
+      "type": "object",
+      "properties": {
+        "command": { "const": "generate" },
+        "file": {
+          "type": "string",
+          "description": "Path to the generator file."
+        },
+        "name": {
+          "type": "string",
+          "description": "Name of the type or parameter to generate a value for."
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["type_name", "param_name"],
+          "description": "Whether this generator targets a type name or a parameter name."
+        },
+        "recipe": {
+          "description": "Reconstruction recipe from a previous generation. When present, the generator should reproduce the value from this recipe."
+        }
+      },
+      "required": ["command", "file", "name", "kind"]
     },
     "shutdown_request": {
       "type": "object",

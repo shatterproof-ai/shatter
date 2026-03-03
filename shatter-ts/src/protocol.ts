@@ -159,6 +159,7 @@ export interface ExecuteResponse extends BaseResponse {
   path_constraints: SymConstraint[];
   side_effects: SideEffect[];
   performance: PerformanceMetrics;
+  capture_truncation?: TruncationInfo;
 }
 
 export interface SetupResponse extends BaseResponse {
@@ -347,6 +348,12 @@ export interface ErrorInfo {
   message: string;
   stack: string | null;
   error_category?: ErrorCategory;
+}
+
+export interface TruncationInfo {
+  was_truncated: boolean;
+  original_lines: number;
+  original_bytes: number;
 }
 
 export interface PerformanceMetrics {

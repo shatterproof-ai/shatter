@@ -6,6 +6,8 @@ import {
   clearModuleCache,
   getExecTimeoutMs,
   DEFAULT_EXEC_TIMEOUT_MS,
+  truncateMessage,
+  truncateSideEffects,
 } from "./executor.js";
 import { instrumentFunction } from "./instrumentor.js";
 import * as fs from "node:fs";
@@ -477,5 +479,66 @@ describe("execution timeout enforcement", () => {
     expect(() => {
       executeFunction(infiniteLoopFixture, "neverReached", []);
     }).toThrow(/Script execution timed out/);
+  });
+});
+
+describe("truncation", () => {
+  it("truncateMessage returns short strings unchanged", () => {
+    expect(truncateMessage("hello", 100)).toBe("hello");
+  });
+
+  it("truncateMessage truncates long strings", () => {
+    const long = "x".repeat(5000);
+    const result = truncateMessage(long, 100);
+    expect(Buffer.byteLength(result, "utf-8")).toBeLessThanOrEqual(100);
+    expect(result).toContain("…[truncated]");
+  });
+
+  it("truncateSideEffects returns few entries unchanged", () => {
+    const effects: SideEffect[] = Array.from({ length: 10 }, (_, i) => ({
+      kind: "console_output" as const,
+      level: "log",
+      message: `line ${i}`,
+    }));
+    const { effects: result, truncation } = truncateSideEffects(effects);
+    expect(result).toHaveLength(10);
+    expect(truncation).toBeUndefined();
+  });
+
+  it("truncateSideEffects truncates many entries with marker", () => {
+    const effects: SideEffect[] = Array.from({ length: 100 }, (_, i) => ({
+      kind: "console_output" as const,
+      level: "log",
+      message: `line ${i}`,
+    }));
+    const { effects: result, truncation } = truncateSideEffects(effects, 5, 3);
+    // 5 head + 1 marker + 3 tail = 9
+    expect(result).toHaveLength(9);
+    expect(result[0]).toEqual({ kind: "console_output", level: "log", message: "line 0" });
+    expect(result[4]).toEqual({ kind: "console_output", level: "log", message: "line 4" });
+    const marker = result[5];
+    expect(marker).toBeDefined();
+    expect(marker!.kind).toBe("console_output");
+    if (marker !== undefined && marker.kind === "console_output") {
+      expect(marker.message).toMatch(/truncated 92 lines/);
+    }
+    expect(result[6]).toEqual({ kind: "console_output", level: "log", message: "line 97" });
+    expect(result[8]).toEqual({ kind: "console_output", level: "log", message: "line 99" });
+    expect(truncation?.was_truncated).toBe(true);
+    expect(truncation?.original_lines).toBe(100);
+  });
+
+  it("truncateSideEffects preserves non-console effects", () => {
+    const effects: SideEffect[] = [
+      { kind: "console_output", level: "log", message: "a" },
+      { kind: "global_mutation", name: "x" },
+      ...Array.from({ length: 100 }, (_, i) => ({
+        kind: "console_output" as const,
+        level: "log",
+        message: `line ${i}`,
+      })),
+    ];
+    const { effects: result } = truncateSideEffects(effects, 5, 3);
+    expect(result.some(e => e.kind === "global_mutation")).toBe(true);
   });
 });
