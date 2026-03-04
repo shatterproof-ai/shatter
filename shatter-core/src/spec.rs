@@ -12,6 +12,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::coverage_metrics::DiscoveryMethod;
 use crate::equivalence::{BranchPath, EquivalenceClass, Precondition};
 use crate::execution_record::{ErrorInfo, SideEffect};
 use crate::explorer::ObservationOutput;
@@ -159,20 +160,21 @@ pub struct FunctionSpec {
     pub fingerprint: Option<String>,
 }
 
-/// Build a [`FunctionSpec`] from an exploration result and its equivalence classes.
+/// Build a [`FunctionSpec`] from an observation output and its equivalence classes.
 ///
 /// Equivalence classes are produced by [`crate::equivalence::group_into_classes`].
-/// The provenance is always `Observed` since the random explorer does not use Z3.
+/// Branches discovered via Z3 get `Provenance::Proven`; all others get `Observed`.
 pub fn build_spec(
     result: &ObservationOutput,
     eq_classes: &[EquivalenceClass],
     location: Option<String>,
     fingerprint: Option<String>,
 ) -> FunctionSpec {
+    let z3_branches = z3_branch_set(&result.discoveries);
     let classes = eq_classes
         .iter()
         .enumerate()
-        .map(|(i, ec)| build_spec_class(i, ec))
+        .map(|(i, ec)| build_spec_class(i, ec, &z3_branches))
         .collect();
 
     FunctionSpec {
@@ -189,19 +191,34 @@ pub fn build_spec(
 
 /// Build a [`FunctionSpec`] with invariant detection enabled.
 ///
-/// Runs Daikon-style invariant detection on the raw execution results, producing
-/// classified invariants at both the per-class and function-wide levels.
+/// Convenience wrapper: builds the spec via [`build_spec`], then enriches it
+/// with invariants via [`detect_spec_invariants`].
 pub fn build_spec_with_invariants(
     result: &ObservationOutput,
     eq_classes: &[EquivalenceClass],
     location: Option<String>,
     fingerprint: Option<String>,
 ) -> FunctionSpec {
+    let mut spec = build_spec(result, eq_classes, location, fingerprint);
+    detect_spec_invariants(&mut spec, result, eq_classes);
+    spec
+}
+
+/// Enrich a [`FunctionSpec`] with Daikon-style invariant detection.
+///
+/// Detects invariants at both the function-wide level (across all executions)
+/// and the per-class level (for classes with at least 2 samples). Mutates
+/// `spec` in place so callers can compose observation, spec construction,
+/// and invariant detection as separate pipeline stages.
+pub fn detect_spec_invariants(
+    spec: &mut FunctionSpec,
+    result: &ObservationOutput,
+    eq_classes: &[EquivalenceClass],
+) {
     use crate::invariants::{
         detect_classified_invariants, records_from_raw_results, InvariantTarget,
     };
 
-    // Convert raw results to execution records for invariant detection
     let all_records = records_from_raw_results(&result.function_name, &result.raw_results);
 
     // Function-wide invariants (across all executions)
@@ -211,49 +228,42 @@ pub fn build_spec_with_invariants(
         &all_records,
         InvariantTarget::Output,
     ));
+    spec.invariants = function_invariants;
 
-    // Per-class invariants: group records by equivalence class branch path
-    let classes: Vec<SpecClass> = eq_classes
-        .iter()
-        .enumerate()
-        .map(|(i, ec)| {
-            let mut spec_class = build_spec_class(i, ec);
+    // Per-class invariants: match spec classes to equivalence classes by branch path
+    for (spec_class, ec) in spec.classes.iter_mut().zip(eq_classes.iter()) {
+        let class_records: Vec<_> = all_records
+            .iter()
+            .filter(|r| ec.all_inputs.contains(&r.parameters))
+            .cloned()
+            .collect();
 
-            // Collect records belonging to this class by matching inputs
-            let class_records: Vec<_> = all_records
-                .iter()
-                .filter(|r| ec.all_inputs.contains(&r.parameters))
-                .cloned()
-                .collect();
-
-            if class_records.len() >= 2 {
-                let mut class_invs =
-                    detect_classified_invariants(&class_records, InvariantTarget::Input);
-                class_invs.extend(detect_classified_invariants(
-                    &class_records,
-                    InvariantTarget::Output,
-                ));
-                spec_class.invariants = class_invs;
-            }
-
-            spec_class
-        })
-        .collect();
-
-    FunctionSpec {
-        function_name: result.function_name.clone(),
-        location,
-        classes,
-        iterations: result.iterations,
-        lines_covered: result.lines_covered,
-        total_lines: result.total_lines,
-        invariants: function_invariants,
-        fingerprint,
+        if class_records.len() >= 2 {
+            let mut class_invs =
+                detect_classified_invariants(&class_records, InvariantTarget::Input);
+            class_invs.extend(detect_classified_invariants(
+                &class_records,
+                InvariantTarget::Output,
+            ));
+            spec_class.invariants = class_invs;
+        }
     }
 }
 
+/// Collect branch IDs discovered via Z3 into a lookup set.
+fn z3_branch_set(discoveries: &[(u32, DiscoveryMethod)]) -> HashSet<u32> {
+    discoveries
+        .iter()
+        .filter(|(_, method)| *method == DiscoveryMethod::Z3)
+        .map(|(id, _)| *id)
+        .collect()
+}
+
 /// Build a single [`SpecClass`] from an equivalence class.
-fn build_spec_class(index: usize, ec: &EquivalenceClass) -> SpecClass {
+///
+/// If every branch in the class's path was discovered by Z3, both precondition
+/// and postcondition provenance are `Proven`; otherwise `Observed`.
+fn build_spec_class(index: usize, ec: &EquivalenceClass, z3_branches: &HashSet<u32>) -> SpecClass {
     let postcondition = if let Some(ref err_msg) = ec.canonical_thrown_error {
         let (error_type, message) = match err_msg.split_once(": ") {
             Some((t, m)) => (t.to_string(), m.to_string()),
@@ -289,6 +299,19 @@ fn build_spec_class(index: usize, ec: &EquivalenceClass) -> SpecClass {
         }),
     };
 
+    // A class is proven if every branch step in its path was solved by Z3.
+    let all_z3 = !ec.branch_path.0.is_empty()
+        && ec
+            .branch_path
+            .0
+            .iter()
+            .all(|step| z3_branches.contains(&step.branch_id));
+    let provenance = if all_z3 {
+        Provenance::Proven
+    } else {
+        Provenance::Observed
+    };
+
     SpecClass {
         label,
         branch_path: ec.branch_path.clone(),
@@ -297,8 +320,8 @@ fn build_spec_class(index: usize, ec: &EquivalenceClass) -> SpecClass {
         side_effects: vec![],
         examples: vec![canonical_example],
         sample_count: ec.all_inputs.len(),
-        precondition_provenance: Provenance::Observed,
-        postcondition_provenance: Provenance::Observed,
+        precondition_provenance: provenance,
+        postcondition_provenance: provenance,
         invariants: vec![],
     }
 }
@@ -835,6 +858,104 @@ mod tests {
 
         assert!(spec.classes.is_empty());
         assert_eq!(spec.function_name, "unused");
+    }
+
+    #[test]
+    fn z3_discovered_branches_get_proven_provenance() {
+        use crate::coverage_metrics::DiscoveryMethod;
+
+        let mut result = make_exploration_result("classify", 50, 3);
+        // Branch 0 solved by Z3, branch 1 found randomly
+        result.discoveries = vec![
+            (0, DiscoveryMethod::Z3),
+            (1, DiscoveryMethod::Random),
+        ];
+
+        let classes = vec![
+            // Class with only branch 0 (Z3) → Proven
+            make_eq_class(
+                vec![(0, true)],
+                vec![json!(5)],
+                Some(json!("positive")),
+                None,
+                vec![Precondition::AllPositive { param_index: 0 }],
+                10,
+            ),
+            // Class with branch 0 (Z3) + branch 1 (Random) → Observed (not all Z3)
+            make_eq_class(
+                vec![(0, false), (1, true)],
+                vec![json!(-3)],
+                Some(json!("negative")),
+                None,
+                vec![Precondition::AllNegative { param_index: 0 }],
+                8,
+            ),
+            // Class with only branch 1 (Random) → Observed
+            make_eq_class(
+                vec![(1, false)],
+                vec![json!(0)],
+                Some(json!("zero")),
+                None,
+                vec![Precondition::AllZero { param_index: 0 }],
+                2,
+            ),
+        ];
+
+        let spec = build_spec(&result, &classes, None, None);
+
+        assert_eq!(spec.classes[0].precondition_provenance, Provenance::Proven);
+        assert_eq!(spec.classes[0].postcondition_provenance, Provenance::Proven);
+
+        assert_eq!(spec.classes[1].precondition_provenance, Provenance::Observed);
+        assert_eq!(spec.classes[1].postcondition_provenance, Provenance::Observed);
+
+        assert_eq!(spec.classes[2].precondition_provenance, Provenance::Observed);
+        assert_eq!(spec.classes[2].postcondition_provenance, Provenance::Observed);
+    }
+
+    #[test]
+    fn all_z3_branches_means_proven() {
+        use crate::coverage_metrics::DiscoveryMethod;
+
+        let mut result = make_exploration_result("allProven", 20, 2);
+        result.discoveries = vec![
+            (0, DiscoveryMethod::Z3),
+            (1, DiscoveryMethod::Z3),
+        ];
+
+        let classes = vec![make_eq_class(
+            vec![(0, true), (1, false)],
+            vec![json!(42)],
+            Some(json!(true)),
+            None,
+            vec![],
+            5,
+        )];
+
+        let spec = build_spec(&result, &classes, None, None);
+        assert_eq!(spec.classes[0].precondition_provenance, Provenance::Proven);
+        assert_eq!(spec.classes[0].postcondition_provenance, Provenance::Proven);
+    }
+
+    #[test]
+    fn empty_branch_path_stays_observed() {
+        use crate::coverage_metrics::DiscoveryMethod;
+
+        let mut result = make_exploration_result("noBranches", 10, 1);
+        result.discoveries = vec![(0, DiscoveryMethod::Z3)];
+
+        // Empty branch path (e.g., straight-line code)
+        let classes = vec![make_eq_class(
+            vec![],
+            vec![json!("hello")],
+            None,
+            None,
+            vec![],
+            10,
+        )];
+
+        let spec = build_spec(&result, &classes, None, None);
+        assert_eq!(spec.classes[0].precondition_provenance, Provenance::Observed);
     }
 
     #[test]
