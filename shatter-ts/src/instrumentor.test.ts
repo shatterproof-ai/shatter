@@ -970,6 +970,89 @@ describe("data flow tracking", () => {
       },
     });
   });
+
+  it("tracks data flow through method calls on parameters", () => {
+    const source = `function check(s: string): boolean {
+  const up = s.toUpperCase();
+  if (up === "HELLO") {
+    return true;
+  }
+  return false;
+}`;
+    const result = instrumentFunction(source, "check");
+    if ("error" in result) throw new Error(result.error);
+
+    const { branches } = executeAndCollect(result.instrumentedSource, "check", ["hello"]);
+    expect(branches[0]!.constraint).toEqual({
+      kind: "expr",
+      expr: {
+        kind: "bin_op",
+        op: "eq",
+        left: {
+          kind: "call",
+          name: "toUpperCase",
+          receiver: { kind: "param", name: "s", path: [] },
+          args: [],
+        },
+        right: { kind: "const", type: "str", value: "HELLO" },
+      },
+    });
+  });
+
+  it("tracks data flow through free function calls with param args", () => {
+    const source = `function check(x: number): boolean {
+  const s = String(x);
+  if (s === "5") {
+    return true;
+  }
+  return false;
+}`;
+    const result = instrumentFunction(source, "check");
+    if ("error" in result) throw new Error(result.error);
+
+    const { branches } = executeAndCollect(result.instrumentedSource, "check", [5]);
+    expect(branches[0]!.constraint).toEqual({
+      kind: "expr",
+      expr: {
+        kind: "bin_op",
+        op: "eq",
+        left: {
+          kind: "call",
+          name: "String",
+          receiver: null,
+          args: [{ kind: "param", name: "x", path: [] }],
+        },
+        right: { kind: "const", type: "str", value: "5" },
+      },
+    });
+  });
+
+  it("tracks data flow through typeof expressions", () => {
+    const source = `function check(x: unknown): boolean {
+  const t = typeof x;
+  if (t === "string") {
+    return true;
+  }
+  return false;
+}`;
+    const result = instrumentFunction(source, "check");
+    if ("error" in result) throw new Error(result.error);
+
+    const { branches } = executeAndCollect(result.instrumentedSource, "check", ["hello"]);
+    expect(branches[0]!.constraint).toEqual({
+      kind: "expr",
+      expr: {
+        kind: "bin_op",
+        op: "eq",
+        left: {
+          kind: "un_op",
+          op: "typeof",
+          operand: { kind: "param", name: "x", path: [] },
+        },
+        right: { kind: "const", type: "str", value: "string" },
+      },
+    });
+  });
 });
 
 describe("mock injection via import rewriting", () => {
