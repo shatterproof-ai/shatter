@@ -401,6 +401,7 @@ pub async fn scan(
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             pool_seeds,
             project_root: config.project_root.clone(),
+            loop_buckets: explorer::LoopBuckets::default(),
         };
 
         let exploration = explorer::explore_function(frontend, analysis, &explore_config).await?;
@@ -767,6 +768,7 @@ pub async fn parallel_scan(
                 capabilities: crate::orchestrator::FrontendCapabilities::default(),
                 pool_seeds,
                 project_root: config.project_root.clone(),
+                loop_buckets: explorer::LoopBuckets::default(),
             };
 
             tasks.push((func_name.clone(), analysis.clone(), explore_config, mocks_used, callees, current_deep_fp));

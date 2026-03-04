@@ -24,6 +24,53 @@ use crate::protocol::{
     Command as ProtoCommand, ExecuteResult, FunctionAnalysis, MockConfig, ResponseResult,
 };
 
+/// Iteration count bucket boundaries for scope-aware path hashing.
+///
+/// Each threshold defines the upper bound of a bucket. Counts above
+/// the last threshold all land in the final bucket.
+/// Default: `[0, 1, 2, 5]` → buckets: 0, 1, 2, 3–5, 6+
+#[derive(Debug, Clone)]
+pub struct LoopBuckets(Vec<u32>);
+
+impl LoopBuckets {
+    /// Construct from sorted, deduplicated boundary values.
+    /// Panics if boundaries are not sorted or contain duplicates.
+    pub fn from_boundaries(mut boundaries: Vec<u32>) -> Self {
+        boundaries.sort_unstable();
+        boundaries.dedup();
+        Self(boundaries)
+    }
+
+    /// Disable bucketing entirely — iteration counts are ignored (current behavior).
+    pub fn none() -> Self {
+        Self(Vec::new())
+    }
+
+    /// Returns `true` when bucketing is disabled.
+    pub fn is_disabled(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Map an iteration count to a bucket index (0-based).
+    /// Bucket *i* covers counts in `(boundaries[i-1], boundaries[i]]`
+    /// (with bucket 0 covering `[0, boundaries[0]]`).
+    /// Counts above the last boundary land in the final bucket.
+    pub fn bucket(&self, count: u32) -> u32 {
+        for (i, &threshold) in self.0.iter().enumerate() {
+            if count <= threshold {
+                return i as u32;
+            }
+        }
+        self.0.len() as u32
+    }
+}
+
+impl Default for LoopBuckets {
+    fn default() -> Self {
+        Self(vec![0, 1, 2, 5])
+    }
+}
+
 /// Configuration for an exploration run.
 #[derive(Debug, Clone)]
 pub struct ExploreConfig {
@@ -48,6 +95,8 @@ pub struct ExploreConfig {
     pub pool_seeds: Vec<Vec<serde_json::Value>>,
     /// Detected project root directory, passed to frontend commands.
     pub project_root: Option<String>,
+    /// Iteration count bucket boundaries for loop-aware path hashing.
+    pub loop_buckets: LoopBuckets,
 }
 
 /// Summary of a single function execution during exploration.
@@ -113,13 +162,15 @@ pub enum ExploreError {
 ///
 /// When `scope_events` is non-empty, uses scope-aware collapsing: repeated
 /// invocations of the same loop or call scope are collapsed to the sorted set
-/// of unique `(branch_id, taken)` pairs, so that iteration count doesn't affect
-/// the hash — only which branches were exercised matters.
+/// of unique `(branch_id, taken)` pairs. The `buckets` parameter controls
+/// whether iteration counts also contribute to the hash — when enabled,
+/// different iteration count buckets produce different hashes even if the
+/// branch profile is identical.
 ///
 /// Falls back to legacy sequential hashing when `scope_events` is empty.
-pub(crate) fn path_hash(result: &crate::protocol::ExecuteResult) -> u64 {
+pub(crate) fn path_hash(result: &crate::protocol::ExecuteResult, buckets: &LoopBuckets) -> u64 {
     if !result.scope_events.is_empty() {
-        return scope_aware_hash(&result.scope_events);
+        return scope_aware_hash(&result.scope_events, buckets);
     }
     legacy_path_hash(result)
 }
@@ -152,7 +203,10 @@ fn legacy_path_hash(result: &crate::protocol::ExecuteResult) -> u64 {
 /// Parses the flat trace into a tree of nested scopes, then for each scope_id
 /// that appears multiple times at the same nesting level, collapses all
 /// repetitions to a single sorted set of unique `(branch_id, taken)` pairs.
-fn scope_aware_hash(events: &[crate::execution_record::TraceEvent]) -> u64 {
+/// When `buckets` is non-empty, each distinct profile is also paired with
+/// its iteration-count bucket so that different iteration counts produce
+/// different hashes.
+fn scope_aware_hash(events: &[crate::execution_record::TraceEvent], buckets: &LoopBuckets) -> u64 {
     use crate::execution_record::{ScopeEvent, TraceEvent};
     use std::collections::BTreeSet;
 
@@ -166,15 +220,18 @@ fn scope_aware_hash(events: &[crate::execution_record::TraceEvent]) -> u64 {
     /// A sorted branch profile from one loop/call iteration.
     type BranchProfile = Vec<(u32, bool)>;
 
+    /// A profile paired with its optional iteration-count bucket.
+    type ProfileWithBucket = (BranchProfile, Option<u32>);
+
     /// Collapsed representation of a scope's content for hashing.
     #[derive(Hash)]
     enum CollapsedItem {
         /// A branch decision outside any scope at this level.
         Branch { branch_id: u32, taken: bool },
-        /// A collapsed scope: set of distinct per-iteration branch profiles.
-        /// Each profile is a sorted vec of (branch_id, taken) from one iteration.
-        /// Multiple iterations with the same profile collapse to one entry.
-        Scope { scope_tag: u64, profiles: Vec<BranchProfile> },
+        /// A collapsed scope: set of distinct per-iteration branch profiles,
+        /// each paired with its iteration-count bucket (or `None` when
+        /// bucketing is disabled, preserving backward-compat hashing).
+        Scope { scope_tag: u64, profile_buckets: Vec<ProfileWithBucket> },
     }
 
     fn is_matching_exit(event: &TraceEvent, kind: ScopeKind) -> bool {
@@ -193,12 +250,15 @@ fn scope_aware_hash(events: &[crate::execution_record::TraceEvent]) -> u64 {
     /// branch 1 true + false) collapse to one profile entry. Iterations with
     /// different branch sets (e.g. one enters the while loop, one doesn't)
     /// remain separate profiles — producing different hashes.
-    fn collapse(events: &[TraceEvent]) -> (Vec<CollapsedItem>, usize) {
+    ///
+    /// When `buckets` is non-empty, tracks iteration counts per (scope_id, profile)
+    /// pair and attaches the bucket index to each profile in the output.
+    fn collapse(events: &[TraceEvent], buckets: &LoopBuckets) -> (Vec<CollapsedItem>, usize) {
         let mut items: Vec<CollapsedItem> = Vec::new();
-        // Map from scope_id to set of distinct iteration profiles.
-        // Each profile is a sorted Vec of (branch_id, taken) from one iteration.
-        let mut loop_profiles: HashMap<u32, BTreeSet<BranchProfile>> = HashMap::new();
-        let mut call_profiles: HashMap<u32, BTreeSet<BranchProfile>> = HashMap::new();
+        // Map from scope_id to per-profile iteration counts.
+        // BTreeMap for deterministic ordering (profiles are sorted vecs).
+        let mut loop_profiles: HashMap<u32, HashMap<BranchProfile, u32>> = HashMap::new();
+        let mut call_profiles: HashMap<u32, HashMap<BranchProfile, u32>> = HashMap::new();
 
         let mut i = 0;
         while i < events.len() {
@@ -226,7 +286,7 @@ fn scope_aware_hash(events: &[crate::execution_record::TraceEvent]) -> u64 {
 
                     // Recursively collapse the scope body
                     let body_start = i + 1;
-                    let (child_items, consumed) = collapse(&events[body_start..]);
+                    let (child_items, consumed) = collapse(&events[body_start..], buckets);
                     let body_end = body_start + consumed;
 
                     // Build this iteration's branch profile (sorted for determinism)
@@ -236,14 +296,14 @@ fn scope_aware_hash(events: &[crate::execution_record::TraceEvent]) -> u64 {
                             CollapsedItem::Branch { branch_id, taken } => {
                                 profile.insert((*branch_id, *taken));
                             }
-                            CollapsedItem::Scope { scope_tag, profiles } => {
+                            CollapsedItem::Scope { scope_tag, profile_buckets } => {
                                 // Include nested scope identity in the profile by
                                 // hashing it into a synthetic branch_id. This ensures
                                 // iterations with different nested scope behavior
                                 // produce different profiles.
                                 let mut h = DefaultHasher::new();
                                 scope_tag.hash(&mut h);
-                                profiles.hash(&mut h);
+                                profile_buckets.hash(&mut h);
                                 let synthetic_id = (h.finish() & 0x7FFF_FFFF) as u32 | 0x8000_0000;
                                 profile.insert((synthetic_id, true));
                             }
@@ -251,13 +311,13 @@ fn scope_aware_hash(events: &[crate::execution_record::TraceEvent]) -> u64 {
                     }
                     let profile_vec: Vec<(u32, bool)> = profile.into_iter().collect();
 
-                    // Add to the set of distinct profiles for this scope_id
+                    // Increment iteration count for this (scope_id, profile) pair
                     match kind {
                         ScopeKind::Loop(id) => {
-                            loop_profiles.entry(id).or_default().insert(profile_vec);
+                            *loop_profiles.entry(id).or_default().entry(profile_vec).or_insert(0) += 1;
                         }
                         ScopeKind::Call(id) => {
-                            call_profiles.entry(id).or_default().insert(profile_vec);
+                            *call_profiles.entry(id).or_default().entry(profile_vec).or_insert(0) += 1;
                         }
                     }
 
@@ -271,29 +331,42 @@ fn scope_aware_hash(events: &[crate::execution_record::TraceEvent]) -> u64 {
         }
 
         // Emit collapsed scope items (one per unique scope_id, in id order).
-        // Profiles are sorted for deterministic hashing.
-        let mut scope_ids: Vec<(u64, Vec<BranchProfile>)> = Vec::new();
+        // Profiles are sorted for deterministic hashing. Each profile is paired
+        // with its iteration-count bucket (None when bucketing is disabled).
+        let mut scope_ids: Vec<(u64, Vec<ProfileWithBucket>)> = Vec::new();
         for (id, profiles) in &loop_profiles {
             let tag = (*id as u64) | (1u64 << 32); // distinguish loops from calls
-            let mut sorted: Vec<BranchProfile> = profiles.iter().cloned().collect();
+            let mut sorted: Vec<ProfileWithBucket> = profiles
+                .iter()
+                .map(|(profile, &count)| {
+                    let bucket = if buckets.is_disabled() { None } else { Some(buckets.bucket(count)) };
+                    (profile.clone(), bucket)
+                })
+                .collect();
             sorted.sort();
             scope_ids.push((tag, sorted));
         }
         for (id, profiles) in &call_profiles {
             let tag = (*id as u64) | (2u64 << 32);
-            let mut sorted: Vec<BranchProfile> = profiles.iter().cloned().collect();
+            let mut sorted: Vec<ProfileWithBucket> = profiles
+                .iter()
+                .map(|(profile, &count)| {
+                    let bucket = if buckets.is_disabled() { None } else { Some(buckets.bucket(count)) };
+                    (profile.clone(), bucket)
+                })
+                .collect();
             sorted.sort();
             scope_ids.push((tag, sorted));
         }
         scope_ids.sort_by_key(|(tag, _)| *tag);
-        for (scope_tag, profiles) in scope_ids {
-            items.push(CollapsedItem::Scope { scope_tag, profiles });
+        for (scope_tag, profile_buckets) in scope_ids {
+            items.push(CollapsedItem::Scope { scope_tag, profile_buckets });
         }
 
         (items, events.len())
     }
 
-    let (items, _) = collapse(events);
+    let (items, _) = collapse(events, buckets);
     let mut hasher = DefaultHasher::new();
     for item in &items {
         item.hash(&mut hasher);
@@ -585,7 +658,7 @@ pub async fn explore_function(
             all_lines.insert(line);
         }
 
-        let hash = path_hash(&exec_result);
+        let hash = path_hash(&exec_result, &config.loop_buckets);
         *path_counts.entry(hash).or_insert(0) += 1;
         let is_new = seen_paths.insert(hash);
 
@@ -806,7 +879,7 @@ mod tests {
             scope_events: vec![],
             capture_truncation: None, performance: empty_perf(),
         };
-        assert_ne!(path_hash(&r1), path_hash(&r2));
+        assert_ne!(path_hash(&r1, &no_buckets()), path_hash(&r2, &no_buckets()));
     }
 
     #[test]
@@ -825,7 +898,7 @@ mod tests {
             scope_events: vec![],
             capture_truncation: None, performance: empty_perf(),
         };
-        assert_eq!(path_hash(&r1), path_hash(&r2));
+        assert_eq!(path_hash(&r1, &no_buckets()), path_hash(&r2, &no_buckets()));
     }
 
     #[test]
@@ -844,7 +917,7 @@ mod tests {
             scope_events: vec![],
             capture_truncation: None, performance: empty_perf(),
         };
-        assert_ne!(path_hash(&r1), path_hash(&r2));
+        assert_ne!(path_hash(&r1, &no_buckets()), path_hash(&r2, &no_buckets()));
     }
 
     #[test]
@@ -864,7 +937,7 @@ mod tests {
             scope_events: vec![],
             capture_truncation: None, performance: empty_perf(),
         };
-        assert_ne!(path_hash(&ok), path_hash(&err));
+        assert_ne!(path_hash(&ok, &no_buckets()), path_hash(&err, &no_buckets()));
     }
 
     #[test]
@@ -889,12 +962,17 @@ mod tests {
             lines_executed: vec![], calls_to_external: vec![], path_constraints: vec![],
             scope_events: vec![], side_effects: vec![], capture_truncation: None, performance: empty_perf(),
         };
-        assert_ne!(path_hash(&r1), path_hash(&r2));
+        assert_ne!(path_hash(&r1, &no_buckets()), path_hash(&r2, &no_buckets()));
     }
 
     // -- Scope-aware path_hash tests --
 
     use crate::execution_record::{ScopeEvent, TraceEvent};
+
+    /// Helper: LoopBuckets::none() for backward-compat tests.
+    fn no_buckets() -> LoopBuckets {
+        LoopBuckets::none()
+    }
 
     /// Helper: branch trace event.
     fn branch_evt(branch_id: u32, taken: bool) -> TraceEvent {
@@ -958,7 +1036,7 @@ mod tests {
             capture_truncation: None,
             performance: empty_perf(),
         };
-        let hash1 = path_hash(&r);
+        let hash1 = path_hash(&r, &no_buckets());
         let hash2 = legacy_path_hash(&r);
         assert_eq!(hash1, hash2, "empty scope_events should use legacy_path_hash");
     }
@@ -980,8 +1058,8 @@ mod tests {
             loop_enter(0), branch_evt(0, true), loop_exit(0),
         ];
         assert_eq!(
-            path_hash(&exec_with_scope(trace_3)),
-            path_hash(&exec_with_scope(trace_5)),
+            path_hash(&exec_with_scope(trace_3), &no_buckets()),
+            path_hash(&exec_with_scope(trace_5), &no_buckets()),
             "same branch set across different iteration counts should produce same hash"
         );
     }
@@ -999,8 +1077,8 @@ mod tests {
             loop_enter(0), branch_evt(0, false), loop_exit(0),
         ];
         assert_ne!(
-            path_hash(&exec_with_scope(trace_all_true)),
-            path_hash(&exec_with_scope(trace_mixed)),
+            path_hash(&exec_with_scope(trace_all_true), &no_buckets()),
+            path_hash(&exec_with_scope(trace_mixed), &no_buckets()),
             "different branch sets within loop should produce different hashes"
         );
     }
@@ -1029,8 +1107,8 @@ mod tests {
             loop_exit(0),
         ];
         assert_eq!(
-            path_hash(&exec_with_scope(trace_2x2)),
-            path_hash(&exec_with_scope(trace_3x1)),
+            path_hash(&exec_with_scope(trace_2x2), &no_buckets()),
+            path_hash(&exec_with_scope(trace_3x1), &no_buckets()),
             "nested loops with same branch sets should produce same hash"
         );
     }
@@ -1047,8 +1125,8 @@ mod tests {
             loop_enter(0), branch_evt(0, true), branch_evt(1, false), loop_exit(0),
         ];
         assert_eq!(
-            path_hash(&exec_with_scope(trace_early)),
-            path_hash(&exec_with_scope(trace_normal)),
+            path_hash(&exec_with_scope(trace_early), &no_buckets()),
+            path_hash(&exec_with_scope(trace_normal), &no_buckets()),
             "early exit from loop should produce same hash as normal exit"
         );
     }
@@ -1066,8 +1144,8 @@ mod tests {
             call_enter(0), branch_evt(0, true), call_exit(0),
         ];
         assert_eq!(
-            path_hash(&exec_with_scope(trace_3)),
-            path_hash(&exec_with_scope(trace_1)),
+            path_hash(&exec_with_scope(trace_3), &no_buckets()),
+            path_hash(&exec_with_scope(trace_1), &no_buckets()),
             "repeated recursive calls with same branches should collapse"
         );
     }
@@ -1094,8 +1172,8 @@ mod tests {
             call_exit(0),
         ];
         assert_eq!(
-            path_hash(&exec_with_scope(trace_a)),
-            path_hash(&exec_with_scope(trace_b)),
+            path_hash(&exec_with_scope(trace_a), &no_buckets()),
+            path_hash(&exec_with_scope(trace_b), &no_buckets()),
             "mixed loops and recursion with same branch sets should collapse"
         );
     }
@@ -1106,9 +1184,131 @@ mod tests {
         let trace_a = vec![branch_evt(0, true), branch_evt(1, false)];
         let trace_b = vec![branch_evt(1, false), branch_evt(0, true)];
         assert_ne!(
-            path_hash(&exec_with_scope(trace_a)),
-            path_hash(&exec_with_scope(trace_b)),
+            path_hash(&exec_with_scope(trace_a), &no_buckets()),
+            path_hash(&exec_with_scope(trace_b), &no_buckets()),
             "branches outside scopes should be order-sensitive"
+        );
+    }
+
+    // -- Loop bucketing tests --
+
+    #[test]
+    fn loop_buckets_default_boundaries() {
+        let b = LoopBuckets::default();
+        assert_eq!(b.bucket(0), 0); // bucket 0: count=0
+        assert_eq!(b.bucket(1), 1); // bucket 1: count=1
+        assert_eq!(b.bucket(2), 2); // bucket 2: count=2
+        assert_eq!(b.bucket(3), 3); // bucket 3: count=3 (3-5 range)
+        assert_eq!(b.bucket(4), 3);
+        assert_eq!(b.bucket(5), 3);
+        assert_eq!(b.bucket(6), 4); // bucket 4: count=6+ (overflow)
+        assert_eq!(b.bucket(100), 4);
+    }
+
+    #[test]
+    fn loop_buckets_none_is_disabled() {
+        let b = LoopBuckets::none();
+        assert!(b.is_disabled());
+    }
+
+    #[test]
+    fn path_hash_loop_bucketing_distinguishes_counts() {
+        // 1 iteration of loop with branch 0 true
+        let trace_1 = vec![
+            loop_enter(0), branch_evt(0, true), loop_exit(0),
+        ];
+        // 3 iterations of same profile — bucket 3 (3–5) vs bucket 1 (1)
+        let trace_3 = vec![
+            loop_enter(0), branch_evt(0, true), loop_exit(0),
+            loop_enter(0), branch_evt(0, true), loop_exit(0),
+            loop_enter(0), branch_evt(0, true), loop_exit(0),
+        ];
+        let buckets = LoopBuckets::default();
+        assert_ne!(
+            path_hash(&exec_with_scope(trace_1), &buckets),
+            path_hash(&exec_with_scope(trace_3), &buckets),
+            "1 iteration vs 3 iterations should produce different hashes with default buckets"
+        );
+    }
+
+    #[test]
+    fn path_hash_loop_bucketing_collapses_within_bucket() {
+        // 3 iterations → bucket 3 (range 3–5)
+        let trace_3 = vec![
+            loop_enter(0), branch_evt(0, true), loop_exit(0),
+            loop_enter(0), branch_evt(0, true), loop_exit(0),
+            loop_enter(0), branch_evt(0, true), loop_exit(0),
+        ];
+        // 4 iterations → also bucket 3 (range 3–5)
+        let trace_4 = vec![
+            loop_enter(0), branch_evt(0, true), loop_exit(0),
+            loop_enter(0), branch_evt(0, true), loop_exit(0),
+            loop_enter(0), branch_evt(0, true), loop_exit(0),
+            loop_enter(0), branch_evt(0, true), loop_exit(0),
+        ];
+        let buckets = LoopBuckets::default();
+        assert_eq!(
+            path_hash(&exec_with_scope(trace_3), &buckets),
+            path_hash(&exec_with_scope(trace_4), &buckets),
+            "3 and 4 iterations should produce same hash (both in 3-5 bucket)"
+        );
+    }
+
+    #[test]
+    fn path_hash_loop_bucketing_disabled() {
+        // With LoopBuckets::none(), different iteration counts should still collapse
+        let trace_1 = vec![
+            loop_enter(0), branch_evt(0, true), loop_exit(0),
+        ];
+        let trace_5 = vec![
+            loop_enter(0), branch_evt(0, true), loop_exit(0),
+            loop_enter(0), branch_evt(0, true), loop_exit(0),
+            loop_enter(0), branch_evt(0, true), loop_exit(0),
+            loop_enter(0), branch_evt(0, true), loop_exit(0),
+            loop_enter(0), branch_evt(0, true), loop_exit(0),
+        ];
+        let buckets = LoopBuckets::none();
+        assert_eq!(
+            path_hash(&exec_with_scope(trace_1), &buckets),
+            path_hash(&exec_with_scope(trace_5), &buckets),
+            "disabled bucketing should collapse all iteration counts"
+        );
+    }
+
+    #[test]
+    fn path_hash_loop_bucketing_custom_boundaries() {
+        // Custom boundaries: [1, 10] → 3 buckets: 0-1, 2-10, 11+
+        let buckets = LoopBuckets::from_boundaries(vec![1, 10]);
+        // 1 iteration → bucket 0 (0-1)
+        let trace_1 = vec![
+            loop_enter(0), branch_evt(0, true), loop_exit(0),
+        ];
+        // 5 iterations → bucket 1 (2-10)
+        let trace_5 = vec![
+            loop_enter(0), branch_evt(0, true), loop_exit(0),
+            loop_enter(0), branch_evt(0, true), loop_exit(0),
+            loop_enter(0), branch_evt(0, true), loop_exit(0),
+            loop_enter(0), branch_evt(0, true), loop_exit(0),
+            loop_enter(0), branch_evt(0, true), loop_exit(0),
+        ];
+        assert_ne!(
+            path_hash(&exec_with_scope(trace_1), &buckets),
+            path_hash(&exec_with_scope(trace_5), &buckets),
+            "custom boundaries should distinguish different buckets"
+        );
+        // 3 iterations and 8 iterations → both bucket 1 (2-10)
+        let trace_3 = vec![
+            loop_enter(0), branch_evt(0, true), loop_exit(0),
+            loop_enter(0), branch_evt(0, true), loop_exit(0),
+            loop_enter(0), branch_evt(0, true), loop_exit(0),
+        ];
+        let trace_8: Vec<_> = (0..8).flat_map(|_| vec![
+            loop_enter(0), branch_evt(0, true), loop_exit(0),
+        ]).collect();
+        assert_eq!(
+            path_hash(&exec_with_scope(trace_3), &buckets),
+            path_hash(&exec_with_scope(trace_8), &buckets),
+            "3 and 8 iterations should produce same hash with [1,10] boundaries"
         );
     }
 
@@ -1347,6 +1547,7 @@ mod tests {
             value_sources: vec![], capabilities: FrontendCapabilities::default(),
             pool_seeds: vec![],
             project_root: None,
+            loop_buckets: LoopBuckets::default(),
         };
         let result = explore_function(&mut frontend, &analysis, &config)
             .await.expect("should succeed with noop frontend");
@@ -1367,6 +1568,7 @@ mod tests {
             value_sources: vec![], capabilities: caps,
             pool_seeds: vec![],
             project_root: None,
+            loop_buckets: LoopBuckets::default(),
         };
         let result = explore_function(&mut frontend, &analysis, &config)
             .await.expect("per_function setup should succeed");
@@ -1387,6 +1589,7 @@ mod tests {
             value_sources: vec![], capabilities: caps,
             pool_seeds: vec![],
             project_root: None,
+            loop_buckets: LoopBuckets::default(),
         };
         let result = explore_function(&mut frontend, &analysis, &config)
             .await.expect("per_execution setup should succeed");
@@ -1406,6 +1609,7 @@ mod tests {
             value_sources: vec![], capabilities: caps,
             pool_seeds: vec![],
             project_root: None,
+            loop_buckets: LoopBuckets::default(),
         };
         let result = explore_function(&mut frontend, &analysis, &config)
             .await.expect("should succeed without setup capability");
@@ -1429,6 +1633,7 @@ mod tests {
             capabilities: caps,
             pool_seeds: vec![],
             project_root: None,
+            loop_buckets: LoopBuckets::default(),
         };
         let result = explore_function(&mut frontend, &analysis, &config)
             .await.expect("generators should succeed");
@@ -1448,6 +1653,7 @@ mod tests {
             value_sources: vec![], capabilities: caps,
             pool_seeds: vec![],
             project_root: None,
+            loop_buckets: LoopBuckets::default(),
         };
         let result = explore_function(&mut frontend, &analysis, &config)
             .await.expect("no generators should succeed");

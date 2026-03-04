@@ -224,6 +224,13 @@ enum CliCommand {
         /// without exploring. Requires --output.
         #[arg(long)]
         dry_run: bool,
+
+        /// Loop iteration bucket boundaries for path hashing (comma-separated).
+        /// Controls how loop iteration counts affect path identity.
+        /// Default "0,1,2,5" gives 5 levels: 0, 1, 2, 3–5, 6+ iterations.
+        /// Use "none" to disable bucketing (only branch profiles matter).
+        #[arg(long, default_value = "0,1,2,5")]
+        loop_buckets: String,
     },
 
     /// Scan a directory for source files, analyze and explore all functions in
@@ -366,6 +373,13 @@ enum CliCommand {
         /// Memory limit in MB for the frontend process.
         #[arg(long)]
         memory_limit: Option<u64>,
+
+        /// Loop iteration bucket boundaries for path hashing (comma-separated).
+        /// Controls how loop iteration counts affect path identity.
+        /// Default "0,1,2,5" gives 5 levels: 0, 1, 2, 3–5, 6+ iterations.
+        /// Use "none" to disable bucketing (only branch profiles matter).
+        #[arg(long, default_value = "0,1,2,5")]
+        loop_buckets: String,
     },
 
     /// Export generated tests from behavior maps produced by exploration.
@@ -740,6 +754,21 @@ fn apply_frontend_env(
     ));
 }
 
+/// Parse a `--loop-buckets` CLI string into `LoopBuckets`.
+/// Accepts "none" (disables bucketing) or comma-separated u32 values like "0,1,2,5".
+fn parse_loop_buckets(s: &str) -> Result<explorer::LoopBuckets, Box<dyn std::error::Error>> {
+    let trimmed = s.trim();
+    if trimmed.eq_ignore_ascii_case("none") {
+        return Ok(explorer::LoopBuckets::none());
+    }
+    let boundaries: Vec<u32> = trimmed
+        .split(',')
+        .map(|v| v.trim().parse::<u32>())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("invalid --loop-buckets value \"{s}\": {e}"))?;
+    Ok(explorer::LoopBuckets::from_boundaries(boundaries))
+}
+
 /// Run the explore command.
 // Each argument corresponds to a CLI flag; grouping into a struct would add indirection
 // without improving clarity since this is only called from one callsite.
@@ -771,7 +800,9 @@ async fn run_explore(
     clean: bool,
     dry_run: bool,
     project_dir: Option<&Path>,
+    loop_buckets_str: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let loop_buckets = parse_loop_buckets(loop_buckets_str)?;
     let scope_config = match scope_path {
         Some(path) => {
             let config = ScopeConfig::from_file(path)
@@ -1062,6 +1093,7 @@ async fn run_explore(
                     }
                 },
                 project_root: project_root_str.clone(),
+                loop_buckets: loop_buckets.clone(),
             };
 
             // Convert candidate inputs for logging
@@ -2034,6 +2066,7 @@ async fn run_export_tests(
             capabilities: shatter_core::orchestrator::FrontendCapabilities::default(),
             pool_seeds: vec![],
             project_root: project_root_str.clone(),
+            loop_buckets: explorer::LoopBuckets::default(),
         };
 
         for func in &functions {
@@ -2402,6 +2435,7 @@ async fn run_run(
                 capabilities: shatter_core::orchestrator::FrontendCapabilities::default(),
                 pool_seeds: vec![],
                 project_root: project_root_str.clone(),
+                loop_buckets: explorer::LoopBuckets::default(),
                 };
 
             match explorer::explore_function(frontend, &func_analysis, &explore_config).await {
@@ -2809,6 +2843,7 @@ async fn main() -> ExitCode {
             memory_limit,
             clean,
             dry_run,
+            loop_buckets,
         } => {
             run_explore(
                 &targets,
@@ -2837,6 +2872,7 @@ async fn main() -> ExitCode {
                 clean,
                 dry_run,
                 cli.project_dir.as_deref(),
+                &loop_buckets,
             )
             .await
         }
@@ -2873,6 +2909,7 @@ async fn main() -> ExitCode {
             genetic_timeout: _,
             solver_timeout: _,
             memory_limit,
+            loop_buckets: _,
         } => {
             run_scan(
                 &directory,
