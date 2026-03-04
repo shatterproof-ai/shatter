@@ -830,6 +830,48 @@ func TestGenerateRequestDeserializesKind(t *testing.T) {
 // TestConvertSideEffects verifies that instrument.SideEffect values are
 // correctly mapped to protocol SideEffect values with the right JSON field
 // names (kind, not type) and snake_case values (console_output, not ConsoleOutput).
+// TestExecuteAfterInstrumentWithoutAnalyze verifies the scan flow:
+// Instrument (with file) → Execute (without file) succeeds because
+// handleInstrument sets lastAnalyzedFile.
+func TestExecuteAfterInstrumentWithoutAnalyze(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "target.go")
+	src := `package main
+
+func double(x int) int {
+	return x * 2
+}
+`
+	if err := os.WriteFile(tmp, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	responses := conversation(t,
+		reqJSON(1, "handshake", `"capabilities":["instrument","execute"]`),
+		reqJSON(2, "instrument", fmt.Sprintf(`"file":"%s","function":"double"`, tmp)),
+		reqJSON(3, "execute", `"function":"double","inputs":[5],"mocks":[]`),
+		reqJSON(4, "shutdown"),
+	)
+	if len(responses) != 4 {
+		t.Fatalf("got %d responses, want 4", len(responses))
+	}
+	if responses[1].Status != "instrument" {
+		t.Fatalf("instrument: status = %q, want instrument (message: %s)", responses[1].Status, responses[1].Message)
+	}
+	if responses[2].Status != "execute" {
+		t.Fatalf("execute: status = %q, want execute (message: %s)", responses[2].Status, responses[2].Message)
+	}
+	var retVal int
+	if err := json.Unmarshal(responses[2].ReturnValue, &retVal); err != nil {
+		t.Fatalf("parsing return value: %v", err)
+	}
+	if retVal != 10 {
+		t.Errorf("expected return value 10, got %d", retVal)
+	}
+	// Cleanup instrumented output
+	if responses[1].OutputFile != nil {
+		os.RemoveAll(*responses[1].OutputFile)
+	}
+}
+
 func TestConvertSideEffects(t *testing.T) {
 	input := []instrument.SideEffect{
 		{Kind: "console_output", Level: "log", Message: "hello stdout"},
