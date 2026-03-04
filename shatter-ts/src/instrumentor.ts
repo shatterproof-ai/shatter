@@ -348,6 +348,34 @@ function buildSymExprWithFlow(
     return { kind: "unknown" };
   }
 
+  if (ts.isTypeOfExpression(expr)) {
+    const operand = buildSymExprWithFlow(expr.expression, resolveName);
+    if (operand.kind !== "unknown") {
+      return { kind: "un_op", op: "typeof" as UnOpKind, operand };
+    }
+    return { kind: "unknown" };
+  }
+
+  if (ts.isCallExpression(expr)) {
+    if (ts.isPropertyAccessExpression(expr.expression)) {
+      const methodName = expr.expression.name.text;
+      const receiver = buildSymExprWithFlow(expr.expression.expression, resolveName);
+      const args = expr.arguments.map((a) => buildSymExprWithFlow(a, resolveName));
+      if (receiver.kind !== "unknown" || args.some((a) => a.kind !== "unknown")) {
+        return { kind: "call", name: methodName, receiver, args };
+      }
+      return { kind: "unknown" };
+    }
+    if (ts.isIdentifier(expr.expression)) {
+      const args = expr.arguments.map((a) => buildSymExprWithFlow(a, resolveName));
+      if (args.some((a) => a.kind !== "unknown")) {
+        return { kind: "call", name: expr.expression.text, receiver: null, args };
+      }
+      return { kind: "unknown" };
+    }
+    return { kind: "unknown" };
+  }
+
   return { kind: "unknown" };
 }
 
