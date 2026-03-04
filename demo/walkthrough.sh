@@ -5,12 +5,12 @@ set -euo pipefail
 # Exercises shatter's full pipeline against example code, showing output at each stage.
 #
 # Usage:
-#   ./demo/walkthrough.sh              # Interactive: pauses after each step
-#   ./demo/walkthrough.sh --auto       # Auto-advance: runs all steps continuously
-#   ./demo/walkthrough.sh --auto --delay 3  # Auto with N-second delay between steps
+#   ./demo/walkthrough.sh              # Auto-advance: runs all steps continuously
+#   ./demo/walkthrough.sh --interactive # Pauses after each step, press Enter to continue
+#   ./demo/walkthrough.sh --delay 3    # Auto with N-second delay between steps
 #   ./demo/walkthrough.sh --dry-run    # Print commands without executing them
 
-MODE="interactive"
+MODE="auto"
 DELAY=2
 DRY_RUN=false
 SHATTER="cargo run --quiet --bin shatter --"
@@ -41,14 +41,15 @@ ${BOLD}USAGE${RESET}
     ./demo/walkthrough.sh [OPTIONS]
 
 ${BOLD}OPTIONS${RESET}
-    --auto          Run all steps without pausing
+    --interactive   Pause after each step (press Enter to continue)
+    --auto          (no-op, auto is the default)
     --delay N       Seconds between steps in auto mode (default: 2)
     --dry-run       Print commands without executing them
     --help, -h      Show this help
 
 ${BOLD}MODES${RESET}
-    Interactive (default)   Pauses after each step, press Enter to continue
-    Auto                    Runs continuously with optional delay
+    Auto (default)          Runs continuously with optional delay
+    Interactive             Pauses after each step, press Enter to continue
     Dry-run                 Shows what would run, useful before core is built
 EOF
     exit 0
@@ -57,7 +58,8 @@ EOF
 # Parse args
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --auto)    MODE="auto"; shift ;;
+        --auto)    MODE="auto"; shift ;;  # no-op, auto is already the default
+        --interactive) MODE="interactive"; shift ;;
         --delay)   DELAY="$2"; shift 2 ;;
         --dry-run) DRY_RUN=true; shift ;;
         --help|-h) usage ;;
@@ -252,12 +254,11 @@ step 22 $TOTAL "Behavioral Specification (JSON)" \
     $SHATTER explore --spec-json "${EXAMPLES[0]}"
 
 # Stage 23: Spec diff
-# Generate two spec JSON files and diff them. We use the same function twice
-# (identical specs) so the diff shows "No changes detected" — a real diff
-# would compare specs from different code versions.
+# Generate specs from v1 and v2 fixture variants of classifyNumber and diff them.
+# v2 adds a "large" threshold, so the diff shows added/changed behaviors.
 step 23 $TOTAL "Specification Diff" \
-    "Compare two spec JSON files to detect behavioral regressions" \
-    bash -c "$SHATTER explore --spec-json '${EXAMPLES[0]}' > /tmp/shatter-spec-old.json 2>/dev/null && cp /tmp/shatter-spec-old.json /tmp/shatter-spec-new.json && $SHATTER spec-diff /tmp/shatter-spec-old.json /tmp/shatter-spec-new.json"
+    "Compare behavioral specs from two versions of classifyNumber to detect regressions" \
+    bash -c "$SHATTER explore --spec-json 'demo/fixtures/classify-v1.ts:classifyNumber' > /tmp/shatter-spec-old.json 2>/dev/null && $SHATTER explore --spec-json 'demo/fixtures/classify-v2.ts:classifyNumber' > /tmp/shatter-spec-new.json 2>/dev/null && { $SHATTER spec-diff /tmp/shatter-spec-old.json /tmp/shatter-spec-new.json; true; }"
 
 # Stage 24: Explore without boundary values
 step 24 $TOTAL "Explore Without Boundary Values" \

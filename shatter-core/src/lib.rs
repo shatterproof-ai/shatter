@@ -22,6 +22,7 @@ pub mod equivalence;
 pub mod execution_record;
 pub mod explorer;
 pub mod export;
+pub mod file_lock;
 pub mod fingerprint;
 pub mod frontend;
 pub mod genetic_fitness;

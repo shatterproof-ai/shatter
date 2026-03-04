@@ -48,6 +48,10 @@ struct Cli {
     #[arg(long, global = true)]
     perf: bool,
 
+    /// Override auto-detected project root directory.
+    #[arg(long, global = true, value_name = "DIR")]
+    project_dir: Option<std::path::PathBuf>,
+
     #[command(subcommand)]
     command: CliCommand,
 }
@@ -63,6 +67,17 @@ impl Cli {
             1 => LogLevel::Debug,
             _ => LogLevel::Trace,
         }
+    }
+
+}
+
+/// Resolve the project root: explicit `project_dir` wins, otherwise auto-detect from `reference_path`.
+fn resolve_project_root(project_dir: Option<&Path>, reference_path: &Path) -> Option<String> {
+    if let Some(dir) = project_dir {
+        Some(dir.to_string_lossy().into_owned())
+    } else {
+        shatter_core::project::detect_project_root(reference_path)
+            .map(|r| r.path.to_string_lossy().into_owned())
     }
 }
 
@@ -755,6 +770,7 @@ async fn run_explore(
     memory_limit: Option<u64>,
     clean: bool,
     dry_run: bool,
+    project_dir: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let scope_config = match scope_path {
         Some(path) => {
@@ -798,16 +814,11 @@ async fn run_explore(
             .as_deref()
             .unwrap_or("(all)");
 
-        let detected_root = shatter_core::project::detect_project_root(&target.file);
-        let project_root_str = detected_root.as_ref().map(|r| r.path.to_string_lossy().into_owned());
+        let project_root_str = resolve_project_root(project_dir, &target.file);
 
         if log_level >= LogLevel::Debug {
-            if let Some(ref root) = detected_root {
-                eprintln!(
-                    "[debug] Detected project root: {} ({:?})",
-                    root.path.display(),
-                    root.kind,
-                );
+            if let Some(ref root) = project_root_str {
+                eprintln!("[debug] Project root: {root}");
             }
             eprintln!(
                 "[debug] Exploring {file_str}:{func_display} [language={}, max_iterations={max_iterations}]",
@@ -1292,6 +1303,7 @@ async fn run_scan(
     stratum_spec: Option<&str>,
     log_level: LogLevel,
     memory_limit: Option<u64>,
+    project_dir: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let report_format: report::ReportFormat = report_format_str
         .parse()
@@ -1326,13 +1338,12 @@ async fn run_scan(
         .canonicalize()
         .map_err(|e| format!("failed to resolve path '{}': {e}", directory))?;
 
-    let detected_root = shatter_core::project::detect_project_root(&root);
-    let project_root_str = detected_root.as_ref().map(|r| r.path.to_string_lossy().into_owned());
+    let project_root_str = resolve_project_root(project_dir, &root);
 
     if log_level >= LogLevel::Debug
-        && let Some(ref pr) = detected_root
+        && let Some(ref pr) = project_root_str
     {
-        eprintln!("[debug] Detected project root: {} ({:?})", pr.path.display(), pr.kind);
+        eprintln!("[debug] Project root: {pr}");
     }
 
     // Discover source files.
@@ -1957,6 +1968,7 @@ async fn run_export_tests(
     build_timeout: u64,
     _log_level: LogLevel,
     memory_limit: Option<u64>,
+    project_dir: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Validate framework
     if framework != "jest" && framework != "vitest" && framework != "gotest" {
@@ -1985,8 +1997,7 @@ async fn run_export_tests(
     for target in &parsed {
         let file_str = target.file.to_string_lossy();
         let func_display = target.function.as_deref().unwrap_or("(all)");
-        let detected_root = shatter_core::project::detect_project_root(&target.file);
-        let project_root_str = detected_root.as_ref().map(|r| r.path.to_string_lossy().into_owned());
+        let project_root_str = resolve_project_root(project_dir, &target.file);
 
         eprintln!("Exploring {file_str}:{func_display} for test export...");
 
@@ -2160,6 +2171,7 @@ async fn run_run(
     build_timeout: u64,
     log_level: LogLevel,
     memory_limit: Option<u64>,
+    project_dir: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
 
@@ -2176,12 +2188,11 @@ async fn run_run(
     let root = root.canonicalize()
         .map_err(|e| format!("failed to resolve path '{}': {e}", path))?;
 
-    let detected_root = shatter_core::project::detect_project_root(&root);
-    let project_root_str = detected_root.as_ref().map(|r| r.path.to_string_lossy().into_owned());
+    let project_root_str = resolve_project_root(project_dir, &root);
 
     if log_level >= LogLevel::Debug {
-        if let Some(ref pr) = detected_root {
-            eprintln!("[debug] Detected project root: {} ({:?})", pr.path.display(), pr.kind);
+        if let Some(ref pr) = project_root_str {
+            eprintln!("[debug] Project root: {pr}");
         }
         eprintln!("Shatter run: {}", root.display());
         eprintln!();
@@ -2693,11 +2704,11 @@ async fn run_stale(
     build_timeout: u64,
     memory_limit: Option<u64>,
     log_level: LogLevel,
+    project_dir: Option<&Path>,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let target = parse_target(source)?;
     let file_str = target.file.to_string_lossy();
-    let detected_root = shatter_core::project::detect_project_root(&target.file);
-    let project_root_str = detected_root.as_ref().map(|r| r.path.to_string_lossy().into_owned());
+    let project_root_str = resolve_project_root(project_dir, &target.file);
 
     let req_timeout = Duration::from_secs(request_timeout);
     let config = frontend_config(target.language, req_timeout, log_level, exec_timeout, build_timeout, memory_limit, None)?;
@@ -2833,6 +2844,7 @@ async fn main() -> ExitCode {
                 memory_limit,
                 clean,
                 dry_run,
+                cli.project_dir.as_deref(),
             )
             .await
         }
@@ -2899,6 +2911,7 @@ async fn main() -> ExitCode {
                 stratum.as_deref(),
                 log_level,
                 memory_limit,
+                cli.project_dir.as_deref(),
             )
             .await
         }
@@ -2928,6 +2941,7 @@ async fn main() -> ExitCode {
                 build_timeout,
                 log_level,
                 memory_limit,
+                cli.project_dir.as_deref(),
             )
             .await
         }
@@ -2954,6 +2968,7 @@ async fn main() -> ExitCode {
                 build_timeout,
                 log_level,
                 memory_limit,
+                cli.project_dir.as_deref(),
             )
             .await
         }
@@ -3009,6 +3024,7 @@ async fn main() -> ExitCode {
                 build_timeout,
                 memory_limit,
                 log_level,
+                cli.project_dir.as_deref(),
             )
             .await
             {

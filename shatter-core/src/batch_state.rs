@@ -96,8 +96,17 @@ impl BatchState {
         }
     }
 
-    /// Load from disk. Returns `Ok(None)` if the file does not exist.
+    /// Load from disk with exclusive flock. Returns `Ok(None)` if the file does not exist.
     pub fn load(path: &Path) -> Result<Option<Self>, BatchStateError> {
+        if !path.exists() {
+            return Ok(None);
+        }
+        let _lock = crate::file_lock::FileLock::acquire(path)
+            .map_err(BatchStateError::Io)?;
+        Self::load_unlocked(path)
+    }
+
+    fn load_unlocked(path: &Path) -> Result<Option<Self>, BatchStateError> {
         match std::fs::read_to_string(path) {
             Ok(contents) => {
                 let state: BatchState = serde_json::from_str(&contents)?;
@@ -108,8 +117,14 @@ impl BatchState {
         }
     }
 
-    /// Atomic save (write to temp file, then rename).
+    /// Atomic save with exclusive flock (write to temp file, then rename).
     pub fn save(&self, path: &Path) -> Result<(), BatchStateError> {
+        let _lock = crate::file_lock::FileLock::acquire(path)
+            .map_err(BatchStateError::Io)?;
+        self.save_unlocked(path)
+    }
+
+    fn save_unlocked(&self, path: &Path) -> Result<(), BatchStateError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }

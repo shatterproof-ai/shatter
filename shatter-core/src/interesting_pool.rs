@@ -314,8 +314,18 @@ impl InterestingPool {
 
 /// Load the interesting pool from a JSON file at the given path.
 ///
-/// Returns `Ok(None)` if the file does not exist.
+/// Acquires an exclusive flock to prevent concurrent reads during a write.
+/// Returns `Ok(None)` if the file does not exist (without acquiring a lock).
 pub fn load_pool(path: &std::path::Path) -> Result<Option<InterestingPool>, std::io::Error> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let _lock = crate::file_lock::FileLock::acquire(path)?;
+    load_pool_unlocked(path)
+}
+
+/// Load without acquiring a lock (for use when caller already holds the lock).
+fn load_pool_unlocked(path: &std::path::Path) -> Result<Option<InterestingPool>, std::io::Error> {
     match std::fs::read_to_string(path) {
         Ok(content) => {
             let pool: InterestingPool = serde_json::from_str(&content)
@@ -329,9 +339,25 @@ pub fn load_pool(path: &std::path::Path) -> Result<Option<InterestingPool>, std:
 
 /// Save the interesting pool to a JSON file at the given path.
 ///
-/// Uses atomic write (temp file + rename) and creates parent directories
-/// on first write. Keys are sorted for deterministic output.
+/// Acquires an exclusive flock, then uses atomic write (temp file + rename).
+/// Creates parent directories on first write. Keys are sorted for deterministic output.
 pub fn save_pool(pool: &InterestingPool, path: &std::path::Path) -> Result<(), std::io::Error> {
+    let _lock = crate::file_lock::FileLock::acquire(path)?;
+    save_pool_unlocked(pool, path)
+}
+
+/// Best-effort save: skips if another process holds the lock.
+pub fn save_pool_best_effort(pool: &InterestingPool, path: &std::path::Path) -> Result<bool, std::io::Error> {
+    match crate::file_lock::FileLock::try_acquire(path)? {
+        Some(_lock) => {
+            save_pool_unlocked(pool, path)?;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
+fn save_pool_unlocked(pool: &InterestingPool, path: &std::path::Path) -> Result<(), std::io::Error> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
