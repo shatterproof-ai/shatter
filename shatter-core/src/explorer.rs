@@ -763,9 +763,9 @@ mod tests {
             raw_results: vec![], discoveries: vec![],
         };
         let report = format_exploration_report(&result, &ReportOptions {
-            location: Some("src/math.ts:10".into()), ..Default::default()
+            location: Some("src/math.ts:10-25".into()), ..Default::default()
         });
-        assert!(report.contains("safeDivide (src/math.ts:10)"));
+        assert!(report.contains("safeDivide (src/math.ts:10-25)"));
     }
 
     #[test]

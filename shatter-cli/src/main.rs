@@ -1144,7 +1144,7 @@ async fn run_explore(
                             eprint!("{}", explorer::format_exploration_report_verbose(&result));
                         } else {
                             let report_opts = ReportOptions {
-                                location: Some(format!("{file_str}:{}", func.start_line)),
+                                location: Some(format!("{file_str}:{}-{}", func.start_line, func.end_line)),
                                 show_perf,
                                 wall_time: Some(wall_time),
                                 coverage_metrics: Some(analyze_output.coverage_metrics.clone()),
@@ -1163,7 +1163,7 @@ async fn run_explore(
                     // Spec output: use eq classes from analyze stage
                     if show_spec || detect_invariants {
                         let eq_classes = &analyze_output.eq_classes;
-                        let location = Some(format!("{file_str}:{}", func.start_line));
+                        let location = Some(format!("{file_str}:{}-{}", func.start_line, func.end_line));
 
                         // Use deep fingerprint (call-graph-aware) for spec output.
                         let fingerprint = deep_fingerprints.get(&func.name).cloned();
