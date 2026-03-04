@@ -634,7 +634,7 @@ fn frontend_config(
             let bundle_path = embedded_frontend::ensure_extracted()?;
             (
                 PathBuf::from("node"),
-                vec![bundle_path.to_string_lossy().into_owned()],
+                vec!["--no-warnings".to_string(), bundle_path.to_string_lossy().into_owned()],
             )
         }
         Language::Go => {
@@ -3831,12 +3831,13 @@ mod tests {
         let config = frontend_config(Language::TypeScript, shatter_core::frontend::DEFAULT_REQUEST_TIMEOUT, LogLevel::Info, 10, 30, None, None).unwrap();
         assert_eq!(config.command, PathBuf::from("node"));
         assert_eq!(config.request_timeout, shatter_core::frontend::DEFAULT_REQUEST_TIMEOUT);
-        // The arg should point to the extracted bundle, not a relative dev path
-        assert_eq!(config.args.len(), 1);
+        // First arg suppresses Node warnings, second is the extracted bundle
+        assert_eq!(config.args.len(), 2);
+        assert_eq!(config.args[0], "--no-warnings");
         assert!(
-            config.args[0].contains("frontend-"),
+            config.args[1].contains("frontend-"),
             "expected embedded bundle path, got: {}",
-            config.args[0]
+            config.args[1]
         );
     }
 

@@ -34,7 +34,7 @@ async fn spawn_ts_frontend() -> Frontend {
     );
 
     let mut config = FrontendConfig::new(PathBuf::from("node"));
-    config.args = vec![frontend_path.to_string_lossy().into_owned()];
+    config.args = vec!["--no-warnings".to_string(), frontend_path.to_string_lossy().into_owned()];
     config.request_timeout = DEFAULT_REQUEST_TIMEOUT;
 
     Frontend::spawn(&config)
