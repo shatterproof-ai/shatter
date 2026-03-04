@@ -9,7 +9,7 @@
 
 import * as readline from "node:readline";
 import { handleRequest, parseRequest } from "./handlers.js";
-import type { Response } from "./protocol.js";
+import { PROTOCOL_VERSION, type Response } from "./protocol.js";
 
 type FrontendLogLevel = "error" | "warn" | "info" | "debug" | "trace";
 
@@ -68,6 +68,7 @@ function main(): void {
       return;
     }
 
+    const requestId = result.request.id;
     void handleRequest(result.request).then(({ response, shutdown }) => {
       sendResponse(response);
 
@@ -75,6 +76,16 @@ function main(): void {
         log("Shutting down", "debug");
         rl.close();
       }
+    }).catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      log(`Unhandled error processing request ${requestId}: ${msg}`, "error");
+      sendResponse({
+        protocol_version: PROTOCOL_VERSION,
+        id: requestId,
+        status: "error",
+        code: "internal_error",
+        message: `Unhandled error: ${msg}`,
+      } as Response);
     });
   });
 

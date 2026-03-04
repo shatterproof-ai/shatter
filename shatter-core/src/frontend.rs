@@ -274,6 +274,13 @@ impl Frontend {
         }
     }
 
+    /// Check whether the frontend subprocess is still running.
+    ///
+    /// Returns `false` if the child has exited or `try_wait()` fails.
+    pub fn is_alive(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
+    }
+
     /// The language reported by the frontend during handshake.
     pub fn language(&self) -> Option<&str> {
         self.language.as_deref()
@@ -475,6 +482,25 @@ mod tests {
     #[test]
     fn major_minor_handles_no_dots() {
         assert_eq!(super::major_minor("1"), "1");
+    }
+
+    #[tokio::test]
+    async fn is_alive_returns_true_for_running_frontend() {
+        let config = noop_config();
+        let mut frontend = Frontend::spawn(&config).await.expect("spawn failed");
+        assert!(frontend.is_alive());
+        frontend.shutdown().await.expect("shutdown failed");
+    }
+
+    #[tokio::test]
+    async fn is_alive_returns_false_after_shutdown() {
+        let config = noop_config();
+        let mut frontend = Frontend::spawn(&config).await.expect("spawn failed");
+        // Send shutdown and wait for process exit
+        let _ = frontend.send(crate::protocol::Command::Shutdown).await;
+        // Give the process a moment to exit
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!frontend.is_alive());
     }
 
     #[test]
