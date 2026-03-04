@@ -4,12 +4,15 @@
 //! as seeds for other functions with matching parameter types. Entry identity
 //! is the `(ty, value)` pair — behaviors accumulate across functions.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::boundary_dict;
 use crate::execution_record::ErrorInfo;
-use crate::types::TypeInfo;
+use crate::explorer;
+use crate::protocol::ExecuteResult;
+use crate::types::{ParamInfo, TypeInfo};
 
 /// How severe the behavior triggered by an input was.
 ///
@@ -343,6 +346,127 @@ pub fn save_pool(pool: &InterestingPool, path: &std::path::Path) -> Result<(), s
     Ok(())
 }
 
+/// Paths exercised by at most this many inputs qualify as rare during harvesting.
+pub const DEFAULT_RARITY_THRESHOLD: u32 = 2;
+
+/// Harvest interesting inputs from raw exploration results into the pool.
+///
+/// Decomposes each execution's input vector into individual `(value, TypeInfo)`
+/// pairs, filters out boundary-dict values (already tried everywhere), classifies
+/// severity, and inserts into the pool. For error-triggering executions all inputs
+/// are harvested; for non-error executions only those on rare paths (exercised by
+/// ≤ `DEFAULT_RARITY_THRESHOLD` inputs) are kept.
+///
+/// Returns the number of pool entries inserted or merged.
+pub fn harvest_from_exploration(
+    pool: &mut InterestingPool,
+    raw_results: &[(Vec<serde_json::Value>, ExecuteResult)],
+    params: &[ParamInfo],
+    function_name: &str,
+) -> usize {
+    if raw_results.is_empty() || params.is_empty() {
+        return 0;
+    }
+
+    // Build path frequency map for rarity classification.
+    let mut path_counts: HashMap<u64, u32> = HashMap::new();
+    let hashes: Vec<u64> = raw_results
+        .iter()
+        .map(|(_, result)| {
+            let h = explorer::path_hash(result);
+            *path_counts.entry(h).or_default() += 1;
+            h
+        })
+        .collect();
+
+    // Pre-compute boundary value sets per parameter position for filtering.
+    let boundary_sets: Vec<HashSet<serde_json::Value>> = params
+        .iter()
+        .map(|p| {
+            boundary_dict::get_boundary_values(&p.typ)
+                .into_iter()
+                .map(|entry| entry.value)
+                .collect()
+        })
+        .collect();
+
+    let epoch = pool.epoch;
+    let mut inserted = 0;
+
+    for (idx, (inputs, exec_result)) in raw_results.iter().enumerate() {
+        let severity = classify_severity(exec_result.thrown_error.as_ref(), false);
+
+        // For RarePath, only harvest if the path is actually rare.
+        if severity == Severity::RarePath {
+            let count = path_counts.get(&hashes[idx]).copied().unwrap_or(0);
+            if count > DEFAULT_RARITY_THRESHOLD {
+                continue;
+            }
+        }
+
+        // Determine branch_id from execution's branch path.
+        let branch_id = exec_result
+            .branch_path
+            .last()
+            .map(|d| d.branch_id)
+            .unwrap_or(0);
+
+        let obs = BehaviorObservation {
+            function: function_name.to_string(),
+            branch_id,
+            severity,
+        };
+
+        // Decompose input vector into individual (value, type) entries.
+        for (i, value) in inputs.iter().enumerate() {
+            if i >= params.len() {
+                break;
+            }
+
+            // Skip boundary-dict values — they're tried everywhere already.
+            if boundary_sets[i].contains(value) {
+                continue;
+            }
+
+            let entry = PoolEntry {
+                value: value.clone(),
+                ty: params[i].typ.clone(),
+                behaviors: vec![obs.clone()],
+                discovered_epoch: epoch,
+                last_hit_epoch: epoch,
+            };
+
+            if pool.insert(entry) {
+                inserted += 1;
+            }
+        }
+
+        // For multi-param functions with compound types, also store the full
+        // input vector so correlated multi-arg patterns are preserved.
+        if params.len() > 1
+            && inputs.iter().zip(params.iter()).any(|(_, p)| {
+                matches!(p.typ, TypeInfo::Object { .. } | TypeInfo::Array { .. })
+            })
+        {
+            let compound_type = TypeInfo::Array {
+                element: Box::new(TypeInfo::Unknown),
+            };
+            let compound_entry = PoolEntry {
+                value: serde_json::Value::Array(inputs.clone()),
+                ty: compound_type,
+                behaviors: vec![obs],
+                discovered_epoch: epoch,
+                last_hit_epoch: epoch,
+            };
+            if pool.insert(compound_entry) {
+                inserted += 1;
+            }
+        }
+    }
+
+    inserted
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -535,5 +659,188 @@ mod tests {
         let path = std::path::Path::new("/nonexistent/pool.json");
         let result = load_pool(path).expect("should not error");
         assert!(result.is_none());
+    }
+
+    // -- harvest_from_exploration tests --
+
+    use crate::execution_record::{BranchDecision, SymConstraint};
+    use crate::protocol::{ExecuteResult, PerformanceMetrics};
+
+    fn make_params(types: &[TypeInfo]) -> Vec<ParamInfo> {
+        types
+            .iter()
+            .enumerate()
+            .map(|(i, ty)| ParamInfo {
+                name: format!("p{i}"),
+                typ: ty.clone(),
+                type_name: None,
+            })
+            .collect()
+    }
+
+    fn make_exec_result_ok(branch_id: u32) -> ExecuteResult {
+        ExecuteResult {
+            return_value: Some(serde_json::json!(0)),
+            thrown_error: None,
+            branch_path: vec![BranchDecision {
+                branch_id,
+                line: 1,
+                taken: true,
+                constraint: SymConstraint::Unknown { hint: String::new() },
+            }],
+            lines_executed: vec![],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
+            performance: PerformanceMetrics::default(),
+            capture_truncation: None,
+        }
+    }
+
+    fn make_exec_result_error(error_type: &str, branch_id: u32) -> ExecuteResult {
+        ExecuteResult {
+            return_value: None,
+            thrown_error: Some(ErrorInfo {
+                error_type: error_type.into(),
+                message: "test error".into(),
+                stack: None,
+                error_category: None,
+            }),
+            branch_path: vec![BranchDecision {
+                branch_id,
+                line: 1,
+                taken: true,
+                constraint: SymConstraint::Unknown { hint: String::new() },
+            }],
+            lines_executed: vec![],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
+            performance: PerformanceMetrics::default(),
+            capture_truncation: None,
+        }
+    }
+
+    #[test]
+    fn harvest_handles_empty_results() {
+        let mut pool = InterestingPool::default();
+        pool.epoch = 1;
+        let count = harvest_from_exploration(&mut pool, &[], &make_params(&[TypeInfo::Int]), "f");
+        assert_eq!(count, 0);
+        assert!(pool.buckets.is_empty());
+    }
+
+    #[test]
+    fn harvest_inserts_error_inputs() {
+        let mut pool = InterestingPool::default();
+        pool.epoch = 1;
+        let params = make_params(&[TypeInfo::Int]);
+        // Value 999 is not a boundary value for Int
+        let raw = vec![(
+            vec![serde_json::json!(999)],
+            make_exec_result_error("TypeError", 5),
+        )];
+        let count = harvest_from_exploration(&mut pool, &raw, &params, "myFunc");
+        assert_eq!(count, 1);
+        let key = type_key(&TypeInfo::Int);
+        let bucket = &pool.buckets[&key];
+        assert_eq!(bucket.len(), 1);
+        assert_eq!(bucket[0].value, serde_json::json!(999));
+        assert_eq!(bucket[0].behaviors[0].severity, Severity::UnhandledError);
+        assert_eq!(bucket[0].behaviors[0].function, "myFunc");
+        assert_eq!(bucket[0].behaviors[0].branch_id, 5);
+    }
+
+    #[test]
+    fn harvest_inserts_rare_path_inputs() {
+        let mut pool = InterestingPool::default();
+        pool.epoch = 1;
+        let params = make_params(&[TypeInfo::Str]);
+        // Single execution → path count = 1, which is ≤ DEFAULT_RARITY_THRESHOLD
+        let raw = vec![(
+            vec![serde_json::json!("rare_value")],
+            make_exec_result_ok(3),
+        )];
+        let count = harvest_from_exploration(&mut pool, &raw, &params, "f");
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn harvest_skips_common_paths() {
+        let mut pool = InterestingPool::default();
+        pool.epoch = 1;
+        let params = make_params(&[TypeInfo::Int]);
+        // Same branch path for all 3 executions → count = 3 > threshold
+        let exec = make_exec_result_ok(1);
+        let raw = vec![
+            (vec![serde_json::json!(100)], exec.clone()),
+            (vec![serde_json::json!(200)], exec.clone()),
+            (vec![serde_json::json!(300)], exec),
+        ];
+        let count = harvest_from_exploration(&mut pool, &raw, &params, "f");
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn harvest_skips_boundary_values() {
+        let mut pool = InterestingPool::default();
+        pool.epoch = 1;
+        let params = make_params(&[TypeInfo::Int]);
+        // 0 and -1 are boundary values for Int; should be skipped even on error paths
+        let raw = vec![
+            (
+                vec![serde_json::json!(0)],
+                make_exec_result_error("TypeError", 1),
+            ),
+            (
+                vec![serde_json::json!(-1)],
+                make_exec_result_error("TypeError", 2),
+            ),
+        ];
+        let count = harvest_from_exploration(&mut pool, &raw, &params, "f");
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn harvest_decomposes_vectors() {
+        let mut pool = InterestingPool::default();
+        pool.epoch = 1;
+        let params = make_params(&[TypeInfo::Int, TypeInfo::Str]);
+        let raw = vec![(
+            vec![serde_json::json!(42), serde_json::json!("hello")],
+            make_exec_result_error("RangeError", 1),
+        )];
+        let count = harvest_from_exploration(&mut pool, &raw, &params, "f");
+        // 42 is not a boundary Int, "hello" is not a boundary Str → both inserted
+        assert_eq!(count, 2);
+        let int_key = type_key(&TypeInfo::Int);
+        let str_key = type_key(&TypeInfo::Str);
+        assert_eq!(pool.buckets[&int_key].len(), 1);
+        assert_eq!(pool.buckets[&str_key].len(), 1);
+    }
+
+    #[test]
+    fn harvest_merges_same_value() {
+        let mut pool = InterestingPool::default();
+        pool.epoch = 1;
+        let params = make_params(&[TypeInfo::Int]);
+        // Same value (999) from two different error executions
+        let raw = vec![
+            (
+                vec![serde_json::json!(999)],
+                make_exec_result_error("TypeError", 1),
+            ),
+            (
+                vec![serde_json::json!(999)],
+                make_exec_result_error("RangeError", 2),
+            ),
+        ];
+        let count = harvest_from_exploration(&mut pool, &raw, &params, "f");
+        // Both insert calls succeed (second merges), so count = 2
+        assert_eq!(count, 2);
+        let key = type_key(&TypeInfo::Int);
+        // But only one entry in the bucket (merged)
+        assert_eq!(pool.buckets[&key].len(), 1);
+        assert_eq!(pool.buckets[&key][0].behaviors.len(), 2);
     }
 }

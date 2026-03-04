@@ -29,6 +29,7 @@ use crate::cache::BehaviorMapCache;
 use crate::execution_record::ExecutionRecord;
 use crate::explorer::{self, ExploreConfig, ExploreError, ObservationOutput};
 use crate::frontend::{Frontend, FrontendConfig, FrontendError};
+use crate::interesting_pool::{self, InterestingPool};
 use crate::mock_gen::mock_config_from_behavior_map;
 use crate::protocol::{ExecuteResult, FunctionAnalysis, MockConfig};
 
@@ -64,6 +65,10 @@ pub struct ScanConfig {
     /// time at the start of each layer; if exceeded, remaining functions
     /// are skipped with reason "total scan timeout exceeded".
     pub timeout_total: Option<Duration>,
+    /// Path to the interesting input pool file (e.g., `.shatter/seeds/pool.json`).
+    /// When `Some`, interesting inputs discovered during exploration are
+    /// harvested into the pool after each function completes.
+    pub pool_path: Option<PathBuf>,
 }
 
 /// Context about sampling mode, for report headers.
@@ -284,6 +289,14 @@ pub async fn scan(
         None => crate::checkpoint::ScanCheckpoint::new(scan_id),
     };
 
+    // Load the interesting input pool for cross-function seed sharing.
+    let mut input_pool = config
+        .pool_path
+        .as_ref()
+        .and_then(|p| interesting_pool::load_pool(p).ok().flatten())
+        .unwrap_or_default();
+    input_pool.epoch += 1;
+
     for func_name in &test_order {
         let analysis = match analysis_map.get(func_name.as_str()) {
             Some(a) => *a,
@@ -385,6 +398,14 @@ pub async fn scan(
 
         let exploration = explorer::explore_function(frontend, analysis, &explore_config).await?;
 
+        // Harvest interesting inputs into the cross-function pool.
+        interesting_pool::harvest_from_exploration(
+            &mut input_pool,
+            &exploration.raw_results,
+            &analysis.params,
+            func_name,
+        );
+
         // Run the Analyze stage to produce behavior map and coverage metrics.
         let mut analyze_out = crate::pipeline::analyze(&exploration, analysis);
         analyze_out.behavior_map.fingerprint = current_deep_fp.clone();
@@ -429,6 +450,13 @@ pub async fn scan(
             mocks_used,
             coverage_metrics: analyze_out.coverage_metrics,
         });
+    }
+
+    // Save the interesting input pool if configured.
+    if let Some(ref pool_path) = config.pool_path
+        && let Err(e) = interesting_pool::save_pool(&input_pool, pool_path)
+    {
+        eprintln!("[shatter] failed to save interesting pool: {e}");
     }
 
     Ok(ScanResult {
@@ -544,6 +572,17 @@ pub async fn parallel_scan(
 
     let behavior_maps: Arc<Mutex<HashMap<String, BehaviorMap>>> =
         Arc::new(Mutex::new(HashMap::new()));
+
+    // Load the interesting input pool for cross-function seed sharing.
+    let input_pool: Arc<Mutex<InterestingPool>> = {
+        let loaded = config
+            .pool_path
+            .as_ref()
+            .and_then(|p| interesting_pool::load_pool(p).ok().flatten())
+            .unwrap_or_default();
+        Arc::new(Mutex::new(loaded))
+    };
+    input_pool.lock().await.epoch += 1;
 
     // Deep fingerprints: accumulated across layers. Since functions within a
     // layer have no cross-dependencies, callee deep FPs are always from prior
@@ -728,6 +767,7 @@ pub async fn parallel_scan(
         for (func_name, analysis, explore_config, mocks_used, callees, deep_fp) in tasks {
             let pool = Arc::clone(&pool);
             let behavior_maps = Arc::clone(&behavior_maps);
+            let input_pool = Arc::clone(&input_pool);
             let timeout = config.timeout_per_fn;
             let cache = config.cache.clone();
             let fe_config = Arc::clone(&fe_config);
@@ -746,6 +786,7 @@ pub async fn parallel_scan(
                         &callees,
                         &behavior_maps,
                         deep_fp.clone(),
+                        &input_pool,
                     ),
                 )
                 .await;
@@ -835,6 +876,14 @@ pub async fn parallel_scan(
         }
     }
 
+    // Save the interesting input pool if configured.
+    if let Some(ref pool_path) = config.pool_path {
+        let pool_guard = input_pool.lock().await;
+        if let Err(e) = interesting_pool::save_pool(&pool_guard, pool_path) {
+            eprintln!("[shatter] failed to save interesting pool: {e}");
+        }
+    }
+
     // Shutdown workers. All spawned tasks have completed, so this is the only
     // remaining reference to the pool.
     if let Ok(pool) = Arc::try_unwrap(pool) {
@@ -917,8 +966,20 @@ async fn explore_single_function(
     callees: &std::collections::HashSet<String>,
     behavior_maps: &Mutex<HashMap<String, BehaviorMap>>,
     fingerprint: Option<String>,
+    input_pool: &Mutex<InterestingPool>,
 ) -> Result<FunctionResult, ScanError> {
     let exploration = explorer::explore_function(frontend, analysis, explore_config).await?;
+
+    // Harvest interesting inputs into the cross-function pool.
+    {
+        let mut pool_guard = input_pool.lock().await;
+        interesting_pool::harvest_from_exploration(
+            &mut pool_guard,
+            &exploration.raw_results,
+            &analysis.params,
+            func_name,
+        );
+    }
 
     // Run the Analyze stage to produce behavior map and coverage metrics.
     let mut analyze_out = crate::pipeline::analyze(&exploration, analysis);
@@ -1874,6 +1935,7 @@ mod tests {
             mock_overrides: HashMap::new(),
             resume_path: None,
             timeout_total: None,
+            pool_path: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -1939,6 +2001,7 @@ mod tests {
             mock_overrides: HashMap::new(),
             resume_path: None,
             timeout_total: None,
+            pool_path: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2000,6 +2063,7 @@ mod tests {
             mock_overrides: HashMap::new(),
             resume_path: None,
             timeout_total: None,
+            pool_path: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2077,6 +2141,7 @@ mod tests {
             mock_overrides: HashMap::new(),
             resume_path: None,
             timeout_total: Some(Duration::ZERO),
+            pool_path: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2138,6 +2203,7 @@ mod tests {
             mock_overrides: HashMap::new(),
             resume_path: None,
             timeout_total: None,
+            pool_path: None,
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -2185,6 +2251,7 @@ mod tests {
             mock_overrides: HashMap::new(),
             resume_path: None,
             timeout_total: None,
+            pool_path: None,
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -2215,6 +2282,7 @@ mod tests {
             mock_overrides: HashMap::new(),
             resume_path: None,
             timeout_total: None,
+            pool_path: None,
         };
 
         let plan = format_dry_run_plan(&analyses, &skipped, &config).expect("should succeed");
@@ -2236,6 +2304,7 @@ mod tests {
             mock_overrides: HashMap::new(),
             resume_path: None,
             timeout_total: None,
+            pool_path: None,
         };
 
         let plan = format_dry_run_plan(&[], &[], &config).expect("should succeed");
