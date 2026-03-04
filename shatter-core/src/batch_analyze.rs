@@ -30,6 +30,10 @@ pub struct FunctionEntry {
     pub dependencies: Vec<ExternalDependency>,
     /// Number of branch points in the function.
     pub branch_count: usize,
+    /// First line of the function in source.
+    pub start_line: u32,
+    /// Last line of the function in source.
+    pub end_line: u32,
 }
 
 /// Aggregated results of analyzing all discovered source files.
@@ -207,6 +211,8 @@ fn function_entry_from_analysis(file_path: PathBuf, analysis: FunctionAnalysis) 
         return_type: analysis.return_type,
         dependencies: analysis.dependencies,
         branch_count,
+        start_line: analysis.start_line,
+        end_line: analysis.end_line,
     }
 }
 
@@ -322,6 +328,8 @@ mod tests {
         assert_eq!(entry.dependencies.len(), 1);
         assert_eq!(entry.dependencies[0].symbol, "helper");
         assert_eq!(entry.branch_count, 2);
+        assert_eq!(entry.start_line, 1);
+        assert_eq!(entry.end_line, 15);
     }
 
     #[test]
@@ -350,6 +358,8 @@ mod tests {
             return_type: TypeInfo::Int,
             dependencies: vec![],
             branch_count: 2,
+            start_line: 1,
+            end_line: 10,
         };
         index.insert(
             FunctionRegistry::qualified_name(Path::new("src/app.ts"), "funcA"),
@@ -365,6 +375,8 @@ mod tests {
             return_type: TypeInfo::Str,
             dependencies: vec![],
             branch_count: 0,
+            start_line: 11,
+            end_line: 20,
         };
         index.insert(
             FunctionRegistry::qualified_name(Path::new("src/app.ts"), "funcB"),
@@ -380,6 +392,8 @@ mod tests {
             return_type: TypeInfo::Unknown,
             dependencies: vec![],
             branch_count: 1,
+            start_line: 1,
+            end_line: 5,
         };
         index.insert(
             FunctionRegistry::qualified_name(Path::new("src/utils.ts"), "helper"),
@@ -406,6 +420,8 @@ mod tests {
             return_type: TypeInfo::Int,
             dependencies: vec![],
             branch_count: 3,
+            start_line: 1,
+            end_line: 10,
         };
         index.insert("src/app.ts::funcA".to_string(), 0);
         entries.push(entry);
@@ -442,6 +458,8 @@ mod tests {
                 return_type: TypeInfo::Unknown,
                 dependencies: vec![],
                 branch_count: 0,
+                start_line: 1,
+                end_line: 10,
             });
         }
 
@@ -476,6 +494,8 @@ mod tests {
                 return_type: TypeInfo::Unknown,
                 dependencies: vec![],
                 branch_count: 0,
+                start_line: 1,
+                end_line: 10,
             });
         }
 

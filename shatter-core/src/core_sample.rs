@@ -708,6 +708,8 @@ mod tests {
                 })
                 .collect(),
             branch_count,
+            start_line: 1,
+            end_line: 10,
         }
     }
 
