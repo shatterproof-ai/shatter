@@ -62,15 +62,16 @@ type Response struct {
 	OutputFile   *string `json:"output_file,omitempty"`
 
 	// Execute
-	ReturnValue       json.RawMessage  `json:"return_value,omitempty"`
-	ThrownError       *ErrorInfo       `json:"thrown_error,omitempty"`
-	BranchPath        []BranchDecision `json:"branch_path,omitempty"`
-	LinesExecuted     []int            `json:"lines_executed,omitempty"`
-	CallsToExternal   []ExternalCall   `json:"calls_to_external,omitempty"`
-	PathConstraints   []SymConstraint  `json:"path_constraints,omitempty"`
-	SideEffects       []SideEffect     `json:"side_effects,omitempty"`
-	CaptureTruncation *TruncationInfo  `json:"capture_truncation,omitempty"`
-	Performance       *PerfMetrics     `json:"performance,omitempty"`
+	ReturnValue       json.RawMessage   `json:"return_value,omitempty"`
+	ThrownError       *ErrorInfo        `json:"thrown_error,omitempty"`
+	BranchPath        []BranchDecision  `json:"branch_path,omitempty"`
+	LinesExecuted     []int             `json:"lines_executed,omitempty"`
+	CallsToExternal   []ExternalCall    `json:"calls_to_external,omitempty"`
+	PathConstraints   []SymConstraint   `json:"path_constraints,omitempty"`
+	SideEffects       []SideEffect      `json:"side_effects,omitempty"`
+	ScopeEvents       []json.RawMessage `json:"scope_events,omitempty"`
+	CaptureTruncation *TruncationInfo   `json:"capture_truncation,omitempty"`
+	Performance       *PerfMetrics      `json:"performance,omitempty"`
 
 	// Setup
 	SetupContext *json.RawMessage `json:"setup_context,omitempty"`

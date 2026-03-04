@@ -30,10 +30,23 @@ func TestGeneratedRecorderContainsRequiredFunctions(t *testing.T) {
 	for _, fn := range []string{
 		"__shatter_record_line",
 		"__shatter_record_branch",
+		"__shatter_record_scope",
 		"__shatter_dump_results",
 	} {
 		if !strings.Contains(src, "func "+fn) {
 			t.Errorf("recorder missing function %s", fn)
+		}
+	}
+}
+
+func TestGeneratedRecorderContainsTraceTypes(t *testing.T) {
+	src := generateRecorder("main")
+	for _, typeName := range []string{
+		"__shatterScopeEvent",
+		"__shatterTraceEvent",
+	} {
+		if !strings.Contains(src, "type "+typeName+" struct") {
+			t.Errorf("recorder missing type %s", typeName)
 		}
 	}
 }
