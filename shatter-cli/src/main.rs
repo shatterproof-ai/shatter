@@ -1085,6 +1085,10 @@ async fn run_explore(
                     &resolved.generators,
                 ),
                 capabilities: shatter_core::orchestrator::FrontendCapabilities::default(),
+                user_seeds: resolved.candidate_inputs
+                    .iter()
+                    .map(|input| input.args.clone())
+                    .collect(),
                 pool_seeds: {
                     let pool_path = std::path::Path::new(".shatter/seeds/pool.json");
                     match shatter_core::interesting_pool::load_pool(pool_path) {
@@ -1109,12 +1113,6 @@ async fn run_explore(
                 }
             }
 
-            // Store candidate inputs on the ExploreConfig is not needed;
-            // they are used by the explorer via its own mechanism.
-            // For now, we just log that they exist. The actual wiring into
-            // the orchestrator's worklist happens when the concolic orchestrator
-            // is used. For the random explorer (explore_function), we pass them
-            // as extra seed inputs.
             let _ = &shatter_configs; // suppress unused warning
 
             let func_start = Instant::now();
@@ -2064,6 +2062,7 @@ async fn run_export_tests(
             setup_mode: shatter_core::config::SetupMode::PerFunction,
             value_sources: vec![],
             capabilities: shatter_core::orchestrator::FrontendCapabilities::default(),
+            user_seeds: vec![],
             pool_seeds: vec![],
             project_root: project_root_str.clone(),
             loop_buckets: explorer::LoopBuckets::default(),
@@ -2433,6 +2432,7 @@ async fn run_run(
                 setup_mode: shatter_core::config::SetupMode::PerFunction,
                 value_sources: vec![],
                 capabilities: shatter_core::orchestrator::FrontendCapabilities::default(),
+                user_seeds: vec![],
                 pool_seeds: vec![],
                 project_root: project_root_str.clone(),
                 loop_buckets: explorer::LoopBuckets::default(),

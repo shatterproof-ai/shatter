@@ -6,6 +6,7 @@
 
 use serde_json::Value;
 
+use crate::boundary_dict::generate_boundary_inputs;
 use crate::orchestrator::FrontendCapabilities;
 use crate::protocol::{ExecuteResult, LiteralValue};
 use crate::types::{ParamInfo, TypeInfo};
@@ -65,6 +66,89 @@ pub trait InputStrategy: Send {
     /// Z3 solver).
     fn estimated_size(&self) -> Option<u64> {
         None
+    }
+}
+
+// ---------------------------------------------------------------------------
+// UserProvidedStrategy — yields a pre-built list of candidate inputs
+// ---------------------------------------------------------------------------
+
+/// Strategy that yields user-provided candidate inputs in order.
+///
+/// Exhaustible: returns `None` once all candidates have been yielded.
+/// Feedback is ignored — the input list is fixed at construction time.
+pub struct UserProvidedStrategy {
+    inputs: Vec<Vec<Value>>,
+    index: usize,
+}
+
+impl UserProvidedStrategy {
+    pub fn new(inputs: Vec<Vec<Value>>) -> Self {
+        Self { inputs, index: 0 }
+    }
+}
+
+impl InputStrategy for UserProvidedStrategy {
+    fn next(&mut self, _ctx: &StrategyContext) -> Option<Vec<Value>> {
+        if self.index < self.inputs.len() {
+            let v = self.inputs[self.index].clone();
+            self.index += 1;
+            Some(v)
+        } else {
+            None
+        }
+    }
+
+    fn name(&self) -> &str {
+        "user_provided"
+    }
+
+    fn estimated_size(&self) -> Option<u64> {
+        Some(self.inputs.len() as u64)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BoundarySeeds — exhaustible strategy yielding type-aware boundary values
+// ---------------------------------------------------------------------------
+
+/// Yields pre-computed boundary-value input vectors using pairwise coverage.
+///
+/// For each parameter position, every boundary value for that parameter's type
+/// is paired with neutral defaults for all other parameters. This caps the
+/// candidate count at `sum(boundaries_per_type_i)` instead of the cartesian
+/// product. Delegates to [`generate_boundary_inputs`] for the actual generation.
+pub struct BoundarySeeds {
+    candidates: Vec<Vec<Value>>,
+    cursor: usize,
+}
+
+impl BoundarySeeds {
+    pub fn new(params: &[ParamInfo]) -> Self {
+        Self {
+            candidates: generate_boundary_inputs(params),
+            cursor: 0,
+        }
+    }
+}
+
+impl InputStrategy for BoundarySeeds {
+    fn next(&mut self, _ctx: &StrategyContext) -> Option<Vec<Value>> {
+        if self.cursor < self.candidates.len() {
+            let v = self.candidates[self.cursor].clone();
+            self.cursor += 1;
+            Some(v)
+        } else {
+            None
+        }
+    }
+
+    fn name(&self) -> &str {
+        "boundary"
+    }
+
+    fn estimated_size(&self) -> Option<u64> {
+        Some(self.candidates.len() as u64)
     }
 }
 
@@ -693,5 +777,159 @@ mod tests {
     fn hit_rate_mixed() {
         let window: VecDeque<bool> = vec![true, false, true, false].into();
         assert!((hit_rate(&window) - 0.5).abs() < f64::EPSILON);
+    }
+
+    // --- BoundarySeeds tests ---
+
+    use crate::boundary_dict::get_boundary_values;
+
+    fn make_params(types: &[TypeInfo]) -> Vec<ParamInfo> {
+        types
+            .iter()
+            .enumerate()
+            .map(|(i, t)| ParamInfo {
+                name: format!("p{i}"),
+                typ: t.clone(),
+                type_name: None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn boundary_seeds_single_int_param() {
+        let params = make_params(&[TypeInfo::Int]);
+        let mut bs = BoundarySeeds::new(&params);
+        let ctx = empty_ctx();
+        let expected = get_boundary_values(&TypeInfo::Int).len();
+        assert_eq!(bs.estimated_size(), Some(expected as u64));
+
+        let mut count = 0;
+        while bs.next(&ctx).is_some() {
+            count += 1;
+        }
+        assert_eq!(count, expected);
+        // Exhausted — next returns None.
+        assert!(bs.next(&ctx).is_none());
+    }
+
+    #[test]
+    fn boundary_seeds_single_string_param() {
+        let params = make_params(&[TypeInfo::Str]);
+        let mut bs = BoundarySeeds::new(&params);
+        let ctx = empty_ctx();
+        let expected = get_boundary_values(&TypeInfo::Str).len();
+        assert_eq!(bs.estimated_size(), Some(expected as u64));
+
+        let mut count = 0;
+        while bs.next(&ctx).is_some() {
+            count += 1;
+        }
+        assert_eq!(count, expected);
+    }
+
+    #[test]
+    fn boundary_seeds_multi_param_pairwise() {
+        let params = make_params(&[TypeInfo::Int, TypeInfo::Str]);
+        let mut bs = BoundarySeeds::new(&params);
+        let ctx = empty_ctx();
+        let expected =
+            get_boundary_values(&TypeInfo::Int).len() + get_boundary_values(&TypeInfo::Str).len();
+        assert_eq!(bs.estimated_size(), Some(expected as u64));
+
+        let mut count = 0;
+        while let Some(v) = bs.next(&ctx) {
+            assert_eq!(v.len(), 2, "each candidate should have 2 elements");
+            count += 1;
+        }
+        assert_eq!(count, expected);
+    }
+
+    #[test]
+    fn boundary_seeds_bool_exhausts_after_two() {
+        let params = make_params(&[TypeInfo::Bool]);
+        let mut bs = BoundarySeeds::new(&params);
+        let ctx = empty_ctx();
+        assert_eq!(bs.estimated_size(), Some(2));
+        assert!(bs.next(&ctx).is_some());
+        assert!(bs.next(&ctx).is_some());
+        assert!(bs.next(&ctx).is_none());
+    }
+
+    #[test]
+    fn boundary_seeds_empty_params() {
+        let params: Vec<ParamInfo> = vec![];
+        let mut bs = BoundarySeeds::new(&params);
+        let ctx = empty_ctx();
+        assert_eq!(bs.estimated_size(), Some(0));
+        assert!(bs.next(&ctx).is_none());
+    }
+
+    #[test]
+    fn boundary_seeds_unknown_type_yields_nothing() {
+        let params = make_params(&[TypeInfo::Unknown]);
+        let mut bs = BoundarySeeds::new(&params);
+        let ctx = empty_ctx();
+        assert_eq!(bs.estimated_size(), Some(0));
+        assert!(bs.next(&ctx).is_none());
+    }
+
+    #[test]
+    fn boundary_seeds_name() {
+        let bs = BoundarySeeds::new(&[]);
+        assert_eq!(bs.name(), "boundary");
+    }
+
+    #[test]
+    fn boundary_seeds_estimated_size_matches_drain_count() {
+        let params = make_params(&[TypeInfo::Float, TypeInfo::Bool]);
+        let mut bs = BoundarySeeds::new(&params);
+        let ctx = empty_ctx();
+        let est = bs.estimated_size().unwrap();
+        let mut count = 0u64;
+        while bs.next(&ctx).is_some() {
+            count += 1;
+        }
+        assert_eq!(count, est);
+    }
+
+    // --- UserProvidedStrategy tests ---
+
+    #[test]
+    fn user_provided_preserves_ordering() {
+        let inputs = vec![
+            vec![Value::from(1)],
+            vec![Value::from(2)],
+            vec![Value::from(3)],
+        ];
+        let mut s = UserProvidedStrategy::new(inputs.clone());
+        let ctx = empty_ctx();
+
+        for expected in &inputs {
+            assert_eq!(s.next(&ctx).as_ref(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn user_provided_exhausts_then_stays_none() {
+        let mut s = UserProvidedStrategy::new(vec![vec![Value::from(42)]]);
+        let ctx = empty_ctx();
+
+        assert!(s.next(&ctx).is_some());
+        assert!(s.next(&ctx).is_none());
+        assert!(s.next(&ctx).is_none()); // stays None
+    }
+
+    #[test]
+    fn user_provided_empty_returns_none_immediately() {
+        let mut s = UserProvidedStrategy::new(vec![]);
+        let ctx = empty_ctx();
+        assert!(s.next(&ctx).is_none());
+    }
+
+    #[test]
+    fn user_provided_estimated_size() {
+        let s = UserProvidedStrategy::new(vec![vec![Value::from(1)], vec![Value::from(2)]]);
+        assert_eq!(s.estimated_size(), Some(2));
+        assert_eq!(s.name(), "user_provided");
     }
 }

@@ -90,6 +90,9 @@ pub struct ExploreConfig {
     pub value_sources: Vec<ValueSource>,
     /// Frontend capabilities (used to gate setup/generate commands).
     pub capabilities: FrontendCapabilities,
+    /// User-provided candidate inputs from --inputs or .shatter/ config.
+    /// Executed first (highest priority), with no budget cap.
+    pub user_seeds: Vec<Vec<serde_json::Value>>,
     /// Pre-computed pool seed candidates (from interesting input pool).
     /// Injected after literal candidates but before random generation.
     pub pool_seeds: Vec<Vec<serde_json::Value>>,
@@ -583,6 +586,9 @@ pub async fn explore_function(
     let mut seen_branch_ids: HashSet<u32> = HashSet::new();
     let mut discoveries: Vec<(u32, DiscoveryMethod)> = Vec::new();
 
+    // --- User-provided candidate inputs (highest priority, no budget cap) ---
+    let mut user_iter = config.user_seeds.iter().cloned().peekable();
+
     // --- Literal-derived seed inputs ---
     // Execute extracted literals first to cover magic-value branches before random exploration.
     let literal_candidates = literals_to_candidate_inputs(&analysis.params, &analysis.literals);
@@ -611,8 +617,10 @@ pub async fn explore_function(
         }
 
         // --- Input generation ---
-        // Priority: literals → pool seeds → custom generators → random.
-        let inputs = if let Some(lit_inputs) = literal_iter.next() {
+        // Priority: user seeds → literals → pool seeds → custom generators → random.
+        let inputs = if let Some(user_inputs) = user_iter.next() {
+            user_inputs
+        } else if let Some(lit_inputs) = literal_iter.next() {
             lit_inputs
         } else if let Some(pool_inputs) = pool_iter.next() {
             pool_inputs
@@ -1545,6 +1553,7 @@ mod tests {
             file: "test.ts".into(), max_iterations: 3, seed: Some(42), mocks: vec![],
             setup_file: None, setup_mode: SetupMode::PerFunction,
             value_sources: vec![], capabilities: FrontendCapabilities::default(),
+            user_seeds: vec![],
             pool_seeds: vec![],
             project_root: None,
             loop_buckets: LoopBuckets::default(),
@@ -1566,6 +1575,7 @@ mod tests {
             file: "test.ts".into(), max_iterations: 2, seed: Some(42), mocks: vec![],
             setup_file: Some("setup.ts".into()), setup_mode: SetupMode::PerFunction,
             value_sources: vec![], capabilities: caps,
+            user_seeds: vec![],
             pool_seeds: vec![],
             project_root: None,
             loop_buckets: LoopBuckets::default(),
@@ -1587,6 +1597,7 @@ mod tests {
             file: "test.ts".into(), max_iterations: 2, seed: Some(42), mocks: vec![],
             setup_file: Some("setup.ts".into()), setup_mode: SetupMode::PerExecution,
             value_sources: vec![], capabilities: caps,
+            user_seeds: vec![],
             pool_seeds: vec![],
             project_root: None,
             loop_buckets: LoopBuckets::default(),
@@ -1607,6 +1618,7 @@ mod tests {
             file: "test.ts".into(), max_iterations: 2, seed: Some(42), mocks: vec![],
             setup_file: Some("setup.ts".into()), setup_mode: SetupMode::PerFunction,
             value_sources: vec![], capabilities: caps,
+            user_seeds: vec![],
             pool_seeds: vec![],
             project_root: None,
             loop_buckets: LoopBuckets::default(),
@@ -1631,6 +1643,7 @@ mod tests {
                 kind: crate::protocol::GeneratorKind::ParamName,
             }],
             capabilities: caps,
+            user_seeds: vec![],
             pool_seeds: vec![],
             project_root: None,
             loop_buckets: LoopBuckets::default(),
@@ -1651,6 +1664,7 @@ mod tests {
             file: "test.ts".into(), max_iterations: 3, seed: Some(42), mocks: vec![],
             setup_file: None, setup_mode: SetupMode::PerFunction,
             value_sources: vec![], capabilities: caps,
+            user_seeds: vec![],
             pool_seeds: vec![],
             project_root: None,
             loop_buckets: LoopBuckets::default(),
@@ -1658,6 +1672,28 @@ mod tests {
         let result = explore_function(&mut frontend, &analysis, &config)
             .await.expect("no generators should succeed");
         assert_eq!(result.iterations, 3);
+        frontend.shutdown().await.expect("shutdown failed");
+    }
+
+    #[tokio::test]
+    async fn user_seeds_consumed_before_literals() {
+        let mut frontend = spawn_noop_frontend().await;
+        let analysis = stub_analysis();
+        let user_seed_value = vec![serde_json::json!(999)];
+        let config = ExploreConfig {
+            file: "test.ts".into(), max_iterations: 5, seed: Some(42), mocks: vec![],
+            setup_file: None, setup_mode: SetupMode::PerFunction,
+            value_sources: vec![], capabilities: FrontendCapabilities::default(),
+            user_seeds: vec![user_seed_value.clone()],
+            pool_seeds: vec![],
+            project_root: None,
+            loop_buckets: LoopBuckets::default(),
+        };
+        let result = explore_function(&mut frontend, &analysis, &config)
+            .await.expect("user seeds should succeed");
+        assert_eq!(result.iterations, 5);
+        // The first execution should use the user-provided seed value.
+        assert_eq!(result.raw_results[0].0, user_seed_value);
         frontend.shutdown().await.expect("shutdown failed");
     }
 }
