@@ -36,6 +36,27 @@ pub struct BranchDecision {
     pub constraint: SymConstraint,
 }
 
+/// Scope boundary event marking loop/call enter and exit in the execution trace.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ScopeEvent {
+    LoopEnter { loop_id: u32 },
+    LoopExit { loop_id: u32 },
+    CallEnter { call_site_id: u32 },
+    CallExit { call_site_id: u32 },
+}
+
+/// A single event in the execution trace — either a branch decision or scope marker.
+/// When present in `scope_events`, provides a richer trace than `branch_path` alone,
+/// enabling scope-aware path collapsing (loops/recursion with the same branch set
+/// produce identical path hashes regardless of iteration count).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TraceEvent {
+    Branch { decision: BranchDecision },
+    Scope { event: ScopeEvent },
+}
+
 /// Information about an error thrown during execution.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ErrorInfo {
@@ -115,6 +136,10 @@ pub struct ExecutionRecord {
 
     // Control flow
     pub branch_path: Vec<BranchDecision>,
+    /// Scope-annotated execution trace (branches + loop/call markers).
+    /// When non-empty, enables scope-aware path collapsing in `path_hash`.
+    #[serde(default)]
+    pub scope_events: Vec<TraceEvent>,
     pub lines_executed: Vec<u32>,
     pub calls_to_external: Vec<ExternalCall>,
     pub path_constraints: Vec<SymConstraint>,
@@ -185,6 +210,38 @@ mod tests {
                     right: Box::new(SymExpr::Const(ConstValue::Str("active".into()))),
                 },
             },
+        });
+    }
+
+    #[test]
+    fn scope_event_round_trips() {
+        round_trip(&ScopeEvent::LoopEnter { loop_id: 0 });
+        round_trip(&ScopeEvent::LoopExit { loop_id: 1 });
+        round_trip(&ScopeEvent::CallEnter { call_site_id: 2 });
+        round_trip(&ScopeEvent::CallExit { call_site_id: 3 });
+    }
+
+    #[test]
+    fn trace_event_branch_round_trips() {
+        round_trip(&TraceEvent::Branch {
+            decision: BranchDecision {
+                branch_id: 0,
+                line: 10,
+                taken: true,
+                constraint: SymConstraint::Unknown {
+                    hint: "test".into(),
+                },
+            },
+        });
+    }
+
+    #[test]
+    fn trace_event_scope_round_trips() {
+        round_trip(&TraceEvent::Scope {
+            event: ScopeEvent::LoopEnter { loop_id: 5 },
+        });
+        round_trip(&TraceEvent::Scope {
+            event: ScopeEvent::CallExit { call_site_id: 7 },
         });
     }
 
@@ -331,6 +388,7 @@ mod tests {
                     },
                 },
             ],
+            scope_events: vec![],
             lines_executed: vec![10, 11, 23, 24, 30],
             calls_to_external: vec![ExternalCall {
                 symbol: "rateService.getExpressRate".into(),
@@ -375,6 +433,7 @@ mod tests {
             input_hash: 0xcafebabe,
             parameters: vec![serde_json::json!(null)],
             branch_path: vec![],
+            scope_events: vec![],
             lines_executed: vec![1, 2],
             calls_to_external: vec![],
             path_constraints: vec![],
