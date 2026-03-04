@@ -7,6 +7,7 @@
 use serde_json::Value;
 
 use crate::boundary_dict::generate_boundary_inputs;
+use crate::input_gen::{generate_random_inputs, literals_to_candidate_inputs};
 use crate::orchestrator::FrontendCapabilities;
 use crate::protocol::{ExecuteResult, LiteralValue};
 use crate::types::{ParamInfo, TypeInfo};
@@ -109,6 +110,88 @@ impl InputStrategy for UserProvidedStrategy {
 }
 
 // ---------------------------------------------------------------------------
+// LiteralsStrategy — exhaustible strategy yielding literal-derived inputs
+// ---------------------------------------------------------------------------
+
+/// Yields inputs derived from literals extracted during static analysis.
+///
+/// Pre-computes candidates via [`literals_to_candidate_inputs`] at construction
+/// time, then yields them one at a time. Does not apply any budget cap — that
+/// is the meta-strategy's responsibility.
+pub struct LiteralsStrategy {
+    candidates: Vec<Vec<Value>>,
+    cursor: usize,
+}
+
+impl LiteralsStrategy {
+    pub fn new(params: &[ParamInfo], literals: &[LiteralValue]) -> Self {
+        Self {
+            candidates: literals_to_candidate_inputs(params, literals),
+            cursor: 0,
+        }
+    }
+}
+
+impl InputStrategy for LiteralsStrategy {
+    fn next(&mut self, _ctx: &StrategyContext) -> Option<Vec<Value>> {
+        if self.cursor < self.candidates.len() {
+            let v = self.candidates[self.cursor].clone();
+            self.cursor += 1;
+            Some(v)
+        } else {
+            None
+        }
+    }
+
+    fn name(&self) -> &str {
+        "literals"
+    }
+
+    fn estimated_size(&self) -> Option<u64> {
+        Some(self.candidates.len() as u64)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RandomStrategy — infinite strategy yielding random type-aware inputs
+// ---------------------------------------------------------------------------
+
+/// Infinite strategy that generates random inputs matching parameter types.
+///
+/// Wraps [`generate_random_inputs`] with an owned RNG. Seeded for
+/// reproducibility or from system entropy.
+pub struct RandomStrategy {
+    rng: StdRng,
+}
+
+impl RandomStrategy {
+    /// Create a new random strategy. If `seed` is `Some`, the RNG is
+    /// deterministic (useful for reproducible tests). If `None`, seeds
+    /// from system entropy.
+    pub fn new(seed: Option<u64>) -> Self {
+        let rng = match seed {
+            Some(s) => StdRng::seed_from_u64(s),
+            None => StdRng::from_os_rng(),
+        };
+        Self { rng }
+    }
+}
+
+impl InputStrategy for RandomStrategy {
+    fn next(&mut self, ctx: &StrategyContext) -> Option<Vec<Value>> {
+        Some(generate_random_inputs(
+            &ctx.params,
+            &mut self.rng,
+            Some(&ctx.capabilities),
+        ))
+    }
+
+    fn name(&self) -> &str {
+        "random"
+    }
+}
+
+// ---------------------------------------------------------------------------
 // BoundarySeeds — exhaustible strategy yielding type-aware boundary values
 // ---------------------------------------------------------------------------
 
@@ -192,7 +275,8 @@ impl Default for MetaConfig {
 // MetaStrategy — adaptive selection over registered strategies
 // ---------------------------------------------------------------------------
 
-use rand::Rng;
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use std::collections::VecDeque;
 
 /// Per-strategy scoring state.
@@ -1011,5 +1095,165 @@ mod tests {
 
         assert_eq!(strategy.estimated_size(), Some(0));
         assert!(strategy.next(&ctx).is_none());
+    }
+
+    // --- LiteralsStrategy tests ---
+
+    use crate::input_gen::literals_to_candidate_inputs;
+    use crate::protocol::LiteralValue;
+
+    #[test]
+    fn literals_strategy_yields_expected_candidates() {
+        let params = make_params(&[TypeInfo::Str]);
+        let literals = vec![
+            LiteralValue::Str { value: "hello".into() },
+            LiteralValue::Str { value: "world".into() },
+        ];
+        let expected = literals_to_candidate_inputs(&params, &literals);
+        let mut strat = LiteralsStrategy::new(&params, &literals);
+        let ctx = empty_ctx();
+
+        let mut got = Vec::new();
+        while let Some(v) = strat.next(&ctx) {
+            got.push(v);
+        }
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn literals_strategy_exhausts_then_none() {
+        let params = make_params(&[TypeInfo::Int]);
+        let literals = vec![LiteralValue::Int { value: 42 }];
+        let mut strat = LiteralsStrategy::new(&params, &literals);
+        let ctx = empty_ctx();
+
+        assert!(strat.next(&ctx).is_some());
+        assert!(strat.next(&ctx).is_none());
+        assert!(strat.next(&ctx).is_none());
+    }
+
+    #[test]
+    fn literals_strategy_empty_literals() {
+        let params = make_params(&[TypeInfo::Int]);
+        let mut strat = LiteralsStrategy::new(&params, &[]);
+        let ctx = empty_ctx();
+        assert_eq!(strat.estimated_size(), Some(0));
+        assert!(strat.next(&ctx).is_none());
+    }
+
+    #[test]
+    fn literals_strategy_empty_params() {
+        let literals = vec![LiteralValue::Str { value: "test".into() }];
+        let mut strat = LiteralsStrategy::new(&[], &literals);
+        let ctx = empty_ctx();
+        assert_eq!(strat.estimated_size(), Some(0));
+        assert!(strat.next(&ctx).is_none());
+    }
+
+    #[test]
+    fn literals_strategy_name() {
+        let strat = LiteralsStrategy::new(&[], &[]);
+        assert_eq!(strat.name(), "literals");
+    }
+
+    #[test]
+    fn literals_strategy_estimated_size_matches_drain() {
+        let params = make_params(&[TypeInfo::Int, TypeInfo::Str]);
+        let literals = vec![
+            LiteralValue::Int { value: 1 },
+            LiteralValue::Int { value: 2 },
+            LiteralValue::Str { value: "abc".into() },
+        ];
+        let mut strat = LiteralsStrategy::new(&params, &literals);
+        let ctx = empty_ctx();
+        let est = strat.estimated_size().unwrap();
+        let mut count = 0u64;
+        while strat.next(&ctx).is_some() {
+            count += 1;
+        }
+        assert_eq!(count, est);
+    }
+
+    // --- RandomStrategy tests ---
+
+    #[test]
+    fn random_strategy_never_exhausts() {
+        let mut s = RandomStrategy::new(Some(42));
+        let ctx = empty_ctx();
+        for _ in 0..100 {
+            assert!(s.next(&ctx).is_some(), "random strategy should never return None");
+        }
+    }
+
+    #[test]
+    fn random_strategy_produces_type_appropriate_values() {
+        let mut s = RandomStrategy::new(Some(99));
+
+        let int_ctx = StrategyContext {
+            params: vec![ParamInfo {
+                name: "n".into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            }],
+            literals: vec![],
+            capabilities: FrontendCapabilities::from_raw(&[]),
+        };
+        for _ in 0..20 {
+            let vals = s.next(&int_ctx).unwrap();
+            assert_eq!(vals.len(), 1);
+            assert!(vals[0].is_number(), "Int param should produce a number, got {:?}", vals[0]);
+        }
+
+        let str_ctx = StrategyContext {
+            params: vec![ParamInfo {
+                name: "s".into(),
+                typ: TypeInfo::Str,
+                type_name: None,
+            }],
+            literals: vec![],
+            capabilities: FrontendCapabilities::from_raw(&[]),
+        };
+        for _ in 0..20 {
+            let vals = s.next(&str_ctx).unwrap();
+            assert_eq!(vals.len(), 1);
+            assert!(vals[0].is_string(), "Str param should produce a string, got {:?}", vals[0]);
+        }
+
+        let bool_ctx = StrategyContext {
+            params: vec![ParamInfo {
+                name: "b".into(),
+                typ: TypeInfo::Bool,
+                type_name: None,
+            }],
+            literals: vec![],
+            capabilities: FrontendCapabilities::from_raw(&[]),
+        };
+        for _ in 0..20 {
+            let vals = s.next(&bool_ctx).unwrap();
+            assert_eq!(vals.len(), 1);
+            assert!(vals[0].is_boolean(), "Bool param should produce a boolean, got {:?}", vals[0]);
+        }
+    }
+
+    #[test]
+    fn random_strategy_name() {
+        let s = RandomStrategy::new(Some(0));
+        assert_eq!(s.name(), "random");
+    }
+
+    #[test]
+    fn random_strategy_estimated_size_is_none() {
+        let s = RandomStrategy::new(Some(0));
+        assert_eq!(s.estimated_size(), None);
+    }
+
+    #[test]
+    fn random_strategy_deterministic_with_seed() {
+        let ctx = empty_ctx();
+        let mut s1 = RandomStrategy::new(Some(123));
+        let mut s2 = RandomStrategy::new(Some(123));
+        for _ in 0..50 {
+            assert_eq!(s1.next(&ctx), s2.next(&ctx));
+        }
     }
 }
