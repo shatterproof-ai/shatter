@@ -1588,6 +1588,7 @@ async fn run_scan(
             mock_overrides: HashMap::new(),
             resume_path: None,
             timeout_total: None,
+            pool_path: None,
         };
         let plan = scan_orchestrator::format_dry_run_plan(
             &all_analyses,
@@ -1655,6 +1656,7 @@ async fn run_scan(
         mock_overrides,
         resume_path: resume.map(|p| p.to_path_buf()),
         timeout_total: if timeout_total == 0 { None } else { Some(Duration::from_secs(timeout_total)) },
+        pool_path: Some(std::path::PathBuf::from(directory).join(".shatter/seeds/pool.json")),
     };
 
     let scan_start = Instant::now();

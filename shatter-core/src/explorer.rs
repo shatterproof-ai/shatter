@@ -97,7 +97,7 @@ pub enum ExploreError {
 }
 
 /// Compute a hash representing the "path signature" of an execution.
-fn path_hash(result: &crate::protocol::ExecuteResult) -> u64 {
+pub(crate) fn path_hash(result: &crate::protocol::ExecuteResult) -> u64 {
     let mut hasher = DefaultHasher::new();
     if !result.branch_path.is_empty() {
         for decision in &result.branch_path {
