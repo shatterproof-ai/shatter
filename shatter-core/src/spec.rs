@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::equivalence::{BranchPath, EquivalenceClass, Precondition};
 use crate::execution_record::{ErrorInfo, SideEffect};
 use crate::explorer::ExplorationResult;
-use crate::fingerprint::{compute_function_fingerprint, extract_function_source};
+use crate::fingerprint::compute_deep_fingerprints;
 use crate::invariants::ClassifiedInvariant;
 use crate::protocol::FunctionAnalysis;
 
@@ -492,10 +492,13 @@ pub struct IncrementalPlan {
 
 /// Compare current function analyses against an existing spec to determine staleness.
 ///
-/// For each function in `current_analyses`, computes a fingerprint from source text
-/// (via `extract_function_source`) and analysis metadata, then compares against
-/// `existing.functions[name].fingerprint`. A function is fresh only if its fingerprint
-/// matches. Functions in the existing bundle not present in current analysis are removed.
+/// Computes deep fingerprints (incorporating callee dependencies) for each function
+/// in `current_analyses`, then compares against `existing.functions[name].fingerprint`.
+/// A function is fresh only if its deep fingerprint matches. This means a caller is
+/// marked stale when any of its in-scope callees change, even if the caller's own
+/// source is unchanged.
+///
+/// Functions in the existing bundle not present in current analysis are removed.
 ///
 /// Returns an error if source extraction fails (e.g., file unreadable).
 pub fn compute_incremental_plan(
@@ -509,6 +512,8 @@ pub fn compute_incremental_plan(
         .map(|f| (f.function_name.as_str(), f))
         .collect();
 
+    let deep_fps = compute_deep_fingerprints(file_path, current_analyses)?;
+
     let mut stale = Vec::new();
     let mut fresh = Vec::new();
     let mut seen_names: HashSet<String> = HashSet::new();
@@ -516,11 +521,10 @@ pub fn compute_incremental_plan(
     for func in current_analyses {
         seen_names.insert(func.name.clone());
 
-        let source = extract_function_source(file_path, func.start_line, func.end_line)?;
-        let current_fp = compute_function_fingerprint(&source, func);
+        let current_fp = deep_fps.get(&func.name);
 
-        match existing_by_name.get(func.name.as_str()) {
-            Some(spec) if spec.fingerprint.as_deref() == Some(current_fp.as_str()) => {
+        match (existing_by_name.get(func.name.as_str()), current_fp) {
+            (Some(spec), Some(fp)) if spec.fingerprint.as_deref() == Some(fp.as_str()) => {
                 fresh.push(func.name.clone());
             }
             _ => {
@@ -1423,14 +1427,13 @@ mod tests {
         std::fs::write(&file, source).unwrap();
 
         let analysis = make_analysis("add", 1, 4);
-        let fp = crate::fingerprint::compute_function_fingerprint(
-            &crate::fingerprint::extract_function_source(&file, 1, 4).unwrap(),
-            &analysis,
-        );
+        let deep_fps =
+            crate::fingerprint::compute_deep_fingerprints(&file, &[analysis.clone()]).unwrap();
+        let fp = &deep_fps["add"];
 
         let existing = FileSpecBundle {
             file: "test.ts".to_string(),
-            functions: vec![make_spec_with_fingerprint("add", Some(&fp))],
+            functions: vec![make_spec_with_fingerprint("add", Some(fp))],
         };
 
         let plan = compute_incremental_plan(&file, &[analysis], &existing).unwrap();
@@ -1511,6 +1514,74 @@ mod tests {
         let analysis = make_analysis("add", 1, 4);
         let plan = compute_incremental_plan(&file, &[analysis], &existing).unwrap();
         assert_eq!(plan.removed, vec!["removed_fn"]);
+    }
+
+    fn make_analysis_with_deps(
+        name: &str,
+        start: u32,
+        end: u32,
+        deps: Vec<&str>,
+    ) -> crate::protocol::FunctionAnalysis {
+        use crate::protocol::{DependencyKind, ExternalDependency};
+        let mut a = make_analysis(name, start, end);
+        a.dependencies = deps
+            .into_iter()
+            .map(|s| ExternalDependency {
+                kind: DependencyKind::FunctionCall,
+                symbol: s.to_string(),
+                source_module: String::new(),
+                return_type: crate::types::TypeInfo::Unknown,
+                param_types: vec![],
+                call_sites: vec![],
+            })
+            .collect();
+        a
+    }
+
+    #[test]
+    fn incremental_plan_caller_stale_when_callee_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.ts");
+        // V1: leaf returns 1
+        let source_v1 =
+            "function leaf(x) {\n  if (x > 0) return 1;\n  return 0;\n}\nfunction caller(x) {\n  if (x > 0) return leaf(x);\n  return 0;\n}\n";
+        std::fs::write(&file, source_v1).unwrap();
+
+        let analyses_v1 = vec![
+            make_analysis("leaf", 1, 3),
+            make_analysis_with_deps("caller", 5, 7, vec!["leaf"]),
+        ];
+
+        let deep_fps_v1 =
+            crate::fingerprint::compute_deep_fingerprints(&file, &analyses_v1).unwrap();
+
+        let existing = FileSpecBundle {
+            file: "test.ts".to_string(),
+            functions: vec![
+                make_spec_with_fingerprint("leaf", Some(&deep_fps_v1["leaf"])),
+                make_spec_with_fingerprint("caller", Some(&deep_fps_v1["caller"])),
+            ],
+        };
+
+        // V2: leaf returns 2 (changed), caller unchanged
+        let source_v2 =
+            "function leaf(x) {\n  if (x > 0) return 2;\n  return 0;\n}\nfunction caller(x) {\n  if (x > 0) return leaf(x);\n  return 0;\n}\n";
+        std::fs::write(&file, source_v2).unwrap();
+
+        let analyses_v2 = vec![
+            make_analysis("leaf", 1, 3),
+            make_analysis_with_deps("caller", 5, 7, vec!["leaf"]),
+        ];
+
+        let plan = compute_incremental_plan(&file, &analyses_v2, &existing).unwrap();
+
+        // Both should be stale: leaf changed directly, caller transitively.
+        assert!(plan.stale.contains(&"leaf".to_string()), "leaf should be stale");
+        assert!(
+            plan.stale.contains(&"caller".to_string()),
+            "caller should be stale when callee changes"
+        );
+        assert!(plan.fresh.is_empty());
     }
 
     #[test]

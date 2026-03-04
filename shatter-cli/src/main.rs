@@ -937,6 +937,11 @@ async fn run_explore(
                 .map_err(|e| format!("config discovery error: {e}"))?
         };
 
+        // Compute deep fingerprints (call-graph-aware) for spec output.
+        let deep_fingerprints: std::collections::HashMap<String, String> =
+            shatter_core::fingerprint::compute_deep_fingerprints(&target.file, &functions)
+                .unwrap_or_default();
+
         // Exploration phase: generate random inputs and execute
         let mut skipped_unexecutable: Vec<(String, Vec<executability::SkipReason>)> = Vec::new();
         let mut file_specs: Vec<shatter_core::spec::FunctionSpec> = Vec::new();
@@ -1094,14 +1099,8 @@ async fn run_explore(
                         let eq_classes = &analyze_output.eq_classes;
                         let location = Some(format!("{file_str}:{}", func.start_line));
 
-                        // Compute fingerprint for spec output
-                        let fingerprint = shatter_core::fingerprint::extract_function_source(
-                            &target.file, func.start_line, func.end_line,
-                        )
-                        .ok()
-                        .map(|source| {
-                            shatter_core::fingerprint::compute_function_fingerprint(&source, func)
-                        });
+                        // Use deep fingerprint (call-graph-aware) for spec output.
+                        let fingerprint = deep_fingerprints.get(&func.name).cloned();
 
                         let spec = if detect_invariants {
                             shatter_core::spec::build_spec_with_invariants(
