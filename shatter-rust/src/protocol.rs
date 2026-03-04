@@ -80,7 +80,7 @@ pub enum UnOpKind {
 
 /// Constant value in a symbolic expression.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "const_type", content = "value", rename_all = "snake_case")]
+#[serde(tag = "type", content = "value", rename_all = "snake_case")]
 pub enum ConstValue {
     Int(i64),
     Float(f64),
@@ -258,6 +258,12 @@ pub struct Request {
     /// Opaque recipe state from a prior generate call, enabling stateful generators.
     #[serde(default)]
     pub recipe: Option<serde_json::Value>,
+
+    // Project context
+    /// Detected project root directory, if any.
+    #[allow(dead_code)] // will be used when full analysis is implemented
+    #[serde(default)]
+    pub project_root: Option<String>,
 }
 
 /// A response message from this frontend to the core engine.

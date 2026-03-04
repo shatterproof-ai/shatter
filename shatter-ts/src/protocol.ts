@@ -49,6 +49,7 @@ export interface AnalyzeRequest extends BaseRequest {
   command: "analyze";
   file: string;
   function?: string | null;
+  project_root?: string | null;
 }
 
 export interface InstrumentRequest extends BaseRequest {
@@ -56,6 +57,7 @@ export interface InstrumentRequest extends BaseRequest {
   file: string;
   function: string;
   mocks: MockConfig[];
+  project_root?: string | null;
 }
 
 export interface ExecuteRequest extends BaseRequest {
@@ -71,6 +73,7 @@ export interface SetupRequest extends BaseRequest {
   file: string;
   function: string;
   mode: SetupMode;
+  project_root?: string | null;
 }
 
 export interface TeardownRequest extends BaseRequest {
@@ -84,6 +87,7 @@ export interface GenerateRequest extends BaseRequest {
   name: string;
   kind: GeneratorKind;
   recipe?: unknown;
+  project_root?: string | null;
 }
 
 export interface ShutdownRequest extends BaseRequest {

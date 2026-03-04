@@ -226,7 +226,7 @@ func (h *Handler) handleInstrument(resp Response, req Request) Response {
 		return resp
 	}
 
-	outputDir, err := instrument.InstrumentFile(req.File, req.Function)
+	outputDir, err := instrument.InstrumentFile(req.File, req.Function, req.ProjectRoot)
 	if err != nil {
 		resp.Status = "error"
 		resp.Code = ErrInternalError

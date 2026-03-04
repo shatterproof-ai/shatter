@@ -22,8 +22,9 @@ type Request struct {
 	Capabilities []string `json:"capabilities,omitempty"`
 
 	// Analyze fields
-	File     string  `json:"file,omitempty"`
-	Function *string `json:"function,omitempty"`
+	File        string  `json:"file,omitempty"`
+	Function    *string `json:"function,omitempty"`
+	ProjectRoot *string `json:"project_root,omitempty"`
 
 	// Instrument/Execute fields
 	Mocks []MockConfig `json:"mocks,omitempty"`

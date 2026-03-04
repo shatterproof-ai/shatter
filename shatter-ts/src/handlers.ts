@@ -21,6 +21,7 @@ import {
   executeFunction,
   executeInstrumented,
   buildExecuteResponse,
+  setProjectRoot,
 } from "./executor.js";
 import {
   loadSetupModule,
@@ -103,7 +104,8 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
       }
 
       lastAnalyzedFile = path.resolve(request.file);
-      const functions = analyzeFile(request.file, request.function);
+      setProjectRoot(request.project_root);
+      const functions = analyzeFile(request.file, request.function, request.project_root);
 
       if (request.function != null && functions.length === 0) {
         return {

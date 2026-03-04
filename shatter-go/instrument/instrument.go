@@ -11,8 +11,10 @@ import (
 
 // InstrumentFile parses and instruments a Go source file, writing the output
 // to a temporary directory. If funcName is non-nil, only that function is
-// instrumented. Returns the output directory path.
-func InstrumentFile(sourcePath string, funcName *string) (string, error) {
+// instrumented. When projectRoot is non-nil, go.mod and go.sum are copied
+// from that directory instead of walking up from the source file.
+// Returns the output directory path.
+func InstrumentFile(sourcePath string, funcName *string, projectRoot *string) (string, error) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, sourcePath, nil, parser.ParseComments)
 	if err != nil {
@@ -47,28 +49,29 @@ func InstrumentFile(sourcePath string, funcName *string) (string, error) {
 		return "", fmt.Errorf("writing recorder: %w", err)
 	}
 
-	// Write go.mod
-	if err := writeGoMod(outputDir, sourcePath); err != nil {
+	// Write go.mod (and go.sum if present)
+	if err := writeGoMod(outputDir, sourcePath, projectRoot); err != nil {
 		return "", fmt.Errorf("writing go.mod: %w", err)
 	}
 
 	return outputDir, nil
 }
 
-// writeGoMod copies go.mod from the source directory or creates a minimal one.
-func writeGoMod(outputDir, sourcePath string) error {
-	sourceDir := filepath.Dir(sourcePath)
-	srcGoMod := filepath.Join(sourceDir, "go.mod")
-	if data, err := os.ReadFile(srcGoMod); err == nil {
-		return os.WriteFile(filepath.Join(outputDir, "go.mod"), data, 0644)
+// writeGoMod copies go.mod and go.sum from the project root (if provided),
+// falls back to walking up from the source directory, or creates a minimal go.mod.
+func writeGoMod(outputDir, sourcePath string, projectRoot *string) error {
+	// Try project root first when provided
+	if projectRoot != nil {
+		if err := copyModFiles(outputDir, *projectRoot); err == nil {
+			return nil
+		}
 	}
 
-	// Walk up to find go.mod
-	dir := sourceDir
+	// Walk up from source directory to find go.mod
+	dir := filepath.Dir(sourcePath)
 	for {
-		candidate := filepath.Join(dir, "go.mod")
-		if data, err := os.ReadFile(candidate); err == nil {
-			return os.WriteFile(filepath.Join(outputDir, "go.mod"), data, 0644)
+		if err := copyModFiles(outputDir, dir); err == nil {
+			return nil
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
@@ -80,4 +83,21 @@ func writeGoMod(outputDir, sourcePath string) error {
 	// Create a minimal go.mod
 	modContent := "module shatter_instrumented\n\ngo 1.23\n"
 	return os.WriteFile(filepath.Join(outputDir, "go.mod"), []byte(modContent), 0644)
+}
+
+// copyModFiles copies go.mod and go.sum (if present) from srcDir to outputDir.
+// Returns an error if go.mod does not exist in srcDir.
+func copyModFiles(outputDir, srcDir string) error {
+	modData, err := os.ReadFile(filepath.Join(srcDir, "go.mod"))
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(outputDir, "go.mod"), modData, 0644); err != nil {
+		return err
+	}
+	// Copy go.sum if it exists (best-effort)
+	if sumData, err := os.ReadFile(filepath.Join(srcDir, "go.sum")); err == nil {
+		_ = os.WriteFile(filepath.Join(outputDir, "go.sum"), sumData, 0644)
+	}
+	return nil
 }

@@ -851,6 +851,7 @@ pub async fn prefetch_custom_values(
                     name: name.clone(),
                     kind: kind.clone(),
                     recipe: None,
+                    project_root: None,
                 })
                 .await?;
 

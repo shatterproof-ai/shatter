@@ -40,7 +40,7 @@ func classify(x int) string {
 }
 `)
 
-	outputDir, err := InstrumentFile(src, nil)
+	outputDir, err := InstrumentFile(src, nil, nil)
 	if err != nil {
 		t.Fatalf("InstrumentFile: %v", err)
 	}
@@ -72,7 +72,7 @@ func classify(x int) string {
 `)
 
 	funcName := "classify"
-	outputDir, err := InstrumentFile(src, &funcName)
+	outputDir, err := InstrumentFile(src, &funcName, nil)
 	if err != nil {
 		t.Fatalf("InstrumentFile: %v", err)
 	}
@@ -156,7 +156,7 @@ func main() {
 }
 
 func TestInstrumentFileNotFound(t *testing.T) {
-	_, err := InstrumentFile("/nonexistent/file.go", nil)
+	_, err := InstrumentFile("/nonexistent/file.go", nil, nil)
 	if err == nil {
 		t.Error("expected error for nonexistent file")
 	}

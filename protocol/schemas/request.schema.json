@@ -54,6 +54,10 @@
         "function": {
           "type": ["string", "null"],
           "description": "Name of the function to analyze. If null/absent, analyze all exported functions."
+        },
+        "project_root": {
+          "type": ["string", "null"],
+          "description": "Path to the detected project root directory."
         }
       },
       "required": ["command", "file"]
@@ -74,6 +78,10 @@
           "type": "array",
           "items": { "$ref": "mock-config.schema.json" },
           "description": "Mock configurations for external dependencies."
+        },
+        "project_root": {
+          "type": ["string", "null"],
+          "description": "Path to the detected project root directory."
         }
       },
       "required": ["command", "file", "function", "mocks"]
@@ -117,6 +125,10 @@
         },
         "recipe": {
           "description": "Reconstruction recipe from a previous generation. When present, the generator should reproduce the value from this recipe."
+        },
+        "project_root": {
+          "type": ["string", "null"],
+          "description": "Path to the detected project root directory."
         }
       },
       "required": ["command", "file", "name", "kind"]

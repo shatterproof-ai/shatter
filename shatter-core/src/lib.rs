@@ -32,6 +32,7 @@ pub mod mock_gen;
 pub mod invariants;
 pub mod orchestrator;
 pub mod pipeline;
+pub mod project;
 pub mod protocol;
 pub mod recursive;
 pub mod report;

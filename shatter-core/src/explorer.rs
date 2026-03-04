@@ -46,6 +46,8 @@ pub struct ExploreConfig {
     /// Pre-computed pool seed candidates (from interesting input pool).
     /// Injected after literal candidates but before random generation.
     pub pool_seeds: Vec<Vec<serde_json::Value>>,
+    /// Detected project root directory, passed to frontend commands.
+    pub project_root: Option<String>,
 }
 
 /// Summary of a single function execution during exploration.
@@ -215,12 +217,14 @@ async fn send_setup(
     setup_file: &str,
     function: &str,
     mode: SetupMode,
+    project_root: Option<String>,
 ) -> Result<Option<serde_json::Value>, ExploreError> {
     let response = frontend
         .send(ProtoCommand::Setup {
             file: setup_file.to_string(),
             function: function.to_string(),
             mode,
+            project_root,
         })
         .await?;
     match response.result {
@@ -265,6 +269,7 @@ pub async fn explore_function(
             file: config.file.clone(),
             function: analysis.name.clone(),
             mocks: config.mocks.clone(),
+            project_root: config.project_root.clone(),
         })
         .await?;
 
@@ -305,7 +310,7 @@ pub async fn explore_function(
         && let Some(ref setup_file) = config.setup_file
     {
         setup_context =
-            send_setup(frontend, setup_file, &analysis.name, config.setup_mode).await?;
+            send_setup(frontend, setup_file, &analysis.name, config.setup_mode, config.project_root.clone()).await?;
     }
 
     // --- Generator prefetch ---
@@ -359,7 +364,7 @@ pub async fn explore_function(
             && let Some(ref setup_file) = config.setup_file
         {
             setup_context =
-                send_setup(frontend, setup_file, &analysis.name, config.setup_mode).await?;
+                send_setup(frontend, setup_file, &analysis.name, config.setup_mode, config.project_root.clone()).await?;
         }
 
         // --- Input generation ---
@@ -940,6 +945,7 @@ mod tests {
             setup_file: None, setup_mode: SetupMode::PerFunction,
             value_sources: vec![], capabilities: FrontendCapabilities::default(),
             pool_seeds: vec![],
+            project_root: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config)
             .await.expect("should succeed with noop frontend");
@@ -959,6 +965,7 @@ mod tests {
             setup_file: Some("setup.ts".into()), setup_mode: SetupMode::PerFunction,
             value_sources: vec![], capabilities: caps,
             pool_seeds: vec![],
+            project_root: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config)
             .await.expect("per_function setup should succeed");
@@ -978,6 +985,7 @@ mod tests {
             setup_file: Some("setup.ts".into()), setup_mode: SetupMode::PerExecution,
             value_sources: vec![], capabilities: caps,
             pool_seeds: vec![],
+            project_root: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config)
             .await.expect("per_execution setup should succeed");
@@ -996,6 +1004,7 @@ mod tests {
             setup_file: Some("setup.ts".into()), setup_mode: SetupMode::PerFunction,
             value_sources: vec![], capabilities: caps,
             pool_seeds: vec![],
+            project_root: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config)
             .await.expect("should succeed without setup capability");
@@ -1018,6 +1027,7 @@ mod tests {
             }],
             capabilities: caps,
             pool_seeds: vec![],
+            project_root: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config)
             .await.expect("generators should succeed");
@@ -1036,6 +1046,7 @@ mod tests {
             setup_file: None, setup_mode: SetupMode::PerFunction,
             value_sources: vec![], capabilities: caps,
             pool_seeds: vec![],
+            project_root: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config)
             .await.expect("no generators should succeed");

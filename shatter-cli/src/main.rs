@@ -558,6 +558,7 @@ struct Target {
 enum Language {
     TypeScript,
     Go,
+    Rust,
 }
 
 impl Language {
@@ -565,6 +566,7 @@ impl Language {
         match ext {
             "ts" | "tsx" => Some(Language::TypeScript),
             "go" => Some(Language::Go),
+            "rs" => Some(Language::Rust),
             _ => None,
         }
     }
@@ -573,6 +575,7 @@ impl Language {
         match self {
             Language::TypeScript => "typescript",
             Language::Go => "go",
+            Language::Rust => "rust",
         }
     }
 }
@@ -620,6 +623,14 @@ fn find_custom_binary(shatter_dir: Option<&Path>, lang: &str) -> Option<PathBuf>
     bin.is_file().then_some(bin)
 }
 
+/// Search PATH for a binary by name, returning the first match.
+fn find_on_path(name: &str) -> Option<PathBuf> {
+    let path_var = std::env::var_os("PATH")?;
+    std::env::split_paths(&path_var)
+        .map(|dir| dir.join(name))
+        .find(|p| p.is_file())
+}
+
 fn frontend_config(
     language: Language,
     timeout: Duration,
@@ -645,6 +656,24 @@ fn frontend_config(
                 (binary_path, vec![])
             }
         }
+        Language::Rust => {
+            if let Some(custom) = find_custom_binary(shatter_dir, "rust") {
+                (custom, vec![])
+            } else if let Some(path) = find_on_path("shatter-rust") {
+                (path, vec![])
+            } else {
+                // shatter-rust is outside the workspace, so check both locations
+                let candidates = [
+                    PathBuf::from("./shatter-rust/target/debug/shatter-rust"),
+                    PathBuf::from("./target/debug/shatter-rust"),
+                ];
+                if let Some(path) = candidates.iter().find(|p| p.is_file()) {
+                    (path.clone(), vec![])
+                } else {
+                    return Err("shatter-rust frontend not found: install it on PATH or build with `cargo build --manifest-path shatter-rust/Cargo.toml`".to_string());
+                }
+            }
+        }
     };
 
     // Apply memory limit: for TS, --max-old-space-size must come before the script
@@ -653,8 +682,9 @@ fn frontend_config(
             Language::TypeScript => {
                 args.insert(0, format!("--max-old-space-size={mb}"));
             }
-            Language::Go => {
-                // GOMEMLIMIT is set via env_vars below
+            Language::Go | Language::Rust => {
+                // Go: GOMEMLIMIT is set via env_vars below
+                // Rust: no memory limit mechanism yet
             }
         }
     }
@@ -768,7 +798,17 @@ async fn run_explore(
             .as_deref()
             .unwrap_or("(all)");
 
+        let detected_root = shatter_core::project::detect_project_root(&target.file);
+        let project_root_str = detected_root.as_ref().map(|r| r.path.to_string_lossy().into_owned());
+
         if log_level >= LogLevel::Debug {
+            if let Some(ref root) = detected_root {
+                eprintln!(
+                    "[debug] Detected project root: {} ({:?})",
+                    root.path.display(),
+                    root.kind,
+                );
+            }
             eprintln!(
                 "[debug] Exploring {file_str}:{func_display} [language={}, max_iterations={max_iterations}]",
                 target.language.label()
@@ -795,6 +835,7 @@ async fn run_explore(
             .send(ProtoCommand::Analyze {
                 file: file_str.to_string(),
                 function: target.function.clone(),
+                project_root: project_root_str.clone(),
             })
             .await
             .map_err(|e| format!("analyze failed: {e}"))?;
@@ -829,7 +870,15 @@ async fn run_explore(
             _ => unreachable!("already matched above"),
         };
 
-        if analyze_only {
+        // Rust exploration not yet supported — auto-promote to analyze-only with warning
+        let effective_analyze_only = if target.language == Language::Rust && !analyze_only {
+            eprintln!("Rust exploration not yet supported; showing analysis only");
+            true
+        } else {
+            analyze_only
+        };
+
+        if effective_analyze_only {
             if log_level >= LogLevel::Info {
                 for func in &functions {
                     eprintln!(
@@ -1009,6 +1058,7 @@ async fn run_explore(
                         _ => vec![],
                     }
                 },
+                project_root: project_root_str.clone(),
             };
 
             // Convert candidate inputs for logging
@@ -1259,10 +1309,10 @@ async fn run_scan(
 
     // Validate --language if specified.
     if let Some(lang) = language_filter
-        && lang != "typescript" && lang != "go"
+        && lang != "typescript" && lang != "go" && lang != "rust"
     {
         return Err(format!(
-            "unsupported language '{lang}': expected 'typescript' or 'go'"
+            "unsupported language '{lang}': expected 'typescript', 'go', or 'rust'"
         )
         .into());
     }
@@ -1275,6 +1325,15 @@ async fn run_scan(
     let root = root
         .canonicalize()
         .map_err(|e| format!("failed to resolve path '{}': {e}", directory))?;
+
+    let detected_root = shatter_core::project::detect_project_root(&root);
+    let project_root_str = detected_root.as_ref().map(|r| r.path.to_string_lossy().into_owned());
+
+    if log_level >= LogLevel::Debug
+        && let Some(ref pr) = detected_root
+    {
+        eprintln!("[debug] Detected project root: {} ({:?})", pr.path.display(), pr.kind);
+    }
 
     // Discover source files.
     let options = DiscoveryOptions {
@@ -1291,6 +1350,7 @@ async fn run_scan(
         let target_lang = match lang {
             "typescript" => DiscoveryLanguage::TypeScript,
             "go" => DiscoveryLanguage::Go,
+            "rust" => DiscoveryLanguage::Rust,
             _ => unreachable!(),
         };
         files
@@ -1360,6 +1420,7 @@ async fn run_scan(
         &mut frontends,
         &analyzable_files,
         analysis_cache.as_ref(),
+        project_root_str.as_deref(),
     )
     .await
     .map_err(|e| format!("batch analyze failed: {e}"))?;
@@ -1605,6 +1666,7 @@ async fn run_scan(
             resume_path: None,
             timeout_total: None,
             pool_path: None,
+            project_root: project_root_str.clone(),
         };
         let plan = scan_orchestrator::format_dry_run_plan(
             &all_analyses,
@@ -1673,6 +1735,7 @@ async fn run_scan(
         resume_path: resume.map(|p| p.to_path_buf()),
         timeout_total: if timeout_total == 0 { None } else { Some(Duration::from_secs(timeout_total)) },
         pool_path: Some(std::path::PathBuf::from(directory).join(".shatter/seeds/pool.json")),
+        project_root: project_root_str.clone(),
     };
 
     let scan_start = Instant::now();
@@ -1922,6 +1985,8 @@ async fn run_export_tests(
     for target in &parsed {
         let file_str = target.file.to_string_lossy();
         let func_display = target.function.as_deref().unwrap_or("(all)");
+        let detected_root = shatter_core::project::detect_project_root(&target.file);
+        let project_root_str = detected_root.as_ref().map(|r| r.path.to_string_lossy().into_owned());
 
         eprintln!("Exploring {file_str}:{func_display} for test export...");
 
@@ -1935,6 +2000,7 @@ async fn run_export_tests(
             .send(ProtoCommand::Analyze {
                 file: file_str.to_string(),
                 function: target.function.clone(),
+                project_root: project_root_str.clone(),
             })
             .await
             .map_err(|e| format!("analyze failed: {e}"))?;
@@ -1964,6 +2030,7 @@ async fn run_export_tests(
             value_sources: vec![],
             capabilities: shatter_core::orchestrator::FrontendCapabilities::default(),
             pool_seeds: vec![],
+            project_root: project_root_str.clone(),
         };
 
         for func in &functions {
@@ -2076,7 +2143,7 @@ fn discovery_lang_to_cli_lang(lang: DiscoveryLanguage) -> Option<Language> {
     match lang {
         DiscoveryLanguage::TypeScript => Some(Language::TypeScript),
         DiscoveryLanguage::Go => Some(Language::Go),
-        DiscoveryLanguage::Rust => None, // Rust frontend not yet supported for exploration
+        DiscoveryLanguage::Rust => Some(Language::Rust),
     }
 }
 
@@ -2109,7 +2176,13 @@ async fn run_run(
     let root = root.canonicalize()
         .map_err(|e| format!("failed to resolve path '{}': {e}", path))?;
 
+    let detected_root = shatter_core::project::detect_project_root(&root);
+    let project_root_str = detected_root.as_ref().map(|r| r.path.to_string_lossy().into_owned());
+
     if log_level >= LogLevel::Debug {
+        if let Some(ref pr) = detected_root {
+            eprintln!("[debug] Detected project root: {} ({:?})", pr.path.display(), pr.kind);
+        }
         eprintln!("Shatter run: {}", root.display());
         eprintln!();
     }
@@ -2148,7 +2221,7 @@ async fn run_run(
             eprintln!("    Go: {}", go_files.len());
         }
         if !rs_files.is_empty() {
-            eprintln!("    Rust: {} (analysis not yet supported)", rs_files.len());
+            eprintln!("    Rust: {}", rs_files.len());
         }
         eprintln!();
     }
@@ -2160,7 +2233,7 @@ async fn run_run(
         .collect();
 
     if analyzable_files.is_empty() {
-        eprintln!("No analyzable source files found (only TypeScript and Go are supported).");
+        eprintln!("No analyzable source files found (supported: TypeScript, Go, Rust).");
         return Ok(());
     }
 
@@ -2198,6 +2271,7 @@ async fn run_run(
         &mut frontends,
         &analyzable_files,
         None,
+        project_root_str.as_deref(),
     )
     .await
     .map_err(|e| format!("batch analyze failed: {e}"))?;
@@ -2293,6 +2367,7 @@ async fn run_run(
                 .send(ProtoCommand::Analyze {
                     file: entry.file_path.to_string_lossy().into_owned(),
                     function: Some(entry.name.clone()),
+                    project_root: project_root_str.clone(),
                 })
                 .await
                 .map_err(|e| format!("analyze failed for {qualified_name}: {e}"))?;
@@ -2323,6 +2398,7 @@ async fn run_run(
                 value_sources: vec![],
                 capabilities: shatter_core::orchestrator::FrontendCapabilities::default(),
                 pool_seeds: vec![],
+                project_root: project_root_str.clone(),
                 };
 
             match explorer::explore_function(frontend, &func_analysis, &explore_config).await {
@@ -2620,6 +2696,8 @@ async fn run_stale(
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let target = parse_target(source)?;
     let file_str = target.file.to_string_lossy();
+    let detected_root = shatter_core::project::detect_project_root(&target.file);
+    let project_root_str = detected_root.as_ref().map(|r| r.path.to_string_lossy().into_owned());
 
     let req_timeout = Duration::from_secs(request_timeout);
     let config = frontend_config(target.language, req_timeout, log_level, exec_timeout, build_timeout, memory_limit, None)?;
@@ -2631,6 +2709,7 @@ async fn run_stale(
         .send(ProtoCommand::Analyze {
             file: file_str.to_string(),
             function: target.function.clone(),
+            project_root: project_root_str,
         })
         .await
         .map_err(|e| format!("analyze failed: {e}"))?;
@@ -3398,6 +3477,27 @@ mod tests {
     }
 
     #[test]
+    fn parse_target_rust_file_and_function() {
+        let target = parse_target("src/lib.rs:classify_number").unwrap();
+        assert_eq!(target.file, PathBuf::from("src/lib.rs"));
+        assert_eq!(target.function.as_deref(), Some("classify_number"));
+        assert_eq!(target.language, Language::Rust);
+    }
+
+    #[test]
+    fn parse_target_rust_file_only() {
+        let target = parse_target("src/lib.rs").unwrap();
+        assert_eq!(target.file, PathBuf::from("src/lib.rs"));
+        assert!(target.function.is_none());
+        assert_eq!(target.language, Language::Rust);
+    }
+
+    #[test]
+    fn language_from_extension_recognizes_rs() {
+        assert_eq!(Language::from_extension("rs"), Some(Language::Rust));
+    }
+
+    #[test]
     fn parse_target_trailing_colon_treated_as_file_only() {
         // A trailing colon with empty function name falls through to the file-only path.
         // "src/app.ts:" becomes the file path; OS sees ".ts:" as extension → unsupported.
@@ -3457,6 +3557,7 @@ mod tests {
     fn language_labels_are_correct() {
         assert_eq!(Language::TypeScript.label(), "typescript");
         assert_eq!(Language::Go.label(), "go");
+        assert_eq!(Language::Rust.label(), "rust");
     }
 
     #[test]
@@ -4247,7 +4348,7 @@ mod tests {
         );
         assert_eq!(
             discovery_lang_to_cli_lang(DiscoveryLanguage::Rust),
-            None
+            Some(Language::Rust)
         );
     }
 

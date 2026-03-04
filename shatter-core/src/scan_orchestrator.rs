@@ -69,6 +69,8 @@ pub struct ScanConfig {
     /// When `Some`, interesting inputs discovered during exploration are
     /// harvested into the pool after each function completes.
     pub pool_path: Option<PathBuf>,
+    /// Detected project root directory, passed to frontend commands.
+    pub project_root: Option<String>,
 }
 
 /// Context about sampling mode, for report headers.
@@ -397,6 +399,7 @@ pub async fn scan(
             value_sources: vec![],
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             pool_seeds,
+            project_root: config.project_root.clone(),
         };
 
         let exploration = explorer::explore_function(frontend, analysis, &explore_config).await?;
@@ -762,6 +765,7 @@ pub async fn parallel_scan(
                 value_sources: vec![],
                 capabilities: crate::orchestrator::FrontendCapabilities::default(),
                 pool_seeds,
+                project_root: config.project_root.clone(),
             };
 
             tasks.push((func_name.clone(), analysis.clone(), explore_config, mocks_used, callees, current_deep_fp));
@@ -1945,6 +1949,7 @@ mod tests {
             resume_path: None,
             timeout_total: None,
             pool_path: None,
+            project_root: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2011,6 +2016,7 @@ mod tests {
             resume_path: None,
             timeout_total: None,
             pool_path: None,
+            project_root: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2073,6 +2079,7 @@ mod tests {
             resume_path: None,
             timeout_total: None,
             pool_path: None,
+            project_root: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2151,6 +2158,7 @@ mod tests {
             resume_path: None,
             timeout_total: Some(Duration::ZERO),
             pool_path: None,
+            project_root: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2213,6 +2221,7 @@ mod tests {
             resume_path: None,
             timeout_total: None,
             pool_path: None,
+            project_root: None,
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -2261,6 +2270,7 @@ mod tests {
             resume_path: None,
             timeout_total: None,
             pool_path: None,
+            project_root: None,
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -2292,6 +2302,7 @@ mod tests {
             resume_path: None,
             timeout_total: None,
             pool_path: None,
+            project_root: None,
         };
 
         let plan = format_dry_run_plan(&analyses, &skipped, &config).expect("should succeed");
@@ -2314,6 +2325,7 @@ mod tests {
             resume_path: None,
             timeout_total: None,
             pool_path: None,
+            project_root: None,
         };
 
         let plan = format_dry_run_plan(&[], &[], &config).expect("should succeed");

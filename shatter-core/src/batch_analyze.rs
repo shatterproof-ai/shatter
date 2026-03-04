@@ -112,6 +112,7 @@ pub async fn batch_analyze(
     frontends: &mut HashMap<Language, Frontend>,
     files: &[(PathBuf, Language)],
     analysis_cache: Option<&AnalysisCache>,
+    project_root: Option<&str>,
 ) -> Result<FunctionRegistry, BatchAnalyzeError> {
     let mut entries = Vec::new();
     let mut index = HashMap::new();
@@ -138,6 +139,7 @@ pub async fn batch_analyze(
             .send(ProtoCommand::Analyze {
                 file: file_path.to_string_lossy().into_owned(),
                 function: None,
+                project_root: project_root.map(String::from),
             })
             .await
             .map_err(|e| BatchAnalyzeError::Frontend {
@@ -547,7 +549,7 @@ mod tests {
             (PathBuf::from("src/utils.ts"), Language::TypeScript),
         ];
 
-        let registry = batch_analyze(&mut frontends, &files, None)
+        let registry = batch_analyze(&mut frontends, &files, None, None)
             .await
             .expect("batch analyze failed");
 
@@ -579,7 +581,7 @@ mod tests {
 
         let files = vec![(PathBuf::from("src/app.ts"), Language::TypeScript)];
 
-        let result = batch_analyze(&mut frontends.into_iter().collect(), &files, None).await;
+        let result = batch_analyze(&mut frontends.into_iter().collect(), &files, None, None).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(matches!(err, BatchAnalyzeError::NoFrontend(Language::TypeScript)));
@@ -591,7 +593,7 @@ mod tests {
 
         let files: Vec<(PathBuf, Language)> = vec![];
 
-        let registry = batch_analyze(&mut frontends, &files, None)
+        let registry = batch_analyze(&mut frontends, &files, None, None)
             .await
             .expect("batch analyze failed");
 
@@ -615,7 +617,7 @@ mod tests {
             (PathBuf::from("pkg/handler.go"), Language::Go),
         ];
 
-        let registry = batch_analyze(&mut frontends, &files, None)
+        let registry = batch_analyze(&mut frontends, &files, None, None)
             .await
             .expect("batch analyze failed");
 

@@ -47,6 +47,9 @@ pub enum Command {
         file: String,
         /// Name of the function to analyze. If absent, analyze all exported functions.
         function: Option<String>,
+        /// Detected project root directory, if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project_root: Option<String>,
     },
     /// Instrument a function for symbolic constraint tracking.
     Instrument {
@@ -56,6 +59,9 @@ pub enum Command {
         function: String,
         /// Mock configurations for external dependencies.
         mocks: Vec<MockConfig>,
+        /// Detected project root directory, if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project_root: Option<String>,
     },
     /// Execute an instrumented function with specific inputs and mocks.
     Execute {
@@ -77,6 +83,9 @@ pub enum Command {
         function: String,
         /// When to run setup relative to executions.
         mode: SetupMode,
+        /// Detected project root directory, if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project_root: Option<String>,
     },
     /// Tear down state established by a prior Setup command.
     Teardown {
@@ -94,6 +103,9 @@ pub enum Command {
         /// Reconstruction recipe from a previous generation.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         recipe: Option<serde_json::Value>,
+        /// Detected project root directory, if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project_root: Option<String>,
     },
     /// Request graceful shutdown of the frontend process.
     Shutdown,
@@ -430,6 +442,7 @@ mod tests {
             Command::Analyze {
                 file: "src/main.ts".into(),
                 function: Some("calculateShipping".into()),
+                project_root: None,
             },
         ));
     }
@@ -441,6 +454,7 @@ mod tests {
             Command::Analyze {
                 file: "src/main.ts".into(),
                 function: None,
+                project_root: None,
             },
         ));
     }
@@ -458,6 +472,7 @@ mod tests {
                     should_track_calls: true,
                     default_behavior: MockBehavior::RepeatLast,
                 }],
+                project_root: None,
             },
         ));
     }
@@ -815,6 +830,7 @@ mod tests {
             Command::Analyze {
                 file: "main.ts".into(),
                 function: Some("foo".into()),
+                project_root: None,
             },
         );
         let json: serde_json::Value = serde_json::to_value(&req).expect("serialize");
@@ -877,6 +893,7 @@ mod tests {
                 file: "src/utils.ts".into(),
                 function: "formatDate".into(),
                 mocks: vec![],
+                project_root: None,
             },
         ));
     }
@@ -1034,6 +1051,7 @@ mod tests {
                 file: "./setup/global.ts".into(),
                 function: "processOrder".into(),
                 mode: crate::config::SetupMode::PerFunction,
+                project_root: None,
             },
         ));
     }
@@ -1046,6 +1064,7 @@ mod tests {
                 file: "./setup/auth.ts".into(),
                 function: "authenticate".into(),
                 mode: crate::config::SetupMode::PerExecution,
+                project_root: None,
             },
         ));
     }
@@ -1069,6 +1088,7 @@ mod tests {
                 name: "User".into(),
                 kind: GeneratorKind::TypeName,
                 recipe: None,
+                project_root: None,
             },
         ));
     }
@@ -1082,6 +1102,7 @@ mod tests {
                 name: "authToken".into(),
                 kind: GeneratorKind::ParamName,
                 recipe: None,
+                project_root: None,
             },
         ));
     }
@@ -1174,6 +1195,7 @@ mod tests {
                 file: "./setup.ts".into(),
                 function: "fn1".into(),
                 mode: crate::config::SetupMode::PerFunction,
+                project_root: None,
             },
         );
         let json = serde_json::to_value(&req).expect("serialize");
@@ -1205,6 +1227,7 @@ mod tests {
                 name: "User".into(),
                 kind: GeneratorKind::TypeName,
                 recipe: None,
+                project_root: None,
             },
         );
         let json = serde_json::to_value(&req).expect("serialize");
@@ -1276,5 +1299,47 @@ mod tests {
             !json.as_object().unwrap().contains_key("literals"),
             "empty literals should not appear in JSON"
         );
+    }
+
+    #[test]
+    fn analyze_with_project_root_round_trips() {
+        round_trip(&Request::new(
+            10,
+            Command::Analyze {
+                file: "src/main.ts".into(),
+                function: Some("handler".into()),
+                project_root: Some("/home/user/project".into()),
+            },
+        ));
+    }
+
+    #[test]
+    fn analyze_without_project_root_omits_field() {
+        let req = Request::new(
+            11,
+            Command::Analyze {
+                file: "main.ts".into(),
+                function: None,
+                project_root: None,
+            },
+        );
+        let json = serde_json::to_value(&req).expect("serialize");
+        assert!(
+            !json.as_object().unwrap().contains_key("project_root"),
+            "None project_root should be omitted from JSON"
+        );
+    }
+
+    #[test]
+    fn instrument_with_project_root_round_trips() {
+        round_trip(&Request::new(
+            12,
+            Command::Instrument {
+                file: "src/utils.ts".into(),
+                function: "processData".into(),
+                mocks: vec![],
+                project_root: Some("/home/user/project".into()),
+            },
+        ));
     }
 }

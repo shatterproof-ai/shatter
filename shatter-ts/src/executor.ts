@@ -94,6 +94,22 @@ const consoleProxy = new Proxy(console, {
 });
 
 /**
+ * Set the project root for module resolution. When set, NODE_PATH includes
+ * the project's node_modules directory so createRequire() resolves packages.
+ */
+export function setProjectRoot(projectRoot: string | null | undefined): void {
+  if (projectRoot) {
+    const nodeModules = path.join(projectRoot, "node_modules");
+    const existing = process.env["NODE_PATH"] ?? "";
+    if (!existing.split(path.delimiter).includes(nodeModules)) {
+      process.env["NODE_PATH"] = existing ? `${nodeModules}${path.delimiter}${existing}` : nodeModules;
+      // Force Node to re-read NODE_PATH for future require calls
+      require("module").Module._initPaths();
+    }
+  }
+}
+
+/**
  * Transpile a TypeScript file to JavaScript and return the exports object.
  *
  * Results are cached by absolute file path.

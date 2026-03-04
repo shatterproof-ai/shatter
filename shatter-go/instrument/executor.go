@@ -125,7 +125,7 @@ func ExecuteFunction(sourcePath, funcName string, inputs []json.RawMessage, mock
 	}
 
 	// Instrument the file
-	outputDir, err := InstrumentFile(sourcePath, &funcName)
+	outputDir, err := InstrumentFile(sourcePath, &funcName, nil)
 	if err != nil {
 		return nil, fmt.Errorf("instrumenting: %w", err)
 	}

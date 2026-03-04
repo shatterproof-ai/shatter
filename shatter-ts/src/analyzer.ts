@@ -26,22 +26,59 @@ function hasExportModifier(node: ts.Node): boolean {
   return modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) ?? false;
 }
 
+/** Default compiler options used when no tsconfig.json is available. */
+const DEFAULT_COMPILER_OPTIONS: ts.CompilerOptions = {
+  target: ts.ScriptTarget.ES2022,
+  module: ts.ModuleKind.Node16,
+  strict: true,
+  noEmit: true,
+  allowJs: true,
+  jsx: ts.JsxEmit.ReactJSX,
+};
+
+/**
+ * Load compiler options from tsconfig.json if a project root is provided,
+ * falling back to hardcoded defaults on any error or when no root is given.
+ */
+function loadCompilerOptions(absoluteFilePath: string, projectRoot?: string): ts.CompilerOptions {
+  if (!projectRoot) {
+    return DEFAULT_COMPILER_OPTIONS;
+  }
+
+  const tsconfigPath = path.join(projectRoot, "tsconfig.json");
+  const readResult = ts.readConfigFile(tsconfigPath, ts.sys.readFile);
+  if (readResult.error) {
+    return DEFAULT_COMPILER_OPTIONS;
+  }
+
+  const parsed = ts.parseJsonConfigFileContent(
+    readResult.config,
+    ts.sys,
+    projectRoot,
+  );
+
+  if (parsed.errors.length > 0) {
+    return DEFAULT_COMPILER_OPTIONS;
+  }
+
+  // Preserve critical defaults that shatter needs
+  return {
+    ...parsed.options,
+    noEmit: true,
+    allowJs: true,
+  };
+}
+
 /**
  * Analyze functions in a TypeScript file.
  *
  * If `functionName` is provided, only that function is returned.
  * Otherwise, all top-level exported functions are returned.
  */
-export function analyzeFile(filePath: string, functionName?: string | null): FunctionAnalysis[] {
+export function analyzeFile(filePath: string, functionName?: string | null, projectRoot?: string | null): FunctionAnalysis[] {
   const absolutePath = path.resolve(filePath);
-  const program = ts.createProgram([absolutePath], {
-    target: ts.ScriptTarget.ES2022,
-    module: ts.ModuleKind.Node16,
-    strict: true,
-    noEmit: true,
-    allowJs: true,
-    jsx: ts.JsxEmit.ReactJSX,
-  });
+  const compilerOptions = loadCompilerOptions(absolutePath, projectRoot ?? undefined);
+  const program = ts.createProgram([absolutePath], compilerOptions);
 
   const sourceFile = program.getSourceFile(absolutePath);
   if (!sourceFile) {
