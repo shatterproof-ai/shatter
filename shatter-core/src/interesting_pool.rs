@@ -411,7 +411,7 @@ pub fn harvest_from_exploration(
     let hashes: Vec<u64> = raw_results
         .iter()
         .map(|(_, result)| {
-            let h = explorer::path_hash(result);
+            let h = explorer::path_hash(result, &explorer::LoopBuckets::default());
             *path_counts.entry(h).or_default() += 1;
             h
         })
