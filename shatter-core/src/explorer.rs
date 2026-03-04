@@ -110,7 +110,23 @@ pub enum ExploreError {
 }
 
 /// Compute a hash representing the "path signature" of an execution.
+///
+/// When `scope_events` is non-empty, uses scope-aware collapsing: repeated
+/// invocations of the same loop or call scope are collapsed to the sorted set
+/// of unique `(branch_id, taken)` pairs, so that iteration count doesn't affect
+/// the hash — only which branches were exercised matters.
+///
+/// Falls back to legacy sequential hashing when `scope_events` is empty.
 pub(crate) fn path_hash(result: &crate::protocol::ExecuteResult) -> u64 {
+    if !result.scope_events.is_empty() {
+        return scope_aware_hash(&result.scope_events);
+    }
+    legacy_path_hash(result)
+}
+
+/// Legacy path hash: hashes branch decisions sequentially, falling back to
+/// lines_executed, error info, or return value.
+fn legacy_path_hash(result: &crate::protocol::ExecuteResult) -> u64 {
     let mut hasher = DefaultHasher::new();
     if !result.branch_path.is_empty() {
         for decision in &result.branch_path {
@@ -120,14 +136,139 @@ pub(crate) fn path_hash(result: &crate::protocol::ExecuteResult) -> u64 {
     } else if !result.lines_executed.is_empty() {
         result.lines_executed.hash(&mut hasher);
     } else if let Some(ref err) = result.thrown_error {
-            "error".hash(&mut hasher);
-            err.error_type.hash(&mut hasher);
-            err.message.hash(&mut hasher);
-        } else {
-            "ok".hash(&mut hasher);
-            let ret_str = serde_json::to_string(&result.return_value).unwrap_or_default();
-            ret_str.hash(&mut hasher);
+        "error".hash(&mut hasher);
+        err.error_type.hash(&mut hasher);
+        err.message.hash(&mut hasher);
+    } else {
+        "ok".hash(&mut hasher);
+        let ret_str = serde_json::to_string(&result.return_value).unwrap_or_default();
+        ret_str.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+/// Scope-aware path hash that collapses repeated loop/call scopes.
+///
+/// Parses the flat trace into a tree of nested scopes, then for each scope_id
+/// that appears multiple times at the same nesting level, collapses all
+/// repetitions to a single sorted set of unique `(branch_id, taken)` pairs.
+fn scope_aware_hash(events: &[crate::execution_record::TraceEvent]) -> u64 {
+    use crate::execution_record::{ScopeEvent, TraceEvent};
+    use std::collections::BTreeSet;
+
+    /// Discriminant tag for scope enter/exit matching.
+    #[derive(Clone, Copy, PartialEq)]
+    enum ScopeKind {
+        Loop(u32),
+        Call(u32),
+    }
+
+    /// Collapsed representation of a scope's content for hashing.
+    #[derive(Hash)]
+    enum CollapsedItem {
+        /// A branch decision outside any scope at this level.
+        Branch { branch_id: u32, taken: bool },
+        /// A collapsed scope: sorted set of (branch_id, taken) from all repetitions.
+        Scope { scope_tag: u64, branches: Vec<(u32, bool)> },
+    }
+
+    fn is_matching_exit(event: &TraceEvent, kind: ScopeKind) -> bool {
+        match (kind, event) {
+            (ScopeKind::Loop(id), TraceEvent::Scope { event: ScopeEvent::LoopExit { loop_id } }) => *loop_id == id,
+            (ScopeKind::Call(id), TraceEvent::Scope { event: ScopeEvent::CallExit { call_site_id } }) => *call_site_id == id,
+            _ => false,
         }
+    }
+
+    /// Parse a flat slice of events into collapsed items for hashing.
+    /// Returns (collapsed_items, number_of_events_consumed).
+    fn collapse(events: &[TraceEvent]) -> (Vec<CollapsedItem>, usize) {
+        let mut items: Vec<CollapsedItem> = Vec::new();
+        // Map from scope_id to merged branch set (using BTreeSet for deterministic order)
+        let mut loop_branches: HashMap<u32, BTreeSet<(u32, bool)>> = HashMap::new();
+        let mut call_branches: HashMap<u32, BTreeSet<(u32, bool)>> = HashMap::new();
+
+        let mut i = 0;
+        while i < events.len() {
+            match &events[i] {
+                TraceEvent::Branch { decision } => {
+                    items.push(CollapsedItem::Branch {
+                        branch_id: decision.branch_id,
+                        taken: decision.taken,
+                    });
+                    i += 1;
+                }
+                TraceEvent::Scope { event } => {
+                    let (kind, is_enter) = match event {
+                        ScopeEvent::LoopEnter { loop_id } => (ScopeKind::Loop(*loop_id), true),
+                        ScopeEvent::LoopExit { loop_id } => (ScopeKind::Loop(*loop_id), false),
+                        ScopeEvent::CallEnter { call_site_id } => (ScopeKind::Call(*call_site_id), true),
+                        ScopeEvent::CallExit { call_site_id } => (ScopeKind::Call(*call_site_id), false),
+                    };
+
+                    if !is_enter {
+                        // Exit without matching enter — we've hit the boundary of
+                        // our parent scope. Stop processing here.
+                        return (items, i);
+                    }
+
+                    // Find the matching exit and recursively collapse the scope body
+                    let body_start = i + 1;
+                    let (child_items, consumed) = collapse(&events[body_start..]);
+                    let body_end = body_start + consumed;
+
+                    // Extract branch set from collapsed children
+                    let mut branch_set = BTreeSet::new();
+                    for item in &child_items {
+                        if let CollapsedItem::Branch { branch_id, taken } = item {
+                            branch_set.insert((*branch_id, *taken));
+                        }
+                        // Nested scope items contribute their own collapsed hash
+                        // via the Scope variant — they're kept as-is
+                    }
+
+                    // Merge into the per-scope-id branch set
+                    match kind {
+                        ScopeKind::Loop(id) => {
+                            loop_branches.entry(id).or_default().extend(branch_set.iter());
+                        }
+                        ScopeKind::Call(id) => {
+                            call_branches.entry(id).or_default().extend(branch_set.iter());
+                        }
+                    }
+
+                    // Skip past the exit event if present
+                    i = body_end;
+                    if i < events.len() && is_matching_exit(&events[i], kind) {
+                        i += 1;
+                    }
+                }
+            }
+        }
+
+        // Emit collapsed scope items (one per unique scope_id, in id order)
+        let mut scope_ids: Vec<(u64, Vec<(u32, bool)>)> = Vec::new();
+        for (id, branches) in &loop_branches {
+            let tag = (*id as u64) | (1u64 << 32); // distinguish loops from calls
+            scope_ids.push((tag, branches.iter().copied().collect()));
+        }
+        for (id, branches) in &call_branches {
+            let tag = (*id as u64) | (2u64 << 32);
+            scope_ids.push((tag, branches.iter().copied().collect()));
+        }
+        scope_ids.sort_by_key(|(tag, _)| *tag);
+        for (scope_tag, branches) in scope_ids {
+            items.push(CollapsedItem::Scope { scope_tag, branches });
+        }
+
+        (items, events.len())
+    }
+
+    let (items, _) = collapse(events);
+    let mut hasher = DefaultHasher::new();
+    for item in &items {
+        item.hash(&mut hasher);
+    }
     hasher.finish()
 }
 
@@ -720,6 +861,226 @@ mod tests {
             scope_events: vec![], side_effects: vec![], capture_truncation: None, performance: empty_perf(),
         };
         assert_ne!(path_hash(&r1), path_hash(&r2));
+    }
+
+    // -- Scope-aware path_hash tests --
+
+    use crate::execution_record::{ScopeEvent, TraceEvent};
+
+    /// Helper: branch trace event.
+    fn branch_evt(branch_id: u32, taken: bool) -> TraceEvent {
+        TraceEvent::Branch {
+            decision: BranchDecision {
+                branch_id,
+                line: 0,
+                taken,
+                constraint: SymConstraint::Unknown { hint: String::new() },
+            },
+        }
+    }
+
+    fn loop_enter(id: u32) -> TraceEvent {
+        TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id: id } }
+    }
+
+    fn loop_exit(id: u32) -> TraceEvent {
+        TraceEvent::Scope { event: ScopeEvent::LoopExit { loop_id: id } }
+    }
+
+    fn call_enter(id: u32) -> TraceEvent {
+        TraceEvent::Scope { event: ScopeEvent::CallEnter { call_site_id: id } }
+    }
+
+    fn call_exit(id: u32) -> TraceEvent {
+        TraceEvent::Scope { event: ScopeEvent::CallExit { call_site_id: id } }
+    }
+
+    /// Helper: make an ExecuteResult with given scope_events.
+    fn exec_with_scope(events: Vec<TraceEvent>) -> ExecuteResult {
+        ExecuteResult {
+            return_value: None,
+            thrown_error: None,
+            branch_path: vec![],
+            lines_executed: vec![],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            scope_events: events,
+            side_effects: vec![],
+            capture_truncation: None,
+            performance: empty_perf(),
+        }
+    }
+
+    #[test]
+    fn path_hash_backward_compat_when_scope_events_empty() {
+        // When scope_events is empty, should use branch_path (legacy behavior)
+        let r = ExecuteResult {
+            return_value: Some(serde_json::json!("result")),
+            thrown_error: None,
+            branch_path: vec![BranchDecision {
+                branch_id: 0, line: 10, taken: true,
+                constraint: SymConstraint::Unknown { hint: "test".into() },
+            }],
+            lines_executed: vec![],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            scope_events: vec![],
+            side_effects: vec![],
+            capture_truncation: None,
+            performance: empty_perf(),
+        };
+        let hash1 = path_hash(&r);
+        let hash2 = legacy_path_hash(&r);
+        assert_eq!(hash1, hash2, "empty scope_events should use legacy_path_hash");
+    }
+
+    #[test]
+    fn path_hash_simple_loop_same_branches_same_hash() {
+        // 3 iterations of loop 0 with branch 0 always true
+        let trace_3 = vec![
+            loop_enter(0), branch_evt(0, true), loop_exit(0),
+            loop_enter(0), branch_evt(0, true), loop_exit(0),
+            loop_enter(0), branch_evt(0, true), loop_exit(0),
+        ];
+        // 5 iterations of same
+        let trace_5 = vec![
+            loop_enter(0), branch_evt(0, true), loop_exit(0),
+            loop_enter(0), branch_evt(0, true), loop_exit(0),
+            loop_enter(0), branch_evt(0, true), loop_exit(0),
+            loop_enter(0), branch_evt(0, true), loop_exit(0),
+            loop_enter(0), branch_evt(0, true), loop_exit(0),
+        ];
+        assert_eq!(
+            path_hash(&exec_with_scope(trace_3)),
+            path_hash(&exec_with_scope(trace_5)),
+            "same branch set across different iteration counts should produce same hash"
+        );
+    }
+
+    #[test]
+    fn path_hash_loop_different_branches_different_hash() {
+        // Loop where all iterations take branch=true
+        let trace_all_true = vec![
+            loop_enter(0), branch_evt(0, true), loop_exit(0),
+            loop_enter(0), branch_evt(0, true), loop_exit(0),
+        ];
+        // Loop where one iteration takes branch=false (different branch set)
+        let trace_mixed = vec![
+            loop_enter(0), branch_evt(0, true), loop_exit(0),
+            loop_enter(0), branch_evt(0, false), loop_exit(0),
+        ];
+        assert_ne!(
+            path_hash(&exec_with_scope(trace_all_true)),
+            path_hash(&exec_with_scope(trace_mixed)),
+            "different branch sets within loop should produce different hashes"
+        );
+    }
+
+    #[test]
+    fn path_hash_nested_loops() {
+        // Outer loop 0, inner loop 1 — same branch sets across iterations
+        let trace_2x2 = vec![
+            loop_enter(0),
+                loop_enter(1), branch_evt(1, true), loop_exit(1),
+                loop_enter(1), branch_evt(1, true), loop_exit(1),
+            loop_exit(0),
+            loop_enter(0),
+                loop_enter(1), branch_evt(1, true), loop_exit(1),
+            loop_exit(0),
+        ];
+        let trace_3x1 = vec![
+            loop_enter(0),
+                loop_enter(1), branch_evt(1, true), loop_exit(1),
+            loop_exit(0),
+            loop_enter(0),
+                loop_enter(1), branch_evt(1, true), loop_exit(1),
+            loop_exit(0),
+            loop_enter(0),
+                loop_enter(1), branch_evt(1, true), loop_exit(1),
+            loop_exit(0),
+        ];
+        assert_eq!(
+            path_hash(&exec_with_scope(trace_2x2)),
+            path_hash(&exec_with_scope(trace_3x1)),
+            "nested loops with same branch sets should produce same hash"
+        );
+    }
+
+    #[test]
+    fn path_hash_early_exit_from_loop() {
+        // Loop with early exit (no LoopExit marker)
+        let trace_early = vec![
+            loop_enter(0), branch_evt(0, true), branch_evt(1, false),
+            // no loop_exit — break/return
+        ];
+        // Same branches, with proper exit
+        let trace_normal = vec![
+            loop_enter(0), branch_evt(0, true), branch_evt(1, false), loop_exit(0),
+        ];
+        assert_eq!(
+            path_hash(&exec_with_scope(trace_early)),
+            path_hash(&exec_with_scope(trace_normal)),
+            "early exit from loop should produce same hash as normal exit"
+        );
+    }
+
+    #[test]
+    fn path_hash_recursion_collapses() {
+        // 3 recursive calls with same branch
+        let trace_3 = vec![
+            call_enter(0), branch_evt(0, true), call_exit(0),
+            call_enter(0), branch_evt(0, true), call_exit(0),
+            call_enter(0), branch_evt(0, true), call_exit(0),
+        ];
+        // 1 recursive call
+        let trace_1 = vec![
+            call_enter(0), branch_evt(0, true), call_exit(0),
+        ];
+        assert_eq!(
+            path_hash(&exec_with_scope(trace_3)),
+            path_hash(&exec_with_scope(trace_1)),
+            "repeated recursive calls with same branches should collapse"
+        );
+    }
+
+    #[test]
+    fn path_hash_mixed_loops_and_recursion() {
+        // Call scope containing a loop
+        let trace_a = vec![
+            call_enter(0),
+                loop_enter(0), branch_evt(0, true), loop_exit(0),
+                loop_enter(0), branch_evt(0, true), loop_exit(0),
+                branch_evt(1, false),
+            call_exit(0),
+            call_enter(0),
+                loop_enter(0), branch_evt(0, true), loop_exit(0),
+                branch_evt(1, false),
+            call_exit(0),
+        ];
+        // Same but with different iteration counts
+        let trace_b = vec![
+            call_enter(0),
+                loop_enter(0), branch_evt(0, true), loop_exit(0),
+                branch_evt(1, false),
+            call_exit(0),
+        ];
+        assert_eq!(
+            path_hash(&exec_with_scope(trace_a)),
+            path_hash(&exec_with_scope(trace_b)),
+            "mixed loops and recursion with same branch sets should collapse"
+        );
+    }
+
+    #[test]
+    fn path_hash_branches_outside_scopes_still_ordered() {
+        // Branches outside scopes maintain order
+        let trace_a = vec![branch_evt(0, true), branch_evt(1, false)];
+        let trace_b = vec![branch_evt(1, false), branch_evt(0, true)];
+        assert_ne!(
+            path_hash(&exec_with_scope(trace_a)),
+            path_hash(&exec_with_scope(trace_b)),
+            "branches outside scopes should be order-sensitive"
+        );
     }
 
     #[test]
