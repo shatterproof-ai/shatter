@@ -239,6 +239,60 @@ impl Frontend {
             .map_err(|_| FrontendError::Timeout(self.request_timeout))?
     }
 
+    /// Send a raw JSON value as a request, auto-assigning an ID.
+    ///
+    /// Unlike `send()`, this accepts an arbitrary JSON object, allowing extra
+    /// fields (e.g., `file` for the Rust frontend's Execute command) that the
+    /// typed `Command` enum does not include. The caller must ensure the JSON
+    /// is a valid protocol request except for the `id` field, which is overwritten.
+    pub async fn send_raw(
+        &mut self,
+        mut request: serde_json::Value,
+    ) -> Result<Response, FrontendError> {
+        let id = self.next_id;
+        self.next_id += 1;
+
+        request["id"] = serde_json::Value::from(id);
+
+        let mut json = serde_json::to_string(&request).map_err(FrontendError::Serialize)?;
+        json.push('\n');
+
+        let write_and_read = async {
+            self.stdin
+                .write_all(json.as_bytes())
+                .await
+                .map_err(FrontendError::Write)?;
+            self.stdin.flush().await.map_err(FrontendError::Write)?;
+
+            let mut line = String::new();
+            let bytes_read = self
+                .reader
+                .read_line(&mut line)
+                .await
+                .map_err(FrontendError::Read)?;
+
+            if bytes_read == 0 {
+                return Err(FrontendError::UnexpectedEof);
+            }
+
+            let response: Response =
+                serde_json::from_str(line.trim()).map_err(FrontendError::Deserialize)?;
+
+            if response.id != id {
+                return Err(FrontendError::IdMismatch {
+                    request_id: id,
+                    response_id: response.id,
+                });
+            }
+
+            Ok(response)
+        };
+
+        tokio::time::timeout(self.request_timeout, write_and_read)
+            .await
+            .map_err(|_| FrontendError::Timeout(self.request_timeout))?
+    }
+
     /// Request a graceful shutdown and wait for acknowledgment.
     pub async fn shutdown(mut self) -> Result<(), FrontendError> {
         let response = self.send(ProtoCommand::Shutdown).await?;

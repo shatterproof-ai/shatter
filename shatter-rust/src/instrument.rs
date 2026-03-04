@@ -267,7 +267,7 @@ impl VisitMut for Instrumentor {
             let line = self.line_of(&arm.pat);
             let pattern_str = arm.pat.to_token_stream().to_string();
             let constraint_json = format!(
-                r#"{{"kind":"bin_op","op":"eq","left":{{"kind":"param","name":"{}"}},"right":{{"kind":"const","const_type":"str","value":"{}"}}}}"#,
+                r#"{{"kind":"bin_op","op":"eq","left":{{"kind":"param","name":"{}"}},"right":{{"kind":"const","type":"str","value":"{}"}}}}"#,
                 escape_json_string(&match_expr_tokens),
                 escape_json_string(&pattern_str),
             );
@@ -340,7 +340,7 @@ fn constraint_for_expr(expr: &Expr) -> String {
         }
         Expr::Path(path) => {
             let name = path.to_token_stream().to_string();
-            format!(r#"{{"kind":"param","name":"{}"}}"#, escape_json_string(&name))
+            format!(r#"{{"kind":"param","name":"{}","path":[]}}"#, escape_json_string(&name))
         }
         Expr::Lit(lit) => constraint_for_lit(lit),
         Expr::MethodCall(mc) => {
@@ -371,7 +371,7 @@ fn constraint_for_operand(expr: &Expr) -> String {
     match expr {
         Expr::Path(path) => {
             let name = path.to_token_stream().to_string();
-            format!(r#"{{"kind":"param","name":"{}"}}"#, escape_json_string(&name))
+            format!(r#"{{"kind":"param","name":"{}","path":[]}}"#, escape_json_string(&name))
         }
         Expr::Lit(lit) => constraint_for_lit(lit),
         // For compound expressions, recurse
@@ -389,19 +389,19 @@ fn constraint_for_operand(expr: &Expr) -> String {
 fn constraint_for_lit(lit: &syn::ExprLit) -> String {
     match &lit.lit {
         syn::Lit::Int(i) => {
-            format!(r#"{{"kind":"const","const_type":"int","value":{}}}"#, i.base10_digits())
+            format!(r#"{{"kind":"const","type":"int","value":{}}}"#, i.base10_digits())
         }
         syn::Lit::Float(f) => {
-            format!(r#"{{"kind":"const","const_type":"float","value":{}}}"#, f.base10_digits())
+            format!(r#"{{"kind":"const","type":"float","value":{}}}"#, f.base10_digits())
         }
         syn::Lit::Str(s) => {
             format!(
-                r#"{{"kind":"const","const_type":"str","value":"{}"}}"#,
+                r#"{{"kind":"const","type":"str","value":"{}"}}"#,
                 escape_json_string(&s.value())
             )
         }
         syn::Lit::Bool(b) => {
-            format!(r#"{{"kind":"const","const_type":"bool","value":{}}}"#, b.value)
+            format!(r#"{{"kind":"const","type":"bool","value":{}}}"#, b.value)
         }
         _ => {
             format!(

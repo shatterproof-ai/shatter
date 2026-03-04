@@ -9,7 +9,11 @@ use serde::{Deserialize, Serialize};
 pub enum SymExpr {
     /// Reference to a function parameter, with optional field path.
     /// e.g., param "config", path ["timeout"] represents config.timeout
-    Param { name: String, path: Vec<String> },
+    Param {
+        name: String,
+        #[serde(default)]
+        path: Vec<String>,
+    },
 
     /// A literal constant value.
     Const(ConstValue),
