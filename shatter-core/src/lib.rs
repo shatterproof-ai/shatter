@@ -45,5 +45,6 @@ pub mod spec;
 pub mod spec_diff;
 pub mod solver;
 pub mod stratum;
+pub mod strategy;
 pub mod sym_expr;
 pub mod types;
