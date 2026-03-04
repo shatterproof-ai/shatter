@@ -258,7 +258,7 @@ step 22 $TOTAL "Behavioral Specification (JSON)" \
 # v2 adds a "large" threshold, so the diff shows added/changed behaviors.
 step 23 $TOTAL "Specification Diff" \
     "Compare behavioral specs from two versions of classifyNumber to detect regressions" \
-    bash -c "$SHATTER explore --spec-json 'demo/fixtures/classify-v1.ts:classifyNumber' > /tmp/shatter-spec-old.json 2>/dev/null && $SHATTER explore --spec-json 'demo/fixtures/classify-v2.ts:classifyNumber' > /tmp/shatter-spec-new.json 2>/dev/null && { $SHATTER spec-diff /tmp/shatter-spec-old.json /tmp/shatter-spec-new.json; true; }"
+    bash -c "$SHATTER explore --spec-json 'demo/fixtures/arithmetic-v1.ts:classifyNumber' > /tmp/shatter-spec-old.json 2>/dev/null && $SHATTER explore --spec-json 'demo/fixtures/arithmetic-v2.ts:classifyNumber' > /tmp/shatter-spec-new.json 2>/dev/null && { $SHATTER spec-diff /tmp/shatter-spec-old.json /tmp/shatter-spec-new.json; true; }"
 
 # Stage 24: Explore without boundary values
 step 24 $TOTAL "Explore Without Boundary Values" \
