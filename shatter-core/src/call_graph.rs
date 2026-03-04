@@ -441,6 +441,8 @@ mod tests {
                     })
                     .collect(),
                 branch_count: 0,
+                start_line: 1,
+                end_line: 10,
             });
         }
 
@@ -479,6 +481,8 @@ mod tests {
                     })
                     .collect(),
                 branch_count: 0,
+                start_line: 1,
+                end_line: 10,
             });
         }
 

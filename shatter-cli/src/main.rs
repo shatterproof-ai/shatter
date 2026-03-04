@@ -1457,8 +1457,8 @@ async fn run_scan(
             branches: vec![],
             dependencies: entry.dependencies.clone(),
             exported: entry.exported,
-            start_line: 0,
-            end_line: 0,
+            start_line: entry.start_line,
+            end_line: entry.end_line,
             literals: vec![],
         });
     }

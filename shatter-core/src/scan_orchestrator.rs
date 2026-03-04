@@ -2470,6 +2470,8 @@ mod tests {
                 return_type: TypeInfo::Int,
                 dependencies: vec![],
                 branch_count: 2,
+                start_line: 1,
+                end_line: 10,
             });
         }
         for i in 0..10 {
@@ -2488,6 +2490,8 @@ mod tests {
                     call_sites: vec![],
                 }],
                 branch_count: 3,
+                start_line: 1,
+                end_line: 10,
             });
         }
         for i in 0..10 {
@@ -2506,6 +2510,8 @@ mod tests {
                     call_sites: vec![],
                 }],
                 branch_count: 5,
+                start_line: 1,
+                end_line: 10,
             });
         }
 
@@ -2594,6 +2600,8 @@ mod tests {
                 return_type: TypeInfo::Int,
                 dependencies: vec![],
                 branch_count: i % 10,
+                start_line: 1,
+                end_line: 10,
             })
             .collect();
 
@@ -2638,6 +2646,8 @@ mod tests {
                 return_type: TypeInfo::Int,
                 dependencies: vec![],
                 branch_count: 0,
+                start_line: 1,
+                end_line: 10,
             },
             FunctionEntry {
                 file_path: PathBuf::from("/src/b.ts"),
@@ -2654,6 +2664,8 @@ mod tests {
                     call_sites: vec![],
                 }],
                 branch_count: 3,
+                start_line: 1,
+                end_line: 10,
             },
             FunctionEntry {
                 file_path: PathBuf::from("/src/a.ts"),
@@ -2670,6 +2682,8 @@ mod tests {
                     call_sites: vec![],
                 }],
                 branch_count: 5,
+                start_line: 1,
+                end_line: 10,
             },
         ];
 
