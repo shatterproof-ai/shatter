@@ -800,6 +800,7 @@ mod tests {
             input_hash: 0,
             parameters: params,
             branch_path: vec![],
+            scope_events: vec![],
             lines_executed: vec![],
             calls_to_external: vec![],
             path_constraints: vec![],
@@ -1343,6 +1344,7 @@ mod tests {
                 calls_to_external: vec![],
                 path_constraints: vec![],
                 side_effects: vec![],
+                scope_events: vec![],
                 capture_truncation: None,
                 performance: PerformanceMetrics {
                     wall_time_ms: 1.0,

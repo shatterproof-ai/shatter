@@ -575,6 +575,7 @@ mod tests {
             calls_to_external: vec![],
             path_constraints: vec![],
             side_effects: vec![],
+            scope_events: vec![],
             capture_truncation: None,
             performance: PerformanceMetrics {
                 wall_time_ms: 0.0,

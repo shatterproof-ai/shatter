@@ -750,6 +750,7 @@ mod tests {
             calls_to_external: vec![],
             path_constraints: vec![],
             side_effects: vec![],
+            scope_events: vec![],
             performance: PerformanceMetrics::default(),
             capture_truncation: None,
         }
@@ -774,6 +775,7 @@ mod tests {
             calls_to_external: vec![],
             path_constraints: vec![],
             side_effects: vec![],
+            scope_events: vec![],
             performance: PerformanceMetrics::default(),
             capture_truncation: None,
         }

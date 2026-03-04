@@ -327,6 +327,7 @@ mod tests {
             calls_to_external: vec![],
             path_constraints: vec![],
             side_effects: vec![],
+            scope_events: vec![],
             capture_truncation: None,
             performance: empty_perf(),
         }
@@ -348,6 +349,7 @@ mod tests {
             calls_to_external: vec![],
             path_constraints: vec![],
             side_effects: vec![],
+            scope_events: vec![],
             capture_truncation: None,
             performance: empty_perf(),
         }

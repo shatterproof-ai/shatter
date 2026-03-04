@@ -626,12 +626,14 @@ mod tests {
             return_value: Some(serde_json::json!("negative")),
             thrown_error: None, branch_path: vec![], lines_executed: vec![],
             calls_to_external: vec![], path_constraints: vec![], side_effects: vec![],
+            scope_events: vec![],
             capture_truncation: None, performance: empty_perf(),
         };
         let r2 = ExecuteResult {
             return_value: Some(serde_json::json!("positive-even")),
             thrown_error: None, branch_path: vec![], lines_executed: vec![],
             calls_to_external: vec![], path_constraints: vec![], side_effects: vec![],
+            scope_events: vec![],
             capture_truncation: None, performance: empty_perf(),
         };
         assert_ne!(path_hash(&r1), path_hash(&r2));
@@ -643,12 +645,14 @@ mod tests {
             return_value: Some(serde_json::json!(3.5)),
             thrown_error: None, branch_path: vec![], lines_executed: vec![1, 2, 3],
             calls_to_external: vec![], path_constraints: vec![], side_effects: vec![],
+            scope_events: vec![],
             capture_truncation: None, performance: empty_perf(),
         };
         let r2 = ExecuteResult {
             return_value: Some(serde_json::json!(99.0)),
             thrown_error: None, branch_path: vec![], lines_executed: vec![1, 2, 3],
             calls_to_external: vec![], path_constraints: vec![], side_effects: vec![],
+            scope_events: vec![],
             capture_truncation: None, performance: empty_perf(),
         };
         assert_eq!(path_hash(&r1), path_hash(&r2));
@@ -660,12 +664,14 @@ mod tests {
             return_value: Some(serde_json::json!("same")),
             thrown_error: None, branch_path: vec![], lines_executed: vec![1, 2, 3],
             calls_to_external: vec![], path_constraints: vec![], side_effects: vec![],
+            scope_events: vec![],
             capture_truncation: None, performance: empty_perf(),
         };
         let r2 = ExecuteResult {
             return_value: Some(serde_json::json!("same")),
             thrown_error: None, branch_path: vec![], lines_executed: vec![1, 2, 4],
             calls_to_external: vec![], path_constraints: vec![], side_effects: vec![],
+            scope_events: vec![],
             capture_truncation: None, performance: empty_perf(),
         };
         assert_ne!(path_hash(&r1), path_hash(&r2));
@@ -677,6 +683,7 @@ mod tests {
             return_value: Some(serde_json::json!(42)),
             thrown_error: None, branch_path: vec![], lines_executed: vec![],
             calls_to_external: vec![], path_constraints: vec![], side_effects: vec![],
+            scope_events: vec![],
             capture_truncation: None, performance: empty_perf(),
         };
         let err = ExecuteResult {
@@ -684,6 +691,7 @@ mod tests {
             thrown_error: Some(ErrorInfo { error_type: "Error".into(), message: "boom".into(), stack: None, error_category: None }),
             branch_path: vec![], lines_executed: vec![],
             calls_to_external: vec![], path_constraints: vec![], side_effects: vec![],
+            scope_events: vec![],
             capture_truncation: None, performance: empty_perf(),
         };
         assert_ne!(path_hash(&ok), path_hash(&err));
@@ -699,7 +707,7 @@ mod tests {
                 constraint: SymConstraint::Unknown { hint: "test".into() },
             }],
             lines_executed: vec![], calls_to_external: vec![], path_constraints: vec![],
-            side_effects: vec![], capture_truncation: None, performance: empty_perf(),
+            scope_events: vec![], side_effects: vec![], capture_truncation: None, performance: empty_perf(),
         };
         let r2 = ExecuteResult {
             return_value: Some(serde_json::json!("same")),
@@ -709,7 +717,7 @@ mod tests {
                 constraint: SymConstraint::Unknown { hint: "test".into() },
             }],
             lines_executed: vec![], calls_to_external: vec![], path_constraints: vec![],
-            side_effects: vec![], capture_truncation: None, performance: empty_perf(),
+            scope_events: vec![], side_effects: vec![], capture_truncation: None, performance: empty_perf(),
         };
         assert_ne!(path_hash(&r1), path_hash(&r2));
     }
@@ -858,6 +866,7 @@ mod tests {
             calls_to_external: vec![],
             path_constraints: vec![],
             side_effects: vec![],
+            scope_events: vec![],
             capture_truncation: None,
             performance: Default::default(),
         };
@@ -876,6 +885,7 @@ mod tests {
             calls_to_external: vec![],
             path_constraints: vec![],
             side_effects: vec![],
+            scope_events: vec![],
             capture_truncation: None,
             performance: Default::default(),
         };
@@ -906,6 +916,7 @@ mod tests {
             calls_to_external: vec![],
             path_constraints: vec![],
             side_effects: vec![],
+            scope_events: vec![],
             capture_truncation: None,
             performance: Default::default(),
         };

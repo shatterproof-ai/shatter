@@ -621,6 +621,7 @@ mod tests {
             input_hash,
             parameters: params,
             branch_path: vec![],
+            scope_events: vec![],
             lines_executed: vec![],
             calls_to_external: vec![],
             path_constraints: vec![],
@@ -1079,6 +1080,7 @@ mod tests {
                 },
             ],
             path_constraints: vec![],
+            scope_events: vec![],
             side_effects: vec![],
             capture_truncation: None,
             performance: PerformanceMetrics {
@@ -1116,6 +1118,7 @@ mod tests {
                 level: "info".to_string(),
                 message: "fetching data".to_string(),
             }],
+            scope_events: vec![],
             capture_truncation: None,
             performance: PerformanceMetrics {
                 wall_time_ms: 5.0,
@@ -1189,6 +1192,7 @@ mod tests {
             calls_to_external: vec![],
             path_constraints: vec![],
             side_effects: vec![],
+            scope_events: vec![],
             capture_truncation: None,
             performance: PerformanceMetrics {
                 wall_time_ms: 0.1,
@@ -1247,6 +1251,7 @@ mod tests {
             lines_executed: vec![],
             calls_to_external: vec![],
             path_constraints: vec![],
+            scope_events: vec![],
             side_effects: vec![
                 SideEffect::FileWrite {
                     path: "/tmp/out.txt".to_string(),
@@ -1291,6 +1296,7 @@ mod tests {
             }],
             path_constraints: vec![],
             side_effects: vec![],
+            scope_events: vec![],
             capture_truncation: None,
             performance: PerformanceMetrics {
                 wall_time_ms: 0.5,

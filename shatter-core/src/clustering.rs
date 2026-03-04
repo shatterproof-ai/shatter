@@ -224,6 +224,7 @@ mod tests {
             input_hash: 0,
             parameters: params,
             branch_path,
+            scope_events: vec![],
             lines_executed: vec![],
             calls_to_external: vec![],
             path_constraints: vec![],

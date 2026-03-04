@@ -619,6 +619,7 @@ mod tests {
                         right: Box::new(SymExpr::Const(ConstValue::Str("express".into()))),
                     },
                 }],
+                scope_events: vec![],
                 side_effects: vec![SideEffect::ConsoleOutput {
                     level: "info".into(),
                     message: "Processing express order".into(),
@@ -651,6 +652,7 @@ mod tests {
                 calls_to_external: vec![],
                 path_constraints: vec![],
                 side_effects: vec![],
+                scope_events: vec![],
                 performance: PerformanceMetrics {
                     wall_time_ms: 0.1,
                     cpu_time_us: 80,
