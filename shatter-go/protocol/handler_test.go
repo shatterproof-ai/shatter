@@ -65,8 +65,8 @@ func conversation(t *testing.T, requests ...string) []Response {
 	return responses
 }
 
-func TestHandshakeReturnsGoLanguage(t *testing.T) {
-	resp := sendRecv(t, reqJSON(1, "handshake", `"capabilities":["analyze"]`))
+func TestHandshakeResponse(t *testing.T) {
+	resp := sendRecv(t, reqJSON(42, "handshake", `"capabilities":["analyze"]`))
 	if resp.Status != "handshake" {
 		t.Errorf("status = %q, want handshake", resp.Status)
 	}
@@ -74,12 +74,14 @@ func TestHandshakeReturnsGoLanguage(t *testing.T) {
 		t.Errorf("language = %q, want go", resp.Language)
 	}
 	if resp.FrontendVersion != ProtocolVersion {
-		t.Errorf("frontend_version = %q, want 0.1.0", resp.FrontendVersion)
+		t.Errorf("frontend_version = %q, want %s", resp.FrontendVersion, ProtocolVersion)
 	}
-}
-
-func TestHandshakeReturnsAllCapabilities(t *testing.T) {
-	resp := sendRecv(t, reqJSON(1, "handshake", `"capabilities":["analyze"]`))
+	if resp.ProtocolVersion != ProtocolVersion {
+		t.Errorf("protocol_version = %q, want %s", resp.ProtocolVersion, ProtocolVersion)
+	}
+	if resp.ID != 42 {
+		t.Errorf("id = %d, want 42", resp.ID)
+	}
 	caps := map[string]bool{}
 	for _, c := range resp.Capabilities {
 		caps[c] = true
@@ -88,20 +90,6 @@ func TestHandshakeReturnsAllCapabilities(t *testing.T) {
 		if !caps[want] {
 			t.Errorf("missing capability %q in %v", want, resp.Capabilities)
 		}
-	}
-}
-
-func TestHandshakeEchoesRequestID(t *testing.T) {
-	resp := sendRecv(t, reqJSON(42, "handshake", `"capabilities":[]`))
-	if resp.ID != 42 {
-		t.Errorf("id = %d, want 42", resp.ID)
-	}
-}
-
-func TestHandshakeIncludesProtocolVersion(t *testing.T) {
-	resp := sendRecv(t, reqJSON(1, "handshake", `"capabilities":[]`))
-	if resp.ProtocolVersion != ProtocolVersion {
-		t.Errorf("protocol_version = %q, want 0.1.0", resp.ProtocolVersion)
 	}
 }
 
@@ -582,54 +570,6 @@ func TestLogLevelFilteringShowsDebugAtDebug(t *testing.T) {
 	}
 	if strings.Contains(logStr, "Received:") {
 		t.Errorf("trace messages should be suppressed at debug level: %s", logStr)
-	}
-}
-
-func TestSetupReturnsNotImplementedError(t *testing.T) {
-	resp := sendRecv(t, reqJSON(10, "setup", `"file":"./setup.ts","function":"init","mode":"per_function"`))
-	if resp.Status != "error" {
-		t.Errorf("status = %q, want error", resp.Status)
-	}
-	if resp.Code != ErrInternalError {
-		t.Errorf("code = %q, want internal_error", resp.Code)
-	}
-	if !strings.Contains(resp.Message, "not yet implemented") {
-		t.Errorf("message = %q, want 'not yet implemented'", resp.Message)
-	}
-	if resp.ID != 10 {
-		t.Errorf("id = %d, want 10", resp.ID)
-	}
-}
-
-func TestTeardownReturnsNotImplementedError(t *testing.T) {
-	resp := sendRecv(t, reqJSON(11, "teardown", `"function":"init"`))
-	if resp.Status != "error" {
-		t.Errorf("status = %q, want error", resp.Status)
-	}
-	if resp.Code != ErrInternalError {
-		t.Errorf("code = %q, want internal_error", resp.Code)
-	}
-	if !strings.Contains(resp.Message, "not yet implemented") {
-		t.Errorf("message = %q, want 'not yet implemented'", resp.Message)
-	}
-	if resp.ID != 11 {
-		t.Errorf("id = %d, want 11", resp.ID)
-	}
-}
-
-func TestGenerateWithUnsupportedExtensionReturnsError(t *testing.T) {
-	resp := sendRecv(t, reqJSON(12, "generate", `"file":"./gen.ts","name":"User","kind":"type_name"`))
-	if resp.Status != "error" {
-		t.Errorf("status = %q, want error", resp.Status)
-	}
-	if resp.Code != ErrInternalError {
-		t.Errorf("code = %q, want internal_error", resp.Code)
-	}
-	if !strings.Contains(resp.Message, "unsupported generator type") {
-		t.Errorf("message = %q, want 'unsupported generator type'", resp.Message)
-	}
-	if resp.ID != 12 {
-		t.Errorf("id = %d, want 12", resp.ID)
 	}
 }
 

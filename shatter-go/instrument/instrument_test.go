@@ -55,7 +55,10 @@ func classify(x int) string {
 	}
 }
 
-func TestInstrumentAndRunVerifiesLinesExecuted(t *testing.T) {
+// TestInstrumentAndRunClassify — instruments classify(x int), calls with x=5,
+// and verifies lines_executed, branch_path (branch 0 taken), and symbolic
+// constraint (bin_op gt).
+func TestInstrumentAndRunClassify(t *testing.T) {
 	srcDir := t.TempDir()
 	src := writeTestSource(t, srcDir, "target.go", `package main
 
@@ -75,7 +78,6 @@ func classify(x int) string {
 	}
 	defer os.RemoveAll(outputDir)
 
-	// Write a main that calls the function and dumps results
 	resultsPath := filepath.Join(outputDir, "results.json")
 	mainSrc := `package main
 
@@ -92,7 +94,6 @@ func main() {
 	cmd.Dir = outputDir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		// List files for debugging
 		entries, _ := os.ReadDir(outputDir)
 		for _, e := range entries {
 			data, _ := os.ReadFile(filepath.Join(outputDir, e.Name()))
@@ -111,70 +112,15 @@ func main() {
 		t.Fatalf("parsing results: %v", err)
 	}
 
+	// Verify lines_executed
 	if len(results.LinesExecuted) == 0 {
 		t.Error("lines_executed is empty, expected recorded lines")
 	}
-}
 
-func TestInstrumentAndRunVerifiesBranchPath(t *testing.T) {
-	srcDir := t.TempDir()
-	src := writeTestSource(t, srcDir, "target.go", `package main
-
-func classify(x int) string {
-	if x > 0 {
-		return "positive"
-	} else {
-		return "nonpositive"
-	}
-}
-`)
-
-	funcName := "classify"
-	outputDir, err := InstrumentFile(src, &funcName)
-	if err != nil {
-		t.Fatalf("InstrumentFile: %v", err)
-	}
-	defer os.RemoveAll(outputDir)
-
-	resultsPath := filepath.Join(outputDir, "results.json")
-	mainSrc := `package main
-
-func main() {
-	classify(5)
-	__shatter_dump_results("` + resultsPath + `")
-}
-`
-	if err := os.WriteFile(filepath.Join(outputDir, "main.go"), []byte(mainSrc), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	cmd := exec.Command("go", "run", ".")
-	cmd.Dir = outputDir
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		entries, _ := os.ReadDir(outputDir)
-		for _, e := range entries {
-			data, _ := os.ReadFile(filepath.Join(outputDir, e.Name()))
-			t.Logf("=== %s ===\n%s", e.Name(), string(data))
-		}
-		t.Fatalf("go run failed: %v\n%s", err, out)
-	}
-
-	data, err := os.ReadFile(resultsPath)
-	if err != nil {
-		t.Fatalf("reading results: %v", err)
-	}
-
-	var results testResults
-	if err := json.Unmarshal(data, &results); err != nil {
-		t.Fatalf("parsing results: %v", err)
-	}
-
+	// Verify branch_path: branch 0 should be taken for x=5
 	if len(results.BranchPath) == 0 {
 		t.Fatal("branch_path is empty")
 	}
-
-	// With x=5, the if x > 0 branch should be taken
 	found := false
 	for _, b := range results.BranchPath {
 		if b.BranchID == 0 && b.Taken {
@@ -185,71 +131,12 @@ func main() {
 	if !found {
 		t.Errorf("expected branch 0 to be taken=true for x=5, got: %+v", results.BranchPath)
 	}
-}
 
-func TestInstrumentCapturesSymbolicConstraints(t *testing.T) {
-	srcDir := t.TempDir()
-	src := writeTestSource(t, srcDir, "target.go", `package main
-
-func classify(x int) string {
-	if x > 0 {
-		return "positive"
-	}
-	return "nonpositive"
-}
-`)
-
-	funcName := "classify"
-	outputDir, err := InstrumentFile(src, &funcName)
-	if err != nil {
-		t.Fatalf("InstrumentFile: %v", err)
-	}
-	defer os.RemoveAll(outputDir)
-
-	resultsPath := filepath.Join(outputDir, "results.json")
-	mainSrc := `package main
-
-func main() {
-	classify(5)
-	__shatter_dump_results("` + resultsPath + `")
-}
-`
-	if err := os.WriteFile(filepath.Join(outputDir, "main.go"), []byte(mainSrc), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	cmd := exec.Command("go", "run", ".")
-	cmd.Dir = outputDir
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		entries, _ := os.ReadDir(outputDir)
-		for _, e := range entries {
-			data, _ := os.ReadFile(filepath.Join(outputDir, e.Name()))
-			t.Logf("=== %s ===\n%s", e.Name(), string(data))
-		}
-		t.Fatalf("go run failed: %v\n%s", err, out)
-	}
-
-	data, err := os.ReadFile(resultsPath)
-	if err != nil {
-		t.Fatalf("reading results: %v", err)
-	}
-
-	var results testResults
-	if err := json.Unmarshal(data, &results); err != nil {
-		t.Fatalf("parsing results: %v", err)
-	}
-
-	if len(results.BranchPath) == 0 {
-		t.Fatal("branch_path is empty")
-	}
-
-	// The constraint_json should contain a symbolic expression
+	// Verify symbolic constraint: should be bin_op gt
 	constraintJSON := results.BranchPath[0].ConstraintJSON
 	if constraintJSON == "" {
 		t.Fatal("constraint_json is empty")
 	}
-
 	var constraint struct {
 		Kind string `json:"kind"`
 		Expr *struct {
@@ -260,7 +147,6 @@ func main() {
 	if err := json.Unmarshal([]byte(constraintJSON), &constraint); err != nil {
 		t.Fatalf("parsing constraint: %v", err)
 	}
-
 	if constraint.Kind != "expr" {
 		t.Errorf("constraint kind = %q, want expr", constraint.Kind)
 	}
