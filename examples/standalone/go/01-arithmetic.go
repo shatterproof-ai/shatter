@@ -13,7 +13,7 @@
 //   3. sum <= 100 AND product > 1000 -> "product-large"
 //   4. sum <= 100 AND product <= 1000 -> "both-small"
 
-package examples
+package main
 
 // ClassifyNumber categorizes an integer by sign and parity.
 func ClassifyNumber(n int) string {

@@ -18,10 +18,10 @@ fn ts_frontend_path() -> PathBuf {
     manifest_dir.join("../shatter-ts/dist/main.js")
 }
 
-/// Path to the TypeScript example files, resolved from the workspace root.
+/// Path to standalone TypeScript example files, resolved from the workspace root.
 fn examples_dir() -> PathBuf {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir.join("../examples/typescript/src")
+    manifest_dir.join("../examples/standalone/ts")
 }
 
 /// Spawn a real TypeScript frontend subprocess.

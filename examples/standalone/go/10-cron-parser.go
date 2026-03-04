@@ -27,7 +27,7 @@
 //  21. range within list "1,3-5,7"              → union includes range expansion
 //  22. weekday field with 7 treated as 0 (Sunday) → normalized
 
-package examples
+package main
 
 import (
 	"errors"

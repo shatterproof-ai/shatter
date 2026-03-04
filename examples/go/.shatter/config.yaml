@@ -13,20 +13,6 @@ defaults:
 # ── Per-function overrides ───────────────────────────────────────────────
 # Keys are "relative/path.go:FunctionName" patterns (globs supported).
 functions:
-  # Simple function — fewer iterations are sufficient
-  "01-arithmetic.go:ClassifyNumber":
-    max_iterations: 50
-    inputs: ./inputs/ClassifyNumber/candidates.json
-
-  # Complex nested control flow — needs more iterations
-  "04-nested-control-flow.go:ClassifyHttpResponse":
-    max_iterations: 300
-    timeout: 120
-
-  # Complex state machine — needs more iterations
-  "04-nested-control-flow.go:ProcessStateMachine":
-    max_iterations: 400
-
   # Skip test files — they are not exploration targets
   "*_test.go:*":
     skip: true

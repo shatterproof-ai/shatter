@@ -14,7 +14,7 @@
 //   5. age < 65               -> returns ("adult", nil)
 //   6. age >= 65              -> returns ("senior", nil)
 
-package examples
+package main
 
 import "fmt"
 
