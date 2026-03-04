@@ -881,15 +881,7 @@ async fn run_explore(
             _ => unreachable!("already matched above"),
         };
 
-        // Rust exploration not yet supported — auto-promote to analyze-only with warning
-        let effective_analyze_only = if target.language == Language::Rust && !analyze_only {
-            eprintln!("Rust exploration not yet supported; showing analysis only");
-            true
-        } else {
-            analyze_only
-        };
-
-        if effective_analyze_only {
+        if analyze_only {
             if log_level >= LogLevel::Info {
                 for func in &functions {
                     eprintln!(

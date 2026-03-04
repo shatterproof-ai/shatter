@@ -128,13 +128,19 @@ GO_EXAMPLES=(
     "examples/go/03-errors.go:SafeDivide"
 )
 
-TOTAL=38
+RUST_EXAMPLES=(
+    "examples/rust/src/arithmetic.rs:classify_number"
+    "examples/rust/src/strings.rs:classify_greeting"
+    "examples/rust/src/error_propagation.rs:parse_config_line"
+)
+
+TOTAL=41
 
 # ─── Walkthrough ──────────────────────────────────────────────────────
 
 echo ""
 echo "${BOLD}${GREEN}Shatter Walkthrough${RESET}"
-echo "${DIM}Exercising shatter's pipeline against ${#EXAMPLES[@]} TS + ${#GO_EXAMPLES[@]} Go example functions${RESET}"
+echo "${DIM}Exercising shatter's pipeline against ${#EXAMPLES[@]} TS + ${#GO_EXAMPLES[@]} Go + ${#RUST_EXAMPLES[@]} Rust example functions${RESET}"
 if [[ "$DRY_RUN" == true ]]; then
     echo "${YELLOW}(dry-run mode: commands will not be executed)${RESET}"
 fi
@@ -181,160 +187,175 @@ step 8 $TOTAL "Explore Go Functions" \
     "Concolic execution on Go: generate inputs to cover all branches" \
     $SHATTER explore "${GO_EXAMPLES[@]}"
 
-# Stage 9: Export tests
-step 9 $TOTAL "Export Generated Tests" \
+# Stage 9: Analyze Rust functions
+step 9 $TOTAL "Analyze Rust Functions" \
+    "Discover parameters, types, and branch conditions in Rust code" \
+    $SHATTER explore --analyze-only "${RUST_EXAMPLES[@]}"
+
+# Stage 10: Explore Rust functions
+step 10 $TOTAL "Explore Rust Functions" \
+    "Concolic execution on Rust: generate inputs to cover all branches" \
+    $SHATTER explore "${RUST_EXAMPLES[@]}"
+
+# Stage 11: Scan Rust examples
+step 11 $TOTAL "Scan Rust Examples" \
+    "Scan Rust example directory in dependency order" \
+    $SHATTER scan examples/rust/src
+
+# Stage 12: Export tests
+step 12 $TOTAL "Export Generated Tests" \
     "Generate Jest test files from explored behavior maps" \
     $SHATTER export-tests --framework jest --module-path "./src/01-arithmetic" \
     "examples/typescript/src/01-arithmetic.ts:classifyNumber"
 
-# Stage 10: Run (full pipeline, analyze only)
-step 10 $TOTAL "Run: Analyze Only" \
+# Stage 13: Run (full pipeline, analyze only)
+step 13 $TOTAL "Run: Analyze Only" \
     "Discover, analyze, and report on all files in the examples directory" \
     $SHATTER run --analyze-only examples/typescript/src
 
-# Stage 11: Run (full pipeline with exploration)
-step 11 $TOTAL "Run: Full Pipeline" \
+# Stage 14: Run (full pipeline with exploration)
+step 14 $TOTAL "Run: Full Pipeline" \
     "Discover, analyze, explore, and generate a full report" \
     $SHATTER run --max-iterations 10 --timeout 60 examples/typescript/src
 
-# Stage 12: Log level verbosity (debug)
-step 12 $TOTAL "Verbose Output with Debug Log Level" \
+# Stage 15: Log level verbosity (debug)
+step 15 $TOTAL "Verbose Output with Debug Log Level" \
     "Show detailed progress output using --log-level debug" \
     $SHATTER explore --log-level debug "${EXAMPLES[0]}"
 
-# Stage 13: Request timeout
-step 13 $TOTAL "Request Timeout" \
+# Stage 16: Request timeout
+step 16 $TOTAL "Request Timeout" \
     "Set a per-request timeout to bound frontend communication" \
     $SHATTER explore --request-timeout 15 "${EXAMPLES[@]}"
 
-# Stage 14: User-provided inputs via config
-step 14 $TOTAL "User-Provided Inputs via Config" \
+# Stage 17: User-provided inputs via config
+step 17 $TOTAL "User-Provided Inputs via Config" \
     "Load candidate inputs from a .shatter config directory" \
     $SHATTER explore --config examples/typescript/.shatter/config.yaml \
     "${EXAMPLES[0]}"
 
-# Stage 15: Performance stats
-step 15 $TOTAL "Performance Stats" \
+# Stage 18: Performance stats
+step 18 $TOTAL "Performance Stats" \
     "Show per-function timing data with --perf" \
     $SHATTER explore --perf "${EXAMPLES[@]}"
 
-# Stage 16: Parallel scan with worker pool
-step 16 $TOTAL "Parallel Scan" \
+# Stage 19: Parallel scan with worker pool
+step 19 $TOTAL "Parallel Scan" \
     "Scan with multiple worker processes for faster exploration" \
     $SHATTER scan --parallelism 2 --timeout-per-fn 30 examples/typescript/src
 
-# Stage 17: Execution timeout
-step 17 $TOTAL "Execution Timeout" \
+# Stage 20: Execution timeout
+step 20 $TOTAL "Execution Timeout" \
     "Configure per-execution timeout passed to frontends" \
     $SHATTER explore --exec-timeout 5 --build-timeout 20 "${EXAMPLES[0]}"
 
-# Stage 18: Go execution timeout
-step 18 $TOTAL "Go Execution Timeout" \
+# Stage 21: Go execution timeout
+step 21 $TOTAL "Go Execution Timeout" \
     "Configurable timeouts also apply to the Go frontend" \
     $SHATTER explore --exec-timeout 8 "${GO_EXAMPLES[0]}"
 
-# Stage 19: Scan with total timeout
-step 19 $TOTAL "Scan Total Timeout" \
+# Stage 22: Scan with total timeout
+step 22 $TOTAL "Scan Total Timeout" \
     "Bound overall scan wall-clock time with --timeout-total" \
     $SHATTER scan --timeout-total 120 --timeout-per-fn 30 examples/typescript/src
 
-# Stage 20: Memory limit
-step 20 $TOTAL "Memory Limit" \
+# Stage 23: Memory limit
+step 23 $TOTAL "Memory Limit" \
     "Cap frontend memory usage (sets --max-old-space-size for TS, GOMEMLIMIT for Go)" \
     $SHATTER explore --memory-limit 512 "${EXAMPLES[0]}"
 
-# Stage 21: Behavioral specification (markdown)
-step 21 $TOTAL "Behavioral Specification (Markdown)" \
+# Stage 24: Behavioral specification (markdown)
+step 24 $TOTAL "Behavioral Specification (Markdown)" \
     "Generate a behavioral spec with equivalence classes, pre/postconditions" \
     $SHATTER explore --spec "${EXAMPLES[0]}"
 
-# Stage 22: Behavioral specification (JSON)
-step 22 $TOTAL "Behavioral Specification (JSON)" \
+# Stage 25: Behavioral specification (JSON)
+step 25 $TOTAL "Behavioral Specification (JSON)" \
     "Machine-readable JSON spec for tooling integration" \
     $SHATTER explore --spec-json "${EXAMPLES[0]}"
 
-# Stage 23: Spec diff
+# Stage 26: Spec diff
 # Generate specs from v1 and v2 fixture variants of classifyNumber and diff them.
 # v2 adds a "large" threshold, so the diff shows added/changed behaviors.
-step 23 $TOTAL "Specification Diff" \
+step 26 $TOTAL "Specification Diff" \
     "Compare behavioral specs from two versions of classifyNumber to detect regressions" \
     bash -c "$SHATTER explore --spec-json 'demo/fixtures/arithmetic-v1.ts:classifyNumber' > /tmp/shatter-spec-old.json 2>/dev/null && $SHATTER explore --spec-json 'demo/fixtures/arithmetic-v2.ts:classifyNumber' > /tmp/shatter-spec-new.json 2>/dev/null && { $SHATTER spec-diff /tmp/shatter-spec-old.json /tmp/shatter-spec-new.json; true; }"
 
-# Stage 24: Explore without boundary values
-step 24 $TOTAL "Explore Without Boundary Values" \
+# Stage 27: Explore without boundary values
+step 27 $TOTAL "Explore Without Boundary Values" \
     "Disable built-in boundary value seeding with --no-boundary-values" \
     $SHATTER explore --no-boundary-values "${EXAMPLES[0]}"
 
-# Stage 25: Emit tests from scan
-step 25 $TOTAL "Emit Tests from Scan" \
+# Stage 28: Emit tests from scan
+step 28 $TOTAL "Emit Tests from Scan" \
     "Generate Jest test files from behavior maps discovered during scan" \
     $SHATTER scan --emit-tests jest --output /tmp/shatter-demo-tests \
     examples/typescript/src
 
-# Stage 26: Markdown scan report
-step 26 $TOTAL "Markdown Scan Report" \
+# Stage 29: Markdown scan report
+step 29 $TOTAL "Markdown Scan Report" \
     "Generate a human-readable markdown report alongside JSON" \
     $SHATTER scan --format=markdown examples/typescript/src
 
-# Stage 27: Scan dry-run
-step 27 $TOTAL "Scan Dry Run" \
+# Stage 30: Scan dry-run
+step 30 $TOTAL "Scan Dry Run" \
     "Preview which files would be scanned without executing" \
     $SHATTER scan --dry-run --language typescript examples/typescript/src
 
-# Stage 28: Invariant detection
-step 28 $TOTAL "Invariant Detection" \
+# Stage 31: Invariant detection
+step 31 $TOTAL "Invariant Detection" \
     "Detect Daikon-style invariants over explored executions" \
     $SHATTER explore --invariants "${EXAMPLES[0]}"
 
-# Stage 29: Setup + generators via config
-step 29 $TOTAL "Setup + Generators via Config" \
+# Stage 32: Setup + generators via config
+step 32 $TOTAL "Setup + Generators via Config" \
     "Explore with setup/teardown lifecycle and custom type generators from .shatter/config.yaml" \
     $SHATTER explore --config examples/typescript/.shatter/config.yaml \
     "examples/typescript/src/03-objects.ts:categorizeUser"
 
-# Stage 30: Setup + generators with debug logging
-step 30 $TOTAL "Setup + Generators (Debug)" \
+# Stage 33: Setup + generators with debug logging
+step 33 $TOTAL "Setup + Generators (Debug)" \
     "Show setup/teardown and generator lifecycle with --log-level debug" \
     $SHATTER explore --config examples/typescript/.shatter/config.yaml \
     --log-level debug "examples/typescript/src/03-objects.ts:categorizeUser"
 
-# Stage 31: File-level explore (all exported functions)
-step 31 $TOTAL "File-Level Explore" \
+# Stage 34: File-level explore (all exported functions)
+step 34 $TOTAL "File-Level Explore" \
     "Explore all exported functions in a file by passing just the file path" \
     $SHATTER explore examples/typescript/src/01-arithmetic.ts
 
-# Stage 32: Concolic exploration (Z3-backed)
-step 32 $TOTAL "Concolic Exploration (Z3)" \
+# Stage 35: Concolic exploration (Z3-backed)
+step 35 $TOTAL "Concolic Exploration (Z3)" \
     "Use the Z3-backed concolic explorer to solve branch constraints" \
     $SHATTER explore --concolic "${EXAMPLES[0]}"
 
-# Stage 33: Custom build-frontend help
-step 33 $TOTAL "Custom Build Frontend" \
+# Stage 36: Custom build-frontend help
+step 36 $TOTAL "Custom Build Frontend" \
     "Show the build-frontend subcommand for compiling native generators into a custom frontend binary" \
     $SHATTER build-frontend --help
 
-# Stage 34: Spec output to file (--output)
-step 34 $TOTAL "Spec Output to File" \
+# Stage 37: Spec output to file (--output)
+step 37 $TOTAL "Spec Output to File" \
     "Write a spec bundle to a JSON file with --output (includes fingerprints)" \
     $SHATTER explore --output /tmp/shatter-spec.json "${EXAMPLES[0]}"
 
-# Stage 35: Incremental re-run (skips fresh functions)
-step 35 $TOTAL "Incremental Re-run" \
+# Stage 38: Incremental re-run (skips fresh functions)
+step 38 $TOTAL "Incremental Re-run" \
     "Re-run with --output against existing spec — unchanged functions are skipped" \
     $SHATTER explore --output /tmp/shatter-spec.json "${EXAMPLES[0]}"
 
-# Stage 36: Dry-run mode
-step 36 $TOTAL "Dry-Run Mode" \
+# Stage 39: Dry-run mode
+step 39 $TOTAL "Dry-Run Mode" \
     "Use --dry-run to preview which functions would be re-explored without actually exploring" \
     $SHATTER explore --output /tmp/shatter-spec.json --dry-run "${EXAMPLES[0]}"
 
-# Stage 37: Clean re-exploration
-step 37 $TOTAL "Clean Re-exploration" \
+# Stage 40: Clean re-exploration
+step 40 $TOTAL "Clean Re-exploration" \
     "Use --clean to force full re-exploration, ignoring the existing spec" \
     $SHATTER explore --output /tmp/shatter-spec.json --clean "${EXAMPLES[0]}"
 
-# Stage 38: Stale command
-step 38 $TOTAL "Stale Check" \
+# Stage 41: Stale command
+step 41 $TOTAL "Stale Check" \
     "Check which functions are stale relative to an existing spec file" \
     $SHATTER stale "examples/typescript/src/01-arithmetic.ts" /tmp/shatter-spec.json
 
