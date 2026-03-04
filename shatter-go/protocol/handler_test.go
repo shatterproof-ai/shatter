@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/shatter-dev/shatter/shatter-go/instrument"
 )
 
 // reqJSON builds a JSON request string using ProtocolVersion instead of a
@@ -822,5 +824,56 @@ func TestGenerateRequestDeserializesKind(t *testing.T) {
 				t.Errorf("kind = %q, want %q", req.Kind, tt.wantKind)
 			}
 		})
+	}
+}
+
+// TestConvertSideEffects verifies that instrument.SideEffect values are
+// correctly mapped to protocol SideEffect values with the right JSON field
+// names (kind, not type) and snake_case values (console_output, not ConsoleOutput).
+func TestConvertSideEffects(t *testing.T) {
+	input := []instrument.SideEffect{
+		{Kind: "console_output", Level: "log", Message: "hello stdout"},
+		{Kind: "console_output", Level: "error", Message: "oops stderr"},
+	}
+	result := convertSideEffects(input)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 side effects, got %d", len(result))
+	}
+
+	// Verify field mapping
+	if result[0].Kind != "console_output" {
+		t.Errorf("result[0].Kind = %q, want %q", result[0].Kind, "console_output")
+	}
+	if result[0].Level != "log" {
+		t.Errorf("result[0].Level = %q, want %q", result[0].Level, "log")
+	}
+	if result[0].Message != "hello stdout" {
+		t.Errorf("result[0].Message = %q, want %q", result[0].Message, "hello stdout")
+	}
+	if result[1].Kind != "console_output" {
+		t.Errorf("result[1].Kind = %q, want %q", result[1].Kind, "console_output")
+	}
+	if result[1].Level != "error" {
+		t.Errorf("result[1].Level = %q, want %q", result[1].Level, "error")
+	}
+
+	// Verify JSON serialization uses correct field names
+	data, err := json.Marshal(result[0])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	jsonStr := string(data)
+	if !strings.Contains(jsonStr, `"kind":"console_output"`) {
+		t.Errorf("JSON should contain \"kind\":\"console_output\", got: %s", jsonStr)
+	}
+	if strings.Contains(jsonStr, `"type"`) {
+		t.Errorf("JSON should not contain \"type\" field, got: %s", jsonStr)
+	}
+}
+
+func TestConvertSideEffectsEmpty(t *testing.T) {
+	result := convertSideEffects(nil)
+	if len(result) != 0 {
+		t.Fatalf("expected 0 side effects, got %d", len(result))
 	}
 }

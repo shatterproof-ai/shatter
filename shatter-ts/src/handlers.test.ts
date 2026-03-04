@@ -292,6 +292,79 @@ describe("handleRequest", () => {
         expect(response.performance.wall_time_ms).toBeGreaterThanOrEqual(0);
       }
     });
+
+    it("executes via file:function format with relative path", async () => {
+      // Node.js 24+ requires absolute paths for createRequire().
+      // Relative paths in file:function format must be resolved before use.
+      const relPath = path.relative(process.cwd(), path.resolve(__dirname, "../../examples/typescript/src/01-arithmetic.ts"));
+
+      const { response } = await handleRequest(
+        makeRequest({
+          command: "execute",
+          function: `${relPath}:classifyNumber`,
+          inputs: [42],
+          mocks: [],
+        })
+      );
+      expect(response.status).toBe("execute");
+      if (response.status === "execute") {
+        expect(response.return_value).toBe("positive-even");
+      }
+    });
+
+    it("executes after analyze with relative path", async () => {
+      // Verify lastAnalyzedFile stores an absolute path even when given relative.
+      const relPath = path.relative(process.cwd(), path.resolve(__dirname, "../../examples/typescript/src/01-arithmetic.ts"));
+
+      await handleRequest(
+        makeRequest({
+          command: "analyze",
+          file: relPath,
+          function: "classifyNumber",
+        })
+      );
+
+      const { response } = await handleRequest(
+        makeRequest({
+          command: "execute",
+          function: "classifyNumber",
+          inputs: [0],
+          mocks: [],
+        })
+      );
+      expect(response.status).toBe("execute");
+      if (response.status === "execute") {
+        expect(response.return_value).toBe("zero");
+      }
+    });
+
+    it("executes instrumented code with relative path", async () => {
+      const relPath = path.relative(process.cwd(), path.resolve(__dirname, "../../examples/typescript/src/01-arithmetic.ts"));
+
+      // Instrument with relative path
+      await handleRequest(
+        makeRequest({
+          command: "instrument",
+          file: relPath,
+          function: "classifyNumber",
+          mocks: [],
+        })
+      );
+
+      const { response } = await handleRequest(
+        makeRequest({
+          command: "execute",
+          function: `${relPath}:classifyNumber`,
+          inputs: [-1],
+          mocks: [],
+        })
+      );
+      expect(response.status).toBe("execute");
+      if (response.status === "execute") {
+        expect(response.return_value).toBe("negative");
+        expect(response.branch_path.length).toBeGreaterThan(0);
+      }
+    });
   });
 
   describe("shutdown", () => {

@@ -54,7 +54,7 @@ export function checkStatus(obj: { status: string }): boolean {
 }
 
 export function lookupBracket(m: Record<string, number>): number {
-  return m["priority"] + m["weight"];
+  return (m["priority"] ?? 0) + (m["weight"] ?? 0);
 }
 
 export function goDirection(dir: "north" | "south" | "east"): string {

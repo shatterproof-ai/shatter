@@ -46,7 +46,7 @@ func buildTimeout() time.Duration {
 
 // SideEffect represents an observable side effect during execution.
 type SideEffect struct {
-	Type    string `json:"type"`
+	Kind    string `json:"kind"`
 	Level   string `json:"level,omitempty"`
 	Message string `json:"message,omitempty"`
 }
@@ -202,12 +202,12 @@ func ExecuteFunction(sourcePath, funcName string, inputs []json.RawMessage, mock
 	// Capture stdout/stderr as structured side effects.
 	if s := strings.TrimSpace(stdoutBuf.String()); s != "" {
 		result.SideEffects = append(result.SideEffects, SideEffect{
-			Type: "ConsoleOutput", Level: "log", Message: s,
+			Kind: "console_output", Level: "log", Message: s,
 		})
 	}
 	if s := strings.TrimSpace(stderrBuf.String()); s != "" {
 		result.SideEffects = append(result.SideEffects, SideEffect{
-			Type: "ConsoleOutput", Level: "error", Message: s,
+			Kind: "console_output", Level: "error", Message: s,
 		})
 	}
 

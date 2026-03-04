@@ -590,7 +590,7 @@ export function executeInstrumented(
   // Build the execution context with capturing console and process
   const capturingConsole = createCapturingConsole(sideEffects);
   const capturingProc = createCapturingProcess(sideEffects);
-  const sandboxRequire = sourceFilePath ? createRequire(sourceFilePath) : require;
+  const sandboxRequire = sourceFilePath ? createRequire(path.resolve(sourceFilePath)) : require;
   const moduleExports: Record<string, unknown> = {};
   const moduleObj = { exports: moduleExports };
 

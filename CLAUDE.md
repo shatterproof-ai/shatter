@@ -82,6 +82,9 @@ pub fn boundaries_for(ty: &ParamType) -> Vec<BoundaryValue> {
 | Quick | `cargo test` | During development |
 | Standard | `cargo test && cargo clippy -- -D warnings` | Before committing |
 | Full | Standard + `cd shatter-ts && npm test` + `cd shatter-go && go test ./...` + `cd shatter-rust && cargo test` | Before merge or when touching protocol definitions |
+| Walkthrough | `bash demo/walkthrough.sh --auto --delay 0` | After changing CLI output, protocol, frontend execution, or example files |
+
+**Walkthrough gate**: The walkthrough exercises the full pipeline end-to-end (analyze, explore, scan, export, spec). Run it after any change to CLI commands, frontend handlers, protocol types, or example files. Errors in steps 1–19 (single-function explore, scan, cache, Go explore, export, run) indicate regressions — fix before merging. Errors in scan steps for `11-opaque-types.ts` and `12-external-deps.ts` are expected (opaque types and missing external modules).
 
 ## What NOT to Do
 

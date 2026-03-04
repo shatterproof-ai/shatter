@@ -7,6 +7,7 @@
  */
 
 import * as fs from "node:fs";
+import * as path from "node:path";
 import {
   PROTOCOL_VERSION,
   FRONTEND_LANGUAGE,
@@ -101,7 +102,7 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
         };
       }
 
-      lastAnalyzedFile = request.file;
+      lastAnalyzedFile = path.resolve(request.file);
       const functions = analyzeFile(request.file, request.function);
 
       if (request.function != null && functions.length === 0) {
@@ -144,10 +145,11 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
         };
       }
 
-      // Store the instrumented source for use by the execute handler
-      const key = `${request.file}:${request.function}`;
+      // Store the instrumented source for use by the execute handler.
+      // Use resolved path so keys match execute's resolved fileForExec.
+      const key = `${path.resolve(request.file)}:${request.function}`;
       instrumentedSources.set(key, result.instrumentedSource);
-      lastAnalyzedFile = request.file;
+      lastAnalyzedFile = path.resolve(request.file);
 
       return {
         response: {
@@ -345,11 +347,11 @@ function resolveFileForExecute(funcRef: string): string | null {
     const lastColon = funcRef.lastIndexOf(":");
     const file = funcRef.substring(0, lastColon);
     if (fs.existsSync(file)) {
-      return file;
+      return path.resolve(file);
     }
   }
 
-  // Fall back to last analyzed file
+  // Fall back to last analyzed file (already resolved on store)
   return lastAnalyzedFile;
 }
 

@@ -402,7 +402,7 @@ func convertSideEffects(effects []instrument.SideEffect) []SideEffect {
 	result := make([]SideEffect, len(effects))
 	for i, e := range effects {
 		result[i] = SideEffect{
-			Kind:    e.Type,
+			Kind:    e.Kind,
 			Level:   e.Level,
 			Message: e.Message,
 		}
