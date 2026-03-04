@@ -22,8 +22,8 @@ beforeEach(() => {
 });
 
 describe("executeFunction performance metrics", () => {
-  it("reports plausible metrics for a trivial function", () => {
-    const result = executeFunction(
+  it("reports plausible metrics for a trivial function", async () => {
+    const result = await executeFunction(
       path.join(FIXTURES_DIR, "primitives.ts"),
       "add",
       [1, 2],
@@ -64,8 +64,8 @@ describe("executeFunction with memory-allocating function", () => {
     fs.unlinkSync(allocatorFixture);
   });
 
-  it("shows measurable heap delta for memory-allocating function", () => {
-    const result = executeFunction(allocatorFixture, "allocateArrays", []);
+  it("shows measurable heap delta for memory-allocating function", async () => {
+    const result = await executeFunction(allocatorFixture, "allocateArrays", []);
     expect(result.return_value).toBe(1000);
     // The function allocates ~8MB (1000 arrays * 1000 numbers * 8 bytes).
     // heap_used_bytes may be 0 if GC reclaims during execution, but
@@ -77,7 +77,7 @@ describe("executeFunction with memory-allocating function", () => {
 });
 
 describe("executeInstrumented performance metrics", () => {
-  it("reports plausible metrics for instrumented execution", () => {
+  it("reports plausible metrics for instrumented execution", async () => {
     const exampleFile = path.join(EXAMPLES_DIR, "01-arithmetic.ts");
     const source = fs.readFileSync(exampleFile, "utf-8");
     const instrumentResult = instrumentFunction(source, "classifyNumber", exampleFile);
@@ -86,7 +86,7 @@ describe("executeInstrumented performance metrics", () => {
       throw new Error(`Instrumentation failed: ${instrumentResult.error}`);
     }
 
-    const result = executeInstrumented(
+    const result = await executeInstrumented(
       instrumentResult.instrumentedSource,
       "classifyNumber",
       [42],
@@ -103,8 +103,8 @@ describe("executeInstrumented performance metrics", () => {
 });
 
 describe("buildExecuteResponse", () => {
-  it("includes performance metrics in the response", () => {
-    const rawResult = executeFunction(
+  it("includes performance metrics in the response", async () => {
+    const rawResult = await executeFunction(
       path.join(FIXTURES_DIR, "primitives.ts"),
       "add",
       [3, 4],
@@ -125,8 +125,8 @@ describe("buildExecuteResponse", () => {
 const SIDE_EFFECTS_FIXTURE = path.resolve(FIXTURES_DIR, "side-effects.ts");
 
 describe("executeFunction side effect capture", () => {
-  it("captures console.log and console.warn output", () => {
-    const result = executeFunction(SIDE_EFFECTS_FIXTURE, "logsAndReturns", [42]);
+  it("captures console.log and console.warn output", async () => {
+    const result = await executeFunction(SIDE_EFFECTS_FIXTURE, "logsAndReturns", [42]);
 
     expect(result.return_value).toBe("done: 42");
     expect(result.thrown_error).toBeNull();
@@ -147,8 +147,8 @@ describe("executeFunction side effect capture", () => {
     });
   });
 
-  it("captures thrown error as both thrown_error and side effect", () => {
-    const result = executeFunction(SIDE_EFFECTS_FIXTURE, "throwsError", ["boom"]);
+  it("captures thrown error as both thrown_error and side effect", async () => {
+    const result = await executeFunction(SIDE_EFFECTS_FIXTURE, "throwsError", ["boom"]);
 
     expect(result.thrown_error).not.toBeNull();
     expect(result.thrown_error!.error_type).toBe("Error");
@@ -176,8 +176,8 @@ describe("executeFunction side effect capture", () => {
     });
   });
 
-  it("captures all console levels", () => {
-    const result = executeFunction(SIDE_EFFECTS_FIXTURE, "logsMultipleLevels", []);
+  it("captures all console levels", async () => {
+    const result = await executeFunction(SIDE_EFFECTS_FIXTURE, "logsMultipleLevels", []);
 
     const consoleSideEffects = result.side_effects.filter(
       (se: SideEffect) => se.kind === "console_output",
@@ -191,8 +191,8 @@ describe("executeFunction side effect capture", () => {
     expect(levels).toEqual(["log", "warn", "error", "info", "debug"]);
   });
 
-  it("captures custom error types", () => {
-    const result = executeFunction(SIDE_EFFECTS_FIXTURE, "throwsCustomError", []);
+  it("captures custom error types", async () => {
+    const result = await executeFunction(SIDE_EFFECTS_FIXTURE, "throwsCustomError", []);
 
     expect(result.thrown_error!.error_type).toBe("TypeError");
     expect(result.thrown_error!.message).toBe("custom type error");
@@ -208,23 +208,23 @@ describe("executeFunction side effect capture", () => {
     });
   });
 
-  it("returns empty side_effects for pure functions", () => {
-    const result = executeFunction(SIDE_EFFECTS_FIXTURE, "noSideEffects", [1, 2]);
+  it("returns empty side_effects for pure functions", async () => {
+    const result = await executeFunction(SIDE_EFFECTS_FIXTURE, "noSideEffects", [1, 2]);
 
     expect(result.return_value).toBe(3);
     expect(result.thrown_error).toBeNull();
     expect(result.side_effects).toEqual([]);
   });
 
-  it("restores global console after execution", () => {
+  it("restores global console after execution", async () => {
     const originalConsole = globalThis.console;
-    executeFunction(SIDE_EFFECTS_FIXTURE, "logsAndReturns", [1]);
+    await executeFunction(SIDE_EFFECTS_FIXTURE, "logsAndReturns", [1]);
     expect(globalThis.console).toBe(originalConsole);
   });
 
-  it("restores global console even when function throws", () => {
+  it("restores global console even when function throws", async () => {
     const originalConsole = globalThis.console;
-    executeFunction(SIDE_EFFECTS_FIXTURE, "throwsError", ["test"]);
+    await executeFunction(SIDE_EFFECTS_FIXTURE, "throwsError", ["test"]);
     expect(globalThis.console).toBe(originalConsole);
   });
 });
@@ -239,9 +239,9 @@ describe("executeInstrumented side effect capture", () => {
     return result.instrumentedSource;
   }
 
-  it("captures console output in instrumented execution", () => {
+  it("captures console output in instrumented execution", async () => {
     const instrumentedSource = getInstrumentedSource("logsAndReturns");
-    const result = executeInstrumented(instrumentedSource, "logsAndReturns", [99]);
+    const result = await executeInstrumented(instrumentedSource, "logsAndReturns", [99]);
 
     expect(result.return_value).toBe("done: 99");
 
@@ -260,9 +260,9 @@ describe("executeInstrumented side effect capture", () => {
     }
   });
 
-  it("captures thrown error and console output in instrumented execution", () => {
+  it("captures thrown error and console output in instrumented execution", async () => {
     const instrumentedSource = getInstrumentedSource("throwsError");
-    const result = executeInstrumented(instrumentedSource, "throwsError", ["instrumented boom"]);
+    const result = await executeInstrumented(instrumentedSource, "throwsError", ["instrumented boom"]);
 
     expect(result.thrown_error).not.toBeNull();
     expect(result.thrown_error!.message).toBe("instrumented boom");
@@ -278,9 +278,9 @@ describe("executeInstrumented side effect capture", () => {
     expect(consoleSideEffects.length).toBeGreaterThanOrEqual(1);
   });
 
-  it("detects module-level variable changes", () => {
+  it("detects module-level variable changes", async () => {
     const instrumentedSource = getInstrumentedSource("incrementCounter");
-    const result = executeInstrumented(instrumentedSource, "incrementCounter", []);
+    const result = await executeInstrumented(instrumentedSource, "incrementCounter", []);
 
     expect(result.return_value).toBe(1);
 
@@ -298,14 +298,14 @@ describe("executeInstrumented side effect capture", () => {
 });
 
 describe("intra-package module resolution", () => {
-  it("loadModule resolves relative imports from the target file directory", () => {
+  it("loadModule resolves relative imports from the target file directory", async () => {
     const depsFixture = path.join(FIXTURES_DIR, "dependencies.ts");
-    const result = executeFunction(depsFixture, "usesExternal", [3, 4]);
+    const result = await executeFunction(depsFixture, "usesExternal", [3, 4]);
     expect(result.thrown_error).toBeNull();
     expect(result.return_value).toBe("7");
   });
 
-  it("executeInstrumented resolves relative imports from the source file", () => {
+  it("executeInstrumented resolves relative imports from the source file", async () => {
     const depsFixture = path.join(FIXTURES_DIR, "dependencies.ts");
     const source = fs.readFileSync(depsFixture, "utf-8");
     const instrumentResult = instrumentFunction(source, "usesExternal", depsFixture);
@@ -314,7 +314,7 @@ describe("intra-package module resolution", () => {
       throw new Error(`Instrumentation failed: ${instrumentResult.error}`);
     }
 
-    const result = executeInstrumented(
+    const result = await executeInstrumented(
       instrumentResult.instrumentedSource,
       "usesExternal",
       [3, 4],
@@ -327,16 +327,16 @@ describe("intra-package module resolution", () => {
 });
 
 describe("buildExecuteResponse side effects", () => {
-  it("passes side_effects through to the response", () => {
-    const result = executeFunction(SIDE_EFFECTS_FIXTURE, "logsAndReturns", [7]);
+  it("passes side_effects through to the response", async () => {
+    const result = await executeFunction(SIDE_EFFECTS_FIXTURE, "logsAndReturns", [7]);
     const response = buildExecuteResponse(1, PROTOCOL_VERSION, result);
 
     expect(response.side_effects.length).toBeGreaterThan(0);
     expect(response.side_effects).toEqual(result.side_effects);
   });
 
-  it("acceptance: function with console.log and thrown error has both recorded", () => {
-    const result = executeFunction(SIDE_EFFECTS_FIXTURE, "throwsError", ["fail"]);
+  it("acceptance: function with console.log and thrown error has both recorded", async () => {
+    const result = await executeFunction(SIDE_EFFECTS_FIXTURE, "throwsError", ["fail"]);
     const response = buildExecuteResponse(1, PROTOCOL_VERSION, result);
 
     const hasConsoleOutput = response.side_effects.some(
@@ -413,12 +413,12 @@ describe("execution timeout enforcement", () => {
     }
   });
 
-  it("aborts module-level infinite loop via vm timeout", () => {
+  it("aborts module-level infinite loop via vm timeout", async () => {
     process.env["SHATTER_EXEC_TIMEOUT"] = "0.1";
     clearModuleCache();
-    expect(() => {
-      executeFunction(infiniteLoopFixture, "neverReached", []);
-    }).toThrow(/Script execution timed out/);
+    await expect(
+      executeFunction(infiniteLoopFixture, "neverReached", []),
+    ).rejects.toThrow(/Script execution timed out/);
   });
 });
 
@@ -484,8 +484,8 @@ describe("truncation", () => {
 });
 
 describe("TSX support", () => {
-  it("executes a function from a .tsx file", () => {
-    const result = executeFunction(
+  it("executes a function from a .tsx file", async () => {
+    const result = await executeFunction(
       path.join(FIXTURES_DIR, "component.tsx"),
       "greetingLabel",
       ["Alice"],
@@ -493,8 +493,8 @@ describe("TSX support", () => {
     expect(result.return_value).toBe("<span>Hello, Alice!</span>");
   });
 
-  it("executes a .tsx function with falsy branch", () => {
-    const result = executeFunction(
+  it("executes a .tsx function with falsy branch", async () => {
+    const result = await executeFunction(
       path.join(FIXTURES_DIR, "component.tsx"),
       "greetingLabel",
       [""],
@@ -502,7 +502,7 @@ describe("TSX support", () => {
     expect(result.return_value).toBe("<span>Hello, stranger!</span>");
   });
 
-  it("instruments and executes TSX source with branches", () => {
+  it("instruments and executes TSX source with branches", async () => {
     const tsxFile = path.join(FIXTURES_DIR, "component.tsx");
     const source = fs.readFileSync(tsxFile, "utf-8");
     const instrumentResult = instrumentFunction(source, "greetingLabel", tsxFile);
@@ -511,7 +511,7 @@ describe("TSX support", () => {
       throw new Error(`Instrumentation failed: ${instrumentResult.error}`);
     }
 
-    const result = executeInstrumented(
+    const result = await executeInstrumented(
       instrumentResult.instrumentedSource,
       "greetingLabel",
       ["Bob"],
@@ -521,5 +521,42 @@ describe("TSX support", () => {
 
     expect(result.return_value).toBe("<span>Hello, Bob!</span>");
     expect(result.branch_path.length).toBeGreaterThan(0);
+  });
+});
+
+const ASYNC_FIXTURE = path.resolve(FIXTURES_DIR, "async-functions.ts");
+
+describe("async function execution", () => {
+  const originalEnv = process.env["SHATTER_EXEC_TIMEOUT"];
+
+  afterEach(() => {
+    if (originalEnv === undefined) {
+      delete process.env["SHATTER_EXEC_TIMEOUT"];
+    } else {
+      process.env["SHATTER_EXEC_TIMEOUT"] = originalEnv;
+    }
+  });
+
+  it("awaits async function that resolves and returns the value", async () => {
+    const result = await executeFunction(ASYNC_FIXTURE, "asyncAdd", [3, 4]);
+    expect(result.return_value).toBe(7);
+    expect(result.thrown_error).toBeNull();
+  });
+
+  it("captures rejection from async function as thrown_error", async () => {
+    const result = await executeFunction(ASYNC_FIXTURE, "asyncThrows", []);
+    expect(result.thrown_error).not.toBeNull();
+    expect(result.thrown_error!.error_type).toBe("Error");
+    expect(result.thrown_error!.message).toBe("async boom");
+    expect(result.thrown_error!.error_category).toBe("unknown");
+  });
+
+  it("times out async function that never resolves", async () => {
+    process.env["SHATTER_EXEC_TIMEOUT"] = "0.1";
+    clearModuleCache();
+    const result = await executeFunction(ASYNC_FIXTURE, "asyncHangs", []);
+    expect(result.thrown_error).not.toBeNull();
+    expect(result.thrown_error!.message).toContain("async execution timed out");
+    expect(result.thrown_error!.error_category).toBe("infrastructure");
   });
 });

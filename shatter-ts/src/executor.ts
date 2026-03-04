@@ -198,7 +198,7 @@ interface MeasuredExecution {
  * and heap delta via process.memoryUsage(). Optionally runs GC before measurement
  * if --expose-gc is enabled.
  */
-function measureExecution(fn: () => unknown): MeasuredExecution {
+async function measureExecution(fn: () => unknown): Promise<MeasuredExecution> {
   tryGc();
 
   const startMem = process.memoryUsage();
@@ -209,7 +209,19 @@ function measureExecution(fn: () => unknown): MeasuredExecution {
   let thrownError: ErrorInfo | null = null;
 
   try {
-    returnValue = fn();
+    const syncResult = fn();
+    // If the function returned a Promise (async function), await it with timeout
+    if (syncResult != null && typeof (syncResult as PromiseLike<unknown>).then === 'function') {
+      const timeoutMs = getExecTimeoutMs();
+      returnValue = await Promise.race([
+        syncResult as Promise<unknown>,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("async execution timed out")), timeoutMs)
+        ),
+      ]);
+    } else {
+      returnValue = syncResult;
+    }
   } catch (e: unknown) {
     const err = e as { constructor?: { name?: string }; message?: string; stack?: string };
     const errorType = err.constructor?.name ?? "Error";
@@ -457,11 +469,11 @@ function createCapturingProcess(sideEffects: SideEffect[]): typeof process {
 /**
  * Execute a function with the given inputs and capture the result.
  */
-export function executeFunction(
+export async function executeFunction(
   filePath: string,
   functionRef: string,
   inputs: unknown[],
-): RawExecuteResult {
+): Promise<RawExecuteResult> {
   const fn = resolveFunction(filePath, functionRef);
 
   const sideEffects: SideEffect[] = [];
@@ -471,7 +483,7 @@ export function executeFunction(
   let metrics: MeasuredExecution;
   try {
     const reconstructedInputs = inputs.map(reconstructValue);
-    metrics = measureExecution(() => fn(...reconstructedInputs));
+    metrics = await measureExecution(() => fn(...reconstructedInputs));
   } finally {
     consoleTarget = previousTarget;
   }
@@ -504,13 +516,13 @@ export function executeFunction(
  * calls inserted by the instrumentor. This function defines those callbacks,
  * executes the code, and collects the branch decisions.
  */
-export function executeInstrumented(
+export async function executeInstrumented(
   instrumentedSource: string,
   functionName: string,
   inputs: unknown[],
   mocks: MockConfig[] = [],
   sourceFilePath?: string,
-): RawExecuteResult {
+): Promise<RawExecuteResult> {
   // Transpile instrumented TS to JS
   const jsResult = ts.transpileModule(instrumentedSource, {
     compilerOptions: {
@@ -636,7 +648,7 @@ export function executeInstrumented(
   }
 
   const reconstructedInputs = inputs.map(reconstructValue);
-  const metrics = measureExecution(
+  const metrics = await measureExecution(
     () => (fn as (...args: unknown[]) => unknown)(...reconstructedInputs),
   );
 

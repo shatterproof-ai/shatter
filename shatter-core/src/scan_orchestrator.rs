@@ -723,11 +723,14 @@ pub async fn parallel_scan(
         // Each task checks out a worker, explores, then returns the worker.
         let mut handles = Vec::new();
 
+        let fe_config = Arc::new(frontend_config.clone());
+
         for (func_name, analysis, explore_config, mocks_used, callees, deep_fp) in tasks {
             let pool = Arc::clone(&pool);
             let behavior_maps = Arc::clone(&behavior_maps);
             let timeout = config.timeout_per_fn;
             let cache = config.cache.clone();
+            let fe_config = Arc::clone(&fe_config);
 
             let handle = tokio::spawn(async move {
                 let mut frontend = pool.checkout().await;
@@ -747,8 +750,16 @@ pub async fn parallel_scan(
                 )
                 .await;
 
-                // Return the worker to the pool regardless of outcome.
-                pool.return_worker(frontend).await;
+                // Health-check the frontend before returning to pool.
+                // If it crashed (e.g. async function killed Node), respawn.
+                if frontend.is_alive() {
+                    pool.return_worker(frontend).await;
+                } else {
+                    match Frontend::spawn(&fe_config).await {
+                        Ok(new_fe) => pool.return_worker(new_fe).await,
+                        Err(_) => { /* pool shrinks — acceptable degradation */ }
+                    }
+                }
 
                 match result {
                     Ok(Ok(func_result)) => {

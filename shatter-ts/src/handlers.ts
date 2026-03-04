@@ -186,9 +186,9 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
 
         let rawResult;
         if (instrumentedSource) {
-          rawResult = executeInstrumented(instrumentedSource, funcName, request.inputs, request.mocks ?? [], fileForExec);
+          rawResult = await executeInstrumented(instrumentedSource, funcName, request.inputs, request.mocks ?? [], fileForExec);
         } else {
-          rawResult = executeFunction(fileForExec, funcRef, request.inputs);
+          rawResult = await executeFunction(fileForExec, funcRef, request.inputs);
         }
 
         return {

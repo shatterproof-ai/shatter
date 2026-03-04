@@ -367,6 +367,60 @@ describe("handleRequest", () => {
     });
   });
 
+  describe("async function execution", () => {
+    it("executes async function and returns resolved value", async () => {
+      const asyncFixture = path.resolve(__dirname, "__fixtures__", "async-functions.ts");
+
+      await handleRequest(
+        makeRequest({
+          command: "analyze",
+          file: asyncFixture,
+          function: "asyncAdd",
+        })
+      );
+
+      const { response } = await handleRequest(
+        makeRequest({
+          command: "execute",
+          function: "asyncAdd",
+          inputs: [10, 20],
+          mocks: [],
+        })
+      );
+      expect(response.status).toBe("execute");
+      if (response.status === "execute") {
+        expect(response.return_value).toBe(30);
+        expect(response.thrown_error).toBeNull();
+      }
+    });
+
+    it("executes async function that rejects and captures thrown_error", async () => {
+      const asyncFixture = path.resolve(__dirname, "__fixtures__", "async-functions.ts");
+
+      await handleRequest(
+        makeRequest({
+          command: "analyze",
+          file: asyncFixture,
+          function: "asyncThrows",
+        })
+      );
+
+      const { response } = await handleRequest(
+        makeRequest({
+          command: "execute",
+          function: "asyncThrows",
+          inputs: [],
+          mocks: [],
+        })
+      );
+      expect(response.status).toBe("execute");
+      if (response.status === "execute") {
+        expect(response.thrown_error).not.toBeNull();
+        expect(response.thrown_error!.message).toBe("async boom");
+      }
+    });
+  });
+
   describe("shutdown", () => {
     it("returns shutdown_ack and signals shutdown", async () => {
       const { response, shutdown } = await handleRequest(
