@@ -64,7 +64,6 @@ pub struct Handler<R, W, L> {
     writer: W,
     log: L,
     log_level: FrontendLogLevel,
-    #[allow(dead_code)] // will be used when execute is implemented
     exec_timeout_ms: u64,
     wasm_cache: WasmCache,
     native_registry: Option<NativeRegistry>,
@@ -174,7 +173,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             "handshake" => (self.handle_handshake(resp), false),
             "analyze" => (self.handle_analyze(resp, req), false),
             "instrument" => (self.handle_instrument(resp, req), false),
-            "execute" => (self.handle_execute(resp), false),
+            "execute" => (self.handle_execute(resp, req), false),
             "setup" => (self.handle_setup(resp, req), false),
             "teardown" => (self.handle_teardown(resp), false),
             "generate" => (self.handle_generate(resp, req), false),
@@ -301,11 +300,71 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
         }
     }
 
-    fn handle_execute(&self, mut resp: Response) -> Response {
-        resp.status = "error".to_string();
-        resp.code = Some("internal_error".to_string());
-        resp.message = Some("execute command not yet implemented".to_string());
-        resp
+    fn handle_execute(&self, mut resp: Response, req: &Request) -> Response {
+        let file_path = match &req.file {
+            Some(f) => f,
+            None => {
+                resp.status = "error".to_string();
+                resp.code = Some("invalid_request".to_string());
+                resp.message = Some("execute command requires a file path".to_string());
+                return resp;
+            }
+        };
+        let function_name = match &req.function {
+            Some(f) => f,
+            None => {
+                resp.status = "error".to_string();
+                resp.code = Some("invalid_request".to_string());
+                resp.message = Some("execute command requires a function name".to_string());
+                return resp;
+            }
+        };
+
+        if self.log_level >= FrontendLogLevel::Debug {
+            eprintln!(
+                "[shatter-rust] Executing {function_name} in {file_path} with {} inputs",
+                req.inputs.len()
+            );
+        }
+
+        match crate::executor::execute_function(
+            file_path,
+            function_name,
+            &req.inputs,
+            &req.mocks,
+            self.exec_timeout_ms,
+        ) {
+            Ok(result) => {
+                resp.status = "execute".to_string();
+                resp.return_value = result.return_value;
+                resp.thrown_error = result.thrown_error;
+                resp.branch_path = Some(result.branch_path);
+                resp.lines_executed = Some(result.lines_executed);
+                resp.calls_to_external = Some(result.calls_to_external);
+                resp.path_constraints = Some(result.path_constraints);
+                resp.side_effects = Some(result.side_effects);
+                resp.performance = Some(result.performance);
+                resp
+            }
+            Err(crate::executor::ExecuteError::FileError(msg)) => {
+                resp.status = "error".to_string();
+                resp.code = Some("file_not_found".to_string());
+                resp.message = Some(msg);
+                resp
+            }
+            Err(crate::executor::ExecuteError::CompilationFailed(msg)) => {
+                resp.status = "error".to_string();
+                resp.code = Some("compilation_error".to_string());
+                resp.message = Some(msg);
+                resp
+            }
+            Err(e) => {
+                resp.status = "error".to_string();
+                resp.code = Some("internal_error".to_string());
+                resp.message = Some(e.to_string());
+                resp
+            }
+        }
     }
 
     fn handle_setup(&self, mut resp: Response, req: &Request) -> Response {
@@ -601,12 +660,32 @@ mod tests {
     }
 
     #[test]
-    fn execute_returns_not_implemented() {
+    fn execute_without_file_returns_error() {
         let resp = send_recv(
             r#"{"protocol_version":"0.1.0","id":4,"command":"execute","function":"F","inputs":[],"mocks":[]}"#,
         );
         assert_eq!(resp.status, "error");
-        assert_eq!(resp.code.as_deref(), Some("internal_error"));
+        assert_eq!(resp.code.as_deref(), Some("invalid_request"));
+        assert!(resp.message.as_deref().unwrap_or("").contains("file"));
+    }
+
+    #[test]
+    fn execute_without_function_returns_error() {
+        let resp = send_recv(
+            r#"{"protocol_version":"0.1.0","id":4,"command":"execute","file":"test.rs","inputs":[],"mocks":[]}"#,
+        );
+        assert_eq!(resp.status, "error");
+        assert_eq!(resp.code.as_deref(), Some("invalid_request"));
+        assert!(resp.message.as_deref().unwrap_or("").contains("function"));
+    }
+
+    #[test]
+    fn execute_with_nonexistent_file_returns_error() {
+        let resp = send_recv(
+            r#"{"protocol_version":"0.1.0","id":4,"command":"execute","file":"/nonexistent/file.rs","function":"f","inputs":[],"mocks":[]}"#,
+        );
+        assert_eq!(resp.status, "error");
+        assert_eq!(resp.code.as_deref(), Some("file_not_found"));
     }
 
     #[test]

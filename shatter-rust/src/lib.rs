@@ -1,4 +1,5 @@
 pub mod analyzer;
+pub mod executor;
 pub mod generators;
 pub mod handler;
 pub mod instrument;

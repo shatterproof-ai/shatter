@@ -1,4 +1,5 @@
 mod analyzer;
+mod executor;
 mod generators;
 mod handler;
 mod instrument;
