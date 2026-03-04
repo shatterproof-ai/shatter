@@ -92,35 +92,42 @@ pub fn get_boundary_values_for_category(
 }
 
 fn int_boundaries() -> Vec<BoundaryEntry> {
-    vec![
+    let mut entries = vec![
+        // Core boundary values
         BoundaryEntry::new(json!(0), BoundaryCategory::Boundary, "zero"),
         BoundaryEntry::new(json!(-1), BoundaryCategory::Boundary, "negative one"),
         BoundaryEntry::new(json!(1), BoundaryCategory::Boundary, "positive one"),
-        BoundaryEntry::new(
-            json!(i32::MIN),
-            BoundaryCategory::Overflow,
-            "i32 minimum (-2147483648)",
-        ),
-        BoundaryEntry::new(
-            json!(i32::MAX),
-            BoundaryCategory::Overflow,
-            "i32 maximum (2147483647)",
-        ),
-        BoundaryEntry::new(
-            json!(i64::MIN),
-            BoundaryCategory::Overflow,
-            "i64 minimum",
-        ),
-        BoundaryEntry::new(
-            json!(i64::MAX),
-            BoundaryCategory::Overflow,
-            "i64 maximum",
-        ),
-        BoundaryEntry::new(json!(255), BoundaryCategory::Boundary, "u8 max (byte boundary)"),
-        BoundaryEntry::new(json!(256), BoundaryCategory::Boundary, "u8 max + 1"),
-        BoundaryEntry::new(json!(65535), BoundaryCategory::Boundary, "u16 max"),
-        BoundaryEntry::new(json!(65536), BoundaryCategory::Boundary, "u16 max + 1"),
-    ]
+        BoundaryEntry::new(json!(-2), BoundaryCategory::Boundary, "negative two"),
+        BoundaryEntry::new(json!(2), BoundaryCategory::Boundary, "positive two"),
+        BoundaryEntry::new(json!(-3), BoundaryCategory::Boundary, "negative three"),
+        BoundaryEntry::new(json!(3), BoundaryCategory::Boundary, "positive three"),
+        // Extremes with neighbors
+        BoundaryEntry::new(json!(i64::MAX), BoundaryCategory::Overflow, "i64 maximum"),
+        BoundaryEntry::new(json!(i64::MAX - 1), BoundaryCategory::Overflow, "i64 maximum - 1"),
+        BoundaryEntry::new(json!(i64::MIN), BoundaryCategory::Overflow, "i64 minimum"),
+        BoundaryEntry::new(json!(i64::MIN + 1), BoundaryCategory::Overflow, "i64 minimum + 1"),
+    ];
+
+    // Powers of two with ±1 neighbors: 4, 8, 16, 32, 64, 128, 256, 1024
+    for &power in &[4_i64, 8, 16, 32, 64, 128, 256, 1024] {
+        entries.push(BoundaryEntry::new(
+            json!(power - 1),
+            BoundaryCategory::Boundary,
+            &format!("{power} - 1"),
+        ));
+        entries.push(BoundaryEntry::new(
+            json!(power),
+            BoundaryCategory::Boundary,
+            &format!("power of two: {power}"),
+        ));
+        entries.push(BoundaryEntry::new(
+            json!(power + 1),
+            BoundaryCategory::Boundary,
+            &format!("{power} + 1"),
+        ));
+    }
+
+    entries
 }
 
 fn float_boundaries() -> Vec<BoundaryEntry> {
@@ -128,92 +135,78 @@ fn float_boundaries() -> Vec<BoundaryEntry> {
     // We use string sentinels ("NaN", "Infinity", "-Infinity") that frontends
     // can parse into their language's native float type.
     vec![
+        // Core values
         BoundaryEntry::new(json!(0.0), BoundaryCategory::Boundary, "zero"),
         BoundaryEntry::new(json!(-0.0), BoundaryCategory::Boundary, "negative zero"),
-        BoundaryEntry::new(
-            json!("Infinity"),
-            BoundaryCategory::Overflow,
-            "positive infinity (string sentinel)",
-        ),
-        BoundaryEntry::new(
-            json!("-Infinity"),
-            BoundaryCategory::Overflow,
-            "negative infinity (string sentinel)",
-        ),
-        BoundaryEntry::new(
-            json!("NaN"),
-            BoundaryCategory::Precision,
-            "NaN (string sentinel)",
-        ),
-        BoundaryEntry::new(json!(f64::EPSILON), BoundaryCategory::Precision, "machine epsilon"),
-        BoundaryEntry::new(
-            json!(0.1_f64 + 0.2_f64),
-            BoundaryCategory::Precision,
-            "0.1 + 0.2 (IEEE 754 representation artifact)",
-        ),
-        BoundaryEntry::new(
-            json!(1.7976931348623157e308),
-            BoundaryCategory::Overflow,
-            "f64 near-max",
-        ),
-        BoundaryEntry::new(
-            json!(-1.7976931348623157e308),
-            BoundaryCategory::Overflow,
-            "f64 near-min",
-        ),
-        BoundaryEntry::new(
-            json!(5e-324),
-            BoundaryCategory::Precision,
-            "f64 smallest positive subnormal",
-        ),
+        BoundaryEntry::new(json!(1.0), BoundaryCategory::Boundary, "one"),
+        BoundaryEntry::new(json!(-1.0), BoundaryCategory::Boundary, "negative one"),
+        BoundaryEntry::new(json!(0.5), BoundaryCategory::Boundary, "one half"),
+        BoundaryEntry::new(json!(-0.5), BoundaryCategory::Boundary, "negative one half"),
+        BoundaryEntry::new(json!(2.0), BoundaryCategory::Boundary, "two"),
+        BoundaryEntry::new(json!(-2.0), BoundaryCategory::Boundary, "negative two"),
+        // Mathematical constants
+        BoundaryEntry::new(json!(std::f64::consts::PI), BoundaryCategory::Precision, "pi"),
+        BoundaryEntry::new(json!(-std::f64::consts::PI), BoundaryCategory::Precision, "negative pi"),
+        BoundaryEntry::new(json!(std::f64::consts::E), BoundaryCategory::Precision, "euler's number"),
+        BoundaryEntry::new(json!(-std::f64::consts::E), BoundaryCategory::Precision, "negative euler's number"),
+        BoundaryEntry::new(json!(std::f64::consts::FRAC_PI_2), BoundaryCategory::Precision, "pi/2"),
+        BoundaryEntry::new(json!(std::f64::consts::FRAC_PI_4), BoundaryCategory::Precision, "pi/4"),
+        // IEEE 754 precision traps
+        BoundaryEntry::new(json!(0.1), BoundaryCategory::Precision, "0.1 (inexact in IEEE 754)"),
+        BoundaryEntry::new(json!(0.3), BoundaryCategory::Precision, "0.3 (IEEE 754 trap pair with 0.1+0.2)"),
+        BoundaryEntry::new(json!(1e-10), BoundaryCategory::Precision, "small positive (1e-10)"),
+        BoundaryEntry::new(json!(-1e-10), BoundaryCategory::Precision, "small negative (-1e-10)"),
+        BoundaryEntry::new(json!(1e10), BoundaryCategory::Boundary, "large positive (1e10)"),
+        BoundaryEntry::new(json!(-1e10), BoundaryCategory::Boundary, "large negative (-1e10)"),
+        // Special values (string sentinels for non-JSON-representable floats)
+        BoundaryEntry::new(json!("NaN"), BoundaryCategory::Precision, "NaN (string sentinel)"),
+        BoundaryEntry::new(json!("Infinity"), BoundaryCategory::Overflow, "positive infinity (string sentinel)"),
+        BoundaryEntry::new(json!("-Infinity"), BoundaryCategory::Overflow, "negative infinity (string sentinel)"),
+        // Extremes
+        BoundaryEntry::new(json!(f64::MIN_POSITIVE), BoundaryCategory::Precision, "f64 smallest positive normal"),
+        BoundaryEntry::new(json!(-f64::MIN_POSITIVE), BoundaryCategory::Precision, "f64 smallest negative normal"),
+        BoundaryEntry::new(json!(f64::MAX), BoundaryCategory::Overflow, "f64 maximum"),
+        BoundaryEntry::new(json!(f64::MIN), BoundaryCategory::Overflow, "f64 minimum"),
+        // Integer precision boundary: 2^53 is the last integer exactly representable
+        BoundaryEntry::new(json!((1_u64 << 53) as f64), BoundaryCategory::Precision, "2^53 (integer precision boundary)"),
+        BoundaryEntry::new(json!(((1_u64 << 53) + 1) as f64), BoundaryCategory::Precision, "2^53 + 1 (beyond integer precision)"),
     ]
 }
 
 fn string_boundaries() -> Vec<BoundaryEntry> {
     vec![
+        // Length boundaries
         BoundaryEntry::new(json!(""), BoundaryCategory::Empty, "empty string"),
         BoundaryEntry::new(json!(" "), BoundaryCategory::Boundary, "single space"),
-        BoundaryEntry::new(json!("0"), BoundaryCategory::Boundary, "string zero"),
-        BoundaryEntry::new(json!("null"), BoundaryCategory::Security, "string 'null'"),
+        BoundaryEntry::new(json!("a"), BoundaryCategory::Boundary, "single character"),
+        BoundaryEntry::new(json!("ab"), BoundaryCategory::Boundary, "two characters"),
         BoundaryEntry::new(
-            json!("undefined"),
-            BoundaryCategory::Security,
-            "string 'undefined'",
+            json!("a".repeat(300)),
+            BoundaryCategory::Overflow,
+            "long string (300 chars)",
         ),
-        BoundaryEntry::new(json!("NaN"), BoundaryCategory::Security, "string 'NaN'"),
+        // Whitespace variants
+        BoundaryEntry::new(json!("\t"), BoundaryCategory::Boundary, "tab character"),
+        BoundaryEntry::new(json!("\n"), BoundaryCategory::Boundary, "newline"),
+        BoundaryEntry::new(json!("\r\n"), BoundaryCategory::Boundary, "CRLF"),
+        // Null and embedded null
+        BoundaryEntry::new(json!("\0"), BoundaryCategory::Security, "null byte"),
+        BoundaryEntry::new(json!("a\0b"), BoundaryCategory::Security, "embedded null byte"),
+        // ANSI escape
+        BoundaryEntry::new(json!("\x1b[31m"), BoundaryCategory::Security, "ANSI escape sequence"),
+        // Unicode
+        BoundaryEntry::new(json!("é"), BoundaryCategory::Unicode, "precomposed accented character"),
+        BoundaryEntry::new(json!("日本語"), BoundaryCategory::Unicode, "CJK characters"),
+        BoundaryEntry::new(json!("🎉"), BoundaryCategory::Unicode, "emoji"),
+        // Stringified primitives
         BoundaryEntry::new(json!("true"), BoundaryCategory::Security, "string 'true'"),
         BoundaryEntry::new(json!("false"), BoundaryCategory::Security, "string 'false'"),
-        BoundaryEntry::new(
-            json!("\0"),
-            BoundaryCategory::Security,
-            "null byte character",
-        ),
-        BoundaryEntry::new(
-            json!("a".repeat(10_000)),
-            BoundaryCategory::Overflow,
-            "very long string (10k chars)",
-        ),
-        // Unicode edge cases
-        BoundaryEntry::new(
-            json!("\u{1F600}"),
-            BoundaryCategory::Unicode,
-            "emoji (grinning face)",
-        ),
-        BoundaryEntry::new(
-            json!("\u{200F}"),
-            BoundaryCategory::Unicode,
-            "RTL mark (right-to-left override)",
-        ),
-        BoundaryEntry::new(
-            json!("\u{FEFF}"),
-            BoundaryCategory::Unicode,
-            "BOM (byte order mark)",
-        ),
-        BoundaryEntry::new(
-            json!("e\u{0301}"),
-            BoundaryCategory::Unicode,
-            "combining character (e + acute accent)",
-        ),
+        BoundaryEntry::new(json!("null"), BoundaryCategory::Security, "string 'null'"),
+        BoundaryEntry::new(json!("0"), BoundaryCategory::Boundary, "string zero"),
+        BoundaryEntry::new(json!("-1"), BoundaryCategory::Boundary, "string negative one"),
+        // Injection canaries
+        BoundaryEntry::new(json!("<script>"), BoundaryCategory::Security, "XSS canary"),
+        BoundaryEntry::new(json!("'; DROP TABLE"), BoundaryCategory::Security, "SQL injection canary"),
     ]
 }
 
@@ -297,12 +290,20 @@ mod tests {
         assert!(values.contains(&&json!(0)), "should contain 0");
         assert!(values.contains(&&json!(-1)), "should contain -1");
         assert!(values.contains(&&json!(1)), "should contain 1");
-        assert!(values.contains(&&json!(i32::MIN)), "should contain i32::MIN");
-        assert!(values.contains(&&json!(i32::MAX)), "should contain i32::MAX");
+        assert!(values.contains(&&json!(-2)), "should contain -2");
+        assert!(values.contains(&&json!(2)), "should contain 2");
+        assert!(values.contains(&&json!(-3)), "should contain -3");
+        assert!(values.contains(&&json!(3)), "should contain 3");
         assert!(values.contains(&&json!(i64::MIN)), "should contain i64::MIN");
         assert!(values.contains(&&json!(i64::MAX)), "should contain i64::MAX");
-        assert!(values.contains(&&json!(255)), "should contain 255");
-        assert!(values.contains(&&json!(256)), "should contain 256");
+        assert!(values.contains(&&json!(i64::MAX - 1)), "should contain i64::MAX - 1");
+        assert!(values.contains(&&json!(i64::MIN + 1)), "should contain i64::MIN + 1");
+        // Powers of two and their neighbors
+        for power in [4_i64, 8, 16, 32, 64, 128, 256, 1024] {
+            assert!(values.contains(&&json!(power)), "should contain {power}");
+            assert!(values.contains(&&json!(power - 1)), "should contain {power} - 1");
+            assert!(values.contains(&&json!(power + 1)), "should contain {power} + 1");
+        }
     }
 
     #[test]
@@ -325,10 +326,15 @@ mod tests {
             .any(|e| e.value.as_str() == Some("-Infinity"));
         assert!(has_neg_infinity, "should include negative infinity sentinel");
 
-        let has_epsilon = entries
+        let has_pi = entries
             .iter()
-            .any(|e| e.description.contains("epsilon"));
-        assert!(has_epsilon, "should include epsilon");
+            .any(|e| e.description.contains("pi"));
+        assert!(has_pi, "should include pi");
+
+        let has_e = entries
+            .iter()
+            .any(|e| e.description.contains("euler"));
+        assert!(has_e, "should include euler's number");
     }
 
     #[test]
@@ -340,9 +346,13 @@ mod tests {
             .collect();
         assert!(values.contains(&String::new()), "should contain empty string");
         assert!(values.contains(&" ".to_string()), "should contain single space");
+        assert!(values.contains(&"a".to_string()), "should contain single char");
         assert!(values.contains(&"null".to_string()), "should contain 'null'");
-        assert!(values.contains(&"NaN".to_string()), "should contain 'NaN'");
+        assert!(values.contains(&"true".to_string()), "should contain 'true'");
         assert!(values.contains(&"\0".to_string()), "should contain null byte");
+        assert!(values.contains(&"a\0b".to_string()), "should contain embedded null");
+        assert!(values.contains(&"\t".to_string()), "should contain tab");
+        assert!(values.contains(&"<script>".to_string()), "should contain XSS canary");
     }
 
     #[test]
