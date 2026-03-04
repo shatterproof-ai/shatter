@@ -6,10 +6,41 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 
-use z3::ast::{Bool, Int, Real, String as Z3String};
+use z3::ast::{Ast, Bool, Int, Real, String as Z3String};
 use z3::{Config, SatResult, Solver};
 
 use crate::sym_expr::{BinOpKind, ConstValue, SymExpr, UnOpKind};
+
+/// String method names that return a Bool in Z3 (contains, startsWith, endsWith).
+const STRING_BOOL_METHODS: &[&str] = &[
+    "includes",
+    "Contains",
+    "strings.Contains",
+    "startsWith",
+    "HasPrefix",
+    "strings.HasPrefix",
+    "endsWith",
+    "HasSuffix",
+    "strings.HasSuffix",
+];
+
+/// String method names that return an Int in Z3 (indexOf, length).
+const STRING_INT_METHODS: &[&str] = &[
+    "indexOf",
+    "Index",
+    "strings.Index",
+    "length",
+    "len",
+];
+
+/// String method names that return a String in Z3 (charAt, slice, concat, etc.).
+const STRING_STR_METHODS: &[&str] = &[
+    "charAt",
+    "slice",
+    "substring",
+    "substr",
+    "concat",
+];
 
 /// Errors that can occur during constraint solving.
 #[derive(Debug, thiserror::Error)]
@@ -156,12 +187,27 @@ fn infer_sort(expr: &SymExpr) -> Sort {
             UnOpKind::Neg | UnOpKind::BitwiseNot => infer_sort(operand),
             UnOpKind::TypeOf => Sort::Str,
         },
-        SymExpr::Param { .. } | SymExpr::Call { .. } | SymExpr::Unknown => Sort::Int,
+        SymExpr::Call { name, .. } => infer_call_sort(name),
+        SymExpr::Param { .. } | SymExpr::Unknown => Sort::Int,
         SymExpr::Const(ConstValue::Null | ConstValue::Undefined) => Sort::Int,
         // Complex constants unwrap to their repr's sort
         SymExpr::Const(ConstValue::Complex { repr, .. }) => {
             infer_sort(&SymExpr::Const(*repr.clone()))
         }
+    }
+}
+
+/// Infer the Z3 sort for a Call expression based on the method name.
+/// Recognized string methods return Bool, Int, or Str; unknown calls default to Int.
+fn infer_call_sort(name: &str) -> Sort {
+    if STRING_BOOL_METHODS.contains(&name) {
+        Sort::Bool
+    } else if STRING_INT_METHODS.contains(&name) {
+        Sort::Int
+    } else if STRING_STR_METHODS.contains(&name) {
+        Sort::Str
+    } else {
+        Sort::Int
     }
 }
 
@@ -245,9 +291,11 @@ fn to_z3_expr(
 
         SymExpr::UnOp { op, operand } => convert_unop(vars, *op, operand, hint_sort),
 
-        SymExpr::Call { name, .. } => Err(SolverError::Unsupported(format!(
-            "function call '{name}' cannot be represented in Z3"
-        ))),
+        SymExpr::Call {
+            name,
+            receiver,
+            args,
+        } => convert_string_call(vars, name, receiver.as_deref(), args),
 
         SymExpr::Unknown => Err(SolverError::Unsupported(
             "unknown expression cannot be represented in Z3".into(),
@@ -469,6 +517,154 @@ fn convert_unop(
             })?))
         }
     }
+}
+
+/// Map a `SymExpr::Call` to Z3 string operations.
+///
+/// Supports cross-language method names: TS uses `includes`, `indexOf`, `startsWith`, etc.;
+/// Go uses `strings.Contains`, `strings.Index`, `strings.HasPrefix`, etc.
+/// Returns `SolverError::Unsupported` for unrecognized call names.
+fn convert_string_call(
+    vars: &mut VarTable,
+    name: &str,
+    receiver: Option<&SymExpr>,
+    args: &[SymExpr],
+) -> Result<Z3Ast, SolverError> {
+    match name {
+        // ── contains ────────────────────────────────────────────────
+        "includes" | "Contains" | "strings.Contains" => {
+            let (haystack, needle) = receiver_and_first_arg(vars, name, receiver, args)?;
+            Ok(Z3Ast::Bool(haystack.contains(&needle)))
+        }
+
+        // ── startsWith / HasPrefix ──────────────────────────────────
+        // Z3's `prefix` checks whether `self` is a prefix OF the argument,
+        // so `receiver.startsWith(arg)` maps to `arg.prefix(&receiver)`.
+        "startsWith" | "HasPrefix" | "strings.HasPrefix" => {
+            let (haystack, prefix) = receiver_and_first_arg(vars, name, receiver, args)?;
+            Ok(Z3Ast::Bool(prefix.prefix(&haystack)))
+        }
+
+        // ── endsWith / HasSuffix ────────────────────────────────────
+        // Same inversion as prefix: `receiver.endsWith(arg)` → `arg.suffix(&receiver)`.
+        "endsWith" | "HasSuffix" | "strings.HasSuffix" => {
+            let (haystack, suffix) = receiver_and_first_arg(vars, name, receiver, args)?;
+            Ok(Z3Ast::Bool(suffix.suffix(&haystack)))
+        }
+
+        // ── indexOf / Index ─────────────────────────────────────────
+        // Z3_mk_seq_index(ctx, s, substr, offset) returns Int (-1 when not found).
+        // Not wrapped in the z3 crate, so we call z3-sys directly.
+        "indexOf" | "Index" | "strings.Index" => {
+            let (haystack, needle) = receiver_and_first_arg(vars, name, receiver, args)?;
+            // Offset arg position differs: TS-style has offset at args[1], Go-style at args[2]
+            let offset_arg_index = if receiver.is_none() { 2 } else { 1 };
+            let offset = if args.len() > offset_arg_index {
+                to_z3_int(vars, &args[offset_arg_index])?
+            } else {
+                Int::from_i64(0)
+            };
+            let ctx_ref = haystack.get_ctx();
+            let raw_ctx = ctx_ref.get_z3_context();
+            let result = unsafe {
+                z3_sys::Z3_mk_seq_index(
+                    raw_ctx,
+                    haystack.get_z3_ast(),
+                    needle.get_z3_ast(),
+                    offset.get_z3_ast(),
+                )
+            };
+            let result = result.ok_or_else(|| {
+                SolverError::Unsupported("Z3_mk_seq_index returned null".into())
+            })?;
+            Ok(Z3Ast::Int(unsafe { Int::wrap(ctx_ref, result) }))
+        }
+
+        // ── length / len ────────────────────────────────────────────
+        // TS encodes `s.length` as Call { name: "length", receiver: Some(s), args: [] }.
+        "length" | "len" => {
+            let recv = require_receiver(name, receiver)?;
+            let s = to_z3_string(vars, recv)?;
+            Ok(Z3Ast::Int(s.length()))
+        }
+
+        // ── charAt ──────────────────────────────────────────────────
+        "charAt" => {
+            let recv = require_receiver(name, receiver)?;
+            let s = to_z3_string(vars, recv)?;
+            let index = require_first_arg(name, args)?;
+            let idx = to_z3_int(vars, index)?;
+            Ok(Z3Ast::Str(s.at(idx)))
+        }
+
+        // ── slice / substring / substr ──────────────────────────────
+        // All three map to Z3's `substr(offset, length)`.
+        // JS `slice(start, end?)` and `substring(start, end?)` use end index;
+        // we compute length = end - start.  If no end, we use str.length - start.
+        "slice" | "substring" | "substr" => {
+            let recv = require_receiver(name, receiver)?;
+            let s = to_z3_string(vars, recv)?;
+            let start_expr = require_first_arg(name, args)?;
+            let start = to_z3_int(vars, start_expr)?;
+            let length = if args.len() >= 2 {
+                let end = to_z3_int(vars, &args[1])?;
+                Int::sub(&[&end, &start])
+            } else {
+                // No end argument — take from start to end of string.
+                let total_len = s.length();
+                Int::sub(&[&total_len, &start])
+            };
+            Ok(Z3Ast::Str(s.substr(start, length)))
+        }
+
+        // ── concat ──────────────────────────────────────────────────
+        "concat" => {
+            let recv = require_receiver(name, receiver)?;
+            let s = to_z3_string(vars, recv)?;
+            let mut parts = vec![s];
+            for arg in args {
+                parts.push(to_z3_string(vars, arg)?);
+            }
+            let refs: Vec<&Z3String> = parts.iter().collect();
+            Ok(Z3Ast::Str(Z3String::concat(&refs)))
+        }
+
+        _ => Err(SolverError::Unsupported(format!(
+            "function call '{name}' cannot be represented in Z3"
+        ))),
+    }
+}
+
+/// Extract the receiver string and first argument string for binary string operations.
+fn receiver_and_first_arg(
+    vars: &mut VarTable,
+    name: &str,
+    receiver: Option<&SymExpr>,
+    args: &[SymExpr],
+) -> Result<(Z3String, Z3String), SolverError> {
+    // Go-style: no receiver, two positional args (e.g. strings.Contains(s, substr))
+    if receiver.is_none() && args.len() >= 2 {
+        let haystack = to_z3_string(vars, &args[0])?;
+        let needle = to_z3_string(vars, &args[1])?;
+        return Ok((haystack, needle));
+    }
+    let recv = require_receiver(name, receiver)?;
+    let s = to_z3_string(vars, recv)?;
+    let arg = require_first_arg(name, args)?;
+    let a = to_z3_string(vars, arg)?;
+    Ok((s, a))
+}
+
+fn require_receiver<'a>(name: &str, receiver: Option<&'a SymExpr>) -> Result<&'a SymExpr, SolverError> {
+    receiver.ok_or_else(|| {
+        SolverError::Unsupported(format!("string method '{name}' requires a receiver"))
+    })
+}
+
+fn require_first_arg<'a>(name: &str, args: &'a [SymExpr]) -> Result<&'a SymExpr, SolverError> {
+    args.first().ok_or_else(|| {
+        SolverError::Unsupported(format!("string method '{name}' requires at least one argument"))
+    })
 }
 
 // ── Coercion helpers ─────────────────────────────────────────────────────────
@@ -1373,6 +1569,416 @@ mod tests {
             matches!(result, SolveResult::Unsat),
             "expected unsat for typeof(int) == 'string'"
         );
+    }
+
+    // ── String method call tests ──────────────────────────────────────────
+
+    /// Helper: create `s.includes("needle") == true` constraint.
+    fn str_param(name: &str) -> SymExpr {
+        SymExpr::Param {
+            name: name.into(),
+            path: vec![],
+        }
+    }
+
+    #[test]
+    fn string_includes_sat() {
+        // s.includes("hello") == true → s must contain "hello"
+        let constraint = SymExpr::BinOp {
+            op: BinOpKind::Eq,
+            left: Box::new(SymExpr::Call {
+                name: "includes".into(),
+                receiver: Some(Box::new(str_param("s"))),
+                args: vec![SymExpr::Const(ConstValue::Str("hello".into()))],
+            }),
+            right: Box::new(SymExpr::Const(ConstValue::Bool(true))),
+        };
+        let result = solve_constraints(&[constraint], None).expect("solver should not error");
+        match result {
+            SolveResult::Sat(values) => {
+                let s = match values.get("s") {
+                    Some(ConcreteValue::Str(v)) => v.clone(),
+                    other => panic!("expected Str for s, got {other:?}"),
+                };
+                assert!(s.contains("hello"), "expected s to contain 'hello', got '{s}'");
+            }
+            SolveResult::Unsat => panic!("expected sat"),
+        }
+    }
+
+    #[test]
+    fn string_contains_go_style() {
+        // strings.Contains(s, "world") == true — Go-style (no receiver, two args)
+        let constraint = SymExpr::BinOp {
+            op: BinOpKind::Eq,
+            left: Box::new(SymExpr::Call {
+                name: "strings.Contains".into(),
+                receiver: None,
+                args: vec![
+                    str_param("s"),
+                    SymExpr::Const(ConstValue::Str("world".into())),
+                ],
+            }),
+            right: Box::new(SymExpr::Const(ConstValue::Bool(true))),
+        };
+        let result = solve_constraints(&[constraint], None).expect("solver should not error");
+        match result {
+            SolveResult::Sat(values) => {
+                let s = match values.get("s") {
+                    Some(ConcreteValue::Str(v)) => v.clone(),
+                    other => panic!("expected Str for s, got {other:?}"),
+                };
+                assert!(s.contains("world"), "expected s to contain 'world', got '{s}'");
+            }
+            SolveResult::Unsat => panic!("expected sat"),
+        }
+    }
+
+    #[test]
+    fn string_starts_with_sat() {
+        // s.startsWith("pre") == true
+        let constraint = SymExpr::BinOp {
+            op: BinOpKind::Eq,
+            left: Box::new(SymExpr::Call {
+                name: "startsWith".into(),
+                receiver: Some(Box::new(str_param("s"))),
+                args: vec![SymExpr::Const(ConstValue::Str("pre".into()))],
+            }),
+            right: Box::new(SymExpr::Const(ConstValue::Bool(true))),
+        };
+        let result = solve_constraints(&[constraint], None).expect("solver should not error");
+        match result {
+            SolveResult::Sat(values) => {
+                let s = match values.get("s") {
+                    Some(ConcreteValue::Str(v)) => v.clone(),
+                    other => panic!("expected Str for s, got {other:?}"),
+                };
+                assert!(s.starts_with("pre"), "expected s to start with 'pre', got '{s}'");
+            }
+            SolveResult::Unsat => panic!("expected sat"),
+        }
+    }
+
+    #[test]
+    fn string_has_prefix_go_style() {
+        // strings.HasPrefix(s, "go_") == true
+        let constraint = SymExpr::BinOp {
+            op: BinOpKind::Eq,
+            left: Box::new(SymExpr::Call {
+                name: "strings.HasPrefix".into(),
+                receiver: None,
+                args: vec![
+                    str_param("s"),
+                    SymExpr::Const(ConstValue::Str("go_".into())),
+                ],
+            }),
+            right: Box::new(SymExpr::Const(ConstValue::Bool(true))),
+        };
+        let result = solve_constraints(&[constraint], None).expect("solver should not error");
+        match result {
+            SolveResult::Sat(values) => {
+                let s = match values.get("s") {
+                    Some(ConcreteValue::Str(v)) => v.clone(),
+                    other => panic!("expected Str for s, got {other:?}"),
+                };
+                assert!(s.starts_with("go_"), "expected s to start with 'go_', got '{s}'");
+            }
+            SolveResult::Unsat => panic!("expected sat"),
+        }
+    }
+
+    #[test]
+    fn string_ends_with_sat() {
+        // s.endsWith(".ts") == true
+        let constraint = SymExpr::BinOp {
+            op: BinOpKind::Eq,
+            left: Box::new(SymExpr::Call {
+                name: "endsWith".into(),
+                receiver: Some(Box::new(str_param("s"))),
+                args: vec![SymExpr::Const(ConstValue::Str(".ts".into()))],
+            }),
+            right: Box::new(SymExpr::Const(ConstValue::Bool(true))),
+        };
+        let result = solve_constraints(&[constraint], None).expect("solver should not error");
+        match result {
+            SolveResult::Sat(values) => {
+                let s = match values.get("s") {
+                    Some(ConcreteValue::Str(v)) => v.clone(),
+                    other => panic!("expected Str for s, got {other:?}"),
+                };
+                assert!(s.ends_with(".ts"), "expected s to end with '.ts', got '{s}'");
+            }
+            SolveResult::Unsat => panic!("expected sat"),
+        }
+    }
+
+    #[test]
+    fn string_has_suffix_go_style() {
+        // strings.HasSuffix(s, ".go") == true
+        let constraint = SymExpr::BinOp {
+            op: BinOpKind::Eq,
+            left: Box::new(SymExpr::Call {
+                name: "strings.HasSuffix".into(),
+                receiver: None,
+                args: vec![
+                    str_param("s"),
+                    SymExpr::Const(ConstValue::Str(".go".into())),
+                ],
+            }),
+            right: Box::new(SymExpr::Const(ConstValue::Bool(true))),
+        };
+        let result = solve_constraints(&[constraint], None).expect("solver should not error");
+        match result {
+            SolveResult::Sat(values) => {
+                let s = match values.get("s") {
+                    Some(ConcreteValue::Str(v)) => v.clone(),
+                    other => panic!("expected Str for s, got {other:?}"),
+                };
+                assert!(s.ends_with(".go"), "expected s to end with '.go', got '{s}'");
+            }
+            SolveResult::Unsat => panic!("expected sat"),
+        }
+    }
+
+    #[test]
+    fn string_index_of_found() {
+        // s.indexOf("needle") >= 0 AND s.indexOf("needle") < 5
+        let index_call = SymExpr::Call {
+            name: "indexOf".into(),
+            receiver: Some(Box::new(str_param("s"))),
+            args: vec![SymExpr::Const(ConstValue::Str("needle".into()))],
+        };
+        let constraints = vec![
+            SymExpr::BinOp {
+                op: BinOpKind::Ge,
+                left: Box::new(index_call.clone()),
+                right: Box::new(SymExpr::Const(ConstValue::Int(0))),
+            },
+            SymExpr::BinOp {
+                op: BinOpKind::Lt,
+                left: Box::new(index_call),
+                right: Box::new(SymExpr::Const(ConstValue::Int(5))),
+            },
+        ];
+        let result = solve_constraints(&constraints, None).expect("solver should not error");
+        match result {
+            SolveResult::Sat(values) => {
+                let s = match values.get("s") {
+                    Some(ConcreteValue::Str(v)) => v.clone(),
+                    other => panic!("expected Str for s, got {other:?}"),
+                };
+                let idx = s.find("needle").expect("s should contain 'needle'");
+                assert!(idx < 5, "expected indexOf < 5, got {idx}");
+            }
+            SolveResult::Unsat => panic!("expected sat"),
+        }
+    }
+
+    #[test]
+    fn string_index_of_not_found() {
+        // s == "abc" AND s.indexOf("xyz") == -1
+        let constraints = vec![
+            SymExpr::BinOp {
+                op: BinOpKind::Eq,
+                left: Box::new(str_param("s")),
+                right: Box::new(SymExpr::Const(ConstValue::Str("abc".into()))),
+            },
+            SymExpr::BinOp {
+                op: BinOpKind::Eq,
+                left: Box::new(SymExpr::Call {
+                    name: "indexOf".into(),
+                    receiver: Some(Box::new(str_param("s"))),
+                    args: vec![SymExpr::Const(ConstValue::Str("xyz".into()))],
+                }),
+                right: Box::new(SymExpr::Const(ConstValue::Int(-1))),
+            },
+        ];
+        let result = solve_constraints(&constraints, None).expect("solver should not error");
+        assert!(
+            matches!(result, SolveResult::Sat(_)),
+            "expected sat (abc does not contain xyz)"
+        );
+    }
+
+    #[test]
+    fn string_index_go_style() {
+        // strings.Index(s, "x") >= 0 — Go style
+        let constraint = SymExpr::BinOp {
+            op: BinOpKind::Ge,
+            left: Box::new(SymExpr::Call {
+                name: "strings.Index".into(),
+                receiver: None,
+                args: vec![
+                    str_param("s"),
+                    SymExpr::Const(ConstValue::Str("x".into())),
+                ],
+            }),
+            right: Box::new(SymExpr::Const(ConstValue::Int(0))),
+        };
+        let result = solve_constraints(&[constraint], None).expect("solver should not error");
+        match result {
+            SolveResult::Sat(values) => {
+                let s = match values.get("s") {
+                    Some(ConcreteValue::Str(v)) => v.clone(),
+                    other => panic!("expected Str for s, got {other:?}"),
+                };
+                assert!(s.contains('x'), "expected s to contain 'x', got '{s}'");
+            }
+            SolveResult::Unsat => panic!("expected sat"),
+        }
+    }
+
+    #[test]
+    fn string_length_constraint() {
+        // s.length > 5 AND s.length < 10
+        let len_call = SymExpr::Call {
+            name: "length".into(),
+            receiver: Some(Box::new(str_param("s"))),
+            args: vec![],
+        };
+        let constraints = vec![
+            SymExpr::BinOp {
+                op: BinOpKind::Gt,
+                left: Box::new(len_call.clone()),
+                right: Box::new(SymExpr::Const(ConstValue::Int(5))),
+            },
+            SymExpr::BinOp {
+                op: BinOpKind::Lt,
+                left: Box::new(len_call),
+                right: Box::new(SymExpr::Const(ConstValue::Int(10))),
+            },
+        ];
+        let result = solve_constraints(&constraints, None).expect("solver should not error");
+        match result {
+            SolveResult::Sat(values) => {
+                let s = match values.get("s") {
+                    Some(ConcreteValue::Str(v)) => v.clone(),
+                    other => panic!("expected Str for s, got {other:?}"),
+                };
+                let len = s.len();
+                assert!(
+                    len > 5 && len < 10,
+                    "expected 5 < length < 10, got {len}"
+                );
+            }
+            SolveResult::Unsat => panic!("expected sat"),
+        }
+    }
+
+    #[test]
+    fn string_char_at_constraint() {
+        // s.charAt(0) == "a"
+        let constraint = SymExpr::BinOp {
+            op: BinOpKind::Eq,
+            left: Box::new(SymExpr::Call {
+                name: "charAt".into(),
+                receiver: Some(Box::new(str_param("s"))),
+                args: vec![SymExpr::Const(ConstValue::Int(0))],
+            }),
+            right: Box::new(SymExpr::Const(ConstValue::Str("a".into()))),
+        };
+        let result = solve_constraints(&[constraint], None).expect("solver should not error");
+        match result {
+            SolveResult::Sat(values) => {
+                let s = match values.get("s") {
+                    Some(ConcreteValue::Str(v)) => v.clone(),
+                    other => panic!("expected Str for s, got {other:?}"),
+                };
+                assert!(s.starts_with('a'), "expected s to start with 'a', got '{s}'");
+            }
+            SolveResult::Unsat => panic!("expected sat"),
+        }
+    }
+
+    #[test]
+    fn string_slice_constraint() {
+        // s == "hello world" AND s.slice(0, 5) == "hello"
+        let constraints = vec![
+            SymExpr::BinOp {
+                op: BinOpKind::Eq,
+                left: Box::new(str_param("s")),
+                right: Box::new(SymExpr::Const(ConstValue::Str("hello world".into()))),
+            },
+            SymExpr::BinOp {
+                op: BinOpKind::Eq,
+                left: Box::new(SymExpr::Call {
+                    name: "slice".into(),
+                    receiver: Some(Box::new(str_param("s"))),
+                    args: vec![
+                        SymExpr::Const(ConstValue::Int(0)),
+                        SymExpr::Const(ConstValue::Int(5)),
+                    ],
+                }),
+                right: Box::new(SymExpr::Const(ConstValue::Str("hello".into()))),
+            },
+        ];
+        let result = solve_constraints(&constraints, None).expect("solver should not error");
+        assert!(
+            matches!(result, SolveResult::Sat(_)),
+            "expected sat — 'hello world'.slice(0,5) == 'hello'"
+        );
+    }
+
+    #[test]
+    fn string_concat_constraint() {
+        // s.concat(" world") == "hello world" → s must be "hello"
+        let constraint = SymExpr::BinOp {
+            op: BinOpKind::Eq,
+            left: Box::new(SymExpr::Call {
+                name: "concat".into(),
+                receiver: Some(Box::new(str_param("s"))),
+                args: vec![SymExpr::Const(ConstValue::Str(" world".into()))],
+            }),
+            right: Box::new(SymExpr::Const(ConstValue::Str("hello world".into()))),
+        };
+        let result = solve_constraints(&[constraint], None).expect("solver should not error");
+        match result {
+            SolveResult::Sat(values) => {
+                let s = match values.get("s") {
+                    Some(ConcreteValue::Str(v)) => v.clone(),
+                    other => panic!("expected Str for s, got {other:?}"),
+                };
+                assert_eq!(s, "hello", "expected s == 'hello', got '{s}'");
+            }
+            SolveResult::Unsat => panic!("expected sat"),
+        }
+    }
+
+    #[test]
+    fn string_includes_negated_unsat() {
+        // s == "abc" AND NOT s.includes("b") — should be unsat since "abc" contains "b"
+        let constraints = vec![
+            SymExpr::BinOp {
+                op: BinOpKind::Eq,
+                left: Box::new(str_param("s")),
+                right: Box::new(SymExpr::Const(ConstValue::Str("abc".into()))),
+            },
+            SymExpr::BinOp {
+                op: BinOpKind::Eq,
+                left: Box::new(SymExpr::Call {
+                    name: "includes".into(),
+                    receiver: Some(Box::new(str_param("s"))),
+                    args: vec![SymExpr::Const(ConstValue::Str("b".into()))],
+                }),
+                right: Box::new(SymExpr::Const(ConstValue::Bool(false))),
+            },
+        ];
+        let result = solve_constraints(&constraints, None).expect("solver should not error");
+        assert!(
+            matches!(result, SolveResult::Unsat),
+            "expected unsat — 'abc' always contains 'b'"
+        );
+    }
+
+    #[test]
+    fn unrecognized_call_returns_error() {
+        let constraint = SymExpr::Call {
+            name: "Math.random".into(),
+            receiver: None,
+            args: vec![],
+        };
+        let result = solve_constraints(&[constraint], None);
+        assert!(result.is_err());
     }
 
     #[test]
