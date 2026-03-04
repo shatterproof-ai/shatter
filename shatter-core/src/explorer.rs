@@ -163,13 +163,18 @@ fn scope_aware_hash(events: &[crate::execution_record::TraceEvent]) -> u64 {
         Call(u32),
     }
 
+    /// A sorted branch profile from one loop/call iteration.
+    type BranchProfile = Vec<(u32, bool)>;
+
     /// Collapsed representation of a scope's content for hashing.
     #[derive(Hash)]
     enum CollapsedItem {
         /// A branch decision outside any scope at this level.
         Branch { branch_id: u32, taken: bool },
-        /// A collapsed scope: sorted set of (branch_id, taken) from all repetitions.
-        Scope { scope_tag: u64, branches: Vec<(u32, bool)> },
+        /// A collapsed scope: set of distinct per-iteration branch profiles.
+        /// Each profile is a sorted vec of (branch_id, taken) from one iteration.
+        /// Multiple iterations with the same profile collapse to one entry.
+        Scope { scope_tag: u64, profiles: Vec<BranchProfile> },
     }
 
     fn is_matching_exit(event: &TraceEvent, kind: ScopeKind) -> bool {
@@ -182,11 +187,18 @@ fn scope_aware_hash(events: &[crate::execution_record::TraceEvent]) -> u64 {
 
     /// Parse a flat slice of events into collapsed items for hashing.
     /// Returns (collapsed_items, number_of_events_consumed).
+    ///
+    /// For each scope_id, collects the set of **distinct per-iteration branch
+    /// profiles**. Two iterations with the same branch set (e.g. both take
+    /// branch 1 true + false) collapse to one profile entry. Iterations with
+    /// different branch sets (e.g. one enters the while loop, one doesn't)
+    /// remain separate profiles — producing different hashes.
     fn collapse(events: &[TraceEvent]) -> (Vec<CollapsedItem>, usize) {
         let mut items: Vec<CollapsedItem> = Vec::new();
-        // Map from scope_id to merged branch set (using BTreeSet for deterministic order)
-        let mut loop_branches: HashMap<u32, BTreeSet<(u32, bool)>> = HashMap::new();
-        let mut call_branches: HashMap<u32, BTreeSet<(u32, bool)>> = HashMap::new();
+        // Map from scope_id to set of distinct iteration profiles.
+        // Each profile is a sorted Vec of (branch_id, taken) from one iteration.
+        let mut loop_profiles: HashMap<u32, BTreeSet<BranchProfile>> = HashMap::new();
+        let mut call_profiles: HashMap<u32, BTreeSet<BranchProfile>> = HashMap::new();
 
         let mut i = 0;
         while i < events.len() {
@@ -212,28 +224,40 @@ fn scope_aware_hash(events: &[crate::execution_record::TraceEvent]) -> u64 {
                         return (items, i);
                     }
 
-                    // Find the matching exit and recursively collapse the scope body
+                    // Recursively collapse the scope body
                     let body_start = i + 1;
                     let (child_items, consumed) = collapse(&events[body_start..]);
                     let body_end = body_start + consumed;
 
-                    // Extract branch set from collapsed children
-                    let mut branch_set = BTreeSet::new();
+                    // Build this iteration's branch profile (sorted for determinism)
+                    let mut profile = BTreeSet::new();
                     for item in &child_items {
-                        if let CollapsedItem::Branch { branch_id, taken } = item {
-                            branch_set.insert((*branch_id, *taken));
+                        match item {
+                            CollapsedItem::Branch { branch_id, taken } => {
+                                profile.insert((*branch_id, *taken));
+                            }
+                            CollapsedItem::Scope { scope_tag, profiles } => {
+                                // Include nested scope identity in the profile by
+                                // hashing it into a synthetic branch_id. This ensures
+                                // iterations with different nested scope behavior
+                                // produce different profiles.
+                                let mut h = DefaultHasher::new();
+                                scope_tag.hash(&mut h);
+                                profiles.hash(&mut h);
+                                let synthetic_id = (h.finish() & 0x7FFF_FFFF) as u32 | 0x8000_0000;
+                                profile.insert((synthetic_id, true));
+                            }
                         }
-                        // Nested scope items contribute their own collapsed hash
-                        // via the Scope variant — they're kept as-is
                     }
+                    let profile_vec: Vec<(u32, bool)> = profile.into_iter().collect();
 
-                    // Merge into the per-scope-id branch set
+                    // Add to the set of distinct profiles for this scope_id
                     match kind {
                         ScopeKind::Loop(id) => {
-                            loop_branches.entry(id).or_default().extend(branch_set.iter());
+                            loop_profiles.entry(id).or_default().insert(profile_vec);
                         }
                         ScopeKind::Call(id) => {
-                            call_branches.entry(id).or_default().extend(branch_set.iter());
+                            call_profiles.entry(id).or_default().insert(profile_vec);
                         }
                     }
 
@@ -246,19 +270,24 @@ fn scope_aware_hash(events: &[crate::execution_record::TraceEvent]) -> u64 {
             }
         }
 
-        // Emit collapsed scope items (one per unique scope_id, in id order)
-        let mut scope_ids: Vec<(u64, Vec<(u32, bool)>)> = Vec::new();
-        for (id, branches) in &loop_branches {
+        // Emit collapsed scope items (one per unique scope_id, in id order).
+        // Profiles are sorted for deterministic hashing.
+        let mut scope_ids: Vec<(u64, Vec<BranchProfile>)> = Vec::new();
+        for (id, profiles) in &loop_profiles {
             let tag = (*id as u64) | (1u64 << 32); // distinguish loops from calls
-            scope_ids.push((tag, branches.iter().copied().collect()));
+            let mut sorted: Vec<BranchProfile> = profiles.iter().cloned().collect();
+            sorted.sort();
+            scope_ids.push((tag, sorted));
         }
-        for (id, branches) in &call_branches {
+        for (id, profiles) in &call_profiles {
             let tag = (*id as u64) | (2u64 << 32);
-            scope_ids.push((tag, branches.iter().copied().collect()));
+            let mut sorted: Vec<BranchProfile> = profiles.iter().cloned().collect();
+            sorted.sort();
+            scope_ids.push((tag, sorted));
         }
         scope_ids.sort_by_key(|(tag, _)| *tag);
-        for (scope_tag, branches) in scope_ids {
-            items.push(CollapsedItem::Scope { scope_tag, branches });
+        for (scope_tag, profiles) in scope_ids {
+            items.push(CollapsedItem::Scope { scope_tag, profiles });
         }
 
         (items, events.len())
