@@ -526,3 +526,52 @@ func TestBuildTimeoutReadsEnvVar(t *testing.T) {
 		t.Errorf("expected 60s, got %v", d)
 	}
 }
+
+func TestStripLocalPkg(t *testing.T) {
+	tests := []struct {
+		typeStr, pkg, want string
+	}{
+		{"examples.User", "examples", "User"},
+		{"[]examples.User", "examples", "[]User"},
+		{"map[string]examples.User", "examples", "map[string]User"},
+		{"int", "examples", "int"},
+		{"other.Type", "examples", "other.Type"},
+		{"examples.User", "", "examples.User"},
+	}
+	for _, tt := range tests {
+		got := stripLocalPkg(tt.typeStr, tt.pkg)
+		if got != tt.want {
+			t.Errorf("stripLocalPkg(%q, %q) = %q, want %q", tt.typeStr, tt.pkg, got, tt.want)
+		}
+	}
+}
+
+// TestExecuteFunctionWithStructParam verifies that functions with
+// package-local struct parameters work after package-to-main rewriting.
+func TestExecuteFunctionWithStructParam(t *testing.T) {
+	srcDir := t.TempDir()
+	src := writeExecTestSource(t, srcDir, "target.go", `package mylib
+
+type Point struct {
+	X int
+	Y int
+}
+
+func SumPoint(p Point) int {
+	return p.X + p.Y
+}
+`)
+	result, err := ExecuteFunction(src, "SumPoint", []json.RawMessage{
+		json.RawMessage(`{"X": 3, "Y": 7}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteFunction: %v", err)
+	}
+	var retVal int
+	if err := json.Unmarshal(result.ReturnValue, &retVal); err != nil {
+		t.Fatalf("unmarshal return: %v", err)
+	}
+	if retVal != 10 {
+		t.Errorf("expected 10, got %d", retVal)
+	}
+}

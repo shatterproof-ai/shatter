@@ -315,21 +315,22 @@ func analyzeForExecution(sourcePath, funcName string) ([]paramInfo, returnTypeIn
 			continue
 		}
 
-		params := extractParamInfo(fn, info)
-		retInfo := extractReturnInfo(fn, info)
+		pkgName := file.Name.Name
+		params := extractParamInfo(fn, info, pkgName)
+		retInfo := extractReturnInfo(fn, info, pkgName)
 		return params, retInfo, nil
 	}
 
 	return nil, returnTypeInfo{}, fmt.Errorf("function not found: %s", funcName)
 }
 
-func extractParamInfo(fn *ast.FuncDecl, info *types.Info) []paramInfo {
+func extractParamInfo(fn *ast.FuncDecl, info *types.Info, pkgName string) []paramInfo {
 	if fn.Type.Params == nil {
 		return nil
 	}
 	var params []paramInfo
 	for _, field := range fn.Type.Params.List {
-		goType := resolveGoType(field.Type, info)
+		goType := resolveGoType(field.Type, info, pkgName)
 		for _, name := range field.Names {
 			params = append(params, paramInfo{Name: name.Name, GoType: goType})
 		}
@@ -337,7 +338,7 @@ func extractParamInfo(fn *ast.FuncDecl, info *types.Info) []paramInfo {
 	return params
 }
 
-func extractReturnInfo(fn *ast.FuncDecl, info *types.Info) returnTypeInfo {
+func extractReturnInfo(fn *ast.FuncDecl, info *types.Info, pkgName string) returnTypeInfo {
 	results := fn.Type.Results
 	if results == nil || len(results.List) == 0 {
 		return returnTypeInfo{}
@@ -345,7 +346,7 @@ func extractReturnInfo(fn *ast.FuncDecl, info *types.Info) returnTypeInfo {
 
 	var retTypes []string
 	for _, field := range results.List {
-		goType := resolveGoType(field.Type, info)
+		goType := resolveGoType(field.Type, info, pkgName)
 		if len(field.Names) == 0 {
 			retTypes = append(retTypes, goType)
 		} else {
@@ -364,12 +365,25 @@ func extractReturnInfo(fn *ast.FuncDecl, info *types.Info) returnTypeInfo {
 }
 
 // resolveGoType returns the Go type string for a type expression.
-func resolveGoType(expr ast.Expr, info *types.Info) string {
+// The pkgName parameter is the source file's package name; types qualified
+// with this prefix (e.g. "examples.User") are stripped to the bare name
+// because the instrumented code is rewritten to package main.
+func resolveGoType(expr ast.Expr, info *types.Info, pkgName string) string {
 	if tv, ok := info.Types[expr]; ok {
-		return tv.Type.String()
+		s := tv.Type.String()
+		return stripLocalPkg(s, pkgName)
 	}
 	// Fallback to AST-based type string
 	return astTypeString(expr)
+}
+
+// stripLocalPkg removes occurrences of "pkgName." from a type string so that
+// types defined in the same package work after rewriting to package main.
+func stripLocalPkg(typeStr, pkgName string) string {
+	if pkgName == "" {
+		return typeStr
+	}
+	return strings.ReplaceAll(typeStr, pkgName+".", "")
 }
 
 func astTypeString(expr ast.Expr) string {

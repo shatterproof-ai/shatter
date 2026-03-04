@@ -804,15 +804,20 @@ pub async fn parallel_scan(
                 )
                 .await;
 
-                // Health-check the frontend before returning to pool.
-                // If it crashed (e.g. async function killed Node), respawn.
-                if frontend.is_alive() {
-                    pool.return_worker(frontend).await;
-                } else {
+                let timed_out = result.is_err();
+
+                // After a timeout the frontend's stdout buffer contains a
+                // stale response that would cause an ID mismatch on the next
+                // request.  Kill and respawn instead of returning to pool.
+                if timed_out || !frontend.is_alive() {
+                    // Drop the poisoned/dead frontend (kills the child process).
+                    drop(frontend);
                     match Frontend::spawn(&fe_config).await {
                         Ok(new_fe) => pool.return_worker(new_fe).await,
                         Err(_) => { /* pool shrinks — acceptable degradation */ }
                     }
+                } else {
+                    pool.return_worker(frontend).await;
                 }
 
                 match result {
