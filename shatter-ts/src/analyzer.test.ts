@@ -615,7 +615,6 @@ describe("analyzeFile", () => {
       const names = results.map((f) => f.name);
       expect(names).toContain("greetingLabel");
       expect(names).toContain("statusBadge");
-      expect(names).toContain("statusBadge");
     });
 
     it("extracts parameters from TSX functions", () => {

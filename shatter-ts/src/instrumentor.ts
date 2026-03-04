@@ -76,12 +76,13 @@ export function instrumentFunction(
   fileName = "input.ts",
   mocks: MockConfig[] = [],
 ): InstrumentResult | { error: string } {
+  const scriptKind = fileName.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
   const sourceFile = ts.createSourceFile(
     fileName,
     source,
     ts.ScriptTarget.Latest,
     true,
-    ts.ScriptKind.TS,
+    scriptKind,
   );
 
   const targetFunction = findFunction(sourceFile, functionName);

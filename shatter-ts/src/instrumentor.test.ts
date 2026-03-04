@@ -1080,4 +1080,56 @@ function doStuff(x: number): number {
     expect(mockCalls[0]!.symbol).toBe("getValue");
     expect(mockCalls[0]!.returnValue).toBe(100);
   });
+
+  describe("TSX support", () => {
+    it("instruments a function in TSX source", () => {
+      const source = `
+export function greetingLabel(name: string): string {
+  if (name) {
+    return \`<span>Hello, \${name}!</span>\`;
+  }
+  return "<span>Hello, stranger!</span>";
+}`;
+      const result = instrumentFunction(source, "greetingLabel", "component.tsx");
+      expect("error" in result).toBe(false);
+      if (!("error" in result)) {
+        expect(result.instrumentedSource).toContain(RECORD_FUNCTION);
+        expect(result.instrumentedSource).toContain(BRANCH_FUNCTION);
+        expect(result.branchCount).toBeGreaterThan(0);
+      }
+    });
+
+    it("instruments TSX source containing JSX elements", () => {
+      const source = `
+export function jsxReturning(show: boolean): unknown {
+  if (show) {
+    return <div className="visible">content</div>;
+  }
+  return <div className="hidden" />;
+}`;
+      const result = instrumentFunction(source, "jsxReturning", "component.tsx");
+      expect("error" in result).toBe(false);
+      if (!("error" in result)) {
+        expect(result.instrumentedSource).toContain(BRANCH_FUNCTION);
+        expect(result.branchCount).toBeGreaterThan(0);
+      }
+    });
+
+    it("uses ScriptKind.TS for .ts files and ScriptKind.TSX for .tsx files", () => {
+      const source = `
+export function greetingLabel(name: string): string {
+  if (name) {
+    return "hello " + name;
+  }
+  return "hello stranger";
+}`;
+      const resultTs = instrumentFunction(source, "greetingLabel", "component.ts");
+      const resultTsx = instrumentFunction(source, "greetingLabel", "component.tsx");
+      expect("error" in resultTs).toBe(false);
+      expect("error" in resultTsx).toBe(false);
+      if (!("error" in resultTs) && !("error" in resultTsx)) {
+        expect(resultTs.branchCount).toBe(resultTsx.branchCount);
+      }
+    });
+  });
 });

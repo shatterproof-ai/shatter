@@ -110,6 +110,7 @@ function loadModule(filePath: string): Record<string, unknown> {
       module: ts.ModuleKind.CommonJS,
       esModuleInterop: true,
       strict: true,
+      jsx: ts.JsxEmit.ReactJSX,
     },
     fileName: absolutePath,
   });
@@ -517,6 +518,7 @@ export function executeInstrumented(
       module: ts.ModuleKind.CommonJS,
       esModuleInterop: true,
       strict: true,
+      jsx: ts.JsxEmit.ReactJSX,
     },
     ...(sourceFilePath ? { fileName: sourceFilePath } : {}),
   });
