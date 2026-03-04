@@ -200,6 +200,15 @@ enum CliCommand {
         /// Memory limit in MB for the frontend process. For TS, sets --max-old-space-size; for Go, sets GOMEMLIMIT.
         #[arg(long)]
         memory_limit: Option<u64>,
+
+        /// Ignore existing spec file and force full re-exploration (no incremental reuse).
+        #[arg(long)]
+        clean: bool,
+
+        /// Analyze and compare fingerprints, print stale/fresh/removed functions, then exit
+        /// without exploring. Requires --output.
+        #[arg(long)]
+        dry_run: bool,
     },
 
     /// Scan a directory for source files, analyze and explore all functions in
@@ -500,6 +509,40 @@ enum CliCommand {
         #[arg(long, short)]
         output: Option<PathBuf>,
     },
+
+    /// Check which functions in a source file are stale relative to a spec file.
+    ///
+    /// Analyzes the source file, computes fingerprints, and compares against the
+    /// spec. Exit code: 0 = all fresh, 1 = some stale or removed.
+    Stale {
+        /// Source file to analyze (e.g., "src/math.ts").
+        #[arg(required = true)]
+        source: String,
+
+        /// Path to the existing spec JSON file.
+        #[arg(required = true)]
+        spec: PathBuf,
+
+        /// Output format: "text" (default) or "json".
+        #[arg(long, default_value = "text")]
+        format: String,
+
+        /// Per-request timeout in seconds for frontend communication.
+        #[arg(long, default_value_t = 30)]
+        request_timeout: u64,
+
+        /// Execution timeout in seconds for each function invocation.
+        #[arg(long, default_value_t = 10)]
+        exec_timeout: u64,
+
+        /// Build timeout in seconds for compiling instrumented code.
+        #[arg(long, default_value_t = 30)]
+        build_timeout: u64,
+
+        /// Memory limit in MB for the frontend process.
+        #[arg(long)]
+        memory_limit: Option<u64>,
+    },
 }
 
 /// A parsed target: `<file>:<function>` for a single function, or `<file>` for all.
@@ -680,6 +723,8 @@ async fn run_explore(
     use_concolic: bool,
     solver_timeout: Option<u64>,
     memory_limit: Option<u64>,
+    clean: bool,
+    dry_run: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let scope_config = match scope_path {
         Some(path) => {
@@ -804,6 +849,78 @@ async fn run_explore(
             continue;
         }
 
+        // Incremental plan: compare fingerprints against existing spec when --output is set
+        use std::collections::HashSet;
+        let incremental_plan = if let Some(out) = output_path
+            && !clean
+            && out.exists()
+        {
+            match shatter_core::spec::read_file_spec_bundle(out) {
+                Ok(existing) => {
+                    match shatter_core::spec::compute_incremental_plan(&target.file, &functions, &existing) {
+                        Ok(plan) => Some((plan, existing)),
+                        Err(e) => {
+                            if log_level >= LogLevel::Debug {
+                                eprintln!("[debug] Failed to compute incremental plan: {e}");
+                            }
+                            None
+                        }
+                    }
+                }
+                Err(e) => {
+                    if log_level >= LogLevel::Debug {
+                        eprintln!("[debug] Failed to read existing spec: {e}");
+                    }
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        let fresh_set: HashSet<String> = incremental_plan
+            .as_ref()
+            .map(|(plan, _)| plan.fresh.iter().cloned().collect())
+            .unwrap_or_default();
+
+        // Dry-run mode: print incremental plan and exit
+        if dry_run {
+            if let Some((ref plan, _)) = incremental_plan {
+                if !plan.stale.is_empty() {
+                    eprintln!("Stale ({}):", plan.stale.len());
+                    for name in &plan.stale {
+                        eprintln!("  {name}");
+                    }
+                }
+                if !plan.fresh.is_empty() {
+                    eprintln!("Fresh ({}):", plan.fresh.len());
+                    for name in &plan.fresh {
+                        eprintln!("  {name}");
+                    }
+                }
+                if !plan.removed.is_empty() {
+                    eprintln!("Removed ({}):", plan.removed.len());
+                    for name in &plan.removed {
+                        eprintln!("  {name}");
+                    }
+                }
+            } else {
+                eprintln!("No existing spec to compare against — all {} function(s) are stale.", functions.len());
+                for func in &functions {
+                    eprintln!("  {}", func.name);
+                }
+            }
+            shutdown_frontend(frontend).await;
+            continue;
+        }
+
+        if !fresh_set.is_empty() && log_level >= LogLevel::Info {
+            eprintln!("Skipping {} fresh function(s):", fresh_set.len());
+            for name in &fresh_set {
+                eprintln!("  {name}");
+            }
+        }
+
         // Load .shatter/ config for this target
         let shatter_configs: Vec<ShatterConfig> = if let Some(cp) = config_path {
             // Explicit config bypasses discovery
@@ -824,6 +941,11 @@ async fn run_explore(
         let mut skipped_unexecutable: Vec<(String, Vec<executability::SkipReason>)> = Vec::new();
         let mut file_specs: Vec<shatter_core::spec::FunctionSpec> = Vec::new();
         for func in &functions {
+            // Skip fresh functions in incremental mode
+            if fresh_set.contains(&func.name) {
+                continue;
+            }
+
             let function_id = format!("{}:{}", file_str, func.name);
 
             // Resolve per-function config
@@ -971,12 +1093,22 @@ async fn run_explore(
                     if show_spec || detect_invariants {
                         let eq_classes = &analyze_output.eq_classes;
                         let location = Some(format!("{file_str}:{}", func.start_line));
+
+                        // Compute fingerprint for spec output
+                        let fingerprint = shatter_core::fingerprint::extract_function_source(
+                            &target.file, func.start_line, func.end_line,
+                        )
+                        .ok()
+                        .map(|source| {
+                            shatter_core::fingerprint::compute_function_fingerprint(&source, func)
+                        });
+
                         let spec = if detect_invariants {
                             shatter_core::spec::build_spec_with_invariants(
-                                &result, eq_classes, location, None,
+                                &result, eq_classes, location, fingerprint,
                             )
                         } else {
-                            shatter_core::spec::build_spec(&result, eq_classes, location, None)
+                            shatter_core::spec::build_spec(&result, eq_classes, location, fingerprint)
                         };
                         if output_path.is_some() {
                             // Collect for file-level bundle output
@@ -1022,28 +1154,43 @@ async fn run_explore(
         }
 
         // Collect file-level spec bundle when --output is set.
-        if output_path.is_some() && !file_specs.is_empty() {
-            file_spec_bundles.push(FileSpecBundle {
-                file: file_str.to_string(),
-                functions: file_specs,
-            });
+        if output_path.is_some() {
+            let current_function_names: HashSet<String> =
+                functions.iter().map(|f| f.name.clone()).collect();
+
+            let bundle = if let Some((_, ref existing)) = incremental_plan {
+                // Merge newly explored specs with fresh specs carried over from existing
+                shatter_core::spec::merge_file_spec_bundles(
+                    existing,
+                    &file_specs,
+                    &current_function_names,
+                )
+            } else {
+                FileSpecBundle {
+                    file: file_str.to_string(),
+                    functions: file_specs,
+                }
+            };
+
+            if !bundle.functions.is_empty() {
+                file_spec_bundles.push(bundle);
+            }
         }
 
         shutdown_frontend(frontend).await;
     }
 
-    // Write collected file spec bundles to the output path.
+    // Write collected file spec bundles to the output path as a single bundle.
     if let Some(out) = output_path
         && !file_spec_bundles.is_empty()
     {
-        let json = shatter_core::spec::format_file_spec_json(&file_spec_bundles)
-            .map_err(|e| format!("failed to serialize file spec bundles: {e}"))?;
-        std::fs::write(out, &json)
-            .map_err(|e| format!("failed to write output file {}: {e}", out.display()))?;
+        // Single-target is the primary Make use case; write the first bundle.
+        shatter_core::spec::write_file_spec_bundle(&file_spec_bundles[0], out)
+            .map_err(|e| format!("failed to write spec bundle to {}: {e}", out.display()))?;
         if log_level >= LogLevel::Info {
             eprintln!(
-                "Wrote {} file spec bundle(s) to {}",
-                file_spec_bundles.len(),
+                "Wrote spec bundle ({} function(s)) to {}",
+                file_spec_bundles[0].functions.len(),
                 out.display()
             );
         }
@@ -2378,6 +2525,95 @@ async fn shutdown_frontend(frontend: Frontend) {
     }
 }
 
+/// Run the stale command: check which functions are stale relative to a spec file.
+///
+/// Returns `Ok(true)` if all functions are fresh, `Ok(false)` if any are stale or removed.
+// Each argument corresponds to a CLI flag; this is only called from one callsite.
+#[allow(clippy::too_many_arguments)]
+async fn run_stale(
+    source: &str,
+    spec_path: &Path,
+    format: &str,
+    request_timeout: u64,
+    exec_timeout: u64,
+    build_timeout: u64,
+    memory_limit: Option<u64>,
+    log_level: LogLevel,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let target = parse_target(source)?;
+    let file_str = target.file.to_string_lossy();
+
+    let req_timeout = Duration::from_secs(request_timeout);
+    let config = frontend_config(target.language, req_timeout, log_level, exec_timeout, build_timeout, memory_limit, None)?;
+    let mut frontend = Frontend::spawn(&config).await.map_err(|e| {
+        format!("failed to spawn {} frontend: {e}", target.language.label())
+    })?;
+
+    let analyze_response = frontend
+        .send(ProtoCommand::Analyze {
+            file: file_str.to_string(),
+            function: target.function.clone(),
+        })
+        .await
+        .map_err(|e| format!("analyze failed: {e}"))?;
+
+    let functions = match &analyze_response.result {
+        ResponseResult::Analyze { functions } => functions.clone(),
+        ResponseResult::Error { code, message, .. } => {
+            shutdown_frontend(frontend).await;
+            return Err(format!("analyze error ({code:?}): {message}").into());
+        }
+        other => {
+            shutdown_frontend(frontend).await;
+            return Err(format!("unexpected analyze response: {other:?}").into());
+        }
+    };
+
+    shutdown_frontend(frontend).await;
+
+    let existing = shatter_core::spec::read_file_spec_bundle(spec_path)
+        .map_err(|e| format!("failed to read spec file {}: {e}", spec_path.display()))?;
+
+    let plan = shatter_core::spec::compute_incremental_plan(&target.file, &functions, &existing)
+        .map_err(|e| format!("failed to compute incremental plan: {e}"))?;
+
+    let all_fresh = plan.stale.is_empty() && plan.removed.is_empty();
+
+    if format == "json" {
+        let output = serde_json::json!({
+            "stale": plan.stale,
+            "fresh": plan.fresh,
+            "removed": plan.removed,
+            "all_fresh": all_fresh,
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        if !plan.stale.is_empty() {
+            println!("Stale ({}):", plan.stale.len());
+            for name in &plan.stale {
+                println!("  {name}");
+            }
+        }
+        if !plan.fresh.is_empty() {
+            println!("Fresh ({}):", plan.fresh.len());
+            for name in &plan.fresh {
+                println!("  {name}");
+            }
+        }
+        if !plan.removed.is_empty() {
+            println!("Removed ({}):", plan.removed.len());
+            for name in &plan.removed {
+                println!("  {name}");
+            }
+        }
+        if all_fresh {
+            println!("All functions are fresh.");
+        }
+    }
+
+    Ok(all_fresh)
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -2411,6 +2647,8 @@ async fn main() -> ExitCode {
             genetic_timeout: _,
             solver_timeout,
             memory_limit,
+            clean,
+            dry_run,
         } => {
             run_explore(
                 &targets,
@@ -2436,6 +2674,8 @@ async fn main() -> ExitCode {
                 concolic,
                 solver_timeout,
                 memory_limit,
+                clean,
+                dry_run,
             )
             .await
         }
@@ -2594,6 +2834,36 @@ async fn main() -> ExitCode {
             output,
         } => run_build_frontend(&language, config.as_deref(), output.as_deref())
             .map_err(|e| e.into()),
+        CliCommand::Stale {
+            source,
+            spec,
+            format,
+            request_timeout,
+            exec_timeout,
+            build_timeout,
+            memory_limit,
+        } => {
+            match run_stale(
+                &source,
+                &spec,
+                &format,
+                request_timeout,
+                exec_timeout,
+                build_timeout,
+                memory_limit,
+                log_level,
+            )
+            .await
+            {
+                Ok(all_fresh) => {
+                    if all_fresh {
+                        return ExitCode::SUCCESS;
+                    }
+                    return ExitCode::FAILURE;
+                }
+                Err(e) => Err(e),
+            }
+        }
     };
 
     match result {
@@ -4136,6 +4406,94 @@ mod tests {
                 assert!(genetic_timeout.is_none());
             }
             _ => panic!("expected Scan command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_explore_with_clean_flag() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "explore",
+            "--clean",
+            "test.ts:myFunc",
+        ]);
+        match cli.command {
+            CliCommand::Explore { clean, dry_run, .. } => {
+                assert!(clean);
+                assert!(!dry_run);
+            }
+            _ => panic!("expected Explore command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_explore_with_dry_run_flag() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "explore",
+            "--dry-run",
+            "--output", "spec.json",
+            "test.ts:myFunc",
+        ]);
+        match cli.command {
+            CliCommand::Explore { clean, dry_run, output, .. } => {
+                assert!(!clean);
+                assert!(dry_run);
+                assert_eq!(output, Some(PathBuf::from("spec.json")));
+            }
+            _ => panic!("expected Explore command"),
+        }
+    }
+
+    #[test]
+    fn cli_clean_and_dry_run_default_to_false() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "explore",
+            "test.ts:myFunc",
+        ]);
+        match cli.command {
+            CliCommand::Explore { clean, dry_run, .. } => {
+                assert!(!clean);
+                assert!(!dry_run);
+            }
+            _ => panic!("expected Explore command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_stale_subcommand() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "stale",
+            "src/math.ts",
+            "spec.json",
+        ]);
+        match cli.command {
+            CliCommand::Stale { source, spec, format, request_timeout, .. } => {
+                assert_eq!(source, "src/math.ts");
+                assert_eq!(spec, PathBuf::from("spec.json"));
+                assert_eq!(format, "text");
+                assert_eq!(request_timeout, 30);
+            }
+            _ => panic!("expected Stale command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_stale_with_json_format() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "stale",
+            "--format", "json",
+            "src/math.ts",
+            "spec.json",
+        ]);
+        match cli.command {
+            CliCommand::Stale { format, .. } => {
+                assert_eq!(format, "json");
+            }
+            _ => panic!("expected Stale command"),
         }
     }
 }

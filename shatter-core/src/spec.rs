@@ -5,6 +5,7 @@
 //! concrete examples, and provenance (proven vs observed). The spec can be
 //! rendered as human-readable markdown or machine-readable JSON.
 
+use std::collections::HashSet;
 use std::fmt;
 use std::fs;
 use std::path::Path;
@@ -14,7 +15,9 @@ use serde::{Deserialize, Serialize};
 use crate::equivalence::{BranchPath, EquivalenceClass, Precondition};
 use crate::execution_record::{ErrorInfo, SideEffect};
 use crate::explorer::ExplorationResult;
+use crate::fingerprint::{compute_function_fingerprint, extract_function_source};
 use crate::invariants::ClassifiedInvariant;
+use crate::protocol::FunctionAnalysis;
 
 /// Error type for spec bundle I/O operations.
 #[derive(Debug)]
@@ -471,6 +474,103 @@ pub fn read_file_spec_bundle(path: &Path) -> Result<FileSpecBundle, SpecIoError>
     let contents = fs::read_to_string(path)?;
     let bundle = serde_json::from_str(&contents)?;
     Ok(bundle)
+}
+
+/// Result of comparing current function analyses against an existing spec bundle.
+///
+/// Used by `--output` incremental mode to decide which functions need re-exploration
+/// vs which can be carried over from the previous spec.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IncrementalPlan {
+    /// Functions whose fingerprints changed or are new (need re-exploration).
+    pub stale: Vec<String>,
+    /// Functions whose fingerprints match the existing spec (reuse old spec).
+    pub fresh: Vec<String>,
+    /// Functions present in old spec but absent from current analysis (deleted).
+    pub removed: Vec<String>,
+}
+
+/// Compare current function analyses against an existing spec to determine staleness.
+///
+/// For each function in `current_analyses`, computes a fingerprint from source text
+/// (via `extract_function_source`) and analysis metadata, then compares against
+/// `existing.functions[name].fingerprint`. A function is fresh only if its fingerprint
+/// matches. Functions in the existing bundle not present in current analysis are removed.
+///
+/// Returns an error if source extraction fails (e.g., file unreadable).
+pub fn compute_incremental_plan(
+    file_path: &Path,
+    current_analyses: &[FunctionAnalysis],
+    existing: &FileSpecBundle,
+) -> Result<IncrementalPlan, std::io::Error> {
+    let existing_by_name: std::collections::HashMap<&str, &FunctionSpec> = existing
+        .functions
+        .iter()
+        .map(|f| (f.function_name.as_str(), f))
+        .collect();
+
+    let mut stale = Vec::new();
+    let mut fresh = Vec::new();
+    let mut seen_names: HashSet<String> = HashSet::new();
+
+    for func in current_analyses {
+        seen_names.insert(func.name.clone());
+
+        let source = extract_function_source(file_path, func.start_line, func.end_line)?;
+        let current_fp = compute_function_fingerprint(&source, func);
+
+        match existing_by_name.get(func.name.as_str()) {
+            Some(spec) if spec.fingerprint.as_deref() == Some(current_fp.as_str()) => {
+                fresh.push(func.name.clone());
+            }
+            _ => {
+                stale.push(func.name.clone());
+            }
+        }
+    }
+
+    let removed: Vec<String> = existing
+        .functions
+        .iter()
+        .filter(|f| !seen_names.contains(&f.function_name))
+        .map(|f| f.function_name.clone())
+        .collect();
+
+    Ok(IncrementalPlan {
+        stale,
+        fresh,
+        removed,
+    })
+}
+
+/// Merge newly explored specs with fresh specs carried over from an existing bundle.
+///
+/// `new_specs` contains specs for functions that were re-explored (stale).
+/// Functions in `current_function_names` that are NOT in `new_specs` are carried
+/// over from `existing` (they were fresh and skipped). Functions not in
+/// `current_function_names` are dropped (they were removed from the source).
+pub fn merge_file_spec_bundles(
+    existing: &FileSpecBundle,
+    new_specs: &[FunctionSpec],
+    current_function_names: &HashSet<String>,
+) -> FileSpecBundle {
+    let new_names: HashSet<&str> = new_specs.iter().map(|s| s.function_name.as_str()).collect();
+
+    let mut merged: Vec<FunctionSpec> = new_specs.to_vec();
+
+    // Carry over fresh specs from existing bundle (not re-explored, still in source)
+    for old_spec in &existing.functions {
+        if current_function_names.contains(&old_spec.function_name)
+            && !new_names.contains(old_spec.function_name.as_str())
+        {
+            merged.push(old_spec.clone());
+        }
+    }
+
+    FileSpecBundle {
+        file: existing.file.clone(),
+        functions: merged,
+    }
 }
 
 /// Badge text for provenance level.
@@ -1271,5 +1371,209 @@ mod tests {
             serde_json::from_str::<FileSpecBundle>("bad").unwrap_err(),
         );
         assert!(json_err.to_string().contains("spec JSON error"));
+    }
+
+    // --- IncrementalPlan tests ---
+
+    use crate::protocol::BranchInfo;
+    use crate::types::ParamInfo;
+
+    fn make_analysis(name: &str, start: u32, end: u32) -> crate::protocol::FunctionAnalysis {
+        crate::protocol::FunctionAnalysis {
+            name: name.to_string(),
+            exported: true,
+            params: vec![ParamInfo {
+                name: "x".into(),
+                typ: crate::types::TypeInfo::Int,
+                type_name: None,
+            }],
+            branches: vec![BranchInfo {
+                id: 0,
+                line: start + 1,
+                condition_text: "x > 0".into(),
+                condition: None,
+                branch_type: crate::protocol::BranchType::If,
+            }],
+            dependencies: vec![],
+            return_type: crate::types::TypeInfo::Int,
+            start_line: start,
+            end_line: end,
+            literals: vec![],
+        }
+    }
+
+    fn make_spec_with_fingerprint(name: &str, fingerprint: Option<&str>) -> FunctionSpec {
+        FunctionSpec {
+            function_name: name.to_string(),
+            location: None,
+            classes: vec![],
+            iterations: 10,
+            lines_covered: 5,
+            total_lines: 10,
+            invariants: vec![],
+            fingerprint: fingerprint.map(|s| s.to_string()),
+        }
+    }
+
+    #[test]
+    fn incremental_plan_all_fresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.ts");
+        let source = "function add(x) {\n  if (x > 0) return x;\n  return 0;\n}\n";
+        std::fs::write(&file, source).unwrap();
+
+        let analysis = make_analysis("add", 1, 4);
+        let fp = crate::fingerprint::compute_function_fingerprint(
+            &crate::fingerprint::extract_function_source(&file, 1, 4).unwrap(),
+            &analysis,
+        );
+
+        let existing = FileSpecBundle {
+            file: "test.ts".to_string(),
+            functions: vec![make_spec_with_fingerprint("add", Some(&fp))],
+        };
+
+        let plan = compute_incremental_plan(&file, &[analysis], &existing).unwrap();
+        assert!(plan.stale.is_empty(), "expected no stale, got: {:?}", plan.stale);
+        assert_eq!(plan.fresh, vec!["add"]);
+        assert!(plan.removed.is_empty());
+    }
+
+    #[test]
+    fn incremental_plan_stale_on_fingerprint_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.ts");
+        std::fs::write(&file, "function add(x) {\n  if (x > 0) return x;\n  return 0;\n}\n").unwrap();
+
+        let analysis = make_analysis("add", 1, 4);
+
+        let existing = FileSpecBundle {
+            file: "test.ts".to_string(),
+            functions: vec![make_spec_with_fingerprint("add", Some("old_fp_mismatch"))],
+        };
+
+        let plan = compute_incremental_plan(&file, &[analysis], &existing).unwrap();
+        assert_eq!(plan.stale, vec!["add"]);
+        assert!(plan.fresh.is_empty());
+        assert!(plan.removed.is_empty());
+    }
+
+    #[test]
+    fn incremental_plan_stale_when_no_fingerprint() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.ts");
+        std::fs::write(&file, "function add(x) {\n  if (x > 0) return x;\n  return 0;\n}\n").unwrap();
+
+        let analysis = make_analysis("add", 1, 4);
+
+        let existing = FileSpecBundle {
+            file: "test.ts".to_string(),
+            functions: vec![make_spec_with_fingerprint("add", None)],
+        };
+
+        let plan = compute_incremental_plan(&file, &[analysis], &existing).unwrap();
+        assert_eq!(plan.stale, vec!["add"]);
+        assert!(plan.fresh.is_empty());
+    }
+
+    #[test]
+    fn incremental_plan_new_function() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.ts");
+        std::fs::write(&file, "function add(x) {\n  if (x > 0) return x;\n  return 0;\n}\n").unwrap();
+
+        let analysis = make_analysis("add", 1, 4);
+        let existing = FileSpecBundle {
+            file: "test.ts".to_string(),
+            functions: vec![],
+        };
+
+        let plan = compute_incremental_plan(&file, &[analysis], &existing).unwrap();
+        assert_eq!(plan.stale, vec!["add"]);
+        assert!(plan.fresh.is_empty());
+        assert!(plan.removed.is_empty());
+    }
+
+    #[test]
+    fn incremental_plan_removed_function() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.ts");
+        std::fs::write(&file, "function add(x) {\n  if (x > 0) return x;\n  return 0;\n}\n").unwrap();
+
+        let existing = FileSpecBundle {
+            file: "test.ts".to_string(),
+            functions: vec![
+                make_spec_with_fingerprint("add", Some("old")),
+                make_spec_with_fingerprint("removed_fn", Some("old2")),
+            ],
+        };
+
+        let analysis = make_analysis("add", 1, 4);
+        let plan = compute_incremental_plan(&file, &[analysis], &existing).unwrap();
+        assert_eq!(plan.removed, vec!["removed_fn"]);
+    }
+
+    #[test]
+    fn merge_preserves_fresh_drops_removed() {
+        let existing = FileSpecBundle {
+            file: "test.ts".to_string(),
+            functions: vec![
+                make_spec_with_fingerprint("fresh_fn", Some("fp1")),
+                make_spec_with_fingerprint("stale_fn", Some("fp2")),
+                make_spec_with_fingerprint("removed_fn", Some("fp3")),
+            ],
+        };
+
+        let new_stale_spec = make_spec_with_fingerprint("stale_fn", Some("fp2_new"));
+        let current_names: HashSet<String> =
+            ["fresh_fn", "stale_fn"].iter().map(|s| s.to_string()).collect();
+
+        let merged = merge_file_spec_bundles(&existing, &[new_stale_spec], &current_names);
+
+        assert_eq!(merged.functions.len(), 2);
+        let names: Vec<&str> = merged.functions.iter().map(|f| f.function_name.as_str()).collect();
+        assert!(names.contains(&"stale_fn"), "should contain re-explored stale_fn");
+        assert!(names.contains(&"fresh_fn"), "should carry over fresh_fn");
+        assert!(!names.contains(&"removed_fn"), "should drop removed_fn");
+
+        // Verify stale_fn has new fingerprint
+        let stale = merged.functions.iter().find(|f| f.function_name == "stale_fn").unwrap();
+        assert_eq!(stale.fingerprint.as_deref(), Some("fp2_new"));
+
+        // Verify fresh_fn has old fingerprint
+        let fresh = merged.functions.iter().find(|f| f.function_name == "fresh_fn").unwrap();
+        assert_eq!(fresh.fingerprint.as_deref(), Some("fp1"));
+    }
+
+    #[test]
+    fn merge_with_empty_existing() {
+        let existing = FileSpecBundle {
+            file: "test.ts".to_string(),
+            functions: vec![],
+        };
+
+        let new_spec = make_spec_with_fingerprint("add", Some("fp1"));
+        let current_names: HashSet<String> = ["add"].iter().map(|s| s.to_string()).collect();
+
+        let merged = merge_file_spec_bundles(&existing, &[new_spec], &current_names);
+        assert_eq!(merged.functions.len(), 1);
+        assert_eq!(merged.functions[0].function_name, "add");
+    }
+
+    #[test]
+    fn merge_with_no_new_specs() {
+        let existing = FileSpecBundle {
+            file: "test.ts".to_string(),
+            functions: vec![
+                make_spec_with_fingerprint("fn1", Some("fp1")),
+                make_spec_with_fingerprint("fn2", Some("fp2")),
+            ],
+        };
+
+        let current_names: HashSet<String> =
+            ["fn1", "fn2"].iter().map(|s| s.to_string()).collect();
+
+        let merged = merge_file_spec_bundles(&existing, &[], &current_names);
+        assert_eq!(merged.functions.len(), 2);
     }
 }

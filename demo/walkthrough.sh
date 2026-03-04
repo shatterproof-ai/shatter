@@ -126,7 +126,7 @@ GO_EXAMPLES=(
     "examples/go/03-errors.go:SafeDivide"
 )
 
-TOTAL=33
+TOTAL=38
 
 # ─── Walkthrough ──────────────────────────────────────────────────────
 
@@ -311,5 +311,30 @@ step 32 $TOTAL "Concolic Exploration (Z3)" \
 step 33 $TOTAL "Custom Build Frontend" \
     "Show the build-frontend subcommand for compiling native generators into a custom frontend binary" \
     $SHATTER build-frontend --help
+
+# Stage 34: Spec output to file (--output)
+step 34 $TOTAL "Spec Output to File" \
+    "Write a spec bundle to a JSON file with --output (includes fingerprints)" \
+    $SHATTER explore --output /tmp/shatter-spec.json "${EXAMPLES[0]}"
+
+# Stage 35: Incremental re-run (skips fresh functions)
+step 35 $TOTAL "Incremental Re-run" \
+    "Re-run with --output against existing spec — unchanged functions are skipped" \
+    $SHATTER explore --output /tmp/shatter-spec.json "${EXAMPLES[0]}"
+
+# Stage 36: Dry-run mode
+step 36 $TOTAL "Dry-Run Mode" \
+    "Use --dry-run to preview which functions would be re-explored without actually exploring" \
+    $SHATTER explore --output /tmp/shatter-spec.json --dry-run "${EXAMPLES[0]}"
+
+# Stage 37: Clean re-exploration
+step 37 $TOTAL "Clean Re-exploration" \
+    "Use --clean to force full re-exploration, ignoring the existing spec" \
+    $SHATTER explore --output /tmp/shatter-spec.json --clean "${EXAMPLES[0]}"
+
+# Stage 38: Stale command
+step 38 $TOTAL "Stale Check" \
+    "Check which functions are stale relative to an existing spec file" \
+    $SHATTER stale "examples/typescript/src/01-arithmetic.ts" /tmp/shatter-spec.json
 
 echo "${BOLD}${GREEN}Walkthrough complete.${RESET}"
