@@ -1,0 +1,62 @@
+# Canonical string operations and per-language aliases.
+#
+# Each operation maps to a Z3 Seq theory function. The `z3_sort` field
+# declares the Z3 sort of the operation's return value (Bool, Int, or Str).
+# Aliases list the method names as reported by each language frontend.
+
+operations:
+  - name: contains
+    z3_sort: Bool
+    aliases:
+      - { language: typescript, method: "includes",          style: receiver }
+      - { language: go,         method: "Contains",          style: free }
+      - { language: go,         method: "strings.Contains",  style: free }
+      - { language: rust,       method: "contains",          style: receiver }
+
+  - name: prefix
+    z3_sort: Bool
+    aliases:
+      - { language: typescript, method: "startsWith",        style: receiver }
+      - { language: go,         method: "HasPrefix",         style: free }
+      - { language: go,         method: "strings.HasPrefix", style: free }
+      - { language: rust,       method: "starts_with",       style: receiver }
+
+  - name: suffix
+    z3_sort: Bool
+    aliases:
+      - { language: typescript, method: "endsWith",          style: receiver }
+      - { language: go,         method: "HasSuffix",         style: free }
+      - { language: go,         method: "strings.HasSuffix", style: free }
+      - { language: rust,       method: "ends_with",         style: receiver }
+
+  - name: index_of
+    z3_sort: Int
+    aliases:
+      - { language: typescript, method: "indexOf",           style: receiver }
+      - { language: go,         method: "Index",             style: free }
+      - { language: go,         method: "strings.Index",     style: free }
+      - { language: rust,       method: "find",              style: receiver }
+
+  - name: length
+    z3_sort: Int
+    aliases:
+      - { language: typescript, method: "length",            style: receiver }
+      - { language: go,         method: "len",               style: free }
+      - { language: rust,       method: "len",               style: receiver }
+
+  - name: char_at
+    z3_sort: Str
+    aliases:
+      - { language: typescript, method: "charAt",            style: receiver }
+
+  - name: substr
+    z3_sort: Str
+    aliases:
+      - { language: typescript, method: "slice",             style: receiver }
+      - { language: typescript, method: "substring",         style: receiver }
+      - { language: typescript, method: "substr",            style: receiver }
+
+  - name: concat
+    z3_sort: Str
+    aliases:
+      - { language: typescript, method: "concat",            style: receiver }

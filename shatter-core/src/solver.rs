@@ -11,36 +11,7 @@ use z3::{Config, SatResult, Solver};
 
 use crate::sym_expr::{BinOpKind, ConstValue, SymExpr, UnOpKind};
 
-/// String method names that return a Bool in Z3 (contains, startsWith, endsWith).
-const STRING_BOOL_METHODS: &[&str] = &[
-    "includes",
-    "Contains",
-    "strings.Contains",
-    "startsWith",
-    "HasPrefix",
-    "strings.HasPrefix",
-    "endsWith",
-    "HasSuffix",
-    "strings.HasSuffix",
-];
-
-/// String method names that return an Int in Z3 (indexOf, length).
-const STRING_INT_METHODS: &[&str] = &[
-    "indexOf",
-    "Index",
-    "strings.Index",
-    "length",
-    "len",
-];
-
-/// String method names that return a String in Z3 (charAt, slice, concat, etc.).
-const STRING_STR_METHODS: &[&str] = &[
-    "charAt",
-    "slice",
-    "substring",
-    "substr",
-    "concat",
-];
+include!(concat!(env!("OUT_DIR"), "/string_ops_generated.rs"));
 
 /// Errors that can occur during constraint solving.
 #[derive(Debug, thiserror::Error)]
@@ -200,15 +171,7 @@ fn infer_sort(expr: &SymExpr) -> Sort {
 /// Infer the Z3 sort for a Call expression based on the method name.
 /// Recognized string methods return Bool, Int, or Str; unknown calls default to Int.
 fn infer_call_sort(name: &str) -> Sort {
-    if STRING_BOOL_METHODS.contains(&name) {
-        Sort::Bool
-    } else if STRING_INT_METHODS.contains(&name) {
-        Sort::Int
-    } else if STRING_STR_METHODS.contains(&name) {
-        Sort::Str
-    } else {
-        Sort::Int
-    }
+    resolve_string_op(name).map_or(Sort::Int, |op| op.z3_sort())
 }
 
 /// Infer the sort that a param in a comparison should use, by looking at the other operand.
@@ -521,6 +484,7 @@ fn convert_unop(
 
 /// Map a `SymExpr::Call` to Z3 string operations.
 ///
+/// Dispatches via `StringOp` enum (generated from `data/string-ops.yaml`).
 /// Supports cross-language method names: TS uses `includes`, `indexOf`, `startsWith`, etc.;
 /// Go uses `strings.Contains`, `strings.Index`, `strings.HasPrefix`, etc.
 /// Returns `SolverError::Unsupported` for unrecognized call names.
@@ -530,32 +494,32 @@ fn convert_string_call(
     receiver: Option<&SymExpr>,
     args: &[SymExpr],
 ) -> Result<Z3Ast, SolverError> {
-    match name {
-        // ── contains ────────────────────────────────────────────────
-        "includes" | "Contains" | "strings.Contains" => {
+    let op = resolve_string_op(name).ok_or_else(|| {
+        SolverError::Unsupported(format!("function call '{name}' cannot be represented in Z3"))
+    })?;
+
+    match op {
+        StringOp::Contains => {
             let (haystack, needle) = receiver_and_first_arg(vars, name, receiver, args)?;
             Ok(Z3Ast::Bool(haystack.contains(&needle)))
         }
 
-        // ── startsWith / HasPrefix ──────────────────────────────────
         // Z3's `prefix` checks whether `self` is a prefix OF the argument,
         // so `receiver.startsWith(arg)` maps to `arg.prefix(&receiver)`.
-        "startsWith" | "HasPrefix" | "strings.HasPrefix" => {
+        StringOp::Prefix => {
             let (haystack, prefix) = receiver_and_first_arg(vars, name, receiver, args)?;
             Ok(Z3Ast::Bool(prefix.prefix(&haystack)))
         }
 
-        // ── endsWith / HasSuffix ────────────────────────────────────
         // Same inversion as prefix: `receiver.endsWith(arg)` → `arg.suffix(&receiver)`.
-        "endsWith" | "HasSuffix" | "strings.HasSuffix" => {
+        StringOp::Suffix => {
             let (haystack, suffix) = receiver_and_first_arg(vars, name, receiver, args)?;
             Ok(Z3Ast::Bool(suffix.suffix(&haystack)))
         }
 
-        // ── indexOf / Index ─────────────────────────────────────────
         // Z3_mk_seq_index(ctx, s, substr, offset) returns Int (-1 when not found).
         // Not wrapped in the z3 crate, so we call z3-sys directly.
-        "indexOf" | "Index" | "strings.Index" => {
+        StringOp::IndexOf => {
             let (haystack, needle) = receiver_and_first_arg(vars, name, receiver, args)?;
             // Offset arg position differs: TS-style has offset at args[1], Go-style at args[2]
             let offset_arg_index = if receiver.is_none() { 2 } else { 1 };
@@ -580,16 +544,13 @@ fn convert_string_call(
             Ok(Z3Ast::Int(unsafe { Int::wrap(ctx_ref, result) }))
         }
 
-        // ── length / len ────────────────────────────────────────────
-        // TS encodes `s.length` as Call { name: "length", receiver: Some(s), args: [] }.
-        "length" | "len" => {
+        StringOp::Length => {
             let recv = require_receiver(name, receiver)?;
             let s = to_z3_string(vars, recv)?;
             Ok(Z3Ast::Int(s.length()))
         }
 
-        // ── charAt ──────────────────────────────────────────────────
-        "charAt" => {
+        StringOp::CharAt => {
             let recv = require_receiver(name, receiver)?;
             let s = to_z3_string(vars, recv)?;
             let index = require_first_arg(name, args)?;
@@ -597,11 +558,10 @@ fn convert_string_call(
             Ok(Z3Ast::Str(s.at(idx)))
         }
 
-        // ── slice / substring / substr ──────────────────────────────
-        // All three map to Z3's `substr(offset, length)`.
+        // All three (slice/substring/substr) map to Z3's `substr(offset, length)`.
         // JS `slice(start, end?)` and `substring(start, end?)` use end index;
-        // we compute length = end - start.  If no end, we use str.length - start.
-        "slice" | "substring" | "substr" => {
+        // we compute length = end - start. If no end, we use str.length - start.
+        StringOp::Substr => {
             let recv = require_receiver(name, receiver)?;
             let s = to_z3_string(vars, recv)?;
             let start_expr = require_first_arg(name, args)?;
@@ -610,15 +570,13 @@ fn convert_string_call(
                 let end = to_z3_int(vars, &args[1])?;
                 Int::sub(&[&end, &start])
             } else {
-                // No end argument — take from start to end of string.
                 let total_len = s.length();
                 Int::sub(&[&total_len, &start])
             };
             Ok(Z3Ast::Str(s.substr(start, length)))
         }
 
-        // ── concat ──────────────────────────────────────────────────
-        "concat" => {
+        StringOp::Concat => {
             let recv = require_receiver(name, receiver)?;
             let s = to_z3_string(vars, recv)?;
             let mut parts = vec![s];
@@ -628,10 +586,6 @@ fn convert_string_call(
             let refs: Vec<&Z3String> = parts.iter().collect();
             Ok(Z3Ast::Str(Z3String::concat(&refs)))
         }
-
-        _ => Err(SolverError::Unsupported(format!(
-            "function call '{name}' cannot be represented in Z3"
-        ))),
     }
 }
 
@@ -1979,6 +1933,143 @@ mod tests {
         };
         let result = solve_constraints(&[constraint], None);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn spec_aliases_match_generated_code() {
+        // Parse the YAML spec at test time and verify every alias resolves via resolve_string_op().
+        let yaml_src = include_str!("../data/string-ops.yaml");
+        let spec: serde_yaml::Value =
+            serde_yaml::from_str(yaml_src).expect("failed to parse string-ops.yaml");
+        let operations = spec["operations"].as_sequence().expect("operations should be a list");
+        for op_value in operations {
+            let op_name = op_value["name"].as_str().unwrap();
+            let z3_sort = op_value["z3_sort"].as_str().unwrap();
+            let aliases = op_value["aliases"].as_sequence().expect("aliases should be a list");
+            for alias in aliases {
+                let method = alias["method"].as_str().unwrap();
+                let resolved = resolve_string_op(method);
+                assert!(
+                    resolved.is_some(),
+                    "method '{method}' (operation '{op_name}') not found in generated resolve_string_op()"
+                );
+                let expected_sort = match z3_sort {
+                    "Bool" => Sort::Bool,
+                    "Int" => Sort::Int,
+                    "Str" => Sort::Str,
+                    other => panic!("unknown sort '{other}' in spec"),
+                };
+                assert_eq!(
+                    resolved.unwrap().z3_sort(),
+                    expected_sort,
+                    "method '{method}' (operation '{op_name}'): expected sort {z3_sort}, got {:?}",
+                    resolved.unwrap().z3_sort(),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn all_operations_produce_declared_sort() {
+        // For each canonical operation, build a minimal SymExpr::Call, convert it,
+        // and assert the Z3Ast variant matches the declared sort.
+        let yaml_src = include_str!("../data/string-ops.yaml");
+        let spec: serde_yaml::Value =
+            serde_yaml::from_str(yaml_src).expect("failed to parse string-ops.yaml");
+        let operations = spec["operations"].as_sequence().unwrap();
+
+        for op_value in operations {
+            let op_name = op_value["name"].as_str().unwrap();
+            let z3_sort = op_value["z3_sort"].as_str().unwrap();
+            let aliases = op_value["aliases"].as_sequence().unwrap();
+            // Pick first alias to test
+            let first_alias = &aliases[0];
+            let method = first_alias["method"].as_str().unwrap();
+            let style = first_alias["style"].as_str().unwrap();
+
+            // Build minimal Call expression with appropriate receiver/args
+            let s_param = SymExpr::Param {
+                name: "s".into(),
+                path: vec![],
+            };
+            let arg_str = SymExpr::Const(ConstValue::Str("x".into()));
+            let arg_int = SymExpr::Const(ConstValue::Int(0));
+
+            let call = match (op_name, style) {
+                ("length", _) => SymExpr::Call {
+                    name: method.into(),
+                    receiver: Some(Box::new(s_param)),
+                    args: vec![],
+                },
+                ("char_at", _) => SymExpr::Call {
+                    name: method.into(),
+                    receiver: Some(Box::new(s_param)),
+                    args: vec![arg_int],
+                },
+                ("substr", _) => SymExpr::Call {
+                    name: method.into(),
+                    receiver: Some(Box::new(s_param)),
+                    args: vec![arg_int.clone(), SymExpr::Const(ConstValue::Int(1))],
+                },
+                ("concat", _) => SymExpr::Call {
+                    name: method.into(),
+                    receiver: Some(Box::new(s_param)),
+                    args: vec![arg_str],
+                },
+                (_, "receiver") => SymExpr::Call {
+                    name: method.into(),
+                    receiver: Some(Box::new(s_param)),
+                    args: vec![arg_str],
+                },
+                (_, "free") => SymExpr::Call {
+                    name: method.into(),
+                    receiver: None,
+                    args: vec![s_param, arg_str],
+                },
+                _ => panic!("unhandled style '{style}' for '{op_name}'"),
+            };
+
+            // Wrap in a constraint so we can solve it
+            let expected_sort_enum = match z3_sort {
+                "Bool" => Sort::Bool,
+                "Int" => Sort::Int,
+                "Str" => Sort::Str,
+                other => panic!("unknown sort '{other}'"),
+            };
+
+            // Just check that infer_call_sort returns the right sort
+            assert_eq!(
+                infer_call_sort(method),
+                expected_sort_enum,
+                "infer_call_sort('{method}') for operation '{op_name}' returned wrong sort"
+            );
+
+            // Also verify the call can be converted without error (basic smoke test)
+            let constraint = match z3_sort {
+                "Bool" => SymExpr::BinOp {
+                    op: BinOpKind::Eq,
+                    left: Box::new(call),
+                    right: Box::new(SymExpr::Const(ConstValue::Bool(true))),
+                },
+                "Int" => SymExpr::BinOp {
+                    op: BinOpKind::Ge,
+                    left: Box::new(call),
+                    right: Box::new(SymExpr::Const(ConstValue::Int(0))),
+                },
+                "Str" => SymExpr::BinOp {
+                    op: BinOpKind::Eq,
+                    left: Box::new(call),
+                    right: Box::new(SymExpr::Const(ConstValue::Str("x".into()))),
+                },
+                _ => unreachable!(),
+            };
+            let result = solve_constraints(&[constraint], None);
+            assert!(
+                result.is_ok(),
+                "operation '{op_name}' via method '{method}' failed to convert: {:?}",
+                result.err()
+            );
+        }
     }
 
     #[test]
