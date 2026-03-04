@@ -82,6 +82,7 @@ fn execution_record_from_result(
         input_hash,
         parameters: inputs.to_vec(),
         branch_path: result.branch_path.clone(),
+        scope_events: result.scope_events.clone(),
         lines_executed: result.lines_executed.clone(),
         calls_to_external: result.calls_to_external.clone(),
         path_constraints: result.path_constraints.clone(),

@@ -407,6 +407,7 @@ fn execution_record_from_behavior(
         input_hash: 0,
         parameters: behavior.input_args.clone(),
         branch_path: behavior.branch_path.clone(),
+        scope_events: vec![],
         lines_executed: vec![],
         calls_to_external: vec![],
         path_constraints: vec![],
