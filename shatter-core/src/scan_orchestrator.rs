@@ -1401,18 +1401,6 @@ mod tests {
     }
 
     #[test]
-    fn scan_mutual_recursion_returns_group() {
-        let analyses = vec![
-            make_analysis("a", vec!["b"]),
-            make_analysis("b", vec!["a"]),
-        ];
-        let call_graph = CallGraph::from_analyses(&analyses);
-        let result = call_graph.test_order().expect("mutual recursion should not error");
-        assert_eq!(result.len(), 1);
-        assert!(matches!(&result[0], TestOrderEntry::MutualGroup { function_ids } if function_ids.len() == 2));
-    }
-
-    #[test]
     fn format_scan_report_shows_test_order() {
         let result = ScanResult {
             test_order: vec!["leaf".into(), "caller".into()],

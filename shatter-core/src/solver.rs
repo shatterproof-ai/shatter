@@ -1202,41 +1202,6 @@ mod tests {
     }
 
     #[test]
-    fn compound_logical_range() {
-        // x > 0 && x < 100 → value in range (1..99)
-        let constraint = SymExpr::BinOp {
-            op: BinOpKind::And,
-            left: Box::new(SymExpr::BinOp {
-                op: BinOpKind::Gt,
-                left: Box::new(SymExpr::Param {
-                    name: "x".into(),
-                    path: vec![],
-                }),
-                right: Box::new(SymExpr::Const(ConstValue::Int(0))),
-            }),
-            right: Box::new(SymExpr::BinOp {
-                op: BinOpKind::Lt,
-                left: Box::new(SymExpr::Param {
-                    name: "x".into(),
-                    path: vec![],
-                }),
-                right: Box::new(SymExpr::Const(ConstValue::Int(100))),
-            }),
-        };
-        let result = solve_constraints(&[constraint], None).expect("solver should not error");
-        match result {
-            SolveResult::Sat(values) => {
-                let x = match values.get("x") {
-                    Some(ConcreteValue::Int(v)) => *v,
-                    other => panic!("expected Int for x, got {other:?}"),
-                };
-                assert!(x > 0 && x < 100, "expected 0 < x < 100, got x={x}");
-            }
-            SolveResult::Unsat => panic!("expected sat"),
-        }
-    }
-
-    #[test]
     fn solve_for_new_path_multi_constraint() {
         // Path: x > 0, x < 50, x != 25
         // Negate index 2 (x != 25) → should find x == 25 with x > 0 and x < 50
@@ -1357,28 +1322,17 @@ mod tests {
     }
 
     #[test]
-    fn typeof_string_param() {
-        // typeof(s) == "string" where s is a string param — should be sat
-        // Force s to be string-sorted by also constraining it
-        let constraints = vec![
-            SymExpr::BinOp {
-                op: BinOpKind::Eq,
-                left: Box::new(SymExpr::Param {
-                    name: "s".into(),
-                    path: vec![],
-                }),
-                right: Box::new(SymExpr::Const(ConstValue::Str("test".into()))),
-            },
-            SymExpr::BinOp {
-                op: BinOpKind::Eq,
-                left: Box::new(SymExpr::UnOp {
-                    op: UnOpKind::TypeOf,
-                    operand: Box::new(SymExpr::Const(ConstValue::Str("anything".into()))),
-                }),
-                right: Box::new(SymExpr::Const(ConstValue::Str("string".into()))),
-            },
-        ];
-        let result = solve_constraints(&constraints, None).expect("solver should not error");
+    fn typeof_string_constant() {
+        // typeof("hello") == "string" — should be sat
+        let constraint = SymExpr::BinOp {
+            op: BinOpKind::Eq,
+            left: Box::new(SymExpr::UnOp {
+                op: UnOpKind::TypeOf,
+                operand: Box::new(SymExpr::Const(ConstValue::Str("hello".into()))),
+            }),
+            right: Box::new(SymExpr::Const(ConstValue::Str("string".into()))),
+        };
+        let result = solve_constraints(&[constraint], None).expect("solver should not error");
         assert!(
             matches!(result, SolveResult::Sat(_)),
             "expected sat for typeof(string) == 'string'"

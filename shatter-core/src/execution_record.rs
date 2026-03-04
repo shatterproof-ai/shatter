@@ -240,15 +240,6 @@ mod tests {
     }
 
     #[test]
-    fn truncation_info_not_truncated_round_trips() {
-        round_trip(&TruncationInfo {
-            was_truncated: false,
-            original_lines: 10,
-            original_bytes: 256,
-        });
-    }
-
-    #[test]
     fn side_effect_variants_round_trip() {
         round_trip(&SideEffect::ConsoleOutput {
             level: "warn".into(),

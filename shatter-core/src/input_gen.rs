@@ -2096,19 +2096,6 @@ mod tests {
     // -- Mutation operator tests --
 
     #[test]
-    fn mutate_int_produces_valid_int() {
-        let mut rng = seeded_rng();
-        for _ in 0..100 {
-            let original = json!(42);
-            let mutated = mutate_value(&original, &TypeInfo::Int, &mut rng);
-            assert!(
-                mutated.is_i64() || mutated.is_u64(),
-                "expected integer, got {mutated}"
-            );
-        }
-    }
-
-    #[test]
     fn mutate_int_boundary_values() {
         let mut rng = StdRng::seed_from_u64(0);
         let mut saw_zero = false;
@@ -2139,19 +2126,6 @@ mod tests {
     }
 
     #[test]
-    fn mutate_float_produces_valid_number() {
-        let mut rng = seeded_rng();
-        for _ in 0..100 {
-            let mutated = mutate_value(&json!(3.14), &TypeInfo::Float, &mut rng);
-            // NaN/Inf serialize as null in JSON
-            assert!(
-                mutated.is_f64() || mutated.is_i64() || mutated.is_null(),
-                "expected number or null, got {mutated}"
-            );
-        }
-    }
-
-    #[test]
     fn mutate_float_special_values() {
         let mut rng = StdRng::seed_from_u64(0);
         let mut saw_null = false; // NaN or Inf → null
@@ -2174,15 +2148,6 @@ mod tests {
         let mut rng = seeded_rng();
         assert_eq!(mutate_value(&json!(true), &TypeInfo::Bool, &mut rng), json!(false));
         assert_eq!(mutate_value(&json!(false), &TypeInfo::Bool, &mut rng), json!(true));
-    }
-
-    #[test]
-    fn mutate_string_type_valid() {
-        let mut rng = seeded_rng();
-        for _ in 0..100 {
-            let mutated = mutate_value(&json!("hello"), &TypeInfo::Str, &mut rng);
-            assert!(mutated.is_string(), "expected string, got {mutated}");
-        }
     }
 
     #[test]

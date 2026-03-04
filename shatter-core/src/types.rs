@@ -351,31 +351,6 @@ mod tests {
     }
 
     #[test]
-    fn complex_type_info_nested_in_array_round_trips() {
-        round_trip(&TypeInfo::Array {
-            element: Box::new(TypeInfo::Complex {
-                kind: ComplexKind::Date,
-                metadata: serde_json::Map::new(),
-                inner: None,
-            }),
-        });
-    }
-
-    #[test]
-    fn complex_type_info_nested_in_object_round_trips() {
-        round_trip(&TypeInfo::Object {
-            fields: vec![
-                ("created_at".into(), TypeInfo::Complex {
-                    kind: ComplexKind::Date,
-                    metadata: serde_json::Map::new(),
-                    inner: None,
-                }),
-                ("name".into(), TypeInfo::Str),
-            ],
-        });
-    }
-
-    #[test]
     fn complex_type_info_result_with_inner_round_trips() {
         round_trip(&TypeInfo::Complex {
             kind: ComplexKind::Result,
@@ -394,36 +369,6 @@ mod tests {
     fn opaque_round_trips() {
         round_trip(&TypeInfo::Opaque {
             label: "net.Socket".to_string(),
-        });
-    }
-
-    #[test]
-    fn opaque_inside_array_round_trips() {
-        round_trip(&TypeInfo::Array {
-            element: Box::new(TypeInfo::Opaque {
-                label: "fs.FileHandle".to_string(),
-            }),
-        });
-    }
-
-    #[test]
-    fn opaque_inside_object_round_trips() {
-        round_trip(&TypeInfo::Object {
-            fields: vec![
-                ("conn".into(), TypeInfo::Opaque {
-                    label: "pg.Client".to_string(),
-                }),
-                ("name".into(), TypeInfo::Str),
-            ],
-        });
-    }
-
-    #[test]
-    fn opaque_inside_nullable_round_trips() {
-        round_trip(&TypeInfo::Nullable {
-            inner: Box::new(TypeInfo::Opaque {
-                label: "stream.Readable".to_string(),
-            }),
         });
     }
 

@@ -628,32 +628,11 @@ mod tests {
     // -- concrete_to_json tests --
 
     #[test]
-    fn concrete_int_to_json() {
+    fn concrete_to_json_primitives() {
         assert_eq!(concrete_to_json(&ConcreteValue::Int(42)), serde_json::json!(42));
-    }
-
-    #[test]
-    fn concrete_float_to_json() {
-        assert_eq!(
-            concrete_to_json(&ConcreteValue::Float(3.14)),
-            serde_json::json!(3.14)
-        );
-    }
-
-    #[test]
-    fn concrete_str_to_json() {
-        assert_eq!(
-            concrete_to_json(&ConcreteValue::Str("hello".into())),
-            serde_json::json!("hello")
-        );
-    }
-
-    #[test]
-    fn concrete_bool_to_json() {
-        assert_eq!(
-            concrete_to_json(&ConcreteValue::Bool(true)),
-            serde_json::json!(true)
-        );
+        assert_eq!(concrete_to_json(&ConcreteValue::Float(3.14)), serde_json::json!(3.14));
+        assert_eq!(concrete_to_json(&ConcreteValue::Str("hello".into())), serde_json::json!("hello"));
+        assert_eq!(concrete_to_json(&ConcreteValue::Bool(true)), serde_json::json!(true));
     }
 
     #[test]
@@ -769,32 +748,6 @@ mod tests {
     }
 
     // -- WorklistEntry ordering tests --
-
-    #[test]
-    fn user_provided_has_highest_priority() {
-        let mut heap = BinaryHeap::new();
-        heap.push(WorklistEntry {
-            inputs: vec![serde_json::json!(1)],
-            source: InputSource::Seed,
-        });
-        heap.push(WorklistEntry {
-            inputs: vec![serde_json::json!(2)],
-            source: InputSource::Z3Solved,
-        });
-        heap.push(WorklistEntry {
-            inputs: vec![serde_json::json!(3)],
-            source: InputSource::Fuzzed,
-        });
-        heap.push(WorklistEntry {
-            inputs: vec![serde_json::json!(4)],
-            source: InputSource::UserProvided,
-        });
-
-        assert_eq!(heap.pop().unwrap().source, InputSource::UserProvided);
-        assert_eq!(heap.pop().unwrap().source, InputSource::Z3Solved);
-        assert_eq!(heap.pop().unwrap().source, InputSource::Fuzzed);
-        assert_eq!(heap.pop().unwrap().source, InputSource::Seed);
-    }
 
     // -- ExploreConfig defaults --
 

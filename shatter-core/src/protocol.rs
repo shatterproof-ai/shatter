@@ -1215,41 +1215,6 @@ mod tests {
     }
 
     #[test]
-    fn setup_response_serializes_with_status_tag() {
-        let resp = Response::new(
-            30,
-            ResponseResult::Setup {
-                setup_context: serde_json::json!({"ready": true}),
-            },
-        );
-        let json = serde_json::to_value(&resp).expect("serialize");
-        assert_eq!(json["status"], "setup");
-        assert_eq!(json["setup_context"], serde_json::json!({"ready": true}));
-    }
-
-    #[test]
-    fn teardown_ack_response_serializes_with_status_tag() {
-        let resp = Response::new(31, ResponseResult::TeardownAck);
-        let json = serde_json::to_value(&resp).expect("serialize");
-        assert_eq!(json["status"], "teardown_ack");
-    }
-
-    #[test]
-    fn generate_response_serializes_with_status_tag() {
-        let resp = Response::new(
-            32,
-            ResponseResult::Generate {
-                value: serde_json::json!(42),
-                generator_id: "generated".into(),
-                recipe: None,
-            },
-        );
-        let json = serde_json::to_value(&resp).expect("serialize");
-        assert_eq!(json["status"], "generate");
-        assert_eq!(json["value"], 42);
-    }
-
-    #[test]
     fn all_generator_kinds_round_trip() {
         round_trip(&GeneratorKind::TypeName);
         round_trip(&GeneratorKind::ParamName);

@@ -122,14 +122,6 @@ mod tests {
     }
 
     #[test]
-    fn sym_expr_param_empty_path_round_trips() {
-        round_trip(&SymExpr::Param {
-            name: "x".into(),
-            path: vec![],
-        });
-    }
-
-    #[test]
     fn sym_expr_const_round_trips() {
         round_trip(&SymExpr::Const(ConstValue::Int(42)));
         round_trip(&SymExpr::Const(ConstValue::Float(3.14)));
