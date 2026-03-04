@@ -11,6 +11,7 @@ import {
 } from "./executor.js";
 import { instrumentFunction } from "./instrumentor.js";
 import * as fs from "node:fs";
+import { PROTOCOL_VERSION } from "./protocol.js";
 import type { SideEffect } from "./protocol.js";
 
 const FIXTURES_DIR = path.resolve(__dirname, "__fixtures__");
@@ -154,7 +155,7 @@ describe("buildExecuteResponse", () => {
       [3, 4],
     );
 
-    const response = buildExecuteResponse(1, "0.1.0", rawResult);
+    const response = buildExecuteResponse(1, PROTOCOL_VERSION, rawResult);
 
     expect(response.status).toBe("execute");
     expect(response.return_value).toBe(7);
@@ -171,7 +172,7 @@ describe("buildExecuteResponse", () => {
       [5],
     );
 
-    const response = buildExecuteResponse(2, "0.1.0", rawResult);
+    const response = buildExecuteResponse(2, PROTOCOL_VERSION, rawResult);
     const json = JSON.stringify(response);
     const parsed = JSON.parse(json) as typeof response;
 
@@ -389,7 +390,7 @@ describe("intra-package module resolution", () => {
 describe("buildExecuteResponse side effects", () => {
   it("passes side_effects through to the response", () => {
     const result = executeFunction(SIDE_EFFECTS_FIXTURE, "logsAndReturns", [7]);
-    const response = buildExecuteResponse(1, "0.1.0", result);
+    const response = buildExecuteResponse(1, PROTOCOL_VERSION, result);
 
     expect(response.side_effects.length).toBeGreaterThan(0);
     expect(response.side_effects).toEqual(result.side_effects);
@@ -397,7 +398,7 @@ describe("buildExecuteResponse side effects", () => {
 
   it("acceptance: function with console.log and thrown error has both recorded", () => {
     const result = executeFunction(SIDE_EFFECTS_FIXTURE, "throwsError", ["fail"]);
-    const response = buildExecuteResponse(1, "0.1.0", result);
+    const response = buildExecuteResponse(1, PROTOCOL_VERSION, result);
 
     const hasConsoleOutput = response.side_effects.some(
       (se: SideEffect) => se.kind === "console_output",

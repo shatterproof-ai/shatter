@@ -20,6 +20,7 @@ import (
 )
 
 const defaultExecTimeout = 5 * time.Second
+const defaultBuildTimeout = 30 * time.Second
 
 // execTimeout returns the execution timeout, reading from SHATTER_EXEC_TIMEOUT
 // env var (in seconds) with a fallback to defaultExecTimeout.
@@ -33,14 +34,21 @@ func execTimeout() time.Duration {
 }
 
 // buildTimeout returns the build timeout, reading from SHATTER_BUILD_TIMEOUT
-// env var (in seconds) with a fallback to 30s.
+// env var (in seconds) with a fallback to defaultBuildTimeout.
 func buildTimeout() time.Duration {
 	if s := os.Getenv("SHATTER_BUILD_TIMEOUT"); s != "" {
 		if secs, err := strconv.ParseFloat(s, 64); err == nil && secs > 0 {
 			return time.Duration(secs * float64(time.Second))
 		}
 	}
-	return 30 * time.Second
+	return defaultBuildTimeout
+}
+
+// SideEffect represents an observable side effect during execution.
+type SideEffect struct {
+	Type    string `json:"type"`
+	Level   string `json:"level,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 // ExecuteResult holds the output of running an instrumented function.
@@ -50,6 +58,7 @@ type ExecuteResult struct {
 	BranchPath    []BranchDecision `json:"branch_path"`
 	LinesExecuted []int            `json:"lines_executed"`
 	ExternalCalls []ExternalCall   `json:"external_calls,omitempty"`
+	SideEffects   []SideEffect     `json:"side_effects"`
 	Performance   PerfMetrics      `json:"performance"`
 }
 
@@ -176,14 +185,30 @@ func ExecuteFunction(sourcePath, funcName string, inputs []json.RawMessage, mock
 
 	runCmd := exec.CommandContext(runCtx, binaryPath)
 	runCmd.Dir = outputDir
-	runOut, runErr := runCmd.CombinedOutput()
+	var stdoutBuf, stderrBuf strings.Builder
+	runCmd.Stdout = &stdoutBuf
+	runCmd.Stderr = &stderrBuf
+	runErr := runCmd.Run()
 	wallTime := time.Since(start)
 
 	// Parse results even if the run failed (panic may have happened after some recording)
 	result := &ExecuteResult{
 		BranchPath:    []BranchDecision{},
 		LinesExecuted: []int{},
+		SideEffects:   []SideEffect{},
 		Performance:   PerfMetrics{WallTimeMs: float64(wallTime.Milliseconds())},
+	}
+
+	// Capture stdout/stderr as structured side effects.
+	if s := strings.TrimSpace(stdoutBuf.String()); s != "" {
+		result.SideEffects = append(result.SideEffects, SideEffect{
+			Type: "ConsoleOutput", Level: "log", Message: s,
+		})
+	}
+	if s := strings.TrimSpace(stderrBuf.String()); s != "" {
+		result.SideEffects = append(result.SideEffects, SideEffect{
+			Type: "ConsoleOutput", Level: "error", Message: s,
+		})
 	}
 
 	// Try to parse the shatter recording results
@@ -241,7 +266,7 @@ func ExecuteFunction(sourcePath, funcName string, inputs []json.RawMessage, mock
 			result.ThrownError = &ErrorInfo{
 				ErrorType:     "runtime_error",
 				Message:       runErr.Error(),
-				Stack:         string(runOut),
+				Stack:         stderrBuf.String(),
 				ErrorCategory: &cat,
 			}
 		}

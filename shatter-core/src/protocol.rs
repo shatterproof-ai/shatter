@@ -487,7 +487,7 @@ mod tests {
         round_trip(&Response::new(
             1,
             ResponseResult::Handshake {
-                frontend_version: "0.1.0".into(),
+                frontend_version: PROTOCOL_VERSION.into(),
                 language: "typescript".into(),
                 capabilities: vec!["analyze".into(), "execute".into(), "instrument".into()],
             },
@@ -889,7 +889,7 @@ mod tests {
         assert_eq!(
             resp.result,
             ResponseResult::Handshake {
-                frontend_version: "0.1.0".into(),
+                frontend_version: PROTOCOL_VERSION.into(),
                 language: "noop".into(),
                 capabilities: vec!["analyze".into(), "execute".into(), "instrument".into()],
             }

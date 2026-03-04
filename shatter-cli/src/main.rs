@@ -3558,9 +3558,9 @@ mod tests {
 
     #[test]
     fn frontend_config_typescript_uses_embedded_bundle() {
-        let config = frontend_config(Language::TypeScript, Duration::from_secs(30), LogLevel::Info, 10, 30, None, None).unwrap();
+        let config = frontend_config(Language::TypeScript, shatter_core::frontend::DEFAULT_REQUEST_TIMEOUT, LogLevel::Info, 10, 30, None, None).unwrap();
         assert_eq!(config.command, PathBuf::from("node"));
-        assert_eq!(config.request_timeout, Duration::from_secs(30));
+        assert_eq!(config.request_timeout, shatter_core::frontend::DEFAULT_REQUEST_TIMEOUT);
         // The arg should point to the extracted bundle, not a relative dev path
         assert_eq!(config.args.len(), 1);
         assert!(

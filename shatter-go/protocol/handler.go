@@ -115,7 +115,7 @@ func (h *Handler) dispatch(req Request) (Response, bool) {
 
 	if req.ProtocolVersion != ProtocolVersion {
 		base.Status = "error"
-		base.Code = "version_mismatch"
+		base.Code = ErrVersionMismatch
 		base.Message = fmt.Sprintf(
 			"unsupported protocol version %q, expected %q",
 			req.ProtocolVersion, ProtocolVersion,
@@ -142,7 +142,7 @@ func (h *Handler) dispatch(req Request) (Response, bool) {
 		return h.handleShutdown(base), true
 	default:
 		base.Status = "error"
-		base.Code = "invalid_request"
+		base.Code = ErrInvalidRequest
 		base.Message = fmt.Sprintf("unknown command: %s", req.Command)
 		return base, false
 	}
@@ -152,26 +152,28 @@ func (h *Handler) handleHandshake(resp Response, req Request) Response {
 	resp.Status = "handshake"
 	resp.FrontendVersion = frontendVersion
 	resp.Language = frontendLanguage
-	resp.Capabilities = []string{
-		"analyze", "execute", "instrument", "generate",
+	caps := make([]string, len(CommandCapabilities))
+	copy(caps, CommandCapabilities)
+	caps = append(caps,
 		"complex_type:date", "complex_type:duration", "complex_type:url",
 		"complex_type:reg_exp", "complex_type:ip_address", "complex_type:big_int",
 		"complex_type:rational", "complex_type:big_decimal", "complex_type:error",
-	}
+	)
+	resp.Capabilities = caps
 	return resp
 }
 
 func (h *Handler) handleAnalyze(resp Response, req Request) Response {
 	if req.File == "" {
 		resp.Status = "error"
-		resp.Code = "invalid_request"
+		resp.Code = ErrInvalidRequest
 		resp.Message = "analyze command requires a file path"
 		return resp
 	}
 
 	if _, err := os.Stat(req.File); err != nil {
 		resp.Status = "error"
-		resp.Code = "file_not_found"
+		resp.Code = ErrFileNotFound
 		resp.Message = fmt.Sprintf("file not found: %s", req.File)
 		return resp
 	}
@@ -192,7 +194,7 @@ func (h *Handler) handleAnalyze(resp Response, req Request) Response {
 			return resp
 		}
 		resp.Status = "error"
-		resp.Code = "parse_error"
+		resp.Code = ErrParseError
 		resp.Message = err.Error()
 		return resp
 	}
@@ -212,14 +214,14 @@ func isNotFound(err error) bool {
 func (h *Handler) handleInstrument(resp Response, req Request) Response {
 	if req.File == "" {
 		resp.Status = "error"
-		resp.Code = "invalid_request"
+		resp.Code = ErrInvalidRequest
 		resp.Message = "instrument command requires a file path"
 		return resp
 	}
 
 	if _, err := os.Stat(req.File); err != nil {
 		resp.Status = "error"
-		resp.Code = "file_not_found"
+		resp.Code = ErrFileNotFound
 		resp.Message = fmt.Sprintf("file not found: %s", req.File)
 		return resp
 	}
@@ -227,7 +229,7 @@ func (h *Handler) handleInstrument(resp Response, req Request) Response {
 	outputDir, err := instrument.InstrumentFile(req.File, req.Function)
 	if err != nil {
 		resp.Status = "error"
-		resp.Code = "internal_error"
+		resp.Code = ErrInternalError
 		resp.Message = fmt.Sprintf("instrumentation failed: %v", err)
 		return resp
 	}
@@ -246,21 +248,21 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 	}
 	if file == "" {
 		resp.Status = "error"
-		resp.Code = "invalid_request"
+		resp.Code = ErrInvalidRequest
 		resp.Message = "execute command requires a file path (or a prior analyze)"
 		return resp
 	}
 
 	if req.Function == nil || *req.Function == "" {
 		resp.Status = "error"
-		resp.Code = "invalid_request"
+		resp.Code = ErrInvalidRequest
 		resp.Message = "execute command requires a function name"
 		return resp
 	}
 
 	if _, err := os.Stat(file); err != nil {
 		resp.Status = "error"
-		resp.Code = "file_not_found"
+		resp.Code = ErrFileNotFound
 		resp.Message = fmt.Sprintf("file not found: %s", file)
 		return resp
 	}
@@ -283,9 +285,9 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 		} else if strings.Contains(err.Error(), "build failed") {
 			resp.Code = "instrumentation_failed"
 		} else if strings.Contains(err.Error(), "timed out") {
-			resp.Code = "execution_timeout"
+			resp.Code = ErrExecutionTimeout
 		} else {
-			resp.Code = "internal_error"
+			resp.Code = ErrInternalError
 		}
 		resp.Message = err.Error()
 		return resp
@@ -298,7 +300,7 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 	resp.BranchPath = convertBranchPath(result.BranchPath)
 	resp.PathConstraints = extractPathConstraints(result.BranchPath)
 	resp.CallsToExternal = convertExternalCalls(result.ExternalCalls)
-	resp.SideEffects = []SideEffect{}
+	resp.SideEffects = convertSideEffects(result.SideEffects)
 	resp.Performance = &PerfMetrics{
 		WallTimeMs:         result.Performance.WallTimeMs,
 		CPUTimeUs:          result.Performance.CPUTimeUs,
@@ -392,16 +394,32 @@ func convertExternalCalls(calls []instrument.ExternalCall) []ExternalCall {
 	return result
 }
 
+// convertSideEffects converts executor SideEffects to protocol format.
+func convertSideEffects(effects []instrument.SideEffect) []SideEffect {
+	if len(effects) == 0 {
+		return []SideEffect{}
+	}
+	result := make([]SideEffect, len(effects))
+	for i, e := range effects {
+		result[i] = SideEffect{
+			Kind:    e.Type,
+			Level:   e.Level,
+			Message: e.Message,
+		}
+	}
+	return result
+}
+
 func (h *Handler) handleSetup(resp Response, req Request) Response {
 	resp.Status = "error"
-	resp.Code = "internal_error"
+	resp.Code = ErrInternalError
 	resp.Message = "setup command not yet implemented"
 	return resp
 }
 
 func (h *Handler) handleTeardown(resp Response, req Request) Response {
 	resp.Status = "error"
-	resp.Code = "internal_error"
+	resp.Code = ErrInternalError
 	resp.Message = "teardown command not yet implemented"
 	return resp
 }
@@ -409,13 +427,13 @@ func (h *Handler) handleTeardown(resp Response, req Request) Response {
 func (h *Handler) handleGenerate(resp Response, req Request) Response {
 	if req.File == "" {
 		resp.Status = "error"
-		resp.Code = "invalid_request"
+		resp.Code = ErrInvalidRequest
 		resp.Message = "generate command requires a file path"
 		return resp
 	}
 	if req.Name == "" {
 		resp.Status = "error"
-		resp.Code = "invalid_request"
+		resp.Code = ErrInvalidRequest
 		resp.Message = "generate command requires a name"
 		return resp
 	}
@@ -428,7 +446,7 @@ func (h *Handler) handleGenerate(resp Response, req Request) Response {
 	value, generatorID, outRecipe, err := h.registry.Generate(req.File, req.Name, recipe)
 	if err != nil {
 		resp.Status = "error"
-		resp.Code = "internal_error"
+		resp.Code = ErrInternalError
 		resp.Message = fmt.Sprintf("generate failed: %v", err)
 		return resp
 	}

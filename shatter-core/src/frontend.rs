@@ -13,6 +13,13 @@ use tokio::process::{Child, Command};
 
 use crate::protocol::{Command as ProtoCommand, Request, Response, ResponseResult, PROTOCOL_VERSION};
 
+/// Default timeout for individual frontend requests (30 seconds).
+pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Grace period to wait for the frontend process to exit during shutdown
+/// before force-killing it.
+const SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(5);
+
 /// Errors that can occur when communicating with a frontend subprocess.
 #[derive(Debug, thiserror::Error)]
 pub enum FrontendError {
@@ -86,7 +93,7 @@ impl FrontendConfig {
         Self {
             command,
             args: Vec::new(),
-            request_timeout: Duration::from_secs(30),
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
             capabilities: vec![
                 "analyze".into(),
                 "execute".into(),
@@ -254,7 +261,7 @@ impl Frontend {
 
         // Wait briefly for the process to exit, then kill if still running.
         let wait_result =
-            tokio::time::timeout(Duration::from_secs(5), self.child.wait()).await;
+            tokio::time::timeout(SHUTDOWN_GRACE_PERIOD, self.child.wait()).await;
 
         match wait_result {
             Ok(Ok(_status)) => Ok(()),
@@ -475,7 +482,26 @@ mod tests {
         let config = FrontendConfig::new(PathBuf::from("/usr/bin/node"));
         assert_eq!(config.command, PathBuf::from("/usr/bin/node"));
         assert!(config.args.is_empty());
-        assert_eq!(config.request_timeout, Duration::from_secs(30));
+        assert_eq!(config.request_timeout, DEFAULT_REQUEST_TIMEOUT);
         assert_eq!(config.capabilities.len(), 3);
+    }
+
+    fn slow_frontend_config() -> FrontendConfig {
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let slow_path = manifest_dir.join("../protocol/slow-frontend.sh");
+        let mut config = FrontendConfig::new(PathBuf::from("bash"));
+        config.args = vec![slow_path.to_string_lossy().into_owned()];
+        config.request_timeout = Duration::from_millis(100);
+        config
+    }
+
+    #[tokio::test]
+    async fn spawn_timeout_returns_timeout_error() {
+        let config = slow_frontend_config();
+        match Frontend::spawn(&config).await {
+            Err(FrontendError::Timeout(_)) => {} // expected
+            Err(other) => panic!("expected FrontendError::Timeout, got: {other:?}"),
+            Ok(_) => panic!("expected timeout error from slow frontend"),
+        }
     }
 }

@@ -3,12 +3,23 @@ package protocol
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// reqJSON builds a JSON request string using ProtocolVersion instead of a
+// hard-coded version literal.
+func reqJSON(id int, command string, extra ...string) string {
+	base := fmt.Sprintf(`{"protocol_version":%q,"id":%d,"command":%q`, ProtocolVersion, id, command)
+	for _, e := range extra {
+		base += "," + e
+	}
+	return base + "}"
+}
 
 // sendRecv sends a single request and reads the response.
 func sendRecv(t *testing.T, reqJSON string) Response {
@@ -55,25 +66,25 @@ func conversation(t *testing.T, requests ...string) []Response {
 }
 
 func TestHandshakeReturnsGoLanguage(t *testing.T) {
-	resp := sendRecv(t, `{"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze"]}`)
+	resp := sendRecv(t, reqJSON(1, "handshake", `"capabilities":["analyze"]`))
 	if resp.Status != "handshake" {
 		t.Errorf("status = %q, want handshake", resp.Status)
 	}
 	if resp.Language != "go" {
 		t.Errorf("language = %q, want go", resp.Language)
 	}
-	if resp.FrontendVersion != "0.1.0" {
+	if resp.FrontendVersion != ProtocolVersion {
 		t.Errorf("frontend_version = %q, want 0.1.0", resp.FrontendVersion)
 	}
 }
 
 func TestHandshakeReturnsAllCapabilities(t *testing.T) {
-	resp := sendRecv(t, `{"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze"]}`)
+	resp := sendRecv(t, reqJSON(1, "handshake", `"capabilities":["analyze"]`))
 	caps := map[string]bool{}
 	for _, c := range resp.Capabilities {
 		caps[c] = true
 	}
-	for _, want := range []string{"analyze", "execute", "instrument", "generate"} {
+	for _, want := range CommandCapabilities {
 		if !caps[want] {
 			t.Errorf("missing capability %q in %v", want, resp.Capabilities)
 		}
@@ -81,21 +92,21 @@ func TestHandshakeReturnsAllCapabilities(t *testing.T) {
 }
 
 func TestHandshakeEchoesRequestID(t *testing.T) {
-	resp := sendRecv(t, `{"protocol_version":"0.1.0","id":42,"command":"handshake","capabilities":[]}`)
+	resp := sendRecv(t, reqJSON(42, "handshake", `"capabilities":[]`))
 	if resp.ID != 42 {
 		t.Errorf("id = %d, want 42", resp.ID)
 	}
 }
 
 func TestHandshakeIncludesProtocolVersion(t *testing.T) {
-	resp := sendRecv(t, `{"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":[]}`)
-	if resp.ProtocolVersion != "0.1.0" {
+	resp := sendRecv(t, reqJSON(1, "handshake", `"capabilities":[]`))
+	if resp.ProtocolVersion != ProtocolVersion {
 		t.Errorf("protocol_version = %q, want 0.1.0", resp.ProtocolVersion)
 	}
 }
 
 func TestShutdownReturnsAckAndStops(t *testing.T) {
-	resp := sendRecv(t, `{"protocol_version":"0.1.0","id":5,"command":"shutdown"}`)
+	resp := sendRecv(t, reqJSON(5, "shutdown"))
 	if resp.Status != "shutdown_ack" {
 		t.Errorf("status = %q, want shutdown_ack", resp.Status)
 	}
@@ -109,27 +120,27 @@ func TestVersionMismatchReturnsError(t *testing.T) {
 	if resp.Status != "error" {
 		t.Errorf("status = %q, want error", resp.Status)
 	}
-	if resp.Code != "version_mismatch" {
+	if resp.Code != ErrVersionMismatch {
 		t.Errorf("code = %q, want version_mismatch", resp.Code)
 	}
 }
 
 func TestUnknownCommandReturnsError(t *testing.T) {
-	resp := sendRecv(t, `{"protocol_version":"0.1.0","id":1,"command":"foobar"}`)
+	resp := sendRecv(t, reqJSON(1, "foobar"))
 	if resp.Status != "error" {
 		t.Errorf("status = %q, want error", resp.Status)
 	}
-	if resp.Code != "invalid_request" {
+	if resp.Code != ErrInvalidRequest {
 		t.Errorf("code = %q, want invalid_request", resp.Code)
 	}
 }
 
 func TestAnalyzeWithMissingFileReturnsError(t *testing.T) {
-	resp := sendRecv(t, `{"protocol_version":"0.1.0","id":2,"command":"analyze","file":"nonexistent.go"}`)
+	resp := sendRecv(t, reqJSON(2, "analyze", `"file":"nonexistent.go"`))
 	if resp.Status != "error" {
 		t.Errorf("status = %q, want error", resp.Status)
 	}
-	if resp.Code != "file_not_found" {
+	if resp.Code != ErrFileNotFound {
 		t.Errorf("code = %q, want file_not_found", resp.Code)
 	}
 }
@@ -140,7 +151,7 @@ func TestAnalyzeWithExistingFileReturnsEmptyFunctions(t *testing.T) {
 	if err := os.WriteFile(tmp, []byte("package main\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	req := `{"protocol_version":"0.1.0","id":3,"command":"analyze","file":"` + tmp + `"}`
+	req := reqJSON(3, "analyze", fmt.Sprintf(`"file":"%s"`, tmp))
 	resp := sendRecv(t, req)
 	if resp.Status != "analyze" {
 		t.Errorf("status = %q, want analyze", resp.Status)
@@ -157,7 +168,7 @@ func TestAnalyzeEmptyFileJSONIncludesFunctionsField(t *testing.T) {
 	}
 
 	// Send the analyze request and capture raw JSON output
-	input := strings.NewReader(`{"protocol_version":"0.1.0","id":3,"command":"analyze","file":"` + tmp + `"}` + "\n")
+	input := strings.NewReader(reqJSON(3, "analyze", fmt.Sprintf(`"file":"%s"`, tmp)) + "\n")
 	var output bytes.Buffer
 	handler := NewHandler(input, &output, io.Discard)
 	if err := handler.Run(); err != nil {
@@ -195,7 +206,7 @@ func TestAnalyzeReturnsFunctionAnalysis(t *testing.T) {
 	if err := os.WriteFile(tmp, []byte(src), 0644); err != nil {
 		t.Fatal(err)
 	}
-	req := `{"protocol_version":"0.1.0","id":3,"command":"analyze","file":"` + tmp + `"}`
+	req := reqJSON(3, "analyze", fmt.Sprintf(`"file":"%s"`, tmp))
 	resp := sendRecv(t, req)
 	if resp.Status != "analyze" {
 		t.Fatalf("status = %q, want analyze", resp.Status)
@@ -218,7 +229,7 @@ func TestAnalyzeWithFunctionFilterReturnsOneFunction(t *testing.T) {
 	if err := os.WriteFile(tmp, []byte(src), 0644); err != nil {
 		t.Fatal(err)
 	}
-	req := `{"protocol_version":"0.1.0","id":3,"command":"analyze","file":"` + tmp + `","function":"Bar"}`
+	req := reqJSON(3, "analyze", fmt.Sprintf(`"file":"%s","function":"Bar"`, tmp))
 	resp := sendRecv(t, req)
 	if resp.Status != "analyze" {
 		t.Fatalf("status = %q, want analyze", resp.Status)
@@ -236,7 +247,7 @@ func TestAnalyzeWithMissingFunctionReturnsError(t *testing.T) {
 	if err := os.WriteFile(tmp, []byte("package main\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	req := `{"protocol_version":"0.1.0","id":3,"command":"analyze","file":"` + tmp + `","function":"Missing"}`
+	req := reqJSON(3, "analyze", fmt.Sprintf(`"file":"%s","function":"Missing"`, tmp))
 	resp := sendRecv(t, req)
 	if resp.Status != "error" {
 		t.Fatalf("status = %q, want error", resp.Status)
@@ -247,31 +258,31 @@ func TestAnalyzeWithMissingFunctionReturnsError(t *testing.T) {
 }
 
 func TestAnalyzeWithoutFileReturnsError(t *testing.T) {
-	resp := sendRecv(t, `{"protocol_version":"0.1.0","id":2,"command":"analyze"}`)
+	resp := sendRecv(t, reqJSON(2, "analyze"))
 	if resp.Status != "error" {
 		t.Errorf("status = %q, want error", resp.Status)
 	}
-	if resp.Code != "invalid_request" {
+	if resp.Code != ErrInvalidRequest {
 		t.Errorf("code = %q, want invalid_request", resp.Code)
 	}
 }
 
 func TestInstrumentWithMissingFileReturnsError(t *testing.T) {
-	resp := sendRecv(t, `{"protocol_version":"0.1.0","id":3,"command":"instrument","file":"nonexistent.go"}`)
+	resp := sendRecv(t, reqJSON(3, "instrument", `"file":"nonexistent.go"`))
 	if resp.Status != "error" {
 		t.Errorf("status = %q, want error", resp.Status)
 	}
-	if resp.Code != "file_not_found" {
+	if resp.Code != ErrFileNotFound {
 		t.Errorf("code = %q, want file_not_found", resp.Code)
 	}
 }
 
 func TestInstrumentWithoutFileReturnsError(t *testing.T) {
-	resp := sendRecv(t, `{"protocol_version":"0.1.0","id":3,"command":"instrument"}`)
+	resp := sendRecv(t, reqJSON(3, "instrument"))
 	if resp.Status != "error" {
 		t.Errorf("status = %q, want error", resp.Status)
 	}
-	if resp.Code != "invalid_request" {
+	if resp.Code != ErrInvalidRequest {
 		t.Errorf("code = %q, want invalid_request", resp.Code)
 	}
 }
@@ -281,7 +292,7 @@ func TestInstrumentWithValidFileReturnsSuccess(t *testing.T) {
 	if err := os.WriteFile(tmp, []byte("package main\n\nfunc F(x int) int { if x > 0 { return 1 } ; return 0 }\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	req := `{"protocol_version":"0.1.0","id":3,"command":"instrument","file":"` + tmp + `"}`
+	req := reqJSON(3, "instrument", fmt.Sprintf(`"file":"%s"`, tmp))
 	resp := sendRecv(t, req)
 	if resp.Status != "instrument" {
 		t.Errorf("status = %q, want instrument (message: %s)", resp.Status, resp.Message)
@@ -299,11 +310,11 @@ func TestInstrumentWithValidFileReturnsSuccess(t *testing.T) {
 }
 
 func TestExecuteWithoutFileReturnsError(t *testing.T) {
-	resp := sendRecv(t, `{"protocol_version":"0.1.0","id":4,"command":"execute","function":"F","inputs":[],"mocks":[]}`)
+	resp := sendRecv(t, reqJSON(4, "execute", `"function":"F","inputs":[],"mocks":[]`))
 	if resp.Status != "error" {
 		t.Errorf("status = %q, want error", resp.Status)
 	}
-	if resp.Code != "invalid_request" {
+	if resp.Code != ErrInvalidRequest {
 		t.Errorf("code = %q, want invalid_request", resp.Code)
 	}
 }
@@ -313,22 +324,22 @@ func TestExecuteWithoutFunctionReturnsError(t *testing.T) {
 	if err := os.WriteFile(tmp, []byte("package main\n\nfunc F(x int) int { return x }\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	req := `{"protocol_version":"0.1.0","id":4,"command":"execute","file":"` + tmp + `","inputs":[]}`
+	req := reqJSON(4, "execute", fmt.Sprintf(`"file":"%s","inputs":[]`, tmp))
 	resp := sendRecv(t, req)
 	if resp.Status != "error" {
 		t.Errorf("status = %q, want error", resp.Status)
 	}
-	if resp.Code != "invalid_request" {
+	if resp.Code != ErrInvalidRequest {
 		t.Errorf("code = %q, want invalid_request", resp.Code)
 	}
 }
 
 func TestExecuteWithMissingFileReturnsError(t *testing.T) {
-	resp := sendRecv(t, `{"protocol_version":"0.1.0","id":4,"command":"execute","file":"/nonexistent.go","function":"F","inputs":[]}`)
+	resp := sendRecv(t, reqJSON(4, "execute", `"file":"/nonexistent.go","function":"F","inputs":[]`))
 	if resp.Status != "error" {
 		t.Errorf("status = %q, want error", resp.Status)
 	}
-	if resp.Code != "file_not_found" {
+	if resp.Code != ErrFileNotFound {
 		t.Errorf("code = %q, want file_not_found", resp.Code)
 	}
 }
@@ -347,7 +358,7 @@ func classify(x int) string {
 	if err := os.WriteFile(tmp, []byte(src), 0644); err != nil {
 		t.Fatal(err)
 	}
-	req := `{"protocol_version":"0.1.0","id":4,"command":"execute","file":"` + tmp + `","function":"classify","inputs":[5]}`
+	req := reqJSON(4, "execute", fmt.Sprintf(`"file":"%s","function":"classify","inputs":[5]`, tmp))
 	resp := sendRecv(t, req)
 	if resp.Status != "execute" {
 		t.Fatalf("status = %q, want execute (message: %s)", resp.Status, resp.Message)
@@ -394,7 +405,7 @@ func identity(x int) int {
 	if err := os.WriteFile(tmp, []byte(src), 0644); err != nil {
 		t.Fatal(err)
 	}
-	req := `{"protocol_version":"0.1.0","id":5,"command":"execute","file":"` + tmp + `","function":"identity","inputs":[42]}`
+	req := reqJSON(5, "execute", fmt.Sprintf(`"file":"%s","function":"identity","inputs":[42]`, tmp))
 	resp := sendRecv(t, req)
 	if resp.Status != "execute" {
 		t.Fatalf("status = %q, want execute (message: %s)", resp.Status, resp.Message)
@@ -417,7 +428,7 @@ func Foo() {}
 	if err := os.WriteFile(tmp, []byte(src), 0644); err != nil {
 		t.Fatal(err)
 	}
-	req := `{"protocol_version":"0.1.0","id":5,"command":"execute","file":"` + tmp + `","function":"NonExistent","inputs":[]}`
+	req := reqJSON(5, "execute", fmt.Sprintf(`"file":"%s","function":"NonExistent","inputs":[]`, tmp))
 	resp := sendRecv(t, req)
 	if resp.Status != "error" {
 		t.Fatalf("status = %q, want error", resp.Status)
@@ -439,9 +450,9 @@ func add(a int, b int) int {
 		t.Fatal(err)
 	}
 	responses := conversation(t,
-		`{"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze","execute"]}`,
-		`{"protocol_version":"0.1.0","id":2,"command":"execute","file":"`+tmp+`","function":"add","inputs":[3,4]}`,
-		`{"protocol_version":"0.1.0","id":3,"command":"shutdown"}`,
+		reqJSON(1, "handshake", `"capabilities":["analyze","execute"]`),
+		reqJSON(2, "execute", fmt.Sprintf(`"file":"%s","function":"add","inputs":[3,4]`, tmp)),
+		reqJSON(3, "shutdown"),
 	)
 	if len(responses) != 3 {
 		t.Fatalf("got %d responses, want 3", len(responses))
@@ -467,8 +478,8 @@ func add(a int, b int) int {
 
 func TestMultipleCommandsInSequence(t *testing.T) {
 	responses := conversation(t,
-		`{"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze"]}`,
-		`{"protocol_version":"0.1.0","id":2,"command":"shutdown"}`,
+		reqJSON(1, "handshake", `"capabilities":["analyze"]`),
+		reqJSON(2, "shutdown"),
 	)
 	if len(responses) != 2 {
 		t.Fatalf("got %d responses, want 2", len(responses))
@@ -483,8 +494,8 @@ func TestMultipleCommandsInSequence(t *testing.T) {
 
 func TestShutdownStopsProcessingFurtherCommands(t *testing.T) {
 	responses := conversation(t,
-		`{"protocol_version":"0.1.0","id":1,"command":"shutdown"}`,
-		`{"protocol_version":"0.1.0","id":2,"command":"handshake","capabilities":[]}`,
+		reqJSON(1, "shutdown"),
+		reqJSON(2, "handshake", `"capabilities":[]`),
 	)
 	// Should only get one response — handler stops after shutdown
 	if len(responses) != 1 {
@@ -493,7 +504,7 @@ func TestShutdownStopsProcessingFurtherCommands(t *testing.T) {
 }
 
 func TestEmptyLinesAreSkipped(t *testing.T) {
-	input := "\n\n" + `{"protocol_version":"0.1.0","id":1,"command":"shutdown"}` + "\n\n"
+	input := "\n\n" + reqJSON(1, "shutdown") + "\n\n"
 	var output bytes.Buffer
 	handler := NewHandler(strings.NewReader(input), &output, io.Discard)
 	if err := handler.Run(); err != nil {
@@ -506,8 +517,8 @@ func TestEmptyLinesAreSkipped(t *testing.T) {
 }
 
 func TestResponseIsValidNDJSON(t *testing.T) {
-	input := `{"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":[]}` + "\n" +
-		`{"protocol_version":"0.1.0","id":2,"command":"shutdown"}` + "\n"
+	input := reqJSON(1, "handshake", `"capabilities":[]`) + "\n" +
+		reqJSON(2, "shutdown") + "\n"
 	var output bytes.Buffer
 	handler := NewHandler(strings.NewReader(input), &output, io.Discard)
 	if err := handler.Run(); err != nil {
@@ -524,7 +535,7 @@ func TestResponseIsValidNDJSON(t *testing.T) {
 }
 
 func TestDebugOutputGoesToLog(t *testing.T) {
-	input := `{"protocol_version":"0.1.0","id":1,"command":"shutdown"}` + "\n"
+	input := reqJSON(1, "shutdown") + "\n"
 	var output, logBuf bytes.Buffer
 	handler := NewHandlerWithLogLevel(strings.NewReader(input), &output, &logBuf, "trace")
 	if err := handler.Run(); err != nil {
@@ -540,7 +551,7 @@ func TestDebugOutputGoesToLog(t *testing.T) {
 }
 
 func TestLogLevelFilteringSuppressesTraceAtInfo(t *testing.T) {
-	input := `{"protocol_version":"0.1.0","id":1,"command":"shutdown"}` + "\n"
+	input := reqJSON(1, "shutdown") + "\n"
 	var output, logBuf bytes.Buffer
 	handler := NewHandlerWithLogLevel(strings.NewReader(input), &output, &logBuf, "info")
 	if err := handler.Run(); err != nil {
@@ -556,7 +567,7 @@ func TestLogLevelFilteringSuppressesTraceAtInfo(t *testing.T) {
 }
 
 func TestLogLevelFilteringShowsDebugAtDebug(t *testing.T) {
-	input := `{"protocol_version":"0.1.0","id":1,"command":"shutdown"}` + "\n"
+	input := reqJSON(1, "shutdown") + "\n"
 	var output, logBuf bytes.Buffer
 	handler := NewHandlerWithLogLevel(strings.NewReader(input), &output, &logBuf, "debug")
 	if err := handler.Run(); err != nil {
@@ -575,11 +586,11 @@ func TestLogLevelFilteringShowsDebugAtDebug(t *testing.T) {
 }
 
 func TestSetupReturnsNotImplementedError(t *testing.T) {
-	resp := sendRecv(t, `{"protocol_version":"0.1.0","id":10,"command":"setup","file":"./setup.ts","function":"init","mode":"per_function"}`)
+	resp := sendRecv(t, reqJSON(10, "setup", `"file":"./setup.ts","function":"init","mode":"per_function"`))
 	if resp.Status != "error" {
 		t.Errorf("status = %q, want error", resp.Status)
 	}
-	if resp.Code != "internal_error" {
+	if resp.Code != ErrInternalError {
 		t.Errorf("code = %q, want internal_error", resp.Code)
 	}
 	if !strings.Contains(resp.Message, "not yet implemented") {
@@ -591,11 +602,11 @@ func TestSetupReturnsNotImplementedError(t *testing.T) {
 }
 
 func TestTeardownReturnsNotImplementedError(t *testing.T) {
-	resp := sendRecv(t, `{"protocol_version":"0.1.0","id":11,"command":"teardown","function":"init"}`)
+	resp := sendRecv(t, reqJSON(11, "teardown", `"function":"init"`))
 	if resp.Status != "error" {
 		t.Errorf("status = %q, want error", resp.Status)
 	}
-	if resp.Code != "internal_error" {
+	if resp.Code != ErrInternalError {
 		t.Errorf("code = %q, want internal_error", resp.Code)
 	}
 	if !strings.Contains(resp.Message, "not yet implemented") {
@@ -607,11 +618,11 @@ func TestTeardownReturnsNotImplementedError(t *testing.T) {
 }
 
 func TestGenerateWithUnsupportedExtensionReturnsError(t *testing.T) {
-	resp := sendRecv(t, `{"protocol_version":"0.1.0","id":12,"command":"generate","file":"./gen.ts","name":"User","kind":"type_name"}`)
+	resp := sendRecv(t, reqJSON(12, "generate", `"file":"./gen.ts","name":"User","kind":"type_name"`))
 	if resp.Status != "error" {
 		t.Errorf("status = %q, want error", resp.Status)
 	}
-	if resp.Code != "internal_error" {
+	if resp.Code != ErrInternalError {
 		t.Errorf("code = %q, want internal_error", resp.Code)
 	}
 	if !strings.Contains(resp.Message, "unsupported generator type") {
@@ -623,21 +634,21 @@ func TestGenerateWithUnsupportedExtensionReturnsError(t *testing.T) {
 }
 
 func TestGenerateWithoutFileReturnsError(t *testing.T) {
-	resp := sendRecv(t, `{"protocol_version":"0.1.0","id":13,"command":"generate","name":"User","kind":"type_name"}`)
+	resp := sendRecv(t, reqJSON(13, "generate", `"name":"User","kind":"type_name"`))
 	if resp.Status != "error" {
 		t.Errorf("status = %q, want error", resp.Status)
 	}
-	if resp.Code != "invalid_request" {
+	if resp.Code != ErrInvalidRequest {
 		t.Errorf("code = %q, want invalid_request", resp.Code)
 	}
 }
 
 func TestGenerateWithoutNameReturnsError(t *testing.T) {
-	resp := sendRecv(t, `{"protocol_version":"0.1.0","id":14,"command":"generate","file":"./gen.wasm","kind":"type_name"}`)
+	resp := sendRecv(t, reqJSON(14, "generate", `"file":"./gen.wasm","kind":"type_name"`))
 	if resp.Status != "error" {
 		t.Errorf("status = %q, want error", resp.Status)
 	}
-	if resp.Code != "invalid_request" {
+	if resp.Code != ErrInvalidRequest {
 		t.Errorf("code = %q, want invalid_request", resp.Code)
 	}
 }
@@ -650,17 +661,17 @@ func TestSetupTeardownStubsTableDriven(t *testing.T) {
 	}{
 		{
 			name:    "setup per_function",
-			request: `{"protocol_version":"0.1.0","id":20,"command":"setup","file":"./setup.ts","function":"fn1","mode":"per_function"}`,
+			request: reqJSON(20, "setup", `"file":"./setup.ts","function":"fn1","mode":"per_function"`),
 			wantID:  20,
 		},
 		{
 			name:    "setup per_execution",
-			request: `{"protocol_version":"0.1.0","id":21,"command":"setup","file":"./setup.ts","function":"fn1","mode":"per_execution"}`,
+			request: reqJSON(21, "setup", `"file":"./setup.ts","function":"fn1","mode":"per_execution"`),
 			wantID:  21,
 		},
 		{
 			name:    "teardown",
-			request: `{"protocol_version":"0.1.0","id":22,"command":"teardown","function":"fn1"}`,
+			request: reqJSON(22, "teardown", `"function":"fn1"`),
 			wantID:  22,
 		},
 	}
@@ -671,7 +682,7 @@ func TestSetupTeardownStubsTableDriven(t *testing.T) {
 			if resp.Status != "error" {
 				t.Errorf("status = %q, want error", resp.Status)
 			}
-			if resp.Code != "internal_error" {
+			if resp.Code != ErrInternalError {
 				t.Errorf("code = %q, want internal_error", resp.Code)
 			}
 			if !strings.Contains(resp.Message, "not yet implemented") {
@@ -680,7 +691,7 @@ func TestSetupTeardownStubsTableDriven(t *testing.T) {
 			if resp.ID != tt.wantID {
 				t.Errorf("id = %d, want %d", resp.ID, tt.wantID)
 			}
-			if resp.ProtocolVersion != "0.1.0" {
+			if resp.ProtocolVersion != ProtocolVersion {
 				t.Errorf("protocol_version = %q, want 0.1.0", resp.ProtocolVersion)
 			}
 		})
@@ -695,12 +706,12 @@ func TestGenerateUnsupportedExtensionTableDriven(t *testing.T) {
 	}{
 		{
 			name:    "generate type_name with .ts file",
-			request: `{"protocol_version":"0.1.0","id":23,"command":"generate","file":"./gen.ts","name":"User","kind":"type_name"}`,
+			request: reqJSON(23, "generate", `"file":"./gen.ts","name":"User","kind":"type_name"`),
 			wantID:  23,
 		},
 		{
 			name:    "generate param_name with .ts file",
-			request: `{"protocol_version":"0.1.0","id":24,"command":"generate","file":"./gen.ts","name":"authToken","kind":"param_name"}`,
+			request: reqJSON(24, "generate", `"file":"./gen.ts","name":"authToken","kind":"param_name"`),
 			wantID:  24,
 		},
 	}
@@ -711,7 +722,7 @@ func TestGenerateUnsupportedExtensionTableDriven(t *testing.T) {
 			if resp.Status != "error" {
 				t.Errorf("status = %q, want error", resp.Status)
 			}
-			if resp.Code != "internal_error" {
+			if resp.Code != ErrInternalError {
 				t.Errorf("code = %q, want internal_error", resp.Code)
 			}
 			if !strings.Contains(resp.Message, "unsupported generator type") {
@@ -720,7 +731,7 @@ func TestGenerateUnsupportedExtensionTableDriven(t *testing.T) {
 			if resp.ID != tt.wantID {
 				t.Errorf("id = %d, want %d", resp.ID, tt.wantID)
 			}
-			if resp.ProtocolVersion != "0.1.0" {
+			if resp.ProtocolVersion != ProtocolVersion {
 				t.Errorf("protocol_version = %q, want 0.1.0", resp.ProtocolVersion)
 			}
 		})
@@ -729,11 +740,11 @@ func TestGenerateUnsupportedExtensionTableDriven(t *testing.T) {
 
 func TestNewCommandsInConversationSequence(t *testing.T) {
 	responses := conversation(t,
-		`{"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze"]}`,
-		`{"protocol_version":"0.1.0","id":2,"command":"setup","file":"./setup.ts","function":"fn1","mode":"per_function"}`,
-		`{"protocol_version":"0.1.0","id":3,"command":"teardown","function":"fn1"}`,
-		`{"protocol_version":"0.1.0","id":4,"command":"generate","file":"./gen.ts","name":"User","kind":"type_name"}`,
-		`{"protocol_version":"0.1.0","id":5,"command":"shutdown"}`,
+		reqJSON(1, "handshake", `"capabilities":["analyze"]`),
+		reqJSON(2, "setup", `"file":"./setup.ts","function":"fn1","mode":"per_function"`),
+		reqJSON(3, "teardown", `"function":"fn1"`),
+		reqJSON(4, "generate", `"file":"./gen.ts","name":"User","kind":"type_name"`),
+		reqJSON(5, "shutdown"),
 	)
 	if len(responses) != 5 {
 		t.Fatalf("got %d responses, want 5", len(responses))
@@ -765,19 +776,19 @@ func TestNewCommandRequestDeserialization(t *testing.T) {
 	}{
 		{
 			name:     "setup request",
-			json:     `{"protocol_version":"0.1.0","id":1,"command":"setup","file":"./setup.ts","function":"fn1","mode":"per_function"}`,
+			json:     reqJSON(1, "setup", `"file":"./setup.ts","function":"fn1","mode":"per_function"`),
 			wantCmd:  "setup",
 			wantFile: "./setup.ts",
 			wantFunc: "fn1",
 		},
 		{
 			name:    "teardown request",
-			json:    `{"protocol_version":"0.1.0","id":2,"command":"teardown","function":"fn1"}`,
+			json:    reqJSON(2, "teardown", `"function":"fn1"`),
 			wantCmd: "teardown",
 		},
 		{
 			name:     "generate request",
-			json:     `{"protocol_version":"0.1.0","id":3,"command":"generate","file":"./gen.ts","name":"User","kind":"type_name"}`,
+			json:     reqJSON(3, "generate", `"file":"./gen.ts","name":"User","kind":"type_name"`),
 			wantCmd:  "generate",
 			wantFile: "./gen.ts",
 		},
@@ -816,12 +827,12 @@ func TestSetupRequestDeserializesMode(t *testing.T) {
 	}{
 		{
 			name:     "per_function",
-			json:     `{"protocol_version":"0.1.0","id":1,"command":"setup","file":"./s.ts","function":"f","mode":"per_function"}`,
+			json:     reqJSON(1, "setup", `"file":"./s.ts","function":"f","mode":"per_function"`),
 			wantMode: "per_function",
 		},
 		{
 			name:     "per_execution",
-			json:     `{"protocol_version":"0.1.0","id":1,"command":"setup","file":"./s.ts","function":"f","mode":"per_execution"}`,
+			json:     reqJSON(1, "setup", `"file":"./s.ts","function":"f","mode":"per_execution"`),
 			wantMode: "per_execution",
 		},
 	}
@@ -847,13 +858,13 @@ func TestGenerateRequestDeserializesKind(t *testing.T) {
 	}{
 		{
 			name:     "type_name",
-			json:     `{"protocol_version":"0.1.0","id":1,"command":"generate","file":"./g.ts","name":"User","kind":"type_name"}`,
+			json:     reqJSON(1, "generate", `"file":"./g.ts","name":"User","kind":"type_name"`),
 			wantName: "User",
 			wantKind: "type_name",
 		},
 		{
 			name:     "param_name",
-			json:     `{"protocol_version":"0.1.0","id":1,"command":"generate","file":"./g.ts","name":"authToken","kind":"param_name"}`,
+			json:     reqJSON(1, "generate", `"file":"./g.ts","name":"authToken","kind":"param_name"`),
 			wantName: "authToken",
 			wantKind: "param_name",
 		},

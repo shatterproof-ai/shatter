@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use shatter_core::frontend::{Frontend, FrontendConfig};
+use shatter_core::frontend::{Frontend, FrontendConfig, DEFAULT_REQUEST_TIMEOUT};
 use shatter_core::orchestrator::{self, ExploreConfig, ExploreResult};
 use shatter_core::protocol::{Command as ProtoCommand, ResponseResult};
 
@@ -35,7 +35,7 @@ async fn spawn_ts_frontend() -> Frontend {
 
     let mut config = FrontendConfig::new(PathBuf::from("node"));
     config.args = vec![frontend_path.to_string_lossy().into_owned()];
-    config.request_timeout = Duration::from_secs(30);
+    config.request_timeout = DEFAULT_REQUEST_TIMEOUT;
 
     Frontend::spawn(&config)
         .await

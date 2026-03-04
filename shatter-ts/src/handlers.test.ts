@@ -28,7 +28,7 @@ describe("parseRequest", () => {
   });
 
   it("rejects request without id", () => {
-    const result = parseRequest('{"command":"handshake","protocol_version":"0.1.0"}');
+    const result = parseRequest(`{"command":"handshake","protocol_version":"${PROTOCOL_VERSION}"}`);
     expect("error" in result).toBe(true);
     if ("error" in result) {
       expect(result.error.code).toBe("invalid_request");
@@ -45,7 +45,7 @@ describe("parseRequest", () => {
   });
 
   it("rejects request without command", () => {
-    const result = parseRequest('{"id":1,"protocol_version":"0.1.0"}');
+    const result = parseRequest(`{"id":1,"protocol_version":"${PROTOCOL_VERSION}"}`);
     expect("error" in result).toBe(true);
     if ("error" in result) {
       expect(result.error.code).toBe("invalid_request");
@@ -53,7 +53,7 @@ describe("parseRequest", () => {
   });
 
   it("rejects unknown command", () => {
-    const result = parseRequest('{"id":1,"protocol_version":"0.1.0","command":"bogus"}');
+    const result = parseRequest(`{"id":1,"protocol_version":"${PROTOCOL_VERSION}","command":"bogus"}`);
     expect("error" in result).toBe(true);
     if ("error" in result) {
       expect(result.error.code).toBe("invalid_request");
@@ -63,7 +63,7 @@ describe("parseRequest", () => {
 
   it("accepts valid handshake request", () => {
     const result = parseRequest(
-      '{"id":1,"protocol_version":"0.1.0","command":"handshake","capabilities":["analyze"]}'
+      `{"id":1,"protocol_version":"${PROTOCOL_VERSION}","command":"handshake","capabilities":["analyze"]}`
     );
     expect("request" in result).toBe(true);
     if ("request" in result) {
@@ -74,7 +74,7 @@ describe("parseRequest", () => {
 
   it("accepts valid shutdown request", () => {
     const result = parseRequest(
-      '{"id":5,"protocol_version":"0.1.0","command":"shutdown"}'
+      `{"id":5,"protocol_version":"${PROTOCOL_VERSION}","command":"shutdown"}`
     );
     expect("request" in result).toBe(true);
     if ("request" in result) {
@@ -477,7 +477,7 @@ describe("handleRequest", () => {
 
 describe("protocol round-trip", () => {
   it("handshake response deserializes from noop-frontend format", () => {
-    const json = '{"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"typescript","capabilities":["analyze","execute","instrument"]}';
+    const json = `{"protocol_version":"${PROTOCOL_VERSION}","id":1,"status":"handshake","frontend_version":"${PROTOCOL_VERSION}","language":"typescript","capabilities":["analyze","execute","instrument"]}`;
     const response: Response = JSON.parse(json) as Response;
     expect(response.status).toBe("handshake");
     expect(response.id).toBe(1);
@@ -700,7 +700,7 @@ describe("protocol round-trip", () => {
 describe("parseRequest with new commands", () => {
   it("accepts valid setup request", () => {
     const result = parseRequest(
-      '{"id":1,"protocol_version":"0.1.0","command":"setup","file":"s.ts","function":"fn","mode":"per_function"}'
+      `{"id":1,"protocol_version":"${PROTOCOL_VERSION}","command":"setup","file":"s.ts","function":"fn","mode":"per_function"}`
     );
     expect("request" in result).toBe(true);
     if ("request" in result) {
@@ -710,7 +710,7 @@ describe("parseRequest with new commands", () => {
 
   it("accepts valid teardown request", () => {
     const result = parseRequest(
-      '{"id":2,"protocol_version":"0.1.0","command":"teardown","function":"fn"}'
+      `{"id":2,"protocol_version":"${PROTOCOL_VERSION}","command":"teardown","function":"fn"}`
     );
     expect("request" in result).toBe(true);
     if ("request" in result) {
@@ -720,7 +720,7 @@ describe("parseRequest with new commands", () => {
 
   it("accepts valid generate request", () => {
     const result = parseRequest(
-      '{"id":3,"protocol_version":"0.1.0","command":"generate","file":"g.ts","name":"User","kind":"type_name"}'
+      `{"id":3,"protocol_version":"${PROTOCOL_VERSION}","command":"generate","file":"g.ts","name":"User","kind":"type_name"}`
     );
     expect("request" in result).toBe(true);
     if ("request" in result) {

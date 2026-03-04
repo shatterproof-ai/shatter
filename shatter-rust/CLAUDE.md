@@ -11,3 +11,7 @@ Rust language frontend for Shatter. Standalone binary implementing the JSON-over
 Does **not** depend on `shatter-core` — defines its own protocol types that produce compatible JSON.
 
 Commands: `handshake`, `analyze`, `instrument`, `execute`, `setup`, `teardown`, `generate`, `shutdown`
+
+## Timeout Contract
+
+Execution timeout: 5s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `exec_timeout_from_env()` in `src/handler.rs`. Currently stored but not applied (execute is unimplemented).

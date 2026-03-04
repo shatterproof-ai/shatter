@@ -577,6 +577,14 @@ mod tests {
     use crate::protocol::ExecuteResult;
     use crate::protocol::PerformanceMetrics;
 
+    /// Base command capabilities for test frontends.
+    const BASE_CAPABILITIES: &[&str] = &["analyze", "execute", "instrument"];
+
+    /// Build a capability string list from base + additional capabilities.
+    fn capabilities_with(extra: &[&str]) -> Vec<String> {
+        BASE_CAPABILITIES.iter().chain(extra.iter()).map(|s| (*s).into()).collect()
+    }
+
     fn empty_perf() -> PerformanceMetrics {
         PerformanceMetrics {
             wall_time_ms: 0.0,
@@ -923,10 +931,7 @@ mod tests {
     async fn per_function_setup_teardown_lifecycle() {
         let mut frontend = spawn_noop_frontend().await;
         let analysis = stub_analysis();
-        let caps = FrontendCapabilities::from_raw(&[
-            "analyze".into(), "execute".into(), "instrument".into(),
-            "setup".into(), "teardown".into(),
-        ]);
+        let caps = FrontendCapabilities::from_raw(&capabilities_with(&["setup", "teardown"]));
         let config = ExploreConfig {
             file: "test.ts".into(), max_iterations: 2, seed: Some(42), mocks: vec![],
             setup_file: Some("setup.ts".into()), setup_mode: SetupMode::PerFunction,
@@ -944,10 +949,7 @@ mod tests {
     async fn per_execution_setup_teardown_lifecycle() {
         let mut frontend = spawn_noop_frontend().await;
         let analysis = stub_analysis();
-        let caps = FrontendCapabilities::from_raw(&[
-            "analyze".into(), "execute".into(), "instrument".into(),
-            "setup".into(), "teardown".into(),
-        ]);
+        let caps = FrontendCapabilities::from_raw(&capabilities_with(&["setup", "teardown"]));
         let config = ExploreConfig {
             file: "test.ts".into(), max_iterations: 2, seed: Some(42), mocks: vec![],
             setup_file: Some("setup.ts".into()), setup_mode: SetupMode::PerExecution,
@@ -964,9 +966,7 @@ mod tests {
     async fn setup_skipped_when_frontend_lacks_capability() {
         let mut frontend = spawn_noop_frontend().await;
         let analysis = stub_analysis();
-        let caps = FrontendCapabilities::from_raw(&[
-            "analyze".into(), "execute".into(), "instrument".into(),
-        ]);
+        let caps = FrontendCapabilities::from_raw(&capabilities_with(&[]));
         let config = ExploreConfig {
             file: "test.ts".into(), max_iterations: 2, seed: Some(42), mocks: vec![],
             setup_file: Some("setup.ts".into()), setup_mode: SetupMode::PerFunction,
@@ -982,9 +982,7 @@ mod tests {
     async fn generator_integration_uses_custom_values() {
         let mut frontend = spawn_noop_frontend().await;
         let analysis = stub_analysis();
-        let caps = FrontendCapabilities::from_raw(&[
-            "analyze".into(), "execute".into(), "instrument".into(), "generate".into(),
-        ]);
+        let caps = FrontendCapabilities::from_raw(&capabilities_with(&["generate"]));
         let config = ExploreConfig {
             file: "test.ts".into(), max_iterations: 2, seed: Some(42), mocks: vec![],
             setup_file: None, setup_mode: SetupMode::PerFunction,
@@ -1006,9 +1004,7 @@ mod tests {
     async fn fallback_to_builtin_when_no_generators_configured() {
         let mut frontend = spawn_noop_frontend().await;
         let analysis = stub_analysis();
-        let caps = FrontendCapabilities::from_raw(&[
-            "analyze".into(), "execute".into(), "instrument".into(), "generate".into(),
-        ]);
+        let caps = FrontendCapabilities::from_raw(&capabilities_with(&["generate"]));
         let config = ExploreConfig {
             file: "test.ts".into(), max_iterations: 3, seed: Some(42), mocks: vec![],
             setup_file: None, setup_mode: SetupMode::PerFunction,

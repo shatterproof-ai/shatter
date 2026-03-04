@@ -85,11 +85,14 @@ pub struct ExploreConfig {
     pub solver_timeout_ms: Option<u64>,
 }
 
+/// Default maximum total executions before stopping exploration.
+pub const DEFAULT_MAX_EXECUTIONS: usize = 500;
+
 impl Default for ExploreConfig {
     fn default() -> Self {
         Self {
             max_iterations: 100,
-            max_executions: 500,
+            max_executions: DEFAULT_MAX_EXECUTIONS,
             plateau_threshold: 20,
             mocks: vec![],
             solver_timeout_ms: None,
@@ -799,7 +802,7 @@ mod tests {
     fn default_config_has_reasonable_limits() {
         let config = ExploreConfig::default();
         assert_eq!(config.max_iterations, 100);
-        assert_eq!(config.max_executions, 500);
+        assert_eq!(config.max_executions, DEFAULT_MAX_EXECUTIONS);
         assert_eq!(config.plateau_threshold, 20);
     }
 
@@ -1022,6 +1025,9 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::time::Duration;
 
+    /// Request timeout for integration tests using mock frontends.
+    const TEST_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
     fn frontend_script(name: &str) -> PathBuf {
         let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
         manifest_dir.join("../protocol").join(name)
@@ -1030,7 +1036,7 @@ mod tests {
     fn config_for_script(script: &str) -> FrontendConfig {
         let mut config = FrontendConfig::new(PathBuf::from("bash"));
         config.args = vec![frontend_script(script).to_string_lossy().into_owned()];
-        config.request_timeout = Duration::from_secs(10);
+        config.request_timeout = TEST_REQUEST_TIMEOUT;
         config
     }
 

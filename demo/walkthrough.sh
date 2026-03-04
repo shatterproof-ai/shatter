@@ -126,7 +126,7 @@ GO_EXAMPLES=(
     "examples/go/03-errors.go:SafeDivide"
 )
 
-TOTAL=31
+TOTAL=33
 
 # ─── Walkthrough ──────────────────────────────────────────────────────
 
@@ -231,74 +231,84 @@ step 18 $TOTAL "Go Execution Timeout" \
     "Configurable timeouts also apply to the Go frontend" \
     $SHATTER explore --exec-timeout 8 "${GO_EXAMPLES[0]}"
 
-# Stage 19: Behavioral specification (markdown)
-step 19 $TOTAL "Behavioral Specification (Markdown)" \
+# Stage 19: Scan with total timeout
+step 19 $TOTAL "Scan Total Timeout" \
+    "Bound overall scan wall-clock time with --timeout-total" \
+    $SHATTER scan --timeout-total 120 --timeout-per-fn 30 examples/typescript/src
+
+# Stage 20: Memory limit
+step 20 $TOTAL "Memory Limit" \
+    "Cap frontend memory usage (sets --max-old-space-size for TS, GOMEMLIMIT for Go)" \
+    $SHATTER explore --memory-limit 512 "${EXAMPLES[0]}"
+
+# Stage 21: Behavioral specification (markdown)
+step 21 $TOTAL "Behavioral Specification (Markdown)" \
     "Generate a behavioral spec with equivalence classes, pre/postconditions" \
     $SHATTER explore --spec "${EXAMPLES[0]}"
 
-# Stage 20: Behavioral specification (JSON)
-step 20 $TOTAL "Behavioral Specification (JSON)" \
+# Stage 22: Behavioral specification (JSON)
+step 22 $TOTAL "Behavioral Specification (JSON)" \
     "Machine-readable JSON spec for tooling integration" \
     $SHATTER explore --spec-json "${EXAMPLES[0]}"
 
-# Stage 21: Spec diff
+# Stage 23: Spec diff
 # Generate two spec JSON files and diff them. We use the same function twice
 # (identical specs) so the diff shows "No changes detected" — a real diff
 # would compare specs from different code versions.
-step 21 $TOTAL "Specification Diff" \
+step 23 $TOTAL "Specification Diff" \
     "Compare two spec JSON files to detect behavioral regressions" \
     bash -c "$SHATTER explore --spec-json '${EXAMPLES[0]}' > /tmp/shatter-spec-old.json 2>/dev/null && cp /tmp/shatter-spec-old.json /tmp/shatter-spec-new.json && $SHATTER spec-diff /tmp/shatter-spec-old.json /tmp/shatter-spec-new.json"
 
-# Stage 22: Explore without boundary values
-step 22 $TOTAL "Explore Without Boundary Values" \
+# Stage 24: Explore without boundary values
+step 24 $TOTAL "Explore Without Boundary Values" \
     "Disable built-in boundary value seeding with --no-boundary-values" \
     $SHATTER explore --no-boundary-values "${EXAMPLES[0]}"
 
-# Stage 23: Emit tests from scan
-step 23 $TOTAL "Emit Tests from Scan" \
+# Stage 25: Emit tests from scan
+step 25 $TOTAL "Emit Tests from Scan" \
     "Generate Jest test files from behavior maps discovered during scan" \
     $SHATTER scan --emit-tests jest --output /tmp/shatter-demo-tests \
     examples/typescript/src
 
-# Stage 24: Markdown scan report
-step 24 $TOTAL "Markdown Scan Report" \
+# Stage 26: Markdown scan report
+step 26 $TOTAL "Markdown Scan Report" \
     "Generate a human-readable markdown report alongside JSON" \
     $SHATTER scan --format=markdown examples/typescript/src
 
-# Stage 25: Scan dry-run
-step 25 $TOTAL "Scan Dry Run" \
+# Stage 27: Scan dry-run
+step 27 $TOTAL "Scan Dry Run" \
     "Preview which files would be scanned without executing" \
     $SHATTER scan --dry-run --language typescript examples/typescript/src
 
-# Stage 26: Invariant detection
-step 26 $TOTAL "Invariant Detection" \
+# Stage 28: Invariant detection
+step 28 $TOTAL "Invariant Detection" \
     "Detect Daikon-style invariants over explored executions" \
     $SHATTER explore --invariants "${EXAMPLES[0]}"
 
-# Stage 27: Setup + generators via config
-step 27 $TOTAL "Setup + Generators via Config" \
+# Stage 29: Setup + generators via config
+step 29 $TOTAL "Setup + Generators via Config" \
     "Explore with setup/teardown lifecycle and custom type generators from .shatter/config.yaml" \
     $SHATTER explore --config examples/typescript/.shatter/config.yaml \
     "examples/typescript/src/03-objects.ts:categorizeUser"
 
-# Stage 28: Setup + generators with debug logging
-step 28 $TOTAL "Setup + Generators (Debug)" \
+# Stage 30: Setup + generators with debug logging
+step 30 $TOTAL "Setup + Generators (Debug)" \
     "Show setup/teardown and generator lifecycle with --log-level debug" \
     $SHATTER explore --config examples/typescript/.shatter/config.yaml \
     --log-level debug "examples/typescript/src/03-objects.ts:categorizeUser"
 
-# Stage 29: File-level explore (all exported functions)
-step 29 $TOTAL "File-Level Explore" \
+# Stage 31: File-level explore (all exported functions)
+step 31 $TOTAL "File-Level Explore" \
     "Explore all exported functions in a file by passing just the file path" \
     $SHATTER explore examples/typescript/src/01-arithmetic.ts
 
-# Stage 30: Concolic exploration (Z3-backed)
-step 30 $TOTAL "Concolic Exploration (Z3)" \
+# Stage 32: Concolic exploration (Z3-backed)
+step 32 $TOTAL "Concolic Exploration (Z3)" \
     "Use the Z3-backed concolic explorer to solve branch constraints" \
     $SHATTER explore --concolic "${EXAMPLES[0]}"
 
-# Stage 31: Custom build-frontend help
-step 31 $TOTAL "Custom Build Frontend" \
+# Stage 33: Custom build-frontend help
+step 33 $TOTAL "Custom Build Frontend" \
     "Show the build-frontend subcommand for compiling native generators into a custom frontend binary" \
     $SHATTER build-frontend --help
 

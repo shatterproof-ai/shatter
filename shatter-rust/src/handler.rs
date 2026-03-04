@@ -484,7 +484,7 @@ mod tests {
         );
         assert_eq!(resp.status, "handshake");
         assert_eq!(resp.language.as_deref(), Some("rust"));
-        assert_eq!(resp.frontend_version.as_deref(), Some("0.1.0"));
+        assert_eq!(resp.frontend_version.as_deref(), Some(crate::protocol::FRONTEND_VERSION));
     }
 
     #[test]
@@ -512,7 +512,7 @@ mod tests {
         let resp = send_recv(
             r#"{"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":[]}"#,
         );
-        assert_eq!(resp.protocol_version, "0.1.0");
+        assert_eq!(resp.protocol_version, crate::protocol::PROTOCOL_VERSION);
     }
 
     #[test]

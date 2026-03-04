@@ -1317,6 +1317,9 @@ mod tests {
     };
     use crate::types::{ParamInfo, TypeInfo};
 
+    /// Request timeout for integration tests using the noop frontend.
+    const TEST_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
     fn make_analysis(name: &str, deps: Vec<&str>) -> FunctionAnalysis {
         FunctionAnalysis {
             name: name.to_string(),
@@ -1815,7 +1818,7 @@ mod tests {
 
         let mut fe_config = FrontendConfig::new(PathBuf::from("bash"));
         fe_config.args = vec![noop_path.to_string_lossy().into_owned()];
-        fe_config.request_timeout = Duration::from_secs(10);
+        fe_config.request_timeout = TEST_REQUEST_TIMEOUT;
 
         let analyses = vec![
             FunctionAnalysis {
@@ -1866,7 +1869,7 @@ mod tests {
             seed: Some(42),
             file_map,
             parallelism: 2,
-            timeout_per_fn: Duration::from_secs(10),
+            timeout_per_fn: TEST_REQUEST_TIMEOUT,
             cache: None,
             stratum: None,
             mock_overrides: HashMap::new(),
@@ -1905,7 +1908,7 @@ mod tests {
 
         let mut fe_config = FrontendConfig::new(PathBuf::from("bash"));
         fe_config.args = vec![noop_path.to_string_lossy().into_owned()];
-        fe_config.request_timeout = Duration::from_secs(10);
+        fe_config.request_timeout = TEST_REQUEST_TIMEOUT;
 
         let analyses = vec![FunctionAnalysis {
             name: "solo".to_string(),
@@ -1931,7 +1934,7 @@ mod tests {
             seed: Some(99),
             file_map,
             parallelism: 1,
-            timeout_per_fn: Duration::from_secs(10),
+            timeout_per_fn: TEST_REQUEST_TIMEOUT,
             cache: None,
             stratum: None,
             mock_overrides: HashMap::new(),
@@ -1961,7 +1964,7 @@ mod tests {
 
         let mut fe_config = FrontendConfig::new(PathBuf::from("bash"));
         fe_config.args = vec![noop_path.to_string_lossy().into_owned()];
-        fe_config.request_timeout = Duration::from_secs(10);
+        fe_config.request_timeout = TEST_REQUEST_TIMEOUT;
 
         let analyses = vec![FunctionAnalysis {
             name: "cached_fn".to_string(),
@@ -1992,7 +1995,7 @@ mod tests {
             seed: Some(42),
             file_map,
             parallelism: 1,
-            timeout_per_fn: Duration::from_secs(10),
+            timeout_per_fn: TEST_REQUEST_TIMEOUT,
             cache: Some(cache.clone()),
             stratum: None,
             mock_overrides: HashMap::new(),
@@ -2025,7 +2028,7 @@ mod tests {
 
         let mut fe_config = FrontendConfig::new(PathBuf::from("bash"));
         fe_config.args = vec![noop_path.to_string_lossy().into_owned()];
-        fe_config.request_timeout = Duration::from_secs(10);
+        fe_config.request_timeout = TEST_REQUEST_TIMEOUT;
 
         let analyses = vec![
             FunctionAnalysis {
@@ -2069,7 +2072,7 @@ mod tests {
             seed: Some(42),
             file_map,
             parallelism: 1,
-            timeout_per_fn: Duration::from_secs(10),
+            timeout_per_fn: TEST_REQUEST_TIMEOUT,
             cache: None,
             stratum: None,
             mock_overrides: HashMap::new(),
@@ -2130,7 +2133,7 @@ mod tests {
             seed: None,
             file_map,
             parallelism: 2,
-            timeout_per_fn: Duration::from_secs(30),
+            timeout_per_fn: crate::frontend::DEFAULT_REQUEST_TIMEOUT,
             cache: None,
             stratum: None,
             mock_overrides: HashMap::new(),
@@ -2177,7 +2180,7 @@ mod tests {
             seed: None,
             file_map,
             parallelism: 1,
-            timeout_per_fn: Duration::from_secs(30),
+            timeout_per_fn: crate::frontend::DEFAULT_REQUEST_TIMEOUT,
             cache: None,
             stratum: None,
             mock_overrides: HashMap::new(),
@@ -2207,7 +2210,7 @@ mod tests {
                 .into_iter()
                 .collect(),
             parallelism: 1,
-            timeout_per_fn: Duration::from_secs(30),
+            timeout_per_fn: crate::frontend::DEFAULT_REQUEST_TIMEOUT,
             cache: None,
             stratum: None,
             mock_overrides: HashMap::new(),
@@ -2228,7 +2231,7 @@ mod tests {
             seed: None,
             file_map: HashMap::new(),
             parallelism: 1,
-            timeout_per_fn: Duration::from_secs(30),
+            timeout_per_fn: crate::frontend::DEFAULT_REQUEST_TIMEOUT,
             cache: None,
             stratum: None,
             mock_overrides: HashMap::new(),

@@ -117,6 +117,18 @@ pub fn boundaries_for(ty: &ParamType) -> Vec<BoundaryValue> {
 3. Write the test in `shatter-core` that invokes the engine and asserts all branches are found
 4. Check in a regression snapshot of the output
 
+### Frontend timeout contract
+
+All frontends MUST read the `SHATTER_EXEC_TIMEOUT` env var (seconds) and apply it to function execution. The CLI sets this var from `--timeout` before spawning frontends.
+
+| Frontend | Default | Env var | Implementation |
+|---|---|---|---|
+| Go | 5s | `SHATTER_EXEC_TIMEOUT` | `execTimeout()` in `instrument/executor.go` |
+| TypeScript | 15s | `SHATTER_EXEC_TIMEOUT` | `getExecTimeoutMs()` in `src/executor.ts` |
+| Rust | 5s | `SHATTER_EXEC_TIMEOUT` | `exec_timeout_from_env()` in `src/handler.rs` (stored, not yet applied — execute is unimplemented) |
+
+Invalid values (non-numeric, zero, negative) fall back to the default silently.
+
 ## Output Review
 
 After any change affecting CLI output, frontend logging, or protocol formatting, run `/walkthrough-review` to validate the output is human-readable.

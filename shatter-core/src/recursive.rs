@@ -17,6 +17,9 @@ use crate::protocol::{
 };
 use crate::types::TypeInfo;
 
+/// Default maximum deepening depth for recursive function exploration.
+pub const DEFAULT_MAX_DEPTH: u32 = 10;
+
 /// Configuration for recursive function exploration.
 #[derive(Debug, Clone)]
 pub struct RecursiveConfig {
@@ -29,7 +32,7 @@ pub struct RecursiveConfig {
 impl Default for RecursiveConfig {
     fn default() -> Self {
         Self {
-            max_depth: 10,
+            max_depth: DEFAULT_MAX_DEPTH,
             max_probes: 20,
         }
     }
@@ -646,7 +649,7 @@ mod tests {
     #[test]
     fn recursive_config_default() {
         let config = RecursiveConfig::default();
-        assert_eq!(config.max_depth, 10);
+        assert_eq!(config.max_depth, DEFAULT_MAX_DEPTH);
         assert_eq!(config.max_probes, 20);
     }
 }

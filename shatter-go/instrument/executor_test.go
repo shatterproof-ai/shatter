@@ -515,7 +515,7 @@ func TestFlattenMocksReturnsFirst(t *testing.T) {
 
 func TestBuildTimeoutDefaultIs30s(t *testing.T) {
 	os.Unsetenv("SHATTER_BUILD_TIMEOUT")
-	if d := buildTimeout(); d != 30*time.Second {
+	if d := buildTimeout(); d != defaultBuildTimeout {
 		t.Errorf("expected 30s default, got %v", d)
 	}
 }

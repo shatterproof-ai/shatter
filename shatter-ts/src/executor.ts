@@ -346,6 +346,11 @@ export function truncateSideEffects(
 
 /**
  * Create an intercepting console that records all output as side effects.
+ *
+ * Captures: log, warn, error, info, debug (level mapped 1:1),
+ * dir/table/dirxml (→ "log"), trace (→ "debug"), count/countReset (→ "log"),
+ * time/timeEnd/timeLog (→ "log"). Non-output methods (group, clear, assert,
+ * profile, timeStamp) delegate to the real console.
  */
 function createCapturingConsole(sideEffects: SideEffect[]): Console {
   const makeLogger = (level: string) => (...args: unknown[]): void => {
@@ -355,31 +360,97 @@ function createCapturingConsole(sideEffects: SideEffect[]): Console {
     sideEffects.push({ kind: "console_output", level, message });
   };
 
+  const logFn = makeLogger("log");
+  const debugFn = makeLogger("debug");
+
+  // Counters for console.count / console.countReset
+  const counters = new Map<string, number>();
+
+  // Timers for console.time / console.timeEnd / console.timeLog
+  const timers = new Map<string, number>();
+
   return {
-    log: makeLogger("log"),
+    log: logFn,
     warn: makeLogger("warn"),
     error: makeLogger("error"),
     info: makeLogger("info"),
-    debug: makeLogger("debug"),
-    dir: console.dir,
-    time: console.time,
-    timeEnd: console.timeEnd,
-    timeLog: console.timeLog,
-    trace: console.trace,
+    debug: debugFn,
+    dir: (...args: unknown[]) => logFn(...args),
+    table: (...args: unknown[]) => logFn(...args),
+    dirxml: (...args: unknown[]) => logFn(...args),
+    trace: (...args: unknown[]) => {
+      debugFn("Trace:", ...args);
+    },
+    count: (label = "default") => {
+      const n = (counters.get(label) ?? 0) + 1;
+      counters.set(label, n);
+      logFn(`${label}: ${n}`);
+    },
+    countReset: (label = "default") => {
+      counters.set(label, 0);
+    },
+    time: (label = "default") => {
+      timers.set(label, performance.now());
+    },
+    timeEnd: (label = "default") => {
+      const start = timers.get(label);
+      if (start !== undefined) {
+        logFn(`${label}: ${(performance.now() - start).toFixed(3)}ms`);
+        timers.delete(label);
+      }
+    },
+    timeLog: (label = "default", ...args: unknown[]) => {
+      const start = timers.get(label);
+      if (start !== undefined) {
+        logFn(`${label}: ${(performance.now() - start).toFixed(3)}ms`, ...args);
+      }
+    },
     assert: console.assert,
     clear: console.clear,
-    count: console.count,
-    countReset: console.countReset,
     group: console.group,
     groupCollapsed: console.groupCollapsed,
     groupEnd: console.groupEnd,
-    table: console.table,
-    dirxml: console.dirxml,
     profile: console.profile,
     profileEnd: console.profileEnd,
     timeStamp: console.timeStamp,
     Console: console.Console,
   } as unknown as Console;
+}
+
+/**
+ * Create a process-like object that intercepts stdout/stderr writes
+ * and records them as side effects.
+ */
+function createCapturingProcess(sideEffects: SideEffect[]): typeof process {
+  const makeStreamWriter = (level: string) => {
+    const originalStream = level === "stdout" ? process.stdout : process.stderr;
+    return new Proxy(originalStream, {
+      get(target, prop) {
+        if (prop === "write") {
+          return (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+            const text = typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
+            const trimmed = text.replace(/\n$/, "");
+            if (trimmed.length > 0) {
+              const message = truncateMessage(trimmed);
+              sideEffects.push({ kind: "console_output", level, message });
+            }
+            return true;
+          };
+        }
+        const val = Reflect.get(target, prop, target);
+        return typeof val === "function" ? val.bind(target) : val;
+      },
+    });
+  };
+
+  return new Proxy(process, {
+    get(target, prop) {
+      if (prop === "stdout") return makeStreamWriter("stdout");
+      if (prop === "stderr") return makeStreamWriter("stderr");
+      const val = Reflect.get(target, prop, target);
+      return typeof val === "function" ? val.bind(target) : val;
+    },
+  });
 }
 
 /**
@@ -514,8 +585,9 @@ export function executeInstrumented(
     });
   };
 
-  // Build the execution context with capturing console
+  // Build the execution context with capturing console and process
   const capturingConsole = createCapturingConsole(sideEffects);
+  const capturingProc = createCapturingProcess(sideEffects);
   const sandboxRequire = sourceFilePath ? createRequire(sourceFilePath) : require;
   const moduleExports: Record<string, unknown> = {};
   const moduleObj = { exports: moduleExports };
@@ -525,7 +597,7 @@ export function executeInstrumented(
     exports: moduleExports,
     require: sandboxRequire,
     console: capturingConsole,
-    process,
+    process: capturingProc,
     Buffer,
     setTimeout,
     clearTimeout,
