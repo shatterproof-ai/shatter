@@ -53,13 +53,14 @@ type SideEffect struct {
 
 // ExecuteResult holds the output of running an instrumented function.
 type ExecuteResult struct {
-	ReturnValue   json.RawMessage  `json:"return_value,omitempty"`
-	ThrownError   *ErrorInfo       `json:"thrown_error,omitempty"`
-	BranchPath    []BranchDecision `json:"branch_path"`
-	LinesExecuted []int            `json:"lines_executed"`
-	ExternalCalls []ExternalCall   `json:"external_calls,omitempty"`
-	SideEffects   []SideEffect     `json:"side_effects"`
-	Performance   PerfMetrics      `json:"performance"`
+	ReturnValue   json.RawMessage   `json:"return_value,omitempty"`
+	ThrownError   *ErrorInfo        `json:"thrown_error,omitempty"`
+	BranchPath    []BranchDecision  `json:"branch_path"`
+	LinesExecuted []int             `json:"lines_executed"`
+	ExternalCalls []ExternalCall    `json:"external_calls,omitempty"`
+	SideEffects   []SideEffect      `json:"side_effects"`
+	ScopeEvents   []json.RawMessage `json:"scope_events"`
+	Performance   PerfMetrics       `json:"performance"`
 }
 
 // ExternalCall records one call to a mocked external dependency.
@@ -196,6 +197,7 @@ func ExecuteFunction(sourcePath, funcName string, inputs []json.RawMessage, mock
 		BranchPath:    []BranchDecision{},
 		LinesExecuted: []int{},
 		SideEffects:   []SideEffect{},
+		ScopeEvents:   []json.RawMessage{},
 		Performance:   PerfMetrics{WallTimeMs: float64(wallTime.Milliseconds())},
 	}
 
@@ -214,12 +216,14 @@ func ExecuteFunction(sourcePath, funcName string, inputs []json.RawMessage, mock
 	// Try to parse the shatter recording results
 	if data, err := os.ReadFile(resultsPath); err == nil {
 		var recorded struct {
-			LinesExecuted []int            `json:"lines_executed"`
-			BranchPath    []BranchDecision `json:"branch_path"`
+			LinesExecuted []int             `json:"lines_executed"`
+			BranchPath    []BranchDecision  `json:"branch_path"`
+			ScopeEvents   []json.RawMessage `json:"scope_events"`
 		}
 		if err := json.Unmarshal(data, &recorded); err == nil {
 			result.LinesExecuted = recorded.LinesExecuted
 			result.BranchPath = recorded.BranchPath
+			result.ScopeEvents = recorded.ScopeEvents
 		}
 	}
 

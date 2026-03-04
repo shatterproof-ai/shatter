@@ -195,3 +195,113 @@ func F(items []int) {
 		t.Errorf("branchCount = %d, want 1", branchCount)
 	}
 }
+
+func TestForLoopScopeMarkers(t *testing.T) {
+	src := `package main
+
+func F(n int) {
+	for i := 0; i < n; i++ {
+		_ = i
+	}
+}
+`
+	out, _ := transformSource(t, src, nil)
+	if !strings.Contains(out, `__shatter_record_scope("loop_enter"`) {
+		t.Errorf("missing loop_enter scope marker\noutput:\n%s", out)
+	}
+	if !strings.Contains(out, `__shatter_record_scope("loop_exit"`) {
+		t.Errorf("missing loop_exit scope marker\noutput:\n%s", out)
+	}
+}
+
+func TestRangeLoopScopeMarkers(t *testing.T) {
+	src := `package main
+
+func F(items []int) {
+	for _, v := range items {
+		_ = v
+	}
+}
+`
+	out, _ := transformSource(t, src, nil)
+	if !strings.Contains(out, `__shatter_record_scope("loop_enter"`) {
+		t.Errorf("missing loop_enter scope marker\noutput:\n%s", out)
+	}
+	if !strings.Contains(out, `__shatter_record_scope("loop_exit"`) {
+		t.Errorf("missing loop_exit scope marker\noutput:\n%s", out)
+	}
+}
+
+func TestInfiniteLoopScopeMarkers(t *testing.T) {
+	src := `package main
+
+func F() {
+	for {
+		break
+	}
+}
+`
+	out, _ := transformSource(t, src, nil)
+	if !strings.Contains(out, `__shatter_record_scope("loop_enter"`) {
+		t.Errorf("missing loop_enter scope marker for infinite loop\noutput:\n%s", out)
+	}
+	if !strings.Contains(out, `__shatter_record_scope("loop_exit"`) {
+		t.Errorf("missing loop_exit scope marker for infinite loop\noutput:\n%s", out)
+	}
+}
+
+func TestNestedLoopsDistinctIDs(t *testing.T) {
+	src := `package main
+
+func F(n int) {
+	for i := 0; i < n; i++ {
+		for j := 0; j < n; j++ {
+			_ = i + j
+		}
+	}
+}
+`
+	out, _ := transformSource(t, src, nil)
+	// Outer loop gets id 0, inner loop gets id 1
+	if !strings.Contains(out, `__shatter_record_scope("loop_enter", 0)`) {
+		t.Errorf("missing loop_enter with id 0\noutput:\n%s", out)
+	}
+	if !strings.Contains(out, `__shatter_record_scope("loop_enter", 1)`) {
+		t.Errorf("missing loop_enter with id 1\noutput:\n%s", out)
+	}
+}
+
+func TestFunctionCallScopeMarkers(t *testing.T) {
+	src := `package main
+
+func F(x int) {
+	_ = x
+}
+`
+	out, _ := transformSource(t, src, nil)
+	if !strings.Contains(out, `__shatter_record_scope("call_enter"`) {
+		t.Errorf("missing call_enter scope marker\noutput:\n%s", out)
+	}
+	if !strings.Contains(out, `defer __shatter_record_scope("call_exit"`) {
+		t.Errorf("missing defer call_exit scope marker\noutput:\n%s", out)
+	}
+}
+
+func TestFuncLitCallScopeMarkers(t *testing.T) {
+	src := `package main
+
+func F() {
+	f := func(x int) int {
+		return x * 2
+	}
+	_ = f(1)
+}
+`
+	out, _ := transformSource(t, src, nil)
+	// Should have call_enter for the top-level function (id 0)
+	// and call_enter for the func literal (id 1)
+	enterCount := strings.Count(out, `__shatter_record_scope("call_enter"`)
+	if enterCount < 2 {
+		t.Errorf("expected at least 2 call_enter markers (func + funclit), got %d\noutput:\n%s", enterCount, out)
+	}
+}

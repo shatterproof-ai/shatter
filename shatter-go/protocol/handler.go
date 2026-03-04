@@ -303,6 +303,7 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 	resp.PathConstraints = extractPathConstraints(result.BranchPath)
 	resp.CallsToExternal = convertExternalCalls(result.ExternalCalls)
 	resp.SideEffects = convertSideEffects(result.SideEffects)
+	resp.ScopeEvents = result.ScopeEvents
 	resp.Performance = &PerfMetrics{
 		WallTimeMs:         result.Performance.WallTimeMs,
 		CPUTimeUs:          result.Performance.CPUTimeUs,
