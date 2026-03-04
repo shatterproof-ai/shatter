@@ -11,7 +11,9 @@
 //! - **No macro expansion**: Macros are not expanded; generated code is invisible.
 //! - **No const evaluation**: Constant references in conditions appear as `Unknown`.
 //! - **Limited generics**: Generic type parameters `T` are reported as `Unknown`.
-//! - **Pattern matching**: Complex match patterns produce `condition: None`.
+//!   Trait bounds are noted but don't refine the type.
+//! - **Pattern matching**: Literal, range, or-pattern, and variant patterns produce
+//!   symbolic conditions. Deeply nested or guarded patterns may still produce `None`.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -69,8 +71,9 @@ pub fn analyze_source(
     let file = syn::parse_file(source)
         .map_err(|e| AnalyzeError::ParseError(e.to_string()))?;
 
-    // Collect struct definitions in this file for field extraction.
+    // Collect struct and enum definitions in this file for type resolution.
     let structs = collect_struct_defs(&file);
+    let enums = collect_enum_defs(&file);
 
     let mut results = Vec::new();
 
@@ -84,7 +87,7 @@ pub fn analyze_source(
                 continue;
             }
 
-            results.push(analyze_function(item_fn, &structs));
+            results.push(analyze_function(item_fn, &structs, &enums));
         }
     }
 
@@ -99,6 +102,9 @@ pub fn analyze_source(
 
 /// Collected struct definitions from the same file.
 type StructDefs = HashMap<String, Vec<(String, syn::Type)>>;
+
+/// Collected enum definitions: maps enum name → Vec of (variant_name, fields).
+type EnumDefs = HashMap<String, Vec<(String, syn::Fields)>>;
 
 fn collect_struct_defs(file: &syn::File) -> StructDefs {
     let mut defs = HashMap::new();
@@ -119,14 +125,99 @@ fn collect_struct_defs(file: &syn::File) -> StructDefs {
     defs
 }
 
-fn analyze_function(item_fn: &syn::ItemFn, structs: &StructDefs) -> FunctionAnalysis {
+fn collect_enum_defs(file: &syn::File) -> EnumDefs {
+    let mut defs = HashMap::new();
+    for item in &file.items {
+        if let syn::Item::Enum(e) = item {
+            let variants: Vec<(String, syn::Fields)> = e
+                .variants
+                .iter()
+                .map(|v| (v.ident.to_string(), v.fields.clone()))
+                .collect();
+            defs.insert(e.ident.to_string(), variants);
+        }
+    }
+    defs
+}
+
+/// Convert an enum variant's fields to a TypeInfo.
+fn enum_variant_to_type(
+    fields: &syn::Fields,
+    structs: &StructDefs,
+    enums: &EnumDefs,
+    generic_params: &HashSet<String>,
+    converting: &mut HashSet<String>,
+) -> TypeInfo {
+    match fields {
+        syn::Fields::Unit => TypeInfo::Unknown,
+        syn::Fields::Unnamed(f) if f.unnamed.len() == 1 => {
+            convert_type_inner(&f.unnamed[0].ty, structs, enums, generic_params, converting)
+        }
+        syn::Fields::Unnamed(f) => {
+            let flds = f
+                .unnamed
+                .iter()
+                .enumerate()
+                .map(|(i, field)| {
+                    (
+                        i.to_string(),
+                        convert_type_inner(&field.ty, structs, enums, generic_params, converting),
+                    )
+                })
+                .collect();
+            TypeInfo::Object { fields: flds }
+        }
+        syn::Fields::Named(f) => {
+            let flds = f
+                .named
+                .iter()
+                .filter_map(|field| {
+                    field.ident.as_ref().map(|id| {
+                        (
+                            id.to_string(),
+                            convert_type_inner(
+                                &field.ty,
+                                structs,
+                                enums,
+                                generic_params,
+                                converting,
+                            ),
+                        )
+                    })
+                })
+                .collect();
+            TypeInfo::Object { fields: flds }
+        }
+    }
+}
+
+fn analyze_function(
+    item_fn: &syn::ItemFn,
+    structs: &StructDefs,
+    enums: &EnumDefs,
+) -> FunctionAnalysis {
     let name = item_fn.sig.ident.to_string();
     let exported = matches!(item_fn.vis, syn::Visibility::Public(_));
 
-    let params = extract_params(&item_fn.sig.inputs, structs);
+    // Collect generic type parameter names so T maps to Unknown, not Opaque.
+    let generic_params: HashSet<String> = item_fn
+        .sig
+        .generics
+        .params
+        .iter()
+        .filter_map(|p| {
+            if let syn::GenericParam::Type(tp) = p {
+                Some(tp.ident.to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let params = extract_params(&item_fn.sig.inputs, structs, enums, &generic_params);
     let param_names: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
 
-    let return_type = convert_return_type(&item_fn.sig.output, structs);
+    let return_type = convert_return_type(&item_fn.sig.output, structs, enums, &generic_params);
 
     let start_line = item_fn.sig.ident.span().start().line as u32;
     let end_line = item_fn.block.brace_token.span.close().end().line as u32;
@@ -153,13 +244,15 @@ fn analyze_function(item_fn: &syn::ItemFn, structs: &StructDefs) -> FunctionAnal
 fn extract_params(
     inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::token::Comma>,
     structs: &StructDefs,
+    enums: &EnumDefs,
+    generic_params: &HashSet<String>,
 ) -> Vec<ParamInfo> {
     let mut params = Vec::new();
     for arg in inputs {
         if let syn::FnArg::Typed(pat_type) = arg {
             let name = extract_pat_name(&pat_type.pat);
             let type_name = extract_type_name(&pat_type.ty);
-            let typ = convert_type(&pat_type.ty, structs);
+            let typ = convert_type(&pat_type.ty, structs, enums, generic_params);
             params.push(ParamInfo {
                 name,
                 typ,
@@ -217,18 +310,54 @@ fn is_well_known_generic(name: &str) -> bool {
     )
 }
 
-fn convert_type(ty: &syn::Type, structs: &StructDefs) -> TypeInfo {
+fn convert_type(
+    ty: &syn::Type,
+    structs: &StructDefs,
+    enums: &EnumDefs,
+    generic_params: &HashSet<String>,
+) -> TypeInfo {
+    convert_type_inner(ty, structs, enums, generic_params, &mut HashSet::new())
+}
+
+/// Inner type conversion with a `converting` set to guard against recursive enums.
+fn convert_type_inner(
+    ty: &syn::Type,
+    structs: &StructDefs,
+    enums: &EnumDefs,
+    generic_params: &HashSet<String>,
+    converting: &mut HashSet<String>,
+) -> TypeInfo {
     match ty {
-        syn::Type::Path(type_path) => convert_type_path(type_path, structs),
-        syn::Type::Reference(type_ref) => convert_reference(type_ref, structs),
-        syn::Type::Tuple(type_tuple) => convert_tuple(type_tuple, structs),
+        syn::Type::Path(type_path) => {
+            convert_type_path(type_path, structs, enums, generic_params, converting)
+        }
+        syn::Type::Reference(type_ref) => {
+            convert_reference(type_ref, structs, enums, generic_params, converting)
+        }
+        syn::Type::Tuple(type_tuple) => {
+            convert_tuple(type_tuple, structs, enums, generic_params, converting)
+        }
         syn::Type::Array(type_array) => TypeInfo::Array {
-            element: Box::new(convert_type(&type_array.elem, structs)),
+            element: Box::new(convert_type_inner(
+                &type_array.elem,
+                structs,
+                enums,
+                generic_params,
+                converting,
+            )),
         },
         syn::Type::Slice(type_slice) => TypeInfo::Array {
-            element: Box::new(convert_type(&type_slice.elem, structs)),
+            element: Box::new(convert_type_inner(
+                &type_slice.elem,
+                structs,
+                enums,
+                generic_params,
+                converting,
+            )),
         },
-        syn::Type::Paren(type_paren) => convert_type(&type_paren.elem, structs),
+        syn::Type::Paren(type_paren) => {
+            convert_type_inner(&type_paren.elem, structs, enums, generic_params, converting)
+        }
         syn::Type::BareFn(_) => TypeInfo::Complex {
             kind: ComplexKind::Closure,
             metadata: HashMap::new(),
@@ -239,7 +368,13 @@ fn convert_type(ty: &syn::Type, structs: &StructDefs) -> TypeInfo {
     }
 }
 
-fn convert_type_path(type_path: &syn::TypePath, structs: &StructDefs) -> TypeInfo {
+fn convert_type_path(
+    type_path: &syn::TypePath,
+    structs: &StructDefs,
+    enums: &EnumDefs,
+    generic_params: &HashSet<String>,
+    converting: &mut HashSet<String>,
+) -> TypeInfo {
     let Some(seg) = type_path.path.segments.last() else {
         return TypeInfo::Unknown;
     };
@@ -268,7 +403,8 @@ fn convert_type_path(type_path: &syn::TypePath, structs: &StructDefs) -> TypeInf
 
         // Vec<T> → Array
         "Vec" => {
-            let inner = extract_first_generic_arg(seg, structs);
+            let inner =
+                extract_first_generic_arg(seg, structs, enums, generic_params, converting);
             TypeInfo::Array {
                 element: Box::new(inner),
             }
@@ -276,7 +412,8 @@ fn convert_type_path(type_path: &syn::TypePath, structs: &StructDefs) -> TypeInf
 
         // Option<T> → Nullable
         "Option" => {
-            let inner = extract_first_generic_arg(seg, structs);
+            let inner =
+                extract_first_generic_arg(seg, structs, enums, generic_params, converting);
             TypeInfo::Nullable {
                 inner: Box::new(inner),
             }
@@ -284,18 +421,18 @@ fn convert_type_path(type_path: &syn::TypePath, structs: &StructDefs) -> TypeInf
 
         // Result<T, E> → Union
         "Result" => {
-            let variants = extract_generic_args(seg, structs);
+            let variants = extract_generic_args(seg, structs, enums, generic_params, converting);
             TypeInfo::Union { variants }
         }
 
         // Smart pointers / wrappers → unwrap to inner
         "Box" | "Arc" | "Rc" | "Cow" | "Cell" | "RefCell" | "Mutex" | "RwLock" => {
-            extract_first_generic_arg(seg, structs)
+            extract_first_generic_arg(seg, structs, enums, generic_params, converting)
         }
 
         // HashMap/BTreeMap → Object with key/value fields
         "HashMap" | "BTreeMap" => {
-            let args = extract_generic_args(seg, structs);
+            let args = extract_generic_args(seg, structs, enums, generic_params, converting);
             let key_type = args.first().cloned().unwrap_or(TypeInfo::Unknown);
             let val_type = args.get(1).cloned().unwrap_or(TypeInfo::Unknown);
             TypeInfo::Object {
@@ -308,7 +445,8 @@ fn convert_type_path(type_path: &syn::TypePath, structs: &StructDefs) -> TypeInf
 
         // HashSet/BTreeSet → Array
         "HashSet" | "BTreeSet" => {
-            let inner = extract_first_generic_arg(seg, structs);
+            let inner =
+                extract_first_generic_arg(seg, structs, enums, generic_params, converting);
             TypeInfo::Array {
                 element: Box::new(inner),
             }
@@ -346,14 +484,39 @@ fn convert_type_path(type_path: &syn::TypePath, structs: &StructDefs) -> TypeInf
             inner: None,
         },
 
-        // Check if it's a struct defined in the same file
         _ => {
+            // Generic type parameter → Unknown (not an external type)
+            if generic_params.contains(&name) {
+                return TypeInfo::Unknown;
+            }
+            // Struct defined in same file → Object
             if let Some(fields) = structs.get(&name) {
                 TypeInfo::Object {
                     fields: fields
                         .iter()
-                        .map(|(n, t)| (n.clone(), convert_type(t, structs)))
+                        .map(|(n, t)| {
+                            (
+                                n.clone(),
+                                convert_type_inner(t, structs, enums, generic_params, converting),
+                            )
+                        })
                         .collect(),
+                }
+            // Enum defined in same file → Union
+            } else if let Some(variants) = enums.get(&name) {
+                // Guard against recursive enums
+                if !converting.insert(name.clone()) {
+                    return TypeInfo::Opaque { label: name };
+                }
+                let variant_types = variants
+                    .iter()
+                    .map(|(_, fields)| {
+                        enum_variant_to_type(fields, structs, enums, generic_params, converting)
+                    })
+                    .collect();
+                converting.remove(&name);
+                TypeInfo::Union {
+                    variants: variant_types,
                 }
             } else {
                 TypeInfo::Opaque { label: name }
@@ -362,7 +525,13 @@ fn convert_type_path(type_path: &syn::TypePath, structs: &StructDefs) -> TypeInf
     }
 }
 
-fn convert_reference(type_ref: &syn::TypeReference, structs: &StructDefs) -> TypeInfo {
+fn convert_reference(
+    type_ref: &syn::TypeReference,
+    structs: &StructDefs,
+    enums: &EnumDefs,
+    generic_params: &HashSet<String>,
+    converting: &mut HashSet<String>,
+) -> TypeInfo {
     // Special case: &str → Str
     if let syn::Type::Path(tp) = type_ref.elem.as_ref()
         && let Some(seg) = tp.path.segments.last()
@@ -373,14 +542,26 @@ fn convert_reference(type_ref: &syn::TypeReference, structs: &StructDefs) -> Typ
     // Special case: &[T] → Array
     if let syn::Type::Slice(ts) = type_ref.elem.as_ref() {
         return TypeInfo::Array {
-            element: Box::new(convert_type(&ts.elem, structs)),
+            element: Box::new(convert_type_inner(
+                &ts.elem,
+                structs,
+                enums,
+                generic_params,
+                converting,
+            )),
         };
     }
-    // Otherwise unwrap the reference
-    convert_type(&type_ref.elem, structs)
+    // Otherwise unwrap the reference (strips &, &mut, and lifetime annotations)
+    convert_type_inner(&type_ref.elem, structs, enums, generic_params, converting)
 }
 
-fn convert_tuple(type_tuple: &syn::TypeTuple, structs: &StructDefs) -> TypeInfo {
+fn convert_tuple(
+    type_tuple: &syn::TypeTuple,
+    structs: &StructDefs,
+    enums: &EnumDefs,
+    generic_params: &HashSet<String>,
+    converting: &mut HashSet<String>,
+) -> TypeInfo {
     if type_tuple.elems.is_empty() {
         return TypeInfo::Unknown; // unit type ()
     }
@@ -388,28 +569,45 @@ fn convert_tuple(type_tuple: &syn::TypeTuple, structs: &StructDefs) -> TypeInfo 
         .elems
         .iter()
         .enumerate()
-        .map(|(i, t)| (i.to_string(), convert_type(t, structs)))
+        .map(|(i, t)| {
+            (
+                i.to_string(),
+                convert_type_inner(t, structs, enums, generic_params, converting),
+            )
+        })
         .collect();
     TypeInfo::Object { fields }
 }
 
-fn extract_first_generic_arg(seg: &syn::PathSegment, structs: &StructDefs) -> TypeInfo {
+fn extract_first_generic_arg(
+    seg: &syn::PathSegment,
+    structs: &StructDefs,
+    enums: &EnumDefs,
+    generic_params: &HashSet<String>,
+    converting: &mut HashSet<String>,
+) -> TypeInfo {
     if let syn::PathArguments::AngleBracketed(args) = &seg.arguments
         && let Some(syn::GenericArgument::Type(ty)) = args.args.first()
     {
-        return convert_type(ty, structs);
+        return convert_type_inner(ty, structs, enums, generic_params, converting);
     }
     TypeInfo::Unknown
 }
 
-fn extract_generic_args(seg: &syn::PathSegment, structs: &StructDefs) -> Vec<TypeInfo> {
+fn extract_generic_args(
+    seg: &syn::PathSegment,
+    structs: &StructDefs,
+    enums: &EnumDefs,
+    generic_params: &HashSet<String>,
+    converting: &mut HashSet<String>,
+) -> Vec<TypeInfo> {
     if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
         return args
             .args
             .iter()
             .filter_map(|a| {
                 if let syn::GenericArgument::Type(ty) = a {
-                    Some(convert_type(ty, structs))
+                    Some(convert_type_inner(ty, structs, enums, generic_params, converting))
                 } else {
                     None
                 }
@@ -419,10 +617,15 @@ fn extract_generic_args(seg: &syn::PathSegment, structs: &StructDefs) -> Vec<Typ
     vec![]
 }
 
-fn convert_return_type(output: &syn::ReturnType, structs: &StructDefs) -> TypeInfo {
+fn convert_return_type(
+    output: &syn::ReturnType,
+    structs: &StructDefs,
+    enums: &EnumDefs,
+    generic_params: &HashSet<String>,
+) -> TypeInfo {
     match output {
         syn::ReturnType::Default => TypeInfo::Unknown, // unit return
-        syn::ReturnType::Type(_, ty) => convert_type(ty, structs),
+        syn::ReturnType::Type(_, ty) => convert_type(ty, structs, enums, generic_params),
     }
 }
 
@@ -799,8 +1002,8 @@ fn build_sym_expr(expr: &syn::Expr, param_names: &HashSet<String>) -> SymExpr {
         syn::Expr::Reference(reference) => build_sym_expr(&reference.expr, param_names),
 
         syn::Expr::Let(expr_let) => {
-            // `let Some(x) = expr` in if-let: treat the expression as the condition
-            build_sym_expr(&expr_let.expr, param_names)
+            // `let Some(x) = expr` in if-let: build condition from the pattern.
+            build_pattern_sym_expr(&expr_let.pat, &expr_let.expr, param_names)
         }
 
         _ => SymExpr::Unknown,
@@ -842,18 +1045,167 @@ fn build_pattern_sym_expr(
 ) -> SymExpr {
     match pat {
         syn::Pat::Const(pat_const) => {
-            // Pattern like `0`, `1`, `"hello"` in match arms
             let left = build_sym_expr(scrutinee, param_names);
-            let right = build_sym_expr(&pat_const.block.stmts.first().and_then(|s| {
-                if let syn::Stmt::Expr(e, _) = s { Some(e) } else { None }
-            }).cloned().unwrap_or_else(|| syn::parse_quote!(())), param_names);
+            let right = build_sym_expr(
+                &pat_const
+                    .block
+                    .stmts
+                    .first()
+                    .and_then(|s| {
+                        if let syn::Stmt::Expr(e, _) = s {
+                            Some(e)
+                        } else {
+                            None
+                        }
+                    })
+                    .cloned()
+                    .unwrap_or_else(|| syn::parse_quote!(())),
+                param_names,
+            );
             SymExpr::BinOp {
                 op: BinOpKind::Eq,
                 left: Box::new(left),
                 right: Box::new(right),
             }
         }
-        syn::Pat::Wild(_) => SymExpr::Unknown, // wildcard _ matches anything
+
+        syn::Pat::Lit(pat_lit) => {
+            let left = build_sym_expr(scrutinee, param_names);
+            let right = SymExpr::Const(convert_lit(&pat_lit.lit));
+            SymExpr::BinOp {
+                op: BinOpKind::Eq,
+                left: Box::new(left),
+                right: Box::new(right),
+            }
+        }
+
+        syn::Pat::Ident(pat_ident) => {
+            // Bare identifier — unit enum variant or variable binding.
+            let left = build_sym_expr(scrutinee, param_names);
+            let right = SymExpr::Const(ConstValue::Str(pat_ident.ident.to_string()));
+            SymExpr::BinOp {
+                op: BinOpKind::Eq,
+                left: Box::new(left),
+                right: Box::new(right),
+            }
+        }
+
+        syn::Pat::TupleStruct(pat_ts) => {
+            // `Some(x)`, `Ok(v)`, `Err(e)` — variant discriminant condition.
+            let left = build_sym_expr(scrutinee, param_names);
+            let variant_name = pat_ts
+                .path
+                .segments
+                .last()
+                .map(|s| s.ident.to_string())
+                .unwrap_or_default();
+            let right = SymExpr::Const(ConstValue::Str(variant_name));
+            SymExpr::BinOp {
+                op: BinOpKind::Eq,
+                left: Box::new(left),
+                right: Box::new(right),
+            }
+        }
+
+        syn::Pat::Struct(pat_struct) => {
+            // `Point { x, y }` or `Variant { field, .. }` — struct/variant discriminant.
+            let left = build_sym_expr(scrutinee, param_names);
+            let variant_name = pat_struct
+                .path
+                .segments
+                .last()
+                .map(|s| s.ident.to_string())
+                .unwrap_or_default();
+            let right = SymExpr::Const(ConstValue::Str(variant_name));
+            SymExpr::BinOp {
+                op: BinOpKind::Eq,
+                left: Box::new(left),
+                right: Box::new(right),
+            }
+        }
+
+        syn::Pat::Path(pat_path) => {
+            // Qualified path like `Status::Active` in match arms.
+            let left = build_sym_expr(scrutinee, param_names);
+            let variant_name = pat_path
+                .path
+                .segments
+                .last()
+                .map(|s| s.ident.to_string())
+                .unwrap_or_default();
+            let right = SymExpr::Const(ConstValue::Str(variant_name));
+            SymExpr::BinOp {
+                op: BinOpKind::Eq,
+                left: Box::new(left),
+                right: Box::new(right),
+            }
+        }
+
+        syn::Pat::Or(pat_or) => {
+            // `1 | 2 | 3` — build left-folded Or tree.
+            let mut cases = pat_or.cases.iter();
+            let first = cases
+                .next()
+                .map(|p| build_pattern_sym_expr(p, scrutinee, param_names))
+                .unwrap_or(SymExpr::Unknown);
+            cases.fold(first, |acc, p| {
+                let rhs = build_pattern_sym_expr(p, scrutinee, param_names);
+                SymExpr::BinOp {
+                    op: BinOpKind::Or,
+                    left: Box::new(acc),
+                    right: Box::new(rhs),
+                }
+            })
+        }
+
+        syn::Pat::Range(pat_range) => {
+            // `1..=10`, `..5`, `3..` — build conjunction of bounds.
+            let subj = build_sym_expr(scrutinee, param_names);
+            let lo_expr = pat_range
+                .start
+                .as_deref()
+                .map(|e| build_sym_expr(e, param_names));
+            let hi_expr = pat_range
+                .end
+                .as_deref()
+                .map(|e| build_sym_expr(e, param_names));
+            let hi_op = match &pat_range.limits {
+                syn::RangeLimits::HalfOpen(_) => BinOpKind::Lt,
+                syn::RangeLimits::Closed(_) => BinOpKind::Le,
+            };
+            match (lo_expr, hi_expr) {
+                (Some(lo), Some(hi)) => {
+                    let ge = SymExpr::BinOp {
+                        op: BinOpKind::Ge,
+                        left: Box::new(subj.clone()),
+                        right: Box::new(lo),
+                    };
+                    let le = SymExpr::BinOp {
+                        op: hi_op,
+                        left: Box::new(subj),
+                        right: Box::new(hi),
+                    };
+                    SymExpr::BinOp {
+                        op: BinOpKind::And,
+                        left: Box::new(ge),
+                        right: Box::new(le),
+                    }
+                }
+                (Some(lo), None) => SymExpr::BinOp {
+                    op: BinOpKind::Ge,
+                    left: Box::new(subj),
+                    right: Box::new(lo),
+                },
+                (None, Some(hi)) => SymExpr::BinOp {
+                    op: hi_op,
+                    left: Box::new(subj),
+                    right: Box::new(hi),
+                },
+                (None, None) => SymExpr::Unknown,
+            }
+        }
+
+        syn::Pat::Wild(_) => SymExpr::Unknown,
         _ => SymExpr::Unknown,
     }
 }
@@ -1921,5 +2273,372 @@ mod tests {
             "check",
         );
         assert!(f.literals.iter().any(|l| matches!(l, LiteralValue::Bool { value: true })));
+    }
+
+    // ── Enum type mapping tests ──
+
+    #[test]
+    fn maps_unit_enum_to_union_of_unknowns() {
+        let code = r#"
+            enum Direction { North, South, East, West }
+            fn f(d: Direction) {}
+        "#;
+        let f = analyze_fn(code, "f");
+        assert_eq!(
+            f.params[0].typ,
+            TypeInfo::Union {
+                variants: vec![
+                    TypeInfo::Unknown,
+                    TypeInfo::Unknown,
+                    TypeInfo::Unknown,
+                    TypeInfo::Unknown,
+                ]
+            }
+        );
+    }
+
+    #[test]
+    fn maps_data_enum_to_union_with_payload_types() {
+        let code = r#"
+            enum Shape {
+                Circle(f64),
+                Rect { w: f64, h: f64 },
+                Point,
+            }
+            fn f(s: Shape) {}
+        "#;
+        let f = analyze_fn(code, "f");
+        assert_eq!(
+            f.params[0].typ,
+            TypeInfo::Union {
+                variants: vec![
+                    TypeInfo::Float,
+                    TypeInfo::Object {
+                        fields: vec![
+                            ("w".to_string(), TypeInfo::Float),
+                            ("h".to_string(), TypeInfo::Float),
+                        ]
+                    },
+                    TypeInfo::Unknown,
+                ]
+            }
+        );
+    }
+
+    #[test]
+    fn maps_multi_field_tuple_variant() {
+        let code = r#"
+            enum Pair { Two(i32, String) }
+            fn f(p: Pair) {}
+        "#;
+        let f = analyze_fn(code, "f");
+        assert_eq!(
+            f.params[0].typ,
+            TypeInfo::Union {
+                variants: vec![TypeInfo::Object {
+                    fields: vec![
+                        ("0".to_string(), TypeInfo::Int),
+                        ("1".to_string(), TypeInfo::Str),
+                    ]
+                }]
+            }
+        );
+    }
+
+    #[test]
+    fn recursive_enum_does_not_infinite_loop() {
+        let code = r#"
+            enum List { Cons(i32, Box<List>), Nil }
+            fn f(l: List) {}
+        "#;
+        let f = analyze_fn(code, "f");
+        assert!(matches!(f.params[0].typ, TypeInfo::Union { .. }));
+    }
+
+    #[test]
+    fn enum_not_in_same_file_remains_opaque() {
+        let f = analyze_fn("fn f(x: ExternalEnum) {}", "f");
+        assert_eq!(
+            f.params[0].typ,
+            TypeInfo::Opaque {
+                label: "ExternalEnum".to_string()
+            }
+        );
+    }
+
+    // ── Generic type parameter tests ──
+
+    #[test]
+    fn generic_type_param_maps_to_unknown() {
+        let f = analyze_fn("fn f<T>(x: T) {}", "f");
+        assert_eq!(f.params[0].typ, TypeInfo::Unknown);
+    }
+
+    #[test]
+    fn generic_param_with_bounds_maps_to_unknown() {
+        let f = analyze_fn(
+            "fn f<T: std::fmt::Display + Clone>(x: T) {}",
+            "f",
+        );
+        assert_eq!(f.params[0].typ, TypeInfo::Unknown);
+    }
+
+    #[test]
+    fn generic_return_type_maps_to_unknown() {
+        let f = analyze_fn("fn f<T>() -> T { todo!() }", "f");
+        assert_eq!(f.return_type, TypeInfo::Unknown);
+    }
+
+    #[test]
+    fn generic_in_container_maps_inner_to_unknown() {
+        let f = analyze_fn("fn f<T>(x: Vec<T>) {}", "f");
+        assert_eq!(
+            f.params[0].typ,
+            TypeInfo::Array {
+                element: Box::new(TypeInfo::Unknown)
+            }
+        );
+    }
+
+    #[test]
+    fn multiple_generic_params() {
+        let f = analyze_fn("fn f<K, V>(k: K, v: V) {}", "f");
+        assert_eq!(f.params[0].typ, TypeInfo::Unknown);
+        assert_eq!(f.params[1].typ, TypeInfo::Unknown);
+    }
+
+    #[test]
+    fn non_generic_named_type_still_opaque() {
+        let f = analyze_fn("fn f(x: MyStruct) {}", "f");
+        assert_eq!(
+            f.params[0].typ,
+            TypeInfo::Opaque {
+                label: "MyStruct".to_string()
+            }
+        );
+    }
+
+    // ── Pattern matching tests ──
+
+    #[test]
+    fn match_pat_lit_produces_eq_condition() {
+        let f = analyze_fn(
+            r#"fn f(x: i32) -> &'static str {
+                match x {
+                    42 => "answer",
+                    _ => "other",
+                }
+            }"#,
+            "f",
+        );
+        let switch: Vec<_> = f
+            .branches
+            .iter()
+            .filter(|b| b.branch_type == BranchType::Switch)
+            .collect();
+        assert!(
+            switch[0].condition.is_some(),
+            "Pat::Lit arm should have a condition"
+        );
+        assert!(matches!(
+            &switch[0].condition,
+            Some(SymExpr::BinOp {
+                op: BinOpKind::Eq,
+                right,
+                ..
+            }) if matches!(right.as_ref(), SymExpr::Const(ConstValue::Int(42)))
+        ));
+    }
+
+    #[test]
+    fn match_pat_range_produces_and_of_bounds() {
+        let f = analyze_fn(
+            r#"fn f(x: i32) -> &'static str {
+                match x {
+                    1..=10 => "low",
+                    _ => "high",
+                }
+            }"#,
+            "f",
+        );
+        let switch: Vec<_> = f
+            .branches
+            .iter()
+            .filter(|b| b.branch_type == BranchType::Switch)
+            .collect();
+        assert!(
+            switch[0].condition.is_some(),
+            "Pat::Range arm should have a condition"
+        );
+        assert!(matches!(
+            &switch[0].condition,
+            Some(SymExpr::BinOp {
+                op: BinOpKind::And,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn match_pat_or_produces_or_chain() {
+        let f = analyze_fn(
+            r#"fn f(x: i32) -> &'static str {
+                match x {
+                    1 | 2 | 3 => "small",
+                    _ => "big",
+                }
+            }"#,
+            "f",
+        );
+        let switch: Vec<_> = f
+            .branches
+            .iter()
+            .filter(|b| b.branch_type == BranchType::Switch)
+            .collect();
+        assert!(
+            switch[0].condition.is_some(),
+            "Pat::Or arm should have a condition"
+        );
+        assert!(matches!(
+            &switch[0].condition,
+            Some(SymExpr::BinOp {
+                op: BinOpKind::Or,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn match_tuple_struct_pattern_produces_variant_eq() {
+        let f = analyze_fn(
+            r#"fn f(opt: Option<i32>) -> i32 {
+                match opt {
+                    Some(v) => v,
+                    None => 0,
+                }
+            }"#,
+            "f",
+        );
+        let switch: Vec<_> = f
+            .branches
+            .iter()
+            .filter(|b| b.branch_type == BranchType::Switch)
+            .collect();
+        assert!(switch[0].condition.is_some());
+        assert!(matches!(
+            &switch[0].condition,
+            Some(SymExpr::BinOp {
+                op: BinOpKind::Eq,
+                right,
+                ..
+            }) if matches!(right.as_ref(), SymExpr::Const(ConstValue::Str(s)) if s == "Some")
+        ));
+    }
+
+    #[test]
+    fn match_struct_pattern_produces_condition() {
+        let code = r#"
+            struct Point { x: i32, y: i32 }
+            fn f(p: Point) -> i32 {
+                match p {
+                    Point { x, .. } => x,
+                }
+            }
+        "#;
+        let f = analyze_fn(code, "f");
+        let switch: Vec<_> = f
+            .branches
+            .iter()
+            .filter(|b| b.branch_type == BranchType::Switch)
+            .collect();
+        assert!(switch[0].condition.is_some());
+    }
+
+    #[test]
+    fn match_wildcard_no_condition() {
+        let f = analyze_fn(
+            r#"fn f(x: i32) -> i32 { match x { _ => 0 } }"#,
+            "f",
+        );
+        let switch: Vec<_> = f
+            .branches
+            .iter()
+            .filter(|b| b.branch_type == BranchType::Switch)
+            .collect();
+        assert!(switch[0].condition.is_none());
+    }
+
+    #[test]
+    fn match_path_pattern_produces_variant_eq() {
+        let code = r#"
+            enum Status { Active, Inactive }
+            fn f(s: Status) -> i32 {
+                match s {
+                    Status::Active => 1,
+                    Status::Inactive => 0,
+                }
+            }
+        "#;
+        let f = analyze_fn(code, "f");
+        let switch: Vec<_> = f
+            .branches
+            .iter()
+            .filter(|b| b.branch_type == BranchType::Switch)
+            .collect();
+        assert!(switch[0].condition.is_some());
+        assert!(matches!(
+            &switch[0].condition,
+            Some(SymExpr::BinOp {
+                op: BinOpKind::Eq,
+                right,
+                ..
+            }) if matches!(right.as_ref(), SymExpr::Const(ConstValue::Str(s)) if s == "Active")
+        ));
+    }
+
+    // ── if-let pattern tests ──
+
+    #[test]
+    fn if_let_some_produces_variant_condition() {
+        let f = analyze_fn(
+            r#"fn f(opt: Option<i32>) -> i32 {
+                if let Some(v) = opt { v } else { 0 }
+            }"#,
+            "f",
+        );
+        let branch = &f.branches[0];
+        assert_eq!(branch.branch_type, BranchType::If);
+        assert!(
+            branch.condition.is_some(),
+            "if-let should produce a condition"
+        );
+        assert!(matches!(
+            &branch.condition,
+            Some(SymExpr::BinOp {
+                op: BinOpKind::Eq,
+                right,
+                ..
+            }) if matches!(right.as_ref(), SymExpr::Const(ConstValue::Str(s)) if s == "Some")
+        ));
+    }
+
+    #[test]
+    fn if_let_ok_produces_variant_condition() {
+        let f = analyze_fn(
+            r#"fn f(r: Result<i32, String>) -> i32 {
+                if let Ok(v) = r { v } else { -1 }
+            }"#,
+            "f",
+        );
+        let branch = &f.branches[0];
+        assert!(branch.condition.is_some());
+        assert!(matches!(
+            &branch.condition,
+            Some(SymExpr::BinOp {
+                op: BinOpKind::Eq,
+                right,
+                ..
+            }) if matches!(right.as_ref(), SymExpr::Const(ConstValue::Str(s)) if s == "Ok")
+        ));
     }
 }

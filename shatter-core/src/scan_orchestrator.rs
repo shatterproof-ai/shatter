@@ -804,15 +804,20 @@ pub async fn parallel_scan(
                 )
                 .await;
 
-                // Health-check the frontend before returning to pool.
-                // If it crashed (e.g. async function killed Node), respawn.
-                if frontend.is_alive() {
-                    pool.return_worker(frontend).await;
-                } else {
+                let timed_out = result.is_err();
+
+                // After a timeout the frontend's stdout buffer contains a
+                // stale response that would cause an ID mismatch on the next
+                // request.  Kill and respawn instead of returning to pool.
+                if timed_out || !frontend.is_alive() {
+                    // Drop the poisoned/dead frontend (kills the child process).
+                    drop(frontend);
                     match Frontend::spawn(&fe_config).await {
                         Ok(new_fe) => pool.return_worker(new_fe).await,
                         Err(_) => { /* pool shrinks — acceptable degradation */ }
                     }
+                } else {
+                    pool.return_worker(frontend).await;
                 }
 
                 match result {
@@ -2173,6 +2178,106 @@ mod tests {
         assert_eq!(result.skipped.len(), 2);
         for s in &result.skipped {
             assert_eq!(s.reason, "total scan timeout exceeded");
+        }
+    }
+
+    /// Regression test: after a per-function timeout, the tainted frontend
+    /// (which still has a stale response buffered in stdout) must be discarded
+    /// and replaced.  Without the respawn fix, the second function would fail
+    /// with an ID mismatch instead of a clean timeout.
+    #[tokio::test]
+    async fn parallel_scan_respawns_frontend_after_timeout() {
+        use crate::frontend::FrontendConfig;
+        use crate::types::{ParamInfo, TypeInfo};
+        use std::path::{Path, PathBuf};
+
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let slow_path = manifest_dir.join("../protocol/slow-execute-frontend.sh");
+
+        let mut fe_config = FrontendConfig::new(PathBuf::from("bash"));
+        fe_config.args = vec![slow_path.to_string_lossy().into_owned()];
+        // Request timeout must be long enough for handshake/instrument
+        // but the per-function timeout triggers during execute.
+        fe_config.request_timeout = Duration::from_secs(10);
+
+        // Two independent functions in the same layer — both will timeout.
+        let analyses = vec![
+            FunctionAnalysis {
+                name: "slow_a".to_string(),
+                exported: true,
+                params: vec![ParamInfo {
+                    name: "x".into(),
+                    typ: TypeInfo::Int,
+                    type_name: None,
+                }],
+                branches: vec![],
+                dependencies: vec![],
+                return_type: TypeInfo::Unknown,
+                start_line: 1,
+                end_line: 5,
+                literals: vec![],
+            },
+            FunctionAnalysis {
+                name: "slow_b".to_string(),
+                exported: true,
+                params: vec![ParamInfo {
+                    name: "y".into(),
+                    typ: TypeInfo::Int,
+                    type_name: None,
+                }],
+                branches: vec![],
+                dependencies: vec![],
+                return_type: TypeInfo::Unknown,
+                start_line: 1,
+                end_line: 5,
+                literals: vec![],
+            },
+        ];
+
+        let mut file_map = HashMap::new();
+        file_map.insert("slow_a".to_string(), "test.ts".to_string());
+        file_map.insert("slow_b".to_string(), "test.ts".to_string());
+
+        let config = ScanConfig {
+            max_iterations_per_function: 3,
+            seed: Some(42),
+            file_map,
+            // Single worker: same pool slot is reused, exposing stale-response bug.
+            parallelism: 1,
+            // Short per-function timeout triggers during the slow execute.
+            timeout_per_fn: Duration::from_secs(3),
+            cache: None,
+            stratum: None,
+            mock_overrides: HashMap::new(),
+            resume_path: None,
+            timeout_total: None,
+            pool_path: None,
+            project_root: None,
+        };
+
+        let result = parallel_scan(&fe_config, &analyses, &config)
+            .await
+            .expect("parallel_scan should succeed even when all functions timeout");
+
+        // Both functions should be skipped with a timeout reason, NOT an error.
+        // Before the fix, the second function would fail with
+        // "response id N does not match request id N+1".
+        assert!(
+            result.function_results.is_empty(),
+            "no functions should succeed when execute always times out"
+        );
+        assert_eq!(
+            result.skipped.len(),
+            2,
+            "both functions should be skipped, got: {:?}",
+            result.skipped
+        );
+        for s in &result.skipped {
+            assert!(
+                s.reason.contains("timed out"),
+                "skip reason should be timeout, not ID mismatch; got: {}",
+                s.reason
+            );
         }
     }
 
