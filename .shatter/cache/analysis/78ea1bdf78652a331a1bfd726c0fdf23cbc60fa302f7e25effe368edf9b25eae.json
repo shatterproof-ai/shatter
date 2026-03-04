@@ -1,0 +1,509 @@
+{
+  "content_hash": "02b596d8dcadf76f762b7c4541d1f9f59eaa672a834a794de4292230fd7b82c3",
+  "mtime_secs": 1772497933,
+  "protocol_version": "0.1.0",
+  "analyses": [
+    {
+      "name": "loadConfig",
+      "exported": true,
+      "params": [
+        {
+          "name": "configPath",
+          "type": {
+            "kind": "str"
+          }
+        }
+      ],
+      "branches": [
+        {
+          "id": 0,
+          "line": 27,
+          "condition_text": "configPath.length === 0",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "param",
+              "name": "configPath",
+              "path": [
+                "length"
+              ]
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 0
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 1,
+          "line": 33,
+          "condition_text": "!fs.existsSync(fullPath)",
+          "condition": {
+            "kind": "un_op",
+            "op": "not",
+            "operand": {
+              "kind": "call",
+              "name": "existsSync",
+              "receiver": {
+                "kind": "unknown"
+              },
+              "args": [
+                {
+                  "kind": "unknown"
+                }
+              ]
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 2,
+          "line": 38,
+          "condition_text": "content.length === 0",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "unknown"
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 0
+            }
+          },
+          "branch_type": "if"
+        }
+      ],
+      "dependencies": [],
+      "return_type": {
+        "kind": "str"
+      },
+      "start_line": 26,
+      "end_line": 43,
+      "literals": [
+        {
+          "type": "str",
+          "value": "length"
+        },
+        {
+          "type": "int",
+          "value": 0
+        },
+        {
+          "type": "str",
+          "value": "empty config path"
+        },
+        {
+          "type": "str",
+          "value": "resolve"
+        },
+        {
+          "type": "str",
+          "value": "existsSync"
+        },
+        {
+          "type": "str",
+          "value": "missing"
+        },
+        {
+          "type": "str",
+          "value": "readFileSync"
+        },
+        {
+          "type": "str",
+          "value": "utf-8"
+        },
+        {
+          "type": "str",
+          "value": "empty"
+        }
+      ]
+    },
+    {
+      "name": "fetchAndProcess",
+      "exported": true,
+      "params": [
+        {
+          "name": "url",
+          "type": {
+            "kind": "str"
+          }
+        },
+        {
+          "name": "response",
+          "type": {
+            "kind": "object",
+            "fields": [
+              [
+                "status",
+                {
+                  "kind": "float"
+                }
+              ],
+              [
+                "data",
+                {
+                  "kind": "unknown"
+                }
+              ]
+            ]
+          }
+        }
+      ],
+      "branches": [
+        {
+          "id": 0,
+          "line": 62,
+          "condition_text": "url.length === 0",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "param",
+              "name": "url",
+              "path": [
+                "length"
+              ]
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 0
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 1,
+          "line": 66,
+          "condition_text": "response.status >= 400",
+          "condition": {
+            "kind": "bin_op",
+            "op": "ge",
+            "left": {
+              "kind": "param",
+              "name": "response",
+              "path": [
+                "status"
+              ]
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 400
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 2,
+          "line": 70,
+          "condition_text": "!response.data",
+          "condition": {
+            "kind": "un_op",
+            "op": "not",
+            "operand": {
+              "kind": "param",
+              "name": "response",
+              "path": [
+                "data"
+              ]
+            }
+          },
+          "branch_type": "if"
+        }
+      ],
+      "dependencies": [],
+      "return_type": {
+        "kind": "str"
+      },
+      "start_line": 58,
+      "end_line": 75,
+      "literals": [
+        {
+          "type": "str",
+          "value": "length"
+        },
+        {
+          "type": "int",
+          "value": 0
+        },
+        {
+          "type": "str",
+          "value": "empty url"
+        },
+        {
+          "type": "str",
+          "value": "status"
+        },
+        {
+          "type": "int",
+          "value": 400
+        },
+        {
+          "type": "str",
+          "value": "data"
+        },
+        {
+          "type": "str",
+          "value": "no-data"
+        },
+        {
+          "type": "str",
+          "value": "keys"
+        }
+      ]
+    },
+    {
+      "name": "queryTable",
+      "exported": true,
+      "params": [
+        {
+          "name": "table",
+          "type": {
+            "kind": "str"
+          }
+        },
+        {
+          "name": "rows",
+          "type": {
+            "kind": "unknown"
+          }
+        }
+      ],
+      "branches": [
+        {
+          "id": 0,
+          "line": 91,
+          "condition_text": "table.length === 0",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "param",
+              "name": "table",
+              "path": [
+                "length"
+              ]
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 0
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 1,
+          "line": 95,
+          "condition_text": "!/^[a-zA-Z_]\\w*$/.test(table)",
+          "condition": {
+            "kind": "un_op",
+            "op": "not",
+            "operand": {
+              "kind": "call",
+              "name": "test",
+              "receiver": {
+                "kind": "unknown"
+              },
+              "args": [
+                {
+                  "kind": "param",
+                  "name": "table",
+                  "path": []
+                }
+              ]
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 2,
+          "line": 99,
+          "condition_text": "rows.length === 0",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "param",
+              "name": "rows",
+              "path": [
+                "length"
+              ]
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 0
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 3,
+          "line": 103,
+          "condition_text": "rows.length === 1",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "param",
+              "name": "rows",
+              "path": [
+                "length"
+              ]
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 1
+            }
+          },
+          "branch_type": "if"
+        }
+      ],
+      "dependencies": [],
+      "return_type": {
+        "kind": "str"
+      },
+      "start_line": 87,
+      "end_line": 108,
+      "literals": [
+        {
+          "type": "str",
+          "value": "length"
+        },
+        {
+          "type": "int",
+          "value": 0
+        },
+        {
+          "type": "str",
+          "value": "empty table"
+        },
+        {
+          "type": "str",
+          "value": "test"
+        },
+        {
+          "type": "regex",
+          "pattern": "^[a-zA-Z_]\\w*$"
+        },
+        {
+          "type": "str",
+          "value": "invalid table name"
+        },
+        {
+          "type": "str",
+          "value": "no-rows"
+        },
+        {
+          "type": "int",
+          "value": 1
+        },
+        {
+          "type": "str",
+          "value": "value"
+        }
+      ]
+    },
+    {
+      "name": "buildSafePath",
+      "exported": true,
+      "params": [
+        {
+          "name": "parts",
+          "type": {
+            "kind": "object",
+            "fields": []
+          }
+        }
+      ],
+      "branches": [
+        {
+          "id": 0,
+          "line": 123,
+          "condition_text": "parts.length === 0",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "param",
+              "name": "parts",
+              "path": [
+                "length"
+              ]
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 0
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 1,
+          "line": 128,
+          "condition_text": "part.includes(\"..\")",
+          "condition": {
+            "kind": "call",
+            "name": "includes",
+            "receiver": {
+              "kind": "unknown"
+            },
+            "args": [
+              {
+                "kind": "const",
+                "type": "str",
+                "value": ".."
+              }
+            ]
+          },
+          "branch_type": "if"
+        }
+      ],
+      "dependencies": [],
+      "return_type": {
+        "kind": "str"
+      },
+      "start_line": 122,
+      "end_line": 134,
+      "literals": [
+        {
+          "type": "str",
+          "value": "length"
+        },
+        {
+          "type": "int",
+          "value": 0
+        },
+        {
+          "type": "str",
+          "value": ""
+        },
+        {
+          "type": "str",
+          "value": "includes"
+        },
+        {
+          "type": "str",
+          "value": ".."
+        },
+        {
+          "type": "str",
+          "value": "path traversal"
+        },
+        {
+          "type": "str",
+          "value": "join"
+        }
+      ]
+    }
+  ]
+}

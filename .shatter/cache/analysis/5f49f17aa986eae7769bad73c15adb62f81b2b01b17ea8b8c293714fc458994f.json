@@ -1,0 +1,508 @@
+{
+  "content_hash": "9c62e3212bf25db8702b0e676e57b1bb0c5bb4e3b773c20e5b5929baa5c48f6c",
+  "mtime_secs": 1772305184,
+  "protocol_version": "0.1.0",
+  "analyses": [
+    {
+      "name": "computeArea",
+      "exported": true,
+      "params": [
+        {
+          "name": "shape",
+          "type": {
+            "kind": "union",
+            "variants": [
+              {
+                "kind": "object",
+                "fields": [
+                  [
+                    "kind",
+                    {
+                      "kind": "str"
+                    }
+                  ],
+                  [
+                    "radius",
+                    {
+                      "kind": "float"
+                    }
+                  ]
+                ]
+              },
+              {
+                "kind": "object",
+                "fields": [
+                  [
+                    "kind",
+                    {
+                      "kind": "str"
+                    }
+                  ],
+                  [
+                    "width",
+                    {
+                      "kind": "float"
+                    }
+                  ],
+                  [
+                    "height",
+                    {
+                      "kind": "float"
+                    }
+                  ]
+                ]
+              },
+              {
+                "kind": "object",
+                "fields": [
+                  [
+                    "kind",
+                    {
+                      "kind": "str"
+                    }
+                  ],
+                  [
+                    "base",
+                    {
+                      "kind": "float"
+                    }
+                  ],
+                  [
+                    "height",
+                    {
+                      "kind": "float"
+                    }
+                  ]
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "branches": [
+        {
+          "id": 0,
+          "line": 19,
+          "condition_text": "shape.kind === \"circle\"",
+          "condition": null,
+          "branch_type": "switch"
+        },
+        {
+          "id": 1,
+          "line": 20,
+          "condition_text": "shape.radius <= 0",
+          "condition": {
+            "kind": "bin_op",
+            "op": "le",
+            "left": {
+              "kind": "param",
+              "name": "shape",
+              "path": [
+                "radius"
+              ]
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 0
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 2,
+          "line": 25,
+          "condition_text": "shape.kind === \"rectangle\"",
+          "condition": null,
+          "branch_type": "switch"
+        },
+        {
+          "id": 3,
+          "line": 26,
+          "condition_text": "shape.width <= 0 || shape.height <= 0",
+          "condition": {
+            "kind": "bin_op",
+            "op": "or",
+            "left": {
+              "kind": "bin_op",
+              "op": "le",
+              "left": {
+                "kind": "param",
+                "name": "shape",
+                "path": [
+                  "width"
+                ]
+              },
+              "right": {
+                "kind": "const",
+                "type": "int",
+                "value": 0
+              }
+            },
+            "right": {
+              "kind": "bin_op",
+              "op": "le",
+              "left": {
+                "kind": "param",
+                "name": "shape",
+                "path": [
+                  "height"
+                ]
+              },
+              "right": {
+                "kind": "const",
+                "type": "int",
+                "value": 0
+              }
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 4,
+          "line": 31,
+          "condition_text": "shape.kind === \"triangle\"",
+          "condition": null,
+          "branch_type": "switch"
+        },
+        {
+          "id": 5,
+          "line": 32,
+          "condition_text": "shape.base <= 0 || shape.height <= 0",
+          "condition": {
+            "kind": "bin_op",
+            "op": "or",
+            "left": {
+              "kind": "bin_op",
+              "op": "le",
+              "left": {
+                "kind": "param",
+                "name": "shape",
+                "path": [
+                  "base"
+                ]
+              },
+              "right": {
+                "kind": "const",
+                "type": "int",
+                "value": 0
+              }
+            },
+            "right": {
+              "kind": "bin_op",
+              "op": "le",
+              "left": {
+                "kind": "param",
+                "name": "shape",
+                "path": [
+                  "height"
+                ]
+              },
+              "right": {
+                "kind": "const",
+                "type": "int",
+                "value": 0
+              }
+            }
+          },
+          "branch_type": "if"
+        }
+      ],
+      "dependencies": [],
+      "return_type": {
+        "kind": "float"
+      },
+      "start_line": 17,
+      "end_line": 37,
+      "literals": [
+        {
+          "type": "str",
+          "value": "kind"
+        },
+        {
+          "type": "str",
+          "value": "circle"
+        },
+        {
+          "type": "str",
+          "value": "radius"
+        },
+        {
+          "type": "int",
+          "value": 0
+        },
+        {
+          "type": "str",
+          "value": "non-positive radius"
+        },
+        {
+          "type": "str",
+          "value": "PI"
+        },
+        {
+          "type": "str",
+          "value": "rectangle"
+        },
+        {
+          "type": "str",
+          "value": "width"
+        },
+        {
+          "type": "str",
+          "value": "height"
+        },
+        {
+          "type": "str",
+          "value": "non-positive dimension"
+        },
+        {
+          "type": "str",
+          "value": "triangle"
+        },
+        {
+          "type": "str",
+          "value": "base"
+        },
+        {
+          "type": "float",
+          "value": 0.5
+        }
+      ]
+    },
+    {
+      "name": "routeRequest",
+      "exported": true,
+      "params": [
+        {
+          "name": "req",
+          "type": {
+            "kind": "object",
+            "fields": [
+              [
+                "method",
+                {
+                  "kind": "union",
+                  "variants": [
+                    {
+                      "kind": "str"
+                    },
+                    {
+                      "kind": "str"
+                    },
+                    {
+                      "kind": "str"
+                    },
+                    {
+                      "kind": "str"
+                    }
+                  ]
+                }
+              ],
+              [
+                "path",
+                {
+                  "kind": "str"
+                }
+              ],
+              [
+                "body",
+                {
+                  "kind": "nullable",
+                  "inner": {
+                    "kind": "str"
+                  }
+                }
+              ],
+              [
+                "authenticated",
+                {
+                  "kind": "bool"
+                }
+              ]
+            ]
+          }
+        }
+      ],
+      "branches": [
+        {
+          "id": 0,
+          "line": 59,
+          "condition_text": "req.path.length === 0",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "param",
+              "name": "req",
+              "path": [
+                "path",
+                "length"
+              ]
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 0
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 1,
+          "line": 64,
+          "condition_text": "req.method === \"GET\"",
+          "condition": null,
+          "branch_type": "switch"
+        },
+        {
+          "id": 2,
+          "line": 67,
+          "condition_text": "req.method === \"DELETE\"",
+          "condition": null,
+          "branch_type": "switch"
+        },
+        {
+          "id": 3,
+          "line": 68,
+          "condition_text": "!req.authenticated",
+          "condition": {
+            "kind": "un_op",
+            "op": "not",
+            "operand": {
+              "kind": "param",
+              "name": "req",
+              "path": [
+                "authenticated"
+              ]
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 4,
+          "line": 73,
+          "condition_text": "req.method === \"POST\"",
+          "condition": null,
+          "branch_type": "switch"
+        },
+        {
+          "id": 5,
+          "line": 74,
+          "condition_text": "!req.body",
+          "condition": {
+            "kind": "un_op",
+            "op": "not",
+            "operand": {
+              "kind": "param",
+              "name": "req",
+              "path": [
+                "body"
+              ]
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 6,
+          "line": 79,
+          "condition_text": "req.method === \"PUT\"",
+          "condition": null,
+          "branch_type": "switch"
+        },
+        {
+          "id": 7,
+          "line": 80,
+          "condition_text": "!req.body",
+          "condition": {
+            "kind": "un_op",
+            "op": "not",
+            "operand": {
+              "kind": "param",
+              "name": "req",
+              "path": [
+                "body"
+              ]
+            }
+          },
+          "branch_type": "if"
+        }
+      ],
+      "dependencies": [],
+      "return_type": {
+        "kind": "str"
+      },
+      "start_line": 58,
+      "end_line": 85,
+      "literals": [
+        {
+          "type": "str",
+          "value": "length"
+        },
+        {
+          "type": "str",
+          "value": "path"
+        },
+        {
+          "type": "int",
+          "value": 0
+        },
+        {
+          "type": "str",
+          "value": "empty path"
+        },
+        {
+          "type": "str",
+          "value": "method"
+        },
+        {
+          "type": "str",
+          "value": "GET"
+        },
+        {
+          "type": "str",
+          "value": "read"
+        },
+        {
+          "type": "str",
+          "value": "DELETE"
+        },
+        {
+          "type": "str",
+          "value": "authenticated"
+        },
+        {
+          "type": "str",
+          "value": "auth required"
+        },
+        {
+          "type": "str",
+          "value": "delete"
+        },
+        {
+          "type": "str",
+          "value": "POST"
+        },
+        {
+          "type": "str",
+          "value": "body"
+        },
+        {
+          "type": "str",
+          "value": "body required"
+        },
+        {
+          "type": "str",
+          "value": "create"
+        },
+        {
+          "type": "str",
+          "value": "PUT"
+        },
+        {
+          "type": "str",
+          "value": "update"
+        }
+      ]
+    }
+  ]
+}

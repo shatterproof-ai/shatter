@@ -240,6 +240,18 @@ impl InterestingPool {
         max_severity as f64 * breadth
     }
 
+    /// Return all pool values matching the given type.
+    ///
+    /// Used to inject cross-function seeds: values that triggered interesting
+    /// behavior in other functions with compatible parameter types.
+    pub fn values_for_type(&self, ty: &TypeInfo) -> Vec<serde_json::Value> {
+        let key = type_key(ty);
+        self.buckets
+            .get(&key)
+            .map(|entries| entries.iter().map(|e| e.value.clone()).collect())
+            .unwrap_or_default()
+    }
+
     /// Insert an entry into the pool, evicting if the bucket is at capacity.
     ///
     /// Returns `true` if the entry was inserted (or merged), `false` if
@@ -659,6 +671,26 @@ mod tests {
         let path = std::path::Path::new("/nonexistent/pool.json");
         let result = load_pool(path).expect("should not error");
         assert!(result.is_none());
+    
+    #[test]
+    fn values_for_type_returns_matching_entries() {
+        let mut pool = InterestingPool::default();
+        pool.insert(make_entry(serde_json::json!(42), "foo", Severity::RarePath));
+        pool.insert(make_entry(serde_json::json!(99), "bar", Severity::Crash));
+
+        let values = pool.values_for_type(&TypeInfo::Int);
+        assert_eq!(values.len(), 2);
+        assert!(values.contains(&serde_json::json!(42)));
+        assert!(values.contains(&serde_json::json!(99)));
+    }
+
+    #[test]
+    fn values_for_type_returns_empty_for_missing_type() {
+        let mut pool = InterestingPool::default();
+        pool.insert(make_entry(serde_json::json!(42), "foo", Severity::RarePath));
+
+        let values = pool.values_for_type(&TypeInfo::Str);
+        assert!(values.is_empty());
     }
 
     // -- harvest_from_exploration tests --
@@ -843,4 +875,5 @@ mod tests {
         assert_eq!(pool.buckets[&key].len(), 1);
         assert_eq!(pool.buckets[&key][0].behaviors.len(), 2);
     }
+}
 }

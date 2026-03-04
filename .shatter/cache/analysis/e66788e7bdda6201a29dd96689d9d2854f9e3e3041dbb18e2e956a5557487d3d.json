@@ -1,0 +1,88 @@
+{
+  "content_hash": "fdbd909a1c55e2e59c63dbffb27ebb10d89437aaf902227f38b86952ed6b8360",
+  "mtime_secs": 1772305184,
+  "protocol_version": "0.1.0",
+  "analyses": [
+    {
+      "name": "escapeAndQuote",
+      "exported": false,
+      "params": [
+        {
+          "name": "value",
+          "type": {
+            "kind": "str"
+          }
+        }
+      ],
+      "branches": [],
+      "dependencies": [],
+      "return_type": {
+        "kind": "str"
+      },
+      "start_line": 1,
+      "end_line": 1,
+      "literals": [
+        {
+          "type": "str",
+          "value": "replaceAll"
+        },
+        {
+          "type": "regex",
+          "pattern": "[']"
+        },
+        {
+          "type": "str",
+          "value": "''"
+        }
+      ]
+    },
+    {
+      "name": "escapeAndQuoteAll",
+      "exported": false,
+      "params": [
+        {
+          "name": "values",
+          "type": {
+            "kind": "object",
+            "fields": []
+          }
+        }
+      ],
+      "branches": [],
+      "dependencies": [],
+      "return_type": {
+        "kind": "unknown"
+      },
+      "start_line": 2,
+      "end_line": 2,
+      "literals": [
+        {
+          "type": "str",
+          "value": "map"
+        }
+      ]
+    },
+    {
+      "name": "constructSearchQuery",
+      "exported": true,
+      "params": [],
+      "branches": [],
+      "dependencies": [],
+      "return_type": {
+        "kind": "unknown"
+      },
+      "start_line": 4,
+      "end_line": 6,
+      "literals": [
+        {
+          "type": "str",
+          "value": "log"
+        },
+        {
+          "type": "str",
+          "value": "yes"
+        }
+      ]
+    }
+  ]
+}

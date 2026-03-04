@@ -1,0 +1,356 @@
+{
+  "content_hash": "131b11a510cf1c55bda231f66c4c0bb89f487d7998a1d53cd97c3a4e5a991b73",
+  "mtime_secs": 1772305184,
+  "protocol_version": "0.1.0",
+  "analyses": [
+    {
+      "name": "categorizeUser",
+      "exported": true,
+      "params": [
+        {
+          "name": "user",
+          "type": {
+            "kind": "object",
+            "fields": [
+              [
+                "name",
+                {
+                  "kind": "str"
+                }
+              ],
+              [
+                "age",
+                {
+                  "kind": "float"
+                }
+              ],
+              [
+                "isVerified",
+                {
+                  "kind": "bool"
+                }
+              ],
+              [
+                "role",
+                {
+                  "kind": "str"
+                }
+              ]
+            ]
+          }
+        }
+      ],
+      "branches": [
+        {
+          "id": 0,
+          "line": 20,
+          "condition_text": "user.age < 0",
+          "condition": {
+            "kind": "bin_op",
+            "op": "lt",
+            "left": {
+              "kind": "param",
+              "name": "user",
+              "path": [
+                "age"
+              ]
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 0
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 1,
+          "line": 23,
+          "condition_text": "user.age < 13",
+          "condition": {
+            "kind": "bin_op",
+            "op": "lt",
+            "left": {
+              "kind": "param",
+              "name": "user",
+              "path": [
+                "age"
+              ]
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 13
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 2,
+          "line": 26,
+          "condition_text": "user.age < 18",
+          "condition": {
+            "kind": "bin_op",
+            "op": "lt",
+            "left": {
+              "kind": "param",
+              "name": "user",
+              "path": [
+                "age"
+              ]
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 18
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 3,
+          "line": 29,
+          "condition_text": "user.isVerified",
+          "condition": {
+            "kind": "param",
+            "name": "user",
+            "path": [
+              "isVerified"
+            ]
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 4,
+          "line": 30,
+          "condition_text": "user.role === \"admin\"",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "param",
+              "name": "user",
+              "path": [
+                "role"
+              ]
+            },
+            "right": {
+              "kind": "const",
+              "type": "str",
+              "value": "admin"
+            }
+          },
+          "branch_type": "if"
+        }
+      ],
+      "dependencies": [],
+      "return_type": {
+        "kind": "str"
+      },
+      "start_line": 19,
+      "end_line": 36,
+      "literals": [
+        {
+          "type": "str",
+          "value": "age"
+        },
+        {
+          "type": "int",
+          "value": 0
+        },
+        {
+          "type": "str",
+          "value": "invalid age"
+        },
+        {
+          "type": "int",
+          "value": 13
+        },
+        {
+          "type": "str",
+          "value": "child"
+        },
+        {
+          "type": "int",
+          "value": 18
+        },
+        {
+          "type": "str",
+          "value": "teen"
+        },
+        {
+          "type": "str",
+          "value": "isVerified"
+        },
+        {
+          "type": "str",
+          "value": "role"
+        },
+        {
+          "type": "str",
+          "value": "admin"
+        },
+        {
+          "type": "str",
+          "value": "verified-user"
+        },
+        {
+          "type": "str",
+          "value": "unverified-user"
+        }
+      ]
+    },
+    {
+      "name": "describeRectangle",
+      "exported": true,
+      "params": [
+        {
+          "name": "rect",
+          "type": {
+            "kind": "object",
+            "fields": [
+              [
+                "width",
+                {
+                  "kind": "float"
+                }
+              ],
+              [
+                "height",
+                {
+                  "kind": "float"
+                }
+              ]
+            ]
+          }
+        }
+      ],
+      "branches": [
+        {
+          "id": 0,
+          "line": 50,
+          "condition_text": "rect.width <= 0 || rect.height <= 0",
+          "condition": {
+            "kind": "bin_op",
+            "op": "or",
+            "left": {
+              "kind": "bin_op",
+              "op": "le",
+              "left": {
+                "kind": "param",
+                "name": "rect",
+                "path": [
+                  "width"
+                ]
+              },
+              "right": {
+                "kind": "const",
+                "type": "int",
+                "value": 0
+              }
+            },
+            "right": {
+              "kind": "bin_op",
+              "op": "le",
+              "left": {
+                "kind": "param",
+                "name": "rect",
+                "path": [
+                  "height"
+                ]
+              },
+              "right": {
+                "kind": "const",
+                "type": "int",
+                "value": 0
+              }
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 1,
+          "line": 53,
+          "condition_text": "rect.width === rect.height",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "param",
+              "name": "rect",
+              "path": [
+                "width"
+              ]
+            },
+            "right": {
+              "kind": "param",
+              "name": "rect",
+              "path": [
+                "height"
+              ]
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 2,
+          "line": 57,
+          "condition_text": "area > 10000",
+          "condition": {
+            "kind": "bin_op",
+            "op": "gt",
+            "left": {
+              "kind": "unknown"
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 10000
+            }
+          },
+          "branch_type": "if"
+        }
+      ],
+      "dependencies": [],
+      "return_type": {
+        "kind": "str"
+      },
+      "start_line": 49,
+      "end_line": 61,
+      "literals": [
+        {
+          "type": "str",
+          "value": "width"
+        },
+        {
+          "type": "int",
+          "value": 0
+        },
+        {
+          "type": "str",
+          "value": "height"
+        },
+        {
+          "type": "str",
+          "value": "non-positive dimension"
+        },
+        {
+          "type": "str",
+          "value": "square"
+        },
+        {
+          "type": "int",
+          "value": 10000
+        },
+        {
+          "type": "str",
+          "value": "large-rectangle"
+        },
+        {
+          "type": "str",
+          "value": "small-rectangle"
+        }
+      ]
+    }
+  ]
+}

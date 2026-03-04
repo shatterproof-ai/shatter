@@ -1,0 +1,624 @@
+{
+  "content_hash": "ee389525febb7147d5022b515373c57c8c63cd8007cb8e74fcae01fb1e6fa812",
+  "mtime_secs": 1772320660,
+  "protocol_version": "0.1.0",
+  "analyses": [
+    {
+      "name": "processWithDbConnection",
+      "exported": true,
+      "params": [
+        {
+          "name": "db",
+          "type": {
+            "kind": "object",
+            "fields": [
+              [
+                "query",
+                {
+                  "kind": "unknown"
+                }
+              ],
+              [
+                "execute",
+                {
+                  "kind": "unknown"
+                }
+              ],
+              [
+                "close",
+                {
+                  "kind": "unknown"
+                }
+              ]
+            ]
+          }
+        }
+      ],
+      "branches": [
+        {
+          "id": 0,
+          "line": 27,
+          "condition_text": "!rows || rows.length === 0",
+          "condition": {
+            "kind": "bin_op",
+            "op": "or",
+            "left": {
+              "kind": "un_op",
+              "op": "not",
+              "operand": {
+                "kind": "unknown"
+              }
+            },
+            "right": {
+              "kind": "bin_op",
+              "op": "eq",
+              "left": {
+                "kind": "unknown"
+              },
+              "right": {
+                "kind": "const",
+                "type": "int",
+                "value": 0
+              }
+            }
+          },
+          "branch_type": "if"
+        }
+      ],
+      "dependencies": [],
+      "return_type": {
+        "kind": "unknown"
+      },
+      "start_line": 23,
+      "end_line": 31,
+      "literals": [
+        {
+          "type": "str",
+          "value": "query"
+        },
+        {
+          "type": "str",
+          "value": "SELECT COUNT(*) FROM users"
+        },
+        {
+          "type": "str",
+          "value": "length"
+        },
+        {
+          "type": "int",
+          "value": 0
+        },
+        {
+          "type": "str",
+          "value": "no-data"
+        },
+        {
+          "type": "str",
+          "value": "has-data"
+        }
+      ]
+    },
+    {
+      "name": "processWithSocket",
+      "exported": true,
+      "params": [
+        {
+          "name": "sock",
+          "type": {
+            "kind": "object",
+            "fields": [
+              [
+                "write",
+                {
+                  "kind": "unknown"
+                }
+              ],
+              [
+                "end",
+                {
+                  "kind": "unknown"
+                }
+              ],
+              [
+                "destroyed",
+                {
+                  "kind": "bool"
+                }
+              ]
+            ]
+          }
+        }
+      ],
+      "branches": [
+        {
+          "id": 0,
+          "line": 44,
+          "condition_text": "sock.destroyed",
+          "condition": {
+            "kind": "param",
+            "name": "sock",
+            "path": [
+              "destroyed"
+            ]
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 1,
+          "line": 48,
+          "condition_text": "ok",
+          "condition": null,
+          "branch_type": "if"
+        }
+      ],
+      "dependencies": [],
+      "return_type": {
+        "kind": "str"
+      },
+      "start_line": 43,
+      "end_line": 52,
+      "literals": [
+        {
+          "type": "str",
+          "value": "destroyed"
+        },
+        {
+          "type": "str",
+          "value": "socket-closed"
+        },
+        {
+          "type": "str",
+          "value": "write"
+        },
+        {
+          "type": "str",
+          "value": "from"
+        },
+        {
+          "type": "str",
+          "value": "ping"
+        },
+        {
+          "type": "str",
+          "value": "sent"
+        },
+        {
+          "type": "str",
+          "value": "backpressure"
+        }
+      ]
+    },
+    {
+      "name": "processWithMixedParams",
+      "exported": true,
+      "params": [
+        {
+          "name": "db",
+          "type": {
+            "kind": "object",
+            "fields": [
+              [
+                "query",
+                {
+                  "kind": "unknown"
+                }
+              ],
+              [
+                "execute",
+                {
+                  "kind": "unknown"
+                }
+              ],
+              [
+                "close",
+                {
+                  "kind": "unknown"
+                }
+              ]
+            ]
+          }
+        },
+        {
+          "name": "tableName",
+          "type": {
+            "kind": "str"
+          }
+        },
+        {
+          "name": "limit",
+          "type": {
+            "kind": "float"
+          }
+        }
+      ],
+      "branches": [
+        {
+          "id": 0,
+          "line": 79,
+          "condition_text": "tableName.length === 0",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "param",
+              "name": "tableName",
+              "path": [
+                "length"
+              ]
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 0
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 1,
+          "line": 82,
+          "condition_text": "!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(tableName)",
+          "condition": {
+            "kind": "un_op",
+            "op": "not",
+            "operand": {
+              "kind": "call",
+              "name": "test",
+              "receiver": {
+                "kind": "unknown"
+              },
+              "args": [
+                {
+                  "kind": "param",
+                  "name": "tableName",
+                  "path": []
+                }
+              ]
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 2,
+          "line": 85,
+          "condition_text": "limit <= 0",
+          "condition": {
+            "kind": "bin_op",
+            "op": "le",
+            "left": {
+              "kind": "param",
+              "name": "limit",
+              "path": []
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 0
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 3,
+          "line": 89,
+          "condition_text": "limit > 1000",
+          "condition": {
+            "kind": "bin_op",
+            "op": "gt",
+            "left": {
+              "kind": "param",
+              "name": "limit",
+              "path": []
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 1000
+            }
+          },
+          "branch_type": "ternary"
+        },
+        {
+          "id": 4,
+          "line": 94,
+          "condition_text": "!rows || rows.length === 0",
+          "condition": {
+            "kind": "bin_op",
+            "op": "or",
+            "left": {
+              "kind": "un_op",
+              "op": "not",
+              "operand": {
+                "kind": "unknown"
+              }
+            },
+            "right": {
+              "kind": "bin_op",
+              "op": "eq",
+              "left": {
+                "kind": "unknown"
+              },
+              "right": {
+                "kind": "const",
+                "type": "int",
+                "value": 0
+              }
+            }
+          },
+          "branch_type": "if"
+        }
+      ],
+      "dependencies": [],
+      "return_type": {
+        "kind": "unknown"
+      },
+      "start_line": 74,
+      "end_line": 98,
+      "literals": [
+        {
+          "type": "str",
+          "value": "length"
+        },
+        {
+          "type": "int",
+          "value": 0
+        },
+        {
+          "type": "str",
+          "value": "empty table name"
+        },
+        {
+          "type": "str",
+          "value": "test"
+        },
+        {
+          "type": "regex",
+          "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$"
+        },
+        {
+          "type": "str",
+          "value": "invalid table name"
+        },
+        {
+          "type": "str",
+          "value": "limit must be positive"
+        },
+        {
+          "type": "int",
+          "value": 1000
+        },
+        {
+          "type": "str",
+          "value": "query"
+        },
+        {
+          "type": "str",
+          "value": "no-results"
+        },
+        {
+          "type": "str",
+          "value": "has-results"
+        }
+      ]
+    },
+    {
+      "name": "computeFromPrimitives",
+      "exported": true,
+      "params": [
+        {
+          "name": "values",
+          "type": {
+            "kind": "object",
+            "fields": []
+          }
+        },
+        {
+          "name": "mode",
+          "type": {
+            "kind": "str"
+          }
+        }
+      ],
+      "branches": [
+        {
+          "id": 0,
+          "line": 121,
+          "condition_text": "values.length === 0",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "param",
+              "name": "values",
+              "path": [
+                "length"
+              ]
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 0
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 1,
+          "line": 125,
+          "condition_text": "values.some(v => isNaN(v))",
+          "condition": {
+            "kind": "call",
+            "name": "some",
+            "receiver": {
+              "kind": "param",
+              "name": "values",
+              "path": []
+            },
+            "args": [
+              {
+                "kind": "unknown"
+              }
+            ]
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 2,
+          "line": 129,
+          "condition_text": "values.every(v => v === 0)",
+          "condition": {
+            "kind": "call",
+            "name": "every",
+            "receiver": {
+              "kind": "param",
+              "name": "values",
+              "path": []
+            },
+            "args": [
+              {
+                "kind": "unknown"
+              }
+            ]
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 3,
+          "line": 133,
+          "condition_text": "values.some(v => v < 0)",
+          "condition": {
+            "kind": "call",
+            "name": "some",
+            "receiver": {
+              "kind": "param",
+              "name": "values",
+              "path": []
+            },
+            "args": [
+              {
+                "kind": "unknown"
+              }
+            ]
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 4,
+          "line": 137,
+          "condition_text": "mode === \"sum\"",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "param",
+              "name": "mode",
+              "path": []
+            },
+            "right": {
+              "kind": "const",
+              "type": "str",
+              "value": "sum"
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 5,
+          "line": 140,
+          "condition_text": "mode === \"avg\"",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "param",
+              "name": "mode",
+              "path": []
+            },
+            "right": {
+              "kind": "const",
+              "type": "str",
+              "value": "avg"
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 6,
+          "line": 143,
+          "condition_text": "mode === \"max\"",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "param",
+              "name": "mode",
+              "path": []
+            },
+            "right": {
+              "kind": "const",
+              "type": "str",
+              "value": "max"
+            }
+          },
+          "branch_type": "if"
+        }
+      ],
+      "dependencies": [],
+      "return_type": {
+        "kind": "float"
+      },
+      "start_line": 117,
+      "end_line": 148,
+      "literals": [
+        {
+          "type": "str",
+          "value": "length"
+        },
+        {
+          "type": "int",
+          "value": 0
+        },
+        {
+          "type": "str",
+          "value": "empty"
+        },
+        {
+          "type": "str",
+          "value": "some"
+        },
+        {
+          "type": "str",
+          "value": "contains-nan"
+        },
+        {
+          "type": "str",
+          "value": "every"
+        },
+        {
+          "type": "str",
+          "value": "contains-negative"
+        },
+        {
+          "type": "str",
+          "value": "sum"
+        },
+        {
+          "type": "str",
+          "value": "reduce"
+        },
+        {
+          "type": "str",
+          "value": "avg"
+        },
+        {
+          "type": "str",
+          "value": "max"
+        },
+        {
+          "type": "str",
+          "value": "unknown mode"
+        }
+      ]
+    }
+  ]
+}

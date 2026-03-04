@@ -1,0 +1,371 @@
+{
+  "content_hash": "54ba42c715cf9487fcf999d3ad7b365d2943c0fd9c37caa382cd74333a25e573",
+  "mtime_secs": 1772305184,
+  "protocol_version": "0.1.0",
+  "analyses": [
+    {
+      "name": "classifyString",
+      "exported": true,
+      "params": [
+        {
+          "name": "s",
+          "type": {
+            "kind": "str"
+          }
+        }
+      ],
+      "branches": [
+        {
+          "id": 0,
+          "line": 13,
+          "condition_text": "s.length === 0",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "param",
+              "name": "s",
+              "path": [
+                "length"
+              ]
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 0
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 1,
+          "line": 16,
+          "condition_text": "s.length === 1",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "param",
+              "name": "s",
+              "path": [
+                "length"
+              ]
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 1
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 2,
+          "line": 19,
+          "condition_text": "s.startsWith(\"http\")",
+          "condition": {
+            "kind": "call",
+            "name": "startsWith",
+            "receiver": {
+              "kind": "param",
+              "name": "s",
+              "path": []
+            },
+            "args": [
+              {
+                "kind": "const",
+                "type": "str",
+                "value": "http"
+              }
+            ]
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 3,
+          "line": 22,
+          "condition_text": "s.includes(\"@\")",
+          "condition": {
+            "kind": "call",
+            "name": "includes",
+            "receiver": {
+              "kind": "param",
+              "name": "s",
+              "path": []
+            },
+            "args": [
+              {
+                "kind": "const",
+                "type": "str",
+                "value": "@"
+              }
+            ]
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 4,
+          "line": 25,
+          "condition_text": "/^\\d+$/.test(s)",
+          "condition": {
+            "kind": "call",
+            "name": "test",
+            "receiver": {
+              "kind": "unknown"
+            },
+            "args": [
+              {
+                "kind": "param",
+                "name": "s",
+                "path": []
+              }
+            ]
+          },
+          "branch_type": "if"
+        }
+      ],
+      "dependencies": [],
+      "return_type": {
+        "kind": "str"
+      },
+      "start_line": 12,
+      "end_line": 29,
+      "literals": [
+        {
+          "type": "str",
+          "value": "length"
+        },
+        {
+          "type": "int",
+          "value": 0
+        },
+        {
+          "type": "str",
+          "value": "empty"
+        },
+        {
+          "type": "int",
+          "value": 1
+        },
+        {
+          "type": "str",
+          "value": "single-char"
+        },
+        {
+          "type": "str",
+          "value": "startsWith"
+        },
+        {
+          "type": "str",
+          "value": "http"
+        },
+        {
+          "type": "str",
+          "value": "url"
+        },
+        {
+          "type": "str",
+          "value": "includes"
+        },
+        {
+          "type": "str",
+          "value": "@"
+        },
+        {
+          "type": "str",
+          "value": "email-like"
+        },
+        {
+          "type": "str",
+          "value": "test"
+        },
+        {
+          "type": "regex",
+          "pattern": "^\\d+$"
+        },
+        {
+          "type": "str",
+          "value": "numeric"
+        },
+        {
+          "type": "str",
+          "value": "text"
+        }
+      ]
+    },
+    {
+      "name": "transformString",
+      "exported": true,
+      "params": [
+        {
+          "name": "input",
+          "type": {
+            "kind": "str"
+          }
+        },
+        {
+          "name": "mode",
+          "type": {
+            "kind": "str"
+          }
+        },
+        {
+          "name": "count",
+          "type": {
+            "kind": "float"
+          }
+        }
+      ],
+      "branches": [
+        {
+          "id": 0,
+          "line": 46,
+          "condition_text": "mode === \"upper\"",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "param",
+              "name": "mode",
+              "path": []
+            },
+            "right": {
+              "kind": "const",
+              "type": "str",
+              "value": "upper"
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 1,
+          "line": 49,
+          "condition_text": "mode === \"lower\"",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "param",
+              "name": "mode",
+              "path": []
+            },
+            "right": {
+              "kind": "const",
+              "type": "str",
+              "value": "lower"
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 2,
+          "line": 52,
+          "condition_text": "mode === \"reverse\"",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "param",
+              "name": "mode",
+              "path": []
+            },
+            "right": {
+              "kind": "const",
+              "type": "str",
+              "value": "reverse"
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 3,
+          "line": 55,
+          "condition_text": "mode === \"repeat\"",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "param",
+              "name": "mode",
+              "path": []
+            },
+            "right": {
+              "kind": "const",
+              "type": "str",
+              "value": "repeat"
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 4,
+          "line": 56,
+          "condition_text": "count <= 0",
+          "condition": {
+            "kind": "bin_op",
+            "op": "le",
+            "left": {
+              "kind": "param",
+              "name": "count",
+              "path": []
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 0
+            }
+          },
+          "branch_type": "if"
+        }
+      ],
+      "dependencies": [],
+      "return_type": {
+        "kind": "str"
+      },
+      "start_line": 41,
+      "end_line": 62,
+      "literals": [
+        {
+          "type": "str",
+          "value": "upper"
+        },
+        {
+          "type": "str",
+          "value": "toUpperCase"
+        },
+        {
+          "type": "str",
+          "value": "lower"
+        },
+        {
+          "type": "str",
+          "value": "toLowerCase"
+        },
+        {
+          "type": "str",
+          "value": "reverse"
+        },
+        {
+          "type": "str",
+          "value": "join"
+        },
+        {
+          "type": "str",
+          "value": "split"
+        },
+        {
+          "type": "str",
+          "value": ""
+        },
+        {
+          "type": "str",
+          "value": "repeat"
+        },
+        {
+          "type": "int",
+          "value": 0
+        }
+      ]
+    }
+  ]
+}

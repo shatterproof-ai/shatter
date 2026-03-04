@@ -1,0 +1,696 @@
+{
+  "content_hash": "46d48ab440beaadf9c77661c84b99436908691c29372d968ca60166268f048f4",
+  "mtime_secs": 1772320660,
+  "protocol_version": "0.1.0",
+  "analyses": [
+    {
+      "name": "mergeConfig",
+      "exported": true,
+      "params": [
+        {
+          "name": "base",
+          "type": {
+            "kind": "object",
+            "fields": []
+          }
+        },
+        {
+          "name": "override",
+          "type": {
+            "kind": "object",
+            "fields": []
+          }
+        },
+        {
+          "name": "arrayStrategy",
+          "type": {
+            "kind": "union",
+            "variants": [
+              {
+                "kind": "str"
+              },
+              {
+                "kind": "str"
+              }
+            ]
+          }
+        },
+        {
+          "name": "maxDepth",
+          "type": {
+            "kind": "float"
+          }
+        },
+        {
+          "name": "currentDepth",
+          "type": {
+            "kind": "float"
+          }
+        }
+      ],
+      "branches": [
+        {
+          "id": 0,
+          "line": 38,
+          "condition_text": "currentDepth > maxDepth",
+          "condition": {
+            "kind": "bin_op",
+            "op": "gt",
+            "left": {
+              "kind": "param",
+              "name": "currentDepth",
+              "path": []
+            },
+            "right": {
+              "kind": "param",
+              "name": "maxDepth",
+              "path": []
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 1,
+          "line": 47,
+          "condition_text": "!(key in override)",
+          "condition": {
+            "kind": "un_op",
+            "op": "not",
+            "operand": {
+              "kind": "bin_op",
+              "op": "in",
+              "left": {
+                "kind": "unknown"
+              },
+              "right": {
+                "kind": "param",
+                "name": "override",
+                "path": []
+              }
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 2,
+          "line": 55,
+          "condition_text": "overrideVal === null",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "unknown"
+            },
+            "right": {
+              "kind": "const",
+              "type": "null"
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 3,
+          "line": 60,
+          "condition_text": "isConfigObject(baseVal) &&\n            isConfigObject(overrideVal)",
+          "condition": {
+            "kind": "bin_op",
+            "op": "and",
+            "left": {
+              "kind": "call",
+              "name": "isConfigObject",
+              "receiver": null,
+              "args": [
+                {
+                  "kind": "unknown"
+                }
+              ]
+            },
+            "right": {
+              "kind": "call",
+              "name": "isConfigObject",
+              "receiver": null,
+              "args": [
+                {
+                  "kind": "unknown"
+                }
+              ]
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 4,
+          "line": 75,
+          "condition_text": "Array.isArray(baseVal) && Array.isArray(overrideVal)",
+          "condition": {
+            "kind": "bin_op",
+            "op": "and",
+            "left": {
+              "kind": "call",
+              "name": "isArray",
+              "receiver": {
+                "kind": "unknown"
+              },
+              "args": [
+                {
+                  "kind": "unknown"
+                }
+              ]
+            },
+            "right": {
+              "kind": "call",
+              "name": "isArray",
+              "receiver": {
+                "kind": "unknown"
+              },
+              "args": [
+                {
+                  "kind": "unknown"
+                }
+              ]
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 5,
+          "line": 76,
+          "condition_text": "arrayStrategy === \"append\"",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "param",
+              "name": "arrayStrategy",
+              "path": []
+            },
+            "right": {
+              "kind": "const",
+              "type": "str",
+              "value": "append"
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 6,
+          "line": 90,
+          "condition_text": "!(key in base) && override[key] !== null",
+          "condition": {
+            "kind": "bin_op",
+            "op": "and",
+            "left": {
+              "kind": "un_op",
+              "op": "not",
+              "operand": {
+                "kind": "bin_op",
+                "op": "in",
+                "left": {
+                  "kind": "unknown"
+                },
+                "right": {
+                  "kind": "param",
+                  "name": "base",
+                  "path": []
+                }
+              }
+            },
+            "right": {
+              "kind": "bin_op",
+              "op": "ne",
+              "left": {
+                "kind": "unknown"
+              },
+              "right": {
+                "kind": "const",
+                "type": "null"
+              }
+            }
+          },
+          "branch_type": "if"
+        }
+      ],
+      "dependencies": [],
+      "return_type": {
+        "kind": "object",
+        "fields": []
+      },
+      "start_line": 31,
+      "end_line": 96,
+      "literals": [
+        {
+          "type": "int",
+          "value": 0
+        },
+        {
+          "type": "str",
+          "value": "max depth exceeded"
+        },
+        {
+          "type": "str",
+          "value": "keys"
+        },
+        {
+          "type": "int",
+          "value": 1
+        },
+        {
+          "type": "str",
+          "value": "isArray"
+        },
+        {
+          "type": "str",
+          "value": "append"
+        },
+        {
+          "type": "str",
+          "value": "replace"
+        }
+      ]
+    },
+    {
+      "name": "isConfigObject",
+      "exported": false,
+      "params": [
+        {
+          "name": "val",
+          "type": {
+            "kind": "nullable",
+            "inner": {
+              "kind": "union",
+              "variants": [
+                {
+                  "kind": "str"
+                },
+                {
+                  "kind": "float"
+                },
+                {
+                  "kind": "bool"
+                },
+                {
+                  "kind": "bool"
+                },
+                {
+                  "kind": "object",
+                  "fields": []
+                },
+                {
+                  "kind": "object",
+                  "fields": []
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "branches": [
+        {
+          "id": 0,
+          "line": 99,
+          "condition_text": "typeof val === \"object\" && val !== null && !Array.isArray(val)",
+          "condition": {
+            "kind": "bin_op",
+            "op": "and",
+            "left": {
+              "kind": "bin_op",
+              "op": "and",
+              "left": {
+                "kind": "bin_op",
+                "op": "eq",
+                "left": {
+                  "kind": "un_op",
+                  "op": "type_of",
+                  "operand": {
+                    "kind": "param",
+                    "name": "val",
+                    "path": []
+                  }
+                },
+                "right": {
+                  "kind": "const",
+                  "type": "str",
+                  "value": "object"
+                }
+              },
+              "right": {
+                "kind": "bin_op",
+                "op": "ne",
+                "left": {
+                  "kind": "param",
+                  "name": "val",
+                  "path": []
+                },
+                "right": {
+                  "kind": "const",
+                  "type": "null"
+                }
+              }
+            },
+            "right": {
+              "kind": "un_op",
+              "op": "not",
+              "operand": {
+                "kind": "call",
+                "name": "isArray",
+                "receiver": {
+                  "kind": "unknown"
+                },
+                "args": [
+                  {
+                    "kind": "param",
+                    "name": "val",
+                    "path": []
+                  }
+                ]
+              }
+            }
+          },
+          "branch_type": "logical_and"
+        }
+      ],
+      "dependencies": [],
+      "return_type": {
+        "kind": "bool"
+      },
+      "start_line": 98,
+      "end_line": 100,
+      "literals": [
+        {
+          "type": "str",
+          "value": "object"
+        },
+        {
+          "type": "str",
+          "value": "isArray"
+        }
+      ]
+    },
+    {
+      "name": "transformRecord",
+      "exported": true,
+      "params": [
+        {
+          "name": "record",
+          "type": {
+            "kind": "object",
+            "fields": []
+          }
+        }
+      ],
+      "branches": [
+        {
+          "id": 0,
+          "line": 129,
+          "condition_text": "!record[\"id\"]",
+          "condition": {
+            "kind": "un_op",
+            "op": "not",
+            "operand": {
+              "kind": "unknown"
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 1,
+          "line": 133,
+          "condition_text": "!record[\"type\"]",
+          "condition": {
+            "kind": "un_op",
+            "op": "not",
+            "operand": {
+              "kind": "unknown"
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 2,
+          "line": 139,
+          "condition_text": "type === \"user\"",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "unknown"
+            },
+            "right": {
+              "kind": "const",
+              "type": "str",
+              "value": "user"
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 3,
+          "line": 141,
+          "condition_text": "!email",
+          "condition": {
+            "kind": "un_op",
+            "op": "not",
+            "operand": {
+              "kind": "unknown"
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 4,
+          "line": 147,
+          "condition_text": "!/^[^@]+@[^@]+\\.[^@]+$/.test(emailStr)",
+          "condition": {
+            "kind": "un_op",
+            "op": "not",
+            "operand": {
+              "kind": "call",
+              "name": "test",
+              "receiver": {
+                "kind": "unknown"
+              },
+              "args": [
+                {
+                  "kind": "unknown"
+                }
+              ]
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 5,
+          "line": 161,
+          "condition_text": "type === \"order\"",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "unknown"
+            },
+            "right": {
+              "kind": "const",
+              "type": "str",
+              "value": "order"
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 6,
+          "line": 163,
+          "condition_text": "amount === undefined || amount === \"\"",
+          "condition": {
+            "kind": "bin_op",
+            "op": "or",
+            "left": {
+              "kind": "bin_op",
+              "op": "eq",
+              "left": {
+                "kind": "unknown"
+              },
+              "right": {
+                "kind": "unknown"
+              }
+            },
+            "right": {
+              "kind": "bin_op",
+              "op": "eq",
+              "left": {
+                "kind": "unknown"
+              },
+              "right": {
+                "kind": "const",
+                "type": "str",
+                "value": ""
+              }
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 7,
+          "line": 168,
+          "condition_text": "numAmount <= 0 || isNaN(numAmount)",
+          "condition": {
+            "kind": "bin_op",
+            "op": "or",
+            "left": {
+              "kind": "bin_op",
+              "op": "le",
+              "left": {
+                "kind": "unknown"
+              },
+              "right": {
+                "kind": "const",
+                "type": "int",
+                "value": 0
+              }
+            },
+            "right": {
+              "kind": "call",
+              "name": "isNaN",
+              "receiver": null,
+              "args": [
+                {
+                  "kind": "unknown"
+                }
+              ]
+            }
+          },
+          "branch_type": "if"
+        }
+      ],
+      "dependencies": [],
+      "return_type": {
+        "kind": "object",
+        "fields": [
+          [
+            "status",
+            {
+              "kind": "union",
+              "variants": [
+                {
+                  "kind": "str"
+                },
+                {
+                  "kind": "str"
+                }
+              ]
+            }
+          ],
+          [
+            "reason",
+            {
+              "kind": "nullable",
+              "inner": {
+                "kind": "str"
+              }
+            }
+          ],
+          [
+            "normalized",
+            {
+              "kind": "nullable",
+              "inner": {
+                "kind": "unknown"
+              }
+            }
+          ]
+        ]
+      },
+      "start_line": 128,
+      "end_line": 183,
+      "literals": [
+        {
+          "type": "str",
+          "value": "id"
+        },
+        {
+          "type": "str",
+          "value": "rejected"
+        },
+        {
+          "type": "str",
+          "value": "missing id"
+        },
+        {
+          "type": "str",
+          "value": "type"
+        },
+        {
+          "type": "str",
+          "value": "missing type"
+        },
+        {
+          "type": "str",
+          "value": "user"
+        },
+        {
+          "type": "str",
+          "value": "email"
+        },
+        {
+          "type": "str",
+          "value": "user needs email"
+        },
+        {
+          "type": "str",
+          "value": "test"
+        },
+        {
+          "type": "regex",
+          "pattern": "^[^@]+@[^@]+\\.[^@]+$"
+        },
+        {
+          "type": "str",
+          "value": "invalid email"
+        },
+        {
+          "type": "str",
+          "value": "accepted"
+        },
+        {
+          "type": "str",
+          "value": "toLowerCase"
+        },
+        {
+          "type": "str",
+          "value": "order"
+        },
+        {
+          "type": "str",
+          "value": "amount"
+        },
+        {
+          "type": "str",
+          "value": ""
+        },
+        {
+          "type": "str",
+          "value": "order needs amount"
+        },
+        {
+          "type": "int",
+          "value": 0
+        },
+        {
+          "type": "str",
+          "value": "non-positive amount"
+        },
+        {
+          "type": "str",
+          "value": "round"
+        },
+        {
+          "type": "int",
+          "value": 100
+        },
+        {
+          "type": "str",
+          "value": "unknown type"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,3788 @@
+{
+  "content_hash": "9e18aeefa81284c774d726ee8f0be737bc142b63c86800c536b7c058d738a146",
+  "mtime_secs": 1772305184,
+  "protocol_version": "0.1.0",
+  "analyses": [
+    {
+      "name": "escapeAndQuote",
+      "exported": false,
+      "params": [
+        {
+          "name": "value",
+          "type": {
+            "kind": "str"
+          }
+        }
+      ],
+      "branches": [],
+      "dependencies": [],
+      "return_type": {
+        "kind": "str"
+      },
+      "start_line": 295,
+      "end_line": 295,
+      "literals": [
+        {
+          "type": "str",
+          "value": "replaceAll"
+        },
+        {
+          "type": "regex",
+          "pattern": "[']"
+        },
+        {
+          "type": "str",
+          "value": "''"
+        },
+        {
+          "type": "str",
+          "value": "ACADEMICS"
+        },
+        {
+          "type": "str",
+          "value": "ADMISSIONS"
+        },
+        {
+          "type": "str",
+          "value": "ATHLETICS"
+        },
+        {
+          "type": "str",
+          "value": "CORE"
+        },
+        {
+          "type": "str",
+          "value": "COST"
+        },
+        {
+          "type": "str",
+          "value": "CULTURAL_ENVIRONMENT"
+        },
+        {
+          "type": "str",
+          "value": "DEMOGRAPHICS"
+        },
+        {
+          "type": "str",
+          "value": "FIELDS_OF_STUDY"
+        },
+        {
+          "type": "str",
+          "value": "LOCATION"
+        },
+        {
+          "type": "str",
+          "value": "METADATA"
+        },
+        {
+          "type": "str",
+          "value": "OUTCOMES"
+        },
+        {
+          "type": "str",
+          "value": "PHYSICAL_ENVIRONMENT"
+        },
+        {
+          "type": "str",
+          "value": "REPUTATION"
+        },
+        {
+          "type": "str",
+          "value": "STUDENT_LIFE"
+        },
+        {
+          "type": "str",
+          "value": "WEATHER"
+        },
+        {
+          "type": "str",
+          "value": "OTHER"
+        },
+        {
+          "type": "str",
+          "value": "applications"
+        },
+        {
+          "type": "str",
+          "value": "ssocs"
+        },
+        {
+          "type": "str",
+          "value": "ncaa"
+        },
+        {
+          "type": "str",
+          "value": "nces_fos"
+        },
+        {
+          "type": "str",
+          "value": "nces"
+        },
+        {
+          "type": "str",
+          "value": "koppen"
+        },
+        {
+          "type": "str",
+          "value": "partisan_lean_538"
+        },
+        {
+          "type": "str",
+          "value": "metro_area"
+        },
+        {
+          "type": "str",
+          "value": "aau_list"
+        },
+        {
+          "type": "str",
+          "value": "nces_subjects"
+        },
+        {
+          "type": "str",
+          "value": "DISTANCE"
+        },
+        {
+          "type": "str",
+          "value": "INTEGER"
+        },
+        {
+          "type": "str",
+          "value": "MONEY"
+        },
+        {
+          "type": "str",
+          "value": "FLOAT"
+        },
+        {
+          "type": "str",
+          "value": "PERCENTAGE"
+        },
+        {
+          "type": "str",
+          "value": "BINARY"
+        },
+        {
+          "type": "str",
+          "value": "weather"
+        },
+        {
+          "type": "str",
+          "value": "athletics"
+        },
+        {
+          "type": "str",
+          "value": "fields_of_study"
+        },
+        {
+          "type": "str",
+          "value": "admissions"
+        },
+        {
+          "type": "str",
+          "value": "misc"
+        },
+        {
+          "type": "str",
+          "value": "location"
+        },
+        {
+          "type": "str",
+          "value": "search_base"
+        },
+        {
+          "type": "str",
+          "value": "DATABASE_URL"
+        },
+        {
+          "type": "str",
+          "value": "env"
+        }
+      ]
+    },
+    {
+      "name": "escapeAndQuoteAll",
+      "exported": false,
+      "params": [
+        {
+          "name": "values",
+          "type": {
+            "kind": "object",
+            "fields": []
+          }
+        }
+      ],
+      "branches": [],
+      "dependencies": [],
+      "return_type": {
+        "kind": "unknown"
+      },
+      "start_line": 296,
+      "end_line": 296,
+      "literals": [
+        {
+          "type": "str",
+          "value": "map"
+        },
+        {
+          "type": "str",
+          "value": "ACADEMICS"
+        },
+        {
+          "type": "str",
+          "value": "ADMISSIONS"
+        },
+        {
+          "type": "str",
+          "value": "ATHLETICS"
+        },
+        {
+          "type": "str",
+          "value": "CORE"
+        },
+        {
+          "type": "str",
+          "value": "COST"
+        },
+        {
+          "type": "str",
+          "value": "CULTURAL_ENVIRONMENT"
+        },
+        {
+          "type": "str",
+          "value": "DEMOGRAPHICS"
+        },
+        {
+          "type": "str",
+          "value": "FIELDS_OF_STUDY"
+        },
+        {
+          "type": "str",
+          "value": "LOCATION"
+        },
+        {
+          "type": "str",
+          "value": "METADATA"
+        },
+        {
+          "type": "str",
+          "value": "OUTCOMES"
+        },
+        {
+          "type": "str",
+          "value": "PHYSICAL_ENVIRONMENT"
+        },
+        {
+          "type": "str",
+          "value": "REPUTATION"
+        },
+        {
+          "type": "str",
+          "value": "STUDENT_LIFE"
+        },
+        {
+          "type": "str",
+          "value": "WEATHER"
+        },
+        {
+          "type": "str",
+          "value": "OTHER"
+        },
+        {
+          "type": "str",
+          "value": "applications"
+        },
+        {
+          "type": "str",
+          "value": "ssocs"
+        },
+        {
+          "type": "str",
+          "value": "ncaa"
+        },
+        {
+          "type": "str",
+          "value": "nces_fos"
+        },
+        {
+          "type": "str",
+          "value": "nces"
+        },
+        {
+          "type": "str",
+          "value": "koppen"
+        },
+        {
+          "type": "str",
+          "value": "partisan_lean_538"
+        },
+        {
+          "type": "str",
+          "value": "metro_area"
+        },
+        {
+          "type": "str",
+          "value": "aau_list"
+        },
+        {
+          "type": "str",
+          "value": "nces_subjects"
+        },
+        {
+          "type": "str",
+          "value": "DISTANCE"
+        },
+        {
+          "type": "str",
+          "value": "INTEGER"
+        },
+        {
+          "type": "str",
+          "value": "MONEY"
+        },
+        {
+          "type": "str",
+          "value": "FLOAT"
+        },
+        {
+          "type": "str",
+          "value": "PERCENTAGE"
+        },
+        {
+          "type": "str",
+          "value": "BINARY"
+        },
+        {
+          "type": "str",
+          "value": "weather"
+        },
+        {
+          "type": "str",
+          "value": "athletics"
+        },
+        {
+          "type": "str",
+          "value": "fields_of_study"
+        },
+        {
+          "type": "str",
+          "value": "admissions"
+        },
+        {
+          "type": "str",
+          "value": "misc"
+        },
+        {
+          "type": "str",
+          "value": "location"
+        },
+        {
+          "type": "str",
+          "value": "search_base"
+        },
+        {
+          "type": "str",
+          "value": "DATABASE_URL"
+        },
+        {
+          "type": "str",
+          "value": "env"
+        }
+      ]
+    },
+    {
+      "name": "rfPath",
+      "exported": false,
+      "params": [
+        {
+          "name": "rf",
+          "type": {
+            "kind": "unknown"
+          }
+        }
+      ],
+      "branches": [
+        {
+          "id": 0,
+          "line": 362,
+          "condition_text": "!rf.path || rf.path.length == 0",
+          "condition": {
+            "kind": "bin_op",
+            "op": "or",
+            "left": {
+              "kind": "un_op",
+              "op": "not",
+              "operand": {
+                "kind": "param",
+                "name": "rf",
+                "path": [
+                  "path"
+                ]
+              }
+            },
+            "right": {
+              "kind": "bin_op",
+              "op": "eq",
+              "left": {
+                "kind": "param",
+                "name": "rf",
+                "path": [
+                  "path",
+                  "length"
+                ]
+              },
+              "right": {
+                "kind": "const",
+                "type": "int",
+                "value": 0
+              }
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 1,
+          "line": 367,
+          "condition_text": "rf.valueStructure == 'SCALAR'",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "param",
+              "name": "rf",
+              "path": [
+                "valueStructure"
+              ]
+            },
+            "right": {
+              "kind": "const",
+              "type": "str",
+              "value": "SCALAR"
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 2,
+          "line": 369,
+          "condition_text": "NUMERIC_TYPES.includes(rf.valueType as NumericValueType)",
+          "condition": {
+            "kind": "call",
+            "name": "includes",
+            "receiver": {
+              "kind": "unknown"
+            },
+            "args": [
+              {
+                "kind": "unknown"
+              }
+            ]
+          },
+          "branch_type": "if"
+        }
+      ],
+      "dependencies": [],
+      "return_type": {
+        "kind": "str"
+      },
+      "start_line": 359,
+      "end_line": 375,
+      "literals": [
+        {
+          "type": "str",
+          "value": "datakey"
+        },
+        {
+          "type": "str",
+          "value": "path"
+        },
+        {
+          "type": "str",
+          "value": "length"
+        },
+        {
+          "type": "int",
+          "value": 0
+        },
+        {
+          "type": "str",
+          "value": "valueStructure"
+        },
+        {
+          "type": "str",
+          "value": "SCALAR"
+        },
+        {
+          "type": "str",
+          "value": "("
+        },
+        {
+          "type": "str",
+          "value": "join"
+        },
+        {
+          "type": "str",
+          "value": "slice"
+        },
+        {
+          "type": "int",
+          "value": 1
+        },
+        {
+          "type": "str",
+          "value": " -> "
+        },
+        {
+          "type": "str",
+          "value": "->>"
+        },
+        {
+          "type": "str",
+          "value": ")"
+        },
+        {
+          "type": "str",
+          "value": "includes"
+        },
+        {
+          "type": "str",
+          "value": "valueType"
+        },
+        {
+          "type": "str",
+          "value": "::numeric"
+        },
+        {
+          "type": "str",
+          "value": "ACADEMICS"
+        },
+        {
+          "type": "str",
+          "value": "ADMISSIONS"
+        },
+        {
+          "type": "str",
+          "value": "ATHLETICS"
+        },
+        {
+          "type": "str",
+          "value": "CORE"
+        },
+        {
+          "type": "str",
+          "value": "COST"
+        },
+        {
+          "type": "str",
+          "value": "CULTURAL_ENVIRONMENT"
+        },
+        {
+          "type": "str",
+          "value": "DEMOGRAPHICS"
+        },
+        {
+          "type": "str",
+          "value": "FIELDS_OF_STUDY"
+        },
+        {
+          "type": "str",
+          "value": "LOCATION"
+        },
+        {
+          "type": "str",
+          "value": "METADATA"
+        },
+        {
+          "type": "str",
+          "value": "OUTCOMES"
+        },
+        {
+          "type": "str",
+          "value": "PHYSICAL_ENVIRONMENT"
+        },
+        {
+          "type": "str",
+          "value": "REPUTATION"
+        },
+        {
+          "type": "str",
+          "value": "STUDENT_LIFE"
+        },
+        {
+          "type": "str",
+          "value": "WEATHER"
+        },
+        {
+          "type": "str",
+          "value": "OTHER"
+        },
+        {
+          "type": "str",
+          "value": "applications"
+        },
+        {
+          "type": "str",
+          "value": "ssocs"
+        },
+        {
+          "type": "str",
+          "value": "ncaa"
+        },
+        {
+          "type": "str",
+          "value": "nces_fos"
+        },
+        {
+          "type": "str",
+          "value": "nces"
+        },
+        {
+          "type": "str",
+          "value": "koppen"
+        },
+        {
+          "type": "str",
+          "value": "partisan_lean_538"
+        },
+        {
+          "type": "str",
+          "value": "metro_area"
+        },
+        {
+          "type": "str",
+          "value": "aau_list"
+        },
+        {
+          "type": "str",
+          "value": "nces_subjects"
+        },
+        {
+          "type": "str",
+          "value": "DISTANCE"
+        },
+        {
+          "type": "str",
+          "value": "INTEGER"
+        },
+        {
+          "type": "str",
+          "value": "MONEY"
+        },
+        {
+          "type": "str",
+          "value": "FLOAT"
+        },
+        {
+          "type": "str",
+          "value": "PERCENTAGE"
+        },
+        {
+          "type": "str",
+          "value": "BINARY"
+        },
+        {
+          "type": "str",
+          "value": "weather"
+        },
+        {
+          "type": "str",
+          "value": "athletics"
+        },
+        {
+          "type": "str",
+          "value": "fields_of_study"
+        },
+        {
+          "type": "str",
+          "value": "admissions"
+        },
+        {
+          "type": "str",
+          "value": "misc"
+        },
+        {
+          "type": "str",
+          "value": "location"
+        },
+        {
+          "type": "str",
+          "value": "search_base"
+        },
+        {
+          "type": "str",
+          "value": "DATABASE_URL"
+        },
+        {
+          "type": "str",
+          "value": "env"
+        }
+      ]
+    },
+    {
+      "name": "resolveReference",
+      "exported": false,
+      "params": [
+        {
+          "name": "f",
+          "type": {
+            "kind": "unknown"
+          }
+        },
+        {
+          "name": "allResultFields",
+          "type": {
+            "kind": "unknown"
+          }
+        },
+        {
+          "name": "personalization",
+          "type": {
+            "kind": "object",
+            "fields": [
+              [
+                "location",
+                {
+                  "kind": "nullable",
+                  "inner": {
+                    "kind": "object",
+                    "fields": [
+                      [
+                        "__typename",
+                        {
+                          "kind": "nullable",
+                          "inner": {
+                            "kind": "str"
+                          }
+                        }
+                      ],
+                      [
+                        "city",
+                        {
+                          "kind": "nullable",
+                          "inner": {
+                            "kind": "str"
+                          }
+                        }
+                      ],
+                      [
+                        "country",
+                        {
+                          "kind": "nullable",
+                          "inner": {
+                            "kind": "str"
+                          }
+                        }
+                      ],
+                      [
+                        "latitude",
+                        {
+                          "kind": "nullable",
+                          "inner": {
+                            "kind": "float"
+                          }
+                        }
+                      ],
+                      [
+                        "longitude",
+                        {
+                          "kind": "nullable",
+                          "inner": {
+                            "kind": "float"
+                          }
+                        }
+                      ],
+                      [
+                        "state",
+                        {
+                          "kind": "nullable",
+                          "inner": {
+                            "kind": "str"
+                          }
+                        }
+                      ],
+                      [
+                        "stateCode",
+                        {
+                          "kind": "nullable",
+                          "inner": {
+                            "kind": "str"
+                          }
+                        }
+                      ],
+                      [
+                        "zipCode",
+                        {
+                          "kind": "nullable",
+                          "inner": {
+                            "kind": "str"
+                          }
+                        }
+                      ]
+                    ]
+                  }
+                }
+              ]
+            ]
+          }
+        }
+      ],
+      "branches": [
+        {
+          "id": 0,
+          "line": 378,
+          "condition_text": "f.type == 'column'",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "param",
+              "name": "f",
+              "path": [
+                "type"
+              ]
+            },
+            "right": {
+              "kind": "const",
+              "type": "str",
+              "value": "column"
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 1,
+          "line": 382,
+          "condition_text": "f.type == 'json'",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "param",
+              "name": "f",
+              "path": [
+                "type"
+              ]
+            },
+            "right": {
+              "kind": "const",
+              "type": "str",
+              "value": "json"
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 2,
+          "line": 386,
+          "condition_text": "f.type == 'expression'",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "param",
+              "name": "f",
+              "path": [
+                "type"
+              ]
+            },
+            "right": {
+              "kind": "const",
+              "type": "str",
+              "value": "expression"
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 3,
+          "line": 389,
+          "condition_text": "value == null",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "unknown"
+            },
+            "right": {
+              "kind": "const",
+              "type": "null"
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 4,
+          "line": 392,
+          "condition_text": "typeof value == 'string'",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "un_op",
+              "op": "type_of",
+              "operand": {
+                "kind": "unknown"
+              }
+            },
+            "right": {
+              "kind": "const",
+              "type": "str",
+              "value": "string"
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 5,
+          "line": 398,
+          "condition_text": "f.operation == 'COMPARE'",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "param",
+              "name": "f",
+              "path": [
+                "operation"
+              ]
+            },
+            "right": {
+              "kind": "const",
+              "type": "str",
+              "value": "COMPARE"
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 6,
+          "line": 402,
+          "condition_text": "rf",
+          "condition": null,
+          "branch_type": "if"
+        },
+        {
+          "id": 7,
+          "line": 404,
+          "condition_text": "resolved",
+          "condition": null,
+          "branch_type": "if"
+        },
+        {
+          "id": 8,
+          "line": 412,
+          "condition_text": "cases.length == 0",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "unknown"
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 0
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 9,
+          "line": 413,
+          "condition_text": "f.default",
+          "condition": {
+            "kind": "param",
+            "name": "f",
+            "path": [
+              "default"
+            ]
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 10,
+          "line": 426,
+          "condition_text": "rf",
+          "condition": null,
+          "branch_type": "if"
+        },
+        {
+          "id": 11,
+          "line": 428,
+          "condition_text": "resolved",
+          "condition": null,
+          "branch_type": "if"
+        },
+        {
+          "id": 12,
+          "line": 434,
+          "condition_text": "references.length < f.inputs.length",
+          "condition": {
+            "kind": "bin_op",
+            "op": "lt",
+            "left": {
+              "kind": "unknown"
+            },
+            "right": {
+              "kind": "param",
+              "name": "f",
+              "path": [
+                "inputs",
+                "length"
+              ]
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 13,
+          "line": 439,
+          "condition_text": "f.operation == 'SUM'",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "param",
+              "name": "f",
+              "path": [
+                "operation"
+              ]
+            },
+            "right": {
+              "kind": "const",
+              "type": "str",
+              "value": "SUM"
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 14,
+          "line": 443,
+          "condition_text": "f.operation == 'FORMAT'",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "param",
+              "name": "f",
+              "path": [
+                "operation"
+              ]
+            },
+            "right": {
+              "kind": "const",
+              "type": "str",
+              "value": "FORMAT"
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 15,
+          "line": 449,
+          "condition_text": "f.operation == 'COALESCE'",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "param",
+              "name": "f",
+              "path": [
+                "operation"
+              ]
+            },
+            "right": {
+              "kind": "const",
+              "type": "str",
+              "value": "COALESCE"
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 16,
+          "line": 457,
+          "condition_text": "f.type == 'personalized'",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "param",
+              "name": "f",
+              "path": [
+                "type"
+              ]
+            },
+            "right": {
+              "kind": "const",
+              "type": "str",
+              "value": "personalized"
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 17,
+          "line": 459,
+          "condition_text": "personalization.location",
+          "condition": {
+            "kind": "param",
+            "name": "personalization",
+            "path": [
+              "location"
+            ]
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 18,
+          "line": 465,
+          "condition_text": "!hasAllRequired",
+          "condition": {
+            "kind": "un_op",
+            "op": "not",
+            "operand": {
+              "kind": "unknown"
+            }
+          },
+          "branch_type": "if"
+        }
+      ],
+      "dependencies": [],
+      "return_type": {
+        "kind": "nullable",
+        "inner": {
+          "kind": "str"
+        }
+      },
+      "start_line": 377,
+      "end_line": 474,
+      "literals": [
+        {
+          "type": "str",
+          "value": "type"
+        },
+        {
+          "type": "str",
+          "value": "column"
+        },
+        {
+          "type": "str",
+          "value": "name"
+        },
+        {
+          "type": "str",
+          "value": "json"
+        },
+        {
+          "type": "str",
+          "value": "expression"
+        },
+        {
+          "type": "str",
+          "value": "NULL"
+        },
+        {
+          "type": "str",
+          "value": "string"
+        },
+        {
+          "type": "str",
+          "value": "toString"
+        },
+        {
+          "type": "str",
+          "value": "operation"
+        },
+        {
+          "type": "str",
+          "value": "COMPARE"
+        },
+        {
+          "type": "str",
+          "value": "comparisons"
+        },
+        {
+          "type": "str",
+          "value": "input"
+        },
+        {
+          "type": "str",
+          "value": "operator"
+        },
+        {
+          "type": "str",
+          "value": "test"
+        },
+        {
+          "type": "str",
+          "value": "result"
+        },
+        {
+          "type": "str",
+          "value": "push"
+        },
+        {
+          "type": "str",
+          "value": "length"
+        },
+        {
+          "type": "int",
+          "value": 0
+        },
+        {
+          "type": "str",
+          "value": "default"
+        },
+        {
+          "type": "str",
+          "value": "join"
+        },
+        {
+          "type": "str",
+          "value": "\n"
+        },
+        {
+          "type": "str",
+          "value": "inputs"
+        },
+        {
+          "type": "str",
+          "value": "warn"
+        },
+        {
+          "type": "str",
+          "value": "stringify"
+        },
+        {
+          "type": "str",
+          "value": "SUM"
+        },
+        {
+          "type": "str",
+          "value": " + "
+        },
+        {
+          "type": "str",
+          "value": "FORMAT"
+        },
+        {
+          "type": "str",
+          "value": "map"
+        },
+        {
+          "type": "str",
+          "value": "%s"
+        },
+        {
+          "type": "str",
+          "value": ", "
+        },
+        {
+          "type": "str",
+          "value": ","
+        },
+        {
+          "type": "str",
+          "value": "COALESCE"
+        },
+        {
+          "type": "str",
+          "value": "personalized"
+        },
+        {
+          "type": "str",
+          "value": "location"
+        },
+        {
+          "type": "str",
+          "value": "LOCATION"
+        },
+        {
+          "type": "str",
+          "value": "requiredInputs"
+        },
+        {
+          "type": "str",
+          "value": "every"
+        },
+        {
+          "type": "str",
+          "value": "includes"
+        },
+        {
+          "type": "str",
+          "value": "call"
+        },
+        {
+          "type": "str",
+          "value": "formula"
+        },
+        {
+          "type": "str",
+          "value": "ACADEMICS"
+        },
+        {
+          "type": "str",
+          "value": "ADMISSIONS"
+        },
+        {
+          "type": "str",
+          "value": "ATHLETICS"
+        },
+        {
+          "type": "str",
+          "value": "CORE"
+        },
+        {
+          "type": "str",
+          "value": "COST"
+        },
+        {
+          "type": "str",
+          "value": "CULTURAL_ENVIRONMENT"
+        },
+        {
+          "type": "str",
+          "value": "DEMOGRAPHICS"
+        },
+        {
+          "type": "str",
+          "value": "FIELDS_OF_STUDY"
+        },
+        {
+          "type": "str",
+          "value": "METADATA"
+        },
+        {
+          "type": "str",
+          "value": "OUTCOMES"
+        },
+        {
+          "type": "str",
+          "value": "PHYSICAL_ENVIRONMENT"
+        },
+        {
+          "type": "str",
+          "value": "REPUTATION"
+        },
+        {
+          "type": "str",
+          "value": "STUDENT_LIFE"
+        },
+        {
+          "type": "str",
+          "value": "WEATHER"
+        },
+        {
+          "type": "str",
+          "value": "OTHER"
+        },
+        {
+          "type": "str",
+          "value": "applications"
+        },
+        {
+          "type": "str",
+          "value": "ssocs"
+        },
+        {
+          "type": "str",
+          "value": "ncaa"
+        },
+        {
+          "type": "str",
+          "value": "nces_fos"
+        },
+        {
+          "type": "str",
+          "value": "nces"
+        },
+        {
+          "type": "str",
+          "value": "koppen"
+        },
+        {
+          "type": "str",
+          "value": "partisan_lean_538"
+        },
+        {
+          "type": "str",
+          "value": "metro_area"
+        },
+        {
+          "type": "str",
+          "value": "aau_list"
+        },
+        {
+          "type": "str",
+          "value": "nces_subjects"
+        },
+        {
+          "type": "str",
+          "value": "DISTANCE"
+        },
+        {
+          "type": "str",
+          "value": "INTEGER"
+        },
+        {
+          "type": "str",
+          "value": "MONEY"
+        },
+        {
+          "type": "str",
+          "value": "FLOAT"
+        },
+        {
+          "type": "str",
+          "value": "PERCENTAGE"
+        },
+        {
+          "type": "str",
+          "value": "BINARY"
+        },
+        {
+          "type": "str",
+          "value": "weather"
+        },
+        {
+          "type": "str",
+          "value": "athletics"
+        },
+        {
+          "type": "str",
+          "value": "fields_of_study"
+        },
+        {
+          "type": "str",
+          "value": "admissions"
+        },
+        {
+          "type": "str",
+          "value": "misc"
+        },
+        {
+          "type": "str",
+          "value": "search_base"
+        },
+        {
+          "type": "str",
+          "value": "DATABASE_URL"
+        },
+        {
+          "type": "str",
+          "value": "env"
+        }
+      ]
+    },
+    {
+      "name": "isWeighable",
+      "exported": false,
+      "params": [
+        {
+          "name": "rf",
+          "type": {
+            "kind": "unknown"
+          }
+        }
+      ],
+      "branches": [
+        {
+          "id": 0,
+          "line": 483,
+          "condition_text": "RANGED_TYPES.includes(rf.valueType as RangedType) && rf.sortable && isEmpty(rf.valueLabels)",
+          "condition": {
+            "kind": "bin_op",
+            "op": "and",
+            "left": {
+              "kind": "bin_op",
+              "op": "and",
+              "left": {
+                "kind": "call",
+                "name": "includes",
+                "receiver": {
+                  "kind": "unknown"
+                },
+                "args": [
+                  {
+                    "kind": "unknown"
+                  }
+                ]
+              },
+              "right": {
+                "kind": "param",
+                "name": "rf",
+                "path": [
+                  "sortable"
+                ]
+              }
+            },
+            "right": {
+              "kind": "call",
+              "name": "isEmpty",
+              "receiver": null,
+              "args": [
+                {
+                  "kind": "param",
+                  "name": "rf",
+                  "path": [
+                    "valueLabels"
+                  ]
+                }
+              ]
+            }
+          },
+          "branch_type": "logical_and"
+        }
+      ],
+      "dependencies": [],
+      "return_type": {
+        "kind": "unknown"
+      },
+      "start_line": 482,
+      "end_line": 485,
+      "literals": [
+        {
+          "type": "str",
+          "value": "includes"
+        },
+        {
+          "type": "str",
+          "value": "valueType"
+        },
+        {
+          "type": "str",
+          "value": "sortable"
+        },
+        {
+          "type": "str",
+          "value": "valueLabels"
+        },
+        {
+          "type": "str",
+          "value": "ACADEMICS"
+        },
+        {
+          "type": "str",
+          "value": "ADMISSIONS"
+        },
+        {
+          "type": "str",
+          "value": "ATHLETICS"
+        },
+        {
+          "type": "str",
+          "value": "CORE"
+        },
+        {
+          "type": "str",
+          "value": "COST"
+        },
+        {
+          "type": "str",
+          "value": "CULTURAL_ENVIRONMENT"
+        },
+        {
+          "type": "str",
+          "value": "DEMOGRAPHICS"
+        },
+        {
+          "type": "str",
+          "value": "FIELDS_OF_STUDY"
+        },
+        {
+          "type": "str",
+          "value": "LOCATION"
+        },
+        {
+          "type": "str",
+          "value": "METADATA"
+        },
+        {
+          "type": "str",
+          "value": "OUTCOMES"
+        },
+        {
+          "type": "str",
+          "value": "PHYSICAL_ENVIRONMENT"
+        },
+        {
+          "type": "str",
+          "value": "REPUTATION"
+        },
+        {
+          "type": "str",
+          "value": "STUDENT_LIFE"
+        },
+        {
+          "type": "str",
+          "value": "WEATHER"
+        },
+        {
+          "type": "str",
+          "value": "OTHER"
+        },
+        {
+          "type": "str",
+          "value": "applications"
+        },
+        {
+          "type": "str",
+          "value": "ssocs"
+        },
+        {
+          "type": "str",
+          "value": "ncaa"
+        },
+        {
+          "type": "str",
+          "value": "nces_fos"
+        },
+        {
+          "type": "str",
+          "value": "nces"
+        },
+        {
+          "type": "str",
+          "value": "koppen"
+        },
+        {
+          "type": "str",
+          "value": "partisan_lean_538"
+        },
+        {
+          "type": "str",
+          "value": "metro_area"
+        },
+        {
+          "type": "str",
+          "value": "aau_list"
+        },
+        {
+          "type": "str",
+          "value": "nces_subjects"
+        },
+        {
+          "type": "str",
+          "value": "DISTANCE"
+        },
+        {
+          "type": "str",
+          "value": "INTEGER"
+        },
+        {
+          "type": "str",
+          "value": "MONEY"
+        },
+        {
+          "type": "str",
+          "value": "FLOAT"
+        },
+        {
+          "type": "str",
+          "value": "PERCENTAGE"
+        },
+        {
+          "type": "str",
+          "value": "BINARY"
+        },
+        {
+          "type": "str",
+          "value": "weather"
+        },
+        {
+          "type": "str",
+          "value": "athletics"
+        },
+        {
+          "type": "str",
+          "value": "fields_of_study"
+        },
+        {
+          "type": "str",
+          "value": "admissions"
+        },
+        {
+          "type": "str",
+          "value": "misc"
+        },
+        {
+          "type": "str",
+          "value": "location"
+        },
+        {
+          "type": "str",
+          "value": "search_base"
+        },
+        {
+          "type": "str",
+          "value": "DATABASE_URL"
+        },
+        {
+          "type": "str",
+          "value": "env"
+        }
+      ]
+    },
+    {
+      "name": "constructWeightExpression",
+      "exported": false,
+      "params": [
+        {
+          "name": "availableResultFieldCombined",
+          "type": {
+            "kind": "unknown"
+          }
+        },
+        {
+          "name": "weights",
+          "type": {
+            "kind": "object",
+            "fields": []
+          }
+        },
+        {
+          "name": "personalization",
+          "type": {
+            "kind": "object",
+            "fields": [
+              [
+                "location",
+                {
+                  "kind": "nullable",
+                  "inner": {
+                    "kind": "object",
+                    "fields": [
+                      [
+                        "__typename",
+                        {
+                          "kind": "nullable",
+                          "inner": {
+                            "kind": "str"
+                          }
+                        }
+                      ],
+                      [
+                        "city",
+                        {
+                          "kind": "nullable",
+                          "inner": {
+                            "kind": "str"
+                          }
+                        }
+                      ],
+                      [
+                        "country",
+                        {
+                          "kind": "nullable",
+                          "inner": {
+                            "kind": "str"
+                          }
+                        }
+                      ],
+                      [
+                        "latitude",
+                        {
+                          "kind": "nullable",
+                          "inner": {
+                            "kind": "float"
+                          }
+                        }
+                      ],
+                      [
+                        "longitude",
+                        {
+                          "kind": "nullable",
+                          "inner": {
+                            "kind": "float"
+                          }
+                        }
+                      ],
+                      [
+                        "state",
+                        {
+                          "kind": "nullable",
+                          "inner": {
+                            "kind": "str"
+                          }
+                        }
+                      ],
+                      [
+                        "stateCode",
+                        {
+                          "kind": "nullable",
+                          "inner": {
+                            "kind": "str"
+                          }
+                        }
+                      ],
+                      [
+                        "zipCode",
+                        {
+                          "kind": "nullable",
+                          "inner": {
+                            "kind": "str"
+                          }
+                        }
+                      ]
+                    ]
+                  }
+                }
+              ]
+            ]
+          }
+        }
+      ],
+      "branches": [
+        {
+          "id": 0,
+          "line": 493,
+          "condition_text": "!rf",
+          "condition": {
+            "kind": "un_op",
+            "op": "not",
+            "operand": {
+              "kind": "unknown"
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 1,
+          "line": 498,
+          "condition_text": "isWeighable(rf)",
+          "condition": {
+            "kind": "call",
+            "name": "isWeighable",
+            "receiver": null,
+            "args": [
+              {
+                "kind": "unknown"
+              }
+            ]
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 2,
+          "line": 499,
+          "condition_text": "'range' in rf && rf.range",
+          "condition": {
+            "kind": "bin_op",
+            "op": "and",
+            "left": {
+              "kind": "bin_op",
+              "op": "in",
+              "left": {
+                "kind": "const",
+                "type": "str",
+                "value": "range"
+              },
+              "right": {
+                "kind": "unknown"
+              }
+            },
+            "right": {
+              "kind": "unknown"
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 3,
+          "line": 504,
+          "condition_text": "w.weightingMethod == 'SMALLER_IS_BETTER'",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "unknown"
+            },
+            "right": {
+              "kind": "const",
+              "type": "str",
+              "value": "SMALLER_IS_BETTER"
+            }
+          },
+          "branch_type": "ternary"
+        }
+      ],
+      "dependencies": [],
+      "return_type": {
+        "kind": "object",
+        "fields": [
+          [
+            "0",
+            {
+              "kind": "str"
+            }
+          ],
+          [
+            "1",
+            {
+              "kind": "unknown"
+            }
+          ],
+          [
+            "length",
+            {
+              "kind": "float"
+            }
+          ]
+        ]
+      },
+      "start_line": 487,
+      "end_line": 525,
+      "literals": [
+        {
+          "type": "str",
+          "value": "forEach"
+        },
+        {
+          "type": "str",
+          "value": "field"
+        },
+        {
+          "type": "str",
+          "value": "warn"
+        },
+        {
+          "type": "str",
+          "value": "range"
+        },
+        {
+          "type": "str",
+          "value": "min"
+        },
+        {
+          "type": "int",
+          "value": 0
+        },
+        {
+          "type": "str",
+          "value": "max"
+        },
+        {
+          "type": "int",
+          "value": 1
+        },
+        {
+          "type": "str",
+          "value": "weight"
+        },
+        {
+          "type": "str",
+          "value": "name"
+        },
+        {
+          "type": "str",
+          "value": "weightingMethod"
+        },
+        {
+          "type": "str",
+          "value": "SMALLER_IS_BETTER"
+        },
+        {
+          "type": "str",
+          "value": "join"
+        },
+        {
+          "type": "str",
+          "value": "values"
+        },
+        {
+          "type": "str",
+          "value": " + "
+        },
+        {
+          "type": "str",
+          "value": "ACADEMICS"
+        },
+        {
+          "type": "str",
+          "value": "ADMISSIONS"
+        },
+        {
+          "type": "str",
+          "value": "ATHLETICS"
+        },
+        {
+          "type": "str",
+          "value": "CORE"
+        },
+        {
+          "type": "str",
+          "value": "COST"
+        },
+        {
+          "type": "str",
+          "value": "CULTURAL_ENVIRONMENT"
+        },
+        {
+          "type": "str",
+          "value": "DEMOGRAPHICS"
+        },
+        {
+          "type": "str",
+          "value": "FIELDS_OF_STUDY"
+        },
+        {
+          "type": "str",
+          "value": "LOCATION"
+        },
+        {
+          "type": "str",
+          "value": "METADATA"
+        },
+        {
+          "type": "str",
+          "value": "OUTCOMES"
+        },
+        {
+          "type": "str",
+          "value": "PHYSICAL_ENVIRONMENT"
+        },
+        {
+          "type": "str",
+          "value": "REPUTATION"
+        },
+        {
+          "type": "str",
+          "value": "STUDENT_LIFE"
+        },
+        {
+          "type": "str",
+          "value": "WEATHER"
+        },
+        {
+          "type": "str",
+          "value": "OTHER"
+        },
+        {
+          "type": "str",
+          "value": "applications"
+        },
+        {
+          "type": "str",
+          "value": "ssocs"
+        },
+        {
+          "type": "str",
+          "value": "ncaa"
+        },
+        {
+          "type": "str",
+          "value": "nces_fos"
+        },
+        {
+          "type": "str",
+          "value": "nces"
+        },
+        {
+          "type": "str",
+          "value": "koppen"
+        },
+        {
+          "type": "str",
+          "value": "partisan_lean_538"
+        },
+        {
+          "type": "str",
+          "value": "metro_area"
+        },
+        {
+          "type": "str",
+          "value": "aau_list"
+        },
+        {
+          "type": "str",
+          "value": "nces_subjects"
+        },
+        {
+          "type": "str",
+          "value": "DISTANCE"
+        },
+        {
+          "type": "str",
+          "value": "INTEGER"
+        },
+        {
+          "type": "str",
+          "value": "MONEY"
+        },
+        {
+          "type": "str",
+          "value": "FLOAT"
+        },
+        {
+          "type": "str",
+          "value": "PERCENTAGE"
+        },
+        {
+          "type": "str",
+          "value": "BINARY"
+        },
+        {
+          "type": "str",
+          "value": "weather"
+        },
+        {
+          "type": "str",
+          "value": "athletics"
+        },
+        {
+          "type": "str",
+          "value": "fields_of_study"
+        },
+        {
+          "type": "str",
+          "value": "admissions"
+        },
+        {
+          "type": "str",
+          "value": "misc"
+        },
+        {
+          "type": "str",
+          "value": "location"
+        },
+        {
+          "type": "str",
+          "value": "search_base"
+        },
+        {
+          "type": "str",
+          "value": "DATABASE_URL"
+        },
+        {
+          "type": "str",
+          "value": "env"
+        }
+      ]
+    },
+    {
+      "name": "constructUnfacetedSearchQuery",
+      "exported": false,
+      "params": [
+        {
+          "name": "{\n    availableResultFieldCombined,\n    requestedFields,\n    personalization,\n    unitIds,\n}",
+          "type": {
+            "kind": "object",
+            "fields": [
+              [
+                "availableResultFieldCombined",
+                {
+                  "kind": "unknown"
+                }
+              ],
+              [
+                "requestedFields",
+                {
+                  "kind": "object",
+                  "fields": []
+                }
+              ],
+              [
+                "personalization",
+                {
+                  "kind": "object",
+                  "fields": [
+                    [
+                      "location",
+                      {
+                        "kind": "nullable",
+                        "inner": {
+                          "kind": "object",
+                          "fields": [
+                            [
+                              "__typename",
+                              {
+                                "kind": "nullable",
+                                "inner": {
+                                  "kind": "str"
+                                }
+                              }
+                            ],
+                            [
+                              "city",
+                              {
+                                "kind": "nullable",
+                                "inner": {
+                                  "kind": "str"
+                                }
+                              }
+                            ],
+                            [
+                              "country",
+                              {
+                                "kind": "nullable",
+                                "inner": {
+                                  "kind": "str"
+                                }
+                              }
+                            ],
+                            [
+                              "latitude",
+                              {
+                                "kind": "nullable",
+                                "inner": {
+                                  "kind": "float"
+                                }
+                              }
+                            ],
+                            [
+                              "longitude",
+                              {
+                                "kind": "nullable",
+                                "inner": {
+                                  "kind": "float"
+                                }
+                              }
+                            ],
+                            [
+                              "state",
+                              {
+                                "kind": "nullable",
+                                "inner": {
+                                  "kind": "str"
+                                }
+                              }
+                            ],
+                            [
+                              "stateCode",
+                              {
+                                "kind": "nullable",
+                                "inner": {
+                                  "kind": "str"
+                                }
+                              }
+                            ],
+                            [
+                              "zipCode",
+                              {
+                                "kind": "nullable",
+                                "inner": {
+                                  "kind": "str"
+                                }
+                              }
+                            ]
+                          ]
+                        }
+                      }
+                    ]
+                  ]
+                }
+              ],
+              [
+                "unitIds",
+                {
+                  "kind": "nullable",
+                  "inner": {
+                    "kind": "object",
+                    "fields": []
+                  }
+                }
+              ]
+            ]
+          }
+        }
+      ],
+      "branches": [
+        {
+          "id": 0,
+          "line": 742,
+          "condition_text": "!carnegieUndergradRequested && availableResultFieldCombined['carnegie_undergrad']",
+          "condition": {
+            "kind": "bin_op",
+            "op": "and",
+            "left": {
+              "kind": "un_op",
+              "op": "not",
+              "operand": {
+                "kind": "unknown"
+              }
+            },
+            "right": {
+              "kind": "unknown"
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 1,
+          "line": 760,
+          "condition_text": "reference",
+          "condition": null,
+          "branch_type": "if"
+        },
+        {
+          "id": 2,
+          "line": 775,
+          "condition_text": "unitIds && unitIds.length > 0",
+          "condition": {
+            "kind": "bin_op",
+            "op": "and",
+            "left": {
+              "kind": "unknown"
+            },
+            "right": {
+              "kind": "bin_op",
+              "op": "gt",
+              "left": {
+                "kind": "unknown"
+              },
+              "right": {
+                "kind": "const",
+                "type": "int",
+                "value": 0
+              }
+            }
+          },
+          "branch_type": "if"
+        }
+      ],
+      "dependencies": [],
+      "return_type": {
+        "kind": "unknown"
+      },
+      "start_line": 728,
+      "end_line": 780,
+      "literals": [
+        {
+          "type": "str",
+          "value": "filter"
+        },
+        {
+          "type": "str",
+          "value": "type"
+        },
+        {
+          "type": "str",
+          "value": "secondary"
+        },
+        {
+          "type": "str",
+          "value": "find"
+        },
+        {
+          "type": "str",
+          "value": "name"
+        },
+        {
+          "type": "str",
+          "value": "carnegie_undergrad"
+        },
+        {
+          "type": "str",
+          "value": "push"
+        },
+        {
+          "type": "str",
+          "value": "where"
+        },
+        {
+          "type": "str",
+          "value": "selectAll"
+        },
+        {
+          "type": "str",
+          "value": "selectFrom"
+        },
+        {
+          "type": "str",
+          "value": "with"
+        },
+        {
+          "type": "str",
+          "value": "core_results"
+        },
+        {
+          "type": "str",
+          "value": "select"
+        },
+        {
+          "type": "str",
+          "value": "search_base.dataset_merged as core"
+        },
+        {
+          "type": "str",
+          "value": "institution_name"
+        },
+        {
+          "type": "str",
+          "value": "unit_id"
+        },
+        {
+          "type": "str",
+          "value": "ope6_id"
+        },
+        {
+          "type": "str",
+          "value": "ope8_id"
+        },
+        {
+          "type": "str",
+          "value": "data"
+        },
+        {
+          "type": "str",
+          "value": "name_search_vector"
+        },
+        {
+          "type": "str",
+          "value": "name_location_search_vector"
+        },
+        {
+          "type": "str",
+          "value": "as"
+        },
+        {
+          "type": "str",
+          "value": "raw"
+        },
+        {
+          "type": "str",
+          "value": "not in"
+        },
+        {
+          "type": "str",
+          "value": "('0', '-2')"
+        },
+        {
+          "type": "str",
+          "value": "length"
+        },
+        {
+          "type": "int",
+          "value": 0
+        },
+        {
+          "type": "str",
+          "value": "core_results.unit_id"
+        },
+        {
+          "type": "str",
+          "value": "in"
+        },
+        {
+          "type": "str",
+          "value": "ACADEMICS"
+        },
+        {
+          "type": "str",
+          "value": "ADMISSIONS"
+        },
+        {
+          "type": "str",
+          "value": "ATHLETICS"
+        },
+        {
+          "type": "str",
+          "value": "CORE"
+        },
+        {
+          "type": "str",
+          "value": "COST"
+        },
+        {
+          "type": "str",
+          "value": "CULTURAL_ENVIRONMENT"
+        },
+        {
+          "type": "str",
+          "value": "DEMOGRAPHICS"
+        },
+        {
+          "type": "str",
+          "value": "FIELDS_OF_STUDY"
+        },
+        {
+          "type": "str",
+          "value": "LOCATION"
+        },
+        {
+          "type": "str",
+          "value": "METADATA"
+        },
+        {
+          "type": "str",
+          "value": "OUTCOMES"
+        },
+        {
+          "type": "str",
+          "value": "PHYSICAL_ENVIRONMENT"
+        },
+        {
+          "type": "str",
+          "value": "REPUTATION"
+        },
+        {
+          "type": "str",
+          "value": "STUDENT_LIFE"
+        },
+        {
+          "type": "str",
+          "value": "WEATHER"
+        },
+        {
+          "type": "str",
+          "value": "OTHER"
+        },
+        {
+          "type": "str",
+          "value": "applications"
+        },
+        {
+          "type": "str",
+          "value": "ssocs"
+        },
+        {
+          "type": "str",
+          "value": "ncaa"
+        },
+        {
+          "type": "str",
+          "value": "nces_fos"
+        },
+        {
+          "type": "str",
+          "value": "nces"
+        },
+        {
+          "type": "str",
+          "value": "koppen"
+        },
+        {
+          "type": "str",
+          "value": "partisan_lean_538"
+        },
+        {
+          "type": "str",
+          "value": "metro_area"
+        },
+        {
+          "type": "str",
+          "value": "aau_list"
+        },
+        {
+          "type": "str",
+          "value": "nces_subjects"
+        },
+        {
+          "type": "str",
+          "value": "DISTANCE"
+        },
+        {
+          "type": "str",
+          "value": "INTEGER"
+        },
+        {
+          "type": "str",
+          "value": "MONEY"
+        },
+        {
+          "type": "str",
+          "value": "FLOAT"
+        },
+        {
+          "type": "str",
+          "value": "PERCENTAGE"
+        },
+        {
+          "type": "str",
+          "value": "BINARY"
+        },
+        {
+          "type": "str",
+          "value": "weather"
+        },
+        {
+          "type": "str",
+          "value": "athletics"
+        },
+        {
+          "type": "str",
+          "value": "fields_of_study"
+        },
+        {
+          "type": "str",
+          "value": "admissions"
+        },
+        {
+          "type": "str",
+          "value": "misc"
+        },
+        {
+          "type": "str",
+          "value": "location"
+        },
+        {
+          "type": "str",
+          "value": "search_base"
+        },
+        {
+          "type": "str",
+          "value": "DATABASE_URL"
+        },
+        {
+          "type": "str",
+          "value": "env"
+        }
+      ]
+    },
+    {
+      "name": "constructSearchQuery",
+      "exported": true,
+      "params": [
+        {
+          "name": "availableResultFieldCombined",
+          "type": {
+            "kind": "unknown"
+          }
+        },
+        {
+          "name": "input",
+          "type": {
+            "kind": "object",
+            "fields": [
+              [
+                "columnNames",
+                {
+                  "kind": "nullable",
+                  "inner": {
+                    "kind": "unknown"
+                  }
+                }
+              ],
+              [
+                "facetInputs",
+                {
+                  "kind": "nullable",
+                  "inner": {
+                    "kind": "unknown"
+                  }
+                }
+              ],
+              [
+                "location",
+                {
+                  "kind": "nullable",
+                  "inner": {
+                    "kind": "object",
+                    "fields": [
+                      [
+                        "coordinates",
+                        {
+                          "kind": "nullable",
+                          "inner": {
+                            "kind": "object",
+                            "fields": [
+                              [
+                                "latitude",
+                                {
+                                  "kind": "float"
+                                }
+                              ],
+                              [
+                                "longitude",
+                                {
+                                  "kind": "float"
+                                }
+                              ]
+                            ]
+                          }
+                        }
+                      ],
+                      [
+                        "zipCode",
+                        {
+                          "kind": "nullable",
+                          "inner": {
+                            "kind": "str"
+                          }
+                        }
+                      ]
+                    ]
+                  }
+                }
+              ],
+              [
+                "page",
+                {
+                  "kind": "nullable",
+                  "inner": {
+                    "kind": "float"
+                  }
+                }
+              ],
+              [
+                "quickSearch",
+                {
+                  "kind": "nullable",
+                  "inner": {
+                    "kind": "str"
+                  }
+                }
+              ],
+              [
+                "rankingsToBlend",
+                {
+                  "kind": "nullable",
+                  "inner": {
+                    "kind": "unknown"
+                  }
+                }
+              ],
+              [
+                "sort",
+                {
+                  "kind": "nullable",
+                  "inner": {
+                    "kind": "unknown"
+                  }
+                }
+              ],
+              [
+                "unitIds",
+                {
+                  "kind": "nullable",
+                  "inner": {
+                    "kind": "unknown"
+                  }
+                }
+              ],
+              [
+                "weights",
+                {
+                  "kind": "nullable",
+                  "inner": {
+                    "kind": "unknown"
+                  }
+                }
+              ]
+            ]
+          }
+        },
+        {
+          "name": "personalization",
+          "type": {
+            "kind": "object",
+            "fields": [
+              [
+                "location",
+                {
+                  "kind": "nullable",
+                  "inner": {
+                    "kind": "object",
+                    "fields": [
+                      [
+                        "__typename",
+                        {
+                          "kind": "nullable",
+                          "inner": {
+                            "kind": "str"
+                          }
+                        }
+                      ],
+                      [
+                        "city",
+                        {
+                          "kind": "nullable",
+                          "inner": {
+                            "kind": "str"
+                          }
+                        }
+                      ],
+                      [
+                        "country",
+                        {
+                          "kind": "nullable",
+                          "inner": {
+                            "kind": "str"
+                          }
+                        }
+                      ],
+                      [
+                        "latitude",
+                        {
+                          "kind": "nullable",
+                          "inner": {
+                            "kind": "float"
+                          }
+                        }
+                      ],
+                      [
+                        "longitude",
+                        {
+                          "kind": "nullable",
+                          "inner": {
+                            "kind": "float"
+                          }
+                        }
+                      ],
+                      [
+                        "state",
+                        {
+                          "kind": "nullable",
+                          "inner": {
+                            "kind": "str"
+                          }
+                        }
+                      ],
+                      [
+                        "stateCode",
+                        {
+                          "kind": "nullable",
+                          "inner": {
+                            "kind": "str"
+                          }
+                        }
+                      ],
+                      [
+                        "zipCode",
+                        {
+                          "kind": "nullable",
+                          "inner": {
+                            "kind": "str"
+                          }
+                        }
+                      ]
+                    ]
+                  }
+                }
+              ]
+            ]
+          }
+        },
+        {
+          "name": "facetBuildersByName",
+          "type": {
+            "kind": "unknown"
+          }
+        },
+        {
+          "name": "page",
+          "type": {
+            "kind": "float"
+          }
+        },
+        {
+          "name": "limit",
+          "type": {
+            "kind": "float"
+          }
+        },
+        {
+          "name": "facetInputs",
+          "type": {
+            "kind": "object",
+            "fields": []
+          }
+        },
+        {
+          "name": "requestedColumnNames",
+          "type": {
+            "kind": "unknown"
+          }
+        },
+        {
+          "name": "impliedColumns",
+          "type": {
+            "kind": "unknown"
+          }
+        }
+      ],
+      "branches": [
+        {
+          "id": 0,
+          "line": 796,
+          "condition_text": "requestedColumnNames.has(f.name) || impliedColumns.has(f.name)",
+          "condition": {
+            "kind": "bin_op",
+            "op": "or",
+            "left": {
+              "kind": "call",
+              "name": "has",
+              "receiver": {
+                "kind": "param",
+                "name": "requestedColumnNames",
+                "path": []
+              },
+              "args": [
+                {
+                  "kind": "unknown"
+                }
+              ]
+            },
+            "right": {
+              "kind": "call",
+              "name": "has",
+              "receiver": {
+                "kind": "param",
+                "name": "impliedColumns",
+                "path": []
+              },
+              "args": [
+                {
+                  "kind": "unknown"
+                }
+              ]
+            }
+          },
+          "branch_type": "logical_or"
+        },
+        {
+          "id": 1,
+          "line": 806,
+          "condition_text": "!facetBuilder",
+          "condition": {
+            "kind": "un_op",
+            "op": "not",
+            "operand": {
+              "kind": "unknown"
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 2,
+          "line": 811,
+          "condition_text": "'error' in facetation",
+          "condition": {
+            "kind": "bin_op",
+            "op": "in",
+            "left": {
+              "kind": "const",
+              "type": "str",
+              "value": "error"
+            },
+            "right": {
+              "kind": "unknown"
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 3,
+          "line": 823,
+          "condition_text": "clause.type == 'json-contains'",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "unknown"
+            },
+            "right": {
+              "kind": "const",
+              "type": "str",
+              "value": "json-contains"
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 4,
+          "line": 827,
+          "condition_text": "clause.type == 'simple'",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "unknown"
+            },
+            "right": {
+              "kind": "const",
+              "type": "str",
+              "value": "simple"
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 5,
+          "line": 829,
+          "condition_text": "operator != '?|' && operator != '?&'",
+          "condition": {
+            "kind": "bin_op",
+            "op": "and",
+            "left": {
+              "kind": "bin_op",
+              "op": "ne",
+              "left": {
+                "kind": "unknown"
+              },
+              "right": {
+                "kind": "const",
+                "type": "str",
+                "value": "?|"
+              }
+            },
+            "right": {
+              "kind": "bin_op",
+              "op": "ne",
+              "left": {
+                "kind": "unknown"
+              },
+              "right": {
+                "kind": "const",
+                "type": "str",
+                "value": "?&"
+              }
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 6,
+          "line": 833,
+          "condition_text": "!Array.isArray(right)",
+          "condition": {
+            "kind": "un_op",
+            "op": "not",
+            "operand": {
+              "kind": "call",
+              "name": "isArray",
+              "receiver": {
+                "kind": "unknown"
+              },
+              "args": [
+                {
+                  "kind": "unknown"
+                }
+              ]
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 7,
+          "line": 836,
+          "condition_text": "right.length == 0",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "unknown"
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 0
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 8,
+          "line": 839,
+          "condition_text": "Array.isArray(right)",
+          "condition": {
+            "kind": "call",
+            "name": "isArray",
+            "receiver": {
+              "kind": "unknown"
+            },
+            "args": [
+              {
+                "kind": "unknown"
+              }
+            ]
+          },
+          "branch_type": "ternary"
+        },
+        {
+          "id": 9,
+          "line": 843,
+          "condition_text": "clause.type == 'negative'",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "unknown"
+            },
+            "right": {
+              "kind": "const",
+              "type": "str",
+              "value": "negative"
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 10,
+          "line": 847,
+          "condition_text": "clause.type == 'complex'",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "unknown"
+            },
+            "right": {
+              "kind": "const",
+              "type": "str",
+              "value": "complex"
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 11,
+          "line": 849,
+          "condition_text": "clause.operator == 'AND'",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "unknown"
+            },
+            "right": {
+              "kind": "const",
+              "type": "str",
+              "value": "AND"
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 12,
+          "line": 852,
+          "condition_text": "clause.operator == 'OR'",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "unknown"
+            },
+            "right": {
+              "kind": "const",
+              "type": "str",
+              "value": "OR"
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 13,
+          "line": 866,
+          "condition_text": "quickSearch && quickSearch.length > 0",
+          "condition": {
+            "kind": "bin_op",
+            "op": "and",
+            "left": {
+              "kind": "unknown"
+            },
+            "right": {
+              "kind": "bin_op",
+              "op": "gt",
+              "left": {
+                "kind": "unknown"
+              },
+              "right": {
+                "kind": "const",
+                "type": "int",
+                "value": 0
+              }
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 14,
+          "line": 867,
+          "condition_text": "quickSearch.match(/^[0-9]+$/)",
+          "condition": {
+            "kind": "call",
+            "name": "match",
+            "receiver": {
+              "kind": "unknown"
+            },
+            "args": [
+              {
+                "kind": "unknown"
+              }
+            ]
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 15,
+          "line": 884,
+          "condition_text": "!input.sort?.length",
+          "condition": {
+            "kind": "un_op",
+            "op": "not",
+            "operand": {
+              "kind": "param",
+              "name": "input",
+              "path": [
+                "sort",
+                "length"
+              ]
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 16,
+          "line": 893,
+          "condition_text": "input.weights?.length",
+          "condition": {
+            "kind": "param",
+            "name": "input",
+            "path": [
+              "weights",
+              "length"
+            ]
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 17,
+          "line": 905,
+          "condition_text": "!requestedColumnNames.has(s.field) && !impliedColumns.has(s.field)",
+          "condition": {
+            "kind": "bin_op",
+            "op": "and",
+            "left": {
+              "kind": "un_op",
+              "op": "not",
+              "operand": {
+                "kind": "call",
+                "name": "has",
+                "receiver": {
+                  "kind": "param",
+                  "name": "requestedColumnNames",
+                  "path": []
+                },
+                "args": [
+                  {
+                    "kind": "unknown"
+                  }
+                ]
+              }
+            },
+            "right": {
+              "kind": "un_op",
+              "op": "not",
+              "operand": {
+                "kind": "call",
+                "name": "has",
+                "receiver": {
+                  "kind": "param",
+                  "name": "impliedColumns",
+                  "path": []
+                },
+                "args": [
+                  {
+                    "kind": "unknown"
+                  }
+                ]
+              }
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 18,
+          "line": 909,
+          "condition_text": "!rf",
+          "condition": {
+            "kind": "un_op",
+            "op": "not",
+            "operand": {
+              "kind": "unknown"
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 19,
+          "line": 914,
+          "condition_text": "rf.sortable",
+          "condition": null,
+          "branch_type": "if"
+        },
+        {
+          "id": 20,
+          "line": 916,
+          "condition_text": "reference",
+          "condition": null,
+          "branch_type": "if"
+        },
+        {
+          "id": 21,
+          "line": 917,
+          "condition_text": "s.direction == 'DESC'",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "unknown"
+            },
+            "right": {
+              "kind": "const",
+              "type": "str",
+              "value": "DESC"
+            }
+          },
+          "branch_type": "ternary"
+        }
+      ],
+      "dependencies": [],
+      "return_type": {
+        "kind": "unknown"
+      },
+      "start_line": 782,
+      "end_line": 929,
+      "literals": [
+        {
+          "type": "str",
+          "value": "filter"
+        },
+        {
+          "type": "str",
+          "value": "values"
+        },
+        {
+          "type": "str",
+          "value": "has"
+        },
+        {
+          "type": "str",
+          "value": "name"
+        },
+        {
+          "type": "str",
+          "value": "get"
+        },
+        {
+          "type": "str",
+          "value": "apply"
+        },
+        {
+          "type": "str",
+          "value": "error"
+        },
+        {
+          "type": "str",
+          "value": "push"
+        },
+        {
+          "type": "str",
+          "value": "where"
+        },
+        {
+          "type": "str",
+          "value": "d"
+        },
+        {
+          "type": "str",
+          "value": "t"
+        },
+        {
+          "type": "str",
+          "value": "type"
+        },
+        {
+          "type": "str",
+          "value": "json-contains"
+        },
+        {
+          "type": "str",
+          "value": "raw"
+        },
+        {
+          "type": "str",
+          "value": "data"
+        },
+        {
+          "type": "str",
+          "value": "@>"
+        },
+        {
+          "type": "str",
+          "value": "lit"
+        },
+        {
+          "type": "str",
+          "value": "stringify"
+        },
+        {
+          "type": "str",
+          "value": "matchObject"
+        },
+        {
+          "type": "str",
+          "value": "simple"
+        },
+        {
+          "type": "str",
+          "value": "?|"
+        },
+        {
+          "type": "str",
+          "value": "?&"
+        },
+        {
+          "type": "str",
+          "value": "cmpr"
+        },
+        {
+          "type": "str",
+          "value": "isArray"
+        },
+        {
+          "type": "str",
+          "value": "length"
+        },
+        {
+          "type": "int",
+          "value": 0
+        },
+        {
+          "type": "str",
+          "value": "val"
+        },
+        {
+          "type": "bool",
+          "value": true
+        },
+        {
+          "type": "str",
+          "value": "map"
+        },
+        {
+          "type": "str",
+          "value": "join"
+        },
+        {
+          "type": "str",
+          "value": ","
+        },
+        {
+          "type": "str",
+          "value": "negative"
+        },
+        {
+          "type": "str",
+          "value": "not"
+        },
+        {
+          "type": "str",
+          "value": "clause"
+        },
+        {
+          "type": "str",
+          "value": "complex"
+        },
+        {
+          "type": "str",
+          "value": "operator"
+        },
+        {
+          "type": "str",
+          "value": "AND"
+        },
+        {
+          "type": "str",
+          "value": "and"
+        },
+        {
+          "type": "str",
+          "value": "clauses"
+        },
+        {
+          "type": "str",
+          "value": "OR"
+        },
+        {
+          "type": "str",
+          "value": "or"
+        },
+        {
+          "type": "str",
+          "value": "trim"
+        },
+        {
+          "type": "str",
+          "value": "quickSearch"
+        },
+        {
+          "type": "str",
+          "value": "match"
+        },
+        {
+          "type": "regex",
+          "pattern": "^[0-9]+$"
+        },
+        {
+          "type": "str",
+          "value": "core_results.unit_id"
+        },
+        {
+          "type": "str",
+          "value": "="
+        },
+        {
+          "type": "str",
+          "value": "ope6_id"
+        },
+        {
+          "type": "str",
+          "value": "ope8_id"
+        },
+        {
+          "type": "str",
+          "value": "name_location_search_vector"
+        },
+        {
+          "type": "str",
+          "value": "@@"
+        },
+        {
+          "type": "str",
+          "value": "sort"
+        },
+        {
+          "type": "str",
+          "value": "ASC"
+        },
+        {
+          "type": "str",
+          "value": "weights"
+        },
+        {
+          "type": "str",
+          "value": "forEach"
+        },
+        {
+          "type": "str",
+          "value": "entries"
+        },
+        {
+          "type": "str",
+          "value": "select"
+        },
+        {
+          "type": "str",
+          "value": "as"
+        },
+        {
+          "type": "str",
+          "value": "score"
+        },
+        {
+          "type": "str",
+          "value": "orderBy"
+        },
+        {
+          "type": "str",
+          "value": "desc"
+        },
+        {
+          "type": "str",
+          "value": "field"
+        },
+        {
+          "type": "str",
+          "value": "warn"
+        },
+        {
+          "type": "str",
+          "value": "sortable"
+        },
+        {
+          "type": "str",
+          "value": "direction"
+        },
+        {
+          "type": "str",
+          "value": "DESC"
+        },
+        {
+          "type": "str",
+          "value": "asc"
+        },
+        {
+          "type": "str",
+          "value": "limit"
+        },
+        {
+          "type": "str",
+          "value": "offset"
+        },
+        {
+          "type": "int",
+          "value": 1
+        },
+        {
+          "type": "str",
+          "value": "ACADEMICS"
+        },
+        {
+          "type": "str",
+          "value": "ADMISSIONS"
+        },
+        {
+          "type": "str",
+          "value": "ATHLETICS"
+        },
+        {
+          "type": "str",
+          "value": "CORE"
+        },
+        {
+          "type": "str",
+          "value": "COST"
+        },
+        {
+          "type": "str",
+          "value": "CULTURAL_ENVIRONMENT"
+        },
+        {
+          "type": "str",
+          "value": "DEMOGRAPHICS"
+        },
+        {
+          "type": "str",
+          "value": "FIELDS_OF_STUDY"
+        },
+        {
+          "type": "str",
+          "value": "LOCATION"
+        },
+        {
+          "type": "str",
+          "value": "METADATA"
+        },
+        {
+          "type": "str",
+          "value": "OUTCOMES"
+        },
+        {
+          "type": "str",
+          "value": "PHYSICAL_ENVIRONMENT"
+        },
+        {
+          "type": "str",
+          "value": "REPUTATION"
+        },
+        {
+          "type": "str",
+          "value": "STUDENT_LIFE"
+        },
+        {
+          "type": "str",
+          "value": "WEATHER"
+        },
+        {
+          "type": "str",
+          "value": "OTHER"
+        },
+        {
+          "type": "str",
+          "value": "applications"
+        },
+        {
+          "type": "str",
+          "value": "ssocs"
+        },
+        {
+          "type": "str",
+          "value": "ncaa"
+        },
+        {
+          "type": "str",
+          "value": "nces_fos"
+        },
+        {
+          "type": "str",
+          "value": "nces"
+        },
+        {
+          "type": "str",
+          "value": "koppen"
+        },
+        {
+          "type": "str",
+          "value": "partisan_lean_538"
+        },
+        {
+          "type": "str",
+          "value": "metro_area"
+        },
+        {
+          "type": "str",
+          "value": "aau_list"
+        },
+        {
+          "type": "str",
+          "value": "nces_subjects"
+        },
+        {
+          "type": "str",
+          "value": "DISTANCE"
+        },
+        {
+          "type": "str",
+          "value": "INTEGER"
+        },
+        {
+          "type": "str",
+          "value": "MONEY"
+        },
+        {
+          "type": "str",
+          "value": "FLOAT"
+        },
+        {
+          "type": "str",
+          "value": "PERCENTAGE"
+        },
+        {
+          "type": "str",
+          "value": "BINARY"
+        },
+        {
+          "type": "str",
+          "value": "weather"
+        },
+        {
+          "type": "str",
+          "value": "athletics"
+        },
+        {
+          "type": "str",
+          "value": "fields_of_study"
+        },
+        {
+          "type": "str",
+          "value": "admissions"
+        },
+        {
+          "type": "str",
+          "value": "misc"
+        },
+        {
+          "type": "str",
+          "value": "location"
+        },
+        {
+          "type": "str",
+          "value": "search_base"
+        },
+        {
+          "type": "str",
+          "value": "DATABASE_URL"
+        },
+        {
+          "type": "str",
+          "value": "env"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,307 @@
+{
+  "content_hash": "cfb98f21e3ce013fce5ac96ffcf3e3d4d1af9f53c8ad457e3cf6e905c443a2f1",
+  "mtime_secs": 1772320660,
+  "protocol_version": "0.1.0",
+  "analyses": [
+    {
+      "name": "checkRateLimit",
+      "exported": true,
+      "params": [
+        {
+          "name": "state",
+          "type": {
+            "kind": "object",
+            "fields": [
+              [
+                "tokens",
+                {
+                  "kind": "float"
+                }
+              ],
+              [
+                "lastRefillMs",
+                {
+                  "kind": "float"
+                }
+              ],
+              [
+                "penaltyUntilMs",
+                {
+                  "kind": "float"
+                }
+              ]
+            ]
+          }
+        },
+        {
+          "name": "capacity",
+          "type": {
+            "kind": "float"
+          }
+        },
+        {
+          "name": "refillRate",
+          "type": {
+            "kind": "float"
+          }
+        },
+        {
+          "name": "nowMs",
+          "type": {
+            "kind": "float"
+          }
+        },
+        {
+          "name": "priority",
+          "type": {
+            "kind": "str"
+          }
+        }
+      ],
+      "branches": [
+        {
+          "id": 0,
+          "line": 55,
+          "condition_text": "capacity <= 0",
+          "condition": {
+            "kind": "bin_op",
+            "op": "le",
+            "left": {
+              "kind": "param",
+              "name": "capacity",
+              "path": []
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 0
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 1,
+          "line": 58,
+          "condition_text": "refillRate <= 0",
+          "condition": {
+            "kind": "bin_op",
+            "op": "le",
+            "left": {
+              "kind": "param",
+              "name": "refillRate",
+              "path": []
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 0
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 2,
+          "line": 61,
+          "condition_text": "nowMs < state.lastRefillMs",
+          "condition": {
+            "kind": "bin_op",
+            "op": "lt",
+            "left": {
+              "kind": "param",
+              "name": "nowMs",
+              "path": []
+            },
+            "right": {
+              "kind": "param",
+              "name": "state",
+              "path": [
+                "lastRefillMs"
+              ]
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 3,
+          "line": 66,
+          "condition_text": "state.penaltyUntilMs > nowMs",
+          "condition": {
+            "kind": "bin_op",
+            "op": "gt",
+            "left": {
+              "kind": "param",
+              "name": "state",
+              "path": [
+                "penaltyUntilMs"
+              ]
+            },
+            "right": {
+              "kind": "param",
+              "name": "nowMs",
+              "path": []
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 4,
+          "line": 82,
+          "condition_text": "cost === undefined",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "unknown"
+            },
+            "right": {
+              "kind": "unknown"
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 5,
+          "line": 91,
+          "condition_text": "tokens >= cost",
+          "condition": {
+            "kind": "bin_op",
+            "op": "ge",
+            "left": {
+              "kind": "unknown"
+            },
+            "right": {
+              "kind": "unknown"
+            }
+          },
+          "branch_type": "if"
+        }
+      ],
+      "dependencies": [],
+      "return_type": {
+        "kind": "object",
+        "fields": [
+          [
+            "allowed",
+            {
+              "kind": "bool"
+            }
+          ],
+          [
+            "reason",
+            {
+              "kind": "str"
+            }
+          ],
+          [
+            "remainingTokens",
+            {
+              "kind": "float"
+            }
+          ],
+          [
+            "newState",
+            {
+              "kind": "object",
+              "fields": [
+                [
+                  "tokens",
+                  {
+                    "kind": "float"
+                  }
+                ],
+                [
+                  "lastRefillMs",
+                  {
+                    "kind": "float"
+                  }
+                ],
+                [
+                  "penaltyUntilMs",
+                  {
+                    "kind": "float"
+                  }
+                ]
+              ]
+            }
+          ]
+        ]
+      },
+      "start_line": 48,
+      "end_line": 107,
+      "literals": [
+        {
+          "type": "int",
+          "value": 0
+        },
+        {
+          "type": "str",
+          "value": "invalid capacity"
+        },
+        {
+          "type": "str",
+          "value": "invalid refill rate"
+        },
+        {
+          "type": "str",
+          "value": "lastRefillMs"
+        },
+        {
+          "type": "str",
+          "value": "clock skew detected"
+        },
+        {
+          "type": "str",
+          "value": "penaltyUntilMs"
+        },
+        {
+          "type": "bool",
+          "value": false
+        },
+        {
+          "type": "str",
+          "value": "denied: penalty active"
+        },
+        {
+          "type": "int",
+          "value": 1000
+        },
+        {
+          "type": "str",
+          "value": "min"
+        },
+        {
+          "type": "str",
+          "value": "tokens"
+        },
+        {
+          "type": "str",
+          "value": "denied: unknown priority"
+        },
+        {
+          "type": "bool",
+          "value": true
+        },
+        {
+          "type": "str",
+          "value": "denied: insufficient tokens"
+        },
+        {
+          "type": "int",
+          "value": 1
+        },
+        {
+          "type": "int",
+          "value": 2
+        },
+        {
+          "type": "int",
+          "value": 5
+        },
+        {
+          "type": "int",
+          "value": 10
+        }
+      ]
+    }
+  ]
+}

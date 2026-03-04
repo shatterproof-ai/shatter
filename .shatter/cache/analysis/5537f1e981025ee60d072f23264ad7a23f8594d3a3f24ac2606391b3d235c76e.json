@@ -1,0 +1,926 @@
+{
+  "content_hash": "62deb11854d53a76bbc98aca8e99e9630e96f344408c0f4f986d94beb649e2e8",
+  "mtime_secs": 1772305184,
+  "protocol_version": "0.1.0",
+  "analyses": [
+    {
+      "name": "hello",
+      "exported": false,
+      "params": [
+        {
+          "name": "n",
+          "type": {
+            "kind": "float"
+          }
+        },
+        {
+          "name": "msg",
+          "type": {
+            "kind": "str"
+          }
+        }
+      ],
+      "branches": [
+        {
+          "id": 0,
+          "line": 2,
+          "condition_text": "n <= 0",
+          "condition": {
+            "kind": "bin_op",
+            "op": "le",
+            "left": {
+              "kind": "param",
+              "name": "n",
+              "path": []
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 0
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 1,
+          "line": 6,
+          "condition_text": "n % 1 != 0",
+          "condition": {
+            "kind": "bin_op",
+            "op": "ne",
+            "left": {
+              "kind": "bin_op",
+              "op": "mod",
+              "left": {
+                "kind": "param",
+                "name": "n",
+                "path": []
+              },
+              "right": {
+                "kind": "const",
+                "type": "int",
+                "value": 1
+              }
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 0
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 2,
+          "line": 12,
+          "condition_text": "i < n",
+          "condition": {
+            "kind": "bin_op",
+            "op": "lt",
+            "left": {
+              "kind": "unknown"
+            },
+            "right": {
+              "kind": "param",
+              "name": "n",
+              "path": []
+            }
+          },
+          "branch_type": "for"
+        },
+        {
+          "id": 3,
+          "line": 13,
+          "condition_text": "i > 50",
+          "condition": {
+            "kind": "bin_op",
+            "op": "gt",
+            "left": {
+              "kind": "unknown"
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 50
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 4,
+          "line": 19,
+          "condition_text": "n % 2 == 0",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "bin_op",
+              "op": "mod",
+              "left": {
+                "kind": "param",
+                "name": "n",
+                "path": []
+              },
+              "right": {
+                "kind": "const",
+                "type": "int",
+                "value": 2
+              }
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 0
+            }
+          },
+          "branch_type": "if"
+        }
+      ],
+      "dependencies": [],
+      "return_type": {
+        "kind": "unknown"
+      },
+      "start_line": 1,
+      "end_line": 23,
+      "literals": [
+        {
+          "type": "int",
+          "value": 0
+        },
+        {
+          "type": "str",
+          "value": "n must be at least 1"
+        },
+        {
+          "type": "int",
+          "value": 1
+        },
+        {
+          "type": "str",
+          "value": "n must be an integer"
+        },
+        {
+          "type": "int",
+          "value": 50
+        },
+        {
+          "type": "str",
+          "value": "push"
+        },
+        {
+          "type": "int",
+          "value": 2
+        },
+        {
+          "type": "str",
+          "value": "join"
+        },
+        {
+          "type": "str",
+          "value": ", "
+        },
+        {
+          "type": "str",
+          "value": "; "
+        }
+      ]
+    },
+    {
+      "name": "treeb",
+      "exported": false,
+      "params": [
+        {
+          "name": "r",
+          "type": {
+            "kind": "object",
+            "fields": [
+              [
+                "trunk",
+                {
+                  "kind": "object",
+                  "fields": [
+                    [
+                      "something",
+                      {
+                        "kind": "bool"
+                      }
+                    ],
+                    [
+                      "leaves",
+                      {
+                        "kind": "object",
+                        "fields": []
+                      }
+                    ]
+                  ]
+                }
+              ]
+            ]
+          }
+        }
+      ],
+      "branches": [
+        {
+          "id": 0,
+          "line": 42,
+          "condition_text": "v % 3 == 0",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "bin_op",
+              "op": "mod",
+              "left": {
+                "kind": "unknown"
+              },
+              "right": {
+                "kind": "const",
+                "type": "int",
+                "value": 3
+              }
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 0
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 1,
+          "line": 45,
+          "condition_text": "v % 3 == 1",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "bin_op",
+              "op": "mod",
+              "left": {
+                "kind": "unknown"
+              },
+              "right": {
+                "kind": "const",
+                "type": "int",
+                "value": 3
+              }
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 1
+            }
+          },
+          "branch_type": "if"
+        }
+      ],
+      "dependencies": [],
+      "return_type": {
+        "kind": "unknown"
+      },
+      "start_line": 40,
+      "end_line": 49,
+      "literals": [
+        {
+          "type": "str",
+          "value": "length"
+        },
+        {
+          "type": "str",
+          "value": "stringify"
+        },
+        {
+          "type": "int",
+          "value": 3
+        },
+        {
+          "type": "int",
+          "value": 0
+        },
+        {
+          "type": "int",
+          "value": 1
+        },
+        {
+          "type": "float",
+          "value": 0.2959187215872
+        }
+      ]
+    },
+    {
+      "name": "urlparse",
+      "exported": false,
+      "params": [
+        {
+          "name": "url",
+          "type": {
+            "kind": "str"
+          }
+        }
+      ],
+      "branches": [
+        {
+          "id": 0,
+          "line": 52,
+          "condition_text": "typeof url != 'string'",
+          "condition": {
+            "kind": "bin_op",
+            "op": "ne",
+            "left": {
+              "kind": "un_op",
+              "op": "type_of",
+              "operand": {
+                "kind": "param",
+                "name": "url",
+                "path": []
+              }
+            },
+            "right": {
+              "kind": "const",
+              "type": "str",
+              "value": "string"
+            }
+          },
+          "branch_type": "if"
+        }
+      ],
+      "dependencies": [],
+      "return_type": {
+        "kind": "unknown"
+      },
+      "start_line": 51,
+      "end_line": 57,
+      "literals": [
+        {
+          "type": "str",
+          "value": "string"
+        }
+      ]
+    },
+    {
+      "name": "romannumeral",
+      "exported": false,
+      "params": [
+        {
+          "name": "n",
+          "type": {
+            "kind": "float"
+          }
+        }
+      ],
+      "branches": [
+        {
+          "id": 0,
+          "line": 60,
+          "condition_text": "typeof n != 'number' || n < 0",
+          "condition": {
+            "kind": "bin_op",
+            "op": "or",
+            "left": {
+              "kind": "bin_op",
+              "op": "ne",
+              "left": {
+                "kind": "un_op",
+                "op": "type_of",
+                "operand": {
+                  "kind": "param",
+                  "name": "n",
+                  "path": []
+                }
+              },
+              "right": {
+                "kind": "const",
+                "type": "str",
+                "value": "number"
+              }
+            },
+            "right": {
+              "kind": "bin_op",
+              "op": "lt",
+              "left": {
+                "kind": "param",
+                "name": "n",
+                "path": []
+              },
+              "right": {
+                "kind": "const",
+                "type": "int",
+                "value": 0
+              }
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 1,
+          "line": 64,
+          "condition_text": "n == 0",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "param",
+              "name": "n",
+              "path": []
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 0
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 2,
+          "line": 68,
+          "condition_text": "n > 3999",
+          "condition": {
+            "kind": "bin_op",
+            "op": "gt",
+            "left": {
+              "kind": "param",
+              "name": "n",
+              "path": []
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 3999
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 3,
+          "line": 72,
+          "condition_text": "n >= 1000",
+          "condition": {
+            "kind": "bin_op",
+            "op": "ge",
+            "left": {
+              "kind": "param",
+              "name": "n",
+              "path": []
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 1000
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 4,
+          "line": 75,
+          "condition_text": "n >= 900",
+          "condition": {
+            "kind": "bin_op",
+            "op": "ge",
+            "left": {
+              "kind": "param",
+              "name": "n",
+              "path": []
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 900
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 5,
+          "line": 78,
+          "condition_text": "n >= 500",
+          "condition": {
+            "kind": "bin_op",
+            "op": "ge",
+            "left": {
+              "kind": "param",
+              "name": "n",
+              "path": []
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 500
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 6,
+          "line": 81,
+          "condition_text": "n >= 400",
+          "condition": {
+            "kind": "bin_op",
+            "op": "ge",
+            "left": {
+              "kind": "param",
+              "name": "n",
+              "path": []
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 400
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 7,
+          "line": 84,
+          "condition_text": "n >= 100",
+          "condition": {
+            "kind": "bin_op",
+            "op": "ge",
+            "left": {
+              "kind": "param",
+              "name": "n",
+              "path": []
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 100
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 8,
+          "line": 87,
+          "condition_text": "n >= 90",
+          "condition": {
+            "kind": "bin_op",
+            "op": "ge",
+            "left": {
+              "kind": "param",
+              "name": "n",
+              "path": []
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 90
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 9,
+          "line": 90,
+          "condition_text": "n >= 50",
+          "condition": {
+            "kind": "bin_op",
+            "op": "ge",
+            "left": {
+              "kind": "param",
+              "name": "n",
+              "path": []
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 50
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 10,
+          "line": 93,
+          "condition_text": "n >= 40",
+          "condition": {
+            "kind": "bin_op",
+            "op": "ge",
+            "left": {
+              "kind": "param",
+              "name": "n",
+              "path": []
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 40
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 11,
+          "line": 96,
+          "condition_text": "n >= 10",
+          "condition": {
+            "kind": "bin_op",
+            "op": "ge",
+            "left": {
+              "kind": "param",
+              "name": "n",
+              "path": []
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 10
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 12,
+          "line": 99,
+          "condition_text": "n == 9",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "param",
+              "name": "n",
+              "path": []
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 9
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 13,
+          "line": 102,
+          "condition_text": "n >= 5",
+          "condition": {
+            "kind": "bin_op",
+            "op": "ge",
+            "left": {
+              "kind": "param",
+              "name": "n",
+              "path": []
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 5
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 14,
+          "line": 105,
+          "condition_text": "n == 4",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": {
+              "kind": "param",
+              "name": "n",
+              "path": []
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 4
+            }
+          },
+          "branch_type": "if"
+        }
+      ],
+      "dependencies": [],
+      "return_type": {
+        "kind": "str"
+      },
+      "start_line": 59,
+      "end_line": 110,
+      "literals": [
+        {
+          "type": "str",
+          "value": "number"
+        },
+        {
+          "type": "int",
+          "value": 0
+        },
+        {
+          "type": "str",
+          "value": ""
+        },
+        {
+          "type": "int",
+          "value": 3999
+        },
+        {
+          "type": "int",
+          "value": 1000
+        },
+        {
+          "type": "str",
+          "value": "M"
+        },
+        {
+          "type": "int",
+          "value": 900
+        },
+        {
+          "type": "str",
+          "value": "CM"
+        },
+        {
+          "type": "int",
+          "value": 500
+        },
+        {
+          "type": "str",
+          "value": "D"
+        },
+        {
+          "type": "int",
+          "value": 400
+        },
+        {
+          "type": "str",
+          "value": "CD"
+        },
+        {
+          "type": "int",
+          "value": 100
+        },
+        {
+          "type": "str",
+          "value": "C"
+        },
+        {
+          "type": "int",
+          "value": 90
+        },
+        {
+          "type": "str",
+          "value": "XC"
+        },
+        {
+          "type": "int",
+          "value": 50
+        },
+        {
+          "type": "str",
+          "value": "L"
+        },
+        {
+          "type": "int",
+          "value": 40
+        },
+        {
+          "type": "str",
+          "value": "XL"
+        },
+        {
+          "type": "int",
+          "value": 10
+        },
+        {
+          "type": "str",
+          "value": "X"
+        },
+        {
+          "type": "int",
+          "value": 9
+        },
+        {
+          "type": "str",
+          "value": "IX"
+        },
+        {
+          "type": "int",
+          "value": 5
+        },
+        {
+          "type": "str",
+          "value": "V"
+        },
+        {
+          "type": "int",
+          "value": 4
+        },
+        {
+          "type": "str",
+          "value": "IV"
+        },
+        {
+          "type": "str",
+          "value": "repeat"
+        },
+        {
+          "type": "str",
+          "value": "I"
+        }
+      ]
+    },
+    {
+      "name": "fibonacci",
+      "exported": false,
+      "params": [
+        {
+          "name": "n",
+          "type": {
+            "kind": "float"
+          }
+        }
+      ],
+      "branches": [
+        {
+          "id": 0,
+          "line": 113,
+          "condition_text": "typeof n != 'number' || n < 0",
+          "condition": {
+            "kind": "bin_op",
+            "op": "or",
+            "left": {
+              "kind": "bin_op",
+              "op": "ne",
+              "left": {
+                "kind": "un_op",
+                "op": "type_of",
+                "operand": {
+                  "kind": "param",
+                  "name": "n",
+                  "path": []
+                }
+              },
+              "right": {
+                "kind": "const",
+                "type": "str",
+                "value": "number"
+              }
+            },
+            "right": {
+              "kind": "bin_op",
+              "op": "lt",
+              "left": {
+                "kind": "param",
+                "name": "n",
+                "path": []
+              },
+              "right": {
+                "kind": "const",
+                "type": "int",
+                "value": 0
+              }
+            }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 1,
+          "line": 118,
+          "condition_text": "n <= 1",
+          "condition": {
+            "kind": "bin_op",
+            "op": "le",
+            "left": {
+              "kind": "param",
+              "name": "n",
+              "path": []
+            },
+            "right": {
+              "kind": "const",
+              "type": "int",
+              "value": 1
+            }
+          },
+          "branch_type": "if"
+        }
+      ],
+      "dependencies": [],
+      "return_type": {
+        "kind": "float"
+      },
+      "start_line": 112,
+      "end_line": 123,
+      "literals": [
+        {
+          "type": "str",
+          "value": "number"
+        },
+        {
+          "type": "int",
+          "value": 0
+        },
+        {
+          "type": "int",
+          "value": 1
+        },
+        {
+          "type": "int",
+          "value": 2
+        }
+      ]
+    }
+  ]
+}
