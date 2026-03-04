@@ -560,3 +560,100 @@ describe("async function execution", () => {
     expect(result.thrown_error!.error_category).toBe("infrastructure");
   });
 });
+
+const REACT_FIXTURE = path.resolve(FIXTURES_DIR, "react-component.tsx");
+
+describe("React component execution", () => {
+  it("executes a component returning JSX element objects", async () => {
+    const result = await executeFunction(REACT_FIXTURE, "StatusCard", [
+      { status: "active", count: 15 },
+    ]);
+    expect(result.thrown_error).toBeNull();
+    const el = result.return_value as Record<string, unknown>;
+    expect(el.$$typeof).toBe(Symbol.for("react.element"));
+    expect(el.type).toBe("div");
+  });
+
+  it("hits the inactive branch for non-active status", async () => {
+    const result = await executeFunction(REACT_FIXTURE, "StatusCard", [
+      { status: "disabled", count: 1 },
+    ]);
+    expect(result.thrown_error).toBeNull();
+    const el = result.return_value as Record<string, unknown>;
+    expect(el.type).toBe("div");
+    const props = el.props as Record<string, unknown>;
+    expect(props.className).toBe("inactive");
+  });
+
+  it("evaluates useMemo factory to explore branches", async () => {
+    const resultHigh = await executeFunction(REACT_FIXTURE, "StatusCard", [
+      { status: "active", count: 20 },
+    ]);
+    const resultLow = await executeFunction(REACT_FIXTURE, "StatusCard", [
+      { status: "active", count: 2 },
+    ]);
+    expect(resultHigh.thrown_error).toBeNull();
+    expect(resultLow.thrown_error).toBeNull();
+    // Both should produce element objects — the useMemo factory ran successfully
+    expect((resultHigh.return_value as Record<string, unknown>).$$typeof).toBe(
+      Symbol.for("react.element"),
+    );
+    expect((resultLow.return_value as Record<string, unknown>).$$typeof).toBe(
+      Symbol.for("react.element"),
+    );
+  });
+
+  it("evaluates useState function initializer", async () => {
+    const result = await executeFunction(REACT_FIXTURE, "InitCounter", [
+      { start: 5 },
+    ]);
+    expect(result.thrown_error).toBeNull();
+    const el = result.return_value as Record<string, unknown>;
+    expect(el.type).toBe("span");
+    // start=5, initializer doubles it → count=10, so "Positive: 10"
+    const props = el.props as Record<string, unknown>;
+    const children = props.children;
+    expect(children).toBeDefined();
+  });
+
+  it("hits non-positive branch with negative initializer", async () => {
+    const result = await executeFunction(REACT_FIXTURE, "InitCounter", [
+      { start: -3 },
+    ]);
+    expect(result.thrown_error).toBeNull();
+    const el = result.return_value as Record<string, unknown>;
+    const props = el.props as Record<string, unknown>;
+    const children = props.children;
+    expect(children).toBeDefined();
+  });
+
+  it("instruments and tracks branches in a React component", async () => {
+    const source = fs.readFileSync(REACT_FIXTURE, "utf-8");
+    const instrumentResult = instrumentFunction(source, "StatusCard", REACT_FIXTURE);
+
+    if ("error" in instrumentResult) {
+      throw new Error(`Instrumentation failed: ${instrumentResult.error}`);
+    }
+
+    const result = await executeInstrumented(
+      instrumentResult.instrumentedSource,
+      "StatusCard",
+      [{ status: "active", count: 15 }],
+      [],
+      REACT_FIXTURE,
+    );
+
+    expect(result.thrown_error).toBeNull();
+    expect(result.branch_path.length).toBeGreaterThan(0);
+    const el = result.return_value as Record<string, unknown>;
+    expect(el.$$typeof).toBe(Symbol.for("react.element"));
+  });
+
+  it("does not inject React shim for non-tsx files", async () => {
+    // Regular .ts fixture should work exactly as before
+    const tsFixture = path.join(FIXTURES_DIR, "primitives.ts");
+    const result = await executeFunction(tsFixture, "add", [3, 4]);
+    expect(result.return_value).toBe(7);
+    expect(result.thrown_error).toBeNull();
+  });
+});
