@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::SetupMode;
 use crate::execution_record::{
-    BranchDecision, ErrorInfo, ExternalCall, SideEffect, SymConstraint, TruncationInfo,
+    BranchDecision, ErrorInfo, ExternalCall, SideEffect, SymConstraint, TraceEvent,
+    TruncationInfo,
 };
 use crate::sym_expr::SymExpr;
 use crate::types::{ParamInfo, TypeInfo};
@@ -337,6 +338,10 @@ pub struct ExecuteResult {
     /// Symbolic path constraints collected.
     #[serde(default)]
     pub path_constraints: Vec<SymConstraint>,
+    /// Scope-annotated execution trace (branches + loop/call markers).
+    /// When non-empty, enables scope-aware path collapsing in `path_hash`.
+    #[serde(default)]
+    pub scope_events: Vec<TraceEvent>,
     /// Side effects observed during execution.
     #[serde(default)]
     pub side_effects: Vec<SideEffect>,
