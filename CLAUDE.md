@@ -21,6 +21,7 @@ For local dev: Rust toolchain, Node.js 22+, Go 1.24+, libclang. Run `./scripts/c
 - Regression snapshots are checked into the repo and verified in CI
 - **Bug fixes require a reproduction test first** — write an automated test that demonstrates the bug (must fail), then fix the code and verify the test passes. Never attempt a fix without a failing test.
 - **No magic numbers or string literals** — define named constants for default values, timeouts, error codes, capability lists, and any value that appears in both production code and tests. Tests must reference the constant, not duplicate the literal. Each language has a canonical location for constants (see per-language conventions below).
+- **Parallel code paths must maintain parity** — when two functions process the same domain (e.g. `buildSymExpr` and `buildSymExprWithFlow`, random explorer and concolic orchestrator, CLI wiring for `--concolic` vs default), they must handle the same cases. When adding a capability to one path, check the other. When adding a new AST node type, CLI flag, or config field, grep for the parallel code path and update it too.
 
 See `/rust-conventions`, `/ts-conventions`, `/go-conventions` skills for detailed per-language standards.
 
@@ -87,9 +88,31 @@ pub fn boundaries_for(ty: &ParamType) -> Vec<BoundaryValue> {
 | Quick | `cargo test` | During development |
 | Standard | `cargo test && cargo clippy -- -D warnings` | Before committing |
 | Full | Standard + `cd shatter-ts && npm test` + `cd shatter-go && go test ./...` + `cd shatter-rust && cargo test` | Before merge or when touching protocol definitions |
+| E2E | Full + `cargo test --test e2e_concolic` | After changing solver, instrumentor, explorer, orchestrator, or string ops |
 | Walkthrough | `bash demo/walkthrough.sh --auto --delay 0` | After changing CLI output, protocol, frontend execution, or example files |
 
+**E2E gate**: The E2E concolic tests (`shatter-core/tests/e2e_concolic.rs`) run the real TS frontend subprocess through analyze → instrument → explore → Z3 solve. They are the **only tests that validate the full pipeline end-to-end**. Unit tests alone are insufficient — a module can pass all its own tests while being silently disconnected from the pipeline (see "Completion checklist" below). Run E2E tests after any change to:
+- Solver logic (`solver.rs`, `string-ops.yaml`, `build.rs`)
+- Instrumentor (`instrumentor.ts`, especially `buildSymExpr*` functions)
+- Explorer or orchestrator (`explorer.rs`, `orchestrator.rs`)
+- Protocol types that affect execute responses (`protocol.rs`, `protocol.ts`)
+- CLI wiring that passes config to explorers (`main.rs`)
+
 **Walkthrough gate**: The walkthrough exercises the full pipeline end-to-end (analyze, explore, scan, export, spec). Run it after any change to CLI commands, frontend handlers, protocol types, or example files. Errors in steps 1–19 (single-function explore, scan, cache, Go explore, export, run) indicate regressions — fix before merging. Errors in scan steps for `11-opaque-types.ts` and `12-external-deps.ts` are expected (opaque types and missing external modules).
+
+### Completion Checklist
+
+Before declaring any feature or bug fix **done**, verify:
+
+1. **Unit tests pass** — the module's own tests (Quick tier)
+2. **Clippy clean** — no warnings in the changed crate (Standard tier)
+3. **Cross-language tests pass** — if touching protocol types (Full tier)
+4. **E2E pipeline works** — if touching any component in the analyze → instrument → execute → solve chain, run `cargo test --test e2e_concolic` and verify the pipeline still discovers expected branches
+5. **Walkthrough passes** — if touching CLI output or example files
+
+**Why this matters:** This project has multiple code paths that process the same data (random explorer vs. concolic orchestrator, `buildSymExpr` vs. `buildSymExprWithFlow`, CLI wiring for different explorer modes). Features that work on one path are routinely broken on others. The E2E tests are the only reliable way to catch cross-path regressions.
+
+**A feature is not done until it works end-to-end.** Closing an issue based on unit tests alone has repeatedly led to silent pipeline breakages that compound over time. If the E2E tests don't cover your change, add a new E2E test case before closing.
 
 ## What NOT to Do
 
@@ -98,6 +121,8 @@ pub fn boundaries_for(ty: &ParamType) -> Vec<BoundaryValue> {
 - **Never add** `node_modules/`, `dist/`, or `target/` to git
 - **Never bypass clippy warnings** with `#[allow(...)]` without a comment explaining why
 - **Never add a CLI command** without updating `demo/walkthrough.sh`
+- **Never close a pipeline feature based on unit tests alone** — run `cargo test --test e2e_concolic` to verify end-to-end behavior. Unit tests prove a module works in isolation; E2E tests prove it works in the pipeline. Both are required.
+- **Never add a capability to one explorer path without checking the other** — the random explorer (`explorer.rs`) and concolic orchestrator (`orchestrator.rs`) are wired differently in `main.rs`. A feature added to one is routinely missing from the other (see str-emw6). Grep for the parallel path before declaring done.
 
 ## Common Task Recipes
 
