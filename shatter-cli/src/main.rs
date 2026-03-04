@@ -1460,6 +1460,8 @@ async fn run_scan(
     };
 
     // Apply core sample selection if --core-sample is set.
+    let mut effective_batch_index: Option<usize> = None;
+    let mut total_scope_functions: usize = all_analyses.len();
     let sampling_context = if let Some(spec) = core_sample_spec {
         let budget = shatter_core::core_sample::parse_sample_budget(spec)
             .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
@@ -1512,6 +1514,7 @@ async fn run_scan(
                     start
                 }
             };
+            effective_batch_index = Some(batch_index);
             if log_level >= LogLevel::Info {
                 eprintln!("Using batch {batch_index} of core sample");
             }
@@ -1521,6 +1524,7 @@ async fn run_scan(
         };
         let included = result.all_included();
         let before = all_analyses.len();
+        total_scope_functions = before;
         // included contains qualified names (file_path::name); match using file_map.
         all_analyses.retain(|a| {
             if let Some(file) = file_map.get(&a.name) {
@@ -1697,10 +1701,68 @@ async fn run_scan(
 
             print!("{}", scan_orchestrator::format_parallel_scan_report(&result));
 
+            // Record batch state and print cumulative progress.
+            let batch_state = if let Some(batch_idx) = effective_batch_index {
+                let batch_state_path = PathBuf::from(directory)
+                    .join(".shatter")
+                    .join("batch-state.json");
+
+                let file_paths: Vec<&str> = scan_config
+                    .file_map
+                    .values()
+                    .map(|s| s.as_str())
+                    .collect();
+                let scan_id =
+                    shatter_core::checkpoint::ScanCheckpoint::compute_scan_id(&file_paths);
+
+                let mut state = match shatter_core::batch_state::BatchState::load(&batch_state_path) {
+                    Ok(Some(s)) if s.scan_id == scan_id => s,
+                    Ok(Some(_)) => {
+                        eprintln!("[shatter] batch state scan_id mismatch, starting fresh");
+                        shatter_core::batch_state::BatchState::new(
+                            scan_id,
+                            total_scope_functions,
+                        )
+                    }
+                    Ok(None) => shatter_core::batch_state::BatchState::new(
+                        scan_id,
+                        total_scope_functions,
+                    ),
+                    Err(e) => {
+                        eprintln!("[shatter] failed to load batch state: {e}, starting fresh");
+                        shatter_core::batch_state::BatchState::new(
+                            "unknown".to_string(),
+                            total_scope_functions,
+                        )
+                    }
+                };
+
+                let summary =
+                    shatter_core::batch_state::BatchSummary::from_scan_result(batch_idx, &result);
+                state.record_batch(summary);
+
+                if let Err(e) = state.save(&batch_state_path) {
+                    eprintln!("[shatter] failed to save batch state: {e}");
+                }
+
+                print!(
+                    "{}",
+                    shatter_core::batch_state::format_cumulative_batch_section(&state, batch_idx)
+                );
+
+                Some(state)
+            } else {
+                None
+            };
+
             let report_dir = output_dir
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("./shatter-report/"));
-            let scan_report = report::generate_report(&result, &scan_config.file_map);
+            let scan_report = report::generate_report(
+                &result,
+                &scan_config.file_map,
+                batch_state.as_ref(),
+            );
 
             match report_format {
                 report::ReportFormat::Json => {

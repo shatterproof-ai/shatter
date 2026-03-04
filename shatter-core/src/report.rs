@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::batch_state::BatchState;
+use crate::coverage_metrics::CoverageMetrics;
 use crate::scan_orchestrator::{FunctionResult, ParallelScanResult, ScanResult};
 
 // ---------------------------------------------------------------------------
@@ -117,6 +119,21 @@ pub struct SkippedFunctionReport {
 // Top-level report
 // ---------------------------------------------------------------------------
 
+/// Cumulative progress across progressive batch runs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CumulativeReport {
+    /// Batch indices that have been completed.
+    pub completed_batches: Vec<usize>,
+    /// Total functions explored across all batches.
+    pub total_functions_explored: usize,
+    /// Total functions in the scan scope.
+    pub total_scope_functions: usize,
+    /// Cumulative coverage metrics merged across all batches.
+    pub metrics: CoverageMetrics,
+    /// Overall cumulative coverage percentage.
+    pub cumulative_coverage_pct: f64,
+}
+
 /// The complete JSON scan report.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScanReport {
@@ -128,6 +145,9 @@ pub struct ScanReport {
     pub codebase: CodebaseReport,
     /// Test order used during the scan.
     pub test_order: Vec<String>,
+    /// Cumulative stats across all batches (present only in batch mode).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub cumulative: Option<CumulativeReport>,
 }
 
 // ---------------------------------------------------------------------------
@@ -211,12 +231,26 @@ fn build_dependency_edges(function_results: &[FunctionResult]) -> Vec<Dependency
     edges
 }
 
+/// Build a [`CumulativeReport`] from batch state.
+fn build_cumulative_report(state: &BatchState) -> CumulativeReport {
+    CumulativeReport {
+        completed_batches: state.completed_batches(),
+        total_functions_explored: state.total_functions_explored(),
+        total_scope_functions: state.total_scope_functions,
+        metrics: state.cumulative_metrics.clone(),
+        cumulative_coverage_pct: state.cumulative_coverage_pct(),
+    }
+}
+
 /// Generate a [`ScanReport`] from a [`ParallelScanResult`].
 ///
 /// The `file_map` maps function names to their source file paths.
+/// When `batch_state` is provided, the report includes cumulative progress
+/// across all completed batches.
 pub fn generate_report(
     result: &ParallelScanResult,
     file_map: &std::collections::HashMap<String, String>,
+    batch_state: Option<&BatchState>,
 ) -> ScanReport {
     let functions: Vec<FunctionReport> = result
         .function_results
@@ -249,6 +283,8 @@ pub fn generate_report(
 
     let dependency_graph = build_dependency_edges(&result.function_results);
 
+    let cumulative = batch_state.map(build_cumulative_report);
+
     ScanReport {
         version: 1,
         functions,
@@ -260,6 +296,7 @@ pub fn generate_report(
             dependency_graph,
         },
         test_order: result.test_order.clone(),
+        cumulative,
     }
 }
 
@@ -312,6 +349,7 @@ pub fn generate_report_from_scan(
             dependency_graph,
         },
         test_order: result.test_order.clone(),
+        cumulative: None,
     }
 }
 
@@ -365,6 +403,7 @@ pub fn format_markdown_report(report: &ScanReport) -> String {
     let mut out = String::new();
 
     write_md_header(&mut out, report);
+    write_md_cumulative(&mut out, &report.cumulative);
     write_md_summary_table(&mut out, report);
     write_md_function_details(&mut out, &report.functions);
     write_md_uncovered_branches(&mut out, &report.functions);
@@ -394,6 +433,43 @@ fn write_md_header(out: &mut String, report: &ScanReport) {
         );
     }
 
+    out.push('\n');
+}
+
+fn write_md_cumulative(out: &mut String, cumulative: &Option<CumulativeReport>) {
+    let Some(cum) = cumulative else {
+        return;
+    };
+
+    let _ = writeln!(out, "## Cumulative Progress\n");
+    let batches_str = cum
+        .completed_batches
+        .iter()
+        .map(|i| i.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let _ = writeln!(
+        out,
+        "- **Batches completed:** {} ({})",
+        cum.completed_batches.len(),
+        batches_str,
+    );
+    let _ = writeln!(
+        out,
+        "- **Functions explored:** {}/{}",
+        cum.total_functions_explored, cum.total_scope_functions,
+    );
+    let covered = cum.metrics.z3_solved + cum.metrics.random_found + cum.metrics.user_provided;
+    let _ = writeln!(
+        out,
+        "- **Branches covered:** {}/{}",
+        covered, cum.metrics.total_branches,
+    );
+    let _ = writeln!(
+        out,
+        "- **Cumulative coverage:** {:.1}%",
+        cum.cumulative_coverage_pct,
+    );
     out.push('\n');
 }
 
@@ -758,7 +834,7 @@ mod tests {
         file_map.insert("leaf".to_string(), "src/math.ts".to_string());
         file_map.insert("caller".to_string(), "src/app.ts".to_string());
 
-        let report = generate_report(&parallel_result, &file_map);
+        let report = generate_report(&parallel_result, &file_map, None);
 
         assert_eq!(report.version, 1);
         assert_eq!(report.functions.len(), 2);
@@ -806,7 +882,7 @@ mod tests {
         };
 
         let file_map = HashMap::new();
-        let report = generate_report(&parallel_result, &file_map);
+        let report = generate_report(&parallel_result, &file_map, None);
 
         assert_eq!(report.codebase.skipped_functions.len(), 1);
         assert_eq!(report.codebase.skipped_functions[0].function_name, "slow");
@@ -826,7 +902,7 @@ mod tests {
         };
 
         let file_map = HashMap::new();
-        let report = generate_report(&parallel_result, &file_map);
+        let report = generate_report(&parallel_result, &file_map, None);
 
         assert_eq!(report.version, 1);
         assert!(report.functions.is_empty());
@@ -848,7 +924,7 @@ mod tests {
         };
 
         let file_map = HashMap::new();
-        let report = generate_report(&parallel_result, &file_map);
+        let report = generate_report(&parallel_result, &file_map, None);
 
         let func = &report.functions[0];
         assert!((func.coverage_pct - 70.0).abs() < 0.01);
@@ -864,7 +940,7 @@ mod tests {
         };
 
         let file_map = HashMap::new();
-        let report = generate_report(&parallel_result, &file_map);
+        let report = generate_report(&parallel_result, &file_map, None);
 
         assert_eq!(report.functions[0].coverage_pct, 0.0);
     }
@@ -888,7 +964,7 @@ mod tests {
         file_map.insert("f1".to_string(), "src/a.ts".to_string());
         file_map.insert("f2".to_string(), "src/b.ts".to_string());
 
-        let report = generate_report(&parallel_result, &file_map);
+        let report = generate_report(&parallel_result, &file_map, None);
         let json = serde_json::to_string_pretty(&report).expect("serialize");
         let deserialized: ScanReport = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(report, deserialized);
@@ -904,7 +980,7 @@ mod tests {
         };
 
         let file_map = HashMap::new();
-        let report = generate_report(&parallel_result, &file_map);
+        let report = generate_report(&parallel_result, &file_map, None);
         let json = serde_json::to_string(&report).expect("serialize");
 
         // Top-level fields
@@ -948,6 +1024,7 @@ mod tests {
                 dependency_graph: vec![],
             },
             test_order: vec![],
+            cumulative: None,
         };
 
         let dir = std::env::temp_dir().join("shatter-report-test");
@@ -1002,7 +1079,7 @@ mod tests {
         };
 
         let file_map = HashMap::new();
-        let report = generate_report(&parallel_result, &file_map);
+        let report = generate_report(&parallel_result, &file_map, None);
 
         let func = &report.functions[0];
         assert_eq!(func.behavior_clusters.len(), 2);
@@ -1062,7 +1139,7 @@ mod tests {
         };
 
         let file_map = HashMap::new();
-        let report = generate_report(&parallel_result, &file_map);
+        let report = generate_report(&parallel_result, &file_map, None);
 
         // branches = 2 + 3 = 5, covered = 2 + 3 = 5 => 100%
         assert!((report.codebase.overall_coverage - 100.0).abs() < 0.01);
@@ -1087,7 +1164,7 @@ mod tests {
         file_map.insert("leaf".to_string(), "src/math.ts".to_string());
         file_map.insert("caller".to_string(), "src/app.ts".to_string());
 
-        generate_report(&parallel_result, &file_map)
+        generate_report(&parallel_result, &file_map, None)
     }
 
     #[test]
@@ -1156,6 +1233,7 @@ mod tests {
                 dependency_graph: vec![],
             },
             test_order: vec![],
+            cumulative: None,
         };
 
         let md = format_markdown_report(&report);
@@ -1186,6 +1264,7 @@ mod tests {
                 dependency_graph: vec![],
             },
             test_order: vec![],
+            cumulative: None,
         };
 
         let md = format_markdown_report(&report);

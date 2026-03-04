@@ -4,6 +4,7 @@ pub mod analysis_cache;
 pub mod array_mutation;
 pub mod auto_mock;
 pub mod batch_analyze;
+pub mod batch_state;
 pub mod behavior;
 pub mod boundary_dict;
 pub mod call_graph;

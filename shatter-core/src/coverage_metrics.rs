@@ -138,6 +138,20 @@ impl CoverageMetrics {
             unknown_count,
         }
     }
+
+    /// Additively merge `other` into `self`.
+    ///
+    /// Each counter is summed. The caller must ensure no double-counting
+    /// (e.g., each function appears in exactly one batch).
+    pub fn merge(&mut self, other: &CoverageMetrics) {
+        self.total_branches += other.total_branches;
+        self.z3_solved += other.z3_solved;
+        self.random_found += other.random_found;
+        self.user_provided += other.user_provided;
+        self.uncovered += other.uncovered;
+        self.symexpr_count += other.symexpr_count;
+        self.unknown_count += other.unknown_count;
+    }
 }
 
 /// Format coverage metrics as a human-readable summary block.
@@ -759,5 +773,83 @@ mod tests {
         let json = serde_json::to_string(&target_uncovered).expect("serialize");
         let deserialized: TargetBranch = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(target_uncovered, deserialized);
+    }
+
+    // --- merge tests ---
+
+    #[test]
+    fn merge_adds_all_counters() {
+        let mut a = CoverageMetrics {
+            total_branches: 10,
+            z3_solved: 3,
+            random_found: 2,
+            user_provided: 1,
+            uncovered: 4,
+            symexpr_count: 6,
+            unknown_count: 4,
+        };
+        let b = CoverageMetrics {
+            total_branches: 8,
+            z3_solved: 2,
+            random_found: 3,
+            user_provided: 0,
+            uncovered: 3,
+            symexpr_count: 5,
+            unknown_count: 3,
+        };
+        a.merge(&b);
+        assert_eq!(a.total_branches, 18);
+        assert_eq!(a.z3_solved, 5);
+        assert_eq!(a.random_found, 5);
+        assert_eq!(a.user_provided, 1);
+        assert_eq!(a.uncovered, 7);
+        assert_eq!(a.symexpr_count, 11);
+        assert_eq!(a.unknown_count, 7);
+    }
+
+    #[test]
+    fn merge_with_default_is_identity() {
+        let original = CoverageMetrics {
+            total_branches: 5,
+            z3_solved: 2,
+            random_found: 1,
+            user_provided: 1,
+            uncovered: 1,
+            symexpr_count: 3,
+            unknown_count: 2,
+        };
+        let mut merged = CoverageMetrics::default();
+        merged.merge(&original);
+        assert_eq!(merged, original);
+    }
+
+    #[test]
+    fn merge_is_additive() {
+        let b = CoverageMetrics {
+            total_branches: 4,
+            z3_solved: 1,
+            random_found: 1,
+            user_provided: 0,
+            uncovered: 2,
+            symexpr_count: 2,
+            unknown_count: 2,
+        };
+        let c = CoverageMetrics {
+            total_branches: 6,
+            z3_solved: 2,
+            random_found: 2,
+            user_provided: 1,
+            uncovered: 1,
+            symexpr_count: 4,
+            unknown_count: 2,
+        };
+        // Merge B then C
+        let mut sequential = CoverageMetrics::default();
+        sequential.merge(&b);
+        sequential.merge(&c);
+        // Merge (B+C) at once
+        let mut combined = b.clone();
+        combined.merge(&c);
+        assert_eq!(sequential, combined);
     }
 }
