@@ -1441,6 +1441,49 @@ pub fn literals_to_candidate_inputs(
     result
 }
 
+/// Convert interesting pool values into candidate input vectors.
+///
+/// Follows the same pattern as [`literals_to_candidate_inputs`]: for each
+/// parameter, looks up pool values matching that parameter's type. Each match
+/// produces one input vector with the pool value at that position and boundary
+/// defaults at other positions. Deduplicates by `(param_index, serialized_value)`.
+pub fn pool_to_candidate_inputs(
+    params: &[ParamInfo],
+    pool: &crate::interesting_pool::InterestingPool,
+) -> Vec<Vec<Value>> {
+    if params.is_empty() {
+        return Vec::new();
+    }
+
+    let defaults: Vec<Value> = params
+        .iter()
+        .map(|p| {
+            get_boundary_values(&p.typ)
+                .into_iter()
+                .next()
+                .map(|e| e.value)
+                .unwrap_or(Value::Null)
+        })
+        .collect();
+
+    let mut seen = std::collections::HashSet::new();
+    let mut result = Vec::new();
+
+    for (idx, param) in params.iter().enumerate() {
+        for val in pool.values_for_type(&param.typ) {
+            let dedup_key = (idx, serde_json::to_string(&val).unwrap_or_default());
+            if !seen.insert(dedup_key) {
+                continue;
+            }
+            let mut row = defaults.clone();
+            row[idx] = val;
+            result.push(row);
+        }
+    }
+
+    result
+}
+
 /// Check whether a `LiteralValue` is type-compatible with a `TypeInfo` and return
 /// the corresponding `serde_json::Value` if so.
 fn literal_matches_type(lit: &LiteralValue, typ: &TypeInfo) -> Option<Value> {
@@ -2463,5 +2506,78 @@ mod tests {
         let (c1, c2) = crossover_inputs(&parent_a, &parent_b, &params, 1.0, &mut rng);
         assert_eq!(c1.len(), 3);
         assert_eq!(c2.len(), 3);
+    
+    // -- Pool-to-candidate tests --
+
+    #[test]
+    fn pool_to_candidate_inputs_produces_candidates() {
+        use crate::interesting_pool::{
+            BehaviorObservation, InterestingPool, PoolEntry, Severity,
+        };
+        let mut pool = InterestingPool::default();
+        pool.insert(PoolEntry {
+            value: json!(42),
+            ty: TypeInfo::Int,
+            behaviors: vec![BehaviorObservation {
+                function: "foo".into(),
+                branch_id: 1,
+                severity: Severity::RarePath,
+            }],
+            discovered_epoch: 0,
+            last_hit_epoch: 0,
+        });
+        let params = vec![
+            ParamInfo { name: "x".into(), typ: TypeInfo::Int, type_name: None },
+            ParamInfo { name: "y".into(), typ: TypeInfo::Str, type_name: None },
+        ];
+        let candidates = pool_to_candidate_inputs(&params, &pool);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0][0], json!(42));
     }
+
+    #[test]
+    fn pool_to_candidate_inputs_empty_pool_returns_empty() {
+        let pool = crate::interesting_pool::InterestingPool::default();
+        let params = vec![
+            ParamInfo { name: "x".into(), typ: TypeInfo::Int, type_name: None },
+        ];
+        let candidates = pool_to_candidate_inputs(&params, &pool);
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn pool_to_candidate_inputs_deduplicates() {
+        use crate::interesting_pool::{
+            BehaviorObservation, InterestingPool, PoolEntry, Severity,
+        };
+        let mut pool = InterestingPool::default();
+        pool.insert(PoolEntry {
+            value: json!(7),
+            ty: TypeInfo::Int,
+            behaviors: vec![BehaviorObservation {
+                function: "a".into(),
+                branch_id: 1,
+                severity: Severity::RarePath,
+            }],
+            discovered_epoch: 0,
+            last_hit_epoch: 0,
+        });
+        pool.insert(PoolEntry {
+            value: json!(7),
+            ty: TypeInfo::Int,
+            behaviors: vec![BehaviorObservation {
+                function: "b".into(),
+                branch_id: 2,
+                severity: Severity::Crash,
+            }],
+            discovered_epoch: 0,
+            last_hit_epoch: 0,
+        });
+        let params = vec![
+            ParamInfo { name: "x".into(), typ: TypeInfo::Int, type_name: None },
+        ];
+        let candidates = pool_to_candidate_inputs(&params, &pool);
+        assert_eq!(candidates.len(), 1, "duplicate values should be deduplicated");
+    }
+}
 }

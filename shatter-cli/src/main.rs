@@ -1002,6 +1002,13 @@ async fn run_explore(
                     &resolved.generators,
                 ),
                 capabilities: shatter_core::orchestrator::FrontendCapabilities::default(),
+                pool_seeds: {
+                    let pool_path = std::path::Path::new(".shatter/seeds/pool.json");
+                    match shatter_core::interesting_pool::load_pool(pool_path) {
+                        Ok(Some(pool)) => shatter_core::input_gen::pool_to_candidate_inputs(&func.params, &pool),
+                        _ => vec![],
+                    }
+                },
             };
 
             // Convert candidate inputs for logging
@@ -1030,11 +1037,18 @@ async fn run_explore(
             // Choose exploration strategy: concolic (Z3-backed) or random.
             let explore_result: Result<shatter_core::explorer::ExplorationResult, shatter_core::explorer::ExploreError> = if use_concolic {
                 let param_names: Vec<String> = func.params.iter().map(|p| p.name.clone()).collect();
-                let seed_inputs = shatter_core::boundary_dict::generate_boundary_inputs(&func.params);
+                let mut seed_inputs = shatter_core::boundary_dict::generate_boundary_inputs(&func.params);
                 let user_inputs: Vec<Vec<serde_json::Value>> = resolved.candidate_inputs
                     .iter()
                     .map(|input| input.args.clone())
                     .collect();
+
+                // Add pool-derived seeds for concolic mode
+                let pool_path = std::path::Path::new(".shatter/seeds/pool.json");
+                if let Ok(Some(pool)) = shatter_core::interesting_pool::load_pool(pool_path) {
+                    let pool_candidates = shatter_core::input_gen::pool_to_candidate_inputs(&func.params, &pool);
+                    seed_inputs.extend(pool_candidates);
+                }
 
                 let concolic_config = shatter_core::orchestrator::ExploreConfig {
                     max_iterations: explore_config.max_iterations as usize,
@@ -1591,6 +1605,7 @@ async fn run_scan(
             mock_overrides: HashMap::new(),
             resume_path: None,
             timeout_total: None,
+            pool_path: Some(PathBuf::from(".shatter/seeds/pool.json")),
         };
         let plan = scan_orchestrator::format_dry_run_plan(
             &all_analyses,
@@ -1658,6 +1673,7 @@ async fn run_scan(
         mock_overrides,
         resume_path: resume.map(|p| p.to_path_buf()),
         timeout_total: if timeout_total == 0 { None } else { Some(Duration::from_secs(timeout_total)) },
+        pool_path: Some(PathBuf::from(".shatter/seeds/pool.json")),
     };
 
     let scan_start = Instant::now();
@@ -1948,6 +1964,7 @@ async fn run_export_tests(
             setup_mode: shatter_core::config::SetupMode::PerFunction,
             value_sources: vec![],
             capabilities: shatter_core::orchestrator::FrontendCapabilities::default(),
+            pool_seeds: vec![],
         };
 
         for func in &functions {
@@ -2306,6 +2323,7 @@ async fn run_run(
                 setup_mode: shatter_core::config::SetupMode::PerFunction,
                 value_sources: vec![],
                 capabilities: shatter_core::orchestrator::FrontendCapabilities::default(),
+                pool_seeds: vec![],
                 };
 
             match explorer::explore_function(frontend, &func_analysis, &explore_config).await {

@@ -64,6 +64,8 @@ pub struct ScanConfig {
     /// time at the start of each layer; if exceeded, remaining functions
     /// are skipped with reason "total scan timeout exceeded".
     pub timeout_total: Option<Duration>,
+    /// Path to the interesting input pool file for cross-function seed sharing.
+    pub pool_path: Option<PathBuf>,
 }
 
 /// Context about sampling mode, for report headers.
@@ -260,6 +262,18 @@ pub async fn scan(
     let mut behavior_maps: HashMap<String, BehaviorMap> = HashMap::new();
     let mut function_results: Vec<FunctionResult> = Vec::new();
     let mut skipped_functions: Vec<SkippedFunction> = Vec::new();
+    // Load interesting input pool once for cross-function seed sharing.
+    let pool = config.pool_path.as_ref().and_then(|p| {
+        match crate::interesting_pool::load_pool(p) {
+            Ok(Some(pool)) => Some(pool),
+            Ok(None) => None,
+            Err(e) => {
+                eprintln!("[shatter-core] failed to load pool: {e}");
+                None
+            }
+        }
+    });
+
     let mut deep_fingerprints: HashMap<String, String> = HashMap::new();
 
     // Load checkpoint for resume support.
@@ -372,6 +386,10 @@ pub async fn scan(
             .cloned()
             .unwrap_or_default();
 
+        let pool_seeds = pool.as_ref()
+            .map(|p| crate::input_gen::pool_to_candidate_inputs(&analysis.params, p))
+            .unwrap_or_default();
+
         let explore_config = ExploreConfig {
             file,
             max_iterations: config.max_iterations_per_function,
@@ -381,6 +399,7 @@ pub async fn scan(
             setup_mode: crate::config::SetupMode::PerFunction,
             value_sources: vec![],
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
+            pool_seeds,
         };
 
         let exploration = explorer::explore_function(frontend, analysis, &explore_config).await?;
@@ -541,6 +560,18 @@ pub async fn parallel_scan(
             .await
             .map_err(ScanError::Frontend)?,
     );
+
+    // Load interesting input pool once for cross-function seed sharing.
+    let input_pool = config.pool_path.as_ref().and_then(|p| {
+        match crate::interesting_pool::load_pool(p) {
+            Ok(Some(pool)) => Some(Arc::new(pool)),
+            Ok(None) => None,
+            Err(e) => {
+                eprintln!("[shatter-core] failed to load pool: {e}");
+                None
+            }
+        }
+    });
 
     let behavior_maps: Arc<Mutex<HashMap<String, BehaviorMap>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -705,6 +736,10 @@ pub async fn parallel_scan(
                 .cloned()
                 .unwrap_or_default();
 
+            let pool_seeds = input_pool.as_ref()
+                .map(|p| crate::input_gen::pool_to_candidate_inputs(&analysis.params, p))
+                .unwrap_or_default();
+
             let explore_config = ExploreConfig {
                 file,
                 max_iterations: config.max_iterations_per_function,
@@ -714,6 +749,7 @@ pub async fn parallel_scan(
                 setup_mode: crate::config::SetupMode::PerFunction,
                 value_sources: vec![],
                 capabilities: crate::orchestrator::FrontendCapabilities::default(),
+                pool_seeds,
             };
 
             tasks.push((func_name.clone(), analysis.clone(), explore_config, mocks_used, callees, current_deep_fp));
@@ -1874,6 +1910,7 @@ mod tests {
             mock_overrides: HashMap::new(),
             resume_path: None,
             timeout_total: None,
+            pool_path: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -1939,6 +1976,7 @@ mod tests {
             mock_overrides: HashMap::new(),
             resume_path: None,
             timeout_total: None,
+            pool_path: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2000,6 +2038,7 @@ mod tests {
             mock_overrides: HashMap::new(),
             resume_path: None,
             timeout_total: None,
+            pool_path: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2077,6 +2116,7 @@ mod tests {
             mock_overrides: HashMap::new(),
             resume_path: None,
             timeout_total: Some(Duration::ZERO),
+            pool_path: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2138,6 +2178,7 @@ mod tests {
             mock_overrides: HashMap::new(),
             resume_path: None,
             timeout_total: None,
+            pool_path: None,
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -2185,6 +2226,7 @@ mod tests {
             mock_overrides: HashMap::new(),
             resume_path: None,
             timeout_total: None,
+            pool_path: None,
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -2215,6 +2257,7 @@ mod tests {
             mock_overrides: HashMap::new(),
             resume_path: None,
             timeout_total: None,
+            pool_path: None,
         };
 
         let plan = format_dry_run_plan(&analyses, &skipped, &config).expect("should succeed");
@@ -2236,6 +2279,7 @@ mod tests {
             mock_overrides: HashMap::new(),
             resume_path: None,
             timeout_total: None,
+            pool_path: None,
         };
 
         let plan = format_dry_run_plan(&[], &[], &config).expect("should succeed");
