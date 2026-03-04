@@ -24,6 +24,11 @@ For local dev: Rust toolchain, Node.js 22+, Go 1.24+, libclang. Run `./scripts/c
 
 See `/rust-conventions`, `/ts-conventions`, `/go-conventions` skills for detailed per-language standards.
 
+### File Format Standards
+
+- **YAML** is the format of choice for structured data and configuration files (not TOML, JSON, or XML)
+- **Markdown** is the format of choice for formatted text (documentation, plans, notes, specs)
+
 ### Inline Documentation
 
 Comments explain **why** or document **non-obvious contracts** — never restate what the code already says. If a name needs a comment, choose a better name first.
