@@ -25,6 +25,7 @@ import type {
 } from "./protocol.js";
 import { RECORD_FUNCTION, BRANCH_FUNCTION, MOCK_REGISTRY, MOCK_CALL_FUNCTION } from "./instrumentor.js";
 import type { MockConfig, ExternalCall } from "./protocol.js";
+import { REACT_MODULE_NAMES, getReactShim } from "./react-shim.js";
 
 export const DEFAULT_EXEC_TIMEOUT_MS = 15_000;
 
@@ -94,6 +95,32 @@ const consoleProxy = new Proxy(console, {
 });
 
 /**
+ * Wrap a require function to intercept React module imports for .tsx files.
+ * Non-.tsx files get the original require unchanged.
+ */
+function wrapRequireWithReactShim(
+  originalRequire: NodeRequire,
+  filePath: string | undefined,
+): NodeRequire {
+  if (!filePath || !filePath.endsWith(".tsx")) return originalRequire;
+
+  const wrapped = ((modulePath: string) => {
+    if (REACT_MODULE_NAMES.has(modulePath)) {
+      return getReactShim(modulePath);
+    }
+    return originalRequire(modulePath);
+  }) as NodeRequire;
+
+  // Preserve require.resolve and require.cache for compatibility
+  wrapped.resolve = originalRequire.resolve;
+  wrapped.cache = originalRequire.cache;
+  wrapped.extensions = originalRequire.extensions;
+  wrapped.main = originalRequire.main;
+
+  return wrapped;
+}
+
+/**
  * Transpile a TypeScript file to JavaScript and return the exports object.
  *
  * Results are cached by absolute file path.
@@ -115,7 +142,7 @@ function loadModule(filePath: string): Record<string, unknown> {
     fileName: absolutePath,
   });
 
-  const targetRequire = createRequire(absolutePath);
+  const targetRequire = wrapRequireWithReactShim(createRequire(absolutePath), absolutePath);
   const moduleExports: Record<string, unknown> = {};
   const moduleObj = { exports: moduleExports };
 
@@ -602,7 +629,8 @@ export async function executeInstrumented(
   // Build the execution context with capturing console and process
   const capturingConsole = createCapturingConsole(sideEffects);
   const capturingProc = createCapturingProcess(sideEffects);
-  const sandboxRequire = sourceFilePath ? createRequire(path.resolve(sourceFilePath)) : require;
+  const rawRequire = sourceFilePath ? createRequire(path.resolve(sourceFilePath)) : require;
+  const sandboxRequire = wrapRequireWithReactShim(rawRequire, sourceFilePath);
   const moduleExports: Record<string, unknown> = {};
   const moduleObj = { exports: moduleExports };
 
