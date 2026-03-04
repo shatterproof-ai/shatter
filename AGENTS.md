@@ -155,7 +155,11 @@ An issue is not complete until:
 
 Do not leave stale branches. Merge and delete promptly.
 
-**Never** combine work for multiple issues on one branch. If you discover additional work while on an issue branch, create a new issue and address it on a separate branch after merging the current one.
+**Never** combine work for multiple issues on one branch. If you discover
+additional work while on an issue branch, create a new issue and report it to
+the team lead (or note it for later) — do NOT implement it yourself. Address
+it on a separate branch after merging the current one. Scope creep across
+agents is the primary cause of duplicate commits and orphan branches.
 
 ## Git Workflow
 
@@ -168,6 +172,9 @@ Do not leave stale branches. Merge and delete promptly.
 - Merge to `main` directly — do NOT create pull requests
 - After merge, delete the feature branch both locally and remotely
 - Work is complete when changes are on `main` and pushed, not when a branch is pushed
+- **Never cherry-pick commits.** Cherry-picking creates duplicate commits with
+  different SHAs, making history confusing and leaving orphan branches that
+  appear unmerged. Always merge or rebase entire branches instead.
 
 ### Commit Early, Commit Often
 
@@ -249,6 +256,23 @@ team setup, plan review, merge, quality gates, and close protocol.
 6. Approved teammates implement, team lead merges results ONE AT A TIME
    (merge branch A → main → push, then merge branch B → main → push, etc.)
 ```
+
+**Preventing duplicate work across agents:**
+- The team lead must assign each issue to exactly one teammate. Never assign
+  the same issue to multiple agents.
+- Teammates must check `bd show <id>` before starting — if the issue is already
+  `in_progress` or `closed`, stop and ask the lead for a different assignment.
+- The team lead must mark issues `in_progress` (with assignee) before spawning
+  the teammate, not after.
+
+**Post-swarm cleanup:**
+After all teammates finish and their branches are merged, the team lead must:
+1. Delete all merged worktree branches: `git branch -d <branch>`
+2. Verify no orphan branches remain: `git branch --no-merged main`
+3. Clean up worktree directories if any remain under `.claude/worktrees/`
+
+Orphan branches from interrupted swarms create confusion — they appear unmerged
+but contain duplicate work that already landed on `main` via a different branch.
 
 ### Worktree isolation for teammates
 
