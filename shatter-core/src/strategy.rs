@@ -462,6 +462,43 @@ fn weighted_select(candidates: &[(usize, f64)], rng: &mut impl Rng) -> usize {
 }
 
 // ---------------------------------------------------------------------------
+// PoolSeedsStrategy — yields cross-function pool seeds in order
+// ---------------------------------------------------------------------------
+
+/// Exhaustible strategy that yields pre-collected pool seed inputs from
+/// cross-function seed sharing (`.shatter/seeds/pool.json`).
+pub struct PoolSeedsStrategy {
+    seeds: Vec<Vec<Value>>,
+    index: usize,
+}
+
+impl PoolSeedsStrategy {
+    pub fn new(seeds: Vec<Vec<Value>>) -> Self {
+        Self { seeds, index: 0 }
+    }
+}
+
+impl InputStrategy for PoolSeedsStrategy {
+    fn next(&mut self, _ctx: &StrategyContext) -> Option<Vec<Value>> {
+        if self.index < self.seeds.len() {
+            let v = self.seeds[self.index].clone();
+            self.index += 1;
+            Some(v)
+        } else {
+            None
+        }
+    }
+
+    fn name(&self) -> &str {
+        "pool"
+    }
+
+    fn estimated_size(&self) -> Option<u64> {
+        Some(self.seeds.len() as u64)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -931,5 +968,48 @@ mod tests {
         let s = UserProvidedStrategy::new(vec![vec![Value::from(1)], vec![Value::from(2)]]);
         assert_eq!(s.estimated_size(), Some(2));
         assert_eq!(s.name(), "user_provided");
+    }
+
+    // --- PoolSeedsStrategy tests ---
+
+    #[test]
+    fn pool_seeds_yields_in_order() {
+        let seeds = vec![
+            vec![Value::from(10), Value::from("a")],
+            vec![Value::from(20), Value::from("b")],
+            vec![Value::from(30), Value::from("c")],
+        ];
+        let mut strategy = PoolSeedsStrategy::new(seeds.clone());
+        let ctx = empty_ctx();
+
+        for expected in &seeds {
+            let got = strategy.next(&ctx).expect("should yield a value");
+            assert_eq!(&got, expected);
+        }
+    }
+
+    #[test]
+    fn pool_seeds_exhausts() {
+        let seeds = vec![vec![Value::from(1)], vec![Value::from(2)]];
+        let mut strategy = PoolSeedsStrategy::new(seeds);
+        let ctx = empty_ctx();
+
+        assert_eq!(strategy.estimated_size(), Some(2));
+        assert_eq!(strategy.name(), "pool");
+
+        assert!(strategy.next(&ctx).is_some());
+        assert!(strategy.next(&ctx).is_some());
+        assert!(strategy.next(&ctx).is_none());
+        // Stays exhausted on subsequent calls.
+        assert!(strategy.next(&ctx).is_none());
+    }
+
+    #[test]
+    fn pool_seeds_empty() {
+        let mut strategy = PoolSeedsStrategy::new(vec![]);
+        let ctx = empty_ctx();
+
+        assert_eq!(strategy.estimated_size(), Some(0));
+        assert!(strategy.next(&ctx).is_none());
     }
 }
