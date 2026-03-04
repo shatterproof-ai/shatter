@@ -1585,6 +1585,7 @@ dependencies = [
  "toml",
  "unicode-normalization",
  "z3",
+ "z3-sys",
 ]
 
 [[package]]
