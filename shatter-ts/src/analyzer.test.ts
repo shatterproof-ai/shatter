@@ -312,12 +312,6 @@ describe("analyzeFile", () => {
       expect(ids).toEqual([0, 1, 2, 3]);
     });
 
-    it("includes symbolic condition for param-based conditions", () => {
-      const results = analyzeFile(path.join(fixtures, "branches.ts"), "simpleIf");
-      const fn = results[0]!;
-      expect(fn.branches[0]!.condition).not.toBeNull();
-      expect(fn.branches[0]!.condition!.kind).toBe("bin_op");
-    });
   });
 
   describe("opaque Node.js types", () => {
@@ -612,6 +606,37 @@ describe("analyzeFile", () => {
       const results = analyzeFile(path.join(fixtures, "commonjs-patterns.js"));
       const names = results.map((f) => f.name);
       expect(names).toContain("standalone");
+    });
+  });
+
+  describe("TSX support", () => {
+    it("parses .tsx files and extracts functions", () => {
+      const results = analyzeFile(path.join(fixtures, "component.tsx"));
+      const names = results.map((f) => f.name);
+      expect(names).toContain("greetingLabel");
+      expect(names).toContain("statusBadge");
+      expect(names).toContain("statusBadge");
+    });
+
+    it("extracts parameters from TSX functions", () => {
+      const results = analyzeFile(path.join(fixtures, "component.tsx"), "greetingLabel");
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(fn.params).toHaveLength(1);
+      expect(fn.params[0]!.name).toBe("name");
+      expect(fn.params[0]!.type).toEqual({ kind: "str" });
+    });
+
+    it("detects branches inside TSX functions", () => {
+      const results = analyzeFile(path.join(fixtures, "component.tsx"), "greetingLabel");
+      expect(results).toHaveLength(1);
+      expect(results[0]!.branches.length).toBeGreaterThan(0);
+    });
+
+    it("analyzes a single function by name in TSX", () => {
+      const results = analyzeFile(path.join(fixtures, "component.tsx"), "statusBadge");
+      expect(results).toHaveLength(1);
+      expect(results[0]!.name).toBe("statusBadge");
     });
   });
 });

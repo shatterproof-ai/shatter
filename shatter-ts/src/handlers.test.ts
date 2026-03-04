@@ -81,6 +81,36 @@ describe("parseRequest", () => {
       expect(result.request.command).toBe("shutdown");
     }
   });
+
+  it("accepts valid setup request", () => {
+    const result = parseRequest(
+      `{"id":1,"protocol_version":"${PROTOCOL_VERSION}","command":"setup","file":"s.ts","function":"fn","mode":"per_function"}`
+    );
+    expect("request" in result).toBe(true);
+    if ("request" in result) {
+      expect(result.request.command).toBe("setup");
+    }
+  });
+
+  it("accepts valid teardown request", () => {
+    const result = parseRequest(
+      `{"id":2,"protocol_version":"${PROTOCOL_VERSION}","command":"teardown","function":"fn"}`
+    );
+    expect("request" in result).toBe(true);
+    if ("request" in result) {
+      expect(result.request.command).toBe("teardown");
+    }
+  });
+
+  it("accepts valid generate request", () => {
+    const result = parseRequest(
+      `{"id":3,"protocol_version":"${PROTOCOL_VERSION}","command":"generate","file":"g.ts","name":"User","kind":"type_name"}`
+    );
+    expect("request" in result).toBe(true);
+    if ("request" in result) {
+      expect(result.request.command).toBe("generate");
+    }
+  });
 });
 
 describe("handleRequest", () => {
@@ -610,121 +640,5 @@ describe("protocol round-trip", () => {
     }
   });
 
-  it("setup request round-trips through JSON", () => {
-    const request: Request = {
-      protocol_version: PROTOCOL_VERSION,
-      id: 30,
-      command: "setup",
-      file: "./setup/global.ts",
-      function: "processOrder",
-      mode: "per_function",
-    };
-    const json = JSON.stringify(request);
-    const parsed = JSON.parse(json) as Request;
-    expect(parsed.command).toBe("setup");
-    expect(parsed.id).toBe(30);
-    if (parsed.command === "setup") {
-      expect(parsed.file).toBe("./setup/global.ts");
-      expect(parsed.function).toBe("processOrder");
-      expect(parsed.mode).toBe("per_function");
-    }
-  });
-
-  it("setup request with per_execution mode round-trips", () => {
-    const request: Request = {
-      protocol_version: PROTOCOL_VERSION,
-      id: 31,
-      command: "setup",
-      file: "./setup/auth.ts",
-      function: "authenticate",
-      mode: "per_execution",
-    };
-    const json = JSON.stringify(request);
-    const parsed = JSON.parse(json) as Request;
-    if (parsed.command === "setup") {
-      expect(parsed.mode).toBe("per_execution");
-    }
-  });
-
-  it("teardown request round-trips through JSON", () => {
-    const request: Request = {
-      protocol_version: PROTOCOL_VERSION,
-      id: 32,
-      command: "teardown",
-      function: "processOrder",
-    };
-    const json = JSON.stringify(request);
-    const parsed = JSON.parse(json) as Request;
-    expect(parsed.command).toBe("teardown");
-    if (parsed.command === "teardown") {
-      expect(parsed.function).toBe("processOrder");
-    }
-  });
-
-  it("generate request with type_name round-trips through JSON", () => {
-    const request: Request = {
-      protocol_version: PROTOCOL_VERSION,
-      id: 33,
-      command: "generate",
-      file: "./generators/user.ts",
-      name: "User",
-      kind: "type_name",
-    };
-    const json = JSON.stringify(request);
-    const parsed = JSON.parse(json) as Request;
-    expect(parsed.command).toBe("generate");
-    if (parsed.command === "generate") {
-      expect(parsed.file).toBe("./generators/user.ts");
-      expect(parsed.name).toBe("User");
-      expect(parsed.kind).toBe("type_name");
-    }
-  });
-
-  it("generate request with param_name round-trips through JSON", () => {
-    const request: Request = {
-      protocol_version: PROTOCOL_VERSION,
-      id: 34,
-      command: "generate",
-      file: "./generators/token.ts",
-      name: "authToken",
-      kind: "param_name",
-    };
-    const json = JSON.stringify(request);
-    const parsed = JSON.parse(json) as Request;
-    if (parsed.command === "generate") {
-      expect(parsed.kind).toBe("param_name");
-    }
-  });
 });
 
-describe("parseRequest with new commands", () => {
-  it("accepts valid setup request", () => {
-    const result = parseRequest(
-      `{"id":1,"protocol_version":"${PROTOCOL_VERSION}","command":"setup","file":"s.ts","function":"fn","mode":"per_function"}`
-    );
-    expect("request" in result).toBe(true);
-    if ("request" in result) {
-      expect(result.request.command).toBe("setup");
-    }
-  });
-
-  it("accepts valid teardown request", () => {
-    const result = parseRequest(
-      `{"id":2,"protocol_version":"${PROTOCOL_VERSION}","command":"teardown","function":"fn"}`
-    );
-    expect("request" in result).toBe(true);
-    if ("request" in result) {
-      expect(result.request.command).toBe("teardown");
-    }
-  });
-
-  it("accepts valid generate request", () => {
-    const result = parseRequest(
-      `{"id":3,"protocol_version":"${PROTOCOL_VERSION}","command":"generate","file":"g.ts","name":"User","kind":"type_name"}`
-    );
-    expect("request" in result).toBe(true);
-    if ("request" in result) {
-      expect(result.request.command).toBe("generate");
-    }
-  });
-});

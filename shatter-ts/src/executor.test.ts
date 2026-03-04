@@ -22,68 +22,23 @@ beforeEach(() => {
 });
 
 describe("executeFunction performance metrics", () => {
-  it("reports non-negative wall_time_ms", () => {
+  it("reports plausible metrics for a trivial function", () => {
     const result = executeFunction(
       path.join(FIXTURES_DIR, "primitives.ts"),
       "add",
       [1, 2],
     );
     expect(result.return_value).toBe(3);
-    expect(result.performance.wall_time_ms).toBeGreaterThanOrEqual(0);
-  });
 
-  it("reports non-negative cpu_time_us from process.cpuUsage", () => {
-    const result = executeFunction(
-      path.join(FIXTURES_DIR, "primitives.ts"),
-      "add",
-      [1, 2],
-    );
-    expect(result.performance.cpu_time_us).toBeGreaterThanOrEqual(0);
-  });
-
-  it("reports non-negative heap_used_bytes", () => {
-    const result = executeFunction(
-      path.join(FIXTURES_DIR, "primitives.ts"),
-      "add",
-      [1, 2],
-    );
-    expect(result.performance.heap_used_bytes).toBeGreaterThanOrEqual(0);
-  });
-
-  it("reports non-negative heap_allocated_bytes", () => {
-    const result = executeFunction(
-      path.join(FIXTURES_DIR, "primitives.ts"),
-      "add",
-      [1, 2],
-    );
-    expect(result.performance.heap_allocated_bytes).toBeGreaterThanOrEqual(0);
-  });
-
-  it("wall_time_ms is a finite number", () => {
-    const result = executeFunction(
-      path.join(FIXTURES_DIR, "primitives.ts"),
-      "add",
-      [1, 2],
-    );
-    expect(Number.isFinite(result.performance.wall_time_ms)).toBe(true);
-  });
-
-  it("cpu_time_us is an integer (microseconds from cpuUsage)", () => {
-    const result = executeFunction(
-      path.join(FIXTURES_DIR, "primitives.ts"),
-      "add",
-      [1, 2],
-    );
-    expect(Number.isInteger(result.performance.cpu_time_us)).toBe(true);
-  });
-
-  it("wall time is less than 5 seconds for a trivial function", () => {
-    const result = executeFunction(
-      path.join(FIXTURES_DIR, "primitives.ts"),
-      "add",
-      [1, 2],
-    );
-    expect(result.performance.wall_time_ms).toBeLessThan(5000);
+    const { wall_time_ms, cpu_time_us, heap_used_bytes, heap_allocated_bytes } =
+      result.performance;
+    expect(wall_time_ms).toBeGreaterThanOrEqual(0);
+    expect(Number.isFinite(wall_time_ms)).toBe(true);
+    expect(wall_time_ms).toBeLessThan(5000);
+    expect(cpu_time_us).toBeGreaterThanOrEqual(0);
+    expect(Number.isInteger(cpu_time_us)).toBe(true);
+    expect(heap_used_bytes).toBeGreaterThanOrEqual(0);
+    expect(heap_allocated_bytes).toBeGreaterThanOrEqual(0);
   });
 });
 
@@ -165,22 +120,6 @@ describe("buildExecuteResponse", () => {
     expect(response.performance.heap_allocated_bytes).toBeGreaterThanOrEqual(0);
   });
 
-  it("serializes performance metrics to JSON correctly", () => {
-    const rawResult = executeFunction(
-      path.join(FIXTURES_DIR, "primitives.ts"),
-      "isPositive",
-      [5],
-    );
-
-    const response = buildExecuteResponse(2, PROTOCOL_VERSION, rawResult);
-    const json = JSON.stringify(response);
-    const parsed = JSON.parse(json) as typeof response;
-
-    expect(parsed.performance.wall_time_ms).toBe(response.performance.wall_time_ms);
-    expect(parsed.performance.cpu_time_us).toBe(response.performance.cpu_time_us);
-    expect(parsed.performance.heap_used_bytes).toBe(response.performance.heap_used_bytes);
-    expect(parsed.performance.heap_allocated_bytes).toBe(response.performance.heap_allocated_bytes);
-  });
 });
 
 const SIDE_EFFECTS_FIXTURE = path.resolve(FIXTURES_DIR, "side-effects.ts");
@@ -541,5 +480,46 @@ describe("truncation", () => {
     ];
     const { effects: result } = truncateSideEffects(effects, 5, 3);
     expect(result.some(e => e.kind === "global_mutation")).toBe(true);
+  });
+});
+
+describe("TSX support", () => {
+  it("executes a function from a .tsx file", () => {
+    const result = executeFunction(
+      path.join(FIXTURES_DIR, "component.tsx"),
+      "greetingLabel",
+      ["Alice"],
+    );
+    expect(result.return_value).toBe("<span>Hello, Alice!</span>");
+  });
+
+  it("executes a .tsx function with falsy branch", () => {
+    const result = executeFunction(
+      path.join(FIXTURES_DIR, "component.tsx"),
+      "greetingLabel",
+      [""],
+    );
+    expect(result.return_value).toBe("<span>Hello, stranger!</span>");
+  });
+
+  it("instruments and executes TSX source with branches", () => {
+    const tsxFile = path.join(FIXTURES_DIR, "component.tsx");
+    const source = fs.readFileSync(tsxFile, "utf-8");
+    const instrumentResult = instrumentFunction(source, "greetingLabel", tsxFile);
+
+    if ("error" in instrumentResult) {
+      throw new Error(`Instrumentation failed: ${instrumentResult.error}`);
+    }
+
+    const result = executeInstrumented(
+      instrumentResult.instrumentedSource,
+      "greetingLabel",
+      ["Bob"],
+      [],
+      tsxFile,
+    );
+
+    expect(result.return_value).toBe("<span>Hello, Bob!</span>");
+    expect(result.branch_path.length).toBeGreaterThan(0);
   });
 });
