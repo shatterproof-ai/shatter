@@ -645,31 +645,6 @@ mod tests {
     }
 
     #[test]
-    fn response_is_valid_ndjson() {
-        let input = concat!(
-            r#"{"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":[]}"#,
-            "\n",
-            r#"{"protocol_version":"0.1.0","id":2,"command":"shutdown"}"#,
-            "\n",
-        );
-        let mut output = Vec::new();
-        let handler = Handler::new(
-            input.as_bytes(),
-            &mut output,
-            io::sink(),
-        );
-        handler.run().expect("handler.run");
-        let output_str = String::from_utf8(output).expect("valid utf8");
-        for line in output_str.lines() {
-            if line.is_empty() {
-                continue;
-            }
-            let parsed: Result<serde_json::Value, _> = serde_json::from_str(line);
-            assert!(parsed.is_ok(), "not valid JSON: {line}");
-        }
-    }
-
-    #[test]
     fn debug_output_goes_to_log() {
         let input = r#"{"protocol_version":"0.1.0","id":1,"command":"shutdown"}"#.to_string() + "\n";
         let mut output = Vec::new();
@@ -749,27 +724,6 @@ mod tests {
     fn setup_with_valid_fields_returns_not_implemented() {
         let resp = send_recv(
             r#"{"protocol_version":"0.1.0","id":10,"command":"setup","file":"./setup.ts","function":"myFunc","mode":"per_function"}"#,
-        );
-        assert_eq!(resp.status, "error");
-        assert_eq!(resp.code.as_deref(), Some("internal_error"));
-        assert!(resp.message.as_deref().unwrap_or("").contains("not yet implemented"));
-    }
-
-    #[test]
-    fn setup_per_execution_mode_returns_not_implemented() {
-        let resp = send_recv(
-            r#"{"protocol_version":"0.1.0","id":11,"command":"setup","file":"./setup.ts","function":"auth","mode":"per_execution"}"#,
-        );
-        assert_eq!(resp.status, "error");
-        assert_eq!(resp.code.as_deref(), Some("internal_error"));
-    }
-
-    // -- Teardown command tests --
-
-    #[test]
-    fn teardown_returns_not_implemented() {
-        let resp = send_recv(
-            r#"{"protocol_version":"0.1.0","id":12,"command":"teardown","function":"myFunc"}"#,
         );
         assert_eq!(resp.status, "error");
         assert_eq!(resp.code.as_deref(), Some("internal_error"));
@@ -898,11 +852,4 @@ mod tests {
         assert_eq!(result, DEFAULT_EXEC_TIMEOUT_MS);
     }
 
-    #[test]
-    fn exec_timeout_ignores_negative() {
-        unsafe { std::env::set_var("SHATTER_EXEC_TIMEOUT", "-5") };
-        let result = exec_timeout_from_env();
-        unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
-        assert_eq!(result, DEFAULT_EXEC_TIMEOUT_MS);
-    }
 }

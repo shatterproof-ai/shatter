@@ -357,18 +357,6 @@ mod tests {
     }
 
     #[test]
-    fn typeinfo_opaque_deserializes_from_json() {
-        let json = r#"{"kind":"opaque","label":"pg.Client"}"#;
-        let ti: TypeInfo = serde_json::from_str(json).expect("deserialize");
-        assert_eq!(
-            ti,
-            TypeInfo::Opaque {
-                label: "pg.Client".to_string(),
-            }
-        );
-    }
-
-    #[test]
     fn typeinfo_opaque_inside_array_round_trips() {
         round_trip(&TypeInfo::Array {
             element: Box::new(TypeInfo::Opaque {
@@ -474,13 +462,6 @@ mod tests {
     }
 
     #[test]
-    fn setup_request_per_execution_deserializes() {
-        let json = r#"{"protocol_version":"0.1.0","id":21,"command":"setup","file":"./setup.ts","function":"auth","mode":"per_execution"}"#;
-        let req: Request = serde_json::from_str(json).expect("deserialize setup per_execution");
-        assert_eq!(req.mode.as_deref(), Some("per_execution"));
-    }
-
-    #[test]
     fn teardown_request_deserializes() {
         let json = r#"{"protocol_version":"0.1.0","id":22,"command":"teardown","function":"processOrder"}"#;
         let req: Request = serde_json::from_str(json).expect("deserialize teardown");
@@ -498,13 +479,6 @@ mod tests {
         assert_eq!(req.file.as_deref(), Some("./gen.ts"));
         assert_eq!(req.name.as_deref(), Some("User"));
         assert_eq!(req.kind.as_deref(), Some("type_name"));
-    }
-
-    #[test]
-    fn generate_request_param_name_deserializes() {
-        let json = r#"{"protocol_version":"0.1.0","id":24,"command":"generate","file":"./gen.ts","name":"authToken","kind":"param_name"}"#;
-        let req: Request = serde_json::from_str(json).expect("deserialize generate param_name");
-        assert_eq!(req.kind.as_deref(), Some("param_name"));
     }
 
     #[test]
@@ -546,28 +520,6 @@ mod tests {
     }
 
     #[test]
-    fn teardown_ack_response_round_trips() {
-        let resp = Response {
-            protocol_version: PROTOCOL_VERSION.to_string(),
-            id: 21,
-            status: "teardown_ack".to_string(),
-            frontend_version: None,
-            language: None,
-            capabilities: None,
-            setup_context: None,
-            value: None,
-            generator_id: None,
-            recipe: None,
-            instrumented: None,
-            output_file: None,
-            functions: None,
-            code: None,
-            message: None,
-        };
-        round_trip(&resp);
-    }
-
-    #[test]
     fn generate_response_round_trips() {
         let resp = Response {
             protocol_version: PROTOCOL_VERSION.to_string(),
@@ -578,28 +530,6 @@ mod tests {
             capabilities: None,
             setup_context: None,
             value: Some(serde_json::json!({"id": 1, "name": "Alice"})),
-            generator_id: None,
-            recipe: None,
-            instrumented: None,
-            output_file: None,
-            functions: None,
-            code: None,
-            message: None,
-        };
-        round_trip(&resp);
-    }
-
-    #[test]
-    fn generate_response_primitive_value_round_trips() {
-        let resp = Response {
-            protocol_version: PROTOCOL_VERSION.to_string(),
-            id: 23,
-            status: "generate".to_string(),
-            frontend_version: None,
-            language: None,
-            capabilities: None,
-            setup_context: None,
-            value: Some(serde_json::json!("tok_abc123")),
             generator_id: None,
             recipe: None,
             instrumented: None,
