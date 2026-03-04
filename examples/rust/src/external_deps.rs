@@ -59,6 +59,37 @@ pub fn extract_field(json: &Value, field: &str) -> Result<String, String> {
         .ok_or_else(|| "field is not a string".to_string())
 }
 
+/// ParseKeyValue — 5 branches using regex capture groups to parse "key=value" pairs.
+/// Exercises Regex::captures() and capture group extraction — real regex engine work,
+/// not just a type import.
+///
+/// EXPECTED BRANCHES (5):
+///   1. input is empty                        → Err("empty input")
+///   2. input doesn't match key=value format  → Err("no match")
+///   3. key is empty (e.g. "=foo")            → Err("empty key")
+///   4. value is empty (e.g. "foo=")          → Ok(("foo", None))
+///   5. both key and value present            → Ok(("key", Some("value")))
+pub fn parse_key_value(input: &str) -> Result<(String, Option<String>), String> {
+    if input.is_empty() {
+        return Err("empty input".to_string());
+    }
+
+    let re = Regex::new(r"^([^=]*)=(.*)$").expect("static regex");
+    let caps = re.captures(input).ok_or_else(|| "no match".to_string())?;
+
+    let key = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+    if key.is_empty() {
+        return Err("empty key".to_string());
+    }
+
+    let value = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+    if value.is_empty() {
+        Ok((key.to_string(), None))
+    } else {
+        Ok((key.to_string(), Some(value.to_string())))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,6 +151,34 @@ mod tests {
         assert_eq!(
             extract_field(&json!({"name": "alice"}), "name"),
             Ok("alice".into())
+        );
+    }
+
+    #[test]
+    fn test_parse_key_value_empty() {
+        assert_eq!(parse_key_value(""), Err("empty input".into()));
+    }
+
+    #[test]
+    fn test_parse_key_value_no_equals() {
+        assert_eq!(parse_key_value("hello"), Err("no match".into()));
+    }
+
+    #[test]
+    fn test_parse_key_value_empty_key() {
+        assert_eq!(parse_key_value("=bar"), Err("empty key".into()));
+    }
+
+    #[test]
+    fn test_parse_key_value_empty_value() {
+        assert_eq!(parse_key_value("foo="), Ok(("foo".into(), None)));
+    }
+
+    #[test]
+    fn test_parse_key_value_full() {
+        assert_eq!(
+            parse_key_value("host=localhost"),
+            Ok(("host".into(), Some("localhost".into())))
         );
     }
 }
