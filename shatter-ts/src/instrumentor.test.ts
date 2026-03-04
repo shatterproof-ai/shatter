@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-non-null-assertion */
 import ts from "typescript";
-import { instrumentFunction, buildSymExpr, RECORD_FUNCTION, BRANCH_FUNCTION, MOCK_REGISTRY, MOCK_CALL_FUNCTION } from "./instrumentor";
-import type { SymExpr, BranchDecision, SymConstraint, MockConfig } from "./protocol";
+import { instrumentFunction, buildSymExpr, RECORD_FUNCTION, BRANCH_FUNCTION, SCOPE_EVENT_FUNCTION, MOCK_REGISTRY, MOCK_CALL_FUNCTION } from "./instrumentor";
+import type { SymExpr, BranchDecision, SymConstraint, MockConfig, TraceEvent, ScopeEvent } from "./protocol";
 
 /** Transpile TypeScript to JavaScript so it can be executed with new Function(). */
 function transpileToJs(tsSource: string): string {
@@ -22,11 +22,13 @@ function executeAndRecord(instrumentedSource: string, functionName: string, args
   const fn = new Function(
     RECORD_FUNCTION,
     BRANCH_FUNCTION,
+    SCOPE_EVENT_FUNCTION,
     `${jsSource}\nreturn ${functionName}(${args.map((a) => JSON.stringify(a)).join(", ")});`,
   );
   fn(
     (line: number) => recorded.push(line),
     (_id: number, _line: number, cond: boolean, _sym: unknown) => cond,
+    () => {},
   );
   return recorded;
 }
@@ -36,13 +38,15 @@ function executeAndCollect(
   instrumentedSource: string,
   functionName: string,
   args: unknown[],
-): { lines: number[]; branches: BranchDecision[]; returnValue: unknown } {
+): { lines: number[]; branches: BranchDecision[]; returnValue: unknown; scopeEvents: TraceEvent[] } {
   const lines: number[] = [];
   const branches: BranchDecision[] = [];
+  const scopeEvents: TraceEvent[] = [];
   const jsSource = transpileToJs(instrumentedSource);
   const fn = new Function(
     RECORD_FUNCTION,
     BRANCH_FUNCTION,
+    SCOPE_EVENT_FUNCTION,
     `${jsSource}\nreturn ${functionName}(${args.map((a) => JSON.stringify(a)).join(", ")});`,
   );
   const returnValue = fn(
@@ -54,8 +58,14 @@ function executeAndCollect(
       branches.push({ branch_id: branchId, line, taken: cond, constraint });
       return cond;
     },
+    (scopeId: number, kind: string) => {
+      const event: ScopeEvent = kind.startsWith("loop")
+        ? { kind: kind as "loop_enter" | "loop_exit", loop_id: scopeId }
+        : { kind: kind as "call_enter" | "call_exit", call_site_id: scopeId };
+      scopeEvents.push({ type: "scope", event });
+    },
   );
-  return { lines, branches, returnValue };
+  return { lines, branches, returnValue, scopeEvents };
 }
 
 describe("instrumentFunction", () => {
@@ -1061,6 +1071,7 @@ function doStuff(x: number): number {
     const fn = new Function(
       RECORD_FUNCTION,
       BRANCH_FUNCTION,
+      SCOPE_EVENT_FUNCTION,
       MOCK_REGISTRY,
       MOCK_CALL_FUNCTION,
       `${jsSource}\nreturn doStuff(5);`,
@@ -1068,6 +1079,7 @@ function doStuff(x: number): number {
     const returnValue = fn(
       () => {},
       (_id: number, _line: number, cond: boolean) => cond,
+      () => {},
       mockRegistry,
       (mod: string, sym: string, args: unknown[], ret: unknown) => {
         mockCalls.push({ module: mod, symbol: sym, args: [...args], returnValue: ret });
@@ -1131,5 +1143,139 @@ export function greetingLabel(name: string): string {
         expect(resultTs.branchCount).toBe(resultTsx.branchCount);
       }
     });
+  });
+});
+
+describe("scope events", () => {
+  it("while loop produces loop_enter/loop_exit per iteration", () => {
+    const source = `function countdown(n: number): number {
+  let result = 0;
+  while (n > 0) {
+    result += n;
+    n--;
+  }
+  return result;
+}`;
+    const result = instrumentFunction(source, "countdown");
+    expect("error" in result).toBe(false);
+    if ("error" in result) return;
+
+    const { scopeEvents } = executeAndCollect(result.instrumentedSource, "countdown", [3]);
+    const loopEvents = scopeEvents.filter(
+      (e): e is { type: "scope"; event: ScopeEvent } =>
+        e.type === "scope" && (e.event.kind === "loop_enter" || e.event.kind === "loop_exit"),
+    );
+    const enters = loopEvents.filter((e) => e.event.kind === "loop_enter");
+    const exits = loopEvents.filter((e) => e.event.kind === "loop_exit");
+    expect(enters).toHaveLength(3);
+    expect(exits).toHaveLength(3);
+  });
+
+  it("for-of loop produces scope markers", () => {
+    const source = `function sumArray(items: number[]): number {
+  let total = 0;
+  for (const item of items) {
+    total += item;
+  }
+  return total;
+}`;
+    const result = instrumentFunction(source, "sumArray");
+    expect("error" in result).toBe(false);
+    if ("error" in result) return;
+
+    const { scopeEvents } = executeAndCollect(result.instrumentedSource, "sumArray", [[1, 2, 3]]);
+    const loopEvents = scopeEvents.filter(
+      (e): e is { type: "scope"; event: ScopeEvent } =>
+        e.type === "scope" && (e.event.kind === "loop_enter" || e.event.kind === "loop_exit"),
+    );
+    expect(loopEvents.filter((e) => e.event.kind === "loop_enter")).toHaveLength(3);
+    expect(loopEvents.filter((e) => e.event.kind === "loop_exit")).toHaveLength(3);
+  });
+
+  it("nested loops get distinct loop_ids", () => {
+    const source = `function nested(rows: number, cols: number): number {
+  let count = 0;
+  for (let i = 0; i < rows; i++) {
+    for (let j = 0; j < cols; j++) {
+      count++;
+    }
+  }
+  return count;
+}`;
+    const result = instrumentFunction(source, "nested");
+    expect("error" in result).toBe(false);
+    if ("error" in result) return;
+
+    const { scopeEvents } = executeAndCollect(result.instrumentedSource, "nested", [2, 3]);
+    const loopEnters = scopeEvents.filter(
+      (e): e is { type: "scope"; event: { kind: "loop_enter"; loop_id: number } } =>
+        e.type === "scope" && e.event.kind === "loop_enter",
+    );
+    const loopIds = new Set(loopEnters.map((e) => e.event.loop_id));
+    expect(loopIds.size).toBe(2);
+  });
+
+  it("function body gets call_enter/call_exit scope events", () => {
+    const source = `function simple(x: number): number {
+  return x + 1;
+}`;
+    const result = instrumentFunction(source, "simple");
+    expect("error" in result).toBe(false);
+    if ("error" in result) return;
+
+    const { scopeEvents } = executeAndCollect(result.instrumentedSource, "simple", [5]);
+    const callEvents = scopeEvents.filter(
+      (e): e is { type: "scope"; event: ScopeEvent } =>
+        e.type === "scope" && (e.event.kind === "call_enter" || e.event.kind === "call_exit"),
+    );
+    expect(callEvents.length).toBeGreaterThanOrEqual(2);
+    expect(callEvents[0]!.event.kind).toBe("call_enter");
+    expect(callEvents[callEvents.length - 1]!.event.kind).toBe("call_exit");
+  });
+
+  it("inline arrow callback in .map() produces call_enter/call_exit markers", () => {
+    const source = `function doubleAll(items: number[]): number[] {
+  return items.map((x) => {
+    if (x > 0) {
+      return x * 2;
+    }
+    return 0;
+  });
+}`;
+    const result = instrumentFunction(source, "doubleAll");
+    expect("error" in result).toBe(false);
+    if ("error" in result) return;
+
+    const { scopeEvents } = executeAndCollect(result.instrumentedSource, "doubleAll", [[1, -2, 3]]);
+    const callEnters = scopeEvents.filter(
+      (e): e is { type: "scope"; event: { kind: "call_enter"; call_site_id: number } } =>
+        e.type === "scope" && e.event.kind === "call_enter",
+    );
+    // At least 1 (top-level function) + 3 (callback invocations) = 4 call_enters
+    expect(callEnters.length).toBeGreaterThanOrEqual(4);
+    const callSiteIds = new Set(callEnters.map((e) => e.event.call_site_id));
+    expect(callSiteIds.size).toBeGreaterThanOrEqual(2);
+  });
+
+  it("do-while loop produces scope markers", () => {
+    const source = `function doWhileTest(n: number): number {
+  let result = 0;
+  do {
+    result += n;
+    n--;
+  } while (n > 0);
+  return result;
+}`;
+    const result = instrumentFunction(source, "doWhileTest");
+    expect("error" in result).toBe(false);
+    if ("error" in result) return;
+
+    const { scopeEvents } = executeAndCollect(result.instrumentedSource, "doWhileTest", [3]);
+    const loopEvents = scopeEvents.filter(
+      (e): e is { type: "scope"; event: ScopeEvent } =>
+        e.type === "scope" && (e.event.kind === "loop_enter" || e.event.kind === "loop_exit"),
+    );
+    expect(loopEvents.filter((e) => e.event.kind === "loop_enter")).toHaveLength(3);
+    expect(loopEvents.filter((e) => e.event.kind === "loop_exit")).toHaveLength(3);
   });
 });

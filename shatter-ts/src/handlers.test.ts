@@ -8,6 +8,7 @@ import {
   type SetupResponse,
   type TeardownAckResponse,
   type GenerateResponse,
+  type ExecuteResponse,
 } from "./protocol.js";
 
 describe("parseRequest", () => {
@@ -764,6 +765,41 @@ describe("protocol round-trip", () => {
     if (parsed.status === "generate") {
       expect(parsed.generator_id).toBe("wasm-user-gen");
       expect(parsed.recipe).toEqual({ seed: 42, variant: "admin" });
+    }
+  });
+
+  it("execute response with scope_events round-trips through JSON", () => {
+    const response: ExecuteResponse = {
+      protocol_version: PROTOCOL_VERSION,
+      id: 30,
+      status: "execute",
+      return_value: 42,
+      thrown_error: null,
+      branch_path: [],
+      lines_executed: [1, 2],
+      calls_to_external: [],
+      path_constraints: [],
+      side_effects: [],
+      performance: { wall_time_ms: 1, cpu_time_us: 1000, heap_used_bytes: 0, heap_allocated_bytes: 0 },
+      scope_events: [
+        { type: "scope", event: { kind: "loop_enter", loop_id: 0 } },
+        { type: "branch", decision: { branch_id: 0, line: 3, taken: true, constraint: { kind: "unknown", hint: "test" } } },
+        { type: "scope", event: { kind: "loop_exit", loop_id: 0 } },
+        { type: "scope", event: { kind: "call_enter", call_site_id: 1 } },
+        { type: "scope", event: { kind: "call_exit", call_site_id: 1 } },
+      ],
+    };
+    const json = JSON.stringify(response);
+    const parsed = JSON.parse(json) as Response;
+    expect(parsed.status).toBe("execute");
+    if (parsed.status === "execute") {
+      expect(parsed.scope_events).toHaveLength(5);
+      expect(parsed.scope_events![0]).toEqual({ type: "scope", event: { kind: "loop_enter", loop_id: 0 } });
+      expect(parsed.scope_events![1]).toEqual({
+        type: "branch",
+        decision: { branch_id: 0, line: 3, taken: true, constraint: { kind: "unknown", hint: "test" } },
+      });
+      expect(parsed.scope_events![3]).toEqual({ type: "scope", event: { kind: "call_enter", call_site_id: 1 } });
     }
   });
 

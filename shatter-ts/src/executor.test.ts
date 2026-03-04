@@ -12,7 +12,7 @@ import {
 import { instrumentFunction } from "./instrumentor.js";
 import * as fs from "node:fs";
 import { PROTOCOL_VERSION } from "./protocol.js";
-import type { SideEffect } from "./protocol.js";
+import type { SideEffect, TraceEvent } from "./protocol.js";
 
 const FIXTURES_DIR = path.resolve(__dirname, "__fixtures__");
 const EXAMPLES_DIR = path.resolve(__dirname, "../../examples/typescript/src");
@@ -655,5 +655,77 @@ describe("React component execution", () => {
     const result = await executeFunction(tsFixture, "add", [3, 4]);
     expect(result.return_value).toBe(7);
     expect(result.thrown_error).toBeNull();
+  });
+});
+
+describe("scope events in execution", () => {
+  it("loop function returns scope_events with loop_enter/loop_exit", async () => {
+    const source = `export function countdown(n: number): number {
+  let result = 0;
+  while (n > 0) {
+    result += n;
+    n--;
+  }
+  return result;
+}`;
+    const instrumentResult = instrumentFunction(source, "countdown");
+    if ("error" in instrumentResult) throw new Error(instrumentResult.error);
+
+    const result = await executeInstrumented(instrumentResult.instrumentedSource, "countdown", [3]);
+    expect(result.return_value).toBe(6);
+    expect(result.scope_events).toBeDefined();
+    expect(result.scope_events.length).toBeGreaterThan(0);
+
+    const loopEnters = result.scope_events.filter(
+      (e: TraceEvent) => e.type === "scope" && e.event.kind === "loop_enter",
+    );
+    const loopExits = result.scope_events.filter(
+      (e: TraceEvent) => e.type === "scope" && e.event.kind === "loop_exit",
+    );
+    expect(loopEnters).toHaveLength(3);
+    expect(loopExits).toHaveLength(3);
+  });
+
+  it("inline callback in .map() produces call_enter/call_exit in scope_events", async () => {
+    const source = `export function doublePositive(items: number[]): number[] {
+  return items.map((x) => {
+    if (x > 0) {
+      return x * 2;
+    }
+    return 0;
+  });
+}`;
+    const instrumentResult = instrumentFunction(source, "doublePositive");
+    if ("error" in instrumentResult) throw new Error(instrumentResult.error);
+
+    const result = await executeInstrumented(instrumentResult.instrumentedSource, "doublePositive", [[1, -2, 3]]);
+    expect(result.return_value).toEqual([2, 0, 6]);
+    expect(result.scope_events).toBeDefined();
+
+    const callEnters = result.scope_events.filter(
+      (e: TraceEvent) => e.type === "scope" && e.event.kind === "call_enter",
+    );
+    // At least 1 (top-level function) + 3 (callback invocations) = 4 call_enters
+    expect(callEnters.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it("buildExecuteResponse includes scope_events", () => {
+    const raw = {
+      return_value: 42,
+      thrown_error: null,
+      performance: { wall_time_ms: 1, cpu_time_us: 1000, heap_used_bytes: 0, heap_allocated_bytes: 0 },
+      branch_path: [],
+      path_constraints: [],
+      lines_executed: [],
+      side_effects: [],
+      calls_to_external: [],
+      scope_events: [
+        { type: "scope" as const, event: { kind: "call_enter" as const, call_site_id: 0 } },
+        { type: "scope" as const, event: { kind: "call_exit" as const, call_site_id: 0 } },
+      ],
+    };
+    const response = buildExecuteResponse(1, "0.6.0", raw);
+    expect(response.scope_events).toHaveLength(2);
+    expect(response.scope_events![0]).toEqual({ type: "scope", event: { kind: "call_enter", call_site_id: 0 } });
   });
 });

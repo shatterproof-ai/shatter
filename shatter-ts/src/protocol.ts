@@ -165,6 +165,7 @@ export interface ExecuteResponse extends BaseResponse {
   side_effects: SideEffect[];
   performance: PerformanceMetrics;
   capture_truncation?: TruncationInfo;
+  scope_events?: TraceEvent[];
 }
 
 export interface SetupResponse extends BaseResponse {
@@ -313,6 +314,16 @@ export interface BranchDecision {
   taken: boolean;
   constraint: SymConstraint;
 }
+
+export type ScopeEvent =
+  | { kind: "loop_enter"; loop_id: number }
+  | { kind: "loop_exit"; loop_id: number }
+  | { kind: "call_enter"; call_site_id: number }
+  | { kind: "call_exit"; call_site_id: number };
+
+export type TraceEvent =
+  | { type: "branch"; decision: BranchDecision }
+  | { type: "scope"; event: ScopeEvent };
 
 export type SymConstraint =
   | { kind: "expr"; expr: SymExpr }

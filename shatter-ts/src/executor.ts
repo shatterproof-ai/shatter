@@ -22,8 +22,10 @@ import type {
   SymExpr,
   SideEffect,
   TruncationInfo,
+  TraceEvent,
+  ScopeEvent,
 } from "./protocol.js";
-import { RECORD_FUNCTION, BRANCH_FUNCTION, MOCK_REGISTRY, MOCK_CALL_FUNCTION } from "./instrumentor.js";
+import { RECORD_FUNCTION, BRANCH_FUNCTION, SCOPE_EVENT_FUNCTION, MOCK_REGISTRY, MOCK_CALL_FUNCTION } from "./instrumentor.js";
 import type { MockConfig, ExternalCall } from "./protocol.js";
 import { REACT_MODULE_NAMES, getReactShim } from "./react-shim.js";
 
@@ -307,6 +309,7 @@ interface RawExecuteResult {
   lines_executed: number[];
   side_effects: SideEffect[];
   calls_to_external: ExternalCall[];
+  scope_events: TraceEvent[];
 }
 
 /**
@@ -549,6 +552,7 @@ export async function executeFunction(
     lines_executed: [],
     performance: metrics.performance,
     calls_to_external: [],
+    scope_events: [],
   };
 }
 
@@ -582,6 +586,7 @@ export async function executeInstrumented(
   const branchDecisions: BranchDecision[] = [];
   const sideEffects: SideEffect[] = [];
   const externalCalls: ExternalCall[] = [];
+  const scopeEvents: TraceEvent[] = [];
 
   // Define the runtime callbacks
   const recordFn = (line: number): void => {
@@ -598,14 +603,23 @@ export async function executeInstrumented(
       ? { kind: "expr", expr: symExpr }
       : { kind: "unknown", hint: "unsupported expression" };
 
-    branchDecisions.push({
+    const decision: BranchDecision = {
       branch_id: branchId,
       line,
       taken: conditionResult,
       constraint,
-    });
+    };
+    branchDecisions.push(decision);
+    scopeEvents.push({ type: "branch", decision });
 
     return conditionResult;
+  };
+
+  const scopeEventFn = (scopeId: number, kind: string): void => {
+    const event: ScopeEvent = kind.startsWith("loop")
+      ? { kind: kind as "loop_enter" | "loop_exit", loop_id: scopeId }
+      : { kind: kind as "call_enter" | "call_exit", call_site_id: scopeId };
+    scopeEvents.push({ type: "scope", event });
   };
 
   // Build mock registry from MockConfig array
@@ -664,6 +678,7 @@ export async function executeInstrumented(
     ...(sourceFilePath ? { __filename: sourceFilePath, __dirname: path.dirname(sourceFilePath) } : {}),
     [RECORD_FUNCTION]: recordFn,
     [BRANCH_FUNCTION]: branchFn,
+    [SCOPE_EVENT_FUNCTION]: scopeEventFn,
     [MOCK_REGISTRY]: mockRegistry,
     [MOCK_CALL_FUNCTION]: mockCallFn,
   });
@@ -731,6 +746,7 @@ export async function executeInstrumented(
     lines_executed: linesExecuted,
     performance: metrics.performance,
     calls_to_external: externalCalls,
+    scope_events: scopeEvents,
   };
 }
 
@@ -757,6 +773,7 @@ export function buildExecuteResponse(
     path_constraints: rawResult.path_constraints,
     side_effects: effects,
     performance: rawResult.performance,
+    scope_events: rawResult.scope_events,
   };
 
   if (truncation) {

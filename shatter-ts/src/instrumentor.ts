@@ -50,12 +50,20 @@ export const RECORD_FUNCTION = "__shatter_record";
  */
 export const BRANCH_FUNCTION = "__shatter_branch";
 
+/**
+ * The name of the scope-event recording function inserted into instrumented code.
+ * Signature: __shatter_scope_event(scopeId, kind) → void
+ */
+export const SCOPE_EVENT_FUNCTION = "__shatter_scope_event";
+
 /** Mutable state threaded through the instrumentation pass. */
 interface InstrumentationContext {
   sourceFile: ts.SourceFile;
   factory: ts.NodeFactory;
   paramNames: Set<string>;
   nextBranchId: number;
+  nextLoopId: number;
+  nextCallSiteId: number;
   /** Maps local variable names to their symbolic expressions derived from parameters. */
   dataFlowMap: Map<string, SymExpr>;
 }
@@ -431,13 +439,18 @@ function createInstrumentationTransformer(
         factory: context.factory,
         paramNames,
         nextBranchId: 0,
+        nextLoopId: 0,
+        nextCallSiteId: 0,
         dataFlowMap,
       };
 
       const visitor = (node: ts.Node): ts.Node => {
         if (ts.isFunctionDeclaration(node) && node.name?.text === targetFunctionName && node.body) {
           ctx.nextBranchId = 0;
-          const newBody = instrumentBlock(node.body, ctx);
+          ctx.nextLoopId = 0;
+          ctx.nextCallSiteId = 1;
+          const instrumentedBody = instrumentBlock(node.body, ctx);
+          const newBody = wrapFunctionBodyWithCallScope(instrumentedBody, 0, context.factory);
           branchState.nextBranchId = ctx.nextBranchId;
           return context.factory.updateFunctionDeclaration(
             node,
@@ -461,7 +474,10 @@ function createInstrumentationTransformer(
               ctx.nextBranchId = 0;
 
               if (ts.isArrowFunction(decl.initializer) && ts.isBlock(decl.initializer.body)) {
-                const newBody = instrumentBlock(decl.initializer.body, ctx);
+                ctx.nextLoopId = 0;
+                ctx.nextCallSiteId = 1;
+                const instrumentedBody = instrumentBlock(decl.initializer.body, ctx);
+                const newBody = wrapFunctionBodyWithCallScope(instrumentedBody, 0, context.factory);
                 branchState.nextBranchId = ctx.nextBranchId;
                 const newArrow = context.factory.updateArrowFunction(
                   decl.initializer,
@@ -487,7 +503,10 @@ function createInstrumentationTransformer(
               }
 
               if (ts.isFunctionExpression(decl.initializer) && decl.initializer.body) {
-                const newBody = instrumentBlock(decl.initializer.body, ctx);
+                ctx.nextLoopId = 0;
+                ctx.nextCallSiteId = 1;
+                const instrumentedBody = instrumentBlock(decl.initializer.body, ctx);
+                const newBody = wrapFunctionBodyWithCallScope(instrumentedBody, 0, context.factory);
                 branchState.nextBranchId = ctx.nextBranchId;
                 const newFn = context.factory.updateFunctionExpression(
                   decl.initializer,
@@ -612,7 +631,7 @@ function instrumentStatement(
       condition = wrapBranchCondition(condition, line, ctx);
     }
     const body = ensureBlock(stmt.statement, ctx.factory);
-    const instrumentedBody = instrumentBlock(body, ctx);
+    const instrumentedBody = wrapLoopBody(instrumentBlock(body, ctx), ctx);
     return ctx.factory.updateForStatement(
       stmt,
       stmt.initializer,
@@ -624,13 +643,13 @@ function instrumentStatement(
 
   if (ts.isForInStatement(stmt)) {
     const body = ensureBlock(stmt.statement, ctx.factory);
-    const instrumentedBody = instrumentBlock(body, ctx);
+    const instrumentedBody = wrapLoopBody(instrumentBlock(body, ctx), ctx);
     return ctx.factory.updateForInStatement(stmt, stmt.initializer, stmt.expression, instrumentedBody);
   }
 
   if (ts.isForOfStatement(stmt)) {
     const body = ensureBlock(stmt.statement, ctx.factory);
-    const instrumentedBody = instrumentBlock(body, ctx);
+    const instrumentedBody = wrapLoopBody(instrumentBlock(body, ctx), ctx);
     return ctx.factory.updateForOfStatement(
       stmt,
       stmt.awaitModifier,
@@ -644,7 +663,7 @@ function instrumentStatement(
     const line = ctx.sourceFile.getLineAndCharacterOfPosition(stmt.getStart(ctx.sourceFile)).line + 1;
     const wrappedCondition = wrapBranchCondition(stmt.expression, line, ctx);
     const body = ensureBlock(stmt.statement, ctx.factory);
-    const instrumentedBody = instrumentBlock(body, ctx);
+    const instrumentedBody = wrapLoopBody(instrumentBlock(body, ctx), ctx);
     return ctx.factory.updateWhileStatement(stmt, wrappedCondition, instrumentedBody);
   }
 
@@ -652,7 +671,7 @@ function instrumentStatement(
     const line = ctx.sourceFile.getLineAndCharacterOfPosition(stmt.expression.getStart(ctx.sourceFile)).line + 1;
     const wrappedCondition = wrapBranchCondition(stmt.expression, line, ctx);
     const body = ensureBlock(stmt.statement, ctx.factory);
-    const instrumentedBody = instrumentBlock(body, ctx);
+    const instrumentedBody = wrapLoopBody(instrumentBlock(body, ctx), ctx);
     return ctx.factory.updateDoStatement(stmt, instrumentedBody, wrappedCondition);
   }
 
@@ -677,7 +696,120 @@ function instrumentStatement(
     return ctx.factory.updateTryStatement(stmt, tryBlock, catchClause, finallyBlock);
   }
 
+  // For expression statements, return statements, and variable declarations,
+  // instrument inline callbacks in call arguments.
+  if (ts.isExpressionStatement(stmt)) {
+    const newExpr = instrumentExpressionCallbacks(stmt.expression, ctx);
+    if (newExpr !== stmt.expression) {
+      return ctx.factory.updateExpressionStatement(stmt, newExpr);
+    }
+  }
+
+  if (ts.isReturnStatement(stmt) && stmt.expression) {
+    const newExpr = instrumentExpressionCallbacks(stmt.expression, ctx);
+    if (newExpr !== stmt.expression) {
+      return ctx.factory.updateReturnStatement(stmt, newExpr);
+    }
+  }
+
+  if (ts.isVariableStatement(stmt)) {
+    let changed = false;
+    const newDecls = stmt.declarationList.declarations.map((decl) => {
+      if (decl.initializer) {
+        const newInit = instrumentExpressionCallbacks(decl.initializer, ctx);
+        if (newInit !== decl.initializer) {
+          changed = true;
+          return ctx.factory.updateVariableDeclaration(decl, decl.name, decl.exclamationToken, decl.type, newInit);
+        }
+      }
+      return decl;
+    });
+    if (changed) {
+      const newList = ctx.factory.updateVariableDeclarationList(stmt.declarationList, newDecls);
+      return ctx.factory.updateVariableStatement(stmt, stmt.modifiers, newList);
+    }
+  }
+
   return stmt;
+}
+
+/**
+ * Recursively visit expressions, wrapping inline callback arguments
+ * (arrow functions and function expressions) with call_enter/call_exit scope events.
+ */
+function instrumentExpressionCallbacks(
+  expr: ts.Expression,
+  ctx: InstrumentationContext,
+): ts.Expression {
+  if (ts.isCallExpression(expr)) {
+    let changed = false;
+    const newArgs = expr.arguments.map((arg) => {
+      if (ts.isArrowFunction(arg) && ts.isBlock(arg.body)) {
+        changed = true;
+        return wrapCallbackWithScope(arg, ctx);
+      }
+      if (ts.isFunctionExpression(arg) && arg.body) {
+        changed = true;
+        return wrapCallbackFnExprWithScope(arg, ctx);
+      }
+      const newArg = instrumentExpressionCallbacks(arg, ctx);
+      if (newArg !== arg) changed = true;
+      return newArg;
+    });
+    const newCallExpr = instrumentExpressionCallbacks(expr.expression, ctx);
+    if (changed || newCallExpr !== expr.expression) {
+      return ctx.factory.updateCallExpression(expr, newCallExpr, expr.typeArguments, newArgs);
+    }
+  }
+
+  if (ts.isPropertyAccessExpression(expr)) {
+    const newExpr = instrumentExpressionCallbacks(expr.expression, ctx);
+    if (newExpr !== expr.expression) {
+      return ctx.factory.updatePropertyAccessExpression(expr, newExpr, expr.name);
+    }
+  }
+
+  return expr;
+}
+
+/** Wrap an inline arrow function callback with call_enter/call_exit and instrument its body. */
+function wrapCallbackWithScope(
+  arrow: ts.ArrowFunction,
+  ctx: InstrumentationContext,
+): ts.ArrowFunction {
+  const callSiteId = ctx.nextCallSiteId++;
+  const body = arrow.body as ts.Block;
+  const instrumentedBody = instrumentBlock(body, ctx);
+  const wrappedBody = wrapFunctionBodyWithCallScope(instrumentedBody, callSiteId, ctx.factory);
+  return ctx.factory.updateArrowFunction(
+    arrow,
+    arrow.modifiers,
+    arrow.typeParameters,
+    arrow.parameters,
+    arrow.type,
+    arrow.equalsGreaterThanToken,
+    wrappedBody,
+  );
+}
+
+/** Wrap an inline function expression callback with call_enter/call_exit and instrument its body. */
+function wrapCallbackFnExprWithScope(
+  fn: ts.FunctionExpression,
+  ctx: InstrumentationContext,
+): ts.FunctionExpression {
+  const callSiteId = ctx.nextCallSiteId++;
+  const instrumentedBody = instrumentBlock(fn.body, ctx);
+  const wrappedBody = wrapFunctionBodyWithCallScope(instrumentedBody, callSiteId, ctx.factory);
+  return ctx.factory.updateFunctionExpression(
+    fn,
+    fn.modifiers,
+    fn.asteriskToken,
+    fn.name,
+    fn.typeParameters,
+    fn.parameters,
+    fn.type,
+    wrappedBody,
+  );
 }
 
 /**
@@ -1126,6 +1258,62 @@ function rewriteImportForMocks(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Create a `__shatter_scope_event(scopeId, kind);` expression statement.
+ */
+function createScopeEventCall(
+  factory: ts.NodeFactory,
+  scopeId: number,
+  kind: string,
+): ts.ExpressionStatement {
+  return factory.createExpressionStatement(
+    factory.createCallExpression(
+      factory.createIdentifier(SCOPE_EVENT_FUNCTION),
+      undefined,
+      [
+        factory.createNumericLiteral(scopeId),
+        factory.createStringLiteral(kind),
+      ],
+    ),
+  );
+}
+
+/**
+ * Wrap an instrumented loop body with loop_enter/loop_exit scope events.
+ * Events are placed inside the body so each iteration emits its own pair.
+ */
+function wrapLoopBody(
+  instrumentedBody: ts.Block,
+  ctx: InstrumentationContext,
+): ts.Block {
+  const loopId = ctx.nextLoopId++;
+  const enter = createScopeEventCall(ctx.factory, loopId, "loop_enter");
+  const exit = createScopeEventCall(ctx.factory, loopId, "loop_exit");
+  return ctx.factory.updateBlock(instrumentedBody, [
+    enter,
+    ...instrumentedBody.statements,
+    exit,
+  ]);
+}
+
+/**
+ * Wrap a function body in try/finally with call_enter/call_exit scope events.
+ * call_enter fires at entry, call_exit fires in finally (even on throw/return).
+ */
+function wrapFunctionBodyWithCallScope(
+  body: ts.Block,
+  callSiteId: number,
+  factory: ts.NodeFactory,
+): ts.Block {
+  const enter = createScopeEventCall(factory, callSiteId, "call_enter");
+  const tryFinally = factory.createTryStatement(
+    factory.createBlock([...body.statements], true),
+    undefined,
+    factory.createBlock([createScopeEventCall(factory, callSiteId, "call_exit")], true),
+  );
+  return factory.createBlock([enter, tryFinally], true);
+}
 
 /**
  * Wrap a single statement in a block if it isn't already one.
