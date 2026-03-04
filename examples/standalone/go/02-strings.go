@@ -15,7 +15,7 @@
 //   4. mode == "repeat" AND count > 0  -> input repeated count times
 //   5. unknown mode      -> input unchanged
 
-package examples
+package main
 
 import "strings"
 

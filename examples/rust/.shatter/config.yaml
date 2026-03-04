@@ -13,16 +13,6 @@ defaults:
 # ── Per-function overrides ───────────────────────────────────────────────
 # Keys are "relative/path.rs:function_name" patterns (globs supported).
 functions:
-  # Simple function — fewer iterations are sufficient
-  "src/arithmetic.rs:classify_number":
-    max_iterations: 50
-    inputs: ./inputs/classify_number/candidates.json
-
-  # Complex multi-step validation with Result chaining — needs more iterations
-  "src/error_propagation.rs:validate_and_process":
-    max_iterations: 300
-    timeout: 120
-
   # Skip trait-dependent functions — requires a trait object (DataStore)
   # that Shatter cannot construct automatically
   "src/traits.rs:authenticate":

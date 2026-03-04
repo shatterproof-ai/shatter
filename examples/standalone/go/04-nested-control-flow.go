@@ -32,7 +32,7 @@
 //  11. error + other                             -> "invalid-transition"
 //  12. done state reached                        -> "done"
 
-package examples
+package main
 
 import (
 	"errors"

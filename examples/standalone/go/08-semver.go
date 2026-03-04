@@ -38,7 +38,7 @@
 //  18. wildcard "x" or "*" in range             → always true
 //  19. unknown operator                         → error: "unknown range operator"
 
-package examples
+package main
 
 import (
 	"errors"

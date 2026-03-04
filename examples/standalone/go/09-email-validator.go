@@ -24,7 +24,7 @@
 //  19. quoted local part (starts+ends with ")   → valid, quoted
 //  20. standard valid address                   → valid
 
-package examples
+package main
 
 import "strings"
 

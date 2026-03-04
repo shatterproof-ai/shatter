@@ -85,7 +85,7 @@ run_cmd() {
     if [[ "$DRY_RUN" == true ]]; then
         echo "${DIM}  (dry-run: skipped)${RESET}"
     else
-        if "$@"; then
+        if "$@" </dev/null; then
             true
         else
             local rc=$?
@@ -114,24 +114,25 @@ step() {
 }
 
 # ─── Example targets ──────────────────────────────────────────────────
+# Standalone examples: self-contained files with no project dependencies.
 
 EXAMPLES=(
-    "examples/typescript/src/01-arithmetic.ts:classifyNumber"
-    "examples/typescript/src/02-strings.ts:classifyString"
-    "examples/typescript/src/03-objects.ts:categorizeUser"
-    "examples/typescript/src/04-errors.ts:safeDivide"
+    "examples/standalone/ts/01-arithmetic.ts:classifyNumber"
+    "examples/standalone/ts/02-strings.ts:classifyString"
+    "examples/standalone/ts/03-objects.ts:categorizeUser"
+    "examples/standalone/ts/04-errors.ts:safeDivide"
 )
 
 GO_EXAMPLES=(
-    "examples/go/01-arithmetic.go:ClassifyNumber"
-    "examples/go/02-strings.go:ClassifyString"
-    "examples/go/03-errors.go:SafeDivide"
+    "examples/standalone/go/01-arithmetic.go:ClassifyNumber"
+    "examples/standalone/go/02-strings.go:ClassifyString"
+    "examples/standalone/go/03-errors.go:SafeDivide"
 )
 
 RUST_EXAMPLES=(
-    "examples/rust/src/arithmetic.rs:classify_number"
-    "examples/rust/src/strings.rs:classify_greeting"
-    "examples/rust/src/error_propagation.rs:parse_config_line"
+    "examples/standalone/rust/arithmetic.rs:classify_number"
+    "examples/standalone/rust/strings.rs:classify_greeting"
+    "examples/standalone/rust/error_propagation.rs:parse_config_line"
 )
 
 TOTAL=41
@@ -167,10 +168,10 @@ step 4 $TOTAL "Show Behavior Clusters" \
     "Group executions by branch path into distinct behaviors" \
     $SHATTER explore --show-clusters "${EXAMPLES[@]}"
 
-# Stage 5: Scan (dependency-ordered exploration)
-step 5 $TOTAL "Scan in Dependency Order" \
-    "Test functions leaf-first, using behavior maps as mocks for callers" \
-    $SHATTER scan examples/typescript/src
+# Stage 5: Scan standalone TS files
+step 5 $TOTAL "Scan Standalone TypeScript" \
+    "Scan standalone TypeScript files (no project dependencies needed)" \
+    $SHATTER scan examples/standalone/ts
 
 # Stage 6: Cache behavior maps
 step 6 $TOTAL "Explore with Disk Cache" \
@@ -197,7 +198,7 @@ step 10 $TOTAL "Explore Rust Functions" \
     "Concolic execution on Rust: generate inputs to cover all branches" \
     $SHATTER explore "${RUST_EXAMPLES[@]}"
 
-# Stage 11: Scan Rust examples
+# Stage 11: Scan Rust examples (project with deps)
 step 11 $TOTAL "Scan Rust Examples" \
     "Scan Rust example directory in dependency order" \
     $SHATTER scan examples/rust/src
@@ -206,17 +207,17 @@ step 11 $TOTAL "Scan Rust Examples" \
 step 12 $TOTAL "Export Generated Tests" \
     "Generate Jest test files from explored behavior maps" \
     $SHATTER export-tests --framework jest --module-path "./src/01-arithmetic" \
-    "examples/typescript/src/01-arithmetic.ts:classifyNumber"
+    "examples/standalone/ts/01-arithmetic.ts:classifyNumber"
 
 # Stage 13: Run (full pipeline, analyze only)
 step 13 $TOTAL "Run: Analyze Only" \
-    "Discover, analyze, and report on all files in the examples directory" \
-    $SHATTER run --analyze-only examples/typescript/src
+    "Discover, analyze, and report on all files in the standalone TS directory" \
+    $SHATTER run --analyze-only examples/standalone/ts
 
 # Stage 14: Run (full pipeline with exploration)
 step 14 $TOTAL "Run: Full Pipeline" \
     "Discover, analyze, explore, and generate a full report" \
-    $SHATTER run --max-iterations 10 --timeout 60 examples/typescript/src
+    $SHATTER run --max-iterations 10 --timeout 60 examples/standalone/ts
 
 # Stage 15: Log level verbosity (debug)
 step 15 $TOTAL "Verbose Output with Debug Log Level" \
@@ -242,7 +243,7 @@ step 18 $TOTAL "Performance Stats" \
 # Stage 19: Parallel scan with worker pool
 step 19 $TOTAL "Parallel Scan" \
     "Scan with multiple worker processes for faster exploration" \
-    $SHATTER scan --parallelism 2 --timeout-per-fn 30 examples/typescript/src
+    $SHATTER scan --parallelism 2 --timeout-per-fn 30 examples/standalone/ts
 
 # Stage 20: Execution timeout
 step 20 $TOTAL "Execution Timeout" \
@@ -257,7 +258,7 @@ step 21 $TOTAL "Go Execution Timeout" \
 # Stage 22: Scan with total timeout
 step 22 $TOTAL "Scan Total Timeout" \
     "Bound overall scan wall-clock time with --timeout-total" \
-    $SHATTER scan --timeout-total 120 --timeout-per-fn 30 examples/typescript/src
+    $SHATTER scan --timeout-total 120 --timeout-per-fn 30 examples/standalone/ts
 
 # Stage 23: Memory limit
 step 23 $TOTAL "Memory Limit" \
@@ -290,17 +291,17 @@ step 27 $TOTAL "Explore Without Boundary Values" \
 step 28 $TOTAL "Emit Tests from Scan" \
     "Generate Jest test files from behavior maps discovered during scan" \
     $SHATTER scan --emit-tests jest --output /tmp/shatter-demo-tests \
-    examples/typescript/src
+    examples/standalone/ts
 
 # Stage 29: Markdown scan report
 step 29 $TOTAL "Markdown Scan Report" \
     "Generate a human-readable markdown report alongside JSON" \
-    $SHATTER scan --format=markdown examples/typescript/src
+    $SHATTER scan --format=markdown examples/standalone/ts
 
 # Stage 30: Scan dry-run
 step 30 $TOTAL "Scan Dry Run" \
     "Preview which files would be scanned without executing" \
-    $SHATTER scan --dry-run --language typescript examples/typescript/src
+    $SHATTER scan --dry-run --language typescript examples/standalone/ts
 
 # Stage 31: Invariant detection
 step 31 $TOTAL "Invariant Detection" \
@@ -311,18 +312,18 @@ step 31 $TOTAL "Invariant Detection" \
 step 32 $TOTAL "Setup + Generators via Config" \
     "Explore with setup/teardown lifecycle and custom type generators from .shatter/config.yaml" \
     $SHATTER explore --config examples/typescript/.shatter/config.yaml \
-    "examples/typescript/src/03-objects.ts:categorizeUser"
+    "examples/standalone/ts/03-objects.ts:categorizeUser"
 
 # Stage 33: Setup + generators with debug logging
 step 33 $TOTAL "Setup + Generators (Debug)" \
     "Show setup/teardown and generator lifecycle with --log-level debug" \
     $SHATTER explore --config examples/typescript/.shatter/config.yaml \
-    --log-level debug "examples/typescript/src/03-objects.ts:categorizeUser"
+    --log-level debug "examples/standalone/ts/03-objects.ts:categorizeUser"
 
 # Stage 34: File-level explore (all exported functions)
 step 34 $TOTAL "File-Level Explore" \
     "Explore all exported functions in a file by passing just the file path" \
-    $SHATTER explore examples/typescript/src/01-arithmetic.ts
+    $SHATTER explore examples/standalone/ts/01-arithmetic.ts
 
 # Stage 35: Concolic exploration (Z3-backed)
 step 35 $TOTAL "Concolic Exploration (Z3)" \
@@ -357,6 +358,6 @@ step 40 $TOTAL "Clean Re-exploration" \
 # Stage 41: Stale command
 step 41 $TOTAL "Stale Check" \
     "Check which functions are stale relative to an existing spec file" \
-    $SHATTER stale "examples/typescript/src/01-arithmetic.ts" /tmp/shatter-spec.json
+    $SHATTER stale "examples/standalone/ts/01-arithmetic.ts" /tmp/shatter-spec.json
 
 echo "${BOLD}${GREEN}Walkthrough complete.${RESET}"

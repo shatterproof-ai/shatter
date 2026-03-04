@@ -40,7 +40,7 @@
 //  17. end of string                            → return total
 //  18. lowercase input                          → uppercased before processing
 
-package examples
+package main
 
 import (
 	"errors"

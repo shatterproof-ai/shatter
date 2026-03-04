@@ -31,23 +31,6 @@ defaults:
 # ── Per-function overrides ───────────────────────────────────────────────
 # Keys are "relative/path.ts:functionName" patterns (globs supported).
 functions:
-  # Simple function — fewer iterations are fine
-  "src/01-arithmetic.ts:classifyNumber":
-    max_iterations: 50
-    inputs: ./inputs/classifyNumber/candidates.json
-
-  # Complex multi-field validation — needs more iterations to cover
-  # all JWT format/expiry/scope branches
-  "src/07-auth-validation.ts:validateJwt":
-    max_iterations: 500
-    timeout: 120
-    inputs: ./inputs/validateJwt/candidates.json
-
-  # Object-oriented setup example: run setup/teardown around each execution
-  "src/03-objects.ts:categorizeUser":
-    setup: ./setup/global.ts
-    setup_mode: per_execution
-
   # Skip functions that depend entirely on opaque types (database connections,
   # sockets) — Shatter cannot generate meaningful inputs for these.
   "src/11-opaque-types.ts:processWithDbConnection":

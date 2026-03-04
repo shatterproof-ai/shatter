@@ -18,7 +18,7 @@
 //  13. has "viewer" + non-read                   -> "denied: viewer-readonly"
 //  14. no matching role                          -> "denied: no matching role"
 
-package examples
+package main
 
 // User represents an authenticated user with roles.
 type User struct {
