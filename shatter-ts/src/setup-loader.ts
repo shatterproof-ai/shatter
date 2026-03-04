@@ -36,6 +36,7 @@ function loadAndTranspile(filePath: string): Record<string, unknown> {
       module: ts.ModuleKind.CommonJS,
       esModuleInterop: true,
       strict: true,
+      jsx: ts.JsxEmit.ReactJSX,
     },
     fileName: absolutePath,
   });

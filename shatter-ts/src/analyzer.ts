@@ -40,6 +40,7 @@ export function analyzeFile(filePath: string, functionName?: string | null): Fun
     strict: true,
     noEmit: true,
     allowJs: true,
+    jsx: ts.JsxEmit.ReactJSX,
   });
 
   const sourceFile = program.getSourceFile(absolutePath);

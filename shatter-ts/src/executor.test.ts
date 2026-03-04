@@ -543,3 +543,44 @@ describe("truncation", () => {
     expect(result.some(e => e.kind === "global_mutation")).toBe(true);
   });
 });
+
+describe("TSX support", () => {
+  it("executes a function from a .tsx file", () => {
+    const result = executeFunction(
+      path.join(FIXTURES_DIR, "component.tsx"),
+      "greetingLabel",
+      ["Alice"],
+    );
+    expect(result.return_value).toBe("<span>Hello, Alice!</span>");
+  });
+
+  it("executes a .tsx function with falsy branch", () => {
+    const result = executeFunction(
+      path.join(FIXTURES_DIR, "component.tsx"),
+      "greetingLabel",
+      [""],
+    );
+    expect(result.return_value).toBe("<span>Hello, stranger!</span>");
+  });
+
+  it("instruments and executes TSX source with branches", () => {
+    const tsxFile = path.join(FIXTURES_DIR, "component.tsx");
+    const source = fs.readFileSync(tsxFile, "utf-8");
+    const instrumentResult = instrumentFunction(source, "greetingLabel", tsxFile);
+
+    if ("error" in instrumentResult) {
+      throw new Error(`Instrumentation failed: ${instrumentResult.error}`);
+    }
+
+    const result = executeInstrumented(
+      instrumentResult.instrumentedSource,
+      "greetingLabel",
+      ["Bob"],
+      [],
+      tsxFile,
+    );
+
+    expect(result.return_value).toBe("<span>Hello, Bob!</span>");
+    expect(result.branch_path.length).toBeGreaterThan(0);
+  });
+});
