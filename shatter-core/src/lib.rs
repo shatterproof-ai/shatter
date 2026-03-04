@@ -11,6 +11,7 @@ pub mod cache;
 pub mod canonical_json;
 pub mod checkpoint;
 pub mod config;
+pub mod crypto_registry;
 pub mod core_sample;
 pub mod coverage_metrics;
 pub mod clustering;

@@ -1,0 +1,722 @@
+# Shatter Crypto API Registry
+#
+# Static mapping of known cryptographic functions for boundary detection.
+# Frontends match detected ExternalDependency calls against this registry
+# to identify encryption/decryption boundaries.
+#
+# Fields:
+#   language     — "typescript", "go", or "rust"
+#   package      — module/package path as reported by frontend analyzers
+#   symbol       — function or method name within the package
+#   direction    — "encrypt", "decrypt", or "both" (authenticated encryption)
+#   param_roles  — maps parameter position (as string key) to role
+#   output       — what the return value represents
+#
+# param_roles values: "algorithm", "key", "data", "iv", "nonce", "tag", "aad"
+# output values: "ciphertext", "plaintext", "key", "hash", "signature", "verified"
+#
+# Users can override or extend this registry via .shatter/crypto-registry.toml
+
+# =============================================================================
+# Node.js / TypeScript
+# =============================================================================
+
+# --- node:crypto (built-in) ---
+
+[[entries]]
+language = "typescript"
+package = "crypto"
+symbol = "createCipheriv"
+direction = "encrypt"
+output = "ciphertext"
+
+[entries.param_roles]
+"0" = "algorithm"
+"1" = "key"
+"2" = "iv"
+
+[[entries]]
+language = "typescript"
+package = "crypto"
+symbol = "createDecipheriv"
+direction = "decrypt"
+output = "plaintext"
+
+[entries.param_roles]
+"0" = "algorithm"
+"1" = "key"
+"2" = "iv"
+
+[[entries]]
+language = "typescript"
+package = "crypto"
+symbol = "publicEncrypt"
+direction = "encrypt"
+output = "ciphertext"
+
+[entries.param_roles]
+"0" = "key"
+"1" = "data"
+
+[[entries]]
+language = "typescript"
+package = "crypto"
+symbol = "privateDecrypt"
+direction = "decrypt"
+output = "plaintext"
+
+[entries.param_roles]
+"0" = "key"
+"1" = "data"
+
+[[entries]]
+language = "typescript"
+package = "crypto"
+symbol = "privateEncrypt"
+direction = "encrypt"
+output = "ciphertext"
+
+[entries.param_roles]
+"0" = "key"
+"1" = "data"
+
+[[entries]]
+language = "typescript"
+package = "crypto"
+symbol = "publicDecrypt"
+direction = "decrypt"
+output = "plaintext"
+
+[entries.param_roles]
+"0" = "key"
+"1" = "data"
+
+# --- Web Crypto API (subtle) ---
+
+[[entries]]
+language = "typescript"
+package = "crypto"
+symbol = "subtle.encrypt"
+direction = "encrypt"
+output = "ciphertext"
+
+[entries.param_roles]
+"0" = "algorithm"
+"1" = "key"
+"2" = "data"
+
+[[entries]]
+language = "typescript"
+package = "crypto"
+symbol = "subtle.decrypt"
+direction = "decrypt"
+output = "plaintext"
+
+[entries.param_roles]
+"0" = "algorithm"
+"1" = "key"
+"2" = "data"
+
+# --- crypto-js ---
+
+[[entries]]
+language = "typescript"
+package = "crypto-js"
+symbol = "AES.encrypt"
+direction = "encrypt"
+output = "ciphertext"
+
+[entries.param_roles]
+"0" = "data"
+"1" = "key"
+
+[[entries]]
+language = "typescript"
+package = "crypto-js"
+symbol = "AES.decrypt"
+direction = "decrypt"
+output = "plaintext"
+
+[entries.param_roles]
+"0" = "data"
+"1" = "key"
+
+[[entries]]
+language = "typescript"
+package = "crypto-js"
+symbol = "DES.encrypt"
+direction = "encrypt"
+output = "ciphertext"
+
+[entries.param_roles]
+"0" = "data"
+"1" = "key"
+
+[[entries]]
+language = "typescript"
+package = "crypto-js"
+symbol = "DES.decrypt"
+direction = "decrypt"
+output = "plaintext"
+
+[entries.param_roles]
+"0" = "data"
+"1" = "key"
+
+[[entries]]
+language = "typescript"
+package = "crypto-js"
+symbol = "TripleDES.encrypt"
+direction = "encrypt"
+output = "ciphertext"
+
+[entries.param_roles]
+"0" = "data"
+"1" = "key"
+
+[[entries]]
+language = "typescript"
+package = "crypto-js"
+symbol = "TripleDES.decrypt"
+direction = "decrypt"
+output = "plaintext"
+
+[entries.param_roles]
+"0" = "data"
+"1" = "key"
+
+[[entries]]
+language = "typescript"
+package = "crypto-js"
+symbol = "Rabbit.encrypt"
+direction = "encrypt"
+output = "ciphertext"
+
+[entries.param_roles]
+"0" = "data"
+"1" = "key"
+
+[[entries]]
+language = "typescript"
+package = "crypto-js"
+symbol = "Rabbit.decrypt"
+direction = "decrypt"
+output = "plaintext"
+
+[entries.param_roles]
+"0" = "data"
+"1" = "key"
+
+[[entries]]
+language = "typescript"
+package = "crypto-js"
+symbol = "RC4.encrypt"
+direction = "encrypt"
+output = "ciphertext"
+
+[entries.param_roles]
+"0" = "data"
+"1" = "key"
+
+[[entries]]
+language = "typescript"
+package = "crypto-js"
+symbol = "RC4.decrypt"
+direction = "decrypt"
+output = "plaintext"
+
+[entries.param_roles]
+"0" = "data"
+"1" = "key"
+
+# --- tweetnacl ---
+
+[[entries]]
+language = "typescript"
+package = "tweetnacl"
+symbol = "secretbox"
+direction = "encrypt"
+output = "ciphertext"
+
+[entries.param_roles]
+"0" = "data"
+"1" = "nonce"
+"2" = "key"
+
+[[entries]]
+language = "typescript"
+package = "tweetnacl"
+symbol = "secretbox.open"
+direction = "decrypt"
+output = "plaintext"
+
+[entries.param_roles]
+"0" = "data"
+"1" = "nonce"
+"2" = "key"
+
+[[entries]]
+language = "typescript"
+package = "tweetnacl"
+symbol = "box"
+direction = "encrypt"
+output = "ciphertext"
+
+[entries.param_roles]
+"0" = "data"
+"1" = "nonce"
+"2" = "key"
+
+[[entries]]
+language = "typescript"
+package = "tweetnacl"
+symbol = "box.open"
+direction = "decrypt"
+output = "plaintext"
+
+[entries.param_roles]
+"0" = "data"
+"1" = "nonce"
+"2" = "key"
+
+# --- libsodium-wrappers ---
+
+[[entries]]
+language = "typescript"
+package = "libsodium-wrappers"
+symbol = "crypto_secretbox_easy"
+direction = "encrypt"
+output = "ciphertext"
+
+[entries.param_roles]
+"0" = "data"
+"1" = "nonce"
+"2" = "key"
+
+[[entries]]
+language = "typescript"
+package = "libsodium-wrappers"
+symbol = "crypto_secretbox_open_easy"
+direction = "decrypt"
+output = "plaintext"
+
+[entries.param_roles]
+"0" = "data"
+"1" = "nonce"
+"2" = "key"
+
+[[entries]]
+language = "typescript"
+package = "libsodium-wrappers"
+symbol = "crypto_aead_xchacha20poly1305_ietf_encrypt"
+direction = "encrypt"
+output = "ciphertext"
+
+[entries.param_roles]
+"0" = "data"
+"1" = "aad"
+"2" = "nonce"
+"3" = "key"
+
+[[entries]]
+language = "typescript"
+package = "libsodium-wrappers"
+symbol = "crypto_aead_xchacha20poly1305_ietf_decrypt"
+direction = "decrypt"
+output = "plaintext"
+
+[entries.param_roles]
+"0" = "data"
+"1" = "aad"
+"2" = "nonce"
+"3" = "key"
+
+[[entries]]
+language = "typescript"
+package = "libsodium-wrappers"
+symbol = "crypto_box_easy"
+direction = "encrypt"
+output = "ciphertext"
+
+[entries.param_roles]
+"0" = "data"
+"1" = "nonce"
+"2" = "key"
+
+[[entries]]
+language = "typescript"
+package = "libsodium-wrappers"
+symbol = "crypto_box_open_easy"
+direction = "decrypt"
+output = "plaintext"
+
+[entries.param_roles]
+"0" = "data"
+"1" = "nonce"
+"2" = "key"
+
+# =============================================================================
+# Go
+# =============================================================================
+
+# --- crypto/cipher ---
+
+[[entries]]
+language = "go"
+package = "crypto/cipher"
+symbol = "NewCBCDecrypter"
+direction = "decrypt"
+output = "plaintext"
+
+[entries.param_roles]
+"0" = "key"
+"1" = "iv"
+
+[[entries]]
+language = "go"
+package = "crypto/cipher"
+symbol = "NewCBCEncrypter"
+direction = "encrypt"
+output = "ciphertext"
+
+[entries.param_roles]
+"0" = "key"
+"1" = "iv"
+
+[[entries]]
+language = "go"
+package = "crypto/cipher"
+symbol = "NewCFBDecrypter"
+direction = "decrypt"
+output = "plaintext"
+
+[entries.param_roles]
+"0" = "key"
+"1" = "iv"
+
+[[entries]]
+language = "go"
+package = "crypto/cipher"
+symbol = "NewCFBEncrypter"
+direction = "encrypt"
+output = "ciphertext"
+
+[entries.param_roles]
+"0" = "key"
+"1" = "iv"
+
+[[entries]]
+language = "go"
+package = "crypto/cipher"
+symbol = "NewCTR"
+direction = "both"
+output = "ciphertext"
+
+[entries.param_roles]
+"0" = "key"
+"1" = "iv"
+
+[[entries]]
+language = "go"
+package = "crypto/cipher"
+symbol = "NewOFB"
+direction = "both"
+output = "ciphertext"
+
+[entries.param_roles]
+"0" = "key"
+"1" = "iv"
+
+[[entries]]
+language = "go"
+package = "crypto/cipher"
+symbol = "NewGCM"
+direction = "both"
+output = "ciphertext"
+
+[entries.param_roles]
+"0" = "key"
+
+[[entries]]
+language = "go"
+package = "crypto/cipher"
+symbol = "AEAD.Seal"
+direction = "encrypt"
+output = "ciphertext"
+
+[entries.param_roles]
+"0" = "nonce"
+"1" = "data"
+"2" = "aad"
+
+[[entries]]
+language = "go"
+package = "crypto/cipher"
+symbol = "AEAD.Open"
+direction = "decrypt"
+output = "plaintext"
+
+[entries.param_roles]
+"0" = "nonce"
+"1" = "data"
+"2" = "aad"
+
+[[entries]]
+language = "go"
+package = "crypto/cipher"
+symbol = "Stream.XORKeyStream"
+direction = "both"
+output = "ciphertext"
+
+[entries.param_roles]
+"0" = "data"
+
+# --- crypto/aes ---
+
+[[entries]]
+language = "go"
+package = "crypto/aes"
+symbol = "NewCipher"
+direction = "both"
+output = "key"
+
+[entries.param_roles]
+"0" = "key"
+
+# --- crypto/rsa ---
+
+[[entries]]
+language = "go"
+package = "crypto/rsa"
+symbol = "EncryptOAEP"
+direction = "encrypt"
+output = "ciphertext"
+
+[entries.param_roles]
+"1" = "key"
+"2" = "data"
+
+[[entries]]
+language = "go"
+package = "crypto/rsa"
+symbol = "DecryptOAEP"
+direction = "decrypt"
+output = "plaintext"
+
+[entries.param_roles]
+"1" = "key"
+"2" = "data"
+
+[[entries]]
+language = "go"
+package = "crypto/rsa"
+symbol = "EncryptPKCS1v15"
+direction = "encrypt"
+output = "ciphertext"
+
+[entries.param_roles]
+"1" = "key"
+"2" = "data"
+
+[[entries]]
+language = "go"
+package = "crypto/rsa"
+symbol = "DecryptPKCS1v15"
+direction = "decrypt"
+output = "plaintext"
+
+[entries.param_roles]
+"1" = "key"
+"2" = "data"
+
+# --- x/crypto ---
+
+[[entries]]
+language = "go"
+package = "golang.org/x/crypto/chacha20poly1305"
+symbol = "New"
+direction = "both"
+output = "key"
+
+[entries.param_roles]
+"0" = "key"
+
+[[entries]]
+language = "go"
+package = "golang.org/x/crypto/chacha20poly1305"
+symbol = "NewX"
+direction = "both"
+output = "key"
+
+[entries.param_roles]
+"0" = "key"
+
+[[entries]]
+language = "go"
+package = "golang.org/x/crypto/nacl/secretbox"
+symbol = "Seal"
+direction = "encrypt"
+output = "ciphertext"
+
+[entries.param_roles]
+"1" = "nonce"
+"2" = "data"
+"3" = "key"
+
+[[entries]]
+language = "go"
+package = "golang.org/x/crypto/nacl/secretbox"
+symbol = "Open"
+direction = "decrypt"
+output = "plaintext"
+
+[entries.param_roles]
+"1" = "nonce"
+"2" = "data"
+"3" = "key"
+
+# =============================================================================
+# Rust
+# =============================================================================
+
+# --- aes-gcm ---
+
+[[entries]]
+language = "rust"
+package = "aes-gcm"
+symbol = "Aes256Gcm::encrypt"
+direction = "encrypt"
+output = "ciphertext"
+
+[entries.param_roles]
+"0" = "nonce"
+"1" = "data"
+
+[[entries]]
+language = "rust"
+package = "aes-gcm"
+symbol = "Aes256Gcm::decrypt"
+direction = "decrypt"
+output = "plaintext"
+
+[entries.param_roles]
+"0" = "nonce"
+"1" = "data"
+
+[[entries]]
+language = "rust"
+package = "aes-gcm"
+symbol = "Aes128Gcm::encrypt"
+direction = "encrypt"
+output = "ciphertext"
+
+[entries.param_roles]
+"0" = "nonce"
+"1" = "data"
+
+[[entries]]
+language = "rust"
+package = "aes-gcm"
+symbol = "Aes128Gcm::decrypt"
+direction = "decrypt"
+output = "plaintext"
+
+[entries.param_roles]
+"0" = "nonce"
+"1" = "data"
+
+# --- ring ---
+
+[[entries]]
+language = "rust"
+package = "ring"
+symbol = "aead::seal_in_place"
+direction = "encrypt"
+output = "ciphertext"
+
+[entries.param_roles]
+"0" = "nonce"
+"1" = "aad"
+"2" = "data"
+
+[[entries]]
+language = "rust"
+package = "ring"
+symbol = "aead::open_in_place"
+direction = "decrypt"
+output = "plaintext"
+
+[entries.param_roles]
+"0" = "nonce"
+"1" = "aad"
+"2" = "data"
+
+[[entries]]
+language = "rust"
+package = "ring"
+symbol = "aead::seal_in_place_append_tag"
+direction = "encrypt"
+output = "ciphertext"
+
+[entries.param_roles]
+"0" = "nonce"
+"1" = "aad"
+"2" = "data"
+
+[[entries]]
+language = "rust"
+package = "ring"
+symbol = "aead::open_in_place_mut"
+direction = "decrypt"
+output = "plaintext"
+
+[entries.param_roles]
+"0" = "nonce"
+"1" = "aad"
+"2" = "data"
+
+# --- chacha20poly1305 ---
+
+[[entries]]
+language = "rust"
+package = "chacha20poly1305"
+symbol = "ChaCha20Poly1305::encrypt"
+direction = "encrypt"
+output = "ciphertext"
+
+[entries.param_roles]
+"0" = "nonce"
+"1" = "data"
+
+[[entries]]
+language = "rust"
+package = "chacha20poly1305"
+symbol = "ChaCha20Poly1305::decrypt"
+direction = "decrypt"
+output = "plaintext"
+
+[entries.param_roles]
+"0" = "nonce"
+"1" = "data"
+
+[[entries]]
+language = "rust"
+package = "chacha20poly1305"
+symbol = "XChaCha20Poly1305::encrypt"
+direction = "encrypt"
+output = "ciphertext"
+
+[entries.param_roles]
+"0" = "nonce"
+"1" = "data"
+
+[[entries]]
+language = "rust"
+package = "chacha20poly1305"
+symbol = "XChaCha20Poly1305::decrypt"
+direction = "decrypt"
+output = "plaintext"
+
+[entries.param_roles]
+"0" = "nonce"
+"1" = "data"

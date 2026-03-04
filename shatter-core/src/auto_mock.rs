@@ -47,7 +47,7 @@ const DB_MODULES: &[&str] = &[
 const PURE_UTILITY_MODULES: &[&str] = &[
     "lodash", "lodash-es", "underscore", "ramda", "date-fns",
     "dayjs", "moment", "validator", "uuid", "nanoid",
-    "crypto-js", "chalk", "debug", "ms",
+    "chalk", "debug", "ms",
     "strings", "strconv", "fmt", "math", "sort",
 ];
 
