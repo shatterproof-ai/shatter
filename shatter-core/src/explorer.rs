@@ -46,7 +46,7 @@ pub struct ExploreConfig {
 }
 
 /// Summary of a single function execution during exploration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionSummary {
     /// The input values sent to the function.
     pub inputs: Vec<serde_json::Value>,
@@ -62,9 +62,13 @@ pub struct ExecutionSummary {
     pub error_intent: Option<ErrorIntentLabel>,
 }
 
-/// Result of exploring a single function.
-#[derive(Debug)]
-pub struct ExplorationResult {
+/// Canonical pipeline output for a single function's observation phase.
+///
+/// Captures everything produced by either random or concolic exploration:
+/// discovered paths, line coverage, raw execution results, and per-branch
+/// discovery attribution. Used as the input to the Analyze pipeline stage.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ObservationOutput {
     /// Name of the explored function.
     pub function_name: String,
     /// Total iterations attempted.
@@ -83,9 +87,13 @@ pub struct ExplorationResult {
     pub discoveries: Vec<(u32, DiscoveryMethod)>,
 }
 
+/// Transitional alias: existing code that references `ExplorationResult`
+/// continues to compile while consumers migrate to `ObservationOutput`.
+pub type ExplorationResult = ObservationOutput;
+
 /// Type alias for pipeline composability. `ObserveResult` is the output of
 /// the Observe stage (random exploration).
-pub type ObserveResult = ExplorationResult;
+pub type ObserveResult = ObservationOutput;
 
 /// Errors that can occur during exploration.
 #[derive(Debug, thiserror::Error)]
@@ -248,7 +256,7 @@ pub async fn explore_function(
     frontend: &mut Frontend,
     analysis: &FunctionAnalysis,
     config: &ExploreConfig,
-) -> Result<ExplorationResult, ExploreError> {
+) -> Result<ObservationOutput, ExploreError> {
     let instrument_response = frontend
         .send(ProtoCommand::Instrument {
             file: config.file.clone(),
@@ -425,7 +433,7 @@ pub async fn explore_function(
 
     let total_lines = analysis.end_line.saturating_sub(analysis.start_line) + 1;
 
-    Ok(ExplorationResult {
+    Ok(ObservationOutput {
         function_name: analysis.name.clone(),
         iterations,
         unique_paths: seen_paths.len(),
@@ -446,7 +454,7 @@ pub struct ReportOptions {
     pub coverage_metrics: Option<crate::coverage_metrics::CoverageMetrics>,
 }
 
-pub fn format_exploration_report(result: &ExplorationResult, options: &ReportOptions) -> String {
+pub fn format_exploration_report(result: &ObservationOutput, options: &ReportOptions) -> String {
     let mut out = String::new();
     let location = options.location.as_deref().unwrap_or("");
     if location.is_empty() {
@@ -498,7 +506,7 @@ pub fn format_exploration_report(result: &ExplorationResult, options: &ReportOpt
     out
 }
 
-pub fn format_exploration_report_verbose(result: &ExplorationResult) -> String {
+pub fn format_exploration_report_verbose(result: &ObservationOutput) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "  Exploration complete: {} iteration(s), {} unique path(s) discovered\n",
@@ -700,7 +708,7 @@ mod tests {
 
     #[test]
     fn format_exploration_report_shows_clustered_paths() {
-        let result = ExplorationResult {
+        let result = ObservationOutput {
             function_name: "classify".into(), iterations: 10, unique_paths: 2,
             lines_covered: 5, total_lines: 10,
             new_path_executions: vec![
@@ -727,7 +735,7 @@ mod tests {
 
     #[test]
     fn format_exploration_report_with_location() {
-        let result = ExplorationResult {
+        let result = ObservationOutput {
             function_name: "safeDivide".into(), iterations: 5, unique_paths: 1,
             lines_covered: 3, total_lines: 5,
             new_path_executions: vec![ExecutionSummary {
@@ -744,7 +752,7 @@ mod tests {
 
     #[test]
     fn format_exploration_report_shows_errors() {
-        let result = ExplorationResult {
+        let result = ObservationOutput {
             function_name: "risky".into(), iterations: 5, unique_paths: 1,
             lines_covered: 0, total_lines: 5,
             new_path_executions: vec![ExecutionSummary {
@@ -761,7 +769,7 @@ mod tests {
 
     #[test]
     fn format_exploration_report_with_perf() {
-        let result = ExplorationResult {
+        let result = ObservationOutput {
             function_name: "fast".into(), iterations: 10, unique_paths: 1,
             lines_covered: 0, total_lines: 0, new_path_executions: vec![], raw_results: vec![], discoveries: vec![],
         };
@@ -776,7 +784,7 @@ mod tests {
 
     #[test]
     fn format_exploration_report_includes_coverage_metrics() {
-        let result = ExplorationResult {
+        let result = ObservationOutput {
             function_name: "analyze".into(), iterations: 20, unique_paths: 3,
             lines_covered: 8, total_lines: 10, new_path_executions: vec![], raw_results: vec![], discoveries: vec![],
         };
@@ -795,7 +803,7 @@ mod tests {
 
     #[test]
     fn format_exploration_report_verbose_shows_legacy_format() {
-        let result = ExplorationResult {
+        let result = ObservationOutput {
             function_name: "classify".into(), iterations: 10, unique_paths: 2,
             lines_covered: 5, total_lines: 10,
             new_path_executions: vec![ExecutionSummary {

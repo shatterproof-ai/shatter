@@ -158,6 +158,10 @@ pub enum TerminationReason {
 /// Summary of a concolic exploration session.
 #[derive(Debug)]
 pub struct ExploreResult {
+    /// Name of the explored function.
+    pub function_name: String,
+    /// Total source lines in the function (end_line - start_line + 1).
+    pub total_lines: u32,
     /// Execution results for each unique path discovered.
     pub executions: Vec<ExecuteResult>,
     /// Number of unique branch paths discovered.
@@ -441,6 +445,8 @@ pub async fn explore(
 
     let unique_paths = covered_paths.len();
     Ok(ExploreResult {
+        function_name: function_name.to_string(),
+        total_lines: 0, // Caller must set from FunctionAnalysis (end_line - start_line + 1)
         executions,
         unique_paths,
         total_executions,

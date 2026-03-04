@@ -757,7 +757,7 @@ mod tests {
     use super::*;
     use crate::behavior::{Behavior, BehaviorMap};
     use crate::execution_record::ErrorInfo;
-    use crate::explorer::{ExecutionSummary, ExplorationResult};
+    use crate::explorer::{ExecutionSummary, ObservationOutput};
     use crate::scan_orchestrator::{FunctionResult, ParallelScanResult, SkippedFunction};
     use std::collections::HashMap;
 
@@ -797,7 +797,7 @@ mod tests {
 
         FunctionResult {
             function_name: name.to_string(),
-            exploration: ExplorationResult {
+            exploration: ObservationOutput {
                 function_name: name.to_string(),
                 iterations,
                 unique_paths,

@@ -1028,7 +1028,7 @@ async fn run_explore(
             let func_start = Instant::now();
 
             // Choose exploration strategy: concolic (Z3-backed) or random.
-            let explore_result: Result<shatter_core::explorer::ExplorationResult, shatter_core::explorer::ExploreError> = if use_concolic {
+            let explore_result: Result<shatter_core::explorer::ObservationOutput, shatter_core::explorer::ExploreError> = if use_concolic {
                 let param_names: Vec<String> = func.params.iter().map(|p| p.name.clone()).collect();
                 let seed_inputs = shatter_core::boundary_dict::generate_boundary_inputs(&func.params);
                 let user_inputs: Vec<Vec<serde_json::Value>> = resolved.candidate_inputs
@@ -1052,11 +1052,10 @@ async fn run_explore(
                     &param_names,
                     &concolic_config,
                 ).await {
-                    Ok(concolic_result) => {
-                        let mut obs: shatter_core::pipeline::ObservationOutput = concolic_result.into();
-                        obs.function_name = func.name.clone();
-                        obs.total_lines = func.end_line.saturating_sub(func.start_line) + 1;
-                        Ok(obs.into())
+                    Ok(mut concolic_result) => {
+                        concolic_result.total_lines = func.end_line.saturating_sub(func.start_line) + 1;
+                        let obs: shatter_core::explorer::ObservationOutput = concolic_result.into();
+                        Ok(obs)
                     }
                     Err(shatter_core::orchestrator::ExploreError::Frontend(fe)) => {
                         Err(shatter_core::explorer::ExploreError::Frontend(fe))
@@ -2247,7 +2246,7 @@ async fn run_run(
         eprintln!();
     }
 
-    let mut exploration_results: Vec<(String, explorer::ExplorationResult)> = Vec::new();
+    let mut exploration_results: Vec<(String, explorer::ObservationOutput)> = Vec::new();
 
     for (layer_idx, layer) in layers.iter().enumerate() {
         if log_level >= LogLevel::Debug {
@@ -2373,7 +2372,7 @@ fn print_summary_report(
     call_graph: &CallGraph,
     layers: &[Vec<String>],
     cycles: &[Vec<String>],
-    exploration_results: &[(String, explorer::ExplorationResult)],
+    exploration_results: &[(String, explorer::ObservationOutput)],
     elapsed: Duration,
 ) {
     println!("# Shatter Run Report");
@@ -2500,7 +2499,7 @@ fn write_analysis_report(
 fn write_run_report(
     dir: &Path,
     call_graph: &CallGraph,
-    exploration_results: &[(String, explorer::ExplorationResult)],
+    exploration_results: &[(String, explorer::ObservationOutput)],
 ) -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(dir)
         .map_err(|e| format!("failed to create output dir '{}': {e}", dir.display()))?;

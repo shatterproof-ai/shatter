@@ -27,7 +27,7 @@ use crate::behavior::{BehaviorCoverage, BehaviorMap, CallGraph, CallGraphError, 
 use crate::types::TypeInfo;
 use crate::cache::BehaviorMapCache;
 use crate::execution_record::ExecutionRecord;
-use crate::explorer::{self, ExploreConfig, ExploreError, ExplorationResult};
+use crate::explorer::{self, ExploreConfig, ExploreError, ObservationOutput};
 use crate::frontend::{Frontend, FrontendConfig, FrontendError};
 use crate::mock_gen::mock_config_from_behavior_map;
 use crate::protocol::{ExecuteResult, FunctionAnalysis, MockConfig};
@@ -103,7 +103,7 @@ pub struct FunctionResult {
     /// Name of the explored function.
     pub function_name: String,
     /// The exploration result (paths, coverage, etc.).
-    pub exploration: ExplorationResult,
+    pub exploration: ObservationOutput,
     /// Behavior map built from execution results.
     pub behavior_map: BehaviorMap,
     /// Coverage of callee behaviors exercised by this function.
@@ -1418,7 +1418,7 @@ mod tests {
             function_results: vec![
                 FunctionResult {
                     function_name: "leaf".into(),
-                    exploration: ExplorationResult {
+                    exploration: ObservationOutput {
                         function_name: "leaf".into(),
                         iterations: 5,
                         unique_paths: 2,
@@ -1438,7 +1438,7 @@ mod tests {
                 },
                 FunctionResult {
                     function_name: "caller".into(),
-                    exploration: ExplorationResult {
+                    exploration: ObservationOutput {
                         function_name: "caller".into(),
                         iterations: 10,
                         unique_paths: 3,
@@ -1479,7 +1479,7 @@ mod tests {
             test_order: vec!["standalone".into()],
             function_results: vec![FunctionResult {
                 function_name: "standalone".into(),
-                exploration: ExplorationResult {
+                exploration: ObservationOutput {
                     function_name: "standalone".into(),
                     iterations: 10,
                     unique_paths: 1,
@@ -1513,7 +1513,7 @@ mod tests {
             test_order: vec!["good_func".into()],
             function_results: vec![FunctionResult {
                 function_name: "good_func".into(),
-                exploration: ExplorationResult {
+                exploration: ObservationOutput {
                     function_name: "good_func".into(),
                     iterations: 5,
                     unique_paths: 1,
@@ -1557,7 +1557,7 @@ mod tests {
             test_order: vec!["func".into()],
             function_results: vec![FunctionResult {
                 function_name: "func".into(),
-                exploration: ExplorationResult {
+                exploration: ObservationOutput {
                     function_name: "func".into(),
                     iterations: 1,
                     unique_paths: 1,
@@ -1589,7 +1589,7 @@ mod tests {
             test_order: vec!["func".into()],
             function_results: vec![FunctionResult {
                 function_name: "func".into(),
-                exploration: ExplorationResult {
+                exploration: ObservationOutput {
                     function_name: "func".into(),
                     iterations: 1,
                     unique_paths: 1,
@@ -1630,7 +1630,7 @@ mod tests {
             test_order: vec!["func".into()],
             function_results: vec![FunctionResult {
                 function_name: "func".into(),
-                exploration: ExplorationResult {
+                exploration: ObservationOutput {
                     function_name: "func".into(),
                     iterations: 1,
                     unique_paths: 1,
@@ -1735,7 +1735,7 @@ mod tests {
             test_order: vec!["f1".into(), "f2".into()],
             function_results: vec![FunctionResult {
                 function_name: "f1".into(),
-                exploration: ExplorationResult {
+                exploration: ObservationOutput {
                     function_name: "f1".into(),
                     iterations: 5,
                     unique_paths: 1,
@@ -1776,7 +1776,7 @@ mod tests {
             test_order: vec!["f1".into()],
             function_results: vec![FunctionResult {
                 function_name: "f1".into(),
-                exploration: ExplorationResult {
+                exploration: ObservationOutput {
                     function_name: "f1".into(),
                     iterations: 10,
                     unique_paths: 2,

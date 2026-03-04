@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::equivalence::{BranchPath, EquivalenceClass, Precondition};
 use crate::execution_record::{ErrorInfo, SideEffect};
-use crate::explorer::ExplorationResult;
+use crate::explorer::ObservationOutput;
 use crate::fingerprint::compute_deep_fingerprints;
 use crate::invariants::ClassifiedInvariant;
 use crate::protocol::FunctionAnalysis;
@@ -164,7 +164,7 @@ pub struct FunctionSpec {
 /// Equivalence classes are produced by [`crate::equivalence::group_into_classes`].
 /// The provenance is always `Observed` since the random explorer does not use Z3.
 pub fn build_spec(
-    result: &ExplorationResult,
+    result: &ObservationOutput,
     eq_classes: &[EquivalenceClass],
     location: Option<String>,
     fingerprint: Option<String>,
@@ -192,7 +192,7 @@ pub fn build_spec(
 /// Runs Daikon-style invariant detection on the raw execution results, producing
 /// classified invariants at both the per-class and function-wide levels.
 pub fn build_spec_with_invariants(
-    result: &ExplorationResult,
+    result: &ObservationOutput,
     eq_classes: &[EquivalenceClass],
     location: Option<String>,
     fingerprint: Option<String>,
@@ -671,15 +671,15 @@ mod tests {
     use super::*;
     use crate::equivalence::{BranchPath, BranchStep, EquivalenceClass, Precondition};
     use crate::execution_record::ErrorInfo;
-    use crate::explorer::ExplorationResult;
+    use crate::explorer::ObservationOutput;
     use serde_json::json;
 
     fn make_exploration_result(
         name: &str,
         iterations: u32,
         unique_paths: usize,
-    ) -> ExplorationResult {
-        ExplorationResult {
+    ) -> ObservationOutput {
+        ObservationOutput {
             function_name: name.to_string(),
             iterations,
             unique_paths,

@@ -254,14 +254,14 @@ impl BehaviorMap {
         }
     }
 
-    /// Build a behavior map from an [`ExplorationResult`](crate::explorer::ExplorationResult).
+    /// Build a behavior map from an [`ObservationOutput`](crate::explorer::ObservationOutput).
     ///
     /// Converts each [`ExecutionSummary`](crate::explorer::ExecutionSummary) that discovered
     /// a new path into a [`Behavior`] entry. When raw results are available,
     /// dependency traces are populated from the matching [`ExecuteResult`].
     pub fn from_exploration_result(
         function_id: impl Into<String>,
-        result: &crate::explorer::ExplorationResult,
+        result: &crate::explorer::ObservationOutput,
     ) -> Self {
         let behaviors = result
             .new_path_executions
@@ -605,7 +605,7 @@ mod tests {
 
     use super::*;
     use crate::execution_record::ExternalCall;
-    use crate::explorer::{ExecutionSummary, ExplorationResult};
+    use crate::explorer::{ExecutionSummary, ObservationOutput};
     use crate::protocol::{DependencyKind, ExternalDependency, FunctionAnalysis, PerformanceMetrics};
     use crate::types::TypeInfo;
 
@@ -683,7 +683,7 @@ mod tests {
 
     #[test]
     fn behavior_map_from_exploration_result() {
-        let result = ExplorationResult {
+        let result = ObservationOutput {
             function_name: "classify".to_string(),
             iterations: 10,
             unique_paths: 2,
@@ -1300,7 +1300,7 @@ mod tests {
             },
         };
 
-        let result = ExplorationResult {
+        let result = ObservationOutput {
             function_name: "classify".to_string(),
             iterations: 5,
             unique_paths: 1,

@@ -5,10 +5,10 @@
 //! builds a behavior map, and computes coverage metrics.
 
 use crate::behavior::BehaviorMap;
-use crate::coverage_metrics::{CoverageMetrics, DiscoveryMethod};
+use crate::coverage_metrics::CoverageMetrics;
 use crate::equivalence::{self, EquivalenceClass};
 use crate::execution_record::{ExecutionRecord, SymConstraint};
-use crate::explorer::ExplorationResult;
+use crate::explorer::ObservationOutput;
 use crate::protocol::{ExecuteResult, FunctionAnalysis};
 
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -28,7 +28,7 @@ pub struct AnalyzeOutput {
 ///
 /// Takes the raw exploration output and the static function analysis,
 /// then produces equivalence classes, a behavior map, and coverage metrics.
-pub fn analyze(observe: &ExplorationResult, analysis: &FunctionAnalysis) -> AnalyzeOutput {
+pub fn analyze(observe: &ObservationOutput, analysis: &FunctionAnalysis) -> AnalyzeOutput {
     // Build equivalence classes from raw results.
     let eq_classes = equivalence::group_into_classes(&observe.raw_results);
 
@@ -97,103 +97,6 @@ fn execution_record_from_result(
     }
 }
 
-/// Run the Analyze stage on an [`ObservationOutput`] (adapter type).
-///
-/// This is the generic version of [`analyze`] that works with both random and
-/// concolic exploration output after conversion to `ObservationOutput`.
-pub fn analyze_observation(observe: &ObservationOutput, analysis: &FunctionAnalysis) -> AnalyzeOutput {
-    // Build equivalence classes from raw results.
-    let eq_classes = equivalence::group_into_classes(&observe.raw_results);
-
-    // Build execution records for BehaviorMap construction.
-    let records: Vec<ExecutionRecord> = observe
-        .raw_results
-        .iter()
-        .map(|(inputs, result)| execution_record_from_result(&observe.function_name, inputs, result))
-        .collect();
-
-    let behavior_map = BehaviorMap::from_records(&observe.function_name, &records);
-
-    // Collect all constraints observed across all executions for symexpr ratio.
-    let all_constraints: Vec<SymConstraint> = observe
-        .raw_results
-        .iter()
-        .flat_map(|(_, result)| {
-            result
-                .branch_path
-                .iter()
-                .map(|d| d.constraint.clone())
-        })
-        .collect();
-
-    let coverage_metrics = CoverageMetrics::from_exploration(
-        analysis.branches.len(),
-        &observe.discoveries,
-        &all_constraints,
-    );
-
-    AnalyzeOutput {
-        eq_classes,
-        behavior_map,
-        coverage_metrics,
-    }
-}
-
-/// Adapter type for pipeline composability: wraps either random or concolic
-/// exploration output into a common shape that `analyze()` can consume.
-///
-/// Use `From<ExplorationResult>` for random explorer output or
-/// `From<orchestrator::ExploreResult>` for concolic output.
-#[derive(Debug)]
-pub struct ObservationOutput {
-    /// Name of the explored function.
-    pub function_name: String,
-    /// Total iterations attempted.
-    pub iterations: u32,
-    /// Number of unique execution paths discovered.
-    pub unique_paths: usize,
-    /// Number of unique source lines covered across all executions.
-    pub lines_covered: usize,
-    /// Total source lines in the function.
-    pub total_lines: u32,
-    /// Summary of each execution that discovered a new path.
-    pub new_path_executions: Vec<crate::explorer::ExecutionSummary>,
-    /// Raw execution results paired with their inputs.
-    pub raw_results: Vec<(Vec<serde_json::Value>, ExecuteResult)>,
-    /// Per-branch discovery attribution.
-    pub discoveries: Vec<(u32, DiscoveryMethod)>,
-}
-
-impl From<ObservationOutput> for ExplorationResult {
-    fn from(o: ObservationOutput) -> Self {
-        Self {
-            function_name: o.function_name,
-            iterations: o.iterations,
-            unique_paths: o.unique_paths,
-            lines_covered: o.lines_covered,
-            total_lines: o.total_lines,
-            new_path_executions: o.new_path_executions,
-            raw_results: o.raw_results,
-            discoveries: o.discoveries,
-        }
-    }
-}
-
-impl From<ExplorationResult> for ObservationOutput {
-    fn from(r: ExplorationResult) -> Self {
-        Self {
-            function_name: r.function_name,
-            iterations: r.iterations,
-            unique_paths: r.unique_paths,
-            lines_covered: r.lines_covered,
-            total_lines: r.total_lines,
-            new_path_executions: r.new_path_executions,
-            raw_results: r.raw_results,
-            discoveries: r.discoveries,
-        }
-    }
-}
-
 impl From<crate::orchestrator::ExploreResult> for ObservationOutput {
     fn from(r: crate::orchestrator::ExploreResult) -> Self {
         // Build ExecutionSummary entries from unique-path executions.
@@ -222,11 +125,11 @@ impl From<crate::orchestrator::ExploreResult> for ObservationOutput {
         }
 
         Self {
-            function_name: String::new(), // Must be set by caller
+            function_name: r.function_name,
             iterations: r.total_executions as u32,
             unique_paths: r.unique_paths,
             lines_covered: all_lines.len(),
-            total_lines: 0, // Must be set by caller
+            total_lines: r.total_lines,
             new_path_executions,
             raw_results: r.raw_results,
             discoveries: r.discoveries,
@@ -237,8 +140,9 @@ impl From<crate::orchestrator::ExploreResult> for ObservationOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::coverage_metrics::DiscoveryMethod;
     use crate::execution_record::{BranchDecision, SymConstraint};
-    use crate::explorer::ExplorationResult;
+    use crate::explorer::ObservationOutput;
     use crate::protocol::PerformanceMetrics;
     use crate::types::{ParamInfo, TypeInfo};
     use serde_json::json;
@@ -300,7 +204,7 @@ mod tests {
             performance: empty_perf(),
         };
 
-        let observe = ExplorationResult {
+        let observe = ObservationOutput {
             function_name: "classify".into(),
             iterations: 5,
             unique_paths: 1,
@@ -324,7 +228,7 @@ mod tests {
 
     #[test]
     fn analyze_empty_exploration() {
-        let observe = ExplorationResult {
+        let observe = ObservationOutput {
             function_name: "empty".into(),
             iterations: 0,
             unique_paths: 0,
@@ -345,21 +249,24 @@ mod tests {
     }
 
     #[test]
-    fn observation_output_from_exploration_result() {
-        let result = ExplorationResult {
+    fn observation_output_from_concolic_result() {
+        let concolic = crate::orchestrator::ExploreResult {
             function_name: "test".into(),
-            iterations: 10,
-            unique_paths: 2,
-            lines_covered: 5,
             total_lines: 10,
-            new_path_executions: vec![],
+            executions: vec![],
+            unique_paths: 2,
+            total_executions: 10,
+            z3_generated: 3,
+            fuzz_generated: 1,
+            termination_reason: crate::orchestrator::TerminationReason::WorklistExhausted,
             raw_results: vec![],
             discoveries: vec![(0, DiscoveryMethod::Random)],
         };
 
-        let output: ObservationOutput = result.into();
+        let output: ObservationOutput = concolic.into();
         assert_eq!(output.function_name, "test");
         assert_eq!(output.unique_paths, 2);
+        assert_eq!(output.total_lines, 10);
         assert_eq!(output.discoveries.len(), 1);
     }
 }

@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::execution_record::SymConstraint;
-use crate::explorer::ExplorationResult;
+use crate::explorer::ObservationOutput;
 use crate::orchestrator::ExploreResult;
 use crate::protocol::{BranchInfo, ExecuteResult, FunctionAnalysis};
 
@@ -238,7 +238,7 @@ pub struct TargetBranch {
 /// during exploration to identify targets the GA should focus on.
 pub fn extract_targets(
     analysis: &FunctionAnalysis,
-    result: &ExplorationResult,
+    result: &ObservationOutput,
 ) -> Vec<TargetBranch> {
     extract_targets_inner(&analysis.branches, &result.discoveries, &result.raw_results)
 }
