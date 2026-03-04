@@ -222,22 +222,19 @@ pub struct Request {
     #[serde(default)]
     pub capabilities: Vec<String>,
 
-    // Analyze/Instrument fields
+    // Analyze/Instrument/Execute fields
     #[serde(default)]
     pub file: Option<String>,
-    #[allow(dead_code)] // will be used when analyze is implemented
     #[serde(default)]
     pub function: Option<String>,
 
     // Execute fields
-    #[allow(dead_code)] // will be used when execute is implemented
     #[serde(default)]
     pub inputs: Vec<serde_json::Value>,
-    #[allow(dead_code)] // will be used when execute/instrument is implemented
     #[serde(default)]
     pub mocks: Vec<serde_json::Value>,
     /// Opaque context returned by a prior Setup command, if any.
-    #[allow(dead_code)] // will be used when execute is implemented
+    #[allow(dead_code)] // will be used when setup+execute context passing is implemented
     #[serde(default)]
     pub setup_context: Option<serde_json::Value>,
 
@@ -303,6 +300,24 @@ pub struct Response {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub functions: Option<Vec<FunctionAnalysis>>,
 
+    // Execute result fields — flattened to match the core's wire format.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub return_value: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thrown_error: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch_path: Option<Vec<serde_json::Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lines_executed: Option<Vec<u32>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub calls_to_external: Option<Vec<serde_json::Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path_constraints: Option<Vec<serde_json::Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub side_effects: Option<Vec<serde_json::Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub performance: Option<serde_json::Value>,
+
     // Error fields
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
@@ -327,6 +342,14 @@ impl Response {
             instrumented: None,
             output_file: None,
             functions: None,
+            return_value: None,
+            thrown_error: None,
+            branch_path: None,
+            lines_executed: None,
+            calls_to_external: None,
+            path_constraints: None,
+            side_effects: None,
+            performance: None,
             code: None,
             message: None,
         }
@@ -519,6 +542,14 @@ mod tests {
             instrumented: None,
             output_file: None,
             functions: None,
+            return_value: None,
+            thrown_error: None,
+            branch_path: None,
+            lines_executed: None,
+            calls_to_external: None,
+            path_constraints: None,
+            side_effects: None,
+            performance: None,
             code: None,
             message: None,
         };
@@ -541,6 +572,14 @@ mod tests {
             instrumented: None,
             output_file: None,
             functions: None,
+            return_value: None,
+            thrown_error: None,
+            branch_path: None,
+            lines_executed: None,
+            calls_to_external: None,
+            path_constraints: None,
+            side_effects: None,
+            performance: None,
             code: None,
             message: None,
         };
@@ -563,6 +602,14 @@ mod tests {
             instrumented: None,
             output_file: None,
             functions: None,
+            return_value: None,
+            thrown_error: None,
+            branch_path: None,
+            lines_executed: None,
+            calls_to_external: None,
+            path_constraints: None,
+            side_effects: None,
+            performance: None,
             code: Some("internal_error".to_string()),
             message: Some("something broke".to_string()),
         };
@@ -585,6 +632,14 @@ mod tests {
             instrumented: None,
             output_file: None,
             functions: None,
+            return_value: None,
+            thrown_error: None,
+            branch_path: None,
+            lines_executed: None,
+            calls_to_external: None,
+            path_constraints: None,
+            side_effects: None,
+            performance: None,
             code: None,
             message: None,
         };
