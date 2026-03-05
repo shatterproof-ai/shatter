@@ -10,6 +10,62 @@ use serde_json::{json, Value};
 use crate::orchestrator::FrontendCapabilities;
 use crate::types::{ComplexKind, TypeInfo};
 
+// ---------------------------------------------------------------------------
+// Param-name heuristic string generation
+// ---------------------------------------------------------------------------
+
+/// A mapping from param-name substrings to a realistic seed value.
+///
+/// Order matters: more specific patterns (e.g. `first_name`) must precede
+/// more general ones (`name`) to avoid false-positive matches.
+struct NameHeuristic {
+    substrings: &'static [&'static str],
+    value: &'static str,
+}
+
+const HEURISTIC_EMAIL: &str = "user42@example.com";
+const HEURISTIC_URL: &str = "https://api.example.com/v2/items?id=7";
+const HEURISTIC_PHONE: &str = "+1-555-0142";
+const HEURISTIC_FIRST_NAME: &str = "Alice";
+const HEURISTIC_LAST_NAME: &str = "Smith";
+const HEURISTIC_NAME: &str = "Bob Smith";
+const HEURISTIC_DATE: &str = "2026-03-05T14:30:00Z";
+const HEURISTIC_UUID: &str = "550e8400-e29b-41d4-a716-446655440000";
+const HEURISTIC_PATH: &str = "/tmp/data/report.csv";
+const HEURISTIC_IP: &str = "192.168.1.42";
+const HEURISTIC_TOKEN: &str = "sk_test_abc123def456ghi789jkl012mno345";
+
+/// Ordered by specificity: more specific patterns first to avoid false positives.
+/// E.g. "first_name" before "name", "filepath" before "path" before "name".
+const NAME_HEURISTICS: &[NameHeuristic] = &[
+    NameHeuristic { substrings: &["email", "mail"], value: HEURISTIC_EMAIL },
+    NameHeuristic { substrings: &["url", "uri", "href", "link"], value: HEURISTIC_URL },
+    NameHeuristic { substrings: &["phone", "tel", "mobile"], value: HEURISTIC_PHONE },
+    NameHeuristic { substrings: &["first_name", "firstname"], value: HEURISTIC_FIRST_NAME },
+    NameHeuristic { substrings: &["last_name", "lastname"], value: HEURISTIC_LAST_NAME },
+    NameHeuristic { substrings: &["path", "file", "filename"], value: HEURISTIC_PATH },
+    NameHeuristic { substrings: &["name"], value: HEURISTIC_NAME },
+    NameHeuristic { substrings: &["date", "timestamp", "created_at", "updated_at"], value: HEURISTIC_DATE },
+    NameHeuristic { substrings: &["uuid"], value: HEURISTIC_UUID },
+    NameHeuristic { substrings: &["id"], value: HEURISTIC_UUID },
+    NameHeuristic { substrings: &["ip", "addr"], value: HEURISTIC_IP },
+    NameHeuristic { substrings: &["token", "key", "secret"], value: HEURISTIC_TOKEN },
+];
+
+/// Return a realistic heuristic string if `name` matches a known pattern.
+///
+/// Uses case-insensitive substring matching against `NAME_HEURISTICS`.
+/// Returns the first match, so ordering in the table controls priority.
+fn heuristic_string_for_name(name: &str) -> Option<&'static str> {
+    let lower = name.to_ascii_lowercase();
+    NAME_HEURISTICS.iter().find_map(|h| {
+        h.substrings
+            .iter()
+            .any(|s| lower.contains(s))
+            .then_some(h.value)
+    })
+}
+
 /// Generate a random JSON value matching the given type.
 ///
 /// Uses biased distributions that favor boundary values (0, -1, 1, empty
@@ -662,7 +718,16 @@ pub fn generate_random_inputs(
 ) -> Vec<Value> {
     params
         .iter()
-        .map(|p| generate_random_value(&p.typ, rng, caps))
+        .map(|p| {
+            if matches!(p.typ, TypeInfo::Str) {
+                let hint = heuristic_string_for_name(&p.name)
+                    .or_else(|| p.type_name.as_deref().and_then(heuristic_string_for_name));
+                if let Some(val) = hint {
+                    return json!(val);
+                }
+            }
+            generate_random_value(&p.typ, rng, caps)
+        })
         .collect()
 }
 
@@ -896,18 +961,35 @@ pub fn generate_inputs_with_custom(
     params
         .iter()
         .zip(sources.iter())
-        .map(|(param, source)| match source {
-            ValueSource::CustomGenerator {
-                generator_name,
-                generator_file,
-                ..
-            } => {
-                let file_str = generator_file.display().to_string();
-                prefetched
-                    .take(&file_str, generator_name)
-                    .unwrap_or_else(|| generate_random_value(&param.typ, rng, caps))
+        .map(|(param, source)| {
+            // Check param-name heuristic for Str params before falling back.
+            let heuristic = if matches!(param.typ, TypeInfo::Str) {
+                heuristic_string_for_name(&param.name)
+                    .or_else(|| param.type_name.as_deref().and_then(heuristic_string_for_name))
+            } else {
+                None
+            };
+            match source {
+                ValueSource::CustomGenerator {
+                    generator_name,
+                    generator_file,
+                    ..
+                } => {
+                    let file_str = generator_file.display().to_string();
+                    prefetched
+                        .take(&file_str, generator_name)
+                        .unwrap_or_else(|| {
+                            heuristic.map_or_else(
+                                || generate_random_value(&param.typ, rng, caps),
+                                |v| json!(v),
+                            )
+                        })
+                }
+                ValueSource::BuiltIn => heuristic.map_or_else(
+                    || generate_random_value(&param.typ, rng, caps),
+                    |v| json!(v),
+                ),
             }
-            ValueSource::BuiltIn => generate_random_value(&param.typ, rng, caps),
         })
         .collect()
 }
@@ -2811,5 +2893,139 @@ mod tests {
         ];
         let candidates = pool_to_candidate_inputs(&params, &pool);
         assert_eq!(candidates.len(), 1, "duplicate values should be deduplicated");
+    }
+
+    // -----------------------------------------------------------------------
+    // Param-name heuristic string tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn heuristic_email() {
+        assert_eq!(heuristic_string_for_name("email"), Some(HEURISTIC_EMAIL));
+        assert_eq!(heuristic_string_for_name("user_email"), Some(HEURISTIC_EMAIL));
+        assert_eq!(heuristic_string_for_name("mail_address"), Some(HEURISTIC_EMAIL));
+    }
+
+    #[test]
+    fn heuristic_url() {
+        assert_eq!(heuristic_string_for_name("url"), Some(HEURISTIC_URL));
+        assert_eq!(heuristic_string_for_name("redirect_uri"), Some(HEURISTIC_URL));
+        assert_eq!(heuristic_string_for_name("href"), Some(HEURISTIC_URL));
+        assert_eq!(heuristic_string_for_name("link"), Some(HEURISTIC_URL));
+    }
+
+    #[test]
+    fn heuristic_phone() {
+        assert_eq!(heuristic_string_for_name("phone"), Some(HEURISTIC_PHONE));
+        assert_eq!(heuristic_string_for_name("tel"), Some(HEURISTIC_PHONE));
+        assert_eq!(heuristic_string_for_name("mobile_number"), Some(HEURISTIC_PHONE));
+    }
+
+    #[test]
+    fn heuristic_name_specificity() {
+        assert_eq!(heuristic_string_for_name("first_name"), Some(HEURISTIC_FIRST_NAME));
+        assert_eq!(heuristic_string_for_name("firstname"), Some(HEURISTIC_FIRST_NAME));
+        assert_eq!(heuristic_string_for_name("last_name"), Some(HEURISTIC_LAST_NAME));
+        assert_eq!(heuristic_string_for_name("lastname"), Some(HEURISTIC_LAST_NAME));
+        assert_eq!(heuristic_string_for_name("name"), Some(HEURISTIC_NAME));
+        assert_eq!(heuristic_string_for_name("display_name"), Some(HEURISTIC_NAME));
+    }
+
+    #[test]
+    fn heuristic_date() {
+        assert_eq!(heuristic_string_for_name("date"), Some(HEURISTIC_DATE));
+        assert_eq!(heuristic_string_for_name("timestamp"), Some(HEURISTIC_DATE));
+        assert_eq!(heuristic_string_for_name("created_at"), Some(HEURISTIC_DATE));
+        assert_eq!(heuristic_string_for_name("updated_at"), Some(HEURISTIC_DATE));
+    }
+
+    #[test]
+    fn heuristic_uuid_and_id() {
+        assert_eq!(heuristic_string_for_name("uuid"), Some(HEURISTIC_UUID));
+        assert_eq!(heuristic_string_for_name("request_id"), Some(HEURISTIC_UUID));
+        assert_eq!(heuristic_string_for_name("id"), Some(HEURISTIC_UUID));
+    }
+
+    #[test]
+    fn heuristic_path() {
+        assert_eq!(heuristic_string_for_name("path"), Some(HEURISTIC_PATH));
+        assert_eq!(heuristic_string_for_name("file"), Some(HEURISTIC_PATH));
+        assert_eq!(heuristic_string_for_name("filename"), Some(HEURISTIC_PATH));
+    }
+
+    #[test]
+    fn heuristic_ip() {
+        assert_eq!(heuristic_string_for_name("ip"), Some(HEURISTIC_IP));
+        assert_eq!(heuristic_string_for_name("ip_addr"), Some(HEURISTIC_IP));
+        assert_eq!(heuristic_string_for_name("remote_addr"), Some(HEURISTIC_IP));
+    }
+
+    #[test]
+    fn heuristic_token() {
+        assert_eq!(heuristic_string_for_name("token"), Some(HEURISTIC_TOKEN));
+        assert_eq!(heuristic_string_for_name("api_key"), Some(HEURISTIC_TOKEN));
+        assert_eq!(heuristic_string_for_name("secret"), Some(HEURISTIC_TOKEN));
+    }
+
+    #[test]
+    fn heuristic_case_insensitive() {
+        assert_eq!(heuristic_string_for_name("Email"), Some(HEURISTIC_EMAIL));
+        assert_eq!(heuristic_string_for_name("EMAIL"), Some(HEURISTIC_EMAIL));
+        assert_eq!(heuristic_string_for_name("eMaIl"), Some(HEURISTIC_EMAIL));
+        assert_eq!(heuristic_string_for_name("USER_EMAIL"), Some(HEURISTIC_EMAIL));
+    }
+
+    #[test]
+    fn heuristic_no_match_returns_none() {
+        assert_eq!(heuristic_string_for_name("count"), None);
+        assert_eq!(heuristic_string_for_name("x"), None);
+        assert_eq!(heuristic_string_for_name("foo_bar"), None);
+    }
+
+    #[test]
+    fn generate_random_inputs_uses_heuristic_for_str() {
+        let mut rng = seeded_rng();
+        let params = vec![
+            ParamInfo { name: "email".into(), typ: TypeInfo::Str, type_name: None },
+            ParamInfo { name: "count".into(), typ: TypeInfo::Int, type_name: None },
+        ];
+        let inputs = generate_random_inputs(&params, &mut rng, None);
+        assert_eq!(inputs[0], json!(HEURISTIC_EMAIL));
+        assert!(inputs[1].is_i64() || inputs[1].is_u64());
+    }
+
+    #[test]
+    fn generate_random_inputs_falls_back_for_unknown_name() {
+        let mut rng = seeded_rng();
+        let params = vec![
+            ParamInfo { name: "foo".into(), typ: TypeInfo::Str, type_name: None },
+        ];
+        let inputs = generate_random_inputs(&params, &mut rng, None);
+        assert!(inputs[0].is_string());
+        assert_ne!(inputs[0].as_str(), Some(HEURISTIC_EMAIL));
+    }
+
+    #[test]
+    fn generate_random_inputs_checks_type_name_fallback() {
+        let mut rng = seeded_rng();
+        let params = vec![
+            ParamInfo {
+                name: "x".into(),
+                typ: TypeInfo::Str,
+                type_name: Some("Email".into()),
+            },
+        ];
+        let inputs = generate_random_inputs(&params, &mut rng, None);
+        assert_eq!(inputs[0], json!(HEURISTIC_EMAIL));
+    }
+
+    #[test]
+    fn heuristic_does_not_affect_non_str_types() {
+        let mut rng = seeded_rng();
+        let params = vec![
+            ParamInfo { name: "email".into(), typ: TypeInfo::Int, type_name: None },
+        ];
+        let inputs = generate_random_inputs(&params, &mut rng, None);
+        assert!(inputs[0].is_i64() || inputs[0].is_u64());
     }
 }
