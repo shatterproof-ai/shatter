@@ -1,5 +1,7 @@
 //! Symbolic expression types for representing constraints on function inputs.
 
+use std::collections::HashSet;
+
 use crate::types::ComplexKind;
 use serde::{Deserialize, Serialize};
 
@@ -92,6 +94,41 @@ pub enum BinOpKind {
     // JS-specific
     In,
     InstanceOf,
+}
+
+/// Collect all parameter names referenced in a symbolic expression tree.
+/// Used for branch-parameter attribution — identifying which parameters
+/// influence a given branch condition.
+pub fn extract_param_names(expr: &SymExpr) -> HashSet<String> {
+    let mut names = HashSet::new();
+    collect_param_names(expr, &mut names);
+    names
+}
+
+fn collect_param_names(expr: &SymExpr, names: &mut HashSet<String>) {
+    match expr {
+        SymExpr::Param { name, .. } => {
+            names.insert(name.clone());
+        }
+        SymExpr::Const(_) | SymExpr::Unknown => {}
+        SymExpr::BinOp { left, right, .. } => {
+            collect_param_names(left, names);
+            collect_param_names(right, names);
+        }
+        SymExpr::UnOp { operand, .. } => {
+            collect_param_names(operand, names);
+        }
+        SymExpr::Call {
+            receiver, args, ..
+        } => {
+            if let Some(r) = receiver {
+                collect_param_names(r, names);
+            }
+            for arg in args {
+                collect_param_names(arg, names);
+            }
+        }
+    }
 }
 
 /// Unary operators for symbolic expressions.
@@ -330,5 +367,177 @@ mod tests {
             SymExpr::BinOp { op, .. } => assert_eq!(op, BinOpKind::BitClear),
             other => panic!("expected BinOp, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn extract_param_names_single_param() {
+        let expr = SymExpr::Param {
+            name: "x".into(),
+            path: vec![],
+        };
+        let names = extract_param_names(&expr);
+        assert_eq!(names, HashSet::from(["x".into()]));
+    }
+
+    #[test]
+    fn extract_param_names_const_returns_empty() {
+        let expr = SymExpr::Const(ConstValue::Int(42));
+        assert!(extract_param_names(&expr).is_empty());
+    }
+
+    #[test]
+    fn extract_param_names_unknown_returns_empty() {
+        assert!(extract_param_names(&SymExpr::Unknown).is_empty());
+    }
+
+    #[test]
+    fn extract_param_names_binop_two_params() {
+        let expr = SymExpr::BinOp {
+            op: BinOpKind::Add,
+            left: Box::new(SymExpr::Param {
+                name: "x".into(),
+                path: vec![],
+            }),
+            right: Box::new(SymExpr::Param {
+                name: "y".into(),
+                path: vec![],
+            }),
+        };
+        assert_eq!(
+            extract_param_names(&expr),
+            HashSet::from(["x".into(), "y".into()])
+        );
+    }
+
+    #[test]
+    fn extract_param_names_deduplicates() {
+        // x > 0 && x < 100 — "x" appears twice but should be deduplicated
+        let expr = SymExpr::BinOp {
+            op: BinOpKind::And,
+            left: Box::new(SymExpr::BinOp {
+                op: BinOpKind::Gt,
+                left: Box::new(SymExpr::Param {
+                    name: "x".into(),
+                    path: vec![],
+                }),
+                right: Box::new(SymExpr::Const(ConstValue::Int(0))),
+            }),
+            right: Box::new(SymExpr::BinOp {
+                op: BinOpKind::Lt,
+                left: Box::new(SymExpr::Param {
+                    name: "x".into(),
+                    path: vec![],
+                }),
+                right: Box::new(SymExpr::Const(ConstValue::Int(100))),
+            }),
+        };
+        let names = extract_param_names(&expr);
+        assert_eq!(names, HashSet::from(["x".into()]));
+    }
+
+    #[test]
+    fn extract_param_names_unop() {
+        let expr = SymExpr::UnOp {
+            op: UnOpKind::Not,
+            operand: Box::new(SymExpr::Param {
+                name: "flag".into(),
+                path: vec![],
+            }),
+        };
+        assert_eq!(
+            extract_param_names(&expr),
+            HashSet::from(["flag".into()])
+        );
+    }
+
+    #[test]
+    fn extract_param_names_call_with_receiver_and_args() {
+        // arr.includes(needle) — receiver is param "arr", arg is param "needle"
+        let expr = SymExpr::Call {
+            name: "includes".into(),
+            receiver: Some(Box::new(SymExpr::Param {
+                name: "arr".into(),
+                path: vec![],
+            })),
+            args: vec![SymExpr::Param {
+                name: "needle".into(),
+                path: vec![],
+            }],
+        };
+        assert_eq!(
+            extract_param_names(&expr),
+            HashSet::from(["arr".into(), "needle".into()])
+        );
+    }
+
+    #[test]
+    fn extract_param_names_call_no_receiver() {
+        let expr = SymExpr::Call {
+            name: "isValid".into(),
+            receiver: None,
+            args: vec![SymExpr::Param {
+                name: "input".into(),
+                path: vec![],
+            }],
+        };
+        assert_eq!(
+            extract_param_names(&expr),
+            HashSet::from(["input".into()])
+        );
+    }
+
+    #[test]
+    fn extract_param_names_deeply_nested() {
+        // (a > 0 && b < 10) || !c — three distinct params across nested ops
+        let expr = SymExpr::BinOp {
+            op: BinOpKind::Or,
+            left: Box::new(SymExpr::BinOp {
+                op: BinOpKind::And,
+                left: Box::new(SymExpr::BinOp {
+                    op: BinOpKind::Gt,
+                    left: Box::new(SymExpr::Param {
+                        name: "a".into(),
+                        path: vec![],
+                    }),
+                    right: Box::new(SymExpr::Const(ConstValue::Int(0))),
+                }),
+                right: Box::new(SymExpr::BinOp {
+                    op: BinOpKind::Lt,
+                    left: Box::new(SymExpr::Param {
+                        name: "b".into(),
+                        path: vec![],
+                    }),
+                    right: Box::new(SymExpr::Const(ConstValue::Int(10))),
+                }),
+            }),
+            right: Box::new(SymExpr::UnOp {
+                op: UnOpKind::Not,
+                operand: Box::new(SymExpr::Param {
+                    name: "c".into(),
+                    path: vec![],
+                }),
+            }),
+        };
+        assert_eq!(
+            extract_param_names(&expr),
+            HashSet::from(["a".into(), "b".into(), "c".into()])
+        );
+    }
+
+    #[test]
+    fn extract_param_names_with_field_path() {
+        // config.timeout > 0 — param name is "config" regardless of path
+        let expr = SymExpr::BinOp {
+            op: BinOpKind::Gt,
+            left: Box::new(SymExpr::Param {
+                name: "config".into(),
+                path: vec!["timeout".into()],
+            }),
+            right: Box::new(SymExpr::Const(ConstValue::Int(0))),
+        };
+        assert_eq!(
+            extract_param_names(&expr),
+            HashSet::from(["config".into()])
+        );
     }
 }
