@@ -80,7 +80,10 @@ For each teammate that submits a plan:
 
 As teammates complete work:
 
-1. **Verify quality**: Confirm the teammate ran quality gates and they passed
+1. **Verify quality**: Confirm the teammate's completion message includes the
+   `/pre-completion` summary table with `Pre-completion: PASS`. Reject any
+   completion announcement that lacks the table or shows FAIL status — send
+   the teammate back to fix the issues
 2. **Get the branch**: Read the worktree branch name from the Task result
 3. **Merge to main**:
    ```bash

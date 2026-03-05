@@ -281,6 +281,10 @@ reporting to a team lead or to the user. This skill verifies quality gates, E2E
 tests, commits pushed, scope, and acceptance criteria. Do not declare completion
 until `/pre-completion` reports PASS.
 
+The `/pre-completion` output table is proof of completion. Agents MUST include
+it verbatim in their completion message. Team leads MUST reject completion
+announcements that lack the table or show any FAIL status.
+
 This is a hard requirement, not a suggestion. Agents that skip `/pre-completion`
 risk announcing "done" with failing tests, unpushed commits, or scope creep —
 all of which have caused regressions in this project.

@@ -142,7 +142,10 @@ Run the appropriate language-specific gates based on what changed, plus E2E test
 
 ## Output
 
-Report a summary table:
+Report a summary table. **This table IS the proof of completion.** You MUST
+include it verbatim in your completion message to the team lead (via
+`SendMessage`) or in your final response to the user. The lead will reject
+completion announcements that do not include this table.
 
 ```
 | Check                        | Status      | Notes                   |
