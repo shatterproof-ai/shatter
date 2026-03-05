@@ -24,6 +24,8 @@ pub enum DiscoveryMethod {
     Random,
     /// Found via user-provided inputs.
     UserProvided,
+    /// Found by parameter drilling on a stalled frontier.
+    Drilled,
 }
 
 /// Percentage breakdown of discovery methods.
@@ -110,7 +112,7 @@ impl CoverageMetrics {
         for (_, method) in discoveries {
             match method {
                 DiscoveryMethod::Z3 => z3_solved += 1,
-                DiscoveryMethod::Random => random_found += 1,
+                DiscoveryMethod::Random | DiscoveryMethod::Drilled => random_found += 1,
                 DiscoveryMethod::UserProvided => user_provided += 1,
             }
         }

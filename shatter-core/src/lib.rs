@@ -17,6 +17,7 @@ pub mod core_sample;
 pub mod coverage_metrics;
 pub mod clustering;
 pub mod discovery;
+pub mod drilling;
 pub mod executability;
 pub mod equivalence;
 pub mod execution_record;
