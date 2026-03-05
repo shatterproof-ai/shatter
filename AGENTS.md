@@ -295,10 +295,10 @@ When spawned as a teammate with `isolation: "worktree"`, you run in a separate
 copy of the repo. **Violating isolation corrupts other agents' work.**
 
 **Rules:**
-- **Never `cd` to the main repo** (`/home/ketan/project/shatter`). Stay in your
-  worktree directory (under `.claude/worktrees/`).
+- **Never `cd` to the main repo**. Stay in your worktree directory (under
+  `.claude/worktrees/`). If unsure, run `git rev-parse --show-toplevel`.
 - **Never `git checkout`** to switch branches. You are already on your branch.
-- **Never run git commands with `-C /home/ketan/project/shatter`**. All git
+- **Never run git commands with `-C` pointing to the main repo**. All git
   operations must target your worktree.
 - **Verify isolation** before critical operations: `git rev-parse --show-toplevel`
   must return a path containing `.claude/worktrees/`.

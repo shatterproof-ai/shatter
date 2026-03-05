@@ -49,16 +49,17 @@ isolated worktree with plan-mode supervision.
      ## WORKTREE SETUP — RUN FIRST
      Before doing anything else, create and enter an isolated worktree:
      ```bash
+     REPO_ROOT="$(git rev-parse --show-toplevel)"
      BRANCH_NAME="<issue-id>"
-     git worktree add /home/ketan/project/shatter/.claude/worktrees/$BRANCH_NAME -b $BRANCH_NAME
-     cd /home/ketan/project/shatter/.claude/worktrees/$BRANCH_NAME
+     git worktree add "$REPO_ROOT/.claude/worktrees/$BRANCH_NAME" -b "$BRANCH_NAME"
+     cd "$REPO_ROOT/.claude/worktrees/$BRANCH_NAME"
      ```
      ALL subsequent commands must run from this worktree directory. Verify with:
      ```bash
      pwd  # Must show .claude/worktrees/<issue-id>
      git branch --show-current  # Must show <issue-id>
      ```
-     NEVER cd back to /home/ketan/project/shatter. Commit and push ONLY on
+     NEVER cd back to the main repo directory. Commit and push ONLY on
      your worktree branch — never touch main.
      ```
    - **Pre-completion enforcement** (copy verbatim into each prompt):

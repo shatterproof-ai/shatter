@@ -259,7 +259,7 @@ Produce a regression table:
 Analyze recent Claude Code session transcripts for this project to identify anti-patterns and improvement opportunities in both user and Claude behavior. Session transcripts are JSONL files at:
 
 ```
-/home/ketan/.claude/projects/-home-ketan-project-shatter/*.jsonl
+~/.claude/projects/*/*.jsonl  # Find the directory matching this project
 ```
 
 **Sampling strategy**: Analyze ALL session transcripts in the project directory (skip files under 5KB as trivial sessions). The analysis is programmatic (parsing JSONL, counting patterns, extracting signals), not full-content reading, so processing all sessions is feasible and gives a more complete picture of patterns over time.
