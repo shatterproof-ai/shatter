@@ -1,6 +1,6 @@
 import { mkdtempSync, open, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { basename, dirname, join } from 'path';
+import { basename, dirname, join, resolve } from 'path';
 
 import { faker } from '@faker-js/faker';
 import * as ts from 'typescript';
@@ -542,7 +542,7 @@ async function testThisCode(functionName: string, sourceCode: string, options: T
 async function testThisFile(sourceFileAbsolute: string, sourceFileRelative:RelativePath, functionName: string, options: TestOptions) {
     const modulePaths = process.env.NODE_ENV?.split(':') ?? [];
 
-    const shatterproofModuleOverride = "/home/ketan/project/shatter/shatter-vs/src";
+    const shatterproofModuleOverride = resolve(__dirname, '..');
 
     const { executed, instrumented, clusters } = await shatterAutotest(modulePaths, sourceFileAbsolute as AbsolutePath, sourceFileRelative, functionName, (clusters) => {
         // console.log(`Received clusters ${JSON.stringify(clusters, null, 2)}`);
@@ -971,8 +971,8 @@ describe('infinitue', () => {
 describe('complicated', () => {
     it('should pass', async () => {
         //  TODO: duh
-        const testfile: AbsolutePath = "/home/ketan/project/shatter/examples/typescript/src/query-creator.ts";
-        // const testfile = "/home/ketan/project/shatter/examples/typescript/src/query-creator-short.ts";
+        const testfile: AbsolutePath = resolve(__dirname, '..', '..', '..', 'examples', 'typescript', 'src', 'query-creator.ts') as AbsolutePath;
+        // const testfile = resolve(__dirname, '..', '..', '..', 'examples', 'typescript', 'src', 'query-creator-short.ts');
         const functionName = "constructSearchQuery";
         await testThisFile(testfile, "./query-creator.ts", functionName, { maxIterations: 500, maxTime: 10_000 });
     });
