@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 use shatter_core::analysis_cache::AnalysisCache;
 use shatter_core::batch_analyze::{self, FunctionRegistry};
@@ -52,8 +52,32 @@ struct Cli {
     #[arg(long, global = true, value_name = "DIR")]
     project_dir: Option<std::path::PathBuf>,
 
+    /// When to use terminal colors: always, auto (default), or never.
+    /// Respects the NO_COLOR environment variable (auto treats it as never).
+    #[arg(long, global = true, default_value = "auto", value_name = "WHEN")]
+    color: ColorMode,
+
     #[command(subcommand)]
     command: CliCommand,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum ColorMode {
+    Always,
+    Auto,
+    Never,
+}
+
+impl ColorMode {
+    fn use_color(self) -> bool {
+        match self {
+            ColorMode::Always => true,
+            ColorMode::Never => false,
+            ColorMode::Auto => {
+                std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none()
+            }
+        }
+    }
 }
 
 impl Cli {
@@ -90,7 +114,7 @@ fn relativize_path(path: &Path, root: &Path) -> String {
         .into_owned()
 }
 
-/// Terminal color support based on TTY detection.
+/// Terminal color support.
 struct Colors {
     bold: &'static str,
     dim: &'static str,
@@ -98,8 +122,8 @@ struct Colors {
 }
 
 impl Colors {
-    fn detect() -> Self {
-        if std::io::stdout().is_terminal() {
+    fn new(use_color: bool) -> Self {
+        if use_color {
             Colors {
                 bold: "\x1b[1m",
                 dim: "\x1b[2m",
@@ -112,6 +136,15 @@ impl Colors {
                 reset: "",
             }
         }
+    }
+}
+
+/// Print Markdown to stdout, rendered with termimad formatting when `use_color` is true.
+fn print_markdown(md: &str, use_color: bool) {
+    if use_color {
+        termimad::print_text(md);
+    } else {
+        print!("{md}");
     }
 }
 
@@ -810,6 +843,7 @@ async fn run_explore(
     dry_run: bool,
     project_dir: Option<&Path>,
     loop_buckets_str: &str,
+    use_color: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let loop_buckets = parse_loop_buckets(loop_buckets_str)?;
     let scope_config = match scope_path {
@@ -1227,7 +1261,7 @@ async fn run_explore(
                                 Err(e) => log::error!("Error serializing spec: {e}"),
                             }
                         } else {
-                            print!("{}", shatter_core::spec::format_spec_markdown(&spec));
+                            print_markdown(&shatter_core::spec::format_spec_markdown(&spec), use_color);
                         }
                     }
 
@@ -1337,6 +1371,7 @@ async fn run_scan(
     log_level: LogLevel,
     memory_limit: Option<u64>,
     project_dir: Option<&Path>,
+    use_color: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let report_format: report::ReportFormat = report_format_str
         .parse()
@@ -1802,7 +1837,7 @@ async fn run_scan(
                 }
             }
 
-            print!("{}", scan_orchestrator::format_parallel_scan_report(&result));
+            print_markdown(&scan_orchestrator::format_parallel_scan_report(&result), use_color);
 
             // Record batch state and print cumulative progress.
             let batch_state = if let Some(batch_idx) = effective_batch_index {
@@ -1848,9 +1883,9 @@ async fn run_scan(
                     log::warn!("failed to save batch state: {e}");
                 }
 
-                print!(
-                    "{}",
-                    shatter_core::batch_state::format_cumulative_batch_section(&state, batch_idx)
+                print_markdown(
+                    &shatter_core::batch_state::format_cumulative_batch_section(&state, batch_idx),
+                    use_color,
                 );
 
                 Some(state)
@@ -1918,6 +1953,7 @@ fn run_diff(
     snapshot_path: &Path,
     current_path: &Path,
     output_json: bool,
+    use_color: bool,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let previous = snapshot::Snapshot::read_from_file(snapshot_path)
         .map_err(|e| format!("failed to read previous snapshot '{}': {e}", snapshot_path.display()))?;
@@ -1931,7 +1967,7 @@ fn run_diff(
             .map_err(|e| format!("failed to serialize diff result: {e}"))?;
         println!("{json}");
     } else {
-        print!("{}", result.format_report());
+        print_markdown(&result.format_report(), use_color);
     }
 
     Ok(result.has_regressions())
@@ -1944,6 +1980,7 @@ fn run_spec_diff(
     old_path: &Path,
     new_path: &Path,
     output_json: bool,
+    use_color: bool,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let old_contents = std::fs::read_to_string(old_path)
         .map_err(|e| format!("failed to read old spec '{}': {e}", old_path.display()))?;
@@ -1962,7 +1999,7 @@ fn run_spec_diff(
             .map_err(|e| format!("failed to serialize spec diff: {e}"))?;
         println!("{json}");
     } else {
-        print!("{}", shatter_core::spec_diff::format_spec_diff_text(&result));
+        print_markdown(&shatter_core::spec_diff::format_spec_diff_text(&result), use_color);
     }
 
     Ok(result.has_regressions())
@@ -2190,6 +2227,7 @@ async fn run_run(
     log_level: LogLevel,
     memory_limit: Option<u64>,
     project_dir: Option<&Path>,
+    use_color: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
 
@@ -2329,6 +2367,7 @@ async fn run_run(
             &cycles,
             &[],
             start.elapsed(),
+            use_color,
         );
 
         if let Some(dir) = output_dir {
@@ -2444,6 +2483,7 @@ async fn run_run(
         &cycles,
         &exploration_results,
         start.elapsed(),
+        use_color,
     );
 
     // Step 7: Write output files if requested
@@ -2455,7 +2495,7 @@ async fn run_run(
     Ok(())
 }
 
-/// Print a markdown-style summary report to stdout.
+/// Print a markdown-style summary report to stdout, rendered with termimad when `use_color` is true.
 #[allow(clippy::too_many_arguments)]
 fn print_summary_report(
     root: &Path,
@@ -2468,61 +2508,65 @@ fn print_summary_report(
     cycles: &[Vec<String>],
     exploration_results: &[(String, explorer::ObservationOutput)],
     elapsed: Duration,
+    use_color: bool,
 ) {
-    println!("# Shatter Run Report");
-    println!();
-    println!("**Repository**: {}", root.display());
-    println!("**Elapsed**: {:.1}s", elapsed.as_secs_f64());
-    println!();
+    use std::fmt::Write;
+    let mut md = String::new();
+
+    writeln!(md, "# Shatter Run Report").unwrap();
+    writeln!(md).unwrap();
+    writeln!(md, "**Repository**: {}", root.display()).unwrap();
+    writeln!(md, "**Elapsed**: {:.1}s", elapsed.as_secs_f64()).unwrap();
+    writeln!(md).unwrap();
 
     // Files discovered
     let total_files = ts_files.len() + go_files.len() + rs_files.len();
-    println!("## Files Discovered");
-    println!();
-    println!("| Language | Files |");
-    println!("|----------|-------|");
+    writeln!(md, "## Files Discovered").unwrap();
+    writeln!(md).unwrap();
+    writeln!(md, "| Language | Files |").unwrap();
+    writeln!(md, "|----------|-------|").unwrap();
     if !ts_files.is_empty() {
-        println!("| TypeScript | {} |", ts_files.len());
+        writeln!(md, "| TypeScript | {} |", ts_files.len()).unwrap();
     }
     if !go_files.is_empty() {
-        println!("| Go | {} |", go_files.len());
+        writeln!(md, "| Go | {} |", go_files.len()).unwrap();
     }
     if !rs_files.is_empty() {
-        println!("| Rust | {} |", rs_files.len());
+        writeln!(md, "| Rust | {} |", rs_files.len()).unwrap();
     }
-    println!("| **Total** | **{total_files}** |");
-    println!();
+    writeln!(md, "| **Total** | **{total_files}** |").unwrap();
+    writeln!(md).unwrap();
 
     // Functions analyzed
     let total_branches: usize = registry.entries().iter().map(|e| e.branch_count).sum();
-    println!("## Functions Analyzed");
-    println!();
-    println!("- **Total functions**: {}", registry.len());
-    println!("- **Total branches**: {total_branches}");
-    println!("- **Exported functions**: {}", registry.exported_functions().len());
-    println!();
+    writeln!(md, "## Functions Analyzed").unwrap();
+    writeln!(md).unwrap();
+    writeln!(md, "- **Total functions**: {}", registry.len()).unwrap();
+    writeln!(md, "- **Total branches**: {total_branches}").unwrap();
+    writeln!(md, "- **Exported functions**: {}", registry.exported_functions().len()).unwrap();
+    writeln!(md).unwrap();
 
     // Call graph summary
-    println!("## Call Graph");
-    println!();
-    println!("- **Nodes**: {}", call_graph.node_count());
-    println!("- **Edges**: {}", call_graph.edge_count());
-    println!("- **Topological layers**: {}", layers.len());
-    println!("- **Cycles**: {}", cycles.len());
+    writeln!(md, "## Call Graph").unwrap();
+    writeln!(md).unwrap();
+    writeln!(md, "- **Nodes**: {}", call_graph.node_count()).unwrap();
+    writeln!(md, "- **Edges**: {}", call_graph.edge_count()).unwrap();
+    writeln!(md, "- **Topological layers**: {}", layers.len()).unwrap();
+    writeln!(md, "- **Cycles**: {}", cycles.len()).unwrap();
     if !cycles.is_empty() {
-        println!();
+        writeln!(md).unwrap();
         for (i, cycle) in cycles.iter().enumerate() {
-            println!("  Cycle {}: {}", i + 1, cycle.join(" <-> "));
+            writeln!(md, "  Cycle {}: {}", i + 1, cycle.join(" <-> ")).unwrap();
         }
     }
-    println!();
+    writeln!(md).unwrap();
 
     // Exploration results
     if !exploration_results.is_empty() {
-        println!("## Exploration Results");
-        println!();
-        println!("| Function | Paths | Lines Covered | Coverage |");
-        println!("|----------|-------|---------------|----------|");
+        writeln!(md, "## Exploration Results").unwrap();
+        writeln!(md).unwrap();
+        writeln!(md, "| Function | Paths | Lines Covered | Coverage |").unwrap();
+        writeln!(md, "|----------|-------|---------------|----------|").unwrap();
 
         let mut total_paths = 0;
         let mut total_covered = 0;
@@ -2534,10 +2578,11 @@ fn print_summary_report(
             } else {
                 0.0
             };
-            println!(
+            writeln!(
+                md,
                 "| {qname} | {} | {}/{} | {pct:.0}% |",
                 result.unique_paths, result.lines_covered, result.total_lines
-            );
+            ).unwrap();
             total_paths += result.unique_paths;
             total_covered += result.lines_covered;
             total_lines += result.total_lines;
@@ -2548,11 +2593,14 @@ fn print_summary_report(
         } else {
             0.0
         };
-        println!(
+        writeln!(
+            md,
             "| **Total** | **{total_paths}** | **{total_covered}/{total_lines}** | **{total_pct:.0}%** |",
-        );
-        println!();
+        ).unwrap();
+        writeln!(md).unwrap();
     }
+
+    print_markdown(&md, use_color);
 }
 
 /// Write analysis-only report to output directory.
@@ -2794,7 +2842,8 @@ async fn main() -> ExitCode {
         .parse_default_env()
         .init();
 
-    let colors = Colors::detect();
+    let use_color = cli.color.use_color();
+    let colors = Colors::new(use_color);
 
     let result = match cli.command {
         CliCommand::Explore {
@@ -2855,6 +2904,7 @@ async fn main() -> ExitCode {
                 dry_run,
                 cli.project_dir.as_deref(),
                 &loop_buckets,
+                use_color,
             )
             .await
         }
@@ -2923,6 +2973,7 @@ async fn main() -> ExitCode {
                 log_level,
                 memory_limit,
                 cli.project_dir.as_deref(),
+                use_color,
             )
             .await
         }
@@ -2980,6 +3031,7 @@ async fn main() -> ExitCode {
                 log_level,
                 memory_limit,
                 cli.project_dir.as_deref(),
+                use_color,
             )
             .await
         }
@@ -2988,7 +3040,7 @@ async fn main() -> ExitCode {
             current,
             json,
         } => {
-            match run_diff(&snapshot, &current, json) {
+            match run_diff(&snapshot, &current, json, use_color) {
                 Ok(has_regressions) => {
                     return if has_regressions {
                         ExitCode::FAILURE
@@ -3000,7 +3052,7 @@ async fn main() -> ExitCode {
             }
         }
         CliCommand::SpecDiff { old, new, json } => {
-            match run_spec_diff(&old, &new, json) {
+            match run_spec_diff(&old, &new, json, use_color) {
                 Ok(has_regressions) => {
                     return if has_regressions {
                         ExitCode::FAILURE
