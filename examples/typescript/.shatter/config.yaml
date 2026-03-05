@@ -27,6 +27,7 @@ defaults:
   # function of the same name that returns a seed value for that parameter.
   param_generators:
     authToken: ./generators/token.ts
+    adversarial: ../../generators/wasm-adversarial/adversarial.wasm
 
 # ── Per-function overrides ───────────────────────────────────────────────
 # Keys are "relative/path.ts:functionName" patterns (globs supported).

@@ -10,6 +10,9 @@ defaults:
   max_iterations: 100
   timeout: 60
 
+  param_generators:
+    adversarial: ../../generators/wasm-adversarial/adversarial.wasm
+
 # ── Per-function overrides ───────────────────────────────────────────────
 # Keys are "relative/path.go:FunctionName" patterns (globs supported).
 functions:
