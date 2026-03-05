@@ -444,3 +444,82 @@ async fn concolic_validateemail_discovers_string_paths() {
 
     frontend.shutdown().await.expect("frontend shutdown failed");
 }
+
+/// Reproduction test for str-omrx: concolic explorer stuck on single path
+/// when using only boundary seeds (no hand-crafted inputs).
+///
+/// This simulates what the CLI actually does in concolic mode: it passes
+/// `generate_boundary_inputs()` as seeds, not hand-crafted emails.
+/// Boundary strings are "", " ", "a", unicode edges, etc. — none contain "@",
+/// so the explorer must rely on Z3 solving or literal-derived seeds to get
+/// past the `indexOf('@') === -1` guard.
+///
+/// Expected: the concolic explorer should discover at least 3 distinct paths
+/// (empty, missing-@, and at least one path past the @ guard) using only
+/// boundary seeds + Z3 constraint solving.
+#[tokio::test]
+async fn concolic_validateemail_boundary_seeds_only() {
+    let file = examples_dir().join("15-email-validator.ts");
+    let file_str = file.to_string_lossy().to_string();
+
+    let mut frontend = spawn_ts_frontend().await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "validateEmail").await;
+    assert_eq!(analysis.params.len(), 1, "validateEmail takes 1 param");
+
+    instrument_function(&mut frontend, &file_str, "validateEmail").await;
+
+    let config = ExploreConfig {
+        max_iterations: 50,
+        max_executions: 300,
+        plateau_threshold: 30,
+        ..Default::default()
+    };
+
+    // Use ONLY boundary seeds — this is what the CLI concolic path does.
+    let seed_inputs = shatter_core::boundary_dict::generate_boundary_inputs(&analysis.params);
+
+    let param_names: Vec<String> = analysis.params.iter().map(|p| p.name.clone()).collect();
+
+    let result = orchestrator::explore(
+        &mut frontend,
+        "validateEmail",
+        seed_inputs,
+        vec![], // no user-provided inputs
+        &param_names,
+        &config,
+    )
+    .await
+    .expect("concolic exploration failed");
+
+    let return_values = return_value_set(&result);
+
+    eprintln!("  [repro] unique_paths: {}", result.unique_paths);
+    eprintln!("  [repro] z3_generated: {}", result.z3_generated);
+    eprintln!("  [repro] fuzz_generated: {}", result.fuzz_generated);
+    eprintln!("  [repro] total_executions: {}", result.total_executions);
+    eprintln!("  [repro] termination: {:?}", result.termination_reason);
+    eprintln!("  [repro] return_values: {return_values:?}");
+
+    // The concolic explorer should get past the '@' guard via Z3 solving.
+    // If it only discovers "empty" and "missing @", the bug is confirmed.
+    let has_past_at_guard = return_values.iter().any(|v| {
+        !v.contains("empty") && !v.contains("missing @")
+    });
+
+    assert!(
+        has_past_at_guard,
+        "str-omrx: concolic explorer stuck before '@' guard — only found: {return_values:?}. \
+         Z3 should solve indexOf('@') constraints to generate inputs containing '@'."
+    );
+
+    // Should discover at least 4 distinct paths if Z3 can solve string constraints.
+    assert!(
+        result.unique_paths >= 4,
+        "str-omrx: expected >=4 unique paths with boundary seeds + Z3; got {}. \
+         return_values: {return_values:?}",
+        result.unique_paths
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
