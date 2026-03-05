@@ -274,6 +274,17 @@ After all teammates finish and their branches are merged, the team lead must:
 Orphan branches from interrupted swarms create confusion — they appear unmerged
 but contain duplicate work that already landed on `main` via a different branch.
 
+### Mandatory Pre-Completion Check
+
+Agents MUST run **`/pre-completion`** before announcing work is done — whether
+reporting to a team lead or to the user. This skill verifies quality gates, E2E
+tests, commits pushed, scope, and acceptance criteria. Do not declare completion
+until `/pre-completion` reports PASS.
+
+This is a hard requirement, not a suggestion. Agents that skip `/pre-completion`
+risk announcing "done" with failing tests, unpushed commits, or scope creep —
+all of which have caused regressions in this project.
+
 ### Worktree isolation for teammates
 
 When spawned as a teammate with `isolation: "worktree"`, you run in a separate

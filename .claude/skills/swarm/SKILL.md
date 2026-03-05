@@ -42,11 +42,8 @@ isolated worktree with plan-mode supervision.
    - `team_name: <team>`
 4. Each teammate's prompt must include:
    - The full issue details (from `bd show`)
-   - Instruction to run the appropriate quality gate skill before reporting done:
-     - Rust changes → `/check-rust`
-     - TypeScript changes → `/check-ts`
-     - Go changes → `/check-go`
-     - Cross-language → `/check-all`
+   - Instruction to run **`/pre-completion`** before reporting done — do not
+     announce completion until it reports PASS
    - Instruction to **push their branch** before reporting completion
    - Instruction to follow CLAUDE.md and AGENTS.md conventions
    - **Worktree isolation rules** (copy verbatim into each prompt):
