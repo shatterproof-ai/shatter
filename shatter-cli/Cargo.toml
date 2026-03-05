@@ -15,3 +15,4 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 tempfile = "3"
 log = "0.4"
 env_logger = "0.11"
+termimad = "0.34"
