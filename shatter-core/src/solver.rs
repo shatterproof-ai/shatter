@@ -10,6 +10,7 @@ use z3::ast::{Ast, Bool, Int, Real, String as Z3String};
 use z3::{Config, SatResult, Solver};
 
 use crate::sym_expr::{BinOpKind, ConstValue, SymExpr, UnOpKind};
+use crate::types::{ParamInfo, TypeInfo};
 
 include!(concat!(env!("OUT_DIR"), "/string_ops_generated.rs"));
 
@@ -74,15 +75,19 @@ struct VarTable {
     reals: HashMap<String, Real>,
     bools: HashMap<String, Bool>,
     strings: HashMap<String, Z3String>,
+    /// Known sorts for top-level parameters, derived from `ParamInfo` type data.
+    /// Used to override `infer_sort` which defaults `Param` to `Sort::Int`.
+    param_sorts: HashMap<String, Sort>,
 }
 
 impl VarTable {
-    fn new() -> Self {
+    fn new(param_sorts: HashMap<String, Sort>) -> Self {
         Self {
             ints: HashMap::new(),
             reals: HashMap::new(),
             bools: HashMap::new(),
             strings: HashMap::new(),
+            param_sorts,
         }
     }
 
@@ -113,6 +118,40 @@ impl VarTable {
             .or_insert_with(|| Z3String::new_const(name))
             .clone()
     }
+}
+
+/// Two sorts are "compatible" if they're in the same category and the comparison
+/// context's hint should take precedence. Numeric sorts (Int, Real) are compatible
+/// with each other; Str and Bool are only compatible with themselves.
+fn sorts_compatible(a: Sort, b: Sort) -> bool {
+    matches!(
+        (a, b),
+        (Sort::Int | Sort::Real, Sort::Int | Sort::Real)
+            | (Sort::Str, Sort::Str)
+            | (Sort::Bool, Sort::Bool)
+    )
+}
+
+/// Map `TypeInfo` from frontend analysis to the Z3 `Sort` used for variable declaration.
+fn type_info_to_sort(ty: &TypeInfo) -> Sort {
+    match ty {
+        TypeInfo::Str => Sort::Str,
+        TypeInfo::Int => Sort::Int,
+        TypeInfo::Float => Sort::Real,
+        TypeInfo::Bool => Sort::Bool,
+        // Nullable<inner> uses the inner type's sort for Z3 purposes
+        TypeInfo::Nullable { inner } => type_info_to_sort(inner),
+        // Default to Int for types Z3 can't represent (arrays, objects, unions, etc.)
+        _ => Sort::Int,
+    }
+}
+
+/// Build a param-name → Sort map from `ParamInfo` slices.
+fn build_param_sorts(param_infos: &[ParamInfo]) -> HashMap<String, Sort> {
+    param_infos
+        .iter()
+        .map(|p| (p.name.clone(), type_info_to_sort(&p.typ)))
+        .collect()
 }
 
 /// Infer the sort a `SymExpr` should have, based on the constants and operators it contains.
@@ -224,7 +263,16 @@ fn to_z3_expr(
     match expr {
         SymExpr::Param { name, path } => {
             let var_name = param_var_name(name, path);
-            match hint_sort {
+            // Use declared param sort to prevent sort mismatches (e.g. string params
+            // declared as Int when they appear inside .length). Only override hint_sort
+            // when the declared sort is categorically different (Str vs numeric/bool).
+            // For numeric sorts (Int/Real/Float), prefer the comparison context's hint
+            // since TS `number` maps to Float but constraints often use Int comparisons.
+            let sort = match vars.param_sorts.get(&var_name).copied() {
+                Some(declared) if !sorts_compatible(declared, hint_sort) => declared,
+                _ => hint_sort,
+            };
+            match sort {
                 Sort::Int => Ok(Z3Ast::Int(vars.get_or_create_int(&var_name))),
                 Sort::Real => Ok(Z3Ast::Real(vars.get_or_create_real(&var_name))),
                 Sort::Bool => Ok(Z3Ast::Bool(vars.get_or_create_bool(&var_name))),
@@ -759,6 +807,7 @@ pub fn solve_for_new_path(
     constraints: &[SymExpr],
     negate_index: usize,
     solver_timeout_ms: Option<u64>,
+    param_infos: &[ParamInfo],
 ) -> Result<SolveResult, SolverError> {
     if negate_index >= constraints.len() {
         return Err(SolverError::Unsupported(format!(
@@ -771,9 +820,10 @@ pub fn solve_for_new_path(
     if let Some(ms) = solver_timeout_ms {
         cfg.set_timeout_msec(ms);
     }
+    let param_sorts = build_param_sorts(param_infos);
     z3::with_z3_config(&cfg, || {
         let solver = Solver::new();
-        let mut vars = VarTable::new();
+        let mut vars = VarTable::new(param_sorts.clone());
 
         // Assert the prefix constraints as-is.
         for constraint in &constraints[..negate_index] {
@@ -798,14 +848,16 @@ pub fn solve_for_new_path(
 pub fn solve_constraints(
     constraints: &[SymExpr],
     solver_timeout_ms: Option<u64>,
+    param_infos: &[ParamInfo],
 ) -> Result<SolveResult, SolverError> {
     let mut cfg = Config::new();
     if let Some(ms) = solver_timeout_ms {
         cfg.set_timeout_msec(ms);
     }
+    let param_sorts = build_param_sorts(param_infos);
     z3::with_z3_config(&cfg, || {
         let solver = Solver::new();
-        let mut vars = VarTable::new();
+        let mut vars = VarTable::new(param_sorts.clone());
 
         for constraint in constraints {
             let sort = infer_operand_sort(constraint);
@@ -891,7 +943,7 @@ mod tests {
     #[test]
     fn satisfiable_int_constraints() {
         let constraints = vec![x_gt_10(), x_lt_20()];
-        let result = solve_constraints(&constraints, None).expect("solver should not error");
+        let result = solve_constraints(&constraints, None, &[]).expect("solver should not error");
         match result {
             SolveResult::Sat(values) => {
                 let x = match values.get("x") {
@@ -907,7 +959,7 @@ mod tests {
     #[test]
     fn unsatisfiable_int_constraints() {
         let constraints = vec![x_gt_10(), x_lt_5()];
-        let result = solve_constraints(&constraints, None).expect("solver should not error");
+        let result = solve_constraints(&constraints, None, &[]).expect("solver should not error");
         assert!(
             matches!(result, SolveResult::Unsat),
             "expected unsat, got {result:?}"
@@ -917,7 +969,7 @@ mod tests {
     #[test]
     fn negate_last_branch_finds_new_path() {
         let constraints = vec![x_gt_10(), x_lt_20()];
-        let result = solve_for_new_path(&constraints, 1, None).expect("solver should not error");
+        let result = solve_for_new_path(&constraints, 1, None, &[]).expect("solver should not error");
         match result {
             SolveResult::Sat(values) => {
                 let x = match values.get("x") {
@@ -933,7 +985,7 @@ mod tests {
     #[test]
     fn negate_first_branch() {
         let constraints = vec![x_gt_10(), x_lt_20()];
-        let result = solve_for_new_path(&constraints, 0, None).expect("solver should not error");
+        let result = solve_for_new_path(&constraints, 0, None, &[]).expect("solver should not error");
         match result {
             SolveResult::Sat(values) => {
                 let x = match values.get("x") {
@@ -956,7 +1008,7 @@ mod tests {
             }),
             right: Box::new(SymExpr::Const(ConstValue::Bool(true))),
         };
-        let result = solve_constraints(&[constraint], None).expect("solver should not error");
+        let result = solve_constraints(&[constraint], None, &[]).expect("solver should not error");
         match result {
             SolveResult::Sat(values) => {
                 assert_eq!(values.get("flag"), Some(&ConcreteValue::Bool(true)));
@@ -975,7 +1027,7 @@ mod tests {
             }),
             right: Box::new(SymExpr::Const(ConstValue::Str("alice".into()))),
         };
-        let result = solve_constraints(&[constraint], None).expect("solver should not error");
+        let result = solve_constraints(&[constraint], None, &[]).expect("solver should not error");
         match result {
             SolveResult::Sat(values) => {
                 assert_eq!(
@@ -1005,7 +1057,7 @@ mod tests {
             }),
             right: Box::new(SymExpr::Const(ConstValue::Str("alice".into()))),
         };
-        let result = solve_constraints(&[eq, ne], None).expect("solver should not error");
+        let result = solve_constraints(&[eq, ne], None, &[]).expect("solver should not error");
         assert!(matches!(result, SolveResult::Unsat));
     }
 
@@ -1019,7 +1071,7 @@ mod tests {
             }),
             right: Box::new(SymExpr::Const(ConstValue::Int(30))),
         };
-        let result = solve_constraints(&[constraint], None).expect("solver should not error");
+        let result = solve_constraints(&[constraint], None, &[]).expect("solver should not error");
         match result {
             SolveResult::Sat(values) => {
                 let v = match values.get("config.timeout") {
@@ -1047,7 +1099,7 @@ mod tests {
             }),
             right: Box::new(SymExpr::Const(ConstValue::Int(15))),
         };
-        let result = solve_constraints(&[constraint], None).expect("solver should not error");
+        let result = solve_constraints(&[constraint], None, &[]).expect("solver should not error");
         match result {
             SolveResult::Sat(values) => {
                 let x = match values.get("x") {
@@ -1082,7 +1134,7 @@ mod tests {
                 right: Box::new(SymExpr::Const(ConstValue::Int(3))),
             }),
         };
-        let result = solve_constraints(&[constraint], None).expect("solver should not error");
+        let result = solve_constraints(&[constraint], None, &[]).expect("solver should not error");
         match result {
             SolveResult::Sat(values) => {
                 let x = match values.get("x") {
@@ -1109,7 +1161,7 @@ mod tests {
             }),
             right: Box::new(SymExpr::Const(ConstValue::Int(5))),
         };
-        let result = solve_constraints(&[constraint], None).expect("solver should not error");
+        let result = solve_constraints(&[constraint], None, &[]).expect("solver should not error");
         match result {
             SolveResult::Sat(values) => {
                 let x = match values.get("x") {
@@ -1136,7 +1188,7 @@ mod tests {
                 right: Box::new(SymExpr::Const(ConstValue::Bool(true))),
             }),
         };
-        let result = solve_constraints(&[constraint], None).expect("solver should not error");
+        let result = solve_constraints(&[constraint], None, &[]).expect("solver should not error");
         match result {
             SolveResult::Sat(values) => {
                 assert_eq!(values.get("x"), Some(&ConcreteValue::Bool(false)));
@@ -1177,7 +1229,7 @@ mod tests {
                 right: Box::new(SymExpr::Const(ConstValue::Int(10))),
             },
         ];
-        let result = solve_constraints(&constraints, None).expect("solver should not error");
+        let result = solve_constraints(&constraints, None, &[]).expect("solver should not error");
         match result {
             SolveResult::Sat(values) => {
                 let x = match values.get("x") {
@@ -1199,14 +1251,14 @@ mod tests {
     #[test]
     fn negate_index_out_of_bounds_returns_error() {
         let constraints = vec![x_gt_10()];
-        let result = solve_for_new_path(&constraints, 5, None);
+        let result = solve_for_new_path(&constraints, 5, None, &[]);
         assert!(result.is_err());
     }
 
     #[test]
     fn unknown_expr_returns_error() {
         let constraints = vec![SymExpr::Unknown];
-        let result = solve_constraints(&constraints, None);
+        let result = solve_constraints(&constraints, None, &[]);
         assert!(result.is_err());
     }
 
@@ -1217,7 +1269,7 @@ mod tests {
             receiver: None,
             args: vec![],
         };
-        let result = solve_constraints(&[constraint], None);
+        let result = solve_constraints(&[constraint], None, &[]);
         assert!(result.is_err());
     }
 
@@ -1232,7 +1284,7 @@ mod tests {
             }),
             right: Box::new(SymExpr::Const(ConstValue::Str("hello".into()))),
         };
-        let result = solve_constraints(&[constraint], None).expect("solver should not error");
+        let result = solve_constraints(&[constraint], None, &[]).expect("solver should not error");
         match result {
             SolveResult::Sat(values) => {
                 let s = match values.get("s") {
@@ -1257,7 +1309,7 @@ mod tests {
             }),
             right: Box::new(SymExpr::Const(ConstValue::Str("abc".into()))),
         };
-        let result = solve_constraints(&[constraint], None).expect("solver should not error");
+        let result = solve_constraints(&[constraint], None, &[]).expect("solver should not error");
         match result {
             SolveResult::Sat(values) => {
                 assert!(
@@ -1291,7 +1343,7 @@ mod tests {
                 right: Box::new(SymExpr::Const(ConstValue::Str("a".into()))),
             },
         ];
-        let result = solve_constraints(&constraints, None).expect("solver should not error");
+        let result = solve_constraints(&constraints, None, &[]).expect("solver should not error");
         assert!(matches!(result, SolveResult::Unsat));
     }
 
@@ -1314,7 +1366,7 @@ mod tests {
             }),
             right: Box::new(SymExpr::Const(ConstValue::Int(10))),
         };
-        let result = solve_constraints(&[constraint], None).expect("solver should not error");
+        let result = solve_constraints(&[constraint], None, &[]).expect("solver should not error");
         match result {
             SolveResult::Sat(values) => {
                 let x = match values.get("x") {
@@ -1338,7 +1390,7 @@ mod tests {
             }),
             right: Box::new(SymExpr::Const(ConstValue::Float(3.5))),
         };
-        let result = solve_constraints(&[constraint], None).expect("solver should not error");
+        let result = solve_constraints(&[constraint], None, &[]).expect("solver should not error");
         match result {
             SolveResult::Sat(values) => {
                 let x = match values.get("x") {
@@ -1381,7 +1433,7 @@ mod tests {
                 right: Box::new(SymExpr::Const(ConstValue::Int(25))),
             },
         ];
-        let result = solve_for_new_path(&constraints, 2, None).expect("solver should not error");
+        let result = solve_for_new_path(&constraints, 2, None, &[]).expect("solver should not error");
         match result {
             SolveResult::Sat(values) => {
                 let x = match values.get("x") {
@@ -1409,7 +1461,7 @@ mod tests {
             }),
             right: Box::new(SymExpr::Const(ConstValue::Int(5))),
         };
-        let result = solve_constraints(&[constraint], None).expect("solver should not error");
+        let result = solve_constraints(&[constraint], None, &[]).expect("solver should not error");
         match result {
             SolveResult::Sat(values) => {
                 let x = match values.get("x") {
@@ -1437,7 +1489,7 @@ mod tests {
             }),
             right: Box::new(SymExpr::Const(ConstValue::Int(0))),
         };
-        let result = solve_constraints(&[constraint], None).expect("solver should not error");
+        let result = solve_constraints(&[constraint], None, &[]).expect("solver should not error");
         match result {
             SolveResult::Sat(values) => {
                 let x = match values.get("x") {
@@ -1464,7 +1516,7 @@ mod tests {
             }),
             right: Box::new(SymExpr::Const(ConstValue::Str("number".into()))),
         };
-        let result = solve_constraints(&[constraint], None).expect("solver should not error");
+        let result = solve_constraints(&[constraint], None, &[]).expect("solver should not error");
         assert!(
             matches!(result, SolveResult::Sat(_)),
             "expected sat for typeof(int) == 'number'"
@@ -1482,7 +1534,7 @@ mod tests {
             }),
             right: Box::new(SymExpr::Const(ConstValue::Str("string".into()))),
         };
-        let result = solve_constraints(&[constraint], None).expect("solver should not error");
+        let result = solve_constraints(&[constraint], None, &[]).expect("solver should not error");
         assert!(
             matches!(result, SolveResult::Sat(_)),
             "expected sat for typeof(string) == 'string'"
@@ -1500,7 +1552,7 @@ mod tests {
             }),
             right: Box::new(SymExpr::Const(ConstValue::Str("boolean".into()))),
         };
-        let result = solve_constraints(&[constraint], None).expect("solver should not error");
+        let result = solve_constraints(&[constraint], None, &[]).expect("solver should not error");
         assert!(
             matches!(result, SolveResult::Sat(_)),
             "expected sat for typeof(bool) == 'boolean'"
@@ -1518,7 +1570,7 @@ mod tests {
             }),
             right: Box::new(SymExpr::Const(ConstValue::Str("string".into()))),
         };
-        let result = solve_constraints(&[constraint], None).expect("solver should not error");
+        let result = solve_constraints(&[constraint], None, &[]).expect("solver should not error");
         assert!(
             matches!(result, SolveResult::Unsat),
             "expected unsat for typeof(int) == 'string'"
@@ -1547,7 +1599,7 @@ mod tests {
             }),
             right: Box::new(SymExpr::Const(ConstValue::Bool(true))),
         };
-        let result = solve_constraints(&[constraint], None).expect("solver should not error");
+        let result = solve_constraints(&[constraint], None, &[]).expect("solver should not error");
         match result {
             SolveResult::Sat(values) => {
                 let s = match values.get("s") {
@@ -1575,7 +1627,7 @@ mod tests {
             }),
             right: Box::new(SymExpr::Const(ConstValue::Bool(true))),
         };
-        let result = solve_constraints(&[constraint], None).expect("solver should not error");
+        let result = solve_constraints(&[constraint], None, &[]).expect("solver should not error");
         match result {
             SolveResult::Sat(values) => {
                 let s = match values.get("s") {
@@ -1600,7 +1652,7 @@ mod tests {
             }),
             right: Box::new(SymExpr::Const(ConstValue::Bool(true))),
         };
-        let result = solve_constraints(&[constraint], None).expect("solver should not error");
+        let result = solve_constraints(&[constraint], None, &[]).expect("solver should not error");
         match result {
             SolveResult::Sat(values) => {
                 let s = match values.get("s") {
@@ -1628,7 +1680,7 @@ mod tests {
             }),
             right: Box::new(SymExpr::Const(ConstValue::Bool(true))),
         };
-        let result = solve_constraints(&[constraint], None).expect("solver should not error");
+        let result = solve_constraints(&[constraint], None, &[]).expect("solver should not error");
         match result {
             SolveResult::Sat(values) => {
                 let s = match values.get("s") {
@@ -1653,7 +1705,7 @@ mod tests {
             }),
             right: Box::new(SymExpr::Const(ConstValue::Bool(true))),
         };
-        let result = solve_constraints(&[constraint], None).expect("solver should not error");
+        let result = solve_constraints(&[constraint], None, &[]).expect("solver should not error");
         match result {
             SolveResult::Sat(values) => {
                 let s = match values.get("s") {
@@ -1681,7 +1733,7 @@ mod tests {
             }),
             right: Box::new(SymExpr::Const(ConstValue::Bool(true))),
         };
-        let result = solve_constraints(&[constraint], None).expect("solver should not error");
+        let result = solve_constraints(&[constraint], None, &[]).expect("solver should not error");
         match result {
             SolveResult::Sat(values) => {
                 let s = match values.get("s") {
@@ -1714,7 +1766,7 @@ mod tests {
                 right: Box::new(SymExpr::Const(ConstValue::Int(5))),
             },
         ];
-        let result = solve_constraints(&constraints, None).expect("solver should not error");
+        let result = solve_constraints(&constraints, None, &[]).expect("solver should not error");
         match result {
             SolveResult::Sat(values) => {
                 let s = match values.get("s") {
@@ -1747,7 +1799,7 @@ mod tests {
                 right: Box::new(SymExpr::Const(ConstValue::Int(-1))),
             },
         ];
-        let result = solve_constraints(&constraints, None).expect("solver should not error");
+        let result = solve_constraints(&constraints, None, &[]).expect("solver should not error");
         assert!(
             matches!(result, SolveResult::Sat(_)),
             "expected sat (abc does not contain xyz)"
@@ -1769,7 +1821,7 @@ mod tests {
             }),
             right: Box::new(SymExpr::Const(ConstValue::Int(0))),
         };
-        let result = solve_constraints(&[constraint], None).expect("solver should not error");
+        let result = solve_constraints(&[constraint], None, &[]).expect("solver should not error");
         match result {
             SolveResult::Sat(values) => {
                 let s = match values.get("s") {
@@ -1802,7 +1854,7 @@ mod tests {
                 right: Box::new(SymExpr::Const(ConstValue::Int(10))),
             },
         ];
-        let result = solve_constraints(&constraints, None).expect("solver should not error");
+        let result = solve_constraints(&constraints, None, &[]).expect("solver should not error");
         match result {
             SolveResult::Sat(values) => {
                 let s = match values.get("s") {
@@ -1831,7 +1883,7 @@ mod tests {
             }),
             right: Box::new(SymExpr::Const(ConstValue::Str("a".into()))),
         };
-        let result = solve_constraints(&[constraint], None).expect("solver should not error");
+        let result = solve_constraints(&[constraint], None, &[]).expect("solver should not error");
         match result {
             SolveResult::Sat(values) => {
                 let s = match values.get("s") {
@@ -1866,7 +1918,7 @@ mod tests {
                 right: Box::new(SymExpr::Const(ConstValue::Str("hello".into()))),
             },
         ];
-        let result = solve_constraints(&constraints, None).expect("solver should not error");
+        let result = solve_constraints(&constraints, None, &[]).expect("solver should not error");
         assert!(
             matches!(result, SolveResult::Sat(_)),
             "expected sat — 'hello world'.slice(0,5) == 'hello'"
@@ -1885,7 +1937,7 @@ mod tests {
             }),
             right: Box::new(SymExpr::Const(ConstValue::Str("hello world".into()))),
         };
-        let result = solve_constraints(&[constraint], None).expect("solver should not error");
+        let result = solve_constraints(&[constraint], None, &[]).expect("solver should not error");
         match result {
             SolveResult::Sat(values) => {
                 let s = match values.get("s") {
@@ -1917,7 +1969,7 @@ mod tests {
                 right: Box::new(SymExpr::Const(ConstValue::Bool(false))),
             },
         ];
-        let result = solve_constraints(&constraints, None).expect("solver should not error");
+        let result = solve_constraints(&constraints, None, &[]).expect("solver should not error");
         assert!(
             matches!(result, SolveResult::Unsat),
             "expected unsat — 'abc' always contains 'b'"
@@ -1931,7 +1983,7 @@ mod tests {
             receiver: None,
             args: vec![],
         };
-        let result = solve_constraints(&[constraint], None);
+        let result = solve_constraints(&[constraint], None, &[]);
         assert!(result.is_err());
     }
 
@@ -2063,7 +2115,7 @@ mod tests {
                 },
                 _ => unreachable!(),
             };
-            let result = solve_constraints(&[constraint], None);
+            let result = solve_constraints(&[constraint], None, &[]);
             assert!(
                 result.is_ok(),
                 "operation '{op_name}' via method '{method}' failed to convert: {:?}",
@@ -2085,7 +2137,7 @@ mod tests {
         };
 
         // With a 1ms timeout, Z3 may solve it instantly or time out — both are OK.
-        let result = solve_constraints(&[constraint], Some(1));
+        let result = solve_constraints(&[constraint], Some(1), &[]);
         match result {
             Ok(SolveResult::Sat(_)) => {} // solved before timeout
             Err(SolverError::Unknown(reason)) => {

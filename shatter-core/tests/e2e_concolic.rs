@@ -150,14 +150,12 @@ async fn concolic_classifynumber_discovers_all_branches() {
         vec![serde_json::json!(-3)],
     ];
 
-    let param_names: Vec<String> = analysis.params.iter().map(|p| p.name.clone()).collect();
-
     let result = orchestrator::explore(
         &mut frontend,
         "classifyNumber",
         seed_inputs,
         vec![], // no user-provided inputs
-        &param_names,
+        &analysis.params,
         &config,
     )
     .await
@@ -235,14 +233,12 @@ async fn concolic_comparemagnitudes_discovers_compound_branches() {
         vec![serde_json::json!(200), serde_json::json!(200)],
     ];
 
-    let param_names: Vec<String> = analysis.params.iter().map(|p| p.name.clone()).collect();
-
     let result = orchestrator::explore(
         &mut frontend,
         "compareMagnitudes",
         seed_inputs,
         vec![],
-        &param_names,
+        &analysis.params,
         &config,
     )
     .await
@@ -311,14 +307,12 @@ async fn concolic_safedivide_discovers_error_paths() {
         vec![serde_json::json!(-7), serde_json::json!(2)],
     ];
 
-    let param_names: Vec<String> = analysis.params.iter().map(|p| p.name.clone()).collect();
-
     let result = orchestrator::explore(
         &mut frontend,
         "safeDivide",
         seed_inputs,
         vec![],
-        &param_names,
+        &analysis.params,
         &config,
     )
     .await
@@ -396,14 +390,12 @@ async fn concolic_validateemail_discovers_string_paths() {
         vec![serde_json::json!("test@example.com")],     // standard valid
     ];
 
-    let param_names: Vec<String> = analysis.params.iter().map(|p| p.name.clone()).collect();
-
     let result = orchestrator::explore(
         &mut frontend,
         "validateEmail",
         seed_inputs,
         vec![], // no user-provided inputs
-        &param_names,
+        &analysis.params,
         &config,
     )
     .await
@@ -479,14 +471,12 @@ async fn concolic_validateemail_boundary_seeds_only() {
     // Use ONLY boundary seeds — this is what the CLI concolic path does.
     let seed_inputs = shatter_core::boundary_dict::generate_boundary_inputs(&analysis.params);
 
-    let param_names: Vec<String> = analysis.params.iter().map(|p| p.name.clone()).collect();
-
     let result = orchestrator::explore(
         &mut frontend,
         "validateEmail",
         seed_inputs,
         vec![], // no user-provided inputs
-        &param_names,
+        &analysis.params,
         &config,
     )
     .await

@@ -19,7 +19,7 @@ use crate::frontend::{Frontend, FrontendError};
 use crate::protocol::{Command, ExecuteResult, ResponseResult};
 use crate::solver::{self, ConcreteValue, SolveResult};
 use crate::sym_expr::SymExpr;
-use crate::types::ComplexKind;
+use crate::types::{ComplexKind, ParamInfo};
 
 /// Parsed frontend capabilities from the handshake response.
 ///
@@ -279,8 +279,10 @@ fn overlay_solved_values(
             if idx < result.len() {
                 result[idx] = concrete_to_json(value);
             }
-        } else if param_names.len() == 1 && base_inputs.len() == 1 {
-            // Single-param function: the solver variable likely refers to the param.
+        } else if param_names.len() == 1 && base_inputs.len() == 1 && !var_name.contains('.') {
+            // Single-param function with a simple (non-derived) variable name:
+            // the solver variable likely refers to the param. Skip derived names
+            // like "email.length" which are internal Z3 variables, not params.
             result[0] = concrete_to_json(value);
         }
     }
@@ -293,15 +295,18 @@ fn overlay_solved_values(
 /// `function_name` is the fully-qualified name of the function to explore.
 /// `seed_inputs` provides initial input sets to begin exploration.
 /// `user_inputs` provides user-provided candidate inputs (highest priority).
-/// `param_names` maps parameter positions to their names (used to map Z3 variables back).
+/// `param_infos` provides parameter metadata including names and types. Names are
+/// used to map Z3 variables back to parameter positions; types are used to declare
+/// correct Z3 sorts (preventing string params from being declared as Int).
 pub async fn explore(
     frontend: &mut Frontend,
     function_name: &str,
     seed_inputs: Vec<Vec<serde_json::Value>>,
     user_inputs: Vec<Vec<serde_json::Value>>,
-    param_names: &[String],
+    param_infos: &[ParamInfo],
     config: &ExploreConfig,
 ) -> Result<ExploreResult, ExploreError> {
+    let param_names: Vec<String> = param_infos.iter().map(|p| p.name.clone()).collect();
     let mut worklist = BinaryHeap::new();
     let mut covered_paths: HashSet<u64> = HashSet::new();
     let mut executions = Vec::new();
@@ -403,10 +408,10 @@ pub async fn explore(
         // solvable constraints and negate the i-th one.
         if !solvable.is_empty() {
             for negate_idx in 0..solvable.len() {
-                match solver::solve_for_new_path(&solvable, negate_idx, config.solver_timeout_ms) {
+                match solver::solve_for_new_path(&solvable, negate_idx, config.solver_timeout_ms, param_infos) {
                     Ok(SolveResult::Sat(values)) => {
                         let new_inputs =
-                            overlay_solved_values(&entry.inputs, &values, param_names);
+                            overlay_solved_values(&entry.inputs, &values, &param_names);
                         worklist.push(WorklistEntry {
                             inputs: new_inputs,
                             source: InputSource::Z3Solved,
@@ -817,7 +822,7 @@ mod tests {
         // Then negating it gives x == 42. ✓
         //
         // For this test, let's just use solve_constraints directly to verify Z3 can find x=42.
-        let result = solver::solve_constraints(&[x_eq_42], None).expect("solver should not error");
+        let result = solver::solve_constraints(&[x_eq_42], None, &[]).expect("solver should not error");
 
         match result {
             SolveResult::Sat(values) => {
@@ -850,7 +855,7 @@ mod tests {
 
         // Negate constraint[0] to flip the branch: NOT(NOT(x == 42)) → x == 42.
         let result =
-            solver::solve_for_new_path(&[not_x_eq_42], 0, None).expect("solver should not error");
+            solver::solve_for_new_path(&[not_x_eq_42], 0, None, &[]).expect("solver should not error");
 
         match result {
             SolveResult::Sat(values) => {
@@ -905,7 +910,7 @@ mod tests {
 
         // Negate constraint[0]: flip NOT(x>10) → x>10. With prefix empty, just x>10.
         let result =
-            solver::solve_for_new_path(&constraints, 0, None).expect("should solve for branch 0");
+            solver::solve_for_new_path(&constraints, 0, None, &[]).expect("should solve for branch 0");
         match result {
             SolveResult::Sat(values) => {
                 let x = match values.get("x") {
@@ -920,7 +925,7 @@ mod tests {
         // Negate constraint[1]: keep prefix NOT(x>10) i.e. x<=10, then flip NOT(x==42) → x==42.
         // But x<=10 AND x==42 is UNSAT (can't be both ≤10 and =42).
         let result =
-            solver::solve_for_new_path(&constraints, 1, None).expect("should solve for branch 1");
+            solver::solve_for_new_path(&constraints, 1, None, &[]).expect("should solve for branch 1");
         assert!(
             matches!(result, SolveResult::Unsat),
             "x<=10 AND x==42 should be unsat"
@@ -929,7 +934,7 @@ mod tests {
         // Negate constraint[2]: keep prefix NOT(x>10), NOT(x==42), flip x<100 → x>=100.
         // x<=10 AND x!=42 AND x>=100 is UNSAT.
         let result =
-            solver::solve_for_new_path(&constraints, 2, None).expect("should solve for branch 2");
+            solver::solve_for_new_path(&constraints, 2, None, &[]).expect("should solve for branch 2");
         assert!(
             matches!(result, SolveResult::Unsat),
             "x<=10 AND x>=100 should be unsat"
@@ -1019,7 +1024,7 @@ mod tests {
             "stub",
             vec![vec![serde_json::json!(0)]],
             vec![],
-            &["x".to_string()],
+            &[ParamInfo { name: "x".into(), typ: crate::types::TypeInfo::Int, type_name: None }],
             &explore_config,
         )
         .await
@@ -1054,7 +1059,7 @@ mod tests {
             "f",
             vec![vec![serde_json::json!(0)]],
             vec![],
-            &["x".to_string()],
+            &[ParamInfo { name: "x".into(), typ: crate::types::TypeInfo::Int, type_name: None }],
             &explore_config,
         )
         .await
@@ -1098,7 +1103,7 @@ mod tests {
             "stub",
             seeds,
             vec![],
-            &["x".to_string()],
+            &[ParamInfo { name: "x".into(), typ: crate::types::TypeInfo::Int, type_name: None }],
             &explore_config,
         )
         .await
@@ -1136,7 +1141,7 @@ mod tests {
             "stub",
             seeds,
             vec![],
-            &["x".to_string()],
+            &[ParamInfo { name: "x".into(), typ: crate::types::TypeInfo::Int, type_name: None }],
             &explore_config,
         )
         .await
@@ -1167,7 +1172,7 @@ mod tests {
             "f",
             vec![vec![serde_json::json!(0)], vec![serde_json::json!(20)]],
             vec![],
-            &["x".to_string()],
+            &[ParamInfo { name: "x".into(), typ: crate::types::TypeInfo::Int, type_name: None }],
             &explore_config,
         )
         .await

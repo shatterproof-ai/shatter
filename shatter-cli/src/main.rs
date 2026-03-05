@@ -1120,7 +1120,6 @@ async fn run_explore(
 
             // Choose exploration strategy: concolic (Z3-backed) or random.
             let explore_result: Result<shatter_core::explorer::ObservationOutput, shatter_core::explorer::ExploreError> = if use_concolic {
-                let param_names: Vec<String> = func.params.iter().map(|p| p.name.clone()).collect();
                 let mut seed_inputs = shatter_core::boundary_dict::generate_boundary_inputs(&func.params);
                 let user_inputs: Vec<Vec<serde_json::Value>> = resolved.candidate_inputs
                     .iter()
@@ -1147,7 +1146,7 @@ async fn run_explore(
                     &func.name,
                     seed_inputs,
                     user_inputs,
-                    &param_names,
+                    &func.params,
                     &concolic_config,
                 ).await {
                     Ok(mut concolic_result) => {
