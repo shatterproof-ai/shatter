@@ -30,6 +30,7 @@ pub mod input_gen;
 pub mod interesting_pool;
 pub mod log_level;
 pub mod mock_gen;
+pub mod nondeterminism;
 pub mod invariants;
 pub mod orchestrator;
 pub mod pipeline;
