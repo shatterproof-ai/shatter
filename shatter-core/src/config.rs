@@ -72,6 +72,10 @@ pub struct ShatterConfig {
     /// Additional type names to treat as opaque (unexecutable).
     #[serde(default)]
     pub opaque_types: Vec<String>,
+
+    /// User-declared nondeterminism: confirmed and rejected field declarations.
+    #[serde(default)]
+    pub nondeterminism: Option<NondeterminismConfig>,
 }
 
 
@@ -214,6 +218,29 @@ pub struct CandidateInput {
     /// Optional human-readable label describing this input.
     #[serde(default)]
     pub label: Option<String>,
+}
+
+/// A user declaration that a specific field is (or is not) nondeterministic.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct NondeterminismDeclaration {
+    /// Function name or pattern (e.g. `"createUser"`).
+    pub function: String,
+    /// JSONPath to the field (e.g. `"$.id"`).
+    pub path: String,
+    /// Human-readable explanation of why this field is/isn't nondeterministic.
+    pub reason: String,
+}
+
+/// User-declared nondeterminism configuration.
+///
+/// `confirmed` entries become `NondeterminismEvidence::UserDeclared` (highest precedence).
+/// `rejected` entries suppress re-flagging by heuristics.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+pub struct NondeterminismConfig {
+    #[serde(default)]
+    pub confirmed: Vec<NondeterminismDeclaration>,
+    #[serde(default)]
+    pub rejected: Vec<NondeterminismDeclaration>,
 }
 
 /// Resolved configuration for a specific function, after merging hierarchical configs.
@@ -384,6 +411,31 @@ pub fn merge_configs(configs: &[ShatterConfig]) -> ShatterConfig {
         }
     }
 
+    // Merge nondeterminism declarations: union all confirmed/rejected, dedup by (function, path).
+    let mut confirmed = Vec::<NondeterminismDeclaration>::new();
+    let mut rejected = Vec::<NondeterminismDeclaration>::new();
+    let mut has_any = false;
+    for config in configs {
+        if let Some(ref nd) = config.nondeterminism {
+            has_any = true;
+            for decl in &nd.confirmed {
+                if !confirmed.iter().any(|d| d.function == decl.function && d.path == decl.path) {
+                    confirmed.push(decl.clone());
+                }
+            }
+            for decl in &nd.rejected {
+                if !rejected.iter().any(|d| d.function == decl.function && d.path == decl.path) {
+                    rejected.push(decl.clone());
+                }
+            }
+        }
+    }
+    let nondeterminism = if has_any {
+        Some(NondeterminismConfig { confirmed, rejected })
+    } else {
+        None
+    };
+
     ShatterConfig {
         defaults: DefaultsConfig {
             max_iterations,
@@ -397,6 +449,7 @@ pub fn merge_configs(configs: &[ShatterConfig]) -> ShatterConfig {
         },
         functions,
         opaque_types,
+        nondeterminism,
     }
 }
 
@@ -1475,5 +1528,120 @@ functions:
         let func_genetic = func_config.genetic.as_ref().unwrap();
         assert!(func_genetic.enabled);
         assert_eq!(func_genetic.max_generations, 200);
+    }
+
+    #[test]
+    fn parse_config_with_nondeterminism() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.yaml");
+        fs::write(
+            &config_path,
+            r#"
+defaults: {}
+nondeterminism:
+  confirmed:
+    - function: createUser
+      path: '$.id'
+      reason: 'UUID generated per call'
+  rejected:
+    - function: processOrder
+      path: '$.orderId'
+      reason: 'deterministic sequence from input'
+"#,
+        )
+        .unwrap();
+
+        let config = parse_config(&config_path).unwrap();
+        let nd = config.nondeterminism.as_ref().expect("nondeterminism present");
+        assert_eq!(nd.confirmed.len(), 1);
+        assert_eq!(nd.confirmed[0].function, "createUser");
+        assert_eq!(nd.confirmed[0].path, "$.id");
+        assert_eq!(nd.confirmed[0].reason, "UUID generated per call");
+        assert_eq!(nd.rejected.len(), 1);
+        assert_eq!(nd.rejected[0].function, "processOrder");
+        assert_eq!(nd.rejected[0].path, "$.orderId");
+    }
+
+    #[test]
+    fn parse_config_without_nondeterminism_is_none() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.yaml");
+        fs::write(&config_path, "defaults: {}\n").unwrap();
+
+        let config = parse_config(&config_path).unwrap();
+        assert!(config.nondeterminism.is_none());
+    }
+
+    #[test]
+    fn nondeterminism_config_round_trip() {
+        let config = ShatterConfig {
+            nondeterminism: Some(NondeterminismConfig {
+                confirmed: vec![NondeterminismDeclaration {
+                    function: "createUser".into(),
+                    path: "$.id".into(),
+                    reason: "UUID".into(),
+                }],
+                rejected: vec![],
+            }),
+            ..ShatterConfig::default()
+        };
+
+        let yaml = serde_yaml::to_string(&config).expect("serialize");
+        let restored: ShatterConfig = serde_yaml::from_str(&yaml).expect("deserialize");
+        assert_eq!(config, restored);
+    }
+
+    #[test]
+    fn merge_configs_unions_nondeterminism() {
+        let near = ShatterConfig {
+            nondeterminism: Some(NondeterminismConfig {
+                confirmed: vec![NondeterminismDeclaration {
+                    function: "createUser".into(),
+                    path: "$.id".into(),
+                    reason: "UUID".into(),
+                }],
+                rejected: vec![],
+            }),
+            ..ShatterConfig::default()
+        };
+        let far = ShatterConfig {
+            nondeterminism: Some(NondeterminismConfig {
+                confirmed: vec![
+                    // Duplicate (function, path) — should be deduped, near wins
+                    NondeterminismDeclaration {
+                        function: "createUser".into(),
+                        path: "$.id".into(),
+                        reason: "overridden reason".into(),
+                    },
+                    NondeterminismDeclaration {
+                        function: "getTime".into(),
+                        path: "$.now".into(),
+                        reason: "clock".into(),
+                    },
+                ],
+                rejected: vec![NondeterminismDeclaration {
+                    function: "processOrder".into(),
+                    path: "$.orderId".into(),
+                    reason: "deterministic".into(),
+                }],
+            }),
+            ..ShatterConfig::default()
+        };
+
+        let merged = merge_configs(&[near, far]);
+        let nd = merged.nondeterminism.expect("merged nondeterminism");
+        assert_eq!(nd.confirmed.len(), 2);
+        // Near wins for duplicate key
+        assert_eq!(nd.confirmed[0].reason, "UUID");
+        assert_eq!(nd.confirmed[1].function, "getTime");
+        assert_eq!(nd.rejected.len(), 1);
+    }
+
+    #[test]
+    fn merge_configs_no_nondeterminism_stays_none() {
+        let a = ShatterConfig::default();
+        let b = ShatterConfig::default();
+        let merged = merge_configs(&[a, b]);
+        assert!(merged.nondeterminism.is_none());
     }
 }
