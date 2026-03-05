@@ -50,4 +50,5 @@ pub mod solver;
 pub mod stratum;
 pub mod strategy;
 pub mod sym_expr;
+pub mod triage;
 pub mod types;
