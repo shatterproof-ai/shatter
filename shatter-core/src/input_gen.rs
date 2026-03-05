@@ -925,16 +925,16 @@ pub fn generate_inputs_with_custom(
 /// Applies a random type-appropriate mutation operator. The output is always
 /// type-valid for the given `TypeInfo`. Types that cannot be meaningfully
 /// mutated (Complex, Opaque, Unknown) are returned unchanged.
-pub fn mutate_value(value: &Value, typ: &TypeInfo, rng: &mut impl Rng) -> Value {
+pub fn mutate_value(value: &Value, typ: &TypeInfo, dictionary: &[&str], rng: &mut impl Rng) -> Value {
     match typ {
         TypeInfo::Int => mutate_int(value, rng),
         TypeInfo::Float => mutate_float(value, rng),
         TypeInfo::Bool => mutate_bool(value),
-        TypeInfo::Str => mutate_string(value, rng),
-        TypeInfo::Array { element } => mutate_array(value, element, rng),
-        TypeInfo::Object { fields } => mutate_object(value, fields, rng),
-        TypeInfo::Union { variants } => mutate_union(value, variants, rng),
-        TypeInfo::Nullable { inner } => mutate_nullable(value, inner, rng),
+        TypeInfo::Str => mutate_string(value, dictionary, rng),
+        TypeInfo::Array { element } => mutate_array(value, element, dictionary, rng),
+        TypeInfo::Object { fields } => mutate_object(value, fields, dictionary, rng),
+        TypeInfo::Union { variants } => mutate_union(value, variants, dictionary, rng),
+        TypeInfo::Nullable { inner } => mutate_nullable(value, inner, dictionary, rng),
         TypeInfo::Complex { .. } | TypeInfo::Opaque { .. } | TypeInfo::Unknown => value.clone(),
     }
 }
@@ -947,6 +947,7 @@ pub fn mutate_inputs(
     inputs: &[Value],
     params: &[crate::types::ParamInfo],
     mutation_rate: f64,
+    dictionary: &[&str],
     rng: &mut impl Rng,
 ) -> Vec<Value> {
     inputs
@@ -954,7 +955,7 @@ pub fn mutate_inputs(
         .zip(params.iter())
         .map(|(val, param)| {
             if rng.random_range(0.0..1.0_f64) < mutation_rate {
-                mutate_value(val, &param.typ, rng)
+                mutate_value(val, &param.typ, dictionary, rng)
             } else {
                 val.clone()
             }
@@ -1033,12 +1034,17 @@ fn mutate_bool(value: &Value) -> Value {
 }
 
 /// Mutate a string value.
-fn mutate_string(value: &Value, rng: &mut impl Rng) -> Value {
+///
+/// When `dictionary` is non-empty, an additional mutation operator (fragment
+/// injection) becomes available — it splices a random dictionary entry into
+/// the string at a random position.
+fn mutate_string(value: &Value, dictionary: &[&str], rng: &mut impl Rng) -> Value {
     let s = match value.as_str() {
         Some(s) => s.to_string(),
         None => return generate_string(rng),
     };
-    let op: u8 = rng.random_range(0..6);
+    let num_ops: u8 = if dictionary.is_empty() { 6 } else { 7 };
+    let op: u8 = rng.random_range(0..num_ops);
     match op {
         0 => {
             // Char substitution
@@ -1115,16 +1121,26 @@ fn mutate_string(value: &Value, rng: &mut impl Rng) -> Value {
             // Empty
             json!("")
         }
-        _ => {
+        5 => {
             // Long string (1000 chars)
             let long: String = (0..1000).map(|_| 'a').collect();
             json!(long)
+        }
+        _ => {
+            // Dictionary fragment injection
+            let fragment = dictionary[rng.random_range(0..dictionary.len())];
+            let chars: Vec<char> = s.chars().collect();
+            let pos = rng.random_range(0..=chars.len());
+            let byte_pos: usize = chars[..pos].iter().map(|c| c.len_utf8()).sum();
+            let mut result = s;
+            result.insert_str(byte_pos, fragment);
+            json!(result)
         }
     }
 }
 
 /// Mutate an array value.
-fn mutate_array(value: &Value, element: &TypeInfo, rng: &mut impl Rng) -> Value {
+fn mutate_array(value: &Value, element: &TypeInfo, dictionary: &[&str], rng: &mut impl Rng) -> Value {
     let arr = match value.as_array() {
         Some(a) => a.clone(),
         None => return generate_array(element, rng, None),
@@ -1155,7 +1171,7 @@ fn mutate_array(value: &Value, element: &TypeInfo, rng: &mut impl Rng) -> Value 
             // Mutate element
             let mut result = arr;
             let idx = rng.random_range(0..result.len());
-            result[idx] = mutate_value(&result[idx], element, rng);
+            result[idx] = mutate_value(&result[idx], element, dictionary, rng);
             json!(result)
         }
         _ => {
@@ -1173,6 +1189,7 @@ fn mutate_array(value: &Value, element: &TypeInfo, rng: &mut impl Rng) -> Value 
 fn mutate_object(
     value: &Value,
     fields: &[(String, TypeInfo)],
+    dictionary: &[&str],
     rng: &mut impl Rng,
 ) -> Value {
     let obj = match value.as_object() {
@@ -1190,7 +1207,7 @@ fn mutate_object(
             let idx = rng.random_range(0..fields.len());
             let (name, typ) = &fields[idx];
             if let Some(current) = result.get(name) {
-                let mutated = mutate_value(current, typ, rng);
+                let mutated = mutate_value(current, typ, dictionary, rng);
                 result.insert(name.clone(), mutated);
             }
             Value::Object(result)
@@ -1212,16 +1229,16 @@ fn mutate_object(
 }
 
 /// Mutate a union value by applying mutation with a random variant's type.
-fn mutate_union(value: &Value, variants: &[TypeInfo], rng: &mut impl Rng) -> Value {
+fn mutate_union(value: &Value, variants: &[TypeInfo], dictionary: &[&str], rng: &mut impl Rng) -> Value {
     if variants.is_empty() {
         return value.clone();
     }
     let idx = rng.random_range(0..variants.len());
-    mutate_value(value, &variants[idx], rng)
+    mutate_value(value, &variants[idx], dictionary, rng)
 }
 
 /// Mutate a nullable value: 20% chance to flip null/non-null, otherwise mutate inner.
-fn mutate_nullable(value: &Value, inner: &TypeInfo, rng: &mut impl Rng) -> Value {
+fn mutate_nullable(value: &Value, inner: &TypeInfo, dictionary: &[&str], rng: &mut impl Rng) -> Value {
     if rng.random_range(0..5) == 0 {
         // Flip null / non-null
         if value.is_null() {
@@ -1233,7 +1250,7 @@ fn mutate_nullable(value: &Value, inner: &TypeInfo, rng: &mut impl Rng) -> Value
         // Stay null most of the time if already null
         Value::Null
     } else {
-        mutate_value(value, inner, rng)
+        mutate_value(value, inner, dictionary, rng)
     }
 }
 
@@ -2146,7 +2163,7 @@ mod tests {
         let mut saw_min = false;
         let mut saw_max = false;
         for _ in 0..500 {
-            let mutated = mutate_value(&json!(42), &TypeInfo::Int, &mut rng);
+            let mutated = mutate_value(&json!(42), &TypeInfo::Int, &[], &mut rng);
             let n = mutated.as_i64().or_else(|| mutated.as_u64().map(|u| u as i64));
             if let Some(n) = n {
                 if n == 0 { saw_zero = true; }
@@ -2162,7 +2179,7 @@ mod tests {
     #[test]
     fn mutate_int_invalid_input_regenerates() {
         let mut rng = seeded_rng();
-        let mutated = mutate_value(&json!("not_an_int"), &TypeInfo::Int, &mut rng);
+        let mutated = mutate_value(&json!("not_an_int"), &TypeInfo::Int, &[], &mut rng);
         assert!(
             mutated.is_i64() || mutated.is_u64(),
             "should regenerate valid int, got {mutated}"
@@ -2175,7 +2192,7 @@ mod tests {
         let mut saw_null = false; // NaN or Inf → null
         let mut saw_zero = false;
         for _ in 0..500 {
-            let mutated = mutate_value(&json!(1.0), &TypeInfo::Float, &mut rng);
+            let mutated = mutate_value(&json!(1.0), &TypeInfo::Float, &[], &mut rng);
             if mutated.is_null() {
                 saw_null = true;
             }
@@ -2190,8 +2207,8 @@ mod tests {
     #[test]
     fn mutate_bool_flips() {
         let mut rng = seeded_rng();
-        assert_eq!(mutate_value(&json!(true), &TypeInfo::Bool, &mut rng), json!(false));
-        assert_eq!(mutate_value(&json!(false), &TypeInfo::Bool, &mut rng), json!(true));
+        assert_eq!(mutate_value(&json!(true), &TypeInfo::Bool, &[], &mut rng), json!(false));
+        assert_eq!(mutate_value(&json!(false), &TypeInfo::Bool, &[], &mut rng), json!(true));
     }
 
     #[test]
@@ -2203,7 +2220,7 @@ mod tests {
         let mut saw_long = false;
         let original = "hello";
         for _ in 0..500 {
-            let mutated = mutate_value(&json!(original), &TypeInfo::Str, &mut rng);
+            let mutated = mutate_value(&json!(original), &TypeInfo::Str, &[], &mut rng);
             let s = mutated.as_str().unwrap_or("");
             if s.is_empty() { saw_empty = true; }
             if s.len() >= 1000 { saw_long = true; }
@@ -2220,7 +2237,36 @@ mod tests {
     fn mutate_string_empty_input_is_safe() {
         let mut rng = seeded_rng();
         for _ in 0..50 {
-            let mutated = mutate_value(&json!(""), &TypeInfo::Str, &mut rng);
+            let mutated = mutate_value(&json!(""), &TypeInfo::Str, &[], &mut rng);
+            assert!(mutated.is_string(), "expected string, got {mutated}");
+        }
+    }
+
+    #[test]
+    fn mutate_string_dictionary_injection() {
+        let mut rng = StdRng::seed_from_u64(0);
+        let dictionary: &[&str] = &["@", "://", ".com"];
+        let mut saw_at = false;
+        let mut saw_scheme = false;
+        let mut saw_dotcom = false;
+        for _ in 0..500 {
+            let mutated = mutate_value(&json!("hello"), &TypeInfo::Str, dictionary, &mut rng);
+            let s = mutated.as_str().unwrap_or("");
+            if s.contains('@') { saw_at = true; }
+            if s.contains("://") { saw_scheme = true; }
+            if s.contains(".com") { saw_dotcom = true; }
+        }
+        assert!(saw_at, "should inject '@' from dictionary");
+        assert!(saw_scheme, "should inject '://' from dictionary");
+        assert!(saw_dotcom, "should inject '.com' from dictionary");
+    }
+
+    #[test]
+    fn mutate_string_empty_dictionary_no_injection() {
+        let mut rng = StdRng::seed_from_u64(42);
+        // With empty dictionary, op range is 0..6, same as before
+        for _ in 0..100 {
+            let mutated = mutate_value(&json!("test"), &TypeInfo::Str, &[], &mut rng);
             assert!(mutated.is_string(), "expected string, got {mutated}");
         }
     }
@@ -2230,7 +2276,7 @@ mod tests {
         let mut rng = seeded_rng();
         let typ = TypeInfo::Array { element: Box::new(TypeInfo::Int) };
         for _ in 0..100 {
-            let mutated = mutate_value(&json!([1, 2, 3]), &typ, &mut rng);
+            let mutated = mutate_value(&json!([1, 2, 3]), &typ, &[], &mut rng);
             assert!(mutated.is_array(), "expected array, got {mutated}");
         }
     }
@@ -2239,7 +2285,7 @@ mod tests {
     fn mutate_array_empty_can_grow() {
         let mut rng = seeded_rng();
         let typ = TypeInfo::Array { element: Box::new(TypeInfo::Int) };
-        let mutated = mutate_value(&json!([]), &typ, &mut rng);
+        let mutated = mutate_value(&json!([]), &typ, &[], &mut rng);
         let arr = mutated.as_array().expect("expected array");
         assert_eq!(arr.len(), 1, "empty array mutation should add an element");
     }
@@ -2255,7 +2301,7 @@ mod tests {
         };
         let original = json!({"name": "Alice", "age": 30});
         for _ in 0..100 {
-            let mutated = mutate_value(&original, &typ, &mut rng);
+            let mutated = mutate_value(&original, &typ, &[], &mut rng);
             assert!(mutated.is_object(), "expected object, got {mutated}");
         }
     }
@@ -2268,7 +2314,7 @@ mod tests {
             ParamInfo { name: "b".into(), typ: TypeInfo::Str, type_name: None },
         ];
         let inputs = vec![json!(42), json!("hello")];
-        let mutated = mutate_inputs(&inputs, &params, 0.0, &mut rng);
+        let mutated = mutate_inputs(&inputs, &params, 0.0, &[], &mut rng);
         assert_eq!(mutated, inputs);
     }
 
@@ -2280,7 +2326,7 @@ mod tests {
             ParamInfo { name: "b".into(), typ: TypeInfo::Bool, type_name: None },
         ];
         let inputs = vec![json!(true), json!(false)];
-        let mutated = mutate_inputs(&inputs, &params, 1.0, &mut rng);
+        let mutated = mutate_inputs(&inputs, &params, 1.0, &[], &mut rng);
         // Bools always flip, so both should change
         assert_eq!(mutated[0], json!(false));
         assert_eq!(mutated[1], json!(true));
@@ -2290,7 +2336,7 @@ mod tests {
     fn mutate_value_unknown_returns_unchanged() {
         let mut rng = seeded_rng();
         let val = json!(42);
-        assert_eq!(mutate_value(&val, &TypeInfo::Unknown, &mut rng), val);
+        assert_eq!(mutate_value(&val, &TypeInfo::Unknown, &[], &mut rng), val);
     }
 
     #[test]
@@ -2298,7 +2344,7 @@ mod tests {
         let mut rng = seeded_rng();
         let val = json!(null);
         let typ = TypeInfo::Opaque { label: "net.Socket".into() };
-        assert_eq!(mutate_value(&val, &typ, &mut rng), val);
+        assert_eq!(mutate_value(&val, &typ, &[], &mut rng), val);
     }
 
     #[test]
@@ -2308,7 +2354,7 @@ mod tests {
         let mut saw_null = false;
         let mut saw_value = false;
         for _ in 0..100 {
-            let mutated = mutate_value(&json!(42), &typ, &mut rng);
+            let mutated = mutate_value(&json!(42), &typ, &[], &mut rng);
             if mutated.is_null() {
                 saw_null = true;
             } else {
@@ -2325,7 +2371,7 @@ mod tests {
         let typ = TypeInfo::Nullable { inner: Box::new(TypeInfo::Int) };
         let mut saw_non_null = false;
         for _ in 0..100 {
-            let mutated = mutate_value(&Value::Null, &typ, &mut rng);
+            let mutated = mutate_value(&Value::Null, &typ, &[], &mut rng);
             if !mutated.is_null() {
                 saw_non_null = true;
             }
@@ -2340,7 +2386,7 @@ mod tests {
             variants: vec![TypeInfo::Int, TypeInfo::Str],
         };
         for _ in 0..50 {
-            let mutated = mutate_value(&json!(42), &typ, &mut rng);
+            let mutated = mutate_value(&json!(42), &typ, &[], &mut rng);
             assert!(
                 mutated.is_i64() || mutated.is_u64() || mutated.is_string(),
                 "expected int or string, got {mutated}"

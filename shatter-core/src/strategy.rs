@@ -638,7 +638,7 @@ impl FuzzerStrategy {
 
         // 2. Type-aware mutation via input_gen.
         let params: Vec<ParamInfo> = ctx.params.clone();
-        let mutated = mutate_inputs(&base, &params, FUZZER_MUTATION_RATE, &mut self.rng);
+        let mutated = mutate_inputs(&base, &params, FUZZER_MUTATION_RATE, &[], &mut self.rng);
         self.pending.push_back(mutated);
 
         // 3. Crossover when at least two interesting inputs exist.
