@@ -1695,6 +1695,7 @@ async fn run_scan(
             timeout_total: None,
             pool_path: None,
             project_root: project_root_str.clone(),
+            config_dir: Some(std::path::PathBuf::from(directory)),
         };
         let plan = scan_orchestrator::format_dry_run_plan(
             &all_analyses,
@@ -1762,6 +1763,7 @@ async fn run_scan(
         timeout_total: if timeout_total == 0 { None } else { Some(Duration::from_secs(timeout_total)) },
         pool_path: Some(std::path::PathBuf::from(directory).join(".shatter/seeds/pool.json")),
         project_root: project_root_str.clone(),
+        config_dir: Some(std::path::PathBuf::from(directory)),
     };
 
     let scan_start = Instant::now();
