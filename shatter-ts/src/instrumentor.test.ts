@@ -1053,6 +1053,36 @@ describe("data flow tracking", () => {
       },
     });
   });
+
+  it("tracks data flow through indexOf call (parity: CallExpression in buildSymExprWithFlow)", () => {
+    const source = `function check(s: string): boolean {
+  const x = s.indexOf("@");
+  if (x === -1) {
+    return false;
+  }
+  return true;
+}`;
+    const result = instrumentFunction(source, "check");
+    if ("error" in result) throw new Error(result.error);
+
+    const { branches } = executeAndCollect(result.instrumentedSource, "check", ["hello"]);
+    // The branch condition should resolve the call expression through data flow, not be unknown
+    expect(branches.length).toBeGreaterThan(0);
+    expect(branches[0]!.constraint).toEqual({
+      kind: "expr",
+      expr: {
+        kind: "bin_op",
+        op: "eq",
+        left: {
+          kind: "call",
+          name: "indexOf",
+          receiver: { kind: "param", name: "s", path: [] },
+          args: [{ kind: "const", type: "str", value: "@" }],
+        },
+        right: { kind: "un_op", op: "neg", operand: { kind: "const", type: "int", value: 1 } },
+      },
+    });
+  });
 });
 
 describe("mock injection via import rewriting", () => {
