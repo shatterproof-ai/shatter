@@ -135,7 +135,7 @@ RUST_EXAMPLES=(
     "examples/standalone/rust/error_propagation.rs:parse_config_line"
 )
 
-TOTAL=41
+TOTAL=42
 
 # ─── Walkthrough ──────────────────────────────────────────────────────
 
@@ -330,33 +330,38 @@ step 35 $TOTAL "Concolic Exploration (Z3)" \
     "Use the Z3-backed concolic explorer to solve branch constraints" \
     $SHATTER explore --concolic "${EXAMPLES[0]}"
 
-# Stage 36: Custom build-frontend help
-step 36 $TOTAL "Custom Build Frontend" \
+# Stage 36: Concolic exploration of string functions (Z3 string ops)
+step 36 $TOTAL "Concolic String Exploration (Z3)" \
+    "Use the Z3-backed concolic explorer on string-method functions (startsWith, includes)" \
+    $SHATTER explore --concolic "examples/standalone/ts/02-strings.ts:classifyString"
+
+# Stage 37: Custom build-frontend help
+step 37 $TOTAL "Custom Build Frontend" \
     "Show the build-frontend subcommand for compiling native generators into a custom frontend binary" \
     $SHATTER build-frontend --help
 
-# Stage 37: Spec output to file (--output)
-step 37 $TOTAL "Spec Output to File" \
+# Stage 38: Spec output to file (--output)
+step 38 $TOTAL "Spec Output to File" \
     "Write a spec bundle to a JSON file with --output (includes fingerprints)" \
     $SHATTER explore --output /tmp/shatter-spec.json "${EXAMPLES[0]}"
 
-# Stage 38: Incremental re-run (skips fresh functions)
-step 38 $TOTAL "Incremental Re-run" \
+# Stage 39: Incremental re-run (skips fresh functions)
+step 39 $TOTAL "Incremental Re-run" \
     "Re-run with --output against existing spec — unchanged functions are skipped" \
     $SHATTER explore --output /tmp/shatter-spec.json "${EXAMPLES[0]}"
 
-# Stage 39: Dry-run mode
-step 39 $TOTAL "Dry-Run Mode" \
+# Stage 40: Dry-run mode
+step 40 $TOTAL "Dry-Run Mode" \
     "Use --dry-run to preview which functions would be re-explored without actually exploring" \
     $SHATTER explore --output /tmp/shatter-spec.json --dry-run "${EXAMPLES[0]}"
 
-# Stage 40: Clean re-exploration
-step 40 $TOTAL "Clean Re-exploration" \
+# Stage 41: Clean re-exploration
+step 41 $TOTAL "Clean Re-exploration" \
     "Use --clean to force full re-exploration, ignoring the existing spec" \
     $SHATTER explore --output /tmp/shatter-spec.json --clean "${EXAMPLES[0]}"
 
-# Stage 41: Stale command
-step 41 $TOTAL "Stale Check" \
+# Stage 42: Stale command
+step 42 $TOTAL "Stale Check" \
     "Check which functions are stale relative to an existing spec file" \
     $SHATTER stale "examples/standalone/ts/01-arithmetic.ts" /tmp/shatter-spec.json
 
