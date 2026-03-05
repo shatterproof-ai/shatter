@@ -21,7 +21,7 @@ For local dev: Rust toolchain, Node.js 22+, Go 1.24+, libclang. Run `./scripts/c
 - Regression snapshots are checked into the repo and verified in CI
 - **Bug fixes require a reproduction test first** — write an automated test that demonstrates the bug (must fail), then fix the code and verify the test passes. Never attempt a fix without a failing test.
 - **No magic numbers or string literals** — define named constants for default values, timeouts, error codes, capability lists, and any value that appears in both production code and tests. Tests must reference the constant, not duplicate the literal. Each language has a canonical location for constants (see per-language conventions below).
-- **No absolute paths** — all file paths in code, tests, output artifacts, and documentation must be relative to the project root. Use `path.resolve(__dirname, ...)` (TS), `filepath.Abs` (Go), or `env::current_dir` (Rust) to derive paths at runtime. Hardcoded absolute paths break portability and leak machine-specific information.
+- **No hardcoded absolute paths** — never write a literal absolute path (e.g. `"/home/user/project/..."`) in code, tests, output artifacts, or documentation. Runtime-computed absolute paths are fine and often necessary — use `path.resolve(...)` (TS), `filepath.Abs` (Go), or `canonicalize()` / `env::current_dir` (Rust). The rule prohibits hardcoded paths that bake in machine-specific locations, not absolute paths in general.
 - **Parallel code paths must maintain parity** — when two functions process the same domain (e.g. `buildSymExpr` and `buildSymExprWithFlow`, random explorer and concolic orchestrator, CLI wiring for `--concolic` vs default), they must handle the same cases. When adding a capability to one path, check the other. When adding a new AST node type, CLI flag, or config field, grep for the parallel code path and update it too.
 
 See `/rust-conventions`, `/ts-conventions`, `/go-conventions` skills for detailed per-language standards.
@@ -123,7 +123,7 @@ Before declaring any feature or bug fix **done**, verify:
 - **Never bypass clippy warnings** with `#[allow(...)]` without a comment explaining why
 - **Never add a CLI command** without updating `demo/walkthrough.sh`
 - **Never close a pipeline feature based on unit tests alone** — run `cargo test --test e2e_concolic` to verify end-to-end behavior. Unit tests prove a module works in isolation; E2E tests prove it works in the pipeline. Both are required.
-- **Never use absolute paths** in code, tests, config, or output artifacts — always use paths relative to the project root. Absolute paths break portability and leak machine details.
+- **Never hardcode absolute paths** — no literal paths like `"/home/user/..."` or `"/tmp/specific-dir/..."` in source, tests, or config. Runtime-computed absolute paths (from `canonicalize()`, `current_dir()`, `path.resolve()`, etc.) are fine.
 - **Never add a capability to one explorer path without checking the other** — the random explorer (`explorer.rs`) and concolic orchestrator (`orchestrator.rs`) are wired differently in `main.rs`. A feature added to one is routinely missing from the other (see str-emw6). Grep for the parallel path before declaring done.
 
 ## Common Task Recipes
