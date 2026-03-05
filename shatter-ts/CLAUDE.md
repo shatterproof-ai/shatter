@@ -4,7 +4,8 @@ TypeScript language frontend. Node.js subprocess implementing the JSON-over-stdi
 
 ## Key Files
 
-- `src/main.ts` — Entry point, protocol handler, `log()` function that writes `[shatter-ts]` lines to stderr
+- `src/main.ts` — Entry point, protocol handler
+- `src/logger.ts` — pino logger configured for stderr with `[shatter-ts]` prefix, reads `SHATTER_LOG_LEVEL`
 
 ## Instrumentor Parity Contract
 

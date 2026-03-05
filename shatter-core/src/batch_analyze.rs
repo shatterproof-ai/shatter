@@ -183,10 +183,7 @@ pub async fn batch_analyze(
         if let Some(cache) = analysis_cache
             && let Err(e) = cache.store(file_path, &functions)
         {
-            eprintln!(
-                "Warning: failed to cache analysis for {}: {e}",
-                file_path.display()
-            );
+            log::warn!("failed to cache analysis for {}: {e}", file_path.display());
         }
 
         for func in functions {

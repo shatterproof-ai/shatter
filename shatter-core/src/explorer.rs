@@ -474,7 +474,7 @@ async fn send_setup(
     match response.result {
         ResponseResult::Setup { setup_context } => Ok(Some(setup_context)),
         ResponseResult::Error { message, .. } => {
-            eprintln!("[shatter-core] setup error for {function}: {message}");
+            log::warn!("setup error for {function}: {message}");
             Ok(None)
         }
         other => Err(ExploreError::UnexpectedResponse(format!(
@@ -493,7 +493,7 @@ async fn send_teardown(frontend: &mut Frontend, function: &str) -> Result<(), Ex
     match response.result {
         ResponseResult::TeardownAck => Ok(()),
         ResponseResult::Error { message, .. } => {
-            eprintln!("[shatter-core] teardown error for {function}: {message}");
+            log::warn!("teardown error for {function}: {message}");
             Ok(())
         }
         other => Err(ExploreError::UnexpectedResponse(format!(
@@ -568,7 +568,7 @@ pub async fn explore_function(
         prefetch_custom_values(&config.value_sources, frontend, config.max_iterations as usize)
             .await
             .unwrap_or_else(|e| {
-                eprintln!("[shatter-core] prefetch failed, falling back to built-in: {e}");
+                log::debug!("prefetch failed, falling back to built-in: {e}");
                 PrefetchedValues::new()
             })
     } else {

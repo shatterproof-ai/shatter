@@ -816,9 +816,7 @@ async fn run_explore(
         Some(path) => {
             let config = ScopeConfig::from_file(path)
                 .map_err(|e| format!("failed to load scope config: {e}"))?;
-            if log_level >= LogLevel::Info {
-                eprintln!("Loaded scope config from {}", path.display());
-            }
+            log::info!("Loaded scope config from {}", path.display());
             config
         }
         None => ScopeConfig::default(),
@@ -856,15 +854,13 @@ async fn run_explore(
 
         let project_root_str = resolve_project_root(project_dir, &target.file);
 
-        if log_level >= LogLevel::Debug {
-            if let Some(ref root) = project_root_str {
-                eprintln!("[debug] Project root: {root}");
-            }
-            eprintln!(
-                "[debug] Exploring {file_str}:{func_display} [language={}, max_iterations={max_iterations}]",
-                target.language.label()
-            );
+        if let Some(ref root) = project_root_str {
+            log::debug!("Project root: {root}");
         }
+        log::debug!(
+            "Exploring {file_str}:{func_display} [language={}, max_iterations={max_iterations}]",
+            target.language.label()
+        );
 
         let config = frontend_config(target.language, req_timeout, log_level, exec_timeout, build_timeout, memory_limit, None)?;
         let mut frontend = Frontend::spawn(&config).await.map_err(|e| {
@@ -874,12 +870,10 @@ async fn run_explore(
             )
         })?;
 
-        if log_level >= LogLevel::Debug {
-            eprintln!(
-                "[debug] Frontend connected (language={})",
-                frontend.language().unwrap_or("unknown")
-            );
-        }
+        log::debug!(
+            "Frontend connected (language={})",
+            frontend.language().unwrap_or("unknown")
+        );
 
         // Analyze phase
         let analyze_response = frontend
@@ -893,24 +887,22 @@ async fn run_explore(
 
         match &analyze_response.result {
             ResponseResult::Analyze { functions } => {
-                if log_level >= LogLevel::Debug {
-                    eprintln!("  Found {} function(s):", functions.len());
-                    for func in functions {
-                        eprintln!("    - {} ({} params, {} branches)",
-                            func.name,
-                            func.params.len(),
-                            func.branches.len(),
-                        );
-                    }
+                log::debug!("Found {} function(s):", functions.len());
+                for func in functions {
+                    log::debug!("  - {} ({} params, {} branches)",
+                        func.name,
+                        func.params.len(),
+                        func.branches.len(),
+                    );
                 }
             }
             ResponseResult::Error { code, message, .. } => {
-                eprintln!("  Analyze error ({code:?}): {message}");
+                log::error!("Analyze error ({code:?}): {message}");
                 shutdown_frontend(frontend).await;
                 continue;
             }
             other => {
-                eprintln!("  Unexpected analyze response: {other:?}");
+                log::error!("Unexpected analyze response: {other:?}");
                 shutdown_frontend(frontend).await;
                 continue;
             }
@@ -922,7 +914,7 @@ async fn run_explore(
         };
 
         if analyze_only {
-            if log_level >= LogLevel::Info {
+            if log::log_enabled!(log::Level::Info) {
                 for func in &functions {
                     eprintln!(
                         "{}{}{}  ({file_str}:{})",
@@ -952,17 +944,13 @@ async fn run_explore(
                     match shatter_core::spec::compute_incremental_plan(&target.file, &functions, &existing) {
                         Ok(plan) => Some((plan, existing)),
                         Err(e) => {
-                            if log_level >= LogLevel::Debug {
-                                eprintln!("[debug] Failed to compute incremental plan: {e}");
-                            }
+                            log::debug!("Failed to compute incremental plan: {e}");
                             None
                         }
                     }
                 }
                 Err(e) => {
-                    if log_level >= LogLevel::Debug {
-                        eprintln!("[debug] Failed to read existing spec: {e}");
-                    }
+                    log::debug!("Failed to read existing spec: {e}");
                     None
                 }
             }
@@ -1006,10 +994,10 @@ async fn run_explore(
             continue;
         }
 
-        if !fresh_set.is_empty() && log_level >= LogLevel::Info {
-            eprintln!("Skipping {} fresh function(s):", fresh_set.len());
+        if !fresh_set.is_empty() && log::log_enabled!(log::Level::Info) {
+            log::info!("Skipping {} fresh function(s):", fresh_set.len());
             for name in &fresh_set {
-                eprintln!("  {name}");
+                log::info!("  {name}");
             }
         }
 
@@ -1018,9 +1006,7 @@ async fn run_explore(
             // Explicit config bypasses discovery
             let cfg = shatter_config::parse_config(cp)
                 .map_err(|e| format!("failed to load config: {e}"))?;
-            if log_level >= LogLevel::Debug {
-                eprintln!("[debug] Loaded config from {}", cp.display());
-            }
+            log::debug!("Loaded config from {}", cp.display());
             vec![cfg]
         } else {
             // Hierarchical discovery from target file's directory
@@ -1056,18 +1042,14 @@ async fn run_explore(
             .map_err(|e| format!("config resolution error for {}: {e}", func.name))?;
 
             if resolved.skip {
-                if log_level >= LogLevel::Debug {
-                    eprintln!("\n  [debug] Skipping {} (skip=true in config)", func.name);
-                }
+                log::debug!("Skipping {} (skip=true in config)", func.name);
                 continue;
             }
 
             // Check for unexecutable parameter types (opaque types like net.Socket).
             let skip_reasons = executability::check_executability(&func.params, &[]);
             if !skip_reasons.is_empty() {
-                if log_level >= LogLevel::Debug {
-                    eprintln!("\n  [debug] Skipping {} (unexecutable parameter types)", func.name);
-                }
+                log::debug!("Skipping {} (unexecutable parameter types)", func.name);
                 skipped_unexecutable.push((func.name.clone(), skip_reasons));
                 continue;
             }
@@ -1110,17 +1092,14 @@ async fn run_explore(
                 loop_buckets: loop_buckets.clone(),
             };
 
-            // Convert candidate inputs for logging
-            if log_level >= LogLevel::Debug {
-                if !resolved.candidate_inputs.is_empty() {
-                    eprintln!(
-                        "\n  [debug] Exploring {} ({} candidate input(s) from config)...",
-                        func.name,
-                        resolved.candidate_inputs.len()
-                    );
-                } else {
-                    eprintln!("\n  [debug] Exploring {}...", func.name);
-                }
+            if !resolved.candidate_inputs.is_empty() {
+                log::debug!(
+                    "Exploring {} ({} candidate input(s) from config)...",
+                    func.name,
+                    resolved.candidate_inputs.len()
+                );
+            } else {
+                log::debug!("Exploring {}...", func.name);
             }
 
             let _ = &shatter_configs; // suppress unused warning
@@ -1178,8 +1157,8 @@ async fn run_explore(
                     // Run the Analyze stage to get coverage metrics and eq classes.
                     let analyze_output = shatter_core::pipeline::analyze(&result, func);
 
-                    if log_level >= LogLevel::Info {
-                        if log_level >= LogLevel::Trace {
+                    if log::log_enabled!(log::Level::Info) {
+                        if log::log_enabled!(log::Level::Trace) {
                             eprint!("{}", explorer::format_exploration_report_verbose(&result));
                         } else {
                             let report_opts = ReportOptions {
@@ -1193,7 +1172,7 @@ async fn run_explore(
                         if !mock_symbols.is_empty() {
                             eprintln!("  Mocks used: {}", mock_symbols.join(", "));
                         }
-                        if use_concolic && log_level >= LogLevel::Info {
+                        if use_concolic {
                             eprintln!("  Explorer: concolic (Z3-backed)");
                         }
                         eprintln!();
@@ -1220,7 +1199,7 @@ async fn run_explore(
                         } else if spec_as_json {
                             match shatter_core::spec::format_spec_json(&spec) {
                                 Ok(json) => println!("{json}"),
-                                Err(e) => eprintln!("  Error serializing spec: {e}"),
+                                Err(e) => log::error!("Error serializing spec: {e}"),
                             }
                         } else {
                             print!("{}", shatter_core::spec::format_spec_markdown(&spec));
@@ -1232,24 +1211,24 @@ async fn run_explore(
                     if let Some(ref cache) = cache
                         && let Err(e) = cache.store(&behavior_map)
                     {
-                        eprintln!("  Warning: failed to cache behavior map for {}: {e}", func.name);
+                        log::warn!("failed to cache behavior map for {}: {e}", func.name);
                     }
                 }
                 Err(e) => {
-                    eprintln!("  Exploration error for {}: {e}", func.name);
+                    log::error!("Exploration error for {}: {e}", func.name);
                 }
             }
         }
 
         // Print summary of skipped unexecutable functions.
-        if !skipped_unexecutable.is_empty() && log_level >= LogLevel::Info {
-            eprintln!(
+        if !skipped_unexecutable.is_empty() && log::log_enabled!(log::Level::Info) {
+            log::info!(
                 "Skipped {} function(s) (unexecutable parameter types):",
                 skipped_unexecutable.len()
             );
             for (name, reasons) in &skipped_unexecutable {
                 for reason in reasons {
-                    eprintln!(
+                    log::info!(
                         "  {name}: param {:?} has opaque type {}",
                         reason.param_name, reason.opaque_label
                     );
@@ -1291,13 +1270,11 @@ async fn run_explore(
         // Single-target is the primary Make use case; write the first bundle.
         shatter_core::spec::write_file_spec_bundle(&file_spec_bundles[0], out)
             .map_err(|e| format!("failed to write spec bundle to {}: {e}", out.display()))?;
-        if log_level >= LogLevel::Info {
-            eprintln!(
-                "Wrote spec bundle ({} function(s)) to {}",
-                file_spec_bundles[0].functions.len(),
-                out.display()
-            );
-        }
+        log::info!(
+            "Wrote spec bundle ({} function(s)) to {}",
+            file_spec_bundles[0].functions.len(),
+            out.display()
+        );
     }
 
     Ok(())
@@ -1371,10 +1348,8 @@ async fn run_scan(
 
     let project_root_str = resolve_project_root(project_dir, &root);
 
-    if log_level >= LogLevel::Debug
-        && let Some(ref pr) = project_root_str
-    {
-        eprintln!("[debug] Project root: {pr}");
+    if let Some(ref pr) = project_root_str {
+        log::debug!("Project root: {pr}");
     }
 
     // Discover source files.
@@ -1410,17 +1385,15 @@ async fn run_scan(
         .collect();
 
     if analyzable_files.is_empty() {
-        eprintln!("No supported source files found in {}", root.display());
+        log::info!("No supported source files found in {}", root.display());
         return Ok(());
     }
 
-    if log_level >= LogLevel::Info {
-        eprintln!(
-            "Discovered {} source file(s) in {}",
-            analyzable_files.len(),
-            root.display(),
-        );
-    }
+    log::info!(
+        "Discovered {} source file(s) in {}",
+        analyzable_files.len(),
+        root.display(),
+    );
 
     // Spawn frontends for each language.
     let req_timeout = Duration::from_secs(request_timeout);
@@ -1437,12 +1410,10 @@ async fn run_scan(
         let frontend = Frontend::spawn(&config).await.map_err(|e| {
             format!("failed to spawn {lang:?} frontend: {e}")
         })?;
-        if log_level >= LogLevel::Debug {
-            eprintln!(
-                "[debug] Frontend connected (language={})",
-                frontend.language().unwrap_or("unknown")
-            );
-        }
+        log::debug!(
+            "Frontend connected (language={})",
+            frontend.language().unwrap_or("unknown")
+        );
         frontends.insert(*lang, frontend);
     }
 
@@ -1467,13 +1438,11 @@ async fn run_scan(
     .await
     .map_err(|e| format!("batch analyze failed: {e}"))?;
 
-    if log_level >= LogLevel::Debug {
-        eprintln!(
-            "  Found {} function(s) across {} file(s)",
-            registry.len(),
-            analyzable_files.len(),
-        );
-    }
+    log::debug!(
+        "Found {} function(s) across {} file(s)",
+        registry.len(),
+        analyzable_files.len(),
+    );
 
     // Collect analyses and file map from the registry.
     let mut all_analyses = Vec::new();
@@ -1522,13 +1491,13 @@ async fn run_scan(
         }
     });
 
-    if !skipped_for_executability.is_empty() && log_level >= LogLevel::Info {
-        eprintln!(
+    if !skipped_for_executability.is_empty() {
+        log::info!(
             "Skipped {} function(s) (unexecutable parameter types):",
             skipped_for_executability.len()
         );
         for skip in &skipped_for_executability {
-            eprintln!("  {}: {}", skip.function_name, skip.reason);
+            log::info!("  {}: {}", skip.function_name, skip.reason);
         }
     }
 
@@ -1562,13 +1531,11 @@ async fn run_scan(
                 .collect();
         let before = all_analyses.len();
         all_analyses.retain(|a| selected.contains(&a.name));
-        if log_level >= LogLevel::Info {
-            eprintln!(
-                "Stratum filter: {} of {} function(s) in selected layers",
-                all_analyses.len(),
-                before,
-            );
-        }
+        log::info!(
+            "Stratum filter: {} of {} function(s) in selected layers",
+            all_analyses.len(),
+            before,
+        );
         true
     } else {
         false
@@ -1619,20 +1586,16 @@ async fn run_scan(
                     )
                 }
                 shatter_core::core_sample::BatchSpec::Range(start, end) => {
-                    if log_level >= LogLevel::Info {
-                        eprintln!(
-                            "Batch range {start}-{end}: running batch {start} \
-                             (run subsequent batches with --batch {}..{})",
-                            start + 1, end,
-                        );
-                    }
+                    log::info!(
+                        "Batch range {start}-{end}: running batch {start} \
+                         (run subsequent batches with --batch {}..{})",
+                        start + 1, end,
+                    );
                     start
                 }
             };
             effective_batch_index = Some(batch_index);
-            if log_level >= LogLevel::Info {
-                eprintln!("Using batch {batch_index} of core sample");
-            }
+            log::info!("Using batch {batch_index} of core sample");
             shatter_core::core_sample::select_batch(&entries, &cg, &cs_config, batch_index)
         } else {
             shatter_core::core_sample::select_core_sample(&entries, &cg, &cs_config)
@@ -1650,15 +1613,13 @@ async fn run_scan(
                 included.contains(&a.name)
             }
         });
-        if log_level >= LogLevel::Info {
-            eprintln!(
-                "Core sample: selected {} of {} function(s) ({} sampled + {} dependency closure)",
-                included.len(),
-                before,
-                result.selected.len(),
-                result.dependency_closure.len(),
-            );
-        }
+        log::info!(
+            "Core sample: selected {} of {} function(s) ({} sampled + {} dependency closure)",
+            included.len(),
+            before,
+            result.selected.len(),
+            result.dependency_closure.len(),
+        );
         Some(scan_orchestrator::SamplingContext {
             total_functions: before,
             sampled_functions: result.selected.len(),
@@ -1667,13 +1628,13 @@ async fn run_scan(
         })
     } else {
         if batch_spec.is_some() {
-            eprintln!("Warning: --batch requires --core-sample; ignoring --batch");
+            log::warn!("--batch requires --core-sample; ignoring --batch");
         }
         None
     };
 
     if all_analyses.is_empty() {
-        eprintln!("No functions found to scan.");
+        log::info!("No functions found to scan.");
         for frontend in frontends.into_values() {
             shutdown_frontend(frontend).await;
         }
@@ -1720,14 +1681,12 @@ async fn run_scan(
         return Ok(());
     }
 
-    if log_level >= LogLevel::Debug {
-        eprintln!(
-            "\n[debug] Scanning {} function(s) in dependency order ({} worker(s), {}s/fn)...\n",
-            all_analyses.len(),
-            effective_parallelism,
-            timeout_per_fn,
-        );
-    }
+    log::debug!(
+        "Scanning {} function(s) in dependency order ({} worker(s), {}s/fn)...",
+        all_analyses.len(),
+        effective_parallelism,
+        timeout_per_fn,
+    );
 
     let cache = if no_cache {
         None
@@ -1783,12 +1742,10 @@ async fn run_scan(
     let scan_start = Instant::now();
     let total_functions = all_analyses.len();
 
-    if log_level >= LogLevel::Info {
-        eprintln!(
-            "Scanning {} function(s) in dependency order...",
-            total_functions,
-        );
-    }
+    log::info!(
+        "Scanning {} function(s) in dependency order...",
+        total_functions,
+    );
 
     match scan_orchestrator::parallel_scan(&fe_config, &all_analyses, &scan_config).await {
         Ok(mut result) => {
@@ -1807,9 +1764,9 @@ async fn run_scan(
                     if let Some(json) = event.to_json() {
                         eprintln!("{json}");
                     }
-                } else if log_level >= LogLevel::Info {
-                    eprintln!(
-                        "  [{}/{}] {} ({:.1}s elapsed)",
+                } else {
+                    log::info!(
+                        "[{}/{}] {} ({:.1}s elapsed)",
                         i + 1,
                         total_functions,
                         fr.function_name,
@@ -1837,7 +1794,7 @@ async fn run_scan(
                 let mut state = match shatter_core::batch_state::BatchState::load(&batch_state_path) {
                     Ok(Some(s)) if s.scan_id == scan_id => s,
                     Ok(Some(_)) => {
-                        eprintln!("[shatter] batch state scan_id mismatch, starting fresh");
+                        log::info!("batch state scan_id mismatch, starting fresh");
                         shatter_core::batch_state::BatchState::new(
                             scan_id,
                             total_scope_functions,
@@ -1848,7 +1805,7 @@ async fn run_scan(
                         total_scope_functions,
                     ),
                     Err(e) => {
-                        eprintln!("[shatter] failed to load batch state: {e}, starting fresh");
+                        log::warn!("failed to load batch state: {e}, starting fresh");
                         shatter_core::batch_state::BatchState::new(
                             "unknown".to_string(),
                             total_scope_functions,
@@ -1861,7 +1818,7 @@ async fn run_scan(
                 state.record_batch(summary);
 
                 if let Err(e) = state.save(&batch_state_path) {
-                    eprintln!("[shatter] failed to save batch state: {e}");
+                    log::warn!("failed to save batch state: {e}");
                 }
 
                 print!(
@@ -1886,24 +1843,24 @@ async fn run_scan(
             match report_format {
                 report::ReportFormat::Json => {
                     match report::write_report(&scan_report, &report_dir) {
-                        Ok(path) => eprintln!("Wrote JSON report to {}", path.display()),
-                        Err(e) => eprintln!("Failed to write JSON report: {e}"),
+                        Ok(path) => log::info!("Wrote JSON report to {}", path.display()),
+                        Err(e) => log::error!("Failed to write JSON report: {e}"),
                     }
                 }
                 report::ReportFormat::Markdown => {
                     match report::write_markdown_report(&scan_report, &report_dir) {
-                        Ok(path) => eprintln!("Wrote markdown report to {}", path.display()),
-                        Err(e) => eprintln!("Failed to write markdown report: {e}"),
+                        Ok(path) => log::info!("Wrote markdown report to {}", path.display()),
+                        Err(e) => log::error!("Failed to write markdown report: {e}"),
                     }
                 }
                 report::ReportFormat::Both => {
                     match report::write_report(&scan_report, &report_dir) {
-                        Ok(path) => eprintln!("Wrote JSON report to {}", path.display()),
-                        Err(e) => eprintln!("Failed to write JSON report: {e}"),
+                        Ok(path) => log::info!("Wrote JSON report to {}", path.display()),
+                        Err(e) => log::error!("Failed to write JSON report: {e}"),
                     }
                     match report::write_markdown_report(&scan_report, &report_dir) {
-                        Ok(path) => eprintln!("Wrote markdown report to {}", path.display()),
-                        Err(e) => eprintln!("Failed to write markdown report: {e}"),
+                        Ok(path) => log::info!("Wrote markdown report to {}", path.display()),
+                        Err(e) => log::error!("Failed to write markdown report: {e}"),
                     }
                 }
             }
@@ -1915,12 +1872,12 @@ async fn run_scan(
                     .unwrap_or_else(|| report_dir.clone());
 
                 if let Err(e) = emit_test_files(&result, &scan_config.file_map, framework, &tests_dir) {
-                    eprintln!("Failed to emit test files: {e}");
+                    log::error!("Failed to emit test files: {e}");
                 }
             }
         }
         Err(e) => {
-            eprintln!("Scan error: {e}");
+            log::error!("Scan error: {e}");
         }
     }
 
@@ -2010,7 +1967,7 @@ async fn run_export_tests(
         Some(path) => {
             let config = ScopeConfig::from_file(path)
                 .map_err(|e| format!("failed to load scope config: {e}"))?;
-            eprintln!("Loaded scope config from {}", path.display());
+            log::info!("Loaded scope config from {}", path.display());
             config
         }
         None => ScopeConfig::default(),
@@ -2030,7 +1987,7 @@ async fn run_export_tests(
         let func_display = target.function.as_deref().unwrap_or("(all)");
         let project_root_str = resolve_project_root(project_dir, &target.file);
 
-        eprintln!("Exploring {file_str}:{func_display} for test export...");
+        log::info!("Exploring {file_str}:{func_display} for test export...");
 
         let config = frontend_config(target.language, req_timeout, LogLevel::Warn, exec_timeout, build_timeout, memory_limit, None)?;
         let mut frontend = Frontend::spawn(&config).await.map_err(|e| {
@@ -2050,12 +2007,12 @@ async fn run_export_tests(
         let functions = match &analyze_response.result {
             ResponseResult::Analyze { functions } => functions.clone(),
             ResponseResult::Error { code, message, .. } => {
-                eprintln!("  Analyze error ({code:?}): {message}");
+                log::error!("Analyze error ({code:?}): {message}");
                 shutdown_frontend(frontend).await;
                 continue;
             }
             other => {
-                eprintln!("  Unexpected analyze response: {other:?}");
+                log::error!("Unexpected analyze response: {other:?}");
                 shutdown_frontend(frontend).await;
                 continue;
             }
@@ -2079,7 +2036,7 @@ async fn run_export_tests(
         };
 
         for func in &functions {
-            eprintln!("  Exploring {}...", func.name);
+            log::info!("Exploring {}...", func.name);
 
             match explorer::explore_function(&mut frontend, func, &explore_config).await {
                 Ok(result) => {
@@ -2096,7 +2053,7 @@ async fn run_export_tests(
                     all_output.push('\n');
                 }
                 Err(e) => {
-                    eprintln!("  Exploration error for {}: {e}", func.name);
+                    log::error!("Exploration error for {}: {e}", func.name);
                 }
             }
         }
@@ -2108,7 +2065,7 @@ async fn run_export_tests(
         Some(path) => {
             std::fs::write(path, &all_output)
                 .map_err(|e| format!("failed to write to '{}': {e}", path.display()))?;
-            eprintln!("Wrote tests to {}", path.display());
+            log::info!("Wrote tests to {}", path.display());
         }
         None => {
             print!("{all_output}");
@@ -2224,24 +2181,19 @@ async fn run_run(
 
     let project_root_str = resolve_project_root(project_dir, &root);
 
-    if log_level >= LogLevel::Debug {
-        if let Some(ref pr) = project_root_str {
-            eprintln!("[debug] Project root: {pr}");
-        }
-        eprintln!("Shatter run: {}", root.display());
-        eprintln!();
+    if let Some(ref pr) = project_root_str {
+        log::debug!("Project root: {pr}");
     }
+    log::debug!("Shatter run: {}", root.display());
 
     // Step 1: Discover files
-    if log_level >= LogLevel::Debug {
-        eprintln!("Discovering source files...");
-    }
+    log::debug!("Discovering source files...");
     let options = DiscoveryOptions::default();
     let files = discovery::discover_files(&root, &options)
         .map_err(|e| format!("file discovery failed: {e}"))?;
 
     if files.is_empty() {
-        eprintln!("No supported source files found in {}", root.display());
+        log::info!("No supported source files found in {}", root.display());
         return Ok(());
     }
 
@@ -2257,18 +2209,15 @@ async fn run_run(
         }
     }
 
-    if log_level >= LogLevel::Debug {
-        eprintln!("  Found {} file(s):", files.len());
-        if !ts_files.is_empty() {
-            eprintln!("    TypeScript: {}", ts_files.len());
-        }
-        if !go_files.is_empty() {
-            eprintln!("    Go: {}", go_files.len());
-        }
-        if !rs_files.is_empty() {
-            eprintln!("    Rust: {}", rs_files.len());
-        }
-        eprintln!();
+    log::debug!("Found {} file(s):", files.len());
+    if !ts_files.is_empty() {
+        log::debug!("  TypeScript: {}", ts_files.len());
+    }
+    if !go_files.is_empty() {
+        log::debug!("  Go: {}", go_files.len());
+    }
+    if !rs_files.is_empty() {
+        log::debug!("  Rust: {}", rs_files.len());
     }
 
     // Filter to languages we can actually analyze (TS, Go)
@@ -2278,7 +2227,7 @@ async fn run_run(
         .collect();
 
     if analyzable_files.is_empty() {
-        eprintln!("No analyzable source files found (supported: TypeScript, Go, Rust).");
+        log::info!("No analyzable source files found (supported: TypeScript, Go, Rust).");
         return Ok(());
     }
 
@@ -2298,20 +2247,15 @@ async fn run_run(
         let frontend = Frontend::spawn(&config).await.map_err(|e| {
             format!("failed to spawn {lang:?} frontend: {e}")
         })?;
-        if log_level >= LogLevel::Debug {
-            eprintln!(
-                "Frontend connected (language={})",
-                frontend.language().unwrap_or("unknown")
-            );
-        }
+        log::debug!(
+            "Frontend connected (language={})",
+            frontend.language().unwrap_or("unknown")
+        );
         frontends.insert(*lang, frontend);
     }
 
     // Step 3: Batch analyze
-    if log_level >= LogLevel::Debug {
-        eprintln!();
-        eprintln!("Analyzing {} file(s)...", analyzable_files.len());
-    }
+    log::debug!("Analyzing {} file(s)...", analyzable_files.len());
     let registry = batch_analyze::batch_analyze(
         &mut frontends,
         &analyzable_files,
@@ -2324,35 +2268,27 @@ async fn run_run(
     let total_functions = registry.len();
     let total_branches: usize = registry.entries().iter().map(|e| e.branch_count).sum();
 
-    if log_level >= LogLevel::Debug {
-        eprintln!("  Found {} function(s) with {} total branch(es)", total_functions, total_branches);
-        eprintln!();
-    }
+    log::debug!("Found {} function(s) with {} total branch(es)", total_functions, total_branches);
 
     if total_functions == 0 {
-        eprintln!("No functions found to explore.");
+        log::info!("No functions found to explore.");
         shutdown_all_frontends(frontends).await;
         return Ok(());
     }
 
     // Step 4: Build call graph
-    if log_level >= LogLevel::Debug {
-        eprintln!("Building call graph...");
-    }
+    log::debug!("Building call graph...");
     let call_graph = CallGraph::from_registry(&registry);
     let layers = call_graph.topological_layers();
     let cycles = call_graph.cycle_groups();
 
-    if log_level >= LogLevel::Debug {
-        eprintln!(
-            "  {} node(s), {} edge(s), {} layer(s), {} cycle(s)",
-            call_graph.node_count(),
-            call_graph.edge_count(),
-            layers.len(),
-            cycles.len(),
-        );
-        eprintln!();
-    }
+    log::debug!(
+        "{} node(s), {} edge(s), {} layer(s), {} cycle(s)",
+        call_graph.node_count(),
+        call_graph.edge_count(),
+        layers.len(),
+        cycles.len(),
+    );
 
     if analyze_only {
         print_summary_report(
@@ -2377,17 +2313,12 @@ async fn run_run(
     }
 
     // Step 5: Explore in dependency order (layer by layer)
-    if log_level >= LogLevel::Debug {
-        eprintln!("Exploring functions in dependency order...");
-        eprintln!();
-    }
+    log::debug!("Exploring functions in dependency order...");
 
     let mut exploration_results: Vec<(String, explorer::ObservationOutput)> = Vec::new();
 
     for (layer_idx, layer) in layers.iter().enumerate() {
-        if log_level >= LogLevel::Debug {
-            eprintln!("  Layer {} ({} function(s)):", layer_idx, layer.len());
-        }
+        log::debug!("Layer {} ({} function(s)):", layer_idx, layer.len());
 
         for qualified_name in layer {
             let entry = match registry.get(qualified_name) {
@@ -2425,13 +2356,11 @@ async fn run_run(
             };
 
             let Some(func_analysis) = func_analysis else {
-                eprintln!("    Skipping {}: could not get analysis", entry.name);
+                log::warn!("Skipping {}: could not get analysis", entry.name);
                 continue;
             };
 
-            if log_level >= LogLevel::Debug {
-                eprint!("    Exploring {}...", entry.name);
-            }
+            log::debug!("Exploring {}...", entry.name);
 
             let explore_config = ExploreConfig {
                 file: entry.file_path.to_string_lossy().into_owned(),
@@ -2451,24 +2380,20 @@ async fn run_run(
 
             match explorer::explore_function(frontend, &func_analysis, &explore_config).await {
                 Ok(result) => {
-                    if log_level >= LogLevel::Debug {
-                        eprintln!(
-                            " {} path(s), {}/{} lines",
-                            result.unique_paths, result.lines_covered, result.total_lines
-                        );
-                    }
+                    log::debug!(
+                        "{}: {} path(s), {}/{} lines",
+                        entry.name, result.unique_paths, result.lines_covered, result.total_lines
+                    );
                     exploration_results.push((qualified_name.clone(), result));
                 }
                 Err(e) => {
-                    if log_level >= LogLevel::Debug {
-                        eprintln!(" error: {e}");
-                    }
+                    log::debug!("{}: error: {e}", entry.name);
                 }
             }
 
             // Check overall timeout
             if start.elapsed() > Duration::from_secs(timeout) {
-                eprintln!("\nTimeout reached ({timeout}s), stopping exploration.");
+                log::warn!("Timeout reached ({timeout}s), stopping exploration.");
                 break;
             }
         }
@@ -2633,7 +2558,7 @@ fn write_analysis_report(
 
     std::fs::write(&summary_path, &content)
         .map_err(|e| format!("failed to write summary: {e}"))?;
-    eprintln!("Wrote analysis report to {}", summary_path.display());
+    log::info!("Wrote analysis report to {}", summary_path.display());
 
     Ok(())
 }
@@ -2704,7 +2629,7 @@ fn write_run_report(
             .map_err(|e| format!("failed to write {}: {e}", func_path.display()))?;
     }
 
-    eprintln!(
+    log::info!(
         "Wrote {} per-function report(s) to {}",
         exploration_results.len(),
         dir.display()
@@ -2717,14 +2642,14 @@ fn write_run_report(
 async fn shutdown_all_frontends(frontends: HashMap<DiscoveryLanguage, Frontend>) {
     for (_, frontend) in frontends {
         if let Err(e) = frontend.shutdown().await {
-            eprintln!("  Warning: frontend shutdown error: {e}");
+            log::warn!("frontend shutdown error: {e}");
         }
     }
 }
 
 async fn shutdown_frontend(frontend: Frontend) {
     if let Err(e) = frontend.shutdown().await {
-        eprintln!("  Warning: frontend shutdown error: {e}");
+        log::warn!("frontend shutdown error: {e}");
     }
 }
 
@@ -2824,6 +2749,24 @@ async fn run_stale(
 async fn main() -> ExitCode {
     let cli = Cli::parse();
     let log_level = cli.effective_log_level();
+
+    // Initialize env_logger: CLI flags set the default, RUST_LOG can override.
+    let log_filter = match log_level {
+        LogLevel::Error => log::LevelFilter::Error,
+        LogLevel::Warn => log::LevelFilter::Warn,
+        LogLevel::Info => log::LevelFilter::Info,
+        LogLevel::Debug => log::LevelFilter::Debug,
+        LogLevel::Trace => log::LevelFilter::Trace,
+    };
+    env_logger::Builder::new()
+        .filter_level(log_filter)
+        .format(|buf, record| {
+            use std::io::Write;
+            writeln!(buf, "[{}] {}", record.level().to_string().to_lowercase(), record.args())
+        })
+        .parse_default_env()
+        .init();
+
     let colors = Colors::detect();
 
     let result = match cli.command {
@@ -3180,8 +3123,8 @@ fn build_go_frontend(
     }
 
     let output_binary = out_dir.join("shatter-go-custom");
-    eprintln!(
-        "[shatter] building custom Go frontend with {} native generator(s)...",
+    log::info!(
+        "building custom Go frontend with {} native generator(s)...",
         native_gens.len()
     );
 
@@ -3306,8 +3249,8 @@ func main() {{
         return Err(format!("go build failed:\n{stderr}"));
     }
 
-    eprintln!(
-        "[shatter] custom Go frontend built: {}",
+    log::info!(
+        "custom Go frontend built: {}",
         output_binary.display()
     );
     Ok(())
@@ -3364,8 +3307,8 @@ fn build_rust_frontend(
     }
 
     let output_binary = out_dir.join("shatter-rust-custom");
-    eprintln!(
-        "[shatter] building custom Rust frontend with {} native generator(s)...",
+    log::info!(
+        "building custom Rust frontend with {} native generator(s)...",
         native_gens.len()
     );
 
@@ -3472,8 +3415,8 @@ fn main() {{
     std::fs::copy(&built, &output_binary)
         .map_err(|e| format!("failed to copy binary: {e}"))?;
 
-    eprintln!(
-        "[shatter] custom Rust frontend built: {}",
+    log::info!(
+        "custom Rust frontend built: {}",
         output_binary.display()
     );
     Ok(())

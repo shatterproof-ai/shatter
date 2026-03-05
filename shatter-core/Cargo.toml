@@ -21,6 +21,7 @@ z3 = { version = "0.19", features = ["gh-release"] }
 z3-sys = "0.10.7"
 fs2 = "0.4"
 libc = "0.2"
+log = "0.4"
 
 [build-dependencies]
 serde = { version = "1", features = ["derive"] }

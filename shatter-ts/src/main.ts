@@ -9,46 +9,17 @@
 
 import * as readline from "node:readline";
 import { handleRequest, parseRequest } from "./handlers.js";
+import logger from "./logger.js";
 import { PROTOCOL_VERSION, type Response } from "./protocol.js";
-
-type FrontendLogLevel = "error" | "warn" | "info" | "debug" | "trace";
-
-const LOG_LEVEL_RANK: Record<FrontendLogLevel, number> = {
-  error: 0,
-  warn: 1,
-  info: 2,
-  debug: 3,
-  trace: 4,
-};
-
-function getLogLevel(): FrontendLogLevel {
-  const env = process.env["SHATTER_LOG_LEVEL"]?.toLowerCase();
-  if (env !== undefined && env in LOG_LEVEL_RANK) {
-    return env as FrontendLogLevel;
-  }
-  return "info";
-}
-
-const currentLogLevel = getLogLevel();
-
-function shouldLog(level: FrontendLogLevel): boolean {
-  return LOG_LEVEL_RANK[currentLogLevel] >= LOG_LEVEL_RANK[level];
-}
-
-function log(message: string, level: FrontendLogLevel = "trace"): void {
-  if (shouldLog(level)) {
-    process.stderr.write(`[shatter-ts] ${message}\n`);
-  }
-}
 
 function sendResponse(response: Response): void {
   const json = JSON.stringify(response);
   process.stdout.write(json + "\n");
-  log(`Sent: ${json}`, "trace");
+  logger.trace({ raw: json }, "Sent");
 }
 
 function main(): void {
-  log("Starting TypeScript frontend (protocol 0.1.0)", "debug");
+  logger.debug("Starting TypeScript frontend (protocol 0.1.0)");
 
   const rl = readline.createInterface({
     input: process.stdin,
@@ -59,7 +30,7 @@ function main(): void {
     const trimmed = line.trim();
     if (trimmed === "") return;
 
-    log(`Received: ${trimmed}`, "trace");
+    logger.trace({ raw: trimmed }, "Received");
 
     const result = parseRequest(trimmed);
 
@@ -73,12 +44,12 @@ function main(): void {
       sendResponse(response);
 
       if (shutdown) {
-        log("Shutting down", "debug");
+        logger.debug("Shutting down");
         rl.close();
       }
     }).catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
-      log(`Unhandled error processing request ${requestId}: ${msg}`, "error");
+      logger.error("Unhandled error processing request %s: %s", requestId, msg);
       sendResponse({
         protocol_version: PROTOCOL_VERSION,
         id: requestId,
@@ -90,7 +61,7 @@ function main(): void {
   });
 
   rl.on("close", () => {
-    log("Stdin closed, exiting", "debug");
+    logger.debug("Stdin closed, exiting");
     process.exit(0);
   });
 }

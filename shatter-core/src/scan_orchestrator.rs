@@ -279,12 +279,12 @@ pub async fn scan(
             match crate::checkpoint::ScanCheckpoint::load(path) {
                 Ok(Some(cp)) if cp.scan_id == scan_id => cp,
                 Ok(Some(_)) => {
-                    eprintln!("[shatter] checkpoint scan_id mismatch, starting fresh");
+                    log::info!("checkpoint scan_id mismatch, starting fresh");
                     crate::checkpoint::ScanCheckpoint::new(scan_id)
                 }
                 Ok(None) => crate::checkpoint::ScanCheckpoint::new(scan_id),
                 Err(e) => {
-                    eprintln!("[shatter] failed to load checkpoint: {e}, starting fresh");
+                    log::warn!("failed to load checkpoint: {e}, starting fresh");
                     crate::checkpoint::ScanCheckpoint::new(scan_id)
                 }
             }
@@ -466,7 +466,7 @@ pub async fn scan(
     if let Some(ref pool_path) = config.pool_path
         && let Err(e) = interesting_pool::save_pool(&input_pool, pool_path)
     {
-        eprintln!("[shatter] failed to save interesting pool: {e}");
+        log::warn!("failed to save interesting pool: {e}");
     }
 
     Ok(ScanResult {
@@ -608,12 +608,12 @@ pub async fn parallel_scan(
             match crate::checkpoint::ScanCheckpoint::load(path) {
                 Ok(Some(cp)) if cp.scan_id == scan_id => cp,
                 Ok(Some(_)) => {
-                    eprintln!("[shatter] checkpoint scan_id mismatch, starting fresh");
+                    log::info!("checkpoint scan_id mismatch, starting fresh");
                     crate::checkpoint::ScanCheckpoint::new(scan_id)
                 }
                 Ok(None) => crate::checkpoint::ScanCheckpoint::new(scan_id),
                 Err(e) => {
-                    eprintln!("[shatter] failed to load checkpoint: {e}, starting fresh");
+                    log::warn!("failed to load checkpoint: {e}, starting fresh");
                     crate::checkpoint::ScanCheckpoint::new(scan_id)
                 }
             }
@@ -905,7 +905,7 @@ pub async fn parallel_scan(
     if let Some(ref pool_path) = config.pool_path {
         let pool_guard = input_pool.lock().await;
         if let Err(e) = interesting_pool::save_pool(&pool_guard, pool_path) {
-            eprintln!("[shatter] failed to save interesting pool: {e}");
+            log::warn!("failed to save interesting pool: {e}");
         }
     }
 

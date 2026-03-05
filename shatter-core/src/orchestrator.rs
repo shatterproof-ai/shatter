@@ -365,7 +365,7 @@ pub async fn explore(
             ResponseResult::Execute(result) => *result,
             ResponseResult::Error { message, .. } => {
                 // Frontend reported an error — skip this input but continue exploring.
-                eprintln!("frontend error during execute: {message}");
+                log::warn!("frontend error during execute: {message}");
                 continue;
             }
             _ => continue,

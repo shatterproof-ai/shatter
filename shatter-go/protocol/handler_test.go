@@ -548,10 +548,10 @@ func TestLogLevelFilteringSuppressesTraceAtInfo(t *testing.T) {
 		t.Fatalf("handler.Run: %v", err)
 	}
 	logStr := logBuf.String()
-	if strings.Contains(logStr, "Received:") {
+	if strings.Contains(logStr, "Received") {
 		t.Errorf("trace messages should be suppressed at info level: %s", logStr)
 	}
-	if strings.Contains(logStr, "Sent:") {
+	if strings.Contains(logStr, "Sent") {
 		t.Errorf("trace messages should be suppressed at info level: %s", logStr)
 	}
 }
@@ -570,7 +570,7 @@ func TestLogLevelFilteringShowsDebugAtDebug(t *testing.T) {
 	if !strings.Contains(logStr, "Shutting down") {
 		t.Errorf("debug messages should appear at debug level: %s", logStr)
 	}
-	if strings.Contains(logStr, "Received:") {
+	if strings.Contains(logStr, "Received") {
 		t.Errorf("trace messages should be suppressed at debug level: %s", logStr)
 	}
 }

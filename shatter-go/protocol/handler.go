@@ -2,9 +2,11 @@ package protocol
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"strings"
 
@@ -15,44 +17,24 @@ import (
 const frontendVersion = "0.1.0"
 const frontendLanguage = "go"
 
-// logLevelRank maps level names to numeric ranks for comparison.
-var logLevelRank = map[string]int{
-	"error": 0,
-	"warn":  1,
-	"info":  2,
-	"debug": 3,
-	"trace": 4,
-}
-
-// getLogLevel reads SHATTER_LOG_LEVEL from environment, defaulting to "info".
-func getLogLevel() string {
-	level := strings.ToLower(os.Getenv("SHATTER_LOG_LEVEL"))
-	if _, ok := logLevelRank[level]; ok {
-		return level
-	}
-	return "info"
-}
-
 // Handler processes protocol requests and writes responses.
 type Handler struct {
 	reader           *bufio.Scanner
 	writer           io.Writer
-	log              io.Writer
-	logLevel         string
+	log              *slog.Logger
 	lastAnalyzedFile string // remembered from the most recent analyze command
 	registry         *generators.Registry
 }
 
 // NewHandler creates a handler reading from r, writing responses to w,
-// and logging debug output to logw.
+// and logging to logw at the level set by SHATTER_LOG_LEVEL.
 func NewHandler(r io.Reader, w io.Writer, logw io.Writer) *Handler {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024) // 10MB max line
 	return &Handler{
 		reader:   scanner,
 		writer:   w,
-		log:      logw,
-		logLevel: getLogLevel(),
+		log:      slog.New(newPrefixHandler(logw, slogLevelFromEnv())),
 		registry: generators.NewRegistry(),
 	}
 }
@@ -64,15 +46,14 @@ func NewHandlerWithLogLevel(r io.Reader, w io.Writer, logw io.Writer, level stri
 	return &Handler{
 		reader:   scanner,
 		writer:   w,
-		log:      logw,
-		logLevel: level,
+		log:      slog.New(newPrefixHandler(logw, slogLevelFromString(level))),
 		registry: generators.NewRegistry(),
 	}
 }
 
 // Run processes requests until shutdown or EOF. Returns nil on clean shutdown.
 func (h *Handler) Run() error {
-	h.logAt("debug", "Starting Go frontend (protocol %s)", ProtocolVersion)
+	h.log.Debug("Starting Go frontend", "protocol", ProtocolVersion)
 
 	for h.reader.Scan() {
 		line := h.reader.Text()
@@ -80,11 +61,11 @@ func (h *Handler) Run() error {
 			continue
 		}
 
-		h.logf("Received: %s", line)
+		h.log.Log(context.Background(), LevelTrace, "Received", "raw", line)
 
 		var req Request
 		if err := json.Unmarshal([]byte(line), &req); err != nil {
-			h.logf("Failed to parse request: %v", err)
+			h.log.Log(context.Background(), LevelTrace, "Failed to parse request", "err", err)
 			continue
 		}
 
@@ -94,7 +75,7 @@ func (h *Handler) Run() error {
 		}
 
 		if shutdown {
-			h.logAt("debug", "Shutting down")
+			h.log.Debug("Shutting down")
 			return nil
 		}
 	}
@@ -103,7 +84,7 @@ func (h *Handler) Run() error {
 		return fmt.Errorf("reading stdin: %w", err)
 	}
 
-	h.logAt("debug", "Stdin closed, exiting")
+	h.log.Debug("Stdin closed, exiting")
 	return nil
 }
 
@@ -483,17 +464,8 @@ func (h *Handler) send(resp Response) error {
 		return fmt.Errorf("marshaling response: %w", err)
 	}
 	line := string(data) + "\n"
-	h.logf("Sent: %s", string(data))
+	h.log.Log(context.Background(), LevelTrace, "Sent", "raw", string(data))
 	_, err = io.WriteString(h.writer, line)
 	return err
 }
 
-func (h *Handler) logf(format string, args ...any) {
-	h.logAt("trace", format, args...)
-}
-
-func (h *Handler) logAt(level string, format string, args ...any) {
-	if logLevelRank[h.logLevel] >= logLevelRank[level] {
-		fmt.Fprintf(h.log, "[shatter-go] "+format+"\n", args...)
-	}
-}

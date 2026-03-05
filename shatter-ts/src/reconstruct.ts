@@ -6,6 +6,8 @@
  * in its handshake capabilities.
  */
 
+import logger from "./logger.js";
+
 /**
  * Recursively reconstruct native JS values from __complex_type tagged JSON.
  *
@@ -97,9 +99,7 @@ export function reconstructValue(value: unknown): unknown {
 
     default:
       // Unknown complex type: log warning and pass through as-is
-      process.stderr.write(
-        `[shatter-ts] WARN unknown __complex_type: ${tag}, passing through\n`
-      );
+      logger.warn("unknown __complex_type: %s, passing through", tag);
       return value;
   }
 }

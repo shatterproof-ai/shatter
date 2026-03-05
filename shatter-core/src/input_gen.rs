@@ -868,15 +868,11 @@ pub async fn prefetch_custom_values(
                 }
                 crate::protocol::ResponseResult::Error { message, .. } => {
                     // Log but don't fail -- we'll fall back to built-in generation.
-                    eprintln!(
-                        "[shatter-core] generator error for {name} ({file}): {message}"
-                    );
+                    log::warn!("generator error for {name} ({file}): {message}");
                 }
                 _ => {
                     // Unexpected response type -- skip this generator.
-                    eprintln!(
-                        "[shatter-core] unexpected response for generator {name}"
-                    );
+                    log::warn!("unexpected response for generator {name}");
                 }
             }
         }

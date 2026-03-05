@@ -4,7 +4,8 @@ Go language frontend. Go binary subprocess implementing the JSON-over-stdio prot
 
 ## Key Files
 
-- `protocol/handler.go` — Protocol handler, `logf()` function that writes `[shatter-go]` lines to stderr
+- `protocol/handler.go` — Protocol handler, uses `log/slog` for `[shatter-go]` prefixed stderr logging
+- `protocol/log.go` — slog configuration: `LevelTrace` constant, `prefixHandler` for `[shatter-go]` format
 - `instrument/executor.go` — Function execution and instrumentation
 
 ## Timeout Contract
