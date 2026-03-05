@@ -919,3 +919,50 @@ func TestConvertSideEffectsEmpty(t *testing.T) {
 		t.Fatalf("expected 0 side effects, got %d", len(result))
 	}
 }
+
+// convertBranchPath must always emit a non-nil constraint, even when
+// the Go instrumentor provides no symbolic constraint (ConstraintJSON == "").
+// Without this, Rust's serde rejects the response due to the missing field.
+func TestConvertBranchPathEmitsConstraintWhenEmpty(t *testing.T) {
+	branches := []instrument.BranchDecision{
+		{BranchID: 1, Line: 10, Taken: true, ConstraintJSON: ""},
+	}
+	result := convertBranchPath(branches)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 decision, got %d", len(result))
+	}
+	bd := result[0]
+	if bd.Constraint == nil {
+		t.Fatal("constraint must not be nil when ConstraintJSON is empty")
+	}
+	if bd.Constraint.Kind != "unknown" {
+		t.Errorf("constraint.Kind = %q, want %q", bd.Constraint.Kind, "unknown")
+	}
+
+	// Verify the JSON contains the constraint field (not omitted)
+	data, err := json.Marshal(bd)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	jsonStr := string(data)
+	if !strings.Contains(jsonStr, `"constraint"`) {
+		t.Errorf("JSON must contain constraint field, got: %s", jsonStr)
+	}
+	if !strings.Contains(jsonStr, `"kind":"unknown"`) {
+		t.Errorf("JSON constraint must have kind=unknown, got: %s", jsonStr)
+	}
+}
+
+func TestConvertBranchPathPreservesExplicitConstraint(t *testing.T) {
+	constraintJSON := `{"kind":"expr","expr":{"kind":"binop","op":"==","left":{"kind":"param","name":"x","path":[]},"right":{"kind":"const","value":5}}}`
+	branches := []instrument.BranchDecision{
+		{BranchID: 2, Line: 20, Taken: false, ConstraintJSON: constraintJSON},
+	}
+	result := convertBranchPath(branches)
+	if result[0].Constraint == nil {
+		t.Fatal("constraint must not be nil for explicit constraint")
+	}
+	if result[0].Constraint.Kind != "expr" {
+		t.Errorf("constraint.Kind = %q, want %q", result[0].Constraint.Kind, "expr")
+	}
+}

@@ -23,6 +23,14 @@ pub enum SymConstraint {
     Unknown { hint: String },
 }
 
+impl Default for SymConstraint {
+    fn default() -> Self {
+        Self::Unknown {
+            hint: String::new(),
+        }
+    }
+}
+
 /// A single branch decision recorded during execution.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BranchDecision {
@@ -33,6 +41,8 @@ pub struct BranchDecision {
     /// Whether the true branch was taken.
     pub taken: bool,
     /// The symbolic constraint governing this branch.
+    /// Defaults to `Unknown` when omitted (e.g. Go frontend has no symbolic analysis).
+    #[serde(default)]
     pub constraint: SymConstraint,
 }
 
@@ -211,6 +221,26 @@ mod tests {
                 },
             },
         });
+    }
+
+    #[test]
+    fn branch_decision_missing_constraint_defaults_to_unknown() {
+        let json = r#"{"branch_id":3,"line":15,"taken":false}"#;
+        let bd: BranchDecision = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(bd.branch_id, 3);
+        assert_eq!(bd.line, 15);
+        assert!(!bd.taken);
+        assert_eq!(bd.constraint, SymConstraint::default());
+    }
+
+    #[test]
+    fn sym_constraint_default_is_unknown() {
+        assert_eq!(
+            SymConstraint::default(),
+            SymConstraint::Unknown {
+                hint: String::new()
+            }
+        );
     }
 
     #[test]

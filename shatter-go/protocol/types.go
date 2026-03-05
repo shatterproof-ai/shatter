@@ -167,7 +167,7 @@ type BranchDecision struct {
 	BranchID   int            `json:"branch_id"`
 	Line       int            `json:"line"`
 	Taken      bool           `json:"taken"`
-	Constraint *SymConstraint `json:"constraint,omitempty"`
+	Constraint *SymConstraint `json:"constraint"`
 }
 
 // SymExpr is a symbolic expression representing a constraint on inputs.
