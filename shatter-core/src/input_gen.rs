@@ -1254,6 +1254,9 @@ fn mutate_nullable(value: &Value, inner: &TypeInfo, dictionary: &[&str], rng: &m
 // Type-aware crossover operators
 // ---------------------------------------------------------------------------
 
+/// Number of string crossover strategies (splice, substring insertion, single-point).
+const STRING_CROSSOVER_STRATEGY_COUNT: u32 = 3;
+
 /// Produce two children by crossing over two parent input vectors.
 ///
 /// With probability `crossover_rate`, performs type-aware crossover; otherwise
@@ -1296,6 +1299,7 @@ fn crossover_value(a: &Value, b: &Value, typ: &TypeInfo, rng: &mut impl Rng) -> 
     match typ {
         TypeInfo::Object { fields } => crossover_object(a, b, fields, rng),
         TypeInfo::Array { .. } => crossover_array(a, b, rng),
+        TypeInfo::Str => crossover_string(a, b, rng),
         _ => {
             if rng.random_bool(0.5) {
                 (a.clone(), b.clone())
@@ -1386,6 +1390,75 @@ fn crossover_array(a: &Value, b: &Value, rng: &mut impl Rng) -> (Value, Value) {
     c2.extend(arr_a.iter().skip(point).cloned());
 
     (json!(c1), json!(c2))
+}
+
+/// String-level crossover: combines characters from both parents rather than
+/// picking one whole string or the other. Three strategies chosen uniformly:
+/// splice (prefix A + suffix B), substring insertion, and single-point swap.
+fn crossover_string(a: &Value, b: &Value, rng: &mut impl Rng) -> (Value, Value) {
+    let (Some(sa), Some(sb)) = (a.as_str(), b.as_str()) else {
+        return if rng.random_bool(0.5) {
+            (a.clone(), b.clone())
+        } else {
+            (b.clone(), a.clone())
+        };
+    };
+
+    // Empty strings — fall back to uniform swap
+    if sa.is_empty() || sb.is_empty() {
+        return if rng.random_bool(0.5) {
+            (a.clone(), b.clone())
+        } else {
+            (b.clone(), a.clone())
+        };
+    }
+
+    let chars_a: Vec<char> = sa.chars().collect();
+    let chars_b: Vec<char> = sb.chars().collect();
+
+    let strategy = rng.random_range(0..STRING_CROSSOVER_STRATEGY_COUNT);
+    match strategy {
+        // Splice: prefix of A + suffix of B (and vice versa)
+        0 => {
+            let min_len = chars_a.len().min(chars_b.len());
+            let point = rng.random_range(0..=min_len);
+            let c1: String = chars_a[..point].iter().chain(&chars_b[point..]).collect();
+            let c2: String = chars_b[..point].iter().chain(&chars_a[point..]).collect();
+            (json!(c1), json!(c2))
+        }
+        // Substring insertion: random substring of B inserted into random position of A
+        1 => {
+            let start_b = rng.random_range(0..chars_b.len());
+            let end_b = rng.random_range(start_b..=chars_b.len());
+            let substr: String = chars_b[start_b..end_b].iter().collect();
+            let pos_a = rng.random_range(0..=chars_a.len());
+            let c1: String = chars_a[..pos_a]
+                .iter()
+                .chain(substr.chars().collect::<Vec<_>>().iter())
+                .chain(&chars_a[pos_a..])
+                .collect();
+
+            let start_a = rng.random_range(0..chars_a.len());
+            let end_a = rng.random_range(start_a..=chars_a.len());
+            let substr2: String = chars_a[start_a..end_a].iter().collect();
+            let pos_b = rng.random_range(0..=chars_b.len());
+            let c2: String = chars_b[..pos_b]
+                .iter()
+                .chain(substr2.chars().collect::<Vec<_>>().iter())
+                .chain(&chars_b[pos_b..])
+                .collect();
+
+            (json!(c1), json!(c2))
+        }
+        // Single-point: independent split points, swap tails
+        _ => {
+            let pa = rng.random_range(0..=chars_a.len());
+            let pb = rng.random_range(0..=chars_b.len());
+            let c1: String = chars_a[..pa].iter().chain(&chars_b[pb..]).collect();
+            let c2: String = chars_b[..pb].iter().chain(&chars_a[pa..]).collect();
+            (json!(c1), json!(c2))
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2549,6 +2622,122 @@ mod tests {
         let (c1, c2) = crossover_inputs(&parent_a, &parent_b, &params, 1.0, &mut rng);
         assert_eq!(c1.len(), 3);
         assert_eq!(c2.len(), 3);
+    }
+
+    // -- String crossover tests --
+
+    #[test]
+    fn crossover_string_produces_mixed_children() {
+        let params = vec![ParamInfo {
+            name: "s".into(),
+            typ: TypeInfo::Str,
+            type_name: None,
+        }];
+        let parent_a = vec![json!("abcdef")];
+        let parent_b = vec![json!("ABCDEF")];
+
+        // Over many seeds, at least one child should contain chars from both parents
+        let mut saw_mix = false;
+        for seed in 0..200_u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let (c1, _c2) = crossover_inputs(&parent_a, &parent_b, &params, 1.0, &mut rng);
+            let s = c1[0].as_str().expect("expected string child");
+            let has_lower = s.chars().any(|c| c.is_ascii_lowercase());
+            let has_upper = s.chars().any(|c| c.is_ascii_uppercase());
+            if has_lower && has_upper {
+                saw_mix = true;
+                break;
+            }
+        }
+        assert!(saw_mix, "expected string crossover to combine chars from both parents");
+    }
+
+    #[test]
+    fn crossover_string_empty_no_panic() {
+        let params = vec![ParamInfo {
+            name: "s".into(),
+            typ: TypeInfo::Str,
+            type_name: None,
+        }];
+
+        // One empty, one non-empty
+        let parent_a = vec![json!("")];
+        let parent_b = vec![json!("hello")];
+        for seed in 0..20_u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let (c1, c2) = crossover_inputs(&parent_a, &parent_b, &params, 1.0, &mut rng);
+            assert!(c1[0].is_string());
+            assert!(c2[0].is_string());
+        }
+
+        // Both empty
+        let parent_a = vec![json!("")];
+        let parent_b = vec![json!("")];
+        let mut rng = seeded_rng();
+        let (c1, c2) = crossover_inputs(&parent_a, &parent_b, &params, 1.0, &mut rng);
+        assert!(c1[0].is_string());
+        assert!(c2[0].is_string());
+    }
+
+    #[test]
+    fn crossover_string_children_are_strings() {
+        let params = vec![ParamInfo {
+            name: "s".into(),
+            typ: TypeInfo::Str,
+            type_name: None,
+        }];
+        let parent_a = vec![json!("test@example")];
+        let parent_b = vec![json!("user@domain.com")];
+
+        for seed in 0..100_u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let (c1, c2) = crossover_inputs(&parent_a, &parent_b, &params, 1.0, &mut rng);
+            assert!(c1[0].is_string(), "child1 not a string: {:?}", c1[0]);
+            assert!(c2[0].is_string(), "child2 not a string: {:?}", c2[0]);
+        }
+    }
+
+    #[test]
+    fn crossover_string_nonstring_types_unchanged() {
+        let params = vec![
+            ParamInfo { name: "i".into(), typ: TypeInfo::Int, type_name: None },
+            ParamInfo { name: "b".into(), typ: TypeInfo::Bool, type_name: None },
+        ];
+        let parent_a = vec![json!(42), json!(true)];
+        let parent_b = vec![json!(99), json!(false)];
+
+        for seed in 0..50_u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let (c1, c2) = crossover_inputs(&parent_a, &parent_b, &params, 1.0, &mut rng);
+            // Non-string types use uniform swap — each child value must come from one parent
+            for (idx, child) in [&c1, &c2].into_iter().enumerate() {
+                for (j, val) in child.iter().enumerate() {
+                    assert!(
+                        val == &parent_a[j] || val == &parent_b[j],
+                        "child{idx}[{j}] = {val} not from either parent"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn crossover_string_unicode_safe() {
+        let params = vec![ParamInfo {
+            name: "s".into(),
+            typ: TypeInfo::Str,
+            type_name: None,
+        }];
+        let parent_a = vec![json!("héllo")];
+        let parent_b = vec![json!("wörld")];
+
+        for seed in 0..100_u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let (c1, c2) = crossover_inputs(&parent_a, &parent_b, &params, 1.0, &mut rng);
+            // Must not panic and must produce valid UTF-8 strings
+            assert!(c1[0].is_string());
+            assert!(c2[0].is_string());
+        }
     }
 
     // -- Pool-to-candidate tests --
