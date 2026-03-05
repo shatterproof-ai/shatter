@@ -71,6 +71,9 @@ pub struct ScanConfig {
     pub pool_path: Option<PathBuf>,
     /// Detected project root directory, passed to frontend commands.
     pub project_root: Option<String>,
+    /// Directory from which to discover `.shatter/config.yaml` files.
+    /// When set, per-function candidate inputs are loaded during scan.
+    pub config_dir: Option<PathBuf>,
 }
 
 /// Context about sampling mode, for report headers.
@@ -390,6 +393,13 @@ pub async fn scan(
 
         let pool_seeds = crate::input_gen::pool_to_candidate_inputs(&analysis.params, &input_pool);
 
+        let candidate_inputs = load_config_candidate_inputs(
+            func_name,
+            &config.config_dir,
+            config.max_iterations_per_function,
+            config.timeout_per_fn.as_secs(),
+        );
+
         let explore_config = ExploreConfig {
             file,
             max_iterations: config.max_iterations_per_function,
@@ -400,7 +410,7 @@ pub async fn scan(
             value_sources: vec![],
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             user_seeds: vec![],
-            candidate_inputs: vec![],
+            candidate_inputs,
             pool_seeds,
             project_root: config.project_root.clone(),
             loop_buckets: explorer::LoopBuckets::default(),
@@ -759,6 +769,13 @@ pub async fn parallel_scan(
                 crate::input_gen::pool_to_candidate_inputs(&analysis.params, &pool_guard)
             };
 
+            let candidate_inputs = load_config_candidate_inputs(
+                func_name,
+                &config.config_dir,
+                config.max_iterations_per_function,
+                config.timeout_per_fn.as_secs(),
+            );
+
             let explore_config = ExploreConfig {
                 file,
                 max_iterations: config.max_iterations_per_function,
@@ -769,7 +786,7 @@ pub async fn parallel_scan(
                 value_sources: vec![],
                 capabilities: crate::orchestrator::FrontendCapabilities::default(),
                 user_seeds: vec![],
-                candidate_inputs: vec![],
+                candidate_inputs,
                 pool_seeds,
                 project_root: config.project_root.clone(),
                 loop_buckets: explorer::LoopBuckets::default(),
@@ -1406,6 +1423,48 @@ pub fn format_dry_run_plan(
     Ok(out)
 }
 
+/// Load per-function candidate inputs from `.shatter/config.yaml` if `config_dir` is set.
+/// Returns an empty vec on missing config or resolution errors (logged as warnings).
+fn load_config_candidate_inputs(
+    func_name: &str,
+    config_dir: &Option<PathBuf>,
+    max_iterations: u32,
+    timeout_secs: u64,
+) -> Vec<Vec<serde_json::Value>> {
+    let Some(dir) = config_dir else {
+        return vec![];
+    };
+    match crate::config::resolve_function_config_with_inputs(
+        func_name,
+        dir,
+        None,
+        max_iterations,
+        timeout_secs,
+    ) {
+        Ok(resolved) if !resolved.candidate_inputs.is_empty() => {
+            log::debug!(
+                "Scan: {} candidate input(s) from config for {}",
+                resolved.candidate_inputs.len(),
+                func_name,
+            );
+            resolved
+                .candidate_inputs
+                .iter()
+                .map(|input| input.args.clone())
+                .collect()
+        }
+        Ok(_) => vec![],
+        Err(e) => {
+            log::warn!(
+                "Failed to resolve config candidate inputs for {}: {}",
+                func_name,
+                e,
+            );
+            vec![]
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1964,6 +2023,7 @@ mod tests {
             timeout_total: None,
             pool_path: None,
             project_root: None,
+            config_dir: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2031,6 +2091,7 @@ mod tests {
             timeout_total: None,
             pool_path: None,
             project_root: None,
+            config_dir: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2094,6 +2155,7 @@ mod tests {
             timeout_total: None,
             pool_path: None,
             project_root: None,
+            config_dir: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2173,6 +2235,7 @@ mod tests {
             timeout_total: Some(Duration::ZERO),
             pool_path: None,
             project_root: None,
+            config_dir: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2262,6 +2325,7 @@ mod tests {
             timeout_total: None,
             pool_path: None,
             project_root: None,
+            config_dir: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2336,6 +2400,7 @@ mod tests {
             timeout_total: None,
             pool_path: None,
             project_root: None,
+            config_dir: None,
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -2385,6 +2450,7 @@ mod tests {
             timeout_total: None,
             pool_path: None,
             project_root: None,
+            config_dir: None,
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -2417,6 +2483,7 @@ mod tests {
             timeout_total: None,
             pool_path: None,
             project_root: None,
+            config_dir: None,
         };
 
         let plan = format_dry_run_plan(&analyses, &skipped, &config).expect("should succeed");
@@ -2440,6 +2507,7 @@ mod tests {
             timeout_total: None,
             pool_path: None,
             project_root: None,
+            config_dir: None,
         };
 
         let plan = format_dry_run_plan(&[], &[], &config).expect("should succeed");
@@ -2719,5 +2787,68 @@ mod tests {
 
         assert_eq!(selected.len(), 1);
         assert!(selected.contains("fn_c"));
+    }
+
+    // ── config candidate inputs ────────────────────────────────────
+
+    #[test]
+    fn load_config_candidate_inputs_returns_args_from_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shatter_dir = tmp.path().join(".shatter");
+        std::fs::create_dir_all(&shatter_dir).unwrap();
+
+        // Write a candidate inputs JSON file.
+        let inputs_json = serde_json::json!([
+            { "args": [42, "hello"] },
+            { "args": [0, ""] }
+        ]);
+        let inputs_path = shatter_dir.join("my_inputs.json");
+        std::fs::write(&inputs_path, serde_json::to_string(&inputs_json).unwrap()).unwrap();
+
+        // Write a config.yaml that references the inputs file for "myFunc".
+        let config_yaml = "functions:\n  myFunc:\n    inputs: my_inputs.json\n";
+        let config_path = shatter_dir.join("config.yaml");
+        std::fs::write(&config_path, config_yaml).unwrap();
+
+        let result = load_config_candidate_inputs(
+            "myFunc",
+            &Some(tmp.path().to_path_buf()),
+            100,
+            30,
+        );
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], vec![serde_json::json!(42), serde_json::json!("hello")]);
+        assert_eq!(result[1], vec![serde_json::json!(0), serde_json::json!("")]);
+    }
+
+    #[test]
+    fn load_config_candidate_inputs_returns_empty_without_config_dir() {
+        let result = load_config_candidate_inputs("myFunc", &None, 100, 30);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn load_config_candidate_inputs_returns_empty_for_unmatched_function() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shatter_dir = tmp.path().join(".shatter");
+        std::fs::create_dir_all(&shatter_dir).unwrap();
+
+        let inputs_json = serde_json::json!([{ "args": [1] }]);
+        let inputs_path = shatter_dir.join("my_inputs.json");
+        std::fs::write(&inputs_path, serde_json::to_string(&inputs_json).unwrap()).unwrap();
+
+        // Config only has inputs for "otherFunc", not "myFunc".
+        let config_yaml = "functions:\n  otherFunc:\n    inputs: my_inputs.json\n";
+        std::fs::write(shatter_dir.join("config.yaml"), config_yaml).unwrap();
+
+        let result = load_config_candidate_inputs(
+            "myFunc",
+            &Some(tmp.path().to_path_buf()),
+            100,
+            30,
+        );
+
+        assert!(result.is_empty());
     }
 }
