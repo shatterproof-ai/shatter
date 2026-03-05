@@ -81,6 +81,15 @@ fn resolve_project_root(project_dir: Option<&Path>, reference_path: &Path) -> Op
     }
 }
 
+/// Strip `root` prefix from `path` to produce a relative path string.
+/// Falls back to the full path if stripping fails.
+fn relativize_path(path: &Path, root: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .into_owned()
+}
+
 /// Terminal color support based on TTY detection.
 struct Colors {
     bold: &'static str,
@@ -1479,7 +1488,7 @@ async fn run_scan(
 
         file_map.insert(
             entry.name.clone(),
-            entry.file_path.to_string_lossy().to_string(),
+            relativize_path(&entry.file_path, &root),
         );
         all_analyses.push(shatter_core::protocol::FunctionAnalysis {
             name: entry.name.clone(),
@@ -2361,7 +2370,7 @@ async fn run_run(
         );
 
         if let Some(dir) = output_dir {
-            write_analysis_report(dir, &registry, &call_graph)?;
+            write_analysis_report(dir, &registry, &call_graph, &root)?;
         }
 
         shutdown_all_frontends(frontends).await;
@@ -2600,6 +2609,7 @@ fn write_analysis_report(
     dir: &Path,
     registry: &FunctionRegistry,
     call_graph: &CallGraph,
+    root: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(dir)
         .map_err(|e| format!("failed to create output dir '{}': {e}", dir.display()))?;
@@ -2616,7 +2626,7 @@ fn write_analysis_report(
         content.push_str(&format!(
             "- **{}** ({}): {} branches, {} deps\n",
             entry.name,
-            entry.file_path.display(),
+            relativize_path(&entry.file_path, root),
             entry.branch_count,
             entry.dependencies.len(),
         ));

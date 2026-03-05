@@ -1359,6 +1359,34 @@ mod tests {
         assert!("invalid".parse::<ReportFormat>().is_err());
     }
 
+    /// Regression guard for str-u40f: report file_path values must be relative.
+    /// The CLI is responsible for relativizing paths before passing them in file_map;
+    /// generate_report passes them through verbatim.
+    #[test]
+    fn report_file_paths_are_relative_when_file_map_is_relative() {
+        let parallel_result = ParallelScanResult {
+            function_results: vec![make_function_result("f1", 10, 2, 5, 10, vec![])],
+            test_order: vec!["f1".into()],
+            skipped: vec![],
+            workers_used: 1,
+            sampling: None,
+        };
+
+        let mut file_map = HashMap::new();
+        file_map.insert("f1".to_string(), "src/a.ts".to_string());
+
+        let report = generate_report(&parallel_result, &file_map, None);
+
+        for func in &report.functions {
+            assert!(
+                !func.file_path.starts_with('/'),
+                "file_path should be relative, got: {}",
+                func.file_path
+            );
+            assert_eq!(func.file_path, "src/a.ts");
+        }
+    }
+
     #[test]
     fn boundary_values_detected() {
         assert!(is_boundary_value(&[serde_json::json!(0)]));
