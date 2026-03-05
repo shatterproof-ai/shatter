@@ -1121,6 +1121,10 @@ async fn run_explore(
                     seed_inputs.extend(pool_candidates);
                 }
 
+                // Literal-derived seeds: string/number constants from static analysis
+                let literal_candidates = shatter_core::input_gen::literals_to_candidate_inputs(&func.params, &func.literals);
+                seed_inputs.extend(literal_candidates);
+
                 let concolic_config = shatter_core::orchestrator::ExploreConfig {
                     max_iterations: explore_config.max_iterations as usize,
                     max_executions: (explore_config.max_iterations as usize) * 5,
