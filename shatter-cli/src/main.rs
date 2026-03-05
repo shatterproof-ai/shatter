@@ -1516,7 +1516,7 @@ async fn run_scan(
 
         file_map.insert(
             entry.name.clone(),
-            relativize_path(&entry.file_path, &root),
+            entry.file_path.to_string_lossy().into_owned(),
         );
         all_analyses.push(shatter_core::protocol::FunctionAnalysis {
             name: entry.name.clone(),
