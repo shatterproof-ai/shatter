@@ -11,19 +11,27 @@ isolated worktree with plan-mode supervision.
 
 ## Usage
 
-- `/swarm` — work all `bd ready` issues
-- `/swarm str-abc str-def` — work specific issues only
+- `/swarm` — work all `bd ready` issues (unbounded parallelism)
+- `/swarm 3` — work `bd ready` issues, max 3 concurrent teammates
+- `/swarm 3 str-abc str-def str-ghi` — specific issues, max 3 concurrent
 
 ---
 
 ## Phase 1 — Triage
 
+**Parse arguments**: The first argument, if numeric, is the max concurrent teammates.
+Remaining arguments are issue IDs. If no numeric first argument, concurrency is unbounded.
+
 1. Run `bd ready` (or use the provided issue IDs)
 2. Run `bd show <id>` for each issue to understand scope
 3. Identify issues that touch **overlapping files** — these must be sequenced, not parallelized
 4. Skip issues that are too large or ambiguous for a single teammate (flag for manual work)
-5. Present the triage plan to the user:
-   - Which issues will be parallelized
+5. If a max concurrency limit is set and eligible issues exceed it, prioritize by
+   beads priority (P0 first), then by dependency order (blockers before dependents).
+   Remaining issues go into a **wait queue** for later batches.
+6. Present the triage plan to the user:
+   - Which issues will be parallelized (batch 1)
+   - Which issues are in the wait queue (if limited)
    - Which issues are sequenced and why
    - Which issues are skipped and why
 
@@ -117,6 +125,13 @@ As teammates complete work:
 
 **CRITICAL**: Never shut down a teammate before merging their branch. Always
 merge first, then clean up worktree, then shut down.
+
+### Wait Queue Draining
+
+If a max concurrency limit was set and issues remain in the wait queue:
+- Each time a teammate completes and is merged+shut down, spawn the next
+  issue from the wait queue (maintaining the concurrency cap).
+- Repeat until the wait queue is empty.
 
 ---
 
