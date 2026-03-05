@@ -11,13 +11,12 @@ const VALID_LEVELS: Record<string, string> = {
 const envLevel = process.env["SHATTER_LOG_LEVEL"]?.toLowerCase() ?? "info";
 const level = VALID_LEVELS[envLevel] ?? "info";
 
-const logger = pino({
-  level,
-  transport: {
-    target: "pino/file",
-    options: { destination: 2 },
+const logger = pino(
+  {
+    level,
+    msgPrefix: "[shatter-ts] ",
   },
-  msgPrefix: "[shatter-ts] ",
-});
+  pino.destination({ fd: 2, sync: true }),
+);
 
 export default logger;
