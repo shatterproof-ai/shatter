@@ -7,7 +7,9 @@
 use serde_json::Value;
 
 use crate::boundary_dict::generate_boundary_inputs;
-use crate::input_gen::{generate_random_inputs, literals_to_candidate_inputs};
+use crate::input_gen::{crossover_inputs, generate_random_inputs, literals_to_candidate_inputs, mutate_inputs};
+use crate::orchestrator::fuzz_inputs;
+use crate::execution_record::SymConstraint;
 use crate::orchestrator::FrontendCapabilities;
 use crate::protocol::{ExecuteResult, LiteralValue};
 use crate::types::{ParamInfo, TypeInfo};
@@ -579,6 +581,116 @@ impl InputStrategy for PoolSeedsStrategy {
 
     fn estimated_size(&self) -> Option<u64> {
         Some(self.seeds.len() as u64)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FuzzerStrategy — infinite, feedback-driven mutation and crossover
+// ---------------------------------------------------------------------------
+
+/// Default per-parameter mutation probability for the fuzzer strategy.
+const FUZZER_MUTATION_RATE: f64 = 0.3;
+
+/// Default crossover probability when two parents are available.
+const FUZZER_CROSSOVER_RATE: f64 = 0.7;
+
+/// Infinite strategy that mutates and crosses over inputs which hit Unknown
+/// constraints or discovered new paths.
+///
+/// Feedback records interesting inputs (those reaching branches with no
+/// symbolic constraint, or discovering new coverage). `next()` draws from
+/// the interesting pool, generating mutations via `fuzz_inputs()`,
+/// `mutate_inputs()`, and `crossover_inputs()`.
+pub struct FuzzerStrategy {
+    rng: StdRng,
+    /// Inputs that hit Unknown constraints or new paths — seeds for mutation.
+    interesting: Vec<Vec<Value>>,
+    /// Pending mutations generated from a feedback round, drained by `next()`.
+    pending: VecDeque<Vec<Value>>,
+}
+
+impl FuzzerStrategy {
+    pub fn new(seed: Option<u64>) -> Self {
+        let rng = match seed {
+            Some(s) => StdRng::seed_from_u64(s),
+            None => StdRng::from_os_rng(),
+        };
+        Self {
+            rng,
+            interesting: Vec::new(),
+            pending: VecDeque::new(),
+        }
+    }
+
+    /// Refill `self.pending` by mutating a random interesting input.
+    fn refill(&mut self, ctx: &StrategyContext) {
+        if self.interesting.is_empty() {
+            return;
+        }
+
+        let idx = self.rng.random_range(0..self.interesting.len());
+        let base = self.interesting[idx].clone();
+
+        // 1. Simple value-level mutations (from orchestrator's fuzz_inputs).
+        for mutated in fuzz_inputs(&base) {
+            self.pending.push_back(mutated);
+        }
+
+        // 2. Type-aware mutation via input_gen.
+        let params: Vec<ParamInfo> = ctx.params.clone();
+        let mutated = mutate_inputs(&base, &params, FUZZER_MUTATION_RATE, &mut self.rng);
+        self.pending.push_back(mutated);
+
+        // 3. Crossover when at least two interesting inputs exist.
+        if self.interesting.len() >= 2 {
+            let other_idx = loop {
+                let candidate = self.rng.random_range(0..self.interesting.len());
+                if candidate != idx || self.interesting.len() == 1 {
+                    break candidate;
+                }
+            };
+            let (child_a, _child_b) = crossover_inputs(
+                &base,
+                &self.interesting[other_idx],
+                &params,
+                FUZZER_CROSSOVER_RATE,
+                &mut self.rng,
+            );
+            self.pending.push_back(child_a);
+        }
+    }
+}
+
+impl InputStrategy for FuzzerStrategy {
+    fn next(&mut self, ctx: &StrategyContext) -> Option<Vec<Value>> {
+        if let Some(candidate) = self.pending.pop_front() {
+            return Some(candidate);
+        }
+
+        // Try to refill from interesting pool.
+        self.refill(ctx);
+        self.pending.pop_front()
+    }
+
+    fn feedback(&mut self, inputs: &[Value], result: &ExecuteResult, was_new_path: bool) {
+        // Record inputs that discovered new coverage.
+        if was_new_path {
+            self.interesting.push(inputs.to_vec());
+            return;
+        }
+
+        // Record inputs that hit Unknown constraints (branches the solver
+        // cannot handle, so fuzzing is the only way to explore them).
+        let has_unknown = result.branch_path.iter().any(|decision| {
+            matches!(decision.constraint, SymConstraint::Unknown { .. })
+        });
+        if has_unknown {
+            self.interesting.push(inputs.to_vec());
+        }
+    }
+
+    fn name(&self) -> &str {
+        "fuzzer"
     }
 }
 
@@ -1255,5 +1367,102 @@ mod tests {
         for _ in 0..50 {
             assert_eq!(s1.next(&ctx), s2.next(&ctx));
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // FuzzerStrategy tests
+    // -----------------------------------------------------------------------
+
+    fn make_exec_result_with_unknown() -> ExecuteResult {
+        serde_json::from_value(serde_json::json!({
+            "return_value": 0,
+            "branch_path": [{
+                "branch_id": 1,
+                "line": 10,
+                "taken": true,
+                "constraint": { "kind": "unknown", "hint": "opaque call" }
+            }],
+            "lines_executed": [10],
+            "path_constraints": [],
+            "performance": {
+                "wall_time_ms": 1.0,
+                "cpu_time_us": 0,
+                "heap_used_bytes": 0,
+                "heap_allocated_bytes": 0
+            }
+        }))
+        .expect("valid ExecuteResult JSON")
+    }
+
+    #[test]
+    fn fuzzer_returns_none_without_feedback() {
+        let mut fuzzer = FuzzerStrategy::new(Some(42));
+        let ctx = empty_ctx();
+        assert!(fuzzer.next(&ctx).is_none());
+        assert!(fuzzer.interesting.is_empty());
+    }
+
+    #[test]
+    fn fuzzer_produces_mutations_after_unknown_feedback() {
+        let mut fuzzer = FuzzerStrategy::new(Some(42));
+        let ctx = empty_ctx();
+        let inputs = vec![Value::from(5)];
+        let result = make_exec_result_with_unknown();
+
+        fuzzer.feedback(&inputs, &result, false);
+        assert_eq!(fuzzer.interesting.len(), 1);
+
+        // Should now produce mutations from the interesting input.
+        let first = fuzzer.next(&ctx);
+        assert!(first.is_some());
+        // Should keep producing (infinite strategy).
+        let second = fuzzer.next(&ctx);
+        assert!(second.is_some());
+    }
+
+    #[test]
+    fn fuzzer_records_new_path_inputs() {
+        let mut fuzzer = FuzzerStrategy::new(Some(42));
+        let inputs = vec![Value::from(10)];
+        let result = make_exec_result();
+
+        // was_new_path = true should record even without Unknown constraints.
+        fuzzer.feedback(&inputs, &result, true);
+        assert_eq!(fuzzer.interesting.len(), 1);
+        assert_eq!(fuzzer.interesting[0], inputs);
+    }
+
+    #[test]
+    fn fuzzer_estimated_size_is_none() {
+        let fuzzer = FuzzerStrategy::new(Some(42));
+        assert!(fuzzer.estimated_size().is_none());
+    }
+
+    #[test]
+    fn fuzzer_name_is_fuzzer() {
+        let fuzzer = FuzzerStrategy::new(Some(42));
+        assert_eq!(fuzzer.name(), "fuzzer");
+    }
+
+    #[test]
+    fn fuzzer_crossover_with_two_seeds() {
+        let mut fuzzer = FuzzerStrategy::new(Some(42));
+        let ctx = empty_ctx();
+        let result_unknown = make_exec_result_with_unknown();
+
+        // Feed two different inputs.
+        fuzzer.feedback(&[Value::from(1)], &result_unknown, false);
+        fuzzer.feedback(&[Value::from(100)], &result_unknown, false);
+        assert_eq!(fuzzer.interesting.len(), 2);
+
+        // Drain enough to verify crossover candidates are generated.
+        let mut seen = Vec::new();
+        for _ in 0..20 {
+            if let Some(v) = fuzzer.next(&ctx) {
+                seen.push(v);
+            }
+        }
+        // Should have generated multiple distinct candidates.
+        assert!(seen.len() >= 2);
     }
 }

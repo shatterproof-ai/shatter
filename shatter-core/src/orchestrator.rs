@@ -464,7 +464,7 @@ pub async fn explore(
 /// - Numbers: ±1, ×-1, 0, boundary values
 /// - Booleans: flip
 /// - Strings: empty string, "a"
-fn fuzz_inputs(base: &[serde_json::Value]) -> Vec<Vec<serde_json::Value>> {
+pub(crate) fn fuzz_inputs(base: &[serde_json::Value]) -> Vec<Vec<serde_json::Value>> {
     let mut results = Vec::new();
 
     for (idx, val) in base.iter().enumerate() {
@@ -479,7 +479,7 @@ fn fuzz_inputs(base: &[serde_json::Value]) -> Vec<Vec<serde_json::Value>> {
     results
 }
 
-fn fuzz_single_value(val: &serde_json::Value) -> Vec<serde_json::Value> {
+pub(crate) fn fuzz_single_value(val: &serde_json::Value) -> Vec<serde_json::Value> {
     match val {
         serde_json::Value::Number(n) => {
             let mut mutations = Vec::new();
