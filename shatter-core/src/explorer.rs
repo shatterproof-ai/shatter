@@ -245,21 +245,49 @@ fn scope_aware_hash(events: &[crate::execution_record::TraceEvent], buckets: &Lo
         }
     }
 
-    /// Parse a flat slice of events into collapsed items for hashing.
-    /// Returns (collapsed_items, number_of_events_consumed).
-    ///
-    /// For each scope_id, collects the set of **distinct per-iteration branch
-    /// profiles**. Two iterations with the same branch set (e.g. both take
-    /// branch 1 true + false) collapse to one profile entry. Iterations with
-    /// different branch sets (e.g. one enters the while loop, one doesn't)
-    /// remain separate profiles — producing different hashes.
-    ///
-    /// When `buckets` is non-empty, tracks iteration counts per (scope_id, profile)
-    /// pair and attaches the bucket index to each profile in the output.
+    /// Convert accumulated per-scope profile maps into `CollapsedItem::Scope`
+    /// entries appended to `items`. Called at both the normal end of `collapse()`
+    /// and the early return on parent-scope exit — without this, nested scopes
+    /// would be invisible to their parent's branch profile.
+    fn emit_scope_items(
+        items: &mut Vec<CollapsedItem>,
+        loop_profiles: &HashMap<u32, HashMap<BranchProfile, u32>>,
+        call_profiles: &HashMap<u32, HashMap<BranchProfile, u32>>,
+        buckets: &LoopBuckets,
+    ) {
+        let mut scope_ids: Vec<(u64, Vec<ProfileWithBucket>)> = Vec::new();
+        for (id, profiles) in loop_profiles {
+            let tag = (*id as u64) | (1u64 << 32);
+            let mut sorted: Vec<ProfileWithBucket> = profiles
+                .iter()
+                .map(|(profile, &count)| {
+                    let bucket = if buckets.is_disabled() { None } else { Some(buckets.bucket(count)) };
+                    (profile.clone(), bucket)
+                })
+                .collect();
+            sorted.sort();
+            scope_ids.push((tag, sorted));
+        }
+        for (id, profiles) in call_profiles {
+            let tag = (*id as u64) | (2u64 << 32);
+            let mut sorted: Vec<ProfileWithBucket> = profiles
+                .iter()
+                .map(|(profile, &count)| {
+                    let bucket = if buckets.is_disabled() { None } else { Some(buckets.bucket(count)) };
+                    (profile.clone(), bucket)
+                })
+                .collect();
+            sorted.sort();
+            scope_ids.push((tag, sorted));
+        }
+        scope_ids.sort_by_key(|(tag, _)| *tag);
+        for (scope_tag, profile_buckets) in scope_ids {
+            items.push(CollapsedItem::Scope { scope_tag, profile_buckets });
+        }
+    }
+
     fn collapse(events: &[TraceEvent], buckets: &LoopBuckets) -> (Vec<CollapsedItem>, usize) {
         let mut items: Vec<CollapsedItem> = Vec::new();
-        // Map from scope_id to per-profile iteration counts.
-        // BTreeMap for deterministic ordering (profiles are sorted vecs).
         let mut loop_profiles: HashMap<u32, HashMap<BranchProfile, u32>> = HashMap::new();
         let mut call_profiles: HashMap<u32, HashMap<BranchProfile, u32>> = HashMap::new();
 
@@ -282,8 +310,11 @@ fn scope_aware_hash(events: &[crate::execution_record::TraceEvent], buckets: &Lo
                     };
 
                     if !is_enter {
-                        // Exit without matching enter — we've hit the boundary of
-                        // our parent scope. Stop processing here.
+                        // Exit without matching enter — we've hit the boundary
+                        // of our parent scope. Emit accumulated scope items
+                        // before returning so nested scopes are visible to
+                        // the parent's branch profile.
+                        emit_scope_items(&mut items, &loop_profiles, &call_profiles, buckets);
                         return (items, i);
                     }
 
@@ -300,10 +331,6 @@ fn scope_aware_hash(events: &[crate::execution_record::TraceEvent], buckets: &Lo
                                 profile.insert((*branch_id, *taken));
                             }
                             CollapsedItem::Scope { scope_tag, profile_buckets } => {
-                                // Include nested scope identity in the profile by
-                                // hashing it into a synthetic branch_id. This ensures
-                                // iterations with different nested scope behavior
-                                // produce different profiles.
                                 let mut h = DefaultHasher::new();
                                 scope_tag.hash(&mut h);
                                 profile_buckets.hash(&mut h);
@@ -333,39 +360,7 @@ fn scope_aware_hash(events: &[crate::execution_record::TraceEvent], buckets: &Lo
             }
         }
 
-        // Emit collapsed scope items (one per unique scope_id, in id order).
-        // Profiles are sorted for deterministic hashing. Each profile is paired
-        // with its iteration-count bucket (None when bucketing is disabled).
-        let mut scope_ids: Vec<(u64, Vec<ProfileWithBucket>)> = Vec::new();
-        for (id, profiles) in &loop_profiles {
-            let tag = (*id as u64) | (1u64 << 32); // distinguish loops from calls
-            let mut sorted: Vec<ProfileWithBucket> = profiles
-                .iter()
-                .map(|(profile, &count)| {
-                    let bucket = if buckets.is_disabled() { None } else { Some(buckets.bucket(count)) };
-                    (profile.clone(), bucket)
-                })
-                .collect();
-            sorted.sort();
-            scope_ids.push((tag, sorted));
-        }
-        for (id, profiles) in &call_profiles {
-            let tag = (*id as u64) | (2u64 << 32);
-            let mut sorted: Vec<ProfileWithBucket> = profiles
-                .iter()
-                .map(|(profile, &count)| {
-                    let bucket = if buckets.is_disabled() { None } else { Some(buckets.bucket(count)) };
-                    (profile.clone(), bucket)
-                })
-                .collect();
-            sorted.sort();
-            scope_ids.push((tag, sorted));
-        }
-        scope_ids.sort_by_key(|(tag, _)| *tag);
-        for (scope_tag, profile_buckets) in scope_ids {
-            items.push(CollapsedItem::Scope { scope_tag, profile_buckets });
-        }
-
+        emit_scope_items(&mut items, &loop_profiles, &call_profiles, buckets);
         (items, events.len())
     }
 
@@ -1317,6 +1312,73 @@ mod tests {
             path_hash(&exec_with_scope(trace_3), &buckets),
             path_hash(&exec_with_scope(trace_8), &buckets),
             "3 and 8 iterations should produce same hash with [1,10] boundaries"
+        );
+    }
+
+    /// Regression: collapse() must emit accumulated scope items before the
+    /// early return on a parent scope exit. Without this fix, a loop nested
+    /// inside a call scope is invisible to the call's branch profile, so
+    /// different iteration counts all hash identically.
+    #[test]
+    fn path_hash_nested_loop_in_call_scope_bucketing() {
+        let buckets = LoopBuckets::default(); // [0, 1, 2, 5]
+
+        // Simulate a for-of loop inside a function call scope.
+        // The loop body has no branches, so only iteration count (via
+        // bucketing) can distinguish different input lengths.
+
+        // 0 loop iterations (empty string)
+        let trace_0 = vec![call_enter(0), call_exit(0)];
+        // 1 iteration
+        let trace_1 = vec![
+            call_enter(0), loop_enter(0), loop_exit(0), call_exit(0),
+        ];
+        // 2 iterations
+        let trace_2 = vec![
+            call_enter(0),
+            loop_enter(0), loop_exit(0),
+            loop_enter(0), loop_exit(0),
+            call_exit(0),
+        ];
+        // 5 iterations → bucket 3 (3-5)
+        let trace_5: Vec<_> = {
+            let mut v = vec![call_enter(0)];
+            for _ in 0..5 { v.push(loop_enter(0)); v.push(loop_exit(0)); }
+            v.push(call_exit(0));
+            v
+        };
+        // 10 iterations → bucket 4 (6+)
+        let trace_10: Vec<_> = {
+            let mut v = vec![call_enter(0)];
+            for _ in 0..10 { v.push(loop_enter(0)); v.push(loop_exit(0)); }
+            v.push(call_exit(0));
+            v
+        };
+
+        let h0 = path_hash(&exec_with_scope(trace_0), &buckets);
+        let h1 = path_hash(&exec_with_scope(trace_1), &buckets);
+        let h2 = path_hash(&exec_with_scope(trace_2), &buckets);
+        let h5 = path_hash(&exec_with_scope(trace_5), &buckets);
+        let h10 = path_hash(&exec_with_scope(trace_10), &buckets);
+
+        // All five buckets should produce distinct hashes
+        let hashes = vec![h0, h1, h2, h5, h10];
+        let unique: std::collections::HashSet<u64> = hashes.iter().copied().collect();
+        assert_eq!(
+            unique.len(), 5,
+            "loop inside call scope should produce 5 distinct hashes for 5 buckets, got {hashes:?}",
+        );
+
+        // 3 and 5 iterations both land in bucket 3 (3-5) → same hash
+        let trace_3: Vec<_> = {
+            let mut v = vec![call_enter(0)];
+            for _ in 0..3 { v.push(loop_enter(0)); v.push(loop_exit(0)); }
+            v.push(call_exit(0));
+            v
+        };
+        assert_eq!(
+            path_hash(&exec_with_scope(trace_3), &buckets), h5,
+            "3 and 5 iterations should produce same hash (both in bucket 3-5)"
         );
     }
 
