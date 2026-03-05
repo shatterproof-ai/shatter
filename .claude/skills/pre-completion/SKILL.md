@@ -10,8 +10,10 @@ Verify all completion criteria are met before announcing work is done to the
 team lead (if in a team) or the user (if working solo).
 **Do not declare completion until this skill passes.**
 
-If any required check fails, fix the issue and re-run the failing check.
-Do not announce completion with failures.
+**If any check fails, you are NOT done.** Fix the failing issue, then re-run
+`/pre-completion` from the top. Repeat until all checks pass. Do not announce
+completion, send a completion message, or report to the lead with any FAIL
+status — go back and fix it first.
 
 ---
 
@@ -171,4 +173,6 @@ Pre-completion: PASS / FAIL
 ```
 
 If any required check is FAIL, set overall status to **FAIL** and list what must
-be fixed. Do not announce completion until re-running this skill yields PASS.
+be fixed. **Do not stop here** — go fix the failures, then re-run `/pre-completion`.
+You must keep iterating until the table shows `Pre-completion: PASS`. Only then
+may you send a completion message.
