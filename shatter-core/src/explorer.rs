@@ -93,6 +93,9 @@ pub struct ExploreConfig {
     /// User-provided candidate inputs from --inputs or .shatter/ config.
     /// Executed first (highest priority), with no budget cap.
     pub user_seeds: Vec<Vec<serde_json::Value>>,
+    /// Resolved candidate inputs (from --inputs or .shatter/ config).
+    /// Priority above pool seeds, below literal seeds.
+    pub candidate_inputs: Vec<Vec<serde_json::Value>>,
     /// Pre-computed pool seed candidates (from interesting input pool).
     /// Injected after literal candidates but before random generation.
     pub pool_seeds: Vec<Vec<serde_json::Value>>,
@@ -592,6 +595,14 @@ pub async fn explore_function(
         .min(config.max_iterations as usize / 2);
     let mut literal_iter = literal_candidates.into_iter().take(literal_budget).peekable();
 
+    // --- Candidate inputs (from --inputs or .shatter/ config) ---
+    // Priority above pool seeds, below literal seeds.
+    let candidate_budget = config
+        .candidate_inputs
+        .len()
+        .min(config.max_iterations as usize / 3);
+    let mut candidate_iter = config.candidate_inputs.iter().take(candidate_budget).cloned().peekable();
+
     // --- Pool-derived seed inputs ---
     // Cross-function interesting values, injected after literals but before random generation.
     let pool_budget = config
@@ -612,11 +623,13 @@ pub async fn explore_function(
         }
 
         // --- Input generation ---
-        // Priority: user seeds → literals → pool seeds → custom generators → random.
+        // Priority: user seeds → literals → candidate inputs → pool seeds → custom generators → random.
         let inputs = if let Some(user_inputs) = user_iter.next() {
             user_inputs
         } else if let Some(lit_inputs) = literal_iter.next() {
             lit_inputs
+        } else if let Some(cand_inputs) = candidate_iter.next() {
+            cand_inputs
         } else if let Some(pool_inputs) = pool_iter.next() {
             pool_inputs
         } else if use_generators {
@@ -1616,6 +1629,7 @@ mod tests {
             setup_file: None, setup_mode: SetupMode::PerFunction,
             value_sources: vec![], capabilities: FrontendCapabilities::default(),
             user_seeds: vec![],
+            candidate_inputs: vec![],
             pool_seeds: vec![],
             project_root: None,
             loop_buckets: LoopBuckets::default(),
@@ -1638,6 +1652,7 @@ mod tests {
             setup_file: Some("setup.ts".into()), setup_mode: SetupMode::PerFunction,
             value_sources: vec![], capabilities: caps,
             user_seeds: vec![],
+            candidate_inputs: vec![],
             pool_seeds: vec![],
             project_root: None,
             loop_buckets: LoopBuckets::default(),
@@ -1660,6 +1675,7 @@ mod tests {
             setup_file: Some("setup.ts".into()), setup_mode: SetupMode::PerExecution,
             value_sources: vec![], capabilities: caps,
             user_seeds: vec![],
+            candidate_inputs: vec![],
             pool_seeds: vec![],
             project_root: None,
             loop_buckets: LoopBuckets::default(),
@@ -1681,6 +1697,7 @@ mod tests {
             setup_file: Some("setup.ts".into()), setup_mode: SetupMode::PerFunction,
             value_sources: vec![], capabilities: caps,
             user_seeds: vec![],
+            candidate_inputs: vec![],
             pool_seeds: vec![],
             project_root: None,
             loop_buckets: LoopBuckets::default(),
@@ -1706,6 +1723,7 @@ mod tests {
             }],
             capabilities: caps,
             user_seeds: vec![],
+            candidate_inputs: vec![],
             pool_seeds: vec![],
             project_root: None,
             loop_buckets: LoopBuckets::default(),
@@ -1727,6 +1745,7 @@ mod tests {
             setup_file: None, setup_mode: SetupMode::PerFunction,
             value_sources: vec![], capabilities: caps,
             user_seeds: vec![],
+            candidate_inputs: vec![],
             pool_seeds: vec![],
             project_root: None,
             loop_buckets: LoopBuckets::default(),
@@ -1747,6 +1766,7 @@ mod tests {
             setup_file: None, setup_mode: SetupMode::PerFunction,
             value_sources: vec![], capabilities: FrontendCapabilities::default(),
             user_seeds: vec![user_seed_value.clone()],
+            candidate_inputs: vec![],
             pool_seeds: vec![],
             project_root: None,
             loop_buckets: LoopBuckets::default(),
@@ -1756,6 +1776,38 @@ mod tests {
         assert_eq!(result.iterations, 5);
         // The first execution should use the user-provided seed value.
         assert_eq!(result.raw_results[0].0, user_seed_value);
+        frontend.shutdown().await.expect("shutdown failed");
+    }
+
+    #[tokio::test]
+    async fn candidate_inputs_consumed_between_literals_and_pool() {
+        let mut frontend = spawn_noop_frontend().await;
+        let analysis = stub_analysis();
+        let candidate_value = vec![serde_json::json!(777)];
+        let pool_value = vec![serde_json::json!(888)];
+        let config = ExploreConfig {
+            file: "test.ts".into(), max_iterations: 10, seed: Some(42), mocks: vec![],
+            setup_file: None, setup_mode: SetupMode::PerFunction,
+            value_sources: vec![], capabilities: FrontendCapabilities::default(),
+            user_seeds: vec![],
+            candidate_inputs: vec![candidate_value.clone()],
+            pool_seeds: vec![pool_value.clone()],
+            project_root: None,
+            loop_buckets: LoopBuckets::default(),
+        };
+        let result = explore_function(&mut frontend, &analysis, &config)
+            .await.expect("candidate inputs should succeed");
+        // Literal-derived inputs come first (from stub_analysis literals),
+        // then candidate_inputs, then pool_seeds.
+        // Find the candidate value in raw_results — it should appear before pool value.
+        let candidate_pos = result.raw_results.iter().position(|(inputs, _)| *inputs == candidate_value);
+        let pool_pos = result.raw_results.iter().position(|(inputs, _)| *inputs == pool_value);
+        assert!(candidate_pos.is_some(), "candidate input should be executed");
+        assert!(pool_pos.is_some(), "pool seed should be executed");
+        assert!(
+            candidate_pos.unwrap() < pool_pos.unwrap(),
+            "candidate inputs should be consumed before pool seeds"
+        );
         frontend.shutdown().await.expect("shutdown failed");
     }
 }

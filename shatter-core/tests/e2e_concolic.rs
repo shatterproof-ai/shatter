@@ -344,3 +344,103 @@ async fn concolic_safedivide_discovers_error_paths() {
 
     frontend.shutdown().await.expect("frontend shutdown failed");
 }
+
+/// Test concolic exploration on validateEmail, a string-heavy function with 20 branches.
+///
+/// validateEmail(email: string) validates email addresses against RFC 5321/5322 rules.
+/// Key paths include:
+///   - empty string -> { valid: false, reason: "empty" }
+///   - no '@' -> { valid: false, reason: "missing @" }
+///   - multiple '@' -> { valid: false, reason: "multiple @" }
+///   - empty local/domain parts
+///   - dot placement rules (starts/ends with dot, consecutive dots)
+///   - plus-addressing -> { valid: true, tag: "..." }
+///   - quoted local part -> { valid: true, quoted: true }
+///   - standard valid -> { valid: true }
+///
+/// String-heavy functions are much harder for concolic exploration — most branches
+/// require precise character placement. We seed with structurally diverse emails
+/// and set a modest coverage bar (>=6 paths), with TODOs to raise it as string
+/// solver capabilities improve.
+#[tokio::test]
+async fn concolic_validateemail_discovers_string_paths() {
+    let file = examples_dir().join("15-email-validator.ts");
+    let file_str = file.to_string_lossy().to_string();
+
+    let mut frontend = spawn_ts_frontend().await;
+
+    // Step 1: Analyze the function to get its type signature.
+    let analysis = analyze_function(&mut frontend, &file_str, "validateEmail").await;
+    assert_eq!(analysis.params.len(), 1, "validateEmail takes 1 param");
+
+    // Step 2: Instrument the function for branch tracking.
+    instrument_function(&mut frontend, &file_str, "validateEmail").await;
+
+    // Step 3: Run concolic exploration with generous limits for string-heavy function.
+    let config = ExploreConfig {
+        max_iterations: 50,
+        max_executions: 300,
+        plateau_threshold: 30,
+        ..Default::default()
+    };
+
+    // Seed with structurally diverse emails that exercise different validation paths.
+    let seed_inputs = vec![
+        vec![serde_json::json!("")],                    // empty string
+        vec![serde_json::json!("no-at-sign")],          // missing @
+        vec![serde_json::json!("a@@b.com")],            // multiple @
+        vec![serde_json::json!("@domain.com")],         // empty local part
+        vec![serde_json::json!("user@")],               // empty domain
+        vec![serde_json::json!(".dot@x.com")],          // local starts with dot
+        vec![serde_json::json!("user+tag@x.com")],      // plus-addressing
+        vec![serde_json::json!("test@example.com")],     // standard valid
+    ];
+
+    let param_names: Vec<String> = analysis.params.iter().map(|p| p.name.clone()).collect();
+
+    let result = orchestrator::explore(
+        &mut frontend,
+        "validateEmail",
+        seed_inputs,
+        vec![], // no user-provided inputs
+        &param_names,
+        &config,
+    )
+    .await
+    .expect("concolic exploration failed");
+
+    // Step 4: Verify results.
+    let return_values = return_value_set(&result);
+
+    // With 8 diverse seeds, we should hit at least the paths those seeds trigger directly.
+    // TODO(str-q26c): Raise this bar as string solver improves — the function has 20 branches,
+    // and better string constraint solving should discover more of them automatically.
+    assert!(
+        result.unique_paths >= 6,
+        "should have at least 6 unique paths from string-heavy function; got {}",
+        result.unique_paths
+    );
+
+    // Verify some specific paths are discovered — these are directly triggered by seeds.
+    let has_empty = return_values.iter().any(|v| v.contains("empty"));
+    assert!(
+        has_empty,
+        "should discover 'empty' path (from empty string seed); found: {return_values:?}"
+    );
+
+    let has_missing_at = return_values.iter().any(|v| v.contains("missing @"));
+    assert!(
+        has_missing_at,
+        "should discover 'missing @' path; found: {return_values:?}"
+    );
+
+    let has_valid = return_values
+        .iter()
+        .any(|v| v.contains("\"valid\":true") || v.contains("\"valid\": true"));
+    assert!(
+        has_valid,
+        "should discover at least one valid email path; found: {return_values:?}"
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}

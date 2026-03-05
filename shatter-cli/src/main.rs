@@ -1085,7 +1085,8 @@ async fn run_explore(
                     &resolved.generators,
                 ),
                 capabilities: shatter_core::orchestrator::FrontendCapabilities::default(),
-                user_seeds: resolved.candidate_inputs
+                user_seeds: vec![],
+                candidate_inputs: resolved.candidate_inputs
                     .iter()
                     .map(|input| input.args.clone())
                     .collect(),
@@ -2063,6 +2064,7 @@ async fn run_export_tests(
             value_sources: vec![],
             capabilities: shatter_core::orchestrator::FrontendCapabilities::default(),
             user_seeds: vec![],
+            candidate_inputs: vec![],
             pool_seeds: vec![],
             project_root: project_root_str.clone(),
             loop_buckets: explorer::LoopBuckets::default(),
@@ -2433,6 +2435,7 @@ async fn run_run(
                 value_sources: vec![],
                 capabilities: shatter_core::orchestrator::FrontendCapabilities::default(),
                 user_seeds: vec![],
+                candidate_inputs: vec![],
                 pool_seeds: vec![],
                 project_root: project_root_str.clone(),
                 loop_buckets: explorer::LoopBuckets::default(),
