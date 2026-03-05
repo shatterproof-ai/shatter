@@ -35,29 +35,44 @@ isolated worktree with plan-mode supervision.
 
 1. Create a team via `TeamCreate` (name: `swarm-YYYY-MM-DD` or similar)
 2. Create a task (via `TaskCreate`) for each parallelizable issue, including the beads ID in the task description
-3. For each task, spawn a teammate via the `Task` tool with:
+3. For each task, spawn a teammate via the `Agent` tool with:
    - `subagent_type: "general-purpose"`
-   - `isolation: "worktree"`
    - `mode: "plan"`
    - `team_name: <team>`
+   - Do NOT use `isolation: "worktree"` — it is unreliable. Instead, include
+     manual worktree setup commands in the prompt (see below).
 4. Each teammate's prompt must include:
    - The full issue details (from `bd show`)
-   - Instruction to run **`/pre-completion`** before reporting done — do not
-     announce completion until it reports PASS
-   - Instruction to **push their branch** before reporting completion
    - Instruction to follow CLAUDE.md and AGENTS.md conventions
-   - **Worktree isolation rules** (copy verbatim into each prompt):
+   - **Manual worktree setup** (copy verbatim into each prompt):
      ```
-     ## WORKTREE ISOLATION — CRITICAL
-     You are running in an isolated git worktree. You MUST:
-     1. NEVER run `cd /home/ketan/project/shatter` or cd to the main repo
-     2. NEVER run `git checkout` to switch branches — you are already on your branch
-     3. ALWAYS use your current working directory for all operations
-     4. Verify your worktree: run `git rev-parse --show-toplevel` — it must
-        contain `.claude/worktrees/`, NOT be the main repo
-     5. If any command changes your directory to the main repo, STOP and
-        cd back to your worktree immediately
-     6. Commit and push ONLY on your worktree branch — never touch main
+     ## WORKTREE SETUP — RUN FIRST
+     Before doing anything else, create and enter an isolated worktree:
+     ```bash
+     BRANCH_NAME="<issue-id>"
+     git worktree add /home/ketan/project/shatter/.claude/worktrees/$BRANCH_NAME -b $BRANCH_NAME
+     cd /home/ketan/project/shatter/.claude/worktrees/$BRANCH_NAME
+     ```
+     ALL subsequent commands must run from this worktree directory. Verify with:
+     ```bash
+     pwd  # Must show .claude/worktrees/<issue-id>
+     git branch --show-current  # Must show <issue-id>
+     ```
+     NEVER cd back to /home/ketan/project/shatter. Commit and push ONLY on
+     your worktree branch — never touch main.
+     ```
+   - **Pre-completion enforcement** (copy verbatim into each prompt):
+     ```
+     ## PRE-COMPLETION — MANDATORY
+     You MUST run `/pre-completion` and include the full summary table in your
+     completion message. Your work WILL BE REJECTED if the table is missing or
+     shows FAIL. Do NOT send a completion message without it.
+
+     After pre-completion passes, push your branch:
+     ```bash
+     git push -u origin <branch-name>
+     ```
+     Then send your completion message with the table to the team lead.
      ```
 
 ---
@@ -83,20 +98,24 @@ As teammates complete work:
 1. **Verify quality**: Confirm the teammate's completion message includes the
    `/pre-completion` summary table with `Pre-completion: PASS`. Reject any
    completion announcement that lacks the table or shows FAIL status — send
-   the teammate back to fix the issues
-2. **Get the branch**: Read the worktree branch name from the Task result
+   the teammate back to fix the issues. Do NOT accept "done" without the table.
+2. **Get the branch**: The branch name matches the issue ID (from manual worktree setup)
 3. **Merge to main**:
    ```bash
-   git checkout main
+   git checkout main  # Verify with git branch --show-current
    git merge <branch> --no-edit
    ```
 4. **Handle conflicts**: If merge conflicts arise, resolve them or ask the teammate to rebase
 5. **Close the beads issue**: `bd close <id>`
-6. **Delete the branch**: `git branch -d <branch>`
+6. **Clean up worktree and branch**:
+   ```bash
+   git worktree remove .claude/worktrees/<issue-id>
+   git branch -d <issue-id>
+   ```
 7. **Only then** send `shutdown_request` to the teammate
 
-**CRITICAL**: Never shut down a teammate before merging their branch. Worktree
-cleanup deletes the branch — unmerged work is lost.
+**CRITICAL**: Never shut down a teammate before merging their branch. Always
+merge first, then clean up worktree, then shut down.
 
 ---
 
