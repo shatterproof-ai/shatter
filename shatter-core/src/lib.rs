@@ -24,6 +24,7 @@ pub mod explorer;
 pub mod export;
 pub mod file_lock;
 pub mod fingerprint;
+pub mod frontier;
 pub mod frontend;
 pub mod genetic_fitness;
 pub mod input_gen;
