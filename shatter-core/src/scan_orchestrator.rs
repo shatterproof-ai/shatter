@@ -167,13 +167,24 @@ enum FunctionOutcome {
     },
 }
 
-/// Summary of a function that was skipped during a parallel scan.
+/// Whether a skip is benign (expected) or an actual error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkipCategory {
+    /// Benign: opaque types, cache hits, checkpoint resumes.
+    Expected,
+    /// Problematic: timeouts, exploration errors, crashes.
+    Error,
+}
+
+/// Summary of a function that was skipped during a scan.
 #[derive(Debug)]
 pub struct SkippedFunction {
     /// Name of the function that was skipped.
     pub function_name: String,
     /// Reason the function was skipped.
     pub reason: String,
+    /// Whether this skip is expected or an error.
+    pub category: SkipCategory,
 }
 
 /// Build an [`ExecutionRecord`] from an [`ExecuteResult`] and its inputs.
@@ -326,6 +337,7 @@ pub async fn scan(
             skipped_functions.push(SkippedFunction {
                 function_name: func_name.clone(),
                 reason: "resumed from checkpoint".into(),
+                category: SkipCategory::Expected,
             });
             continue;
         }
@@ -340,6 +352,7 @@ pub async fn scan(
             skipped_functions.push(SkippedFunction {
                 function_name: func_name.clone(),
                 reason: "unchanged (fingerprint match)".into(),
+                category: SkipCategory::Expected,
             });
             continue;
         }
@@ -648,6 +661,7 @@ pub async fn parallel_scan(
                     skipped.push(SkippedFunction {
                         function_name: func_name.clone(),
                         reason: "total scan timeout exceeded".into(),
+                        category: SkipCategory::Error,
                     });
                 }
             }
@@ -668,6 +682,7 @@ pub async fn parallel_scan(
                     skipped.push(SkippedFunction {
                         function_name: func_name.clone(),
                         reason: "no analysis found".into(),
+                        category: SkipCategory::Error,
                     });
                     continue;
                 }
@@ -694,6 +709,7 @@ pub async fn parallel_scan(
                 skipped.push(SkippedFunction {
                     function_name: func_name.clone(),
                     reason: "resumed from checkpoint".into(),
+                    category: SkipCategory::Expected,
                 });
                 continue;
             }
@@ -710,6 +726,7 @@ pub async fn parallel_scan(
                 skipped.push(SkippedFunction {
                     function_name: func_name.clone(),
                     reason: "unchanged (fingerprint match)".into(),
+                    category: SkipCategory::Expected,
                 });
                 continue;
             }
@@ -887,12 +904,14 @@ pub async fn parallel_scan(
                     skipped.push(SkippedFunction {
                         function_name,
                         reason: format!("timed out after {:.0}s", limit.as_secs_f64()),
+                        category: SkipCategory::Error,
                     });
                 }
                 Ok(FunctionOutcome::Error { function_name, error }) => {
                     skipped.push(SkippedFunction {
                         function_name,
                         reason: format!("error: {error}"),
+                        category: SkipCategory::Error,
                     });
                 }
                 Err(e) => {
@@ -900,6 +919,7 @@ pub async fn parallel_scan(
                     skipped.push(SkippedFunction {
                         function_name: "(unknown)".into(),
                         reason: format!("task join error: {e}"),
+                        category: SkipCategory::Error,
                     });
                 }
             }
@@ -1095,10 +1115,14 @@ pub fn format_parallel_scan_report(result: &ParallelScanResult) -> String {
         ));
     }
 
+    let expected: Vec<_> = result.skipped.iter().filter(|s| s.category == SkipCategory::Expected).collect();
+    let errors: Vec<_> = result.skipped.iter().filter(|s| s.category == SkipCategory::Error).collect();
+
     out.push_str(&format!(
-        "Scan complete: {} function(s) tested, {} skipped ({} worker(s))\n",
+        "Scan complete: {} function(s) tested, {} skipped, {} error(s) ({} worker(s))\n",
         result.function_results.len(),
-        result.skipped.len(),
+        expected.len(),
+        errors.len(),
         result.workers_used,
     ));
 
@@ -1130,12 +1154,7 @@ pub fn format_parallel_scan_report(result: &ParallelScanResult) -> String {
         }
     }
 
-    if !result.skipped.is_empty() {
-        out.push_str("\nSkipped functions:\n");
-        for skip in &result.skipped {
-            out.push_str(&format!("  {}: {}\n", skip.function_name, skip.reason));
-        }
-    }
+    format_skip_sections(&expected, &errors, &mut out);
 
     out
 }
@@ -1158,6 +1177,9 @@ pub fn format_scan_report(result: &ScanResult) -> String {
             ctx.closure_functions,
         ));
     }
+
+    let expected: Vec<_> = result.skipped_functions.iter().filter(|s| s.category == SkipCategory::Expected).collect();
+    let errors: Vec<_> = result.skipped_functions.iter().filter(|s| s.category == SkipCategory::Error).collect();
 
     out.push_str(&format!(
         "Scan complete: {} function(s) tested\n",
@@ -1191,14 +1213,26 @@ pub fn format_scan_report(result: &ScanResult) -> String {
         }
     }
 
-    if !result.skipped_functions.is_empty() {
-        out.push_str("\nSkipped functions:\n");
-        for skip in &result.skipped_functions {
+    format_skip_sections(&expected, &errors, &mut out);
+
+    out
+}
+
+/// Append "Skipped (expected)" and "Errors" sections to a report string.
+fn format_skip_sections(expected: &[&SkippedFunction], errors: &[&SkippedFunction], out: &mut String) {
+    if !expected.is_empty() {
+        out.push_str(&format!("\nSkipped (expected, {}):\n", expected.len()));
+        for skip in expected {
             out.push_str(&format!("  {}: {}\n", skip.function_name, skip.reason));
         }
     }
 
-    out
+    if !errors.is_empty() {
+        out.push_str(&format!("\nErrors ({}):\n", errors.len()));
+        for skip in errors {
+            out.push_str(&format!("  {}: {}\n", skip.function_name, skip.reason));
+        }
+    }
 }
 
 /// Format a [`TypeInfo`] as a concise human-readable string.
@@ -1674,10 +1708,12 @@ mod tests {
                 SkippedFunction {
                     function_name: "handleRequest".into(),
                     reason: "param \"socket\" has opaque type net.Socket".into(),
+                    category: SkipCategory::Expected,
                 },
                 SkippedFunction {
                     function_name: "processStream".into(),
                     reason: "param \"input\" has opaque type stream.Readable".into(),
+                    category: SkipCategory::Expected,
                 },
             ],
             sampling: None,
@@ -1685,9 +1721,56 @@ mod tests {
 
         let report = format_scan_report(&result);
         assert!(report.contains("1 function(s) tested"));
-        assert!(report.contains("Skipped functions:"));
+        assert!(report.contains("Skipped (expected, 2):"));
         assert!(report.contains("handleRequest: param \"socket\" has opaque type net.Socket"));
         assert!(report.contains("processStream: param \"input\" has opaque type stream.Readable"));
+        assert!(!report.contains("Errors ("));
+    }
+
+    #[test]
+    fn format_scan_report_mixed_expected_and_errors() {
+        let result = ScanResult {
+            test_order: vec!["good_func".into()],
+            function_results: vec![FunctionResult {
+                function_name: "good_func".into(),
+                exploration: ObservationOutput {
+                    function_name: "good_func".into(),
+                    iterations: 5,
+                    unique_paths: 1,
+                    lines_covered: 3,
+                    total_lines: 5,
+                    new_path_executions: vec![],
+                    raw_results: vec![], discoveries: vec![],
+                },
+                behavior_map: BehaviorMap {
+                    function_id: "good_func".into(),
+                    behaviors: vec![],
+                    fingerprint: None,
+                },
+                behavior_coverage: vec![],
+                mocks_used: vec![],
+                coverage_metrics: Default::default(),
+            }],
+            skipped_functions: vec![
+                SkippedFunction {
+                    function_name: "handleRequest".into(),
+                    reason: "param \"socket\" has opaque type net.Socket".into(),
+                    category: SkipCategory::Expected,
+                },
+                SkippedFunction {
+                    function_name: "authenticate".into(),
+                    reason: "error: unexpected response from frontend".into(),
+                    category: SkipCategory::Error,
+                },
+            ],
+            sampling: None,
+        };
+
+        let report = format_scan_report(&result);
+        assert!(report.contains("Skipped (expected, 1):"), "missing expected section: {report}");
+        assert!(report.contains("handleRequest: param \"socket\" has opaque type net.Socket"));
+        assert!(report.contains("Errors (1):"), "missing errors section: {report}");
+        assert!(report.contains("authenticate: error: unexpected response from frontend"));
     }
 
     #[test]
@@ -1719,7 +1802,8 @@ mod tests {
         };
 
         let report = format_scan_report(&result);
-        assert!(!report.contains("Skipped functions:"));
+        assert!(!report.contains("Skipped (expected"));
+        assert!(!report.contains("Errors ("));
     }
 
     #[test]
@@ -1895,6 +1979,7 @@ mod tests {
             skipped: vec![SkippedFunction {
                 function_name: "f2".into(),
                 reason: "timed out after 30s".into(),
+                category: SkipCategory::Error,
             }],
             workers_used: 4,
             sampling: None,
@@ -1902,11 +1987,13 @@ mod tests {
 
         let report = format_parallel_scan_report(&result);
         assert!(report.contains("1 function(s) tested"));
-        assert!(report.contains("1 skipped"));
+        assert!(report.contains("0 skipped"));
+        assert!(report.contains("1 error(s)"));
         assert!(report.contains("4 worker(s)"));
         assert!(!report.contains("Test order"));
-        assert!(report.contains("Skipped functions:"));
+        assert!(report.contains("Errors (1):"));
         assert!(report.contains("f2: timed out after 30s"));
+        assert!(!report.contains("Skipped (expected"));
     }
 
     #[test]
@@ -1940,7 +2027,9 @@ mod tests {
 
         let report = format_parallel_scan_report(&result);
         assert!(report.contains("0 skipped"));
-        assert!(!report.contains("Skipped functions:"));
+        assert!(report.contains("0 error(s)"));
+        assert!(!report.contains("Skipped (expected"));
+        assert!(!report.contains("Errors ("));
     }
 
     // ── parallel_scan integration test ──────────────────────────────
@@ -2458,6 +2547,7 @@ mod tests {
         let skipped = vec![SkippedFunction {
             function_name: "broken".into(),
             reason: "param \"sock\" has opaque type net.Socket".into(),
+            category: SkipCategory::Expected,
         }];
 
         let config = ScanConfig {

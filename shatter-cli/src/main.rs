@@ -1548,6 +1548,7 @@ async fn run_scan(
             skipped_for_executability.push(SkippedFunction {
                 function_name: func.name.clone(),
                 reason,
+                category: shatter_core::scan_orchestrator::SkipCategory::Expected,
             });
             false
         }
