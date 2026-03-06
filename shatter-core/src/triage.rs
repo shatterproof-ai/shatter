@@ -1,13 +1,219 @@
-//! Concrete evaluator for symbolic expressions.
+//! Input triage: predict whether a candidate input will produce a novel path
+//! without executing it.
 //!
-//! Walks a [`SymExpr`] tree and evaluates it against concrete JSON parameter
-//! values. Returns `None` for `Unknown` nodes, unresolvable params, or
-//! unsupported operations. Used by the symbolic triage system to classify
-//! constraints without invoking Z3.
+//! Contains a concrete evaluator for symbolic expressions ([`evaluate_constraint`])
+//! and the [`TriageState`] that accumulates observed branch traces and predicts
+//! verdicts for candidate inputs.
+
+use std::collections::HashSet;
 
 use serde_json::Value;
 
+use crate::execution_record::{BranchDecision, SymConstraint};
+use crate::orchestrator::hash_branch_path;
 use crate::sym_expr::{BinOpKind, ConstValue, SymExpr, UnOpKind};
+
+/// Maximum number of traces stored in [`TriageState`].
+pub const MAX_TRACES: usize = 64;
+
+/// Fraction of indeterminate branches above which a trace is too uncertain.
+const INDETERMINATE_THRESHOLD: f64 = 0.5;
+
+/// Predicted direction for a single branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BranchPrediction {
+    Taken,
+    NotTaken,
+    Indeterminate,
+}
+
+/// Verdict from triaging a candidate input against observed traces.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TriageVerdict {
+    /// Predicted path already covered — skip execution.
+    Skip,
+    /// At least one branch predicted to take a novel direction.
+    Execute {
+        novel_count: usize,
+        first_novel_depth: usize,
+    },
+    /// Too many unknowns or no matching traces to predict.
+    Indeterminate,
+}
+
+/// Accumulates branch traces from observed executions and predicts whether
+/// candidate inputs will produce novel paths.
+pub struct TriageState {
+    /// Observed branch traces, deduped by branch-ID sequence.
+    traces: Vec<Vec<BranchDecision>>,
+    /// Dedup keys: branch-ID sequences already stored.
+    trace_keys: HashSet<Vec<u32>>,
+    /// Per-branch observed (branch_id, taken) pairs.
+    observed_directions: HashSet<(u32, bool)>,
+    /// Parameter names for constraint evaluation.
+    param_names: Vec<String>,
+}
+
+impl TriageState {
+    pub fn new(param_names: Vec<String>) -> Self {
+        Self {
+            traces: Vec::new(),
+            trace_keys: HashSet::new(),
+            observed_directions: HashSet::new(),
+            param_names,
+        }
+    }
+
+    /// Record a new execution trace. Deduplicates by branch-ID sequence and
+    /// caps storage at [`MAX_TRACES`] (drops oldest on overflow).
+    pub fn update(&mut self, branch_path: &[BranchDecision]) {
+        // Record all observed directions.
+        for d in branch_path {
+            self.observed_directions.insert((d.branch_id, d.taken));
+        }
+
+        // Dedup by branch-ID sequence.
+        let key: Vec<u32> = branch_path.iter().map(|d| d.branch_id).collect();
+        if !self.trace_keys.insert(key) {
+            return;
+        }
+
+        // Cap at MAX_TRACES — drop oldest.
+        if self.traces.len() >= MAX_TRACES {
+            let removed = self.traces.remove(0);
+            let removed_key: Vec<u32> = removed.iter().map(|d| d.branch_id).collect();
+            self.trace_keys.remove(&removed_key);
+        }
+
+        self.traces.push(branch_path.to_vec());
+    }
+
+    /// Number of stored traces.
+    pub fn trace_count(&self) -> usize {
+        self.traces.len()
+    }
+
+    /// Number of observed (branch_id, taken) pairs.
+    pub fn observed_direction_count(&self) -> usize {
+        self.observed_directions.len()
+    }
+
+    /// Predict whether executing `inputs` would produce a novel path.
+    pub fn triage_candidate(
+        &self,
+        inputs: &[Value],
+        covered_paths: &HashSet<u64>,
+    ) -> TriageVerdict {
+        if self.traces.is_empty() {
+            return TriageVerdict::Indeterminate;
+        }
+
+        let mut any_skip = false;
+
+        for trace in &self.traces {
+            if trace.is_empty() {
+                continue;
+            }
+
+            let mut predicted_decisions = Vec::with_capacity(trace.len());
+            let mut indeterminate_count = 0usize;
+            let mut novel_count = 0usize;
+            let mut first_novel_depth = None;
+
+            for (depth, decision) in trace.iter().enumerate() {
+                let prediction = predict_branch(decision, inputs, &self.param_names);
+
+                let predicted_taken = match prediction {
+                    BranchPrediction::Taken => true,
+                    BranchPrediction::NotTaken => false,
+                    BranchPrediction::Indeterminate => {
+                        indeterminate_count += 1;
+                        // Use original direction as fallback for path hash.
+                        decision.taken
+                    }
+                };
+
+                // Check if this predicted direction is novel.
+                if prediction != BranchPrediction::Indeterminate
+                    && !self
+                        .observed_directions
+                        .contains(&(decision.branch_id, predicted_taken))
+                {
+                    novel_count += 1;
+                    if first_novel_depth.is_none() {
+                        first_novel_depth = Some(depth);
+                    }
+                }
+
+                predicted_decisions.push(BranchDecision {
+                    branch_id: decision.branch_id,
+                    line: decision.line,
+                    taken: predicted_taken,
+                    constraint: decision.constraint.clone(),
+                });
+            }
+
+            // Too many unknowns — skip this trace.
+            let total = trace.len();
+            if total > 0
+                && (indeterminate_count as f64 / total as f64) > INDETERMINATE_THRESHOLD
+            {
+                continue;
+            }
+
+            // Novel direction detected.
+            if novel_count > 0 {
+                return TriageVerdict::Execute {
+                    novel_count,
+                    first_novel_depth: first_novel_depth.unwrap_or(0),
+                };
+            }
+
+            // Check if predicted path is already covered.
+            let path_hash = hash_branch_path(&predicted_decisions);
+            if covered_paths.contains(&path_hash) {
+                any_skip = true;
+            } else {
+                // Predicted path is not covered and no novel directions detected
+                // from observed_directions perspective — but it's a new path hash,
+                // so it's worth executing.
+                return TriageVerdict::Execute {
+                    novel_count: 0,
+                    first_novel_depth: 0,
+                };
+            }
+        }
+
+        if any_skip {
+            TriageVerdict::Skip
+        } else {
+            TriageVerdict::Indeterminate
+        }
+    }
+}
+
+/// Predict which direction a branch will take for the given inputs.
+pub fn predict_branch(
+    decision: &BranchDecision,
+    inputs: &[Value],
+    param_names: &[String],
+) -> BranchPrediction {
+    let expr = match &decision.constraint {
+        SymConstraint::Expr { expr } => expr,
+        SymConstraint::Unknown { .. } => return BranchPrediction::Indeterminate,
+    };
+
+    match evaluate_constraint(expr, inputs, param_names) {
+        Some(val) => {
+            if is_truthy(&val) {
+                BranchPrediction::Taken
+            } else {
+                BranchPrediction::NotTaken
+            }
+        }
+        None => BranchPrediction::Indeterminate,
+    }
+}
 
 /// Evaluate a symbolic expression against concrete parameter values.
 ///
@@ -382,6 +588,7 @@ fn eval_string_pair(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::execution_record::{BranchDecision, SymConstraint};
     use crate::sym_expr::ConstValue;
     use serde_json::json;
 
@@ -1116,5 +1323,294 @@ mod tests {
             args: vec![str_const("x")],
         };
         assert_eq!(evaluate_constraint(&expr, &[], &[]), None);
+    }
+
+    // ========================================================================
+    // TriageState and triage_candidate tests
+    // ========================================================================
+
+    fn make_decision(branch_id: u32, taken: bool, expr: SymExpr) -> BranchDecision {
+        BranchDecision {
+            branch_id,
+            line: branch_id * 10,
+            taken,
+            constraint: SymConstraint::Expr { expr },
+        }
+    }
+
+    fn make_unknown_decision(branch_id: u32, taken: bool) -> BranchDecision {
+        BranchDecision {
+            branch_id,
+            line: branch_id * 10,
+            taken,
+            constraint: SymConstraint::Unknown {
+                hint: "opaque".into(),
+            },
+        }
+    }
+
+    // x > 0
+    fn x_gt_0() -> SymExpr {
+        SymExpr::BinOp {
+            op: BinOpKind::Gt,
+            left: Box::new(param("x")),
+            right: Box::new(int_const(0)),
+        }
+    }
+
+    // x == 10
+    fn x_eq_10() -> SymExpr {
+        SymExpr::BinOp {
+            op: BinOpKind::Eq,
+            left: Box::new(param("x")),
+            right: Box::new(int_const(10)),
+        }
+    }
+
+    #[test]
+    fn triage_state_trace_accumulation() {
+        let mut state = TriageState::new(names(&["x"]));
+        assert_eq!(state.trace_count(), 0);
+
+        let trace = vec![make_decision(1, true, x_gt_0())];
+        state.update(&trace);
+        assert_eq!(state.trace_count(), 1);
+
+        let trace2 = vec![
+            make_decision(1, true, x_gt_0()),
+            make_decision(2, false, x_eq_10()),
+        ];
+        state.update(&trace2);
+        assert_eq!(state.trace_count(), 2);
+    }
+
+    #[test]
+    fn triage_state_dedup_same_branch_id_sequence() {
+        let mut state = TriageState::new(names(&["x"]));
+
+        // Same branch IDs [1, 2] but different taken values.
+        let trace_a = vec![
+            make_decision(1, true, x_gt_0()),
+            make_decision(2, true, x_eq_10()),
+        ];
+        let trace_b = vec![
+            make_decision(1, false, x_gt_0()),
+            make_decision(2, false, x_eq_10()),
+        ];
+        state.update(&trace_a);
+        state.update(&trace_b);
+        assert_eq!(state.trace_count(), 1);
+    }
+
+    #[test]
+    fn triage_state_cap_at_64() {
+        let mut state = TriageState::new(names(&["x"]));
+
+        for i in 0..65u32 {
+            let trace = vec![make_decision(i, true, x_gt_0())];
+            state.update(&trace);
+        }
+        assert_eq!(state.trace_count(), MAX_TRACES);
+    }
+
+    #[test]
+    fn triage_state_observed_directions_updated() {
+        let mut state = TriageState::new(names(&["x"]));
+
+        let trace = vec![
+            make_decision(1, true, x_gt_0()),
+            make_decision(2, false, x_eq_10()),
+        ];
+        state.update(&trace);
+
+        assert_eq!(state.observed_direction_count(), 2);
+        // The observed directions should include (1, true) and (2, false).
+    }
+
+    #[test]
+    fn triage_verdict_indeterminate_no_traces() {
+        let state = TriageState::new(names(&["x"]));
+        let covered = HashSet::new();
+        assert_eq!(
+            state.triage_candidate(&[json!(5)], &covered),
+            TriageVerdict::Indeterminate
+        );
+    }
+
+    #[test]
+    fn triage_verdict_skip_when_path_covered() {
+        let mut state = TriageState::new(names(&["x"]));
+
+        // Observe trace: branch 1 taken (x > 0)
+        let trace = vec![make_decision(1, true, x_gt_0())];
+        state.update(&trace);
+
+        // Mark the predicted path as covered.
+        // For x=5, branch 1 will predict Taken → hash matches the observed trace.
+        let predicted = vec![BranchDecision {
+            branch_id: 1,
+            line: 10,
+            taken: true,
+            constraint: SymConstraint::Expr { expr: x_gt_0() },
+        }];
+        let path_hash = hash_branch_path(&predicted);
+        let mut covered = HashSet::new();
+        covered.insert(path_hash);
+
+        assert_eq!(
+            state.triage_candidate(&[json!(5)], &covered),
+            TriageVerdict::Skip
+        );
+    }
+
+    #[test]
+    fn triage_verdict_execute_novel_direction() {
+        let mut state = TriageState::new(names(&["x"]));
+
+        // Observe only the taken=true direction for branch 1 (x > 0).
+        let trace = vec![make_decision(1, true, x_gt_0())];
+        state.update(&trace);
+
+        // Candidate x=-1 predicts branch 1 NotTaken — novel direction.
+        let covered = HashSet::new();
+        let verdict = state.triage_candidate(&[json!(-1)], &covered);
+        assert_eq!(
+            verdict,
+            TriageVerdict::Execute {
+                novel_count: 1,
+                first_novel_depth: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn triage_verdict_execute_novel_path_hash() {
+        let mut state = TriageState::new(names(&["x"]));
+
+        // Observe trace: branch 1 taken, branch 2 taken.
+        let trace = vec![
+            make_decision(1, true, x_gt_0()),
+            make_decision(2, true, x_eq_10()),
+        ];
+        state.update(&trace);
+        // Also observe the not-taken directions so they aren't "novel".
+        state.observed_directions.insert((1, false));
+        state.observed_directions.insert((2, false));
+
+        // For x=-1: branch 1 NotTaken, branch 2 NotTaken.
+        // Both directions are already observed, but the combination might be a new path hash.
+        // With empty covered_paths, this should be Execute (new path hash).
+        let covered = HashSet::new();
+        let verdict = state.triage_candidate(&[json!(-1)], &covered);
+        match verdict {
+            TriageVerdict::Execute { .. } => {} // expected
+            other => panic!("expected Execute, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn triage_verdict_indeterminate_too_many_unknowns() {
+        let mut state = TriageState::new(names(&["x"]));
+
+        // All branches have Unknown constraints → all indeterminate.
+        let trace = vec![
+            make_unknown_decision(1, true),
+            make_unknown_decision(2, false),
+            make_unknown_decision(3, true),
+        ];
+        state.update(&trace);
+
+        let covered = HashSet::new();
+        assert_eq!(
+            state.triage_candidate(&[json!(5)], &covered),
+            TriageVerdict::Indeterminate
+        );
+    }
+
+    #[test]
+    fn predict_branch_taken() {
+        let decision = make_decision(1, true, x_gt_0());
+        assert_eq!(
+            predict_branch(&decision, &[json!(5)], &names(&["x"])),
+            BranchPrediction::Taken
+        );
+    }
+
+    #[test]
+    fn predict_branch_not_taken() {
+        let decision = make_decision(1, true, x_gt_0());
+        assert_eq!(
+            predict_branch(&decision, &[json!(-1)], &names(&["x"])),
+            BranchPrediction::NotTaken
+        );
+    }
+
+    #[test]
+    fn predict_branch_indeterminate_unknown_constraint() {
+        let decision = make_unknown_decision(1, true);
+        assert_eq!(
+            predict_branch(&decision, &[json!(5)], &names(&["x"])),
+            BranchPrediction::Indeterminate
+        );
+    }
+
+    #[test]
+    fn predict_branch_indeterminate_unresolvable_expr() {
+        // Constraint references param "y" but only "x" is provided.
+        let expr = SymExpr::BinOp {
+            op: BinOpKind::Gt,
+            left: Box::new(SymExpr::Param {
+                name: "y".into(),
+                path: vec![],
+            }),
+            right: Box::new(int_const(0)),
+        };
+        let decision = make_decision(1, true, expr);
+        assert_eq!(
+            predict_branch(&decision, &[json!(5)], &names(&["x"])),
+            BranchPrediction::Indeterminate
+        );
+    }
+
+    #[test]
+    fn triage_dedup_preserves_observed_directions_from_both() {
+        let mut state = TriageState::new(names(&["x"]));
+
+        let trace_a = vec![make_decision(1, true, x_gt_0())];
+        let trace_b = vec![make_decision(1, false, x_gt_0())];
+
+        state.update(&trace_a);
+        state.update(&trace_b); // deduped — but directions still recorded
+
+        assert_eq!(state.trace_count(), 1);
+        assert_eq!(state.observed_direction_count(), 2);
+    }
+
+    #[test]
+    fn triage_multi_trace_first_novel_wins() {
+        let mut state = TriageState::new(names(&["x"]));
+
+        // Trace 1: branch 1 taken (x > 0)
+        let trace1 = vec![make_decision(1, true, x_gt_0())];
+        state.update(&trace1);
+
+        // Trace 2: branch 1 taken, branch 2 taken (x > 0 && x == 10)
+        let trace2 = vec![
+            make_decision(1, true, x_gt_0()),
+            make_decision(2, true, x_eq_10()),
+        ];
+        state.update(&trace2);
+
+        // x=-1: trace1 predicts branch 1 NotTaken → novel.
+        // Should return Execute from the first matching trace.
+        let covered = HashSet::new();
+        let verdict = state.triage_candidate(&[json!(-1)], &covered);
+        assert_eq!(
+            verdict,
+            TriageVerdict::Execute {
+                novel_count: 1,
+                first_novel_depth: 0,
+            }
+        );
     }
 }
