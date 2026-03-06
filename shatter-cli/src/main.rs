@@ -279,6 +279,14 @@ enum CliCommand {
         /// Use "none" to disable bucketing (only branch profiles matter).
         #[arg(long, default_value = "0,1,2,5")]
         loop_buckets: String,
+
+        /// Directory for cross-function seed pool (default: .shatter/seeds/).
+        #[arg(long, default_value = ".shatter/seeds")]
+        seeds_dir: PathBuf,
+
+        /// Disable loading and saving the cross-function seed pool.
+        #[arg(long)]
+        no_seeds: bool,
     },
 
     /// Scan a directory for source files, analyze and explore all functions in
@@ -446,6 +454,14 @@ enum CliCommand {
         /// Use "none" to disable bucketing (only branch profiles matter).
         #[arg(long, default_value = "0,1,2,5")]
         loop_buckets: String,
+
+        /// Directory for cross-function seed pool (default: .shatter/seeds/).
+        #[arg(long, default_value = ".shatter/seeds")]
+        seeds_dir: PathBuf,
+
+        /// Disable loading and saving the cross-function seed pool.
+        #[arg(long)]
+        no_seeds: bool,
     },
 
     /// Export generated tests from behavior maps produced by exploration.
@@ -869,7 +885,10 @@ async fn run_explore(
     project_dir: Option<&Path>,
     loop_buckets_str: &str,
     use_color: bool,
+    seeds_dir: &Path,
+    no_seeds: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let pool_path = if no_seeds { None } else { Some(seeds_dir.join("pool.json")) };
     let loop_buckets = parse_loop_buckets(loop_buckets_str)?;
     let scope_config = match scope_path {
         Some(path) => {
@@ -1166,12 +1185,12 @@ async fn run_explore(
                     .iter()
                     .map(|input| input.args.clone())
                     .collect(),
-                pool_seeds: {
-                    let pool_path = std::path::Path::new(".shatter/seeds/pool.json");
-                    match shatter_core::interesting_pool::load_pool(pool_path) {
+                pool_seeds: match &pool_path {
+                    Some(pp) => match shatter_core::interesting_pool::load_pool(pp) {
                         Ok(Some(pool)) => shatter_core::input_gen::pool_to_candidate_inputs(&func.params, &pool),
                         _ => vec![],
-                    }
+                    },
+                    None => vec![],
                 },
                 project_root: project_root_str.clone(),
                 loop_buckets: loop_buckets.clone(),
@@ -1201,8 +1220,9 @@ async fn run_explore(
                     .collect();
 
                 // Add pool-derived seeds for concolic mode
-                let pool_path = std::path::Path::new(".shatter/seeds/pool.json");
-                if let Ok(Some(pool)) = shatter_core::interesting_pool::load_pool(pool_path) {
+                if let Some(ref pp) = pool_path
+                    && let Ok(Some(pool)) = shatter_core::interesting_pool::load_pool(pp)
+                {
                     let pool_candidates = shatter_core::input_gen::pool_to_candidate_inputs(&func.params, &pool);
                     seed_inputs.extend(pool_candidates);
                 }
@@ -1234,23 +1254,24 @@ async fn run_explore(
                         concolic_result.total_lines = func.end_line.saturating_sub(func.start_line) + 1;
 
                         // Harvest interesting inputs into the cross-function pool (parity with scan_orchestrator)
-                        let pool_path = std::path::Path::new(".shatter/seeds/pool.json");
-                        let mut pool = shatter_core::interesting_pool::load_pool(pool_path)
-                            .unwrap_or_else(|e| {
-                                log::warn!("failed to load interesting pool: {e}");
-                                None
-                            })
-                            .unwrap_or_default();
-                        let harvested = shatter_core::interesting_pool::harvest_from_exploration(
-                            &mut pool,
-                            &concolic_result.raw_results,
-                            &func.params,
-                            &func.name,
-                        );
-                        if harvested > 0
-                            && let Err(e) = shatter_core::interesting_pool::save_pool(&pool, pool_path)
-                        {
-                            log::warn!("failed to save interesting pool: {e}");
+                        if let Some(ref pp) = pool_path {
+                            let mut pool = shatter_core::interesting_pool::load_pool(pp)
+                                .unwrap_or_else(|e| {
+                                    log::warn!("failed to load interesting pool: {e}");
+                                    None
+                                })
+                                .unwrap_or_default();
+                            let harvested = shatter_core::interesting_pool::harvest_from_exploration(
+                                &mut pool,
+                                &concolic_result.raw_results,
+                                &func.params,
+                                &func.name,
+                            );
+                            if harvested > 0
+                                && let Err(e) = shatter_core::interesting_pool::save_pool(&pool, pp)
+                            {
+                                log::warn!("failed to save interesting pool: {e}");
+                            }
                         }
 
                         let obs: shatter_core::explorer::ObservationOutput = concolic_result.into();
@@ -1451,7 +1472,16 @@ async fn run_scan(
     memory_limit: Option<u64>,
     project_dir: Option<&Path>,
     use_color: bool,
+    seeds_dir: &Path,
+    no_seeds: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let scan_pool_path = if no_seeds {
+        None
+    } else if seeds_dir.is_absolute() {
+        Some(seeds_dir.join("pool.json"))
+    } else {
+        Some(std::path::PathBuf::from(directory).join(seeds_dir).join("pool.json"))
+    };
     let report_format: report::ReportFormat = report_format_str
         .parse()
         .map_err(|e: String| -> Box<dyn std::error::Error> { e.into() })?;
@@ -1830,7 +1860,7 @@ async fn run_scan(
             mock_overrides: HashMap::new(),
             resume_path: None,
             timeout_total: None,
-            pool_path: None,
+            pool_path: scan_pool_path.clone(),
             project_root: project_root_str.clone(),
             config_dir: Some(std::path::PathBuf::from(directory)),
             timeout_explore: timeout_explore.map(Duration::from_secs_f64),
@@ -1899,7 +1929,7 @@ async fn run_scan(
         mock_overrides,
         resume_path: resume.map(|p| p.to_path_buf()),
         timeout_total: if timeout_total == 0 { None } else { Some(Duration::from_secs(timeout_total)) },
-        pool_path: Some(std::path::PathBuf::from(directory).join(".shatter/seeds/pool.json")),
+        pool_path: scan_pool_path,
         project_root: project_root_str.clone(),
         config_dir: Some(std::path::PathBuf::from(directory)),
         timeout_explore: timeout_explore.map(Duration::from_secs_f64),
@@ -2982,6 +3012,8 @@ async fn main() -> ExitCode {
             dry_run,
             loop_buckets,
             timeout_explore,
+            seeds_dir,
+            no_seeds,
         } => {
             run_explore(
                 &targets,
@@ -3013,6 +3045,8 @@ async fn main() -> ExitCode {
                 cli.project_dir.as_deref(),
                 &loop_buckets,
                 use_color,
+                &seeds_dir,
+                no_seeds,
             )
             .await
         }
@@ -3054,6 +3088,8 @@ async fn main() -> ExitCode {
             memory_limit,
             loop_buckets: _,
             timeout_explore,
+            seeds_dir,
+            no_seeds,
         } => {
             run_scan(
                 &directory,
@@ -3090,6 +3126,8 @@ async fn main() -> ExitCode {
                 memory_limit,
                 cli.project_dir.as_deref(),
                 use_color,
+                &seeds_dir,
+                no_seeds,
             )
             .await
         }
