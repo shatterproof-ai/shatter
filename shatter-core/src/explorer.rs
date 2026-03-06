@@ -8,6 +8,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::time::{Duration, Instant};
 
 use rand::rngs::StdRng;
 use rand::SeedableRng;
@@ -103,6 +104,9 @@ pub struct ExploreConfig {
     pub project_root: Option<String>,
     /// Iteration count bucket boundaries for loop-aware path hashing.
     pub loop_buckets: LoopBuckets,
+    /// Per-function exploration wall-clock timeout. Whichever of this or
+    /// `max_iterations` triggers first stops the loop.
+    pub timeout_explore: Option<Duration>,
 }
 
 /// Summary of a single function execution during exploration.
@@ -615,7 +619,15 @@ pub async fn explore_function(
         .min(config.max_iterations as usize / 4);
     let mut pool_iter = config.pool_seeds.iter().take(pool_budget).cloned().peekable();
 
+    let explore_start = Instant::now();
+
     for _ in 0..config.max_iterations {
+        if let Some(timeout) = config.timeout_explore
+            && explore_start.elapsed() >= timeout
+        {
+            break;
+        }
+
         iterations += 1;
 
         // --- Per-execution setup ---
@@ -1767,6 +1779,7 @@ mod tests {
             pool_seeds: vec![],
             project_root: None,
             loop_buckets: LoopBuckets::default(),
+            timeout_explore: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config)
             .await.expect("should succeed with noop frontend");
@@ -1790,6 +1803,7 @@ mod tests {
             pool_seeds: vec![],
             project_root: None,
             loop_buckets: LoopBuckets::default(),
+            timeout_explore: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config)
             .await.expect("per_function setup should succeed");
@@ -1813,6 +1827,7 @@ mod tests {
             pool_seeds: vec![],
             project_root: None,
             loop_buckets: LoopBuckets::default(),
+            timeout_explore: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config)
             .await.expect("per_execution setup should succeed");
@@ -1835,6 +1850,7 @@ mod tests {
             pool_seeds: vec![],
             project_root: None,
             loop_buckets: LoopBuckets::default(),
+            timeout_explore: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config)
             .await.expect("should succeed without setup capability");
@@ -1861,6 +1877,7 @@ mod tests {
             pool_seeds: vec![],
             project_root: None,
             loop_buckets: LoopBuckets::default(),
+            timeout_explore: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config)
             .await.expect("generators should succeed");
@@ -1883,6 +1900,7 @@ mod tests {
             pool_seeds: vec![],
             project_root: None,
             loop_buckets: LoopBuckets::default(),
+            timeout_explore: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config)
             .await.expect("no generators should succeed");
@@ -1904,6 +1922,7 @@ mod tests {
             pool_seeds: vec![],
             project_root: None,
             loop_buckets: LoopBuckets::default(),
+            timeout_explore: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config)
             .await.expect("user seeds should succeed");
@@ -1928,6 +1947,7 @@ mod tests {
             pool_seeds: vec![pool_value.clone()],
             project_root: None,
             loop_buckets: LoopBuckets::default(),
+            timeout_explore: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config)
             .await.expect("candidate inputs should succeed");
