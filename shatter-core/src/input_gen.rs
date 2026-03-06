@@ -8,6 +8,7 @@ use rand::Rng;
 use serde_json::{json, Value};
 
 use crate::orchestrator::FrontendCapabilities;
+use crate::string_mutation;
 use crate::types::{ComplexKind, TypeInfo};
 
 // ---------------------------------------------------------------------------
@@ -1121,6 +1122,10 @@ fn mutate_string(value: &Value, dictionary: &[&str], rng: &mut impl Rng) -> Valu
         Some(s) => s.to_string(),
         None => return generate_string(rng),
     };
+    // 20% chance of structure-aware mutation (pattern insertion, unicode, segment ops)
+    if rng.random_range(0..5_u8) == 0 {
+        return json!(string_mutation::mutate_structure_aware(&s, rng));
+    }
     let num_ops: u8 = if dictionary.is_empty() { 6 } else { 7 };
     let op: u8 = rng.random_range(0..num_ops);
     match op {
