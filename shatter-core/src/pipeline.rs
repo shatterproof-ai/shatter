@@ -11,6 +11,7 @@ use crate::execution_record::{ExecutionRecord, SymConstraint};
 use crate::explorer::ObservationOutput;
 use crate::protocol::{ExecuteResult, FunctionAnalysis};
 
+use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 /// Output of the Analyze stage.
@@ -41,17 +42,18 @@ pub fn analyze(observe: &ObservationOutput, analysis: &FunctionAnalysis) -> Anal
 
     let behavior_map = BehaviorMap::from_records(&observe.function_name, &records);
 
-    // Collect all constraints observed across all executions for symexpr ratio.
-    let all_constraints: Vec<SymConstraint> = observe
+    // Deduplicate constraints by branch_id so each branch contributes exactly one classification.
+    let unique_constraints: HashMap<u32, SymConstraint> = observe
         .raw_results
         .iter()
         .flat_map(|(_, result)| {
             result
                 .branch_path
                 .iter()
-                .map(|d| d.constraint.clone())
+                .map(|d| (d.branch_id, d.constraint.clone()))
         })
         .collect();
+    let all_constraints: Vec<SymConstraint> = unique_constraints.into_values().collect();
 
     let coverage_metrics = CoverageMetrics::from_exploration(
         analysis.branches.len(),
@@ -248,6 +250,73 @@ mod tests {
         assert_eq!(output.behavior_map.behaviors.len(), 0);
         assert_eq!(output.coverage_metrics.total_branches, 3);
         assert_eq!(output.coverage_metrics.uncovered, 3);
+    }
+
+    /// Regression: constraint count must reflect unique branch_ids, not total observations.
+    /// 3 executions × 2 branches = 6 observations, but only 2 unique constraints.
+    #[test]
+    fn constraint_count_deduplicates_by_branch_id() {
+        let make_branch_path = || {
+            vec![
+                BranchDecision {
+                    branch_id: 0,
+                    line: 10,
+                    taken: true,
+                    constraint: SymConstraint::Expr {
+                        expr: crate::sym_expr::SymExpr::Param {
+                            name: "x".into(),
+                            path: vec![],
+                        },
+                    },
+                },
+                BranchDecision {
+                    branch_id: 1,
+                    line: 20,
+                    taken: false,
+                    constraint: SymConstraint::Unknown {
+                        hint: "opaque".into(),
+                    },
+                },
+            ]
+        };
+
+        let make_result = |val: serde_json::Value| ExecuteResult {
+            return_value: Some(val),
+            thrown_error: None,
+            branch_path: make_branch_path(),
+            lines_executed: vec![1, 2, 3],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
+            scope_events: vec![],
+            capture_truncation: None,
+            performance: empty_perf(),
+        };
+
+        let observe = ObservationOutput {
+            function_name: "dedup_test".into(),
+            iterations: 3,
+            unique_paths: 1,
+            lines_covered: 3,
+            total_lines: 5,
+            new_path_executions: vec![],
+            raw_results: vec![
+                (vec![json!(1)], make_result(json!("a"))),
+                (vec![json!(2)], make_result(json!("b"))),
+                (vec![json!(3)], make_result(json!("c"))),
+            ],
+            discoveries: vec![(0, DiscoveryMethod::Random)],
+        };
+
+        let analysis = stub_analysis("dedup_test", 2);
+        let output = analyze(&observe, &analysis);
+
+        // Must be 2 (one per unique branch_id), not 6 (total observations).
+        let constraint_total =
+            output.coverage_metrics.symexpr_count + output.coverage_metrics.unknown_count;
+        assert_eq!(constraint_total, 2, "constraints must equal unique branch_ids, not total observations");
+        assert_eq!(output.coverage_metrics.symexpr_count, 1);
+        assert_eq!(output.coverage_metrics.unknown_count, 1);
     }
 
     #[test]
