@@ -126,13 +126,13 @@ EXAMPLES=(
 GO_EXAMPLES=(
     "examples/standalone/go/01-arithmetic.go:ClassifyNumber"
     "examples/standalone/go/02-strings.go:ClassifyString"
-    "examples/standalone/go/03-errors.go:SafeDivide"
+    "examples/standalone/go/04-errors.go:SafeDivide"
 )
 
 RUST_EXAMPLES=(
-    "examples/standalone/rust/arithmetic.rs:classify_number"
-    "examples/standalone/rust/strings.rs:classify_greeting"
-    "examples/standalone/rust/error_propagation.rs:parse_config_line"
+    "examples/standalone/rust/01_arithmetic.rs:classify_number"
+    "examples/standalone/rust/02_strings.rs:classify_string"
+    "examples/standalone/rust/04_errors.rs:safe_divide"
 )
 
 TOTAL=42
