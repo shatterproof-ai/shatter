@@ -3,6 +3,7 @@
 //! Converts [`SymExpr`] trees into Z3 AST nodes, solves for new execution paths
 //! by negating branch constraints, and extracts concrete values from Z3 models.
 
+use contracts::requires;
 use std::collections::HashMap;
 use std::str::FromStr;
 
@@ -803,6 +804,7 @@ fn extract_concrete_values(
 ///
 /// Returns `SolveResult::Sat` with concrete variable assignments if satisfiable,
 /// or `SolveResult::Unsat` if no inputs can reach the negated path.
+#[requires(negate_index < constraints.len(), "negate_index must be within constraints bounds")]
 pub fn solve_for_new_path(
     constraints: &[SymExpr],
     negate_index: usize,
@@ -1251,8 +1253,15 @@ mod tests {
     #[test]
     fn negate_index_out_of_bounds_returns_error() {
         let constraints = vec![x_gt_10()];
-        let result = solve_for_new_path(&constraints, 5, None, &[]);
-        assert!(result.is_err());
+        // In debug builds, the `#[requires]` contract catches this as a panic
+        // before the function body's manual check returns Err.
+        let result = std::panic::catch_unwind(|| {
+            solve_for_new_path(&constraints, 5, None, &[])
+        });
+        assert!(
+            result.is_err() || result.unwrap().is_err(),
+            "out-of-bounds negate_index must fail"
+        );
     }
 
     #[test]
