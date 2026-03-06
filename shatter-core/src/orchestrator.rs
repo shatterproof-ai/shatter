@@ -1419,4 +1419,50 @@ mod tests {
 
         frontend.shutdown().await.expect("shutdown failed");
     }
+
+    /// Triage should skip redundant inputs that predict already-covered paths.
+    ///
+    /// Uses a fixed-branch frontend (always returns same single-branch path).
+    /// After the first seed discovers the path, triage predicts Skip for
+    /// all subsequent seeds with matching constraint evaluations.
+    #[tokio::test]
+    async fn explore_triage_skips_redundant_seeds() {
+        let config = config_for_script("fixed-branch-frontend.sh");
+        let mut frontend = Frontend::spawn(&config).await.expect("spawn failed");
+
+        let explore_config = ExploreConfig {
+            max_iterations: 50,
+            max_executions: 50,
+            plateau_threshold: 0, // disable plateau so we rely on worklist exhaustion
+            ..Default::default()
+        };
+
+        // All seeds have x=5, which evaluates x>0 to true (Taken) — matching
+        // the path discovered by the first execution. After the first seed
+        // discovers the path and updates triage, subsequent seeds predict the
+        // same covered path → Skip.
+        let seeds: Vec<Vec<serde_json::Value>> = (0..20)
+            .map(|_| vec![serde_json::json!(5)])
+            .collect();
+
+        let result = explore(
+            &mut frontend,
+            "f",
+            seeds,
+            vec![],
+            &[ParamInfo { name: "x".into(), typ: crate::types::TypeInfo::Int, type_name: None }],
+            &explore_config,
+        )
+        .await
+        .expect("explore failed");
+
+        assert!(
+            result.triage_skipped > 0,
+            "expected triage to skip redundant inputs, but triage_skipped={}",
+            result.triage_skipped
+        );
+        assert_eq!(result.unique_paths, 1);
+
+        frontend.shutdown().await.expect("shutdown failed");
+    }
 }
