@@ -51,6 +51,7 @@ pub mod spec_diff;
 pub mod solver;
 pub mod stratum;
 pub mod strategy;
+pub mod string_mutation;
 pub mod sym_expr;
 pub mod triage;
 pub mod types;
