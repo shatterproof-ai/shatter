@@ -158,6 +158,10 @@ pub struct FunctionSpec {
     /// Used for staleness detection across runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fingerprint: Option<String>,
+    /// Fields identified as nondeterministic during exploration.
+    /// Used by spec diff to exclude nondeterministic fields from postcondition comparison.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nondeterministic_fields: Vec<crate::nondeterminism::NondeterministicField>,
 }
 
 /// Build a [`FunctionSpec`] from an observation output and its equivalence classes.
@@ -186,6 +190,7 @@ pub fn build_spec(
         total_lines: result.total_lines,
         invariants: vec![],
         fingerprint,
+        nondeterministic_fields: result.nondeterministic_fields.clone(),
     }
 }
 
@@ -1263,6 +1268,7 @@ mod tests {
             total_lines: 20,
             invariants: vec![],
             fingerprint: None,
+            nondeterministic_fields: vec![],
         };
 
         let json_str = serde_json::to_string_pretty(&spec).expect("serialize");
@@ -1539,6 +1545,7 @@ mod tests {
             total_lines: 10,
             invariants: vec![],
             fingerprint: fingerprint.map(|s| s.to_string()),
+            nondeterministic_fields: vec![],
         }
     }
 

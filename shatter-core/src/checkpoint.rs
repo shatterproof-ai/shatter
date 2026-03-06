@@ -146,6 +146,7 @@ mod tests {
                 dependency_trace: None,
             }],
             fingerprint: fingerprint.map(String::from),
+            nondeterministic_fields: vec![],
         }
     }
 

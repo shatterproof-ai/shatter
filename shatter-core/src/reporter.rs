@@ -847,6 +847,7 @@ mod tests {
                 },
             ],
             fingerprint: None,
+            nondeterministic_fields: vec![],
         };
 
         let md = generate_markdown_from_behavior_map(&analysis, &map);

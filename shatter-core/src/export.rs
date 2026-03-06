@@ -532,6 +532,7 @@ mod tests {
             function_id: "add".to_string(),
             behaviors: vec![],
             fingerprint: None,
+            nondeterministic_fields: vec![],
         };
         let output = generate_jest_tests(&map, "add", "./src/math");
         assert!(output.starts_with("import { add } from './src/math';\n"));
@@ -543,6 +544,7 @@ mod tests {
             function_id: "add".to_string(),
             behaviors: vec![],
             fingerprint: None,
+            nondeterministic_fields: vec![],
         };
         let output = generate_jest_tests(&map, "add", "./src/math");
         assert!(output.contains("describe('add', () => {"));
@@ -555,6 +557,7 @@ mod tests {
             function_id: "add".to_string(),
             behaviors: vec![make_behavior(0, vec![json!(1), json!(2)], Some(json!(3)), None)],
             fingerprint: None,
+            nondeterministic_fields: vec![],
         };
         let output = generate_jest_tests(&map, "add", "./src/math");
 
@@ -574,6 +577,7 @@ mod tests {
                 None,
             )],
             fingerprint: None,
+            nondeterministic_fields: vec![],
         };
         let output = generate_jest_tests(&map, "classify", "./src/classifier");
         assert!(output.contains("expect(result).toEqual('positive');"));
@@ -593,6 +597,7 @@ mod tests {
                     stack: None, error_category: None }),
             )],
             fingerprint: None,
+            nondeterministic_fields: vec![],
         };
         let output = generate_jest_tests(&map, "divide", "./src/math");
         assert!(output.contains("throws division by zero for input (1, 0)"), "output: {output}");
@@ -609,6 +614,7 @@ mod tests {
                 make_behavior(2, vec![json!(0)], Some(json!(0)), None),
             ],
             fingerprint: None,
+            nondeterministic_fields: vec![],
         };
         let output = generate_jest_tests(&map, "abs", "./src/math");
 
@@ -623,6 +629,7 @@ mod tests {
             function_id: "doSomething".to_string(),
             behaviors: vec![make_behavior(0, vec![json!("input")], None, None)],
             fingerprint: None,
+            nondeterministic_fields: vec![],
         };
         let output = generate_jest_tests(&map, "doSomething", "./src/actions");
         assert!(output.contains("returns undefined for input"));
@@ -640,6 +647,7 @@ mod tests {
                 None,
             )],
             fingerprint: None,
+            nondeterministic_fields: vec![],
         };
         let output = generate_jest_tests(&map, "greet", "./src/greet");
         assert!(output.contains("'it\\'s'"), "output: {output}");
@@ -664,6 +672,7 @@ mod tests {
             function_id: "add".to_string(),
             behaviors: vec![],
             fingerprint: None,
+            nondeterministic_fields: vec![],
         };
         let output = generate_go_tests(&map, "add", "examples");
         assert!(output.starts_with("package examples\n"), "output: {output}");
@@ -676,6 +685,7 @@ mod tests {
             function_id: "classifyNumber".to_string(),
             behaviors: vec![make_behavior(0, vec![json!(5)], Some(json!("positive")), None)],
             fingerprint: None,
+            nondeterministic_fields: vec![],
         };
         let output = generate_go_tests(&map, "classifyNumber", "examples");
         assert!(
@@ -690,6 +700,7 @@ mod tests {
             function_id: "noop".to_string(),
             behaviors: vec![],
             fingerprint: None,
+            nondeterministic_fields: vec![],
         };
         let output = generate_go_tests(&map, "noop", "main");
         assert!(output.contains("// No behaviors observed"), "output: {output}");
@@ -705,6 +716,7 @@ mod tests {
                 make_behavior(2, vec![json!(0)], Some(json!(0)), None),
             ],
             fingerprint: None,
+            nondeterministic_fields: vec![],
         };
         let output = generate_go_tests(&map, "abs", "math");
 
@@ -730,6 +742,7 @@ mod tests {
                 make_behavior(1, vec![json!(-3)], Some(json!("negative")), None),
             ],
             fingerprint: None,
+            nondeterministic_fields: vec![],
         };
         let output = generate_go_tests(&map, "classifyNumber", "examples");
 
@@ -747,6 +760,7 @@ mod tests {
                 make_behavior(1, vec![json!(-1)], Some(json!(false)), None),
             ],
             fingerprint: None,
+            nondeterministic_fields: vec![],
         };
         let output = generate_go_tests(&map, "isPositive", "math");
 
@@ -761,6 +775,7 @@ mod tests {
             function_id: "half".to_string(),
             behaviors: vec![make_behavior(0, vec![json!(3.14)], Some(json!(1.57)), None)],
             fingerprint: None,
+            nondeterministic_fields: vec![],
         };
         let output = generate_go_tests(&map, "half", "math");
 
@@ -774,6 +789,7 @@ mod tests {
             function_id: "maybeNil".to_string(),
             behaviors: vec![make_behavior(0, vec![json!(null)], Some(json!(null)), None)],
             fingerprint: None,
+            nondeterministic_fields: vec![],
         };
         let output = generate_go_tests(&map, "maybeNil", "main");
 
@@ -786,6 +802,7 @@ mod tests {
             function_id: "add".to_string(),
             behaviors: vec![make_behavior(0, vec![json!(1), json!(2)], Some(json!(3)), None)],
             fingerprint: None,
+            nondeterministic_fields: vec![],
         };
         let output = generate_go_tests(&map, "add", "math");
 
@@ -808,6 +825,7 @@ mod tests {
                     stack: None, error_category: None }),
             )],
             fingerprint: None,
+            nondeterministic_fields: vec![],
         };
         let output = generate_go_tests(&map, "divide", "math");
 
@@ -837,6 +855,7 @@ mod tests {
                 ),
             ],
             fingerprint: None,
+            nondeterministic_fields: vec![],
         };
         let output = generate_go_tests(&map, "safeDivide", "math");
 
@@ -985,6 +1004,7 @@ mod tests {
             function_id: "add".to_string(),
             behaviors: vec![],
             fingerprint: None,
+            nondeterministic_fields: vec![],
         };
         let output = generate_vitest_tests(&map, "add", "./src/math");
         assert!(output.contains("import { describe, it, expect } from 'vitest';"));
@@ -996,6 +1016,7 @@ mod tests {
             function_id: "add".to_string(),
             behaviors: vec![],
             fingerprint: None,
+            nondeterministic_fields: vec![],
         };
         let output = generate_vitest_tests(&map, "add", "./src/math");
         assert!(output.contains("import { add } from './src/math';"));
@@ -1007,6 +1028,7 @@ mod tests {
             function_id: "add".to_string(),
             behaviors: vec![],
             fingerprint: None,
+            nondeterministic_fields: vec![],
         };
         let output = generate_vitest_tests(&map, "add", "./src/math");
         assert!(output.contains("describe('add', () => {"));
@@ -1019,6 +1041,7 @@ mod tests {
             function_id: "add".to_string(),
             behaviors: vec![make_behavior(0, vec![json!(1), json!(2)], Some(json!(3)), None)],
             fingerprint: None,
+            nondeterministic_fields: vec![],
         };
         let output = generate_vitest_tests(&map, "add", "./src/math");
         assert!(output.contains("it('returns 3 for input (1, 2)'"));
@@ -1040,6 +1063,7 @@ mod tests {
                     stack: None, error_category: None }),
             )],
             fingerprint: None,
+            nondeterministic_fields: vec![],
         };
         let output = generate_vitest_tests(&map, "divide", "./src/math");
         assert!(output.contains("expect(() => divide(1, 0)).toThrow();"));
@@ -1055,6 +1079,7 @@ mod tests {
                 make_behavior(2, vec![json!(0)], Some(json!(0)), None),
             ],
             fingerprint: None,
+            nondeterministic_fields: vec![],
         };
         let output = generate_vitest_tests(&map, "abs", "./src/math");
         let it_count = output.matches("  it('").count();

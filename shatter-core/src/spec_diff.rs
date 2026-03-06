@@ -9,6 +9,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::equivalence::Precondition;
+use crate::nondeterminism::NondeterministicField;
 use crate::spec::{FunctionSpec, Postcondition, SpecClass};
 
 /// The result of diffing two function specifications.
@@ -81,6 +82,13 @@ pub fn diff_specs(old: &FunctionSpec, new: &FunctionSpec) -> SpecDiff {
     let mut changed_preconditions = Vec::new();
     let mut lost_properties = Vec::new();
 
+    // Collect nondeterministic fields from both specs (union).
+    let nondet_fields: Vec<&NondeterministicField> = old
+        .nondeterministic_fields
+        .iter()
+        .chain(new.nondeterministic_fields.iter())
+        .collect();
+
     // Index old classes by branch path for matching.
     let old_by_path: std::collections::HashMap<_, _> = old
         .classes
@@ -98,8 +106,13 @@ pub fn diff_specs(old: &FunctionSpec, new: &FunctionSpec) -> SpecDiff {
     for new_class in &new.classes {
         match old_by_path.get(&new_class.branch_path) {
             Some(old_class) => {
-                // Matched by branch path — compare postconditions.
-                if old_class.postcondition != new_class.postcondition {
+                // Matched by branch path — compare postconditions,
+                // excluding fields marked as nondeterministic.
+                if !postconditions_equal_ignoring_nondeterminism(
+                    &old_class.postcondition,
+                    &new_class.postcondition,
+                    &nondet_fields,
+                ) {
                     changed_postconditions.push(PostconditionChange {
                         class_label: old_class.label.clone(),
                         old: old_class.postcondition.clone(),
@@ -300,6 +313,98 @@ pub fn format_spec_diff_json(diff: &SpecDiff) -> Result<String, serde_json::Erro
     serde_json::to_string_pretty(diff)
 }
 
+/// Compare two postconditions, treating fields listed as nondeterministic as equal.
+///
+/// For `Returns` variants, if the entire return value is nondeterministic (field path
+/// "return"), they're always equal. Otherwise, JSON values are compared structurally
+/// with nondeterministic sub-paths ignored. `Throws` and `ReturnsVoid` use normal equality.
+fn postconditions_equal_ignoring_nondeterminism(
+    old: &Postcondition,
+    new: &Postcondition,
+    nondet_fields: &[&NondeterministicField],
+) -> bool {
+    match (old, new) {
+        (Postcondition::Returns { value: old_val }, Postcondition::Returns { value: new_val }) => {
+            // If the entire return is nondeterministic, skip comparison.
+            if nondet_fields
+                .iter()
+                .any(|f| f.field_path == "return")
+            {
+                return true;
+            }
+
+            // Collect return sub-field paths (e.g. "return.timestamp" → "timestamp").
+            let return_nondet_paths: Vec<&str> = nondet_fields
+                .iter()
+                .filter_map(|f| f.field_path.strip_prefix("return."))
+                .collect();
+
+            if return_nondet_paths.is_empty() {
+                old_val == new_val
+            } else {
+                json_equal_ignoring_paths(old_val, new_val, &return_nondet_paths, "")
+            }
+        }
+        _ => old == new,
+    }
+}
+
+/// Recursively compare two JSON values, skipping fields whose dot-path is in `skip_paths`.
+fn json_equal_ignoring_paths(
+    a: &serde_json::Value,
+    b: &serde_json::Value,
+    skip_paths: &[&str],
+    current_path: &str,
+) -> bool {
+    use serde_json::Value;
+
+    // Check if the current path should be skipped.
+    if !current_path.is_empty() && skip_paths.contains(&current_path) {
+        return true;
+    }
+
+    match (a, b) {
+        (Value::Object(a_map), Value::Object(b_map)) => {
+            // Both must have the same keys (ignoring skipped ones).
+            let a_keys: std::collections::HashSet<_> = a_map.keys().collect();
+            let b_keys: std::collections::HashSet<_> = b_map.keys().collect();
+
+            for key in a_keys.union(&b_keys) {
+                let child_path = if current_path.is_empty() {
+                    (*key).clone()
+                } else {
+                    format!("{current_path}.{key}")
+                };
+
+                if skip_paths.contains(&child_path.as_str()) {
+                    continue;
+                }
+
+                match (a_map.get(*key), b_map.get(*key)) {
+                    (Some(av), Some(bv)) => {
+                        if !json_equal_ignoring_paths(av, bv, skip_paths, &child_path) {
+                            return false;
+                        }
+                    }
+                    // Key missing from one side and not skipped → not equal.
+                    _ => return false,
+                }
+            }
+            true
+        }
+        (Value::Array(a_arr), Value::Array(b_arr)) => {
+            if a_arr.len() != b_arr.len() {
+                return false;
+            }
+            a_arr
+                .iter()
+                .zip(b_arr.iter())
+                .all(|(av, bv)| json_equal_ignoring_paths(av, bv, skip_paths, current_path))
+        }
+        _ => a == b,
+    }
+}
+
 fn format_postcondition_short(post: &Postcondition) -> String {
     match post {
         Postcondition::Returns { value } => {
@@ -352,6 +457,7 @@ mod tests {
             total_lines: 10,
             invariants: vec![],
             fingerprint: None,
+            nondeterministic_fields: vec![],
         }
     }
 
@@ -854,5 +960,206 @@ mod tests {
         let diff = diff_specs(&spec, &spec);
         let text = format_spec_diff_text(&diff);
         assert!(text.contains("No changes detected"));
+    }
+
+    // -- Nondeterminism-aware postcondition comparison tests --
+
+    use crate::nondeterminism::{Confidence, NondeterministicField, NondeterminismEvidence};
+
+    #[test]
+    fn nondeterministic_field_excludes_postcondition_diff() {
+        let old = make_spec(
+            "fn1",
+            vec![make_class(
+                "Class 1",
+                vec![(0, true)],
+                vec![],
+                Postcondition::Returns {
+                    value: json!({"id": 1, "timestamp": 1000}),
+                },
+            )],
+        );
+        let mut new = make_spec(
+            "fn1",
+            vec![make_class(
+                "Class 1",
+                vec![(0, true)],
+                vec![],
+                Postcondition::Returns {
+                    value: json!({"id": 1, "timestamp": 2000}),
+                },
+            )],
+        );
+        // Mark "return.timestamp" as nondeterministic.
+        new.nondeterministic_fields = vec![NondeterministicField {
+            field_path: "return.timestamp".to_string(),
+            evidence: vec![NondeterminismEvidence::ObservedWithinRun],
+            confidence: Confidence::High,
+        }];
+
+        let diff = diff_specs(&old, &new);
+        assert!(
+            diff.changed_postconditions.is_empty(),
+            "nondeterministic field should be excluded from comparison"
+        );
+    }
+
+    #[test]
+    fn deterministic_field_still_reports_postcondition_diff() {
+        let old = make_spec(
+            "fn1",
+            vec![make_class(
+                "Class 1",
+                vec![(0, true)],
+                vec![],
+                Postcondition::Returns {
+                    value: json!({"id": 1, "name": "alice"}),
+                },
+            )],
+        );
+        let mut new = make_spec(
+            "fn1",
+            vec![make_class(
+                "Class 1",
+                vec![(0, true)],
+                vec![],
+                Postcondition::Returns {
+                    value: json!({"id": 1, "name": "bob"}),
+                },
+            )],
+        );
+        // Only "return.timestamp" is nondeterministic — "name" is not.
+        new.nondeterministic_fields = vec![NondeterministicField {
+            field_path: "return.timestamp".to_string(),
+            evidence: vec![NondeterminismEvidence::ObservedWithinRun],
+            confidence: Confidence::High,
+        }];
+
+        let diff = diff_specs(&old, &new);
+        assert_eq!(
+            diff.changed_postconditions.len(),
+            1,
+            "deterministic field change should still be reported"
+        );
+    }
+
+    #[test]
+    fn whole_return_nondeterministic_skips_comparison() {
+        let old = make_spec(
+            "fn1",
+            vec![make_class(
+                "Class 1",
+                vec![(0, true)],
+                vec![],
+                Postcondition::Returns { value: json!(42) },
+            )],
+        );
+        let mut new = make_spec(
+            "fn1",
+            vec![make_class(
+                "Class 1",
+                vec![(0, true)],
+                vec![],
+                Postcondition::Returns { value: json!(99) },
+            )],
+        );
+        new.nondeterministic_fields = vec![NondeterministicField {
+            field_path: "return".to_string(),
+            evidence: vec![NondeterminismEvidence::ObservedWithinRun],
+            confidence: Confidence::High,
+        }];
+
+        let diff = diff_specs(&old, &new);
+        assert!(
+            diff.changed_postconditions.is_empty(),
+            "whole return marked nondeterministic should skip comparison"
+        );
+    }
+
+    #[test]
+    fn mixed_nondeterministic_and_deterministic_changes() {
+        let old = make_spec(
+            "fn1",
+            vec![make_class(
+                "Class 1",
+                vec![(0, true)],
+                vec![],
+                Postcondition::Returns {
+                    value: json!({"id": 1, "ts": 100, "status": "ok"}),
+                },
+            )],
+        );
+        let mut new = make_spec(
+            "fn1",
+            vec![make_class(
+                "Class 1",
+                vec![(0, true)],
+                vec![],
+                Postcondition::Returns {
+                    // Both ts (nondeterministic) AND status (deterministic) changed.
+                    value: json!({"id": 1, "ts": 200, "status": "error"}),
+                },
+            )],
+        );
+        new.nondeterministic_fields = vec![NondeterministicField {
+            field_path: "return.ts".to_string(),
+            evidence: vec![NondeterminismEvidence::ObservedWithinRun],
+            confidence: Confidence::High,
+        }];
+
+        let diff = diff_specs(&old, &new);
+        assert_eq!(
+            diff.changed_postconditions.len(),
+            1,
+            "deterministic change in 'status' should still be reported"
+        );
+    }
+
+    #[test]
+    fn throws_postcondition_not_affected_by_return_nondeterminism() {
+        let old = make_spec(
+            "fn1",
+            vec![make_class(
+                "Class 1",
+                vec![(0, true)],
+                vec![],
+                Postcondition::Throws {
+                    error: ErrorInfo {
+                        error_type: "Error".to_string(),
+                        message: "old".to_string(),
+                        stack: None,
+                        error_category: None,
+                    },
+                },
+            )],
+        );
+        let mut new = make_spec(
+            "fn1",
+            vec![make_class(
+                "Class 1",
+                vec![(0, true)],
+                vec![],
+                Postcondition::Throws {
+                    error: ErrorInfo {
+                        error_type: "Error".to_string(),
+                        message: "new".to_string(),
+                        stack: None,
+                        error_category: None,
+                    },
+                },
+            )],
+        );
+        new.nondeterministic_fields = vec![NondeterministicField {
+            field_path: "return.timestamp".to_string(),
+            evidence: vec![NondeterminismEvidence::ObservedWithinRun],
+            confidence: Confidence::High,
+        }];
+
+        let diff = diff_specs(&old, &new);
+        assert_eq!(
+            diff.changed_postconditions.len(),
+            1,
+            "throws comparison should not be affected by return nondeterminism"
+        );
     }
 }

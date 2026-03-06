@@ -164,6 +164,7 @@ mod tests {
                 dependency_trace: None,
             }],
             fingerprint: None,
+            nondeterministic_fields: vec![],
         }
     }
 
