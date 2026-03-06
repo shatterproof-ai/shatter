@@ -67,6 +67,9 @@ pub struct Handler<R, W, L> {
     exec_timeout_ms: u64,
     wasm_cache: WasmCache,
     native_registry: Option<NativeRegistry>,
+    /// Remembered from the most recent Analyze or Instrument request so Execute
+    /// can fall back when the core omits the file field (which it always does).
+    last_file: Option<String>,
 }
 
 impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
@@ -79,6 +82,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             exec_timeout_ms: exec_timeout_from_env(),
             wasm_cache: WasmCache::new(),
             native_registry: None,
+            last_file: None,
         }
     }
 
@@ -97,6 +101,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             exec_timeout_ms: exec_timeout_from_env(),
             wasm_cache: WasmCache::new(),
             native_registry: Some(registry),
+            last_file: None,
         }
     }
 
@@ -111,6 +116,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             exec_timeout_ms: exec_timeout_from_env(),
             wasm_cache: WasmCache::new(),
             native_registry: None,
+            last_file: None,
         }
     }
 
@@ -200,7 +206,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
         resp
     }
 
-    fn handle_analyze(&self, mut resp: Response, req: &Request) -> Response {
+    fn handle_analyze(&mut self, mut resp: Response, req: &Request) -> Response {
         let file_path = match &req.file {
             Some(f) => f,
             None => {
@@ -210,6 +216,8 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
                 return resp;
             }
         };
+
+        self.last_file = Some(file_path.clone());
 
         let path = std::path::Path::new(file_path);
         if !path.exists() {
@@ -242,7 +250,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
         }
     }
 
-    fn handle_instrument(&self, mut resp: Response, req: &Request) -> Response {
+    fn handle_instrument(&mut self, mut resp: Response, req: &Request) -> Response {
         let file_path = match &req.file {
             Some(f) => f,
             None => {
@@ -252,6 +260,8 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
                 return resp;
             }
         };
+
+        self.last_file = Some(file_path.clone());
 
         let path = std::path::Path::new(file_path);
         if !path.exists() {
@@ -301,12 +311,12 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
     }
 
     fn handle_execute(&self, mut resp: Response, req: &Request) -> Response {
-        let file_path = match &req.file {
+        let file_path = match req.file.as_ref().or(self.last_file.as_ref()) {
             Some(f) => f,
             None => {
                 resp.status = "error".to_string();
                 resp.code = Some("invalid_request".to_string());
-                resp.message = Some("execute command requires a file path".to_string());
+                resp.message = Some("execute command requires a file path (none provided and no prior analyze/instrument)".to_string());
                 return resp;
             }
         };
@@ -887,6 +897,76 @@ mod tests {
         assert_eq!(responses[0].id, 100);
         assert_eq!(responses[1].id, 200);
         assert_eq!(responses[2].id, 300);
+    }
+
+    // -- Execute file fallback tests (str-rv0k) --
+
+    #[test]
+    fn execute_without_file_falls_back_to_last_analyzed_file() {
+        // The core never sends `file` in Execute — the frontend must remember it
+        // from the prior Analyze request.
+        let dir = std::env::temp_dir().join("shatter-test-rv0k-analyze");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("simple.rs");
+        std::fs::write(&file, "pub fn add(a: i32, b: i32) -> i32 { a + b }").unwrap();
+
+        let file_path = file.to_string_lossy().replace('\\', "\\\\");
+        let responses = conversation(&[
+            // 1. Analyze sets last_file
+            &format!(
+                r#"{{"protocol_version":"0.1.0","id":1,"command":"analyze","file":"{file_path}"}}"#
+            ),
+            // 2. Execute without file field — should use last_file, not return invalid_request
+            r#"{"protocol_version":"0.1.0","id":2,"command":"execute","function":"add","inputs":[1,2],"mocks":[]}"#,
+        ]);
+
+        assert_eq!(responses[0].status, "analyze", "analyze failed: {:?}", responses[0].message);
+        // The execute should NOT fail with "requires a file path"
+        assert_ne!(
+            responses[1].code.as_deref(),
+            Some("invalid_request"),
+            "execute should fall back to last_file from analyze, got: {:?}",
+            responses[1].message,
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn execute_without_file_falls_back_to_last_instrumented_file() {
+        let dir = std::env::temp_dir().join("shatter-test-rv0k-instrument");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("branchy.rs");
+        std::fs::write(&file, "pub fn check(x: i32) -> bool { if x > 0 { true } else { false } }").unwrap();
+
+        let file_path = file.to_string_lossy().replace('\\', "\\\\");
+        let responses = conversation(&[
+            &format!(
+                r#"{{"protocol_version":"0.1.0","id":1,"command":"instrument","file":"{file_path}"}}"#
+            ),
+            r#"{"protocol_version":"0.1.0","id":2,"command":"execute","function":"check","inputs":[42],"mocks":[]}"#,
+        ]);
+
+        assert_eq!(responses[0].status, "instrument", "instrument failed: {:?}", responses[0].message);
+        assert_ne!(
+            responses[1].code.as_deref(),
+            Some("invalid_request"),
+            "execute should fall back to last_file from instrument, got: {:?}",
+            responses[1].message,
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn execute_without_file_and_no_prior_context_still_errors() {
+        // With no prior analyze/instrument, execute without file should still error
+        let resp = send_recv(
+            r#"{"protocol_version":"0.1.0","id":1,"command":"execute","function":"f","inputs":[],"mocks":[]}"#,
+        );
+        assert_eq!(resp.status, "error");
+        assert_eq!(resp.code.as_deref(), Some("invalid_request"));
+        assert!(resp.message.as_deref().unwrap_or("").contains("file"));
     }
 
     // -- Exec timeout tests --
