@@ -10,6 +10,7 @@ import (
 	"go/printer"
 	"go/token"
 	"go/types"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,13 +23,16 @@ import (
 const defaultExecTimeout = 5 * time.Second
 const defaultBuildTimeout = 30 * time.Second
 
+// maxTimeoutSecs guards against overflow when converting float64 seconds to
+// time.Duration. time.Duration is int64 nanoseconds (max ≈292 years); we cap
+// at 24 hours which is well beyond any realistic execution timeout.
+const maxTimeoutSecs = 86400
+
 // execTimeout returns the execution timeout, reading from SHATTER_EXEC_TIMEOUT
 // env var (in seconds) with a fallback to defaultExecTimeout.
 func execTimeout() time.Duration {
-	if s := os.Getenv("SHATTER_EXEC_TIMEOUT"); s != "" {
-		if secs, err := strconv.ParseFloat(s, 64); err == nil && secs > 0 {
-			return time.Duration(secs * float64(time.Second))
-		}
+	if d, ok := parseTimeoutEnv("SHATTER_EXEC_TIMEOUT"); ok {
+		return d
 	}
 	return defaultExecTimeout
 }
@@ -36,12 +40,29 @@ func execTimeout() time.Duration {
 // buildTimeout returns the build timeout, reading from SHATTER_BUILD_TIMEOUT
 // env var (in seconds) with a fallback to defaultBuildTimeout.
 func buildTimeout() time.Duration {
-	if s := os.Getenv("SHATTER_BUILD_TIMEOUT"); s != "" {
-		if secs, err := strconv.ParseFloat(s, 64); err == nil && secs > 0 {
-			return time.Duration(secs * float64(time.Second))
-		}
+	if d, ok := parseTimeoutEnv("SHATTER_BUILD_TIMEOUT"); ok {
+		return d
 	}
 	return defaultBuildTimeout
+}
+
+// parseTimeoutEnv reads an env var as seconds and returns a valid duration.
+// Returns false for missing, non-numeric, non-positive, overflow, or sub-
+// nanosecond values — callers fall back to their default.
+func parseTimeoutEnv(key string) (time.Duration, bool) {
+	s := os.Getenv(key)
+	if s == "" {
+		return 0, false
+	}
+	secs, err := strconv.ParseFloat(s, 64)
+	if err != nil || secs <= 0 || math.IsInf(secs, 0) || math.IsNaN(secs) || secs >= maxTimeoutSecs {
+		return 0, false
+	}
+	d := time.Duration(secs * float64(time.Second))
+	if d <= 0 {
+		return 0, false
+	}
+	return d, true
 }
 
 // SideEffect represents an observable side effect during execution.
