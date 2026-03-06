@@ -1,0 +1,206 @@
+//! SCM (source control) provider for querying changed files.
+//!
+//! Shells out to `git` with zero external dependencies. Used by `--changed`
+//! and `--since` CLI flags to restrict scan scope to modified files.
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+/// Errors from SCM operations.
+#[derive(Debug, thiserror::Error)]
+pub enum ScmError {
+    #[error("not a git repository (or any parent): {path}")]
+    NotARepo { path: PathBuf },
+
+    #[error("git executable not found")]
+    GitNotFound,
+
+    #[error("git command failed (exit {code}): {stderr}")]
+    GitFailed { code: i32, stderr: String },
+
+    #[error("I/O error running git: {0}")]
+    Io(#[from] std::io::Error),
+}
+
+/// Trait for querying changed files from source control.
+pub trait ScmProvider {
+    /// Files with uncommitted changes (staged + unstaged vs HEAD).
+    /// If `include_untracked` is true, also includes untracked files
+    /// (excluding gitignored ones).
+    fn changed_files(&self, root: &Path, include_untracked: bool) -> Result<Vec<PathBuf>, ScmError>;
+
+    /// Files changed between `base_ref` and HEAD (merge-base diff).
+    fn diff_files(&self, root: &Path, base_ref: &str) -> Result<Vec<PathBuf>, ScmError>;
+}
+
+/// Git-based SCM provider. Shells out to `git` via `std::process::Command`.
+#[derive(Debug)]
+pub struct GitProvider;
+
+impl ScmProvider for GitProvider {
+    fn changed_files(&self, root: &Path, include_untracked: bool) -> Result<Vec<PathBuf>, ScmError> {
+        // Staged + unstaged changes vs HEAD
+        let output = run_git(root, &["diff", "--name-only", "HEAD"])?;
+        let mut files = parse_file_list(&output, root);
+
+        // Also include staged-only changes (new files that are staged but not yet committed)
+        let staged_output = run_git(root, &["diff", "--name-only", "--cached"])?;
+        let staged_files = parse_file_list(&staged_output, root);
+        for f in staged_files {
+            if !files.contains(&f) {
+                files.push(f);
+            }
+        }
+
+        if include_untracked {
+            let untracked_output =
+                run_git(root, &["ls-files", "--others", "--exclude-standard"])?;
+            let untracked = parse_file_list(&untracked_output, root);
+            for f in untracked {
+                if !files.contains(&f) {
+                    files.push(f);
+                }
+            }
+        }
+
+        files.sort();
+        files.dedup();
+        Ok(files)
+    }
+
+    fn diff_files(&self, root: &Path, base_ref: &str) -> Result<Vec<PathBuf>, ScmError> {
+        // Three-dot diff: changes between merge-base(base_ref, HEAD) and HEAD
+        let range = format!("{base_ref}...HEAD");
+        let output = run_git(root, &["diff", "--name-only", &range])?;
+        let mut files = parse_file_list(&output, root);
+        files.sort();
+        files.dedup();
+        Ok(files)
+    }
+}
+
+/// Detect the SCM provider for the given directory.
+/// Currently only supports Git.
+pub fn detect_provider(root: &Path) -> Result<GitProvider, ScmError> {
+    let status = Command::new("git")
+        .args(["rev-parse", "--git-dir"])
+        .current_dir(root)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    match status {
+        Ok(s) if s.success() => Ok(GitProvider),
+        Ok(_) => Err(ScmError::NotARepo {
+            path: root.to_path_buf(),
+        }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(ScmError::GitNotFound),
+        Err(e) => Err(ScmError::Io(e)),
+    }
+}
+
+/// Run a git command in the given directory and return stdout as a string.
+fn run_git(root: &Path, args: &[&str]) -> Result<String, ScmError> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .output()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                ScmError::GitNotFound
+            } else {
+                ScmError::Io(e)
+            }
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let code = output.status.code().unwrap_or(-1);
+        return Err(ScmError::GitFailed { code, stderr });
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Parse newline-separated file paths from git output into absolute paths.
+fn parse_file_list(output: &str, root: &Path) -> Vec<PathBuf> {
+    output
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| root.join(line.trim()))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_file_list_basic() {
+        let output = "src/main.rs\nsrc/lib.rs\n";
+        let root = Path::new("/repo");
+        let files = parse_file_list(output, root);
+        assert_eq!(files, vec![
+            PathBuf::from("/repo/src/main.rs"),
+            PathBuf::from("/repo/src/lib.rs"),
+        ]);
+    }
+
+    #[test]
+    fn test_parse_file_list_empty() {
+        let files = parse_file_list("", Path::new("/repo"));
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn test_parse_file_list_trailing_whitespace() {
+        let output = "  src/foo.ts  \nbar.go\n";
+        let root = Path::new("/repo");
+        let files = parse_file_list(output, root);
+        assert_eq!(files.len(), 2);
+        // trim() handles whitespace
+        assert_eq!(files[0], PathBuf::from("/repo/src/foo.ts"));
+        assert_eq!(files[1], PathBuf::from("/repo/bar.go"));
+    }
+
+    #[test]
+    fn test_parse_file_list_blank_lines() {
+        let output = "a.ts\n\nb.ts\n\n";
+        let files = parse_file_list(output, Path::new("/r"));
+        assert_eq!(files.len(), 2);
+    }
+
+    #[test]
+    fn test_detect_provider_in_git_repo() {
+        // This test runs in the shatter repo, which is a git repo
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let result = detect_provider(root);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_detect_provider_not_a_repo() {
+        // /tmp is unlikely to be a git repo
+        let result = detect_provider(Path::new("/tmp"));
+        assert!(matches!(result, Err(ScmError::NotARepo { .. })));
+    }
+
+    #[test]
+    fn test_changed_files_runs_without_error() {
+        // Smoke test: changed_files should not panic in a real git repo
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let provider = detect_provider(root).expect("should be a git repo");
+        let result = provider.changed_files(root, false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_diff_files_against_head() {
+        // HEAD...HEAD should produce no changes
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let provider = detect_provider(root).expect("should be a git repo");
+        let result = provider.diff_files(root, "HEAD");
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+}
