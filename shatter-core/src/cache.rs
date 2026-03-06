@@ -343,4 +343,40 @@ mod tests {
 
         assert!(!cache.is_fresh("nonexistent", "abc123").unwrap());
     }
+
+    #[test]
+    fn store_and_load_preserves_nondeterministic_fields() {
+        use crate::nondeterminism::{Confidence, NondeterministicField, NondeterminismEvidence};
+
+        let dir = tempfile::tempdir().unwrap();
+        let cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
+
+        let mut map = sample_map("nondetFunc");
+        map.nondeterministic_fields = vec![NondeterministicField {
+            field_path: "return.id".into(),
+            evidence: vec![NondeterminismEvidence::ObservedWithinRun],
+            confidence: Confidence::High,
+        }];
+
+        cache.store(&map).unwrap();
+        let loaded = cache.load("nondetFunc").unwrap().unwrap();
+
+        assert_eq!(loaded.nondeterministic_fields.len(), 1);
+        assert_eq!(loaded.nondeterministic_fields[0].field_path, "return.id");
+        assert_eq!(loaded.nondeterministic_fields[0].confidence, Confidence::High);
+    }
+
+    #[test]
+    fn load_old_cache_without_nondeterministic_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_dir = dir.path().to_path_buf();
+        let cache = BehaviorMapCache::new(cache_dir.clone()).unwrap();
+
+        // Write JSON without nondeterministic_fields (simulates old cache format).
+        let json = r#"{"function_id":"oldFunc","behaviors":[]}"#;
+        std::fs::write(cache_dir.join("oldFunc.json"), json).unwrap();
+
+        let loaded = cache.load("oldFunc").unwrap().unwrap();
+        assert!(loaded.nondeterministic_fields.is_empty());
+    }
 }

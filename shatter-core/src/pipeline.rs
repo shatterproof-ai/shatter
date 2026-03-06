@@ -40,7 +40,8 @@ pub fn analyze(observe: &ObservationOutput, analysis: &FunctionAnalysis) -> Anal
         .map(|(inputs, result)| execution_record_from_result(&observe.function_name, inputs, result))
         .collect();
 
-    let behavior_map = BehaviorMap::from_records(&observe.function_name, &records);
+    let mut behavior_map = BehaviorMap::from_records(&observe.function_name, &records);
+    behavior_map.nondeterministic_fields = observe.nondeterministic_fields.clone();
 
     // Deduplicate constraints by branch_id so each branch contributes exactly one classification.
     let unique_constraints: HashMap<u32, SymConstraint> = observe
@@ -323,6 +324,37 @@ mod tests {
         assert_eq!(constraint_total, 2, "constraints must equal unique branch_ids, not total observations");
         assert_eq!(output.coverage_metrics.symexpr_count, 1);
         assert_eq!(output.coverage_metrics.unknown_count, 1);
+    }
+
+    #[test]
+    fn analyze_carries_nondeterministic_fields() {
+        use crate::nondeterminism::{Confidence, NondeterministicField, NondeterminismEvidence};
+
+        let observe = ObservationOutput {
+            function_name: "nondet_fn".into(),
+            iterations: 1,
+            unique_paths: 0,
+            lines_covered: 0,
+            total_lines: 5,
+            new_path_executions: vec![],
+            raw_results: vec![],
+            discoveries: vec![],
+            nondeterministic_fields: vec![NondeterministicField {
+                field_path: "return.timestamp".into(),
+                evidence: vec![NondeterminismEvidence::ObservedWithinRun],
+                confidence: Confidence::High,
+            }],
+            float_probe_results: vec![],
+        };
+
+        let analysis = stub_analysis("nondet_fn", 0);
+        let output = analyze(&observe, &analysis);
+
+        assert_eq!(output.behavior_map.nondeterministic_fields.len(), 1);
+        assert_eq!(
+            output.behavior_map.nondeterministic_fields[0].field_path,
+            "return.timestamp"
+        );
     }
 
     #[test]
