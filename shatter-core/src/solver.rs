@@ -2158,4 +2158,48 @@ mod tests {
             other => panic!("expected Sat or Unknown(timeout), got: {other:?}"),
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Property-based tests
+    // -----------------------------------------------------------------------
+
+    mod prop_tests {
+        use super::*;
+        use crate::test_arbitraries::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn infer_sort_never_panics(expr in arb_sym_expr(4)) {
+                // Any well-formed SymExpr should produce a valid Sort without panicking.
+                let _ = infer_sort(&expr);
+            }
+
+            #[test]
+            fn int_const_infers_int(v in -1_000_000i64..1_000_000i64) {
+                let expr = SymExpr::Const(ConstValue::Int(v));
+                prop_assert_eq!(infer_sort(&expr), Sort::Int);
+            }
+
+            #[test]
+            fn str_const_infers_str(s in ".{0,20}") {
+                let expr = SymExpr::Const(ConstValue::Str(s));
+                prop_assert_eq!(infer_sort(&expr), Sort::Str);
+            }
+
+            #[test]
+            fn bool_const_infers_bool(b in any::<bool>()) {
+                let expr = SymExpr::Const(ConstValue::Bool(b));
+                prop_assert_eq!(infer_sort(&expr), Sort::Bool);
+            }
+
+            #[test]
+            fn float_const_infers_real(
+                f in (-1000.0f64..1000.0).prop_filter("finite", |f| f.is_finite())
+            ) {
+                let expr = SymExpr::Const(ConstValue::Float(f));
+                prop_assert_eq!(infer_sort(&expr), Sort::Real);
+            }
+        }
+    }
 }

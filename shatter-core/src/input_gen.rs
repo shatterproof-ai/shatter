@@ -3081,4 +3081,73 @@ mod tests {
         let inputs = generate_random_inputs(&params, &mut rng, None);
         assert!(inputs[0].is_i64() || inputs[0].is_u64());
     }
+
+    // -----------------------------------------------------------------------
+    // Property-based tests
+    // -----------------------------------------------------------------------
+
+    mod prop_tests {
+        use super::*;
+        use crate::types::ParamInfo;
+        use proptest::prelude::*;
+        use rand::SeedableRng;
+        use rand::rngs::StdRng;
+
+        proptest! {
+            #[test]
+            fn mutate_int_preserves_number(val in -1_000_000i64..1_000_000i64) {
+                let input = serde_json::json!(val);
+                let mut rng = StdRng::seed_from_u64(42);
+                let result = mutate_value(&input, &TypeInfo::Int, &[], &mut rng);
+                prop_assert!(
+                    result.is_number(),
+                    "mutating Int produced non-number: {result:?}"
+                );
+            }
+
+            #[test]
+            fn mutate_str_preserves_string(val in ".{0,30}") {
+                let input = serde_json::json!(val);
+                let mut rng = StdRng::seed_from_u64(42);
+                let result = mutate_value(&input, &TypeInfo::Str, &[], &mut rng);
+                prop_assert!(
+                    result.is_string(),
+                    "mutating Str produced non-string: {result:?}"
+                );
+            }
+
+            #[test]
+            fn mutate_bool_preserves_bool(val in any::<bool>()) {
+                let input = serde_json::json!(val);
+                let result = mutate_value(&input, &TypeInfo::Bool, &[], &mut StdRng::seed_from_u64(42));
+                prop_assert!(
+                    result.is_boolean(),
+                    "mutating Bool produced non-bool: {result:?}"
+                );
+            }
+
+            #[test]
+            fn mutate_inputs_preserves_length(
+                seed in 0..10000u64,
+                len in 1..6usize,
+            ) {
+                let mut rng = StdRng::seed_from_u64(seed);
+                let params: Vec<ParamInfo> = (0..len)
+                    .map(|i| ParamInfo {
+                        name: format!("p{i}"),
+                        typ: TypeInfo::Int,
+                        type_name: None,
+                    })
+                    .collect();
+                let inputs: Vec<serde_json::Value> =
+                    (0..len).map(|i| serde_json::json!(i as i64)).collect();
+                let mutated = mutate_inputs(&inputs, &params, 1.0, &[], &mut rng);
+                prop_assert_eq!(
+                    inputs.len(),
+                    mutated.len(),
+                    "mutate_inputs changed vector length"
+                );
+            }
+        }
+    }
 }

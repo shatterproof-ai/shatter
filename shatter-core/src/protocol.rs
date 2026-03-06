@@ -1495,4 +1495,44 @@ mod tests {
         let fa: FunctionAnalysis = serde_json::from_str(json).expect("deserialize");
         assert!(fa.crypto_boundaries.is_empty());
     }
+
+    // -----------------------------------------------------------------------
+    // Property-based tests
+    // -----------------------------------------------------------------------
+
+    mod prop_tests {
+        use super::*;
+        use crate::test_arbitraries::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn request_round_trips(req in arb_request()) {
+                let json = serde_json::to_string(&req).unwrap();
+                let decoded: Request = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(req, decoded);
+            }
+
+            #[test]
+            fn response_round_trips(resp in arb_response()) {
+                let json = serde_json::to_string(&resp).unwrap();
+                let decoded: Response = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(resp, decoded);
+            }
+
+            #[test]
+            fn execute_result_round_trips(er in arb_execute_result()) {
+                let json = serde_json::to_string(&er).unwrap();
+                let decoded: ExecuteResult = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(er, decoded);
+            }
+
+            #[test]
+            fn function_analysis_round_trips(fa in arb_function_analysis()) {
+                let json = serde_json::to_string(&fa).unwrap();
+                let decoded: FunctionAnalysis = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(fa, decoded);
+            }
+        }
+    }
 }
