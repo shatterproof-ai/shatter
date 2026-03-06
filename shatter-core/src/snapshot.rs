@@ -435,6 +435,7 @@ mod tests {
             function_id: function_id.to_string(),
             behaviors,
             fingerprint: None,
+            nondeterministic_fields: vec![],
         }
     }
 

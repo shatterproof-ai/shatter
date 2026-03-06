@@ -216,6 +216,10 @@ pub struct BehaviorMap {
     /// the function is unchanged and can be skipped during re-exploration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fingerprint: Option<String>,
+    /// Fields identified as nondeterministic during exploration.
+    /// Populated from the nondeterminism detection report when available.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nondeterministic_fields: Vec<crate::nondeterminism::NondeterministicField>,
 }
 
 impl BehaviorMap {
@@ -251,6 +255,7 @@ impl BehaviorMap {
             function_id: function_id.into(),
             behaviors,
             fingerprint: None,
+            nondeterministic_fields: vec![],
         }
     }
 
@@ -298,6 +303,7 @@ impl BehaviorMap {
             function_id: function_id.into(),
             behaviors,
             fingerprint: None,
+            nondeterministic_fields: result.nondeterministic_fields.clone(),
         }
     }
 
@@ -969,6 +975,7 @@ mod tests {
                     dependency_trace: None,
                 }],
                 fingerprint: None,
+                nondeterministic_fields: vec![],
             },
             behavior_coverage: vec![BehaviorCoverage {
                 caller: "calculateTotal".to_string(),
@@ -1331,5 +1338,57 @@ mod tests {
         let trace = map.behaviors[0].dependency_trace.as_ref().unwrap();
         assert_eq!(trace.external_calls.len(), 1);
         assert_eq!(trace.external_calls[0].function_name, "logger");
+    }
+
+    #[test]
+    fn behavior_map_nondeterministic_fields_round_trip() {
+        use crate::nondeterminism::{Confidence, NondeterministicField, NondeterminismEvidence};
+
+        let map = BehaviorMap {
+            function_id: "fn1".to_string(),
+            behaviors: vec![],
+            fingerprint: None,
+            nondeterministic_fields: vec![NondeterministicField {
+                field_path: "return.timestamp".to_string(),
+                evidence: vec![NondeterminismEvidence::ObservedWithinRun],
+                confidence: Confidence::High,
+            }],
+        };
+
+        round_trip(&map);
+    }
+
+    #[test]
+    fn behavior_map_without_nondeterministic_fields_deserializes() {
+        // Backward compatibility: JSON without nondeterministic_fields should
+        // deserialize with an empty vec via serde default.
+        let json = r#"{"function_id":"fn1","behaviors":[]}"#;
+        let map: BehaviorMap = serde_json::from_str(json).expect("deserialize");
+        assert!(map.nondeterministic_fields.is_empty());
+    }
+
+    #[test]
+    fn from_exploration_result_carries_nondeterministic_fields() {
+        use crate::nondeterminism::{Confidence, NondeterministicField, NondeterminismEvidence};
+
+        let result = ObservationOutput {
+            function_name: "fn1".to_string(),
+            iterations: 10,
+            unique_paths: 1,
+            lines_covered: 5,
+            total_lines: 10,
+            new_path_executions: vec![],
+            raw_results: vec![],
+            discoveries: vec![],
+            nondeterministic_fields: vec![NondeterministicField {
+                field_path: "return.id".to_string(),
+                evidence: vec![NondeterminismEvidence::ObservedWithinRun],
+                confidence: Confidence::Medium,
+            }],
+        };
+
+        let map = BehaviorMap::from_exploration_result("fn1", &result);
+        assert_eq!(map.nondeterministic_fields.len(), 1);
+        assert_eq!(map.nondeterministic_fields[0].field_path, "return.id");
     }
 }

@@ -832,6 +832,7 @@ mod tests {
                 function_id: name.to_string(),
                 behaviors,
                 fingerprint: None,
+                nondeterministic_fields: vec![],
             },
             behavior_coverage: vec![],
             mocks_used: mocks,
