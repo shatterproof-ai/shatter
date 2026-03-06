@@ -145,6 +145,9 @@ pub struct ObservationOutput {
     pub raw_results: Vec<(Vec<serde_json::Value>, ExecuteResult)>,
     /// Per-branch discovery attribution: which branch_id was first found by which method.
     pub discoveries: Vec<(u32, DiscoveryMethod)>,
+    /// Fields detected as nondeterministic via within-run re-execution sampling.
+    #[serde(default)]
+    pub nondeterministic_fields: Vec<crate::nondeterminism::NondeterministicField>,
 }
 
 /// Transitional alias: existing code that references `ExplorationResult`
@@ -721,6 +724,7 @@ pub async fn explore_function(
         new_path_executions,
         raw_results,
         discoveries,
+        nondeterministic_fields: vec![],
     })
 }
 
@@ -1517,7 +1521,7 @@ mod tests {
                     return_value: Some(serde_json::json!("negative")),
                     thrown_error: None, lines_executed: vec![1, 4, 5], is_new_path: true, error_intent: None },
             ],
-            raw_results: vec![], discoveries: vec![],
+            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![],
         };
         let report = format_exploration_report(&result, &ReportOptions::default());
         assert!(report.contains("classify"));
@@ -1538,7 +1542,7 @@ mod tests {
                 inputs: vec![serde_json::json!(10)],
                 return_value: Some(serde_json::json!(5)),
                 thrown_error: None, lines_executed: vec![1, 2, 3], is_new_path: true, error_intent: None }],
-            raw_results: vec![], discoveries: vec![],
+            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![],
         };
         let report = format_exploration_report(&result, &ReportOptions {
             location: Some("src/math.ts:10-25".into()), ..Default::default()
@@ -1557,7 +1561,7 @@ mod tests {
                 return_value: None,
                 thrown_error: Some("TypeError: cannot read null".into()),
                 lines_executed: vec![], is_new_path: true, error_intent: None }],
-            raw_results: vec![], discoveries: vec![],
+            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![],
         };
         let report = format_exploration_report(&result, &ReportOptions::default());
         assert!(report.contains("throws"));
@@ -1568,7 +1572,7 @@ mod tests {
     fn format_exploration_report_with_perf() {
         let result = ObservationOutput {
             function_name: "fast".into(), iterations: 10, unique_paths: 1,
-            lines_covered: 0, total_lines: 0, new_path_executions: vec![], raw_results: vec![], discoveries: vec![],
+            lines_covered: 0, total_lines: 0, new_path_executions: vec![], raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![],
         };
         let report = format_exploration_report(&result, &ReportOptions {
             show_perf: true, wall_time: Some(std::time::Duration::from_millis(42)),
@@ -1583,7 +1587,7 @@ mod tests {
     fn format_exploration_report_includes_coverage_metrics() {
         let result = ObservationOutput {
             function_name: "analyze".into(), iterations: 20, unique_paths: 3,
-            lines_covered: 8, total_lines: 10, new_path_executions: vec![], raw_results: vec![], discoveries: vec![],
+            lines_covered: 8, total_lines: 10, new_path_executions: vec![], raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![],
         };
         let metrics = crate::coverage_metrics::CoverageMetrics {
             total_branches: 4, z3_solved: 2, random_found: 1, user_provided: 0,
@@ -1607,7 +1611,7 @@ mod tests {
                 inputs: vec![serde_json::json!(1)],
                 return_value: Some(serde_json::json!("ok")),
                 thrown_error: None, lines_executed: vec![1, 2, 3, 4], is_new_path: true, error_intent: None }],
-            raw_results: vec![], discoveries: vec![],
+            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![],
         };
         let report = format_exploration_report(&result, &ReportOptions {
             style: crate::report_style::ReportStyle::ansi(), ..Default::default()
@@ -1638,7 +1642,7 @@ mod tests {
                 inputs: vec![serde_json::json!(5)],
                 return_value: Some(serde_json::json!("positive-odd")),
                 thrown_error: None, lines_executed: vec![1, 2, 3], is_new_path: true, error_intent: None }],
-            raw_results: vec![], discoveries: vec![],
+            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![],
         };
         let report = format_exploration_report_verbose(&result);
         assert!(report.contains("10 iteration(s)"));

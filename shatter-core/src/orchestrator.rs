@@ -192,6 +192,8 @@ pub struct ExploreResult {
     pub triage_skipped: usize,
     /// Number of sampled skip predictions that were wrong.
     pub triage_mispredictions: usize,
+    /// Fields detected as nondeterministic via within-run re-execution sampling.
+    pub nondeterministic_fields: Vec<crate::nondeterminism::NondeterministicField>,
 }
 
 /// Errors that can occur during concolic exploration.
@@ -590,6 +592,7 @@ pub async fn explore(
         discoveries,
         triage_skipped,
         triage_mispredictions,
+        nondeterministic_fields: vec![],
     })
 }
 

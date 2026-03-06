@@ -136,6 +136,7 @@ impl From<crate::orchestrator::ExploreResult> for ObservationOutput {
             new_path_executions,
             raw_results: r.raw_results,
             discoveries: r.discoveries,
+            nondeterministic_fields: r.nondeterministic_fields,
         }
     }
 }
@@ -218,6 +219,7 @@ mod tests {
             new_path_executions: vec![],
             raw_results: vec![(vec![json!(5)], exec_result)],
             discoveries: vec![(0, DiscoveryMethod::Random)],
+            nondeterministic_fields: vec![],
         };
 
         let analysis = stub_analysis("classify", 2);
@@ -242,6 +244,7 @@ mod tests {
             new_path_executions: vec![],
             raw_results: vec![],
             discoveries: vec![],
+            nondeterministic_fields: vec![],
         };
 
         let analysis = stub_analysis("empty", 3);
@@ -307,6 +310,7 @@ mod tests {
                 (vec![json!(3)], make_result(json!("c"))),
             ],
             discoveries: vec![(0, DiscoveryMethod::Random)],
+            nondeterministic_fields: vec![],
         };
 
         let analysis = stub_analysis("dedup_test", 2);
@@ -336,6 +340,7 @@ mod tests {
             discoveries: vec![(0, DiscoveryMethod::Random)],
             triage_skipped: 0,
             triage_mispredictions: 0,
+            nondeterministic_fields: vec![],
         };
 
         let output: ObservationOutput = concolic.into();
