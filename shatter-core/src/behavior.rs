@@ -707,6 +707,7 @@ mod tests {
             ],
             raw_results: vec![],
             discoveries: vec![],
+            nondeterministic_fields: vec![],
         };
 
         let map = BehaviorMap::from_exploration_result("classify", &result);
@@ -1321,6 +1322,7 @@ mod tests {
                 is_new_path: true, error_intent: None }],
             raw_results: vec![(vec![json!(5)], raw_result)],
             discoveries: vec![],
+            nondeterministic_fields: vec![],
         };
 
         let map = BehaviorMap::from_exploration_result("classify", &result);

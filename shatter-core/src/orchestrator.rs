@@ -187,6 +187,8 @@ pub struct ExploreResult {
     pub raw_results: Vec<(Vec<serde_json::Value>, ExecuteResult)>,
     /// Per-branch discovery attribution with method (Z3, Random, UserProvided).
     pub discoveries: Vec<(u32, DiscoveryMethod)>,
+    /// Fields detected as nondeterministic via within-run re-execution sampling.
+    pub nondeterministic_fields: Vec<crate::nondeterminism::NondeterministicField>,
 }
 
 /// Errors that can occur during concolic exploration.
@@ -549,6 +551,7 @@ pub async fn explore(
         termination_reason,
         raw_results,
         discoveries,
+        nondeterministic_fields: vec![],
     })
 }
 

@@ -711,6 +711,7 @@ mod tests {
             new_path_executions: vec![],
             raw_results: vec![],
             discoveries: vec![],
+            nondeterministic_fields: vec![],
         }
     }
 

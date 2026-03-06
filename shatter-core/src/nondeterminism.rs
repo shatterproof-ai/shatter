@@ -3,10 +3,14 @@
 //! Presence in the nondeterministic field list means "we have evidence
 //! this is nondeterministic." Absence does NOT assert determinism.
 
+use std::collections::HashMap;
+use std::sync::LazyLock;
+
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::sync::LazyLock;
+
+use crate::protocol::ExecuteResult;
 
 /// How nondeterminism was detected for a field or parameter.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -378,6 +382,182 @@ fn check_number_patterns(n: &serde_json::Number) -> Vec<ValuePatternMatch> {
     }
 
     matches
+}
+
+// --- Within-run re-execution sampling ---
+
+/// Number of inputs to sample from each equivalence class for re-execution.
+pub const NONDETERMINISM_SAMPLES_PER_CLASS: usize = 2;
+
+/// Number of times to re-execute each sampled input to detect nondeterminism.
+pub const NONDETERMINISM_REEXECUTION_COUNT: usize = 3;
+
+/// Field path used when the outcome type itself varies (one execution returns,
+/// another throws, or vice versa).
+pub const FIELD_PATH_OUTCOME: &str = "<outcome>";
+
+/// Field path used when thrown error type or message varies across re-executions.
+pub const FIELD_PATH_THROWN_ERROR: &str = "thrown_error";
+
+/// Result of the within-run nondeterminism detection phase.
+#[derive(Debug, Clone, Default)]
+pub struct ReexecutionReport {
+    /// Fields identified as nondeterministic via re-execution sampling.
+    pub nondeterministic_fields: Vec<NondeterministicField>,
+    /// Number of distinct inputs that were re-executed.
+    pub inputs_sampled: usize,
+    /// Total number of re-executions performed.
+    pub reexecutions_performed: usize,
+}
+
+/// Compare an original execution with its re-executions to detect nondeterministic fields.
+///
+/// Each entry in `samples` is `(original_result, re_execution_results)` for the same input.
+/// Returns a report listing fields whose values varied across re-executions, with
+/// confidence based on how consistently the variation appeared.
+pub fn detect_within_run_nondeterminism(
+    samples: &[(ExecuteResult, Vec<ExecuteResult>)],
+) -> ReexecutionReport {
+    if samples.is_empty() {
+        return ReexecutionReport::default();
+    }
+
+    // Track (field_path → (times_changed, total_comparisons)) across all samples.
+    let mut field_stats: HashMap<String, (usize, usize)> = HashMap::new();
+    let total_samples = samples.len();
+    let mut total_reexecutions = 0usize;
+
+    for (original, reexecutions) in samples {
+        total_reexecutions += reexecutions.len();
+
+        for reexec in reexecutions {
+            // Check outcome type mismatch (return vs throw).
+            let orig_returns = original.return_value.is_some() || original.thrown_error.is_none();
+            let reexec_returns = reexec.return_value.is_some() || reexec.thrown_error.is_none();
+
+            if orig_returns != reexec_returns {
+                // One returns normally, the other throws (or vice versa).
+                let entry = field_stats.entry(FIELD_PATH_OUTCOME.to_string()).or_insert((0, 0));
+                entry.0 += 1;
+                entry.1 += 1;
+                continue;
+            }
+
+            // Both returned normally — compare return values.
+            if let (Some(orig_val), Some(reexec_val)) =
+                (&original.return_value, &reexec.return_value)
+            {
+                let sim = structural_similarity(orig_val, reexec_val);
+                for path in &sim.changed_paths {
+                    let field_path = if path.is_empty() {
+                        "return".to_string()
+                    } else {
+                        format!("return.{path}")
+                    };
+                    let entry = field_stats.entry(field_path).or_insert((0, 0));
+                    entry.0 += 1;
+                    entry.1 += 1;
+                }
+                // Count non-changed comparisons too.
+                if sim.changed_paths.is_empty() {
+                    // No changes — record that this comparison was clean.
+                    // We don't add to field_stats since no paths changed.
+                }
+            }
+
+            // Both threw — compare error type and message.
+            if let (Some(orig_err), Some(reexec_err)) =
+                (&original.thrown_error, &reexec.thrown_error)
+            && (orig_err.error_type != reexec_err.error_type
+                    || orig_err.message != reexec_err.message)
+            {
+                let entry = field_stats
+                    .entry(FIELD_PATH_THROWN_ERROR.to_string())
+                    .or_insert((0, 0));
+                entry.0 += 1;
+                entry.1 += 1;
+            }
+        }
+    }
+
+    // Convert field stats to NondeterministicField entries with confidence.
+    let mut fields: Vec<NondeterministicField> = field_stats
+        .into_iter()
+        .map(|(field_path, (times_changed, _))| {
+            // Confidence based on how consistently the field varied:
+            // - Changed in every re-execution of every sample → High
+            // - Changed in majority of re-executions → Medium
+            // - Changed in at least one → Low
+            let total_comparisons = total_reexecutions;
+            let ratio = if total_comparisons > 0 {
+                times_changed as f64 / total_comparisons as f64
+            } else {
+                0.0
+            };
+
+            let confidence = if ratio >= 1.0 - f64::EPSILON {
+                Confidence::High
+            } else if ratio >= 0.5 {
+                Confidence::Medium
+            } else {
+                Confidence::Low
+            };
+
+            NondeterministicField {
+                field_path,
+                evidence: vec![NondeterminismEvidence::ObservedWithinRun],
+                confidence,
+            }
+        })
+        .collect();
+
+    // Sort by field_path for deterministic output.
+    fields.sort_by(|a, b| a.field_path.cmp(&b.field_path));
+
+    ReexecutionReport {
+        nondeterministic_fields: fields,
+        inputs_sampled: total_samples,
+        reexecutions_performed: total_reexecutions,
+    }
+}
+
+/// Select up to `max_samples` input indices from an equivalence class's inputs.
+///
+/// Picks the first (canonical) input, then the one with the most different JSON
+/// serialization length to maximize diversity.
+pub fn select_sample_indices(
+    inputs: &[Vec<serde_json::Value>],
+    max_samples: usize,
+) -> Vec<usize> {
+    if inputs.is_empty() || max_samples == 0 {
+        return vec![];
+    }
+
+    let mut selected = vec![0usize];
+    if max_samples >= 2 && inputs.len() >= 2 {
+        let canonical_len: usize = inputs[0]
+            .iter()
+            .map(|v| serde_json::to_string(v).unwrap_or_default().len())
+            .sum();
+
+        let mut best_idx = 1;
+        let mut best_diff = 0usize;
+        for (i, inp) in inputs.iter().enumerate().skip(1) {
+            let len: usize = inp
+                .iter()
+                .map(|v| serde_json::to_string(v).unwrap_or_default().len())
+                .sum();
+            let diff = len.abs_diff(canonical_len);
+            if diff > best_diff {
+                best_diff = diff;
+                best_idx = i;
+            }
+        }
+        selected.push(best_idx);
+    }
+
+    selected.truncate(max_samples);
+    selected
 }
 
 #[cfg(test)]
@@ -908,5 +1088,255 @@ mod tests {
     fn pattern_object_and_array_return_empty() {
         assert!(check_value_patterns(&json!({"id": "abc"})).is_empty());
         assert!(check_value_patterns(&json!([1, 2, 3])).is_empty());
+    }
+
+    // --- re-execution nondeterminism detection tests ---
+
+    use crate::execution_record::ErrorInfo;
+    use crate::protocol::PerformanceMetrics;
+
+    fn make_exec_result(return_value: Option<Value>) -> ExecuteResult {
+        ExecuteResult {
+            return_value,
+            thrown_error: None,
+            branch_path: vec![],
+            lines_executed: vec![],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            scope_events: vec![],
+            side_effects: vec![],
+            performance: PerformanceMetrics::default(),
+            capture_truncation: None,
+        }
+    }
+
+    fn make_error_result(error_type: &str, message: &str) -> ExecuteResult {
+        ExecuteResult {
+            return_value: None,
+            thrown_error: Some(ErrorInfo {
+                error_type: error_type.to_string(),
+                message: message.to_string(),
+                stack: None,
+                error_category: None,
+            }),
+            branch_path: vec![],
+            lines_executed: vec![],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            scope_events: vec![],
+            side_effects: vec![],
+            performance: PerformanceMetrics::default(),
+            capture_truncation: None,
+        }
+    }
+
+    #[test]
+    fn reexec_all_deterministic() {
+        let original = make_exec_result(Some(json!({"a": 1, "b": 2})));
+        let reexecs = vec![
+            make_exec_result(Some(json!({"a": 1, "b": 2}))),
+            make_exec_result(Some(json!({"a": 1, "b": 2}))),
+            make_exec_result(Some(json!({"a": 1, "b": 2}))),
+        ];
+        assert_eq!(reexecs.len(), NONDETERMINISM_REEXECUTION_COUNT);
+
+        let report = detect_within_run_nondeterminism(&[(original, reexecs)]);
+        assert!(report.nondeterministic_fields.is_empty());
+        assert_eq!(report.inputs_sampled, 1);
+        assert_eq!(report.reexecutions_performed, NONDETERMINISM_REEXECUTION_COUNT);
+    }
+
+    #[test]
+    fn reexec_single_field_nondeterministic() {
+        let original = make_exec_result(Some(json!({"a": 1, "b": 2})));
+        let reexecs = vec![
+            make_exec_result(Some(json!({"a": 1, "b": 99}))),
+            make_exec_result(Some(json!({"a": 1, "b": 77}))),
+            make_exec_result(Some(json!({"a": 1, "b": 55}))),
+        ];
+
+        let report = detect_within_run_nondeterminism(&[(original, reexecs)]);
+        assert_eq!(report.nondeterministic_fields.len(), 1);
+        assert_eq!(report.nondeterministic_fields[0].field_path, "return.b");
+        assert_eq!(
+            report.nondeterministic_fields[0].evidence,
+            vec![NondeterminismEvidence::ObservedWithinRun]
+        );
+        // Changed in all 3 re-executions → High confidence.
+        assert_eq!(report.nondeterministic_fields[0].confidence, Confidence::High);
+    }
+
+    #[test]
+    fn reexec_fully_nondeterministic() {
+        let original = make_exec_result(Some(json!({"a": 1, "b": 2})));
+        let reexecs = vec![
+            make_exec_result(Some(json!({"a": 10, "b": 20}))),
+            make_exec_result(Some(json!({"a": 100, "b": 200}))),
+            make_exec_result(Some(json!({"a": 1000, "b": 2000}))),
+        ];
+
+        let report = detect_within_run_nondeterminism(&[(original, reexecs)]);
+        assert_eq!(report.nondeterministic_fields.len(), 2);
+        let paths: Vec<&str> = report
+            .nondeterministic_fields
+            .iter()
+            .map(|f| f.field_path.as_str())
+            .collect();
+        assert!(paths.contains(&"return.a"));
+        assert!(paths.contains(&"return.b"));
+    }
+
+    #[test]
+    fn reexec_error_type_variation() {
+        let original = make_error_result("TypeError", "x is not a function");
+        let reexecs = vec![
+            make_error_result("TypeError", "x is not a function"),
+            make_error_result("RangeError", "out of bounds"),
+            make_error_result("TypeError", "x is not a function"),
+        ];
+
+        let report = detect_within_run_nondeterminism(&[(original, reexecs)]);
+        assert_eq!(report.nondeterministic_fields.len(), 1);
+        assert_eq!(
+            report.nondeterministic_fields[0].field_path,
+            FIELD_PATH_THROWN_ERROR
+        );
+    }
+
+    #[test]
+    fn reexec_outcome_mismatch() {
+        // Original returns a value, re-execution throws.
+        let original = make_exec_result(Some(json!(42)));
+        let reexecs = vec![
+            make_exec_result(Some(json!(42))),
+            make_error_result("Error", "oops"),
+            make_exec_result(Some(json!(42))),
+        ];
+
+        let report = detect_within_run_nondeterminism(&[(original, reexecs)]);
+        assert_eq!(report.nondeterministic_fields.len(), 1);
+        assert_eq!(
+            report.nondeterministic_fields[0].field_path,
+            FIELD_PATH_OUTCOME
+        );
+    }
+
+    #[test]
+    fn reexec_confidence_levels() {
+        // Field changes in 1 of 3 re-executions → Low.
+        let original = make_exec_result(Some(json!({"x": 1})));
+        let reexecs = vec![
+            make_exec_result(Some(json!({"x": 1}))),
+            make_exec_result(Some(json!({"x": 99}))),
+            make_exec_result(Some(json!({"x": 1}))),
+        ];
+
+        let report = detect_within_run_nondeterminism(&[(original, reexecs)]);
+        assert_eq!(report.nondeterministic_fields.len(), 1);
+        assert_eq!(report.nondeterministic_fields[0].confidence, Confidence::Low);
+    }
+
+    #[test]
+    fn reexec_confidence_medium() {
+        // Field changes in 2 of 3 re-executions → Medium (ratio 2/3 ≥ 0.5).
+        let original = make_exec_result(Some(json!({"x": 1})));
+        let reexecs = vec![
+            make_exec_result(Some(json!({"x": 99}))),
+            make_exec_result(Some(json!({"x": 77}))),
+            make_exec_result(Some(json!({"x": 1}))),
+        ];
+
+        let report = detect_within_run_nondeterminism(&[(original, reexecs)]);
+        assert_eq!(report.nondeterministic_fields.len(), 1);
+        assert_eq!(
+            report.nondeterministic_fields[0].confidence,
+            Confidence::Medium
+        );
+    }
+
+    #[test]
+    fn reexec_multiple_samples_aggregate() {
+        // Two different inputs both show "return.b" varying → merged into one field.
+        let sample1 = (
+            make_exec_result(Some(json!({"a": 1, "b": 2}))),
+            vec![make_exec_result(Some(json!({"a": 1, "b": 99})))],
+        );
+        let sample2 = (
+            make_exec_result(Some(json!({"a": 10, "b": 20}))),
+            vec![make_exec_result(Some(json!({"a": 10, "b": 88})))],
+        );
+
+        let report = detect_within_run_nondeterminism(&[sample1, sample2]);
+        assert_eq!(report.nondeterministic_fields.len(), 1);
+        assert_eq!(report.nondeterministic_fields[0].field_path, "return.b");
+        assert_eq!(report.inputs_sampled, NONDETERMINISM_SAMPLES_PER_CLASS);
+        // Both re-executions showed change → 2/2 = High.
+        assert_eq!(report.nondeterministic_fields[0].confidence, Confidence::High);
+    }
+
+    #[test]
+    fn reexec_both_return_none_is_deterministic() {
+        // Void functions with no errors.
+        let original = make_exec_result(None);
+        let reexecs = vec![
+            make_exec_result(None),
+            make_exec_result(None),
+            make_exec_result(None),
+        ];
+
+        let report = detect_within_run_nondeterminism(&[(original, reexecs)]);
+        assert!(report.nondeterministic_fields.is_empty());
+    }
+
+    #[test]
+    fn reexec_empty_samples() {
+        let report = detect_within_run_nondeterminism(&[]);
+        assert!(report.nondeterministic_fields.is_empty());
+        assert_eq!(report.inputs_sampled, 0);
+        assert_eq!(report.reexecutions_performed, 0);
+    }
+
+    #[test]
+    fn reexec_primitive_return_value_changes() {
+        // Non-object return value that changes.
+        let original = make_exec_result(Some(json!(42)));
+        let reexecs = vec![
+            make_exec_result(Some(json!(99))),
+            make_exec_result(Some(json!(77))),
+            make_exec_result(Some(json!(55))),
+        ];
+
+        let report = detect_within_run_nondeterminism(&[(original, reexecs)]);
+        assert_eq!(report.nondeterministic_fields.len(), 1);
+        // Primitive return value has empty changed_path → mapped to "return".
+        assert_eq!(report.nondeterministic_fields[0].field_path, "return");
+    }
+
+    // --- select_sample_indices tests ---
+
+    #[test]
+    fn select_samples_empty_inputs() {
+        assert!(select_sample_indices(&[], NONDETERMINISM_SAMPLES_PER_CLASS).is_empty());
+    }
+
+    #[test]
+    fn select_samples_single_input() {
+        let inputs = vec![vec![json!(1)]];
+        let indices = select_sample_indices(&inputs, NONDETERMINISM_SAMPLES_PER_CLASS);
+        assert_eq!(indices, vec![0]);
+    }
+
+    #[test]
+    fn select_samples_picks_most_different() {
+        let inputs = vec![
+            vec![json!(1)],
+            vec![json!(2)],
+            vec![json!("a very long string that differs significantly in length")],
+        ];
+        let indices = select_sample_indices(&inputs, NONDETERMINISM_SAMPLES_PER_CLASS);
+        assert_eq!(indices.len(), NONDETERMINISM_SAMPLES_PER_CLASS);
+        assert_eq!(indices[0], 0);
+        // Index 2 has the most different JSON length.
+        assert_eq!(indices[1], 2);
     }
 }
