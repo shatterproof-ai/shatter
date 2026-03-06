@@ -160,6 +160,7 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
           status: "instrument",
           instrumented: true,
           output_file: null,
+          instrumentable_line_count: result.instrumentableLineCount,
         },
         shutdown: false,
       };

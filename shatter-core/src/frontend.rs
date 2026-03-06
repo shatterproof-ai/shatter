@@ -419,6 +419,7 @@ mod tests {
             ResponseResult::Instrument {
                 instrumented,
                 output_file,
+                ..
             } => {
                 assert!(instrumented);
                 assert!(output_file.is_none());

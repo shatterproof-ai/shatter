@@ -152,6 +152,7 @@ export interface InstrumentResponse extends BaseResponse {
   status: "instrument";
   instrumented: boolean;
   output_file: string | null;
+  instrumentable_line_count?: number;
 }
 
 export interface ExecuteResponse extends BaseResponse {

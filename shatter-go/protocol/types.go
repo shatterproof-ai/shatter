@@ -58,8 +58,9 @@ type Response struct {
 	Functions []FunctionAnalysis `json:"functions"`
 
 	// Instrument
-	Instrumented *bool   `json:"instrumented,omitempty"`
-	OutputFile   *string `json:"output_file,omitempty"`
+	Instrumented           *bool   `json:"instrumented,omitempty"`
+	OutputFile             *string `json:"output_file,omitempty"`
+	InstrumentableLineCount *int   `json:"instrumentable_line_count,omitempty"`
 
 	// Execute
 	ReturnValue       json.RawMessage   `json:"return_value,omitempty"`

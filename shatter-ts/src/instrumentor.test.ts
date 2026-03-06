@@ -259,6 +259,31 @@ function target(x: number): number {
     if ("error" in result) return;
     expect(result.branchCount).toBe(2);
   });
+
+  it("reports instrumentable line count excluding non-executable lines", () => {
+    // 10-line function with 5 executable statement lines:
+    // line 1: function signature (not instrumented)
+    // line 2: blank (not instrumented)
+    // line 3: if statement (instrumented)
+    // line 4: return true (instrumented)
+    // line 5: closing brace (not instrumented)
+    // line 6: blank (not instrumented)
+    // line 7: return false (instrumented)
+    // line 8: closing brace (not instrumented)
+    const source = `function example(x: number): boolean {
+
+  if (x > 0) {
+    return true;
+  }
+
+  return false;
+}`;
+    const result = instrumentFunction(source, "example");
+    expect("error" in result).toBe(false);
+    if ("error" in result) return;
+    // Only 3 executable statement lines: if, return true, return false
+    expect(result.instrumentableLineCount).toBe(3);
+  });
 });
 
 describe("symbolic branch instrumentation", () => {
