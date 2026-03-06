@@ -2088,4 +2088,40 @@ mod tests {
         );
         frontend.shutdown().await.expect("shutdown failed");
     }
+
+    /// Random explorer raw_results are harvestable into the interesting pool.
+    ///
+    /// Verifies that explore_function produces raw_results containing non-boundary
+    /// values (from user seeds) that harvest_from_exploration can extract. This
+    /// guards against the pre-str-ttu3 gap where only the concolic path harvested.
+    #[tokio::test]
+    async fn random_explorer_raw_results_are_harvestable() {
+        let mut frontend = spawn_noop_frontend().await;
+        let analysis = stub_analysis();
+        let non_boundary_seed = vec![serde_json::json!(42)];
+        let config = ExploreConfig {
+            file: "test.ts".into(), max_iterations: 1, seed: Some(99), mocks: vec![],
+            setup_file: None, setup_mode: SetupMode::PerFunction,
+            value_sources: vec![], capabilities: FrontendCapabilities::default(),
+            user_seeds: vec![non_boundary_seed],
+            candidate_inputs: vec![],
+            pool_seeds: vec![],
+            project_root: None,
+            loop_buckets: LoopBuckets::default(),
+            timeout_explore: None,
+        };
+        let result = explore_function(&mut frontend, &analysis, &config)
+            .await.expect("should succeed with noop frontend");
+        assert!(!result.raw_results.is_empty(), "raw_results should be populated");
+
+        let mut pool = crate::interesting_pool::InterestingPool::default();
+        let harvested = crate::interesting_pool::harvest_from_exploration(
+            &mut pool,
+            &result.raw_results,
+            &analysis.params,
+            &analysis.name,
+        );
+        assert!(harvested > 0, "non-boundary user seed should be harvested from random explorer");
+        frontend.shutdown().await.expect("shutdown failed");
+    }
 }
