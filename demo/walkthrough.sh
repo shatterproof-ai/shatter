@@ -188,6 +188,9 @@ step 8 $TOTAL "Explore Go Functions" \
     "Concolic execution on Go: generate inputs to cover all branches" \
     $SHATTER explore "${GO_EXAMPLES[@]}"
 
+# Rust frontend is a separate binary — ensure it's up to date.
+cargo build --manifest-path shatter-rust/Cargo.toml --quiet
+
 # Stage 9: Analyze Rust functions
 step 9 $TOTAL "Analyze Rust Functions" \
     "Discover parameters, types, and branch conditions in Rust code" \
