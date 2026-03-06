@@ -157,45 +157,68 @@ impl CoverageMetrics {
 }
 
 /// Format coverage metrics as a human-readable summary block.
-pub fn format_coverage_metrics(metrics: &CoverageMetrics) -> String {
+pub fn format_coverage_metrics(
+    metrics: &CoverageMetrics,
+    style: &crate::report_style::ReportStyle,
+) -> String {
     let mut out = String::new();
     let pct = metrics.percentages();
 
-    out.push_str("  Coverage metrics:\n");
-    out.push_str(&format!(
-        "    Branches: {} total",
-        metrics.total_branches
-    ));
+    let covered = metrics.total_branches.saturating_sub(metrics.uncovered);
+    let branch_pct = if metrics.total_branches > 0 {
+        covered as f64 / metrics.total_branches as f64 * 100.0
+    } else {
+        0.0
+    };
 
     if metrics.total_branches == 0 {
-        out.push_str(" (no branches)\n");
+        out.push_str(&format!(
+            "  {dim}Branches: 0 (no branches){reset}\n",
+            dim = style.dim,
+            reset = style.reset,
+        ));
         return out;
     }
 
-    out.push('\n');
+    out.push_str(&format!(
+        "  Branches: {covered}/{total} ({pct}) {indicator}\n",
+        total = metrics.total_branches,
+        pct = style.color_coverage_pct(branch_pct),
+        indicator = style.coverage_indicator(branch_pct),
+    ));
 
+    // Detailed breakdown in dim text
+    let mut details = Vec::new();
     if metrics.z3_solved > 0 {
-        out.push_str(&format!(
-            "    Z3 solved:     {:>3} ({:.0}%)\n",
-            metrics.z3_solved, pct.z3_pct
-        ));
+        details.push(format!("Z3: {} ({:.0}%)", metrics.z3_solved, pct.z3_pct));
     }
     if metrics.random_found > 0 {
-        out.push_str(&format!(
-            "    Random/bound:  {:>3} ({:.0}%)\n",
+        details.push(format!(
+            "random: {} ({:.0}%)",
             metrics.random_found, pct.random_pct
         ));
     }
     if metrics.user_provided > 0 {
-        out.push_str(&format!(
-            "    User-provided: {:>3} ({:.0}%)\n",
+        details.push(format!(
+            "user: {} ({:.0}%)",
             metrics.user_provided, pct.user_provided_pct
         ));
     }
     if metrics.uncovered > 0 {
+        details.push(format!(
+            "{red}uncovered: {} ({:.0}%){reset}",
+            metrics.uncovered,
+            pct.uncovered_pct,
+            red = style.red,
+            reset = style.reset,
+        ));
+    }
+    if !details.is_empty() {
         out.push_str(&format!(
-            "    Uncovered:     {:>3} ({:.0}%)\n",
-            metrics.uncovered, pct.uncovered_pct
+            "  {dim}[{details}]{reset}\n",
+            details = details.join(", "),
+            dim = style.dim,
+            reset = style.reset,
         ));
     }
 
@@ -203,8 +226,10 @@ pub fn format_coverage_metrics(metrics: &CoverageMetrics) -> String {
     if constraint_total > 0 {
         let ratio_pct = metrics.symexpr_ratio() * 100.0;
         out.push_str(&format!(
-            "    Symbolic expr: {}/{} constraints ({:.0}%)\n",
-            metrics.symexpr_count, constraint_total, ratio_pct
+            "  {dim}Symbolic: {}/{} constraints ({:.0}%){reset}\n",
+            metrics.symexpr_count, constraint_total, ratio_pct,
+            dim = style.dim,
+            reset = style.reset,
         ));
     }
 
@@ -455,14 +480,16 @@ mod tests {
 
     #[test]
     fn format_coverage_metrics_with_no_branches() {
+        let style = crate::report_style::ReportStyle::default();
         let metrics = CoverageMetrics::from_exploration(0, &[], &[]);
-        let output = format_coverage_metrics(&metrics);
-        assert!(output.contains("0 total"));
+        let output = format_coverage_metrics(&metrics, &style);
+        assert!(output.contains("0"));
         assert!(output.contains("no branches"));
     }
 
     #[test]
     fn format_coverage_metrics_shows_all_sections() {
+        let style = crate::report_style::ReportStyle::default();
         let expr = SymExpr::Const(ConstValue::Bool(true));
         let discoveries = vec![
             (0, DiscoveryMethod::Z3),
@@ -476,30 +503,30 @@ mod tests {
             },
         ];
         let metrics = CoverageMetrics::from_exploration(5, &discoveries, &constraints);
-        let output = format_coverage_metrics(&metrics);
+        let output = format_coverage_metrics(&metrics, &style);
 
-        assert!(output.contains("5 total"));
-        assert!(output.contains("Z3 solved"));
-        assert!(output.contains("Random/bound"));
-        assert!(output.contains("User-provided"));
-        assert!(output.contains("Uncovered"));
-        assert!(output.contains("Symbolic expr"));
+        assert!(output.contains("Branches:"));
+        assert!(output.contains("Z3:"));
+        assert!(output.contains("random:"));
+        assert!(output.contains("uncovered:"));
+        assert!(output.contains("Symbolic:"));
         assert!(output.contains("1/2"));
     }
 
     #[test]
     fn format_coverage_metrics_omits_zero_categories() {
+        let style = crate::report_style::ReportStyle::default();
         let discoveries = vec![
             (0, DiscoveryMethod::Random),
             (1, DiscoveryMethod::Random),
         ];
         let metrics = CoverageMetrics::from_exploration(2, &discoveries, &[]);
-        let output = format_coverage_metrics(&metrics);
+        let output = format_coverage_metrics(&metrics, &style);
 
-        assert!(output.contains("Random/bound"));
-        assert!(!output.contains("Z3 solved"));
-        assert!(!output.contains("User-provided"));
-        assert!(!output.contains("Uncovered"));
+        assert!(output.contains("random:"));
+        assert!(!output.contains("Z3:"));
+        assert!(!output.contains("user:"));
+        assert!(!output.contains("uncovered:"));
     }
 
     #[test]
