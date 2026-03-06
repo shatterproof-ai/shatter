@@ -113,6 +113,7 @@ pub struct CodebaseReport {
 pub struct SkippedFunctionReport {
     pub function_name: String,
     pub reason: String,
+    pub category: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -278,6 +279,10 @@ pub fn generate_report(
         .map(|s| SkippedFunctionReport {
             function_name: s.function_name.clone(),
             reason: s.reason.clone(),
+            category: match s.category {
+                crate::scan_orchestrator::SkipCategory::Expected => "expected".into(),
+                crate::scan_orchestrator::SkipCategory::Error => "error".into(),
+            },
         })
         .collect();
 
@@ -335,6 +340,10 @@ pub fn generate_report_from_scan(
         .map(|s| SkippedFunctionReport {
             function_name: s.function_name.clone(),
             reason: s.reason.clone(),
+            category: match s.category {
+                crate::scan_orchestrator::SkipCategory::Expected => "expected".into(),
+                crate::scan_orchestrator::SkipCategory::Error => "error".into(),
+            },
         })
         .collect();
 
@@ -629,13 +638,24 @@ fn write_md_skipped_functions(out: &mut String, skipped: &[SkippedFunctionReport
         return;
     }
 
-    let _ = writeln!(out, "## Skipped Functions\n");
+    let expected: Vec<_> = skipped.iter().filter(|s| s.category == "expected").collect();
+    let errors: Vec<_> = skipped.iter().filter(|s| s.category == "error").collect();
 
-    for s in skipped {
-        let _ = writeln!(out, "- `{}`: {}", s.function_name, s.reason);
+    if !expected.is_empty() {
+        let _ = writeln!(out, "## Skipped (Expected)\n");
+        for s in &expected {
+            let _ = writeln!(out, "- `{}`: {}", s.function_name, s.reason);
+        }
+        out.push('\n');
     }
 
-    out.push('\n');
+    if !errors.is_empty() {
+        let _ = writeln!(out, "## Errors\n");
+        for s in &errors {
+            let _ = writeln!(out, "- `{}`: {}", s.function_name, s.reason);
+        }
+        out.push('\n');
+    }
 }
 
 fn is_boundary_value(inputs: &[serde_json::Value]) -> bool {
@@ -877,6 +897,7 @@ mod tests {
             skipped: vec![SkippedFunction {
                 function_name: "slow".to_string(),
                 reason: "timed out after 30s".to_string(),
+                category: crate::scan_orchestrator::SkipCategory::Error,
             }],
             workers_used: 1, sampling: None,
         };
@@ -956,6 +977,7 @@ mod tests {
             skipped: vec![SkippedFunction {
                 function_name: "f3".to_string(),
                 reason: "error: boom".to_string(),
+                category: crate::scan_orchestrator::SkipCategory::Error,
             }],
             workers_used: 2, sampling: None,
         };
@@ -1260,6 +1282,7 @@ mod tests {
                 skipped_functions: vec![SkippedFunctionReport {
                     function_name: "slow".to_string(),
                     reason: "timed out after 30s".to_string(),
+                    category: "error".to_string(),
                 }],
                 dependency_graph: vec![],
             },
@@ -1269,7 +1292,7 @@ mod tests {
 
         let md = format_markdown_report(&report);
 
-        assert!(md.contains("## Skipped Functions"), "missing skipped section: {md}");
+        assert!(md.contains("## Errors"), "missing errors section: {md}");
         assert!(
             md.contains("`slow`: timed out after 30s"),
             "missing skip detail: {md}"
