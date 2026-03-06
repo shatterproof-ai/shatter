@@ -13,6 +13,33 @@ use serde_json::Value;
 
 use crate::instrument;
 
+/// Wrap instrumented source in `mod user_code { ... }` with all top-level items
+/// made `pub`, so the harness `main()` can call the target function without
+/// name collisions (e.g. duplicate `main()` from the original source).
+fn wrap_in_module(source: &str) -> Result<String, ExecuteError> {
+    use quote::ToTokens;
+
+    let mut file = syn::parse_file(source)
+        .map_err(|e| ExecuteError::InstrumentError(format!("parse error: {e}")))?;
+
+    for item in &mut file.items {
+        match item {
+            syn::Item::Fn(f) => f.vis = syn::Visibility::Public(syn::token::Pub::default()),
+            syn::Item::Struct(s) => s.vis = syn::Visibility::Public(syn::token::Pub::default()),
+            syn::Item::Enum(e) => e.vis = syn::Visibility::Public(syn::token::Pub::default()),
+            syn::Item::Type(t) => t.vis = syn::Visibility::Public(syn::token::Pub::default()),
+            syn::Item::Const(c) => c.vis = syn::Visibility::Public(syn::token::Pub::default()),
+            syn::Item::Static(s) => s.vis = syn::Visibility::Public(syn::token::Pub::default()),
+            syn::Item::Trait(t) => t.vis = syn::Visibility::Public(syn::token::Pub::default()),
+            syn::Item::Mod(m) => m.vis = syn::Visibility::Public(syn::token::Pub::default()),
+            _ => {}
+        }
+    }
+
+    let tokens = file.to_token_stream().to_string();
+    Ok(format!("#[allow(dead_code)]\nmod user_code {{\n{tokens}\n}}"))
+}
+
 /// Errors from the execute pipeline.
 #[derive(Debug)]
 pub enum ExecuteError {
@@ -161,6 +188,9 @@ shatter-rust-runtime = {{ path = "{runtime_path_str}" }}
 }
 
 /// Generate the main.rs harness that calls the target function.
+///
+/// Wraps instrumented source in `mod user_code` to avoid name collisions
+/// (e.g. duplicate `fn main()` when the source file has its own `main`).
 fn generate_harness(
     instrumented_source: &str,
     function_name: &str,
@@ -169,11 +199,12 @@ fn generate_harness(
     return_type: Option<&str>,
     inputs_json: &str,
     mocks_json: &str,
-) -> String {
+) -> Result<String, ExecuteError> {
+    let module_block = wrap_in_module(instrumented_source)?;
     let mut h = String::with_capacity(4096);
 
     h.push_str("use serde_json::Value;\n\n");
-    h.push_str(instrumented_source);
+    h.push_str(&module_block);
     h.push_str("\n\nfn main() {\n");
 
     // Parse inputs
@@ -224,7 +255,7 @@ fn generate_harness(
     // Call the function inside catch_unwind, measuring time
     h.push_str("    let start = std::time::Instant::now();\n");
     h.push_str("    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {\n");
-    h.push_str(&format!("        {function_name}({args})\n"));
+    h.push_str(&format!("        user_code::{function_name}({args})\n"));
     h.push_str("    }));\n");
     h.push_str("    let wall_time_ms = start.elapsed().as_secs_f64() * 1000.0;\n\n");
 
@@ -280,7 +311,7 @@ fn generate_harness(
     h.push_str("    println!(\"{}\", serde_json::to_string(&exec_result).unwrap());\n");
     h.push_str("}\n");
 
-    h
+    Ok(h)
 }
 
 /// Execute an instrumented Rust function by compiling and running a temp project.
@@ -337,7 +368,7 @@ pub fn execute_function(
         sig.return_type.as_deref(),
         &inputs_json,
         &mocks_json,
-    );
+    )?;
 
     // Create temp directory with unique name
     let temp_dir = std::env::temp_dir().join(format!(
@@ -534,8 +565,10 @@ mod tests {
             Some("& 'static str"),
             "[42]",
             "[]",
-        );
-        assert!(harness.contains("classify_number(n)"));
+        )
+        .unwrap();
+        assert!(harness.contains("mod user_code"));
+        assert!(harness.contains("user_code::classify_number(n)"));
         assert!(harness.contains("catch_unwind"));
         assert!(harness.contains("flush_results"));
         assert!(harness.contains("shatter_rust_runtime::reset()"));
@@ -551,9 +584,54 @@ mod tests {
             None,
             "[]",
             "[]",
-        );
-        assert!(harness.contains("noop()"));
+        )
+        .unwrap();
+        assert!(harness.contains("user_code::noop()"));
         assert!(harness.contains("Ok(())"));
+    }
+
+    /// Reproduction test for str-cfhk: source with `fn main()` must not
+    /// produce a harness with two top-level `main` definitions.
+    #[test]
+    fn generate_harness_no_duplicate_main() {
+        let source = r#"
+fn classify_number(n: i32) -> &'static str {
+    if n < 0 { "negative" } else { "non-negative" }
+}
+
+fn main() {
+    println!("{}", classify_number(42));
+}
+"#;
+        let harness = generate_harness(
+            source,
+            "classify_number",
+            &["n".to_string()],
+            &["i32".to_string()],
+            Some("& 'static str"),
+            "[42]",
+            "[]",
+        )
+        .unwrap();
+
+        // The user's main() should be inside mod user_code, not at top level
+        assert!(harness.contains("mod user_code"));
+        assert!(harness.contains("user_code::classify_number(n)"));
+
+        // Count top-level `fn main()` — should be exactly 1 (the harness's)
+        let top_level_mains = harness
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim();
+                // Top-level main: starts at column 0 (not indented inside mod)
+                !line.starts_with(' ') && !line.starts_with('\t')
+                    && (trimmed == "fn main() {" || trimmed.starts_with("fn main()"))
+            })
+            .count();
+        assert_eq!(
+            top_level_mains, 1,
+            "expected exactly 1 top-level fn main(), found {top_level_mains}\n\nharness:\n{harness}"
+        );
     }
 
     #[test]
