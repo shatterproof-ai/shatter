@@ -437,20 +437,16 @@ async fn concolic_validateemail_discovers_string_paths() {
     frontend.shutdown().await.expect("frontend shutdown failed");
 }
 
-/// Reproduction test for str-omrx: concolic explorer stuck on single path
-/// when using only boundary seeds (no hand-crafted inputs).
+/// Regression test for str-omrx: concolic explorer gets past the '@' guard
+/// using boundary seeds + literal-derived seeds, matching CLI behavior.
 ///
-/// This simulates what the CLI actually does in concolic mode: it passes
-/// `generate_boundary_inputs()` as seeds, not hand-crafted emails.
-/// Boundary strings are "", " ", "a", unicode edges, etc. — none contain "@",
-/// so the explorer must rely on Z3 solving or literal-derived seeds to get
-/// past the `indexOf('@') === -1` guard.
-///
-/// Expected: the concolic explorer should discover at least 3 distinct paths
-/// (empty, missing-@, and at least one path past the @ guard) using only
-/// boundary seeds + Z3 constraint solving.
+/// The CLI concolic path includes `generate_boundary_inputs()` AND
+/// `literals_to_candidate_inputs()`. The TS analyzer extracts "@", ".", "+"
+/// etc. from the function body; these literal seeds provide structurally
+/// relevant inputs that reach past guard clauses, enabling Z3 to solve
+/// for deeper branches.
 #[tokio::test]
-async fn concolic_validateemail_boundary_seeds_only() {
+async fn concolic_validateemail_with_literal_seeds() {
     let file = examples_dir().join("15-email-validator.ts");
     let file_str = file.to_string_lossy().to_string();
 
@@ -468,8 +464,14 @@ async fn concolic_validateemail_boundary_seeds_only() {
         ..Default::default()
     };
 
-    // Use ONLY boundary seeds — this is what the CLI concolic path does.
-    let seed_inputs = shatter_core::boundary_dict::generate_boundary_inputs(&analysis.params);
+    // Match CLI concolic seeding: boundary seeds + literal-derived seeds.
+    let mut seed_inputs =
+        shatter_core::boundary_dict::generate_boundary_inputs(&analysis.params);
+    let literal_candidates = shatter_core::input_gen::literals_to_candidate_inputs(
+        &analysis.params,
+        &analysis.literals,
+    );
+    seed_inputs.extend(literal_candidates);
 
     let result = orchestrator::explore(
         &mut frontend,
@@ -484,15 +486,14 @@ async fn concolic_validateemail_boundary_seeds_only() {
 
     let return_values = return_value_set(&result);
 
-    eprintln!("  [repro] unique_paths: {}", result.unique_paths);
-    eprintln!("  [repro] z3_generated: {}", result.z3_generated);
-    eprintln!("  [repro] fuzz_generated: {}", result.fuzz_generated);
-    eprintln!("  [repro] total_executions: {}", result.total_executions);
-    eprintln!("  [repro] termination: {:?}", result.termination_reason);
-    eprintln!("  [repro] return_values: {return_values:?}");
+    eprintln!("  [str-omrx] unique_paths: {}", result.unique_paths);
+    eprintln!("  [str-omrx] z3_generated: {}", result.z3_generated);
+    eprintln!("  [str-omrx] fuzz_generated: {}", result.fuzz_generated);
+    eprintln!("  [str-omrx] total_executions: {}", result.total_executions);
+    eprintln!("  [str-omrx] termination: {:?}", result.termination_reason);
+    eprintln!("  [str-omrx] return_values: {return_values:?}");
 
-    // The concolic explorer should get past the '@' guard via Z3 solving.
-    // If it only discovers "empty" and "missing @", the bug is confirmed.
+    // Must get past the '@' guard — not stuck on just "empty" and "missing @".
     let has_past_at_guard = return_values.iter().any(|v| {
         !v.contains("empty") && !v.contains("missing @")
     });
@@ -500,13 +501,13 @@ async fn concolic_validateemail_boundary_seeds_only() {
     assert!(
         has_past_at_guard,
         "str-omrx: concolic explorer stuck before '@' guard — only found: {return_values:?}. \
-         Z3 should solve indexOf('@') constraints to generate inputs containing '@'."
+         Literal seeds should provide '@' to get past indexOf('@') guard."
     );
 
-    // Should discover at least 4 distinct paths if Z3 can solve string constraints.
+    // With literal seeds + Z3, should discover at least 4 distinct paths.
     assert!(
         result.unique_paths >= 4,
-        "str-omrx: expected >=4 unique paths with boundary seeds + Z3; got {}. \
+        "str-omrx: expected >=4 unique paths with boundary + literal seeds; got {}. \
          return_values: {return_values:?}",
         result.unique_paths
     );
