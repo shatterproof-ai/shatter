@@ -167,6 +167,12 @@ enum CliCommand {
         #[arg(long, default_value_t = 60)]
         timeout: u64,
 
+        /// Per-function exploration wall-clock timeout in seconds. If both
+        /// --max-iterations and --timeout-explore are set, whichever triggers
+        /// first stops exploration for that function.
+        #[arg(long)]
+        timeout_explore: Option<f64>,
+
         /// Path to a scope configuration YAML file (shatter.scope.yaml).
         #[arg(long)]
         scope: Option<PathBuf>,
@@ -380,6 +386,12 @@ enum CliCommand {
         /// Maximum number of iterations per function.
         #[arg(long, default_value_t = 100)]
         max_iterations: u32,
+
+        /// Per-function exploration wall-clock timeout in seconds. If both
+        /// --max-iterations and --timeout-explore are set, whichever triggers
+        /// first stops exploration for that function.
+        #[arg(long)]
+        timeout_explore: Option<f64>,
 
         /// Directory for caching behavior maps across runs.
         /// Falls back to SHATTER_CACHE_DIR env var, then `.shatter/cache/`.
@@ -831,6 +843,7 @@ async fn run_explore(
     targets: &[String],
     max_iterations: u32,
     timeout: u64,
+    timeout_explore: Option<f64>,
     scope_path: Option<&Path>,
     analyze_only: bool,
     _show_clusters: bool,
@@ -1162,6 +1175,7 @@ async fn run_explore(
                 },
                 project_root: project_root_str.clone(),
                 loop_buckets: loop_buckets.clone(),
+                timeout_explore: timeout_explore.map(Duration::from_secs_f64),
             };
 
             if !resolved.candidate_inputs.is_empty() {
@@ -1203,6 +1217,7 @@ async fn run_explore(
                     plateau_threshold: 20,
                     mocks: explore_config.mocks.clone(),
                     solver_timeout_ms: solver_timeout.map(|s| s * 1000),
+                    timeout_explore: timeout_explore.map(Duration::from_secs_f64),
                 };
 
                 match shatter_core::orchestrator::explore(
@@ -1420,6 +1435,7 @@ async fn run_scan(
     build_timeout: u64,
     parallelism: usize,
     timeout_per_fn: u64,
+    timeout_explore: Option<f64>,
     output_dir: Option<&Path>,
     report_format_str: &str,
     progress: bool,
@@ -1817,6 +1833,7 @@ async fn run_scan(
             pool_path: None,
             project_root: project_root_str.clone(),
             config_dir: Some(std::path::PathBuf::from(directory)),
+            timeout_explore: timeout_explore.map(Duration::from_secs_f64),
         };
         let plan = scan_orchestrator::format_dry_run_plan(
             &all_analyses,
@@ -1885,6 +1902,7 @@ async fn run_scan(
         pool_path: Some(std::path::PathBuf::from(directory).join(".shatter/seeds/pool.json")),
         project_root: project_root_str.clone(),
         config_dir: Some(std::path::PathBuf::from(directory)),
+        timeout_explore: timeout_explore.map(Duration::from_secs_f64),
     };
 
     let scan_start = Instant::now();
@@ -2183,6 +2201,7 @@ async fn run_export_tests(
             pool_seeds: vec![],
             project_root: project_root_str.clone(),
             loop_buckets: explorer::LoopBuckets::default(),
+            timeout_explore: None,
         };
 
         for func in &functions {
@@ -2528,6 +2547,7 @@ async fn run_run(
                 pool_seeds: vec![],
                 project_root: project_root_str.clone(),
                 loop_buckets: explorer::LoopBuckets::default(),
+                timeout_explore: None,
                 };
 
             match explorer::explore_function(frontend, &func_analysis, &explore_config).await {
@@ -2961,11 +2981,13 @@ async fn main() -> ExitCode {
             clean,
             dry_run,
             loop_buckets,
+            timeout_explore,
         } => {
             run_explore(
                 &targets,
                 max_iterations,
                 timeout,
+                timeout_explore,
                 scope.as_deref(),
                 analyze_only,
                 show_clusters,
@@ -3031,6 +3053,7 @@ async fn main() -> ExitCode {
             solver_timeout: _,
             memory_limit,
             loop_buckets: _,
+            timeout_explore,
         } => {
             run_scan(
                 &directory,
@@ -3051,6 +3074,7 @@ async fn main() -> ExitCode {
                 build_timeout,
                 parallelism,
                 timeout_per_fn,
+                timeout_explore,
                 output.as_deref(),
                 &format,
                 progress,

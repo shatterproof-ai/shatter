@@ -74,6 +74,9 @@ pub struct ScanConfig {
     /// Directory from which to discover `.shatter/config.yaml` files.
     /// When set, per-function candidate inputs are loaded during scan.
     pub config_dir: Option<PathBuf>,
+    /// Per-function exploration wall-clock timeout. Whichever of this or
+    /// `max_iterations_per_function` triggers first stops the loop.
+    pub timeout_explore: Option<Duration>,
 }
 
 /// Context about sampling mode, for report headers.
@@ -427,6 +430,7 @@ pub async fn scan(
             pool_seeds,
             project_root: config.project_root.clone(),
             loop_buckets: explorer::LoopBuckets::default(),
+            timeout_explore: config.timeout_explore,
         };
 
         let exploration = explorer::explore_function(frontend, analysis, &explore_config).await?;
@@ -807,6 +811,7 @@ pub async fn parallel_scan(
                 pool_seeds,
                 project_root: config.project_root.clone(),
                 loop_buckets: explorer::LoopBuckets::default(),
+                timeout_explore: config.timeout_explore,
             };
 
             tasks.push((func_name.clone(), analysis.clone(), explore_config, mocks_used, callees, current_deep_fp));
@@ -2110,6 +2115,7 @@ mod tests {
             pool_path: None,
             project_root: None,
             config_dir: None,
+            timeout_explore: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2179,6 +2185,7 @@ mod tests {
             pool_path: None,
             project_root: None,
             config_dir: None,
+            timeout_explore: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2244,6 +2251,7 @@ mod tests {
             pool_path: None,
             project_root: None,
             config_dir: None,
+            timeout_explore: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2326,6 +2334,7 @@ mod tests {
             pool_path: None,
             project_root: None,
             config_dir: None,
+            timeout_explore: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2418,6 +2427,7 @@ mod tests {
             pool_path: None,
             project_root: None,
             config_dir: None,
+            timeout_explore: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2494,6 +2504,7 @@ mod tests {
             pool_path: None,
             project_root: None,
             config_dir: None,
+            timeout_explore: None,
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -2544,6 +2555,7 @@ mod tests {
             pool_path: None,
             project_root: None,
             config_dir: None,
+            timeout_explore: None,
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -2578,6 +2590,7 @@ mod tests {
             pool_path: None,
             project_root: None,
             config_dir: None,
+            timeout_explore: None,
         };
 
         let plan = format_dry_run_plan(&analyses, &skipped, &config).expect("should succeed");
@@ -2602,6 +2615,7 @@ mod tests {
             pool_path: None,
             project_root: None,
             config_dir: None,
+            timeout_explore: None,
         };
 
         let plan = format_dry_run_plan(&[], &[], &config).expect("should succeed");

@@ -12,6 +12,7 @@
 
 use std::collections::{BinaryHeap, HashSet};
 use std::hash::{Hash, Hasher};
+use std::time::{Duration, Instant};
 
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -89,6 +90,9 @@ pub struct ExploreConfig {
     pub mocks: Vec<crate::protocol::MockConfig>,
     /// Z3 solver timeout in milliseconds per query. None means no limit.
     pub solver_timeout_ms: Option<u64>,
+    /// Per-function exploration wall-clock timeout. Whichever of this or
+    /// `max_iterations`/`max_executions` triggers first stops the loop.
+    pub timeout_explore: Option<Duration>,
 }
 
 /// Default maximum total executions before stopping exploration.
@@ -102,6 +106,7 @@ impl Default for ExploreConfig {
             plateau_threshold: 20,
             mocks: vec![],
             solver_timeout_ms: None,
+            timeout_explore: None,
         }
     }
 }
@@ -161,6 +166,8 @@ pub enum TerminationReason {
     CoveragePlateau,
     /// The worklist is empty — all reachable paths have been explored.
     WorklistExhausted,
+    /// Exceeded the per-function exploration wall-clock timeout.
+    TimeoutExplore,
 }
 
 /// Summary of a concolic exploration session.
@@ -358,6 +365,8 @@ pub async fn explore(
         });
     }
 
+    let explore_start = Instant::now();
+
     while let Some(entry) = worklist.pop() {
         if executions.len() >= config.max_iterations {
             termination_reason = TerminationReason::MaxIterations;
@@ -365,6 +374,12 @@ pub async fn explore(
         }
         if total_executions >= config.max_executions {
             termination_reason = TerminationReason::MaxExecutions;
+            break;
+        }
+        if let Some(timeout) = config.timeout_explore
+            && explore_start.elapsed() >= timeout
+        {
+            termination_reason = TerminationReason::TimeoutExplore;
             break;
         }
         if config.plateau_threshold > 0 && plateau_counter >= config.plateau_threshold {
@@ -1367,5 +1382,41 @@ mod tests {
         assert!(caps.commands.is_empty());
         assert!(caps.complex_types.is_empty());
         assert!(!caps.supports_complex(ComplexKind::Date));
+    }
+
+    /// A very short timeout_explore stops exploration before max_executions.
+    #[tokio::test]
+    async fn explore_stops_on_timeout_explore() {
+        let config = config_for_script("noop-frontend.sh");
+        let mut frontend = Frontend::spawn(&config).await.expect("spawn failed");
+
+        let explore_config = ExploreConfig {
+            max_iterations: 1000,
+            max_executions: 10000,
+            plateau_threshold: 0,
+            timeout_explore: Some(Duration::from_millis(1)),
+            ..Default::default()
+        };
+
+        let seeds = (0..100)
+            .map(|i| vec![serde_json::json!(i)])
+            .collect();
+
+        let result = explore(
+            &mut frontend,
+            "stub",
+            seeds,
+            vec![],
+            &[ParamInfo { name: "x".into(), typ: crate::types::TypeInfo::Int, type_name: None }],
+            &explore_config,
+        )
+        .await
+        .expect("explore failed");
+
+        // Should terminate due to timeout, not max_executions or max_iterations.
+        assert_eq!(result.termination_reason, TerminationReason::TimeoutExplore);
+        assert!(result.total_executions < 10000);
+
+        frontend.shutdown().await.expect("shutdown failed");
     }
 }
