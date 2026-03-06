@@ -3,7 +3,8 @@
 //! A [`FunctionSpec`] captures the complete behavioral specification of a function:
 //! equivalence classes grouped by branch path, preconditions, postconditions,
 //! concrete examples, and provenance (proven vs observed). The spec can be
-//! rendered as human-readable markdown or machine-readable JSON.
+//! rendered as human-readable markdown, machine-readable JSON, or YAML with
+//! property descriptions.
 
 use std::collections::HashSet;
 use std::fmt;
@@ -17,7 +18,7 @@ use crate::equivalence::{BranchPath, EquivalenceClass, Precondition};
 use crate::execution_record::{ErrorInfo, SideEffect};
 use crate::explorer::ObservationOutput;
 use crate::fingerprint::compute_deep_fingerprints;
-use crate::invariants::ClassifiedInvariant;
+use crate::invariants::{ClassifiedInvariant, InvariantKind};
 use crate::protocol::FunctionAnalysis;
 
 /// Error type for spec bundle I/O operations.
@@ -67,6 +68,86 @@ pub enum Provenance {
     Proven,
     /// Observed across all sampled inputs but not formally proven.
     Observed,
+}
+
+// ---------------------------------------------------------------------------
+// YAML property descriptions — human-friendly invariant representation
+// ---------------------------------------------------------------------------
+
+/// High-level category for an invariant property description.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InvariantCategory {
+    NumericBound,
+    Nullability,
+    StringConstraint,
+    ReturnTypeInvariant,
+    ErrorInvariant,
+    InputOutputRelation,
+    BooleanConstant,
+    ConstantValue,
+}
+
+/// Categorical confidence derived from the numeric confidence score.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfidenceLevel {
+    High,
+    Medium,
+    Low,
+}
+
+const CONFIDENCE_HIGH_THRESHOLD: f64 = 0.95;
+const CONFIDENCE_MEDIUM_THRESHOLD: f64 = 0.75;
+
+impl ConfidenceLevel {
+    fn from_score(score: f64) -> Self {
+        if score >= CONFIDENCE_HIGH_THRESHOLD {
+            Self::High
+        } else if score >= CONFIDENCE_MEDIUM_THRESHOLD {
+            Self::Medium
+        } else {
+            Self::Low
+        }
+    }
+}
+
+/// A human-friendly invariant for YAML spec output.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SpecInvariant {
+    /// Human-readable property description.
+    pub property: String,
+    /// High-level invariant category.
+    pub kind: InvariantCategory,
+    /// Categorical confidence level.
+    pub confidence: ConfidenceLevel,
+}
+
+impl From<&ClassifiedInvariant> for SpecInvariant {
+    fn from(ci: &ClassifiedInvariant) -> Self {
+        Self {
+            property: ci.label.clone(),
+            kind: categorize_invariant_kind(&ci.invariant.kind),
+            confidence: ConfidenceLevel::from_score(ci.confidence),
+        }
+    }
+}
+
+fn categorize_invariant_kind(kind: &InvariantKind) -> InvariantCategory {
+    match kind {
+        InvariantKind::NumericComparison { .. } => InvariantCategory::NumericBound,
+        InvariantKind::NumericConstant { .. } => InvariantCategory::ConstantValue,
+        InvariantKind::NotNull { .. } | InvariantKind::IsNull { .. } => {
+            InvariantCategory::Nullability
+        }
+        InvariantKind::StringNonEmpty { .. } | InvariantKind::StringLength { .. } => {
+            InvariantCategory::StringConstraint
+        }
+        InvariantKind::OutputEqualsInput { .. } => InvariantCategory::InputOutputRelation,
+        InvariantKind::AlwaysTrue { .. } | InvariantKind::AlwaysFalse { .. } => {
+            InvariantCategory::BooleanConstant
+        }
+    }
 }
 
 /// A postcondition describing what a function does on a given path.
@@ -480,6 +561,73 @@ pub fn format_spec_json(spec: &FunctionSpec) -> Result<String, serde_json::Error
 /// Format a collection of per-file spec bundles as machine-readable JSON.
 pub fn format_file_spec_json(bundles: &[FileSpecBundle]) -> Result<String, serde_json::Error> {
     serde_json::to_string_pretty(bundles)
+}
+
+// ---------------------------------------------------------------------------
+// YAML spec output — converts ClassifiedInvariant to SpecInvariant
+// ---------------------------------------------------------------------------
+
+/// Intermediate struct for YAML serialization of a spec class.
+/// Converts `ClassifiedInvariant` to human-friendly `SpecInvariant`.
+#[derive(Serialize)]
+struct YamlSpecClass<'a> {
+    label: &'a str,
+    preconditions: &'a [Precondition],
+    postcondition: &'a Postcondition,
+    #[serde(skip_serializing_if = "<[SideEffect]>::is_empty")]
+    side_effects: &'a [SideEffect],
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    invariants: Vec<SpecInvariant>,
+    examples: &'a [ConcreteExample],
+    sample_count: usize,
+    precondition_provenance: Provenance,
+    postcondition_provenance: Provenance,
+}
+
+/// Intermediate struct for YAML serialization of a function spec.
+#[derive(Serialize)]
+struct YamlFunctionSpec<'a> {
+    function: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    location: Option<&'a str>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    invariants: Vec<SpecInvariant>,
+    classes: Vec<YamlSpecClass<'a>>,
+    iterations: u32,
+    lines_covered: usize,
+    total_lines: u32,
+}
+
+/// Format the spec as YAML with invariants expressed as property descriptions.
+///
+/// Converts internal `ClassifiedInvariant` representations to human-friendly
+/// `SpecInvariant` with categorical confidence (high/medium/low) and a
+/// high-level `InvariantCategory`.
+pub fn format_spec_yaml(spec: &FunctionSpec) -> Result<String, serde_yaml::Error> {
+    let yaml_spec = YamlFunctionSpec {
+        function: &spec.function_name,
+        location: spec.location.as_deref(),
+        invariants: spec.invariants.iter().map(SpecInvariant::from).collect(),
+        classes: spec
+            .classes
+            .iter()
+            .map(|c| YamlSpecClass {
+                label: &c.label,
+                preconditions: &c.preconditions,
+                postcondition: &c.postcondition,
+                side_effects: &c.side_effects,
+                invariants: c.invariants.iter().map(SpecInvariant::from).collect(),
+                examples: &c.examples,
+                sample_count: c.sample_count,
+                precondition_provenance: c.precondition_provenance,
+                postcondition_provenance: c.postcondition_provenance,
+            })
+            .collect(),
+        iterations: spec.iterations,
+        lines_covered: spec.lines_covered,
+        total_lines: spec.total_lines,
+    };
+    serde_yaml::to_string(&yaml_spec)
 }
 
 /// Write a [`FileSpecBundle`] to disk using atomic write (temp file + rename).
@@ -1777,5 +1925,238 @@ mod tests {
 
         let merged = merge_file_spec_bundles(&existing, &[], &current_names);
         assert_eq!(merged.functions.len(), 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // YAML property description tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn confidence_level_thresholds() {
+        assert_eq!(ConfidenceLevel::from_score(1.0), ConfidenceLevel::High);
+        assert_eq!(ConfidenceLevel::from_score(0.95), ConfidenceLevel::High);
+        assert_eq!(ConfidenceLevel::from_score(0.94), ConfidenceLevel::Medium);
+        assert_eq!(ConfidenceLevel::from_score(0.75), ConfidenceLevel::Medium);
+        assert_eq!(ConfidenceLevel::from_score(0.74), ConfidenceLevel::Low);
+        assert_eq!(ConfidenceLevel::from_score(0.0), ConfidenceLevel::Low);
+    }
+
+    #[test]
+    fn categorize_invariant_kinds() {
+        use crate::invariants::{ComparisonOp, InvariantKind};
+
+        assert_eq!(
+            categorize_invariant_kind(&InvariantKind::NumericComparison {
+                path: vec![],
+                op: ComparisonOp::Gt,
+                value: 0.0,
+            }),
+            InvariantCategory::NumericBound
+        );
+        assert_eq!(
+            categorize_invariant_kind(&InvariantKind::NumericConstant {
+                path: vec![],
+                value: 42.0,
+            }),
+            InvariantCategory::ConstantValue
+        );
+        assert_eq!(
+            categorize_invariant_kind(&InvariantKind::NotNull { path: vec![] }),
+            InvariantCategory::Nullability
+        );
+        assert_eq!(
+            categorize_invariant_kind(&InvariantKind::IsNull { path: vec![] }),
+            InvariantCategory::Nullability
+        );
+        assert_eq!(
+            categorize_invariant_kind(&InvariantKind::StringNonEmpty { path: vec![] }),
+            InvariantCategory::StringConstraint
+        );
+        assert_eq!(
+            categorize_invariant_kind(&InvariantKind::StringLength {
+                path: vec![],
+                op: ComparisonOp::Ge,
+                value: 1,
+            }),
+            InvariantCategory::StringConstraint
+        );
+        assert_eq!(
+            categorize_invariant_kind(&InvariantKind::OutputEqualsInput {
+                output_path: vec![],
+                param_index: 0,
+                input_path: vec![],
+            }),
+            InvariantCategory::InputOutputRelation
+        );
+        assert_eq!(
+            categorize_invariant_kind(&InvariantKind::AlwaysTrue { path: vec![] }),
+            InvariantCategory::BooleanConstant
+        );
+        assert_eq!(
+            categorize_invariant_kind(&InvariantKind::AlwaysFalse { path: vec![] }),
+            InvariantCategory::BooleanConstant
+        );
+    }
+
+    #[test]
+    fn spec_invariant_from_classified() {
+        use crate::invariants::{
+            ClassifiedInvariant, ComparisonOp, Invariant, InvariantKind, InvariantTarget,
+        };
+
+        let ci = ClassifiedInvariant {
+            invariant: Invariant {
+                description: "x > 0".to_string(),
+                target: InvariantTarget::Input,
+                kind: InvariantKind::NumericComparison {
+                    path: vec!["x".to_string()],
+                    op: ComparisonOp::Gt,
+                    value: 0.0,
+                },
+            },
+            target: InvariantTarget::Input,
+            label: "input.x > 0".to_string(),
+            confidence: 1.0,
+            satisfied_count: 10,
+            total_count: 10,
+        };
+
+        let si = SpecInvariant::from(&ci);
+        assert_eq!(si.property, "input.x > 0");
+        assert_eq!(si.kind, InvariantCategory::NumericBound);
+        assert_eq!(si.confidence, ConfidenceLevel::High);
+    }
+
+    #[test]
+    fn spec_invariant_medium_confidence() {
+        use crate::invariants::{
+            ClassifiedInvariant, Invariant, InvariantKind, InvariantTarget,
+        };
+
+        let ci = ClassifiedInvariant {
+            invariant: Invariant {
+                description: "x is not null".to_string(),
+                target: InvariantTarget::Input,
+                kind: InvariantKind::NotNull {
+                    path: vec!["x".to_string()],
+                },
+            },
+            target: InvariantTarget::Input,
+            label: "input.x is not null".to_string(),
+            confidence: 0.8,
+            satisfied_count: 8,
+            total_count: 10,
+        };
+
+        let si = SpecInvariant::from(&ci);
+        assert_eq!(si.confidence, ConfidenceLevel::Medium);
+        assert_eq!(si.kind, InvariantCategory::Nullability);
+    }
+
+    #[test]
+    fn format_spec_yaml_with_invariants() {
+        use crate::invariants::{
+            ClassifiedInvariant, ComparisonOp, Invariant, InvariantKind, InvariantTarget,
+        };
+
+        let mut spec = build_spec(
+            &make_exploration_result("validateEmail", 10, 1),
+            &[make_eq_class(vec![], vec![json!("test@example.com")], Some(json!(true)), None, vec![], 5)],
+            Some("src/validate.ts:10".to_string()),
+            None,
+        );
+        spec.invariants = vec![ClassifiedInvariant {
+            invariant: Invariant {
+                description: "input is never null".to_string(),
+                target: InvariantTarget::Input,
+                kind: InvariantKind::NotNull {
+                    path: vec![],
+                },
+            },
+            target: InvariantTarget::Input,
+            label: "input is never null".to_string(),
+            confidence: 1.0,
+            satisfied_count: 10,
+            total_count: 10,
+        }];
+        spec.classes[0].invariants = vec![ClassifiedInvariant {
+            invariant: Invariant {
+                description: "x > 0".to_string(),
+                target: InvariantTarget::Input,
+                kind: InvariantKind::NumericComparison {
+                    path: vec!["length".to_string()],
+                    op: ComparisonOp::Gt,
+                    value: 0.0,
+                },
+            },
+            target: InvariantTarget::Input,
+            label: "input.length > 0".to_string(),
+            confidence: 1.0,
+            satisfied_count: 5,
+            total_count: 5,
+        }];
+
+        let yaml = format_spec_yaml(&spec).expect("yaml serialization");
+
+        // Verify it's valid YAML by parsing it back
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("yaml parse");
+
+        assert_eq!(parsed["function"], "validateEmail");
+        assert_eq!(parsed["location"], "src/validate.ts:10");
+
+        // Function-level invariants
+        let invs = parsed["invariants"].as_sequence().expect("invariants array");
+        assert_eq!(invs.len(), 1);
+        assert_eq!(invs[0]["property"], "input is never null");
+        assert_eq!(invs[0]["kind"], "nullability");
+        assert_eq!(invs[0]["confidence"], "high");
+
+        // Class-level invariants
+        let class_invs = parsed["classes"][0]["invariants"]
+            .as_sequence()
+            .expect("class invariants array");
+        assert_eq!(class_invs.len(), 1);
+        assert_eq!(class_invs[0]["property"], "input.length > 0");
+        assert_eq!(class_invs[0]["kind"], "numeric_bound");
+        assert_eq!(class_invs[0]["confidence"], "high");
+    }
+
+    #[test]
+    fn format_spec_yaml_empty_invariants_omitted() {
+        let spec = build_spec(
+            &make_exploration_result("fn1", 10, 1),
+            &[make_eq_class(vec![], vec![json!(1)], Some(json!(2)), None, vec![], 5)],
+            None,
+            None,
+        );
+
+        let yaml = format_spec_yaml(&spec).expect("yaml serialization");
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("yaml parse");
+
+        // Empty invariants should not appear in output
+        assert!(parsed.get("invariants").is_none() || parsed["invariants"].is_null(),
+            "empty function invariants should be omitted from YAML");
+        assert!(
+            parsed["classes"][0].get("invariants").is_none()
+                || parsed["classes"][0]["invariants"].is_null(),
+            "empty class invariants should be omitted from YAML"
+        );
+    }
+
+    #[test]
+    fn spec_invariant_serialization_round_trips() {
+        let si = SpecInvariant {
+            property: "input.x > 0".to_string(),
+            kind: InvariantCategory::NumericBound,
+            confidence: ConfidenceLevel::High,
+        };
+
+        let yaml = serde_yaml::to_string(&si).expect("serialize");
+        let deserialized: SpecInvariant = serde_yaml::from_str(&yaml).expect("deserialize");
+        assert_eq!(si, deserialized);
+
+        let json = serde_json::to_string(&si).expect("json serialize");
+        let deserialized: SpecInvariant = serde_json::from_str(&json).expect("json deserialize");
+        assert_eq!(si, deserialized);
     }
 }
