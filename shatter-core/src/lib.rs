@@ -40,6 +40,7 @@ pub mod project;
 pub mod protocol;
 pub mod recursive;
 pub mod report;
+pub mod report_style;
 pub mod revalidation;
 pub mod reporter;
 pub mod scan_orchestrator;

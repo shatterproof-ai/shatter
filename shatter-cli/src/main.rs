@@ -879,6 +879,19 @@ async fn run_explore(
 
     let mut file_spec_bundles: Vec<FileSpecBundle> = Vec::new();
 
+    let report_style = if use_color {
+        shatter_core::report_style::ReportStyle::ansi()
+    } else {
+        shatter_core::report_style::ReportStyle::default()
+    };
+
+    // Count total functions across all targets for header/footer.
+    let mut total_function_count: usize = 0;
+    let mut total_paths: usize = 0;
+    let mut total_covered: usize = 0;
+    let mut total_lines: u32 = 0;
+    let mut header_printed = false;
+
     for target in &parsed {
         let file_str = target.file.to_string_lossy();
         let func_display = target
@@ -1054,6 +1067,19 @@ async fn run_explore(
             shatter_core::fingerprint::compute_deep_fingerprints(&target.file, &functions)
                 .unwrap_or_default();
 
+        // Track function count for header/footer.
+        total_function_count += functions.len();
+
+        // Print header on first non-analyze-only target.
+        if !analyze_only && !header_printed && log::log_enabled!(log::Level::Info) {
+            eprint!(
+                "\n{bold}\u{2550}\u{2550}\u{2550} Shatter Explore \u{2550}\u{2550}\u{2550}{reset}\n\n",
+                bold = report_style.bold,
+                reset = report_style.reset,
+            );
+            header_printed = true;
+        }
+
         // Exploration phase: generate random inputs and execute
         let mut skipped_unexecutable: Vec<(String, Vec<executability::SkipReason>)> = Vec::new();
         let mut file_specs: Vec<shatter_core::spec::FunctionSpec> = Vec::new();
@@ -1215,6 +1241,11 @@ async fn run_explore(
                 Ok(result) => {
                     let wall_time = func_start.elapsed();
 
+                    // Accumulate stats for footer.
+                    total_paths += result.unique_paths;
+                    total_covered += result.lines_covered;
+                    total_lines += result.total_lines;
+
                     // Run the Analyze stage to get coverage metrics and eq classes.
                     let analyze_output = shatter_core::pipeline::analyze(&result, func);
 
@@ -1227,6 +1258,7 @@ async fn run_explore(
                                 show_perf,
                                 wall_time: Some(wall_time),
                                 coverage_metrics: Some(analyze_output.coverage_metrics.clone()),
+                                style: report_style.clone(),
                             };
                             eprint!("{}", explorer::format_exploration_report(&result, &report_opts));
                         }
@@ -1322,6 +1354,20 @@ async fn run_explore(
         }
 
         shutdown_frontend(frontend).await;
+    }
+
+    // Print summary footer.
+    if header_printed && log::log_enabled!(log::Level::Info) {
+        eprint!(
+            "{}",
+            explorer::format_explore_footer(
+                total_paths,
+                total_function_count,
+                total_covered,
+                total_lines,
+                &report_style,
+            )
+        );
     }
 
     // Write collected file spec bundles to the output path as a single bundle.

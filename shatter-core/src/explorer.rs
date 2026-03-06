@@ -731,29 +731,99 @@ pub struct ReportOptions {
     pub show_perf: bool,
     pub wall_time: Option<std::time::Duration>,
     pub coverage_metrics: Option<crate::coverage_metrics::CoverageMetrics>,
+    pub style: crate::report_style::ReportStyle,
+}
+
+/// Render the top banner for an explore session.
+pub fn format_explore_header(
+    function_count: usize,
+    style: &crate::report_style::ReportStyle,
+) -> String {
+    format!(
+        "\n{bold}\u{2550}\u{2550}\u{2550} Shatter Explore \u{2550}\u{2550}\u{2550}{reset}  {dim}{function_count} function(s){reset}\n\n",
+        bold = style.bold,
+        dim = style.dim,
+        reset = style.reset,
+    )
+}
+
+/// Render the bottom summary banner for an explore session.
+pub fn format_explore_footer(
+    total_paths: usize,
+    function_count: usize,
+    total_covered: usize,
+    total_lines: u32,
+    style: &crate::report_style::ReportStyle,
+) -> String {
+    let mut out = format!(
+        "{bold}\u{2550}\u{2550}\u{2550} Summary: {total_paths} paths across {function_count} function(s)",
+        bold = style.bold,
+    );
+    if total_lines > 0 {
+        let pct = (total_covered as f64 / total_lines as f64 * 100.0).min(100.0);
+        out.push_str(&format!(
+            " \u{00b7} {covered}/{total} lines ({pct})",
+            covered = total_covered,
+            total = total_lines,
+            pct = style.color_coverage_pct(pct),
+        ));
+    }
+    out.push_str(&format!(" \u{2550}\u{2550}\u{2550}{reset}\n", reset = style.reset));
+    out
 }
 
 pub fn format_exploration_report(result: &ObservationOutput, options: &ReportOptions) -> String {
+    let s = &options.style;
     let mut out = String::new();
+
+    // Function header with box-drawing line
     let location = options.location.as_deref().unwrap_or("");
-    if location.is_empty() {
-        out.push_str(&format!("{}\n", result.function_name));
+    let header_text = if location.is_empty() {
+        format!("{bold}{name}{reset}", bold = s.bold, name = result.function_name, reset = s.reset)
     } else {
-        out.push_str(&format!("{} ({})\n", result.function_name, location));
-    }
-    out.push_str(&format!("  {} distinct path(s)\n", result.unique_paths));
+        format!(
+            "{bold}{name}{reset} {dim}({location}){reset}",
+            bold = s.bold, name = result.function_name, dim = s.dim, reset = s.reset,
+        )
+    };
+    let plain_len = result.function_name.len() + if location.is_empty() { 0 } else { location.len() + 3 };
+    let pad = 50usize.saturating_sub(plain_len);
+    out.push_str(&format!(
+        "\u{2500}\u{2500} {header_text} {line}\n",
+        line = "\u{2500}".repeat(pad),
+    ));
+
+    // Summary line: paths + coverage bar
+    let mut summary_parts = vec![format!("{} paths", result.unique_paths)];
     if result.total_lines > 0 && result.lines_covered > 0 {
         let pct = (result.lines_covered as f64 / result.total_lines as f64 * 100.0).min(100.0);
-        out.push_str(&format!(
-            "  Line coverage: {}/{} lines ({pct:.0}%)\n",
-            result.lines_covered, result.total_lines
+        summary_parts.push(format!(
+            "{}/{} lines ({}) {} {}",
+            result.lines_covered,
+            result.total_lines,
+            s.color_coverage_pct(pct),
+            s.coverage_bar(pct),
+            s.coverage_indicator(pct),
         ));
     }
+    out.push_str(&format!("  {}\n", summary_parts.join(" \u{00b7} ")));
+
+    // Tree-style path clusters
     if !result.new_path_executions.is_empty() {
-        out.push_str("\n  Path clusters:\n");
+        let last_idx = result.new_path_executions.len() - 1;
         for (i, exec) in result.new_path_executions.iter().enumerate() {
-            let outcome_label = format_outcome_label(exec);
-            out.push_str(&format!("    {}. {}\n", i + 1, outcome_label));
+            let is_last = i == last_idx;
+            let branch = if is_last { "\u{2514}\u{2500}" } else { "\u{251c}\u{2500}" };
+            let continuation = if is_last { "  " } else { "\u{2502} " };
+
+            let outcome_label = format_outcome_label_styled(exec, s);
+            out.push_str(&format!(
+                "  {branch} {cyan}{num}{reset}. {outcome}\n",
+                cyan = s.cyan,
+                num = i + 1,
+                reset = s.reset,
+                outcome = outcome_label,
+            ));
             let inputs_str = exec
                 .inputs
                 .iter()
@@ -762,24 +832,33 @@ pub fn format_exploration_report(result: &ObservationOutput, options: &ReportOpt
                 .join(", ");
             let outcome_short = format_outcome_short(exec);
             out.push_str(&format!(
-                "       e.g. {}({inputs_str}) {outcome_short}\n",
-                result.function_name
+                "  {continuation}    {dim}{name}({inputs_str}) {outcome_short}{reset}\n",
+                dim = s.dim,
+                name = result.function_name,
+                reset = s.reset,
             ));
         }
     }
+
     if let Some(ref metrics) = options.coverage_metrics {
-        out.push('\n');
-        out.push_str(&crate::coverage_metrics::format_coverage_metrics(metrics));
+        out.push_str(&crate::coverage_metrics::format_coverage_metrics(metrics, s));
     }
     if options.show_perf {
         if let Some(dur) = options.wall_time {
             out.push_str(&format!(
-                "\n  Perf: {:.1}ms, {} iteration(s)\n",
+                "  {dim}Perf: {:.1}ms, {} iteration(s){reset}\n",
                 dur.as_secs_f64() * 1000.0,
-                result.iterations
+                result.iterations,
+                dim = s.dim,
+                reset = s.reset,
             ));
         } else {
-            out.push_str(&format!("\n  Perf: {} iteration(s)\n", result.iterations));
+            out.push_str(&format!(
+                "  {dim}Perf: {} iteration(s){reset}\n",
+                result.iterations,
+                dim = s.dim,
+                reset = s.reset,
+            ));
         }
     }
     out
@@ -819,28 +898,44 @@ pub fn format_exploration_report_verbose(result: &ObservationOutput) -> String {
     out
 }
 
-fn format_outcome_label(exec: &ExecutionSummary) -> String {
+fn format_outcome_label_styled(
+    exec: &ExecutionSummary,
+    style: &crate::report_style::ReportStyle,
+) -> String {
     if let Some(ref err) = exec.thrown_error {
         let intent_suffix = match &exec.error_intent {
             Some(label) if label.label != "unknown" => format!(" [{}]", label.label),
             _ => String::new(),
         };
-        format!("throws {err}{intent_suffix}")
+        format!(
+            "{red}throws {err}{intent_suffix}{reset}",
+            red = style.red,
+            reset = style.reset,
+        )
     } else {
         match &exec.return_value {
-            Some(v) if !v.is_null() => format!("returns {}", format_value_short(v)),
-            _ => "returns (void)".to_string(),
+            Some(v) if !v.is_null() => format!(
+                "{green}returns {val}{reset}",
+                green = style.green,
+                val = format_value_short(v),
+                reset = style.reset,
+            ),
+            _ => format!(
+                "{green}returns (void){reset}",
+                green = style.green,
+                reset = style.reset,
+            ),
         }
     }
 }
 
 fn format_outcome_short(exec: &ExecutionSummary) -> String {
     if exec.thrown_error.is_some() {
-        "-> Error".to_string()
+        "\u{2192} Error".to_string()
     } else {
         match &exec.return_value {
-            Some(v) if !v.is_null() => format!("-> {}", format_value_short(v)),
-            _ => "-> (void)".to_string(),
+            Some(v) if !v.is_null() => format!("\u{2192} {}", format_value_short(v)),
+            _ => "\u{2192} (void)".to_string(),
         }
     }
 }
@@ -1426,12 +1521,12 @@ mod tests {
         };
         let report = format_exploration_report(&result, &ReportOptions::default());
         assert!(report.contains("classify"));
-        assert!(report.contains("2 distinct path(s)"));
+        assert!(report.contains("2 paths"));
         assert!(report.contains("50%"));
         assert!(report.contains("positive-odd"));
         assert!(report.contains("negative"));
-        assert!(report.contains("Path clusters:"));
-        assert!(report.contains("e.g."));
+        // Tree-style connectors
+        assert!(report.contains("\u{251c}\u{2500}") || report.contains("\u{2514}\u{2500}"));
     }
 
     #[test]
@@ -1448,7 +1543,8 @@ mod tests {
         let report = format_exploration_report(&result, &ReportOptions {
             location: Some("src/math.ts:10-25".into()), ..Default::default()
         });
-        assert!(report.contains("safeDivide (src/math.ts:10-25)"));
+        assert!(report.contains("safeDivide"));
+        assert!(report.contains("src/math.ts:10-25"));
     }
 
     #[test]
@@ -1496,10 +1592,41 @@ mod tests {
         let report = format_exploration_report(&result, &ReportOptions {
             coverage_metrics: Some(metrics), ..Default::default()
         });
-        assert!(report.contains("Coverage metrics:"));
-        assert!(report.contains("Z3 solved"));
-        assert!(report.contains("Uncovered"));
-        assert!(report.contains("Symbolic expr"));
+        assert!(report.contains("Branches:"));
+        assert!(report.contains("Z3:"));
+        assert!(report.contains("uncovered:"));
+        assert!(report.contains("Symbolic:"));
+    }
+
+    #[test]
+    fn format_exploration_report_with_color() {
+        let result = ObservationOutput {
+            function_name: "colorTest".into(), iterations: 5, unique_paths: 1,
+            lines_covered: 4, total_lines: 5,
+            new_path_executions: vec![ExecutionSummary {
+                inputs: vec![serde_json::json!(1)],
+                return_value: Some(serde_json::json!("ok")),
+                thrown_error: None, lines_executed: vec![1, 2, 3, 4], is_new_path: true, error_intent: None }],
+            raw_results: vec![], discoveries: vec![],
+        };
+        let report = format_exploration_report(&result, &ReportOptions {
+            style: crate::report_style::ReportStyle::ansi(), ..Default::default()
+        });
+        assert!(report.contains("\x1b["), "report should contain ANSI codes when style is ansi");
+        assert!(report.contains("\x1b[1m"), "function name should be bold");
+        assert!(report.contains("\x1b[32m"), "returns should be green");
+    }
+
+    #[test]
+    fn format_explore_header_and_footer() {
+        let style = crate::report_style::ReportStyle::default();
+        let header = format_explore_header(4, &style);
+        assert!(header.contains("Shatter Explore"));
+        assert!(header.contains("4 function(s)"));
+
+        let footer = format_explore_footer(15, 4, 30, 50, &style);
+        assert!(footer.contains("15 paths across 4 function(s)"));
+        assert!(footer.contains("30/50"));
     }
 
     #[test]
