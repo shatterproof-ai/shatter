@@ -99,7 +99,21 @@ pub fn boundaries_for(ty: &ParamType) -> Vec<BoundaryValue> {
 - Protocol types that affect execute responses (`protocol.rs`, `protocol.ts`)
 - CLI wiring that passes config to explorers (`main.rs`)
 
-**Walkthrough gate**: The walkthrough exercises the full pipeline end-to-end (analyze, explore, scan, export, spec). Run it after any change to CLI commands, frontend handlers, protocol types, or example files. Errors in steps 1–19 (single-function explore, scan, cache, Go explore, export, run) indicate regressions — fix before merging. Errors in scan steps for `11-opaque-types.ts` and `12-external-deps.ts` are expected (opaque types and missing external modules).
+**Walkthrough gate**: The walkthrough exercises the full pipeline end-to-end (analyze, explore, scan, export, spec). Run it after any change to CLI commands, frontend handlers, protocol types, or example files. The walkthrough prints an **ERROR SUMMARY** at the end and exits with code 1 if any step produced errors — check this summary, investigate failures, and fix before merging. Known exceptions: `stale` exit code 1 is informational (means "some functions are stale"), and scan errors for `11-opaque-types.ts` and `12-external-deps.ts` are expected.
+
+### Property-Based Testing Standards
+
+Every component uses property-based testing: **proptest** (Rust), **fast-check** (TypeScript), **rapid** (Go), plus Go native fuzzing (`testing.F`). PBT is not optional decoration — it is a primary testing strategy alongside unit tests and E2E tests.
+
+**When adding or modifying a public function**, add property tests that cover its core invariants:
+- **Roundtrip properties**: serialize → deserialize → equality (table stakes — always include for serializable types)
+- **Semantic invariants**: "output types match input types", "length is preserved", "ordering is maintained" — these catch real bugs that fixed examples miss
+- **Pipeline composition**: test functions composed together, not just in isolation. The solver bridge (constraints → solve → overlay) and the explore loop (execute → classify → worklist) are especially important.
+- **Negative properties**: malformed/adversarial input never causes panics. Use fuzz targets (Go `testing.F`, Rust `cargo-fuzz`) for byte-level mutation at deserialization boundaries.
+
+**Shared generators**: reuse `test_arbitraries.rs` (Rust), `arbSymExpr`/`arbTypeInfo` (TS), `genTypeInfo` (Go). Don't reinvent type generators per test file.
+
+**Coverage target**: every module that handles untrusted input, crosses an FFI boundary, or maintains state should have proptest/PBT coverage of its core invariants — not just serialization.
 
 ### Completion Checklist
 
@@ -107,9 +121,10 @@ Before declaring any feature or bug fix **done**, verify:
 
 1. **Unit tests pass** — the module's own tests (Quick tier)
 2. **Clippy clean** — no warnings in the changed crate (Standard tier)
-3. **Cross-language tests pass** — if touching protocol types (Full tier)
-4. **E2E pipeline works** — if touching any component in the analyze → instrument → execute → solve chain, run `cargo test --test e2e_concolic` and verify the pipeline still discovers expected branches
-5. **Walkthrough passes** — if touching CLI output or example files
+3. **Property tests adequate** — if adding/modifying a public function, include proptest/fast-check/rapid properties covering its core invariants (not just serialization roundtrips)
+4. **Cross-language tests pass** — if touching protocol types (Full tier)
+5. **E2E pipeline works** — if touching any component in the analyze → instrument → execute → solve chain, run `cargo test --test e2e_concolic` and verify the pipeline still discovers expected branches
+6. **Walkthrough passes** — if touching CLI output or example files
 
 **Why this matters:** This project has multiple code paths that process the same data (random explorer vs. concolic orchestrator, `buildSymExpr` vs. `buildSymExprWithFlow`, CLI wiring for different explorer modes). Features that work on one path are routinely broken on others. The E2E tests are the only reliable way to catch cross-path regressions.
 
@@ -176,7 +191,7 @@ See `AGENTS.md` for issue tracking (beads), git workflow, and agent operational 
 
 ### Sprint Workflow
 
-When asked to work on ready issues in parallel, **always invoke `/swarm`**. Do not manually re-implement the team/worktree workflow. The swarm skill handles triage, team setup, plan review, safe merge-before-shutdown, and quality gates.
+When asked to work on ready issues in parallel, **invoke `/swarm`** (the global skill handles team/worktree/merge mechanics). For epic-based work or Shatter-specific quality gates, also invoke `/swarm-project` which adds wave scheduling via `bd swarm` and runs `/check-all` + `/walkthrough-review`.
 
 ### Research Memory
 
