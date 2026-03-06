@@ -1108,6 +1108,169 @@ describe("data flow tracking", () => {
       },
     });
   });
+
+  it("tracks object destructuring from parameter", () => {
+    const source = `function check(config: {x: number}): boolean {
+  const {x} = config;
+  if (x > 10) {
+    return true;
+  }
+  return false;
+}`;
+    const result = instrumentFunction(source, "check");
+    if ("error" in result) throw new Error(result.error);
+
+    const { branches } = executeAndCollect(result.instrumentedSource, "check", [{ x: 20 }]);
+    expect(branches[0]!.constraint).toEqual({
+      kind: "expr",
+      expr: {
+        kind: "bin_op",
+        op: "gt",
+        left: { kind: "param", name: "config", path: ["x"] },
+        right: { kind: "const", type: "int", value: 10 },
+      },
+    });
+  });
+
+  it("tracks renamed object destructuring binding", () => {
+    const source = `function check(config: {x: number}): boolean {
+  const {x: val} = config;
+  if (val > 10) {
+    return true;
+  }
+  return false;
+}`;
+    const result = instrumentFunction(source, "check");
+    if ("error" in result) throw new Error(result.error);
+
+    const { branches } = executeAndCollect(result.instrumentedSource, "check", [{ x: 20 }]);
+    expect(branches[0]!.constraint).toEqual({
+      kind: "expr",
+      expr: {
+        kind: "bin_op",
+        op: "gt",
+        left: { kind: "param", name: "config", path: ["x"] },
+        right: { kind: "const", type: "int", value: 10 },
+      },
+    });
+  });
+
+  it("tracks array destructuring from parameter", () => {
+    const source = `function check(arr: number[]): boolean {
+  const [a, b] = arr;
+  if (a > 0) {
+    return true;
+  }
+  return false;
+}`;
+    const result = instrumentFunction(source, "check");
+    if ("error" in result) throw new Error(result.error);
+
+    const { branches } = executeAndCollect(result.instrumentedSource, "check", [[5, 10]]);
+    expect(branches[0]!.constraint).toEqual({
+      kind: "expr",
+      expr: {
+        kind: "bin_op",
+        op: "gt",
+        left: { kind: "param", name: "arr", path: ["0"] },
+        right: { kind: "const", type: "int", value: 0 },
+      },
+    });
+  });
+
+  it("tracks nested object destructuring", () => {
+    const source = `function check(obj: {inner: {val: number}}): boolean {
+  const {inner: {val}} = obj;
+  if (val > 0) {
+    return true;
+  }
+  return false;
+}`;
+    const result = instrumentFunction(source, "check");
+    if ("error" in result) throw new Error(result.error);
+
+    const { branches } = executeAndCollect(result.instrumentedSource, "check", [{ inner: { val: 5 } }]);
+    expect(branches[0]!.constraint).toEqual({
+      kind: "expr",
+      expr: {
+        kind: "bin_op",
+        op: "gt",
+        left: { kind: "param", name: "obj", path: ["inner", "val"] },
+        right: { kind: "const", type: "int", value: 0 },
+      },
+    });
+  });
+
+  it("ignores rest patterns in destructuring", () => {
+    const source = `function check(obj: {a: number, b: number, c: number}): boolean {
+  const {a, ...rest} = obj;
+  if (a > 0) {
+    return true;
+  }
+  return false;
+}`;
+    const result = instrumentFunction(source, "check");
+    if ("error" in result) throw new Error(result.error);
+
+    const { branches } = executeAndCollect(result.instrumentedSource, "check", [{ a: 5, b: 1, c: 2 }]);
+    // 'a' should be tracked, rest is ignored
+    expect(branches[0]!.constraint).toEqual({
+      kind: "expr",
+      expr: {
+        kind: "bin_op",
+        op: "gt",
+        left: { kind: "param", name: "obj", path: ["a"] },
+        right: { kind: "const", type: "int", value: 0 },
+      },
+    });
+  });
+
+  it("tracks destructured binding with default value", () => {
+    const source = `function check(config: {x?: number}): boolean {
+  const {x = 5} = config;
+  if (x > 10) {
+    return true;
+  }
+  return false;
+}`;
+    const result = instrumentFunction(source, "check");
+    if ("error" in result) throw new Error(result.error);
+
+    const { branches } = executeAndCollect(result.instrumentedSource, "check", [{ x: 20 }]);
+    expect(branches[0]!.constraint).toEqual({
+      kind: "expr",
+      expr: {
+        kind: "bin_op",
+        op: "gt",
+        left: { kind: "param", name: "config", path: ["x"] },
+        right: { kind: "const", type: "int", value: 10 },
+      },
+    });
+  });
+
+  it("produces unknown for destructuring from non-param expression", () => {
+    const source = `function check(x: number): boolean {
+  const {y} = JSON.parse("{}");
+  if (y > 0) {
+    return true;
+  }
+  return false;
+}`;
+    const result = instrumentFunction(source, "check");
+    if ("error" in result) throw new Error(result.error);
+
+    const { branches } = executeAndCollect(result.instrumentedSource, "check", [1]);
+    // y is not derived from params, so constraint left side is unknown
+    expect(branches[0]!.constraint).toEqual({
+      kind: "expr",
+      expr: {
+        kind: "bin_op",
+        op: "gt",
+        left: { kind: "unknown" },
+        right: { kind: "const", type: "int", value: 0 },
+      },
+    });
+  });
 });
 
 describe("mock injection via import rewriting", () => {

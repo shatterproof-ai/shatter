@@ -242,6 +242,11 @@ function visitStatementsForDataFlow(
           if (symExpr.kind !== "unknown") {
             flowMap.set(decl.name.text, symExpr);
           }
+        } else if ((ts.isObjectBindingPattern(decl.name) || ts.isArrayBindingPattern(decl.name)) && decl.initializer) {
+          const symExpr = buildSymExprWithFlow(decl.initializer, resolveName);
+          if (symExpr.kind !== "unknown") {
+            registerDestructuredBindings(decl.name, symExpr, flowMap);
+          }
         }
       }
     }
@@ -275,6 +280,65 @@ function statementsFromBranch(stmt: ts.Statement): ReadonlyArray<ts.Statement> {
     return stmt.statements;
   }
   return [stmt];
+}
+
+/**
+ * Append a property segment to a param SymExpr's path.
+ * Returns null for non-param expressions (can't track property access on computed values).
+ */
+function appendPathSegment(expr: SymExpr, segment: string): SymExpr | null {
+  if (expr.kind === "param") {
+    return { kind: "param", name: expr.name, path: [...expr.path, segment] };
+  }
+  return null;
+}
+
+/**
+ * Walk a destructuring pattern and register each binding in the flow map
+ * with the appropriate property path appended to the base expression.
+ */
+function registerDestructuredBindings(
+  pattern: ts.BindingPattern,
+  baseExpr: SymExpr,
+  flowMap: Map<string, SymExpr>,
+): void {
+  if (ts.isObjectBindingPattern(pattern)) {
+    for (const element of pattern.elements) {
+      if (element.dotDotDotToken) {
+        continue;
+      }
+      // Renamed binding: {a: renamed} uses propertyName="a", name="renamed"
+      // Direct binding: {a} uses propertyName=undefined, name="a"
+      const propName = element.propertyName
+        ? (ts.isIdentifier(element.propertyName) ? element.propertyName.text : null)
+        : (ts.isIdentifier(element.name) ? element.name.text : null);
+      if (!propName) continue;
+
+      const childExpr = appendPathSegment(baseExpr, propName);
+      if (!childExpr) continue;
+
+      if (ts.isIdentifier(element.name)) {
+        flowMap.set(element.name.text, childExpr);
+      } else if ((ts.isObjectBindingPattern(element.name) || ts.isArrayBindingPattern(element.name))) {
+        registerDestructuredBindings(element.name, childExpr, flowMap);
+      }
+    }
+  } else if (ts.isArrayBindingPattern(pattern)) {
+    for (let i = 0; i < pattern.elements.length; i++) {
+      const element = pattern.elements[i]!;
+      if (ts.isOmittedExpression(element)) continue;
+      if (element.dotDotDotToken) continue;
+
+      const childExpr = appendPathSegment(baseExpr, String(i));
+      if (!childExpr) continue;
+
+      if (ts.isIdentifier(element.name)) {
+        flowMap.set(element.name.text, childExpr);
+      } else if ((ts.isObjectBindingPattern(element.name) || ts.isArrayBindingPattern(element.name))) {
+        registerDestructuredBindings(element.name, childExpr, flowMap);
+      }
+    }
+  }
 }
 
 /**
