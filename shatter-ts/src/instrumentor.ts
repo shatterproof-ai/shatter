@@ -345,7 +345,7 @@ function registerDestructuredBindings(
  * Build a SymExpr from an expression, resolving local variables via the
  * flow-sensitive resolveName lookup (which checks params and already-mapped locals).
  */
-function buildSymExprWithFlow(
+export function buildSymExprWithFlow(
   expr: ts.Expression,
   resolveName: (name: string) => SymExpr | undefined,
 ): SymExpr {
