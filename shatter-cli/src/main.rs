@@ -1253,27 +1253,6 @@ async fn run_explore(
                         // instrumentable_line_count available. Use raw span for now.
                         concolic_result.total_lines = func.end_line.saturating_sub(func.start_line) + 1;
 
-                        // Harvest interesting inputs into the cross-function pool (parity with scan_orchestrator)
-                        if let Some(ref pp) = pool_path {
-                            let mut pool = shatter_core::interesting_pool::load_pool(pp)
-                                .unwrap_or_else(|e| {
-                                    log::warn!("failed to load interesting pool: {e}");
-                                    None
-                                })
-                                .unwrap_or_default();
-                            let harvested = shatter_core::interesting_pool::harvest_from_exploration(
-                                &mut pool,
-                                &concolic_result.raw_results,
-                                &func.params,
-                                &func.name,
-                            );
-                            if harvested > 0
-                                && let Err(e) = shatter_core::interesting_pool::save_pool(&pool, pp)
-                            {
-                                log::warn!("failed to save interesting pool: {e}");
-                            }
-                        }
-
                         let obs: shatter_core::explorer::ObservationOutput = concolic_result.into();
                         Ok(obs)
                     }
@@ -1288,6 +1267,28 @@ async fn run_explore(
             match explore_result {
                 Ok(result) => {
                     let wall_time = func_start.elapsed();
+
+                    // Harvest interesting inputs into the cross-function pool.
+                    // Applies to both concolic and random explorer paths — provenance doesn't matter.
+                    if let Some(ref pp) = pool_path {
+                        let mut pool = shatter_core::interesting_pool::load_pool(pp)
+                            .unwrap_or_else(|e| {
+                                log::warn!("failed to load interesting pool: {e}");
+                                None
+                            })
+                            .unwrap_or_default();
+                        let harvested = shatter_core::interesting_pool::harvest_from_exploration(
+                            &mut pool,
+                            &result.raw_results,
+                            &func.params,
+                            &func.name,
+                        );
+                        if harvested > 0
+                            && let Err(e) = shatter_core::interesting_pool::save_pool(&pool, pp)
+                        {
+                            log::warn!("failed to save interesting pool: {e}");
+                        }
+                    }
 
                     // Accumulate stats for footer.
                     total_paths += result.unique_paths;
