@@ -2168,10 +2168,124 @@ mod tests {
         use crate::test_arbitraries::*;
         use proptest::prelude::*;
 
+        // -- Custom generators for well-typed constraint+param pairs --
+
+        /// Which primitive sort to generate constraints for.
+        #[derive(Debug, Clone, Copy)]
+        enum PrimSort {
+            Int,
+            Str,
+            Bool,
+            Float,
+        }
+
+        fn arb_prim_sort() -> impl Strategy<Value = PrimSort> {
+            prop_oneof![
+                Just(PrimSort::Int),
+                Just(PrimSort::Str),
+                Just(PrimSort::Bool),
+                Just(PrimSort::Float),
+            ]
+        }
+
+        /// Comparison ops valid for the given sort.
+        fn comparison_op_for(sort: PrimSort) -> BoxedStrategy<BinOpKind> {
+            match sort {
+                PrimSort::Int | PrimSort::Float | PrimSort::Str => prop_oneof![
+                    Just(BinOpKind::Eq),
+                    Just(BinOpKind::Ne),
+                    Just(BinOpKind::Lt),
+                    Just(BinOpKind::Le),
+                    Just(BinOpKind::Gt),
+                    Just(BinOpKind::Ge),
+                ]
+                .boxed(),
+                PrimSort::Bool => prop_oneof![Just(BinOpKind::Eq), Just(BinOpKind::Ne),].boxed(),
+            }
+        }
+
+        /// Generate a constant matching the given sort.
+        fn const_for(sort: PrimSort) -> BoxedStrategy<ConstValue> {
+            match sort {
+                PrimSort::Int => (-1000i64..1000).prop_map(ConstValue::Int).boxed(),
+                PrimSort::Float => (-100i32..100)
+                    .prop_map(|n| ConstValue::Float(f64::from(n)))
+                    .boxed(),
+                PrimSort::Str => "[a-z]{1,8}".prop_map(ConstValue::Str).boxed(),
+                PrimSort::Bool => any::<bool>().prop_map(ConstValue::Bool).boxed(),
+            }
+        }
+
+        fn type_info_for(sort: PrimSort) -> TypeInfo {
+            match sort {
+                PrimSort::Int => TypeInfo::Int,
+                PrimSort::Float => TypeInfo::Float,
+                PrimSort::Str => TypeInfo::Str,
+                PrimSort::Bool => TypeInfo::Bool,
+            }
+        }
+
+        /// Generate a well-typed (constraint, ParamInfo) pair: `param op const` where
+        /// the constant's type matches the param's declared type.
+        fn arb_typed_constraint() -> impl Strategy<Value = (SymExpr, ParamInfo)> {
+            (arb_prim_sort(), "[a-z]{1,6}").prop_flat_map(|(sort, name)| {
+                (comparison_op_for(sort), const_for(sort)).prop_map(move |(op, cv)| {
+                    let constraint = SymExpr::BinOp {
+                        op,
+                        left: Box::new(SymExpr::Param {
+                            name: name.clone(),
+                            path: vec![],
+                        }),
+                        right: Box::new(SymExpr::Const(cv)),
+                    };
+                    let param = ParamInfo {
+                        name: name.clone(),
+                        typ: type_info_for(sort),
+                        type_name: None,
+                    };
+                    (constraint, param)
+                })
+            })
+        }
+
+        /// Check that a ConcreteValue matches the expected sort.
+        fn concrete_matches_sort(value: &ConcreteValue, sort: PrimSort) -> bool {
+            match (value, sort) {
+                (ConcreteValue::Int(_), PrimSort::Int) => true,
+                (ConcreteValue::Float(_), PrimSort::Float) => true,
+                // Int is also acceptable for Float params (Z3 may return exact integers)
+                (ConcreteValue::Int(_), PrimSort::Float) => true,
+                (ConcreteValue::Str(_), PrimSort::Str) => true,
+                (ConcreteValue::Bool(_), PrimSort::Bool) => true,
+                _ => false,
+            }
+        }
+
+        fn sort_for_type_info(ti: &TypeInfo) -> PrimSort {
+            match ti {
+                TypeInfo::Int => PrimSort::Int,
+                TypeInfo::Float => PrimSort::Float,
+                TypeInfo::Str => PrimSort::Str,
+                TypeInfo::Bool => PrimSort::Bool,
+                TypeInfo::Nullable { inner } => sort_for_type_info(inner),
+                _ => PrimSort::Int,
+            }
+        }
+
+        /// String method names that produce Bool constraints.
+        fn arb_string_bool_method() -> impl Strategy<Value = &'static str> {
+            prop_oneof![
+                Just("includes"),
+                Just("startsWith"),
+                Just("endsWith"),
+            ]
+        }
+
         proptest! {
+            // -- Existing infer_sort properties --
+
             #[test]
             fn infer_sort_never_panics(expr in arb_sym_expr(4)) {
-                // Any well-formed SymExpr should produce a valid Sort without panicking.
                 let _ = infer_sort(&expr);
             }
 
@@ -2199,6 +2313,232 @@ mod tests {
             ) {
                 let expr = SymExpr::Const(ConstValue::Float(f));
                 prop_assert_eq!(infer_sort(&expr), Sort::Real);
+            }
+
+            // -- Property 1: type_info_to_sort consistency --
+
+            #[test]
+            fn type_info_to_sort_primitives(sort in arb_prim_sort()) {
+                let ti = type_info_for(sort);
+                let expected = match sort {
+                    PrimSort::Int => Sort::Int,
+                    PrimSort::Float => Sort::Real,
+                    PrimSort::Str => Sort::Str,
+                    PrimSort::Bool => Sort::Bool,
+                };
+                prop_assert_eq!(type_info_to_sort(&ti), expected);
+            }
+
+            #[test]
+            fn type_info_to_sort_nullable_unwraps(sort in arb_prim_sort()) {
+                let inner = type_info_for(sort);
+                let nullable = TypeInfo::Nullable { inner: Box::new(inner.clone()) };
+                prop_assert_eq!(type_info_to_sort(&nullable), type_info_to_sort(&inner));
+            }
+
+            // -- Property 2: solved values match ParamInfo types --
+            // The key property that would have caught str-6ayh.
+
+            #[test]
+            fn solved_values_match_param_types(
+                (constraint, param) in arb_typed_constraint()
+            ) {
+                let result = solve_constraints(
+                    &[constraint],
+                    Some(5000),
+                    &[param.clone()],
+                );
+                match result {
+                    Ok(SolveResult::Sat(values)) => {
+                        let expected_sort = sort_for_type_info(&param.typ);
+                        for (_, value) in &values {
+                            prop_assert!(
+                                concrete_matches_sort(value, expected_sort),
+                                "solved value {:?} doesn't match expected sort {:?} for param {:?}",
+                                value, expected_sort, param
+                            );
+                        }
+                    }
+                    // Unsat or errors are acceptable — we only check type correctness on Sat
+                    Ok(SolveResult::Unsat) => {}
+                    Err(_) => {}
+                }
+            }
+
+            // -- Property 3: to_z3_expr never panics on well-typed constraints --
+
+            #[test]
+            fn well_typed_constraints_never_panic(
+                (constraint, param) in arb_typed_constraint()
+            ) {
+                // Should return Ok or a documented error, never panic
+                let result = solve_constraints(
+                    &[constraint],
+                    Some(5000),
+                    &[param],
+                );
+                match &result {
+                    Ok(_) => {}
+                    Err(SolverError::Unsupported(_)) => {}
+                    Err(SolverError::TypeMismatch { .. }) => {}
+                    Err(SolverError::Unsat) => {}
+                    Err(SolverError::Unknown(_)) => {}
+                }
+            }
+
+            // -- Property 4: negation index safety --
+
+            #[test]
+            fn negation_at_any_valid_index_never_panics(
+                constraints in prop::collection::vec(
+                    arb_typed_constraint().prop_map(|(c, _)| c),
+                    1..=5
+                ),
+                idx_frac in 0.0f64..1.0
+            ) {
+                let negate_index = (idx_frac * constraints.len() as f64).floor() as usize;
+                let negate_index = negate_index.min(constraints.len() - 1);
+                let result = solve_for_new_path(
+                    &constraints,
+                    negate_index,
+                    Some(5000),
+                    &[],
+                );
+                // Any result variant is acceptable — no panics
+                match result {
+                    Ok(SolveResult::Sat(_)) => {}
+                    Ok(SolveResult::Unsat) => {}
+                    Err(_) => {}
+                }
+            }
+
+            // -- Property 5: string theory — string params get string solutions --
+
+            #[test]
+            fn string_params_solved_as_strings(
+                method in arb_string_bool_method(),
+                needle in "[a-z]{1,5}",
+                param_name in "[a-z]{1,6}",
+                taken in any::<bool>(),
+            ) {
+                let constraint = SymExpr::BinOp {
+                    op: BinOpKind::Eq,
+                    left: Box::new(SymExpr::Call {
+                        name: method.into(),
+                        receiver: Some(Box::new(SymExpr::Param {
+                            name: param_name.clone(),
+                            path: vec![],
+                        })),
+                        args: vec![SymExpr::Const(ConstValue::Str(needle))],
+                    }),
+                    right: Box::new(SymExpr::Const(ConstValue::Bool(taken))),
+                };
+                let param = ParamInfo {
+                    name: param_name.clone(),
+                    typ: TypeInfo::Str,
+                    type_name: None,
+                };
+                let result = solve_constraints(
+                    &[constraint],
+                    Some(5000),
+                    &[param],
+                );
+                if let Ok(SolveResult::Sat(values)) = result {
+                    if let Some(value) = values.get(&param_name) {
+                        prop_assert!(
+                            matches!(value, ConcreteValue::Str(_)),
+                            "string param '{}' solved as {:?}, expected Str",
+                            param_name, value
+                        );
+                    }
+                }
+            }
+
+            // -- Property 6: solve→negate pipeline preserves type agreement --
+            // For a satisfiable constraint, negating it should also produce
+            // correctly-typed values (or Unsat).
+
+            #[test]
+            fn negate_preserves_type_correctness(
+                (constraint, param) in arb_typed_constraint()
+            ) {
+                let constraints = vec![constraint];
+                let result = solve_for_new_path(
+                    &constraints,
+                    0,
+                    Some(5000),
+                    &[param.clone()],
+                );
+                if let Ok(SolveResult::Sat(values)) = result {
+                    let expected_sort = sort_for_type_info(&param.typ);
+                    for (_, value) in &values {
+                        prop_assert!(
+                            concrete_matches_sort(value, expected_sort),
+                            "negated path produced {:?} for sort {:?}",
+                            value, expected_sort
+                        );
+                    }
+                }
+            }
+
+            // -- Property 7: multi-param constraints preserve per-param types --
+
+            #[test]
+            fn multi_param_type_preservation(
+                pair1 in arb_typed_constraint(),
+                pair2 in arb_typed_constraint(),
+            ) {
+                let (c1, p1) = pair1;
+                let (c2, p2) = pair2;
+                // Skip if same param name with different types (would conflict)
+                if p1.name == p2.name {
+                    return Ok(());
+                }
+                let result = solve_constraints(
+                    &[c1, c2],
+                    Some(5000),
+                    &[p1.clone(), p2.clone()],
+                );
+                if let Ok(SolveResult::Sat(values)) = result {
+                    for param in [&p1, &p2] {
+                        if let Some(value) = values.get(&param.name) {
+                            let expected = sort_for_type_info(&param.typ);
+                            prop_assert!(
+                                concrete_matches_sort(value, expected),
+                                "param '{}' (type {:?}) solved as {:?}",
+                                param.name, param.typ, value
+                            );
+                        }
+                    }
+                }
+            }
+
+            // -- Property 8: build_param_sorts roundtrip --
+            // With duplicate names, last-writer-wins (HashMap semantics).
+
+            #[test]
+            fn build_param_sorts_maps_all_params(
+                params in prop::collection::vec(arb_param_info(), 1..=5)
+            ) {
+                let sorts = build_param_sorts(&params);
+                // Deduplicate: last occurrence of each name wins
+                let mut expected: std::collections::HashMap<String, Sort> =
+                    std::collections::HashMap::new();
+                for p in &params {
+                    expected.insert(p.name.clone(), type_info_to_sort(&p.typ));
+                }
+                for (name, sort) in &expected {
+                    prop_assert!(
+                        sorts.contains_key(name),
+                        "param '{}' missing from sorts map", name
+                    );
+                    prop_assert_eq!(
+                        sorts[name],
+                        *sort,
+                        "sort mismatch for param '{}'", name
+                    );
+                }
+                prop_assert_eq!(sorts.len(), expected.len());
             }
         }
     }
