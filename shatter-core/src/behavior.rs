@@ -713,7 +713,8 @@ mod tests {
             ],
             raw_results: vec![],
             discoveries: vec![],
-            nondeterministic_fields: vec![],
+            nondeterministic_fields: vec![], float_probe_results: vec![],
+       
         };
 
         let map = BehaviorMap::from_exploration_result("classify", &result);
@@ -1329,7 +1330,8 @@ mod tests {
                 is_new_path: true, error_intent: None }],
             raw_results: vec![(vec![json!(5)], raw_result)],
             discoveries: vec![],
-            nondeterministic_fields: vec![],
+            nondeterministic_fields: vec![], float_probe_results: vec![],
+       
         };
 
         let map = BehaviorMap::from_exploration_result("classify", &result);
@@ -1385,6 +1387,7 @@ mod tests {
                 evidence: vec![NondeterminismEvidence::ObservedWithinRun],
                 confidence: Confidence::Medium,
             }],
+            float_probe_results: vec![],
         };
 
         let map = BehaviorMap::from_exploration_result("fn1", &result);

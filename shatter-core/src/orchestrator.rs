@@ -201,6 +201,8 @@ pub struct ExploreResult {
     pub triage_mispredictions: usize,
     /// Fields detected as nondeterministic via within-run re-execution sampling.
     pub nondeterministic_fields: Vec<crate::nondeterminism::NondeterministicField>,
+    /// Float probe results classifying Float params as integer-treating or float-sensitive.
+    pub float_probe_results: Vec<crate::float_probe::FloatProbeResult>,
 }
 
 /// Errors that can occur during concolic exploration.
@@ -363,6 +365,72 @@ pub async fn explore(
             inputs,
             source: InputSource::Seed,
         });
+    }
+
+    // --- Float probe phase ---
+    let float_indices = crate::float_probe::float_param_indices(param_infos);
+    let mut float_probe_results: Vec<crate::float_probe::FloatProbeResult> = Vec::new();
+    if !float_indices.is_empty() {
+        for &idx in &float_indices {
+            let pairs = crate::float_probe::generate_probe_pairs(
+                param_infos,
+                idx,
+                crate::float_probe::PROBE_COUNT,
+                &mut rng,
+            );
+            let mut agreements = 0usize;
+            let mut total_probes = 0usize;
+            let mut divergent_values = Vec::new();
+
+            for (float_inputs, floor_inputs) in pairs {
+                // Execute with float value.
+                let float_resp = frontend
+                    .send(Command::Execute {
+                        function: function_name.to_string(),
+                        inputs: float_inputs.clone(),
+                        mocks: config.mocks.clone(),
+                        setup_context: None,
+                    })
+                    .await?;
+
+                // Execute with floor value.
+                let floor_resp = frontend
+                    .send(Command::Execute {
+                        function: function_name.to_string(),
+                        inputs: floor_inputs,
+                        mocks: config.mocks.clone(),
+                        setup_context: None,
+                    })
+                    .await?;
+
+                if let (
+                    ResponseResult::Execute(float_result),
+                    ResponseResult::Execute(floor_result),
+                ) = (&float_resp.result, &floor_resp.result) {
+                    total_probes += 1;
+
+                    if crate::float_probe::executions_agree(float_result, floor_result) {
+                        agreements += 1;
+                    } else if let Some(v) = float_inputs.get(idx).and_then(|v| v.as_f64()) {
+                        divergent_values.push(v);
+                    }
+                }
+            }
+
+            let classification = crate::float_probe::classify(
+                agreements,
+                total_probes,
+                crate::float_probe::AGREEMENT_THRESHOLD,
+            );
+            float_probe_results.push(crate::float_probe::FloatProbeResult {
+                param_index: idx,
+                param_name: param_infos[idx].name.clone(),
+                classification,
+                agreements,
+                total_probes,
+                divergent_values,
+            });
+        }
     }
 
     let explore_start = Instant::now();
@@ -608,6 +676,7 @@ pub async fn explore(
         triage_skipped,
         triage_mispredictions,
         nondeterministic_fields: vec![],
+        float_probe_results,
     })
 }
 

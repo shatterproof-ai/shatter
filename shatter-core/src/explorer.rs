@@ -152,6 +152,9 @@ pub struct ObservationOutput {
     /// Fields detected as nondeterministic via within-run re-execution sampling.
     #[serde(default)]
     pub nondeterministic_fields: Vec<crate::nondeterminism::NondeterministicField>,
+    /// Float probe results classifying Float params as integer-treating or float-sensitive.
+    #[serde(default)]
+    pub float_probe_results: Vec<crate::float_probe::FloatProbeResult>,
 }
 
 /// Transitional alias: existing code that references `ExplorationResult`
@@ -592,6 +595,90 @@ pub async fn explore_function(
     let mut seen_branch_ids: HashSet<u32> = HashSet::new();
     let mut discoveries: Vec<(u32, DiscoveryMethod)> = Vec::new();
 
+    // --- Float probe phase ---
+    // Probes consume from the iteration budget, contributing to seen_paths and raw_results.
+    let float_indices = crate::float_probe::float_param_indices(&analysis.params);
+    let mut float_probe_results: Vec<crate::float_probe::FloatProbeResult> = Vec::new();
+    let probe_budget = float_indices.len() * crate::float_probe::PROBE_COUNT * 2;
+    if !float_indices.is_empty() && probe_budget < config.max_iterations as usize {
+        for &idx in &float_indices {
+            let pairs = crate::float_probe::generate_probe_pairs(
+                &analysis.params,
+                idx,
+                crate::float_probe::PROBE_COUNT,
+                &mut rng,
+            );
+            let mut agreements = 0usize;
+            let mut total_probes = 0usize;
+            let mut divergent_values = Vec::new();
+
+            for (float_inputs, floor_inputs) in pairs {
+                let float_resp = frontend
+                    .send(ProtoCommand::Execute {
+                        function: analysis.name.clone(),
+                        inputs: float_inputs.clone(),
+                        mocks: config.mocks.clone(),
+                        setup_context: setup_context.clone(),
+                    })
+                    .await?;
+
+                let floor_resp = frontend
+                    .send(ProtoCommand::Execute {
+                        function: analysis.name.clone(),
+                        inputs: floor_inputs,
+                        mocks: config.mocks.clone(),
+                        setup_context: setup_context.clone(),
+                    })
+                    .await?;
+
+                if let (
+                    ResponseResult::Execute(float_result),
+                    ResponseResult::Execute(floor_result),
+                ) = (&float_resp.result, &floor_resp.result) {
+                    total_probes += 1;
+
+                    let fhash = path_hash(float_result, &config.loop_buckets);
+                    let flhash = path_hash(floor_result, &config.loop_buckets);
+                    seen_paths.insert(fhash);
+                    seen_paths.insert(flhash);
+                    for &line in &float_result.lines_executed {
+                        all_lines.insert(line);
+                    }
+                    for &line in &floor_result.lines_executed {
+                        all_lines.insert(line);
+                    }
+
+                    if crate::float_probe::executions_agree(float_result, floor_result) {
+                        agreements += 1;
+                    } else if let Some(v) = float_inputs.get(idx).and_then(|v| v.as_f64()) {
+                        divergent_values.push(v);
+                    }
+
+                    raw_results.push((float_inputs.clone(), (**float_result).clone()));
+                }
+            }
+
+            let classification = crate::float_probe::classify(
+                agreements,
+                total_probes,
+                crate::float_probe::AGREEMENT_THRESHOLD,
+            );
+            float_probe_results.push(crate::float_probe::FloatProbeResult {
+                param_index: idx,
+                param_name: analysis.params[idx].name.clone(),
+                classification,
+                agreements,
+                total_probes,
+                divergent_values,
+            });
+        }
+    }
+
+    let float_bias = crate::float_probe::build_bias_map(&float_probe_results);
+    let has_integer_treating = float_bias
+        .values()
+        .any(|c| *c == crate::float_probe::FloatClassification::IntegerTreating);
+
     // --- User-provided candidate inputs (highest priority, no budget cap) ---
     let mut user_iter = config.user_seeds.iter().cloned().peekable();
 
@@ -655,6 +742,13 @@ pub async fn explore_function(
                 &mut prefetched,
                 &mut rng,
                 Some(&config.capabilities),
+            )
+        } else if has_integer_treating {
+            crate::input_gen::generate_random_inputs_with_float_bias(
+                &analysis.params,
+                &float_bias,
+                &mut rng,
+                None,
             )
         } else {
             generate_random_inputs(&analysis.params, &mut rng, None)
@@ -737,6 +831,7 @@ pub async fn explore_function(
         raw_results,
         discoveries,
         nondeterministic_fields: vec![],
+        float_probe_results,
     })
 }
 
@@ -859,6 +954,35 @@ pub fn format_exploration_report(result: &ObservationOutput, options: &ReportOpt
     if let Some(ref metrics) = options.coverage_metrics {
         out.push_str(&crate::coverage_metrics::format_coverage_metrics(metrics, s));
     }
+    // Float probe results
+    if !result.float_probe_results.is_empty() {
+        out.push_str(&format!("  {dim}Float probes:{reset}\n", dim = s.dim, reset = s.reset));
+        let last_idx = result.float_probe_results.len() - 1;
+        for (i, probe) in result.float_probe_results.iter().enumerate() {
+            let connector = if i == last_idx { "\u{2514}\u{2500}" } else { "\u{251c}\u{2500}" };
+            let label = match probe.classification {
+                crate::float_probe::FloatClassification::IntegerTreating => {
+                    format!("integer-treating ({}/{} agree)", probe.agreements, probe.total_probes)
+                }
+                crate::float_probe::FloatClassification::FloatSensitive => {
+                    let divs: Vec<String> = probe.divergent_values.iter().map(|v| format!("{v}")).collect();
+                    if divs.is_empty() {
+                        "float-sensitive".to_string()
+                    } else {
+                        format!("float-sensitive \u{2014} diverges at {}", divs.join(", "))
+                    }
+                }
+                crate::float_probe::FloatClassification::Inconclusive => "inconclusive".to_string(),
+            };
+            out.push_str(&format!(
+                "  {connector} {dim}{name}: {label}{reset}\n",
+                dim = s.dim,
+                name = probe.param_name,
+                reset = s.reset,
+            ));
+        }
+    }
+
     if options.show_perf {
         if let Some(dur) = options.wall_time {
             out.push_str(&format!(
@@ -1533,7 +1657,7 @@ mod tests {
                     return_value: Some(serde_json::json!("negative")),
                     thrown_error: None, lines_executed: vec![1, 4, 5], is_new_path: true, error_intent: None },
             ],
-            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![],
+            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![],
         };
         let report = format_exploration_report(&result, &ReportOptions::default());
         assert!(report.contains("classify"));
@@ -1554,7 +1678,7 @@ mod tests {
                 inputs: vec![serde_json::json!(10)],
                 return_value: Some(serde_json::json!(5)),
                 thrown_error: None, lines_executed: vec![1, 2, 3], is_new_path: true, error_intent: None }],
-            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![],
+            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![],
         };
         let report = format_exploration_report(&result, &ReportOptions {
             location: Some("src/math.ts:10-25".into()), ..Default::default()
@@ -1573,7 +1697,7 @@ mod tests {
                 return_value: None,
                 thrown_error: Some("TypeError: cannot read null".into()),
                 lines_executed: vec![], is_new_path: true, error_intent: None }],
-            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![],
+            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![],
         };
         let report = format_exploration_report(&result, &ReportOptions::default());
         assert!(report.contains("throws"));
@@ -1584,7 +1708,7 @@ mod tests {
     fn format_exploration_report_with_perf() {
         let result = ObservationOutput {
             function_name: "fast".into(), iterations: 10, unique_paths: 1,
-            lines_covered: 0, total_lines: 0, new_path_executions: vec![], raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![],
+            lines_covered: 0, total_lines: 0, new_path_executions: vec![], raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![],
         };
         let report = format_exploration_report(&result, &ReportOptions {
             show_perf: true, wall_time: Some(std::time::Duration::from_millis(42)),
@@ -1599,7 +1723,7 @@ mod tests {
     fn format_exploration_report_includes_coverage_metrics() {
         let result = ObservationOutput {
             function_name: "analyze".into(), iterations: 20, unique_paths: 3,
-            lines_covered: 8, total_lines: 10, new_path_executions: vec![], raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![],
+            lines_covered: 8, total_lines: 10, new_path_executions: vec![], raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![],
         };
         let metrics = crate::coverage_metrics::CoverageMetrics {
             total_branches: 4, z3_solved: 2, random_found: 1, user_provided: 0,
@@ -1623,7 +1747,7 @@ mod tests {
                 inputs: vec![serde_json::json!(1)],
                 return_value: Some(serde_json::json!("ok")),
                 thrown_error: None, lines_executed: vec![1, 2, 3, 4], is_new_path: true, error_intent: None }],
-            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![],
+            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![],
         };
         let report = format_exploration_report(&result, &ReportOptions {
             style: crate::report_style::ReportStyle::ansi(), ..Default::default()
@@ -1654,7 +1778,7 @@ mod tests {
                 inputs: vec![serde_json::json!(5)],
                 return_value: Some(serde_json::json!("positive-odd")),
                 thrown_error: None, lines_executed: vec![1, 2, 3], is_new_path: true, error_intent: None }],
-            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![],
+            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![],
         };
         let report = format_exploration_report_verbose(&result);
         assert!(report.contains("10 iteration(s)"));

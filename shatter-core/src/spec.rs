@@ -716,7 +716,7 @@ mod tests {
             new_path_executions: vec![],
             raw_results: vec![],
             discoveries: vec![],
-            nondeterministic_fields: vec![],
+            nondeterministic_fields: vec![], float_probe_results: vec![],
         }
     }
 
@@ -1269,6 +1269,7 @@ mod tests {
             invariants: vec![],
             fingerprint: None,
             nondeterministic_fields: vec![],
+       
         };
 
         let json_str = serde_json::to_string_pretty(&spec).expect("serialize");

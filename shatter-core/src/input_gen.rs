@@ -733,6 +733,54 @@ pub fn generate_random_inputs(
 }
 
 // ---------------------------------------------------------------------------
+// Float-biased input generation
+// ---------------------------------------------------------------------------
+
+/// Generate a float value biased toward integers.
+///
+/// With probability `integer_ratio`, generates an integer (as f64).
+/// Otherwise delegates to the standard `generate_float()` distribution.
+pub fn generate_biased_float(rng: &mut impl Rng, integer_ratio: f64) -> Value {
+    if rng.random_bool(integer_ratio.clamp(0.0, 1.0)) {
+        // Generate as integer
+        let n = rng.random_range(-1000..=1000) as f64;
+        json!(n)
+    } else {
+        generate_float(rng)
+    }
+}
+
+/// Like [`generate_random_inputs`] but applies integer bias to Float params
+/// classified as `IntegerTreating`.
+pub fn generate_random_inputs_with_float_bias(
+    params: &[crate::types::ParamInfo],
+    float_bias: &std::collections::HashMap<usize, crate::float_probe::FloatClassification>,
+    rng: &mut impl Rng,
+    caps: Option<&FrontendCapabilities>,
+) -> Vec<Value> {
+    params
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            if matches!(p.typ, TypeInfo::Str) {
+                let hint = heuristic_string_for_name(&p.name)
+                    .or_else(|| p.type_name.as_deref().and_then(heuristic_string_for_name));
+                if let Some(val) = hint {
+                    return json!(val);
+                }
+            }
+            if matches!(p.typ, TypeInfo::Float)
+                && float_bias.get(&i)
+                    == Some(&crate::float_probe::FloatClassification::IntegerTreating)
+            {
+                return generate_biased_float(rng, crate::float_probe::INTEGER_BIAS_RATIO);
+            }
+            generate_random_value(&p.typ, rng, caps)
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // Generator-aware input generation
 // ---------------------------------------------------------------------------
 

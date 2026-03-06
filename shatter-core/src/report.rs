@@ -826,7 +826,7 @@ mod tests {
                 new_path_executions,
                 raw_results: vec![],
                 discoveries: vec![],
-                nondeterministic_fields: vec![],
+                nondeterministic_fields: vec![], float_probe_results: vec![],
             },
             behavior_map: BehaviorMap {
                 function_id: name.to_string(),
