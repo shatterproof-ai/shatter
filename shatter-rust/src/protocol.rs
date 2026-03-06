@@ -295,6 +295,8 @@ pub struct Response {
     pub instrumented: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_file: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instrumentable_line_count: Option<u32>,
 
     // Analyze fields
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -341,6 +343,7 @@ impl Response {
             recipe: None,
             instrumented: None,
             output_file: None,
+            instrumentable_line_count: None,
             functions: None,
             return_value: None,
             thrown_error: None,
@@ -541,6 +544,7 @@ mod tests {
             recipe: None,
             instrumented: None,
             output_file: None,
+            instrumentable_line_count: None,
             functions: None,
             return_value: None,
             thrown_error: None,
@@ -571,6 +575,7 @@ mod tests {
             recipe: None,
             instrumented: None,
             output_file: None,
+            instrumentable_line_count: None,
             functions: None,
             return_value: None,
             thrown_error: None,
@@ -601,6 +606,7 @@ mod tests {
             recipe: None,
             instrumented: None,
             output_file: None,
+            instrumentable_line_count: None,
             functions: None,
             return_value: None,
             thrown_error: None,
@@ -631,6 +637,7 @@ mod tests {
             recipe: None,
             instrumented: None,
             output_file: None,
+            instrumentable_line_count: None,
             functions: None,
             return_value: None,
             thrown_error: None,

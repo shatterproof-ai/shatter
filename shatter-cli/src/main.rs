@@ -1176,6 +1176,8 @@ async fn run_explore(
                     &concolic_config,
                 ).await {
                     Ok(mut concolic_result) => {
+                        // Fallback: concolic path doesn't call instrument, so no
+                        // instrumentable_line_count available. Use raw span for now.
                         concolic_result.total_lines = func.end_line.saturating_sub(func.start_line) + 1;
 
                         // Harvest interesting inputs into the cross-function pool (parity with scan_orchestrator)

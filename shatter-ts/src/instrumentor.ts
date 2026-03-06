@@ -24,6 +24,8 @@ export interface InstrumentResult {
   branchFunctionName: string;
   /** Total number of branch points instrumented. */
   branchCount: number;
+  /** Number of unique executable statement lines instrumented with __shatter_record(). */
+  instrumentableLineCount: number;
 }
 
 /**
@@ -66,6 +68,8 @@ interface InstrumentationContext {
   nextCallSiteId: number;
   /** Maps local variable names to their symbolic expressions derived from parameters. */
   dataFlowMap: Map<string, SymExpr>;
+  /** Unique source lines where __shatter_record() calls were inserted. */
+  instrumentableLines: Set<number>;
 }
 
 /**
@@ -103,13 +107,14 @@ export function instrumentFunction(
 
   // Shared mutable branch counter — captured by the transformer closure.
   const branchState = { nextBranchId: 0 };
+  const instrumentableLines = new Set<number>();
 
   // Build mock lookup for import rewriting
   const mocksBySymbol = buildMockLookup(mocks);
 
   const printer = ts.createPrinter({ newLine: ts.NewLineKind.LineFeed });
   const transformed = ts.transform(sourceFile, [
-    createInstrumentationTransformer(functionName, paramNames, branchState, dataFlowMap, mocksBySymbol),
+    createInstrumentationTransformer(functionName, paramNames, branchState, dataFlowMap, mocksBySymbol, instrumentableLines),
   ]);
   const result = printer.printFile(transformed.transformed[0] as ts.SourceFile);
   transformed.dispose();
@@ -119,6 +124,7 @@ export function instrumentFunction(
     recordFunctionName: RECORD_FUNCTION,
     branchFunctionName: BRANCH_FUNCTION,
     branchCount: branchState.nextBranchId,
+    instrumentableLineCount: instrumentableLines.size,
   };
 }
 
@@ -459,6 +465,7 @@ function createInstrumentationTransformer(
   branchState: { nextBranchId: number },
   dataFlowMap: Map<string, SymExpr> = new Map(),
   mockLookup: MockLookup = new Map(),
+  instrumentableLines: Set<number> = new Set(),
 ): ts.TransformerFactory<ts.SourceFile> {
   return (context) => {
     return (sourceFile) => {
@@ -470,6 +477,7 @@ function createInstrumentationTransformer(
         nextLoopId: 0,
         nextCallSiteId: 0,
         dataFlowMap,
+        instrumentableLines,
       };
 
       const visitor = (node: ts.Node): ts.Node => {
@@ -590,6 +598,7 @@ function instrumentBlock(
 
   for (const stmt of block.statements) {
     const line = ctx.sourceFile.getLineAndCharacterOfPosition(stmt.getStart(ctx.sourceFile)).line + 1;
+    ctx.instrumentableLines.add(line);
     newStatements.push(createRecordCall(ctx.factory, line));
     newStatements.push(instrumentStatement(stmt, ctx));
   }
@@ -619,6 +628,7 @@ function instrumentStatement(
         const elseIfLine = ctx.sourceFile.getLineAndCharacterOfPosition(
           stmt.elseStatement.getStart(ctx.sourceFile),
         ).line + 1;
+        ctx.instrumentableLines.add(elseIfLine);
         const nestedIf = instrumentStatement(stmt.elseStatement, ctx);
         instrumentedElse = ctx.factory.createBlock(
           [createRecordCall(ctx.factory, elseIfLine), nestedIf as ts.Statement],
@@ -638,6 +648,7 @@ function instrumentStatement(
       const newStmts: ts.Statement[] = [];
       for (const clauseStmt of clause.statements) {
         const line = ctx.sourceFile.getLineAndCharacterOfPosition(clauseStmt.getStart(ctx.sourceFile)).line + 1;
+        ctx.instrumentableLines.add(line);
         newStmts.push(createRecordCall(ctx.factory, line));
         newStmts.push(instrumentStatement(clauseStmt, ctx));
       }

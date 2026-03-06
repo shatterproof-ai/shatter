@@ -75,6 +75,11 @@
         "output_file": {
           "type": ["string", "null"],
           "description": "Path to the instrumented output file, if applicable."
+        },
+        "instrumentable_line_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of executable statement lines the instrumentor inserted record calls for."
         }
       },
       "required": ["status", "instrumented"]

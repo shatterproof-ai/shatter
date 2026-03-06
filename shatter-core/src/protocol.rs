@@ -190,6 +190,10 @@ pub enum ResponseResult {
         instrumented: bool,
         /// Path to the instrumented output file, if applicable.
         output_file: Option<String>,
+        /// Number of executable statement lines the instrumentor inserted record calls for.
+        /// Used as the denominator for line coverage instead of raw source span.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        instrumentable_line_count: Option<u32>,
     },
     /// Successful execution result (boxed to reduce enum size).
     Execute(Box<ExecuteResult>),
@@ -577,6 +581,19 @@ mod tests {
             ResponseResult::Instrument {
                 instrumented: true,
                 output_file: Some("/tmp/instrumented_main.ts".into()),
+                instrumentable_line_count: Some(12),
+            },
+        ));
+    }
+
+    #[test]
+    fn instrument_response_without_line_count_round_trips() {
+        round_trip(&Response::new(
+            3,
+            ResponseResult::Instrument {
+                instrumented: true,
+                output_file: None,
+                instrumentable_line_count: None,
             },
         ));
     }
@@ -971,6 +988,21 @@ mod tests {
             ResponseResult::Instrument {
                 instrumented: true,
                 output_file: None,
+                instrumentable_line_count: None,
+            }
+        );
+    }
+
+    #[test]
+    fn instrument_response_with_line_count_deserializes() {
+        let json = r#"{"protocol_version":"0.1.0","id":4,"status":"instrument","instrumented":true,"output_file":null,"instrumentable_line_count":9}"#;
+        let resp: Response = serde_json::from_str(json).expect("deserialize instrument with line count");
+        assert_eq!(
+            resp.result,
+            ResponseResult::Instrument {
+                instrumented: true,
+                output_file: None,
+                instrumentable_line_count: Some(9),
             }
         );
     }

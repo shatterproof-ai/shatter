@@ -517,13 +517,14 @@ pub async fn explore_function(
         })
         .await?;
 
-    match instrument_response.result {
-        ResponseResult::Instrument { instrumented, .. } => {
+    let instrumentable_line_count = match instrument_response.result {
+        ResponseResult::Instrument { instrumented, instrumentable_line_count, .. } => {
             if !instrumented {
                 return Err(ExploreError::UnexpectedResponse(
                     "instrumentation returned instrumented=false".to_string(),
                 ));
             }
+            instrumentable_line_count
         }
         ResponseResult::Error { code, message, .. } => {
             return Err(ExploreError::UnexpectedResponse(format!(
@@ -535,7 +536,7 @@ pub async fn explore_function(
                 "expected Instrument response, got {other:?}"
             )));
         }
-    }
+    };
 
     let mut rng = match config.seed {
         Some(seed) => StdRng::seed_from_u64(seed),
@@ -708,7 +709,8 @@ pub async fn explore_function(
         send_teardown(frontend, &analysis.name).await?;
     }
 
-    let total_lines = analysis.end_line.saturating_sub(analysis.start_line) + 1;
+    let total_lines = instrumentable_line_count
+        .unwrap_or_else(|| analysis.end_line.saturating_sub(analysis.start_line) + 1);
 
     Ok(ObservationOutput {
         function_name: analysis.name.clone(),
