@@ -320,7 +320,7 @@ func toIntSlice(ints []int) []int {
 func convertBranchPath(branches []instrument.BranchDecision) []BranchDecision {
 	result := make([]BranchDecision, len(branches))
 	for i, b := range branches {
-		var constraint *SymConstraint
+		constraint := &SymConstraint{Kind: "unknown", Hint: "no symbolic constraint from Go frontend"}
 		if b.ConstraintJSON != "" {
 			var sc SymConstraint
 			if err := json.Unmarshal([]byte(b.ConstraintJSON), &sc); err == nil {
