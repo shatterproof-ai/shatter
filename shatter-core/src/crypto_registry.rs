@@ -13,7 +13,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::protocol::ExternalDependency;
+use crate::protocol::{CryptoBoundary, ExternalDependency};
 
 /// Built-in registry TOML, embedded at compile time.
 const BUILTIN_REGISTRY: &str = include_str!("../data/crypto-registry.toml");
@@ -191,6 +191,28 @@ impl CryptoRegistry {
     /// Whether the registry is empty.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// Classify all dependencies in a list, returning `CryptoBoundary` for each match.
+    pub fn classify_all_dependencies(
+        &self,
+        deps: &[ExternalDependency],
+        language: &str,
+    ) -> Vec<CryptoBoundary> {
+        deps.iter()
+            .filter_map(|dep| {
+                self.classify_dependency(dep, language).map(|entry| {
+                    CryptoBoundary {
+                        symbol: dep.symbol.clone(),
+                        source_module: dep.source_module.clone(),
+                        direction: entry.direction,
+                        output: entry.output,
+                        param_roles: entry.param_roles.clone(),
+                        call_sites: dep.call_sites.clone(),
+                    }
+                })
+            })
+            .collect()
     }
 }
 
@@ -396,5 +418,59 @@ output = "plaintext"
             .lookup("rust", "chacha20poly1305", "ChaCha20Poly1305::encrypt")
             .expect("Rust ChaCha20Poly1305::encrypt should exist");
         assert_eq!(rust_entry.direction, CryptoDirection::Encrypt);
+    }
+
+    #[test]
+    fn classify_all_dependencies_matches_crypto() {
+        let registry = CryptoRegistry::load().unwrap();
+        let deps = vec![
+            ExternalDependency {
+                kind: DependencyKind::FunctionCall,
+                symbol: "createDecipheriv".to_string(),
+                source_module: "crypto".to_string(),
+                return_type: crate::types::TypeInfo::Unknown,
+                param_types: vec![],
+                call_sites: vec![5, 12],
+            },
+            ExternalDependency {
+                kind: DependencyKind::FunctionCall,
+                symbol: "readFile".to_string(),
+                source_module: "fs".to_string(),
+                return_type: crate::types::TypeInfo::Unknown,
+                param_types: vec![],
+                call_sites: vec![3],
+            },
+        ];
+
+        let boundaries = registry.classify_all_dependencies(&deps, "typescript");
+        assert_eq!(boundaries.len(), 1, "only the crypto dep should match");
+        assert_eq!(boundaries[0].symbol, "createDecipheriv");
+        assert_eq!(boundaries[0].source_module, "crypto");
+        assert_eq!(boundaries[0].direction, CryptoDirection::Decrypt);
+        assert_eq!(boundaries[0].output, OutputSemantics::Plaintext);
+        assert_eq!(boundaries[0].call_sites, vec![5, 12]);
+    }
+
+    #[test]
+    fn classify_all_dependencies_no_match() {
+        let registry = CryptoRegistry::load().unwrap();
+        let deps = vec![ExternalDependency {
+            kind: DependencyKind::FunctionCall,
+            symbol: "readFile".to_string(),
+            source_module: "fs".to_string(),
+            return_type: crate::types::TypeInfo::Unknown,
+            param_types: vec![],
+            call_sites: vec![1],
+        }];
+
+        let boundaries = registry.classify_all_dependencies(&deps, "typescript");
+        assert!(boundaries.is_empty());
+    }
+
+    #[test]
+    fn classify_all_dependencies_empty_input() {
+        let registry = CryptoRegistry::load().unwrap();
+        let boundaries = registry.classify_all_dependencies(&[], "typescript");
+        assert!(boundaries.is_empty());
     }
 }

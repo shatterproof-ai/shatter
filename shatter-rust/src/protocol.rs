@@ -185,6 +185,18 @@ pub enum LiteralValue {
     Regex { pattern: String },
 }
 
+/// A detected cryptographic API boundary within a function.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CryptoBoundary {
+    pub symbol: String,
+    pub source_module: String,
+    pub direction: String,
+    pub output: String,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub param_roles: HashMap<String, String>,
+    pub call_sites: Vec<u32>,
+}
+
 /// Analysis result for a single function.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FunctionAnalysis {
@@ -199,6 +211,8 @@ pub struct FunctionAnalysis {
     pub end_line: u32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub literals: Vec<LiteralValue>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub crypto_boundaries: Vec<CryptoBoundary>,
 }
 
 /// Current protocol version.
@@ -679,6 +693,7 @@ mod tests {
                 LiteralValue::Str { value: "express".into() },
                 LiteralValue::Regex { pattern: "\\d{5}".into() },
             ],
+            crypto_boundaries: vec![],
         });
     }
 
@@ -694,6 +709,7 @@ mod tests {
             start_line: 1,
             end_line: 1,
             literals: vec![],
+            crypto_boundaries: vec![],
         };
         let json = serde_json::to_value(&fa).expect("serialize");
         assert!(
@@ -707,5 +723,49 @@ mod tests {
         let json = r#"{"name":"stub","params":[],"branches":[],"dependencies":[],"return_type":{"kind":"unknown"},"start_line":1,"end_line":1}"#;
         let fa: FunctionAnalysis = serde_json::from_str(json).expect("deserialize");
         assert!(fa.literals.is_empty());
+    }
+
+    #[test]
+    fn crypto_boundary_round_trips() {
+        let mut roles = HashMap::new();
+        roles.insert("0".to_string(), "algorithm".to_string());
+        roles.insert("1".to_string(), "key".to_string());
+
+        round_trip(&CryptoBoundary {
+            symbol: "createDecipheriv".into(),
+            source_module: "crypto".into(),
+            direction: "decrypt".into(),
+            output: "plaintext".into(),
+            param_roles: roles,
+            call_sites: vec![5, 12],
+        });
+    }
+
+    #[test]
+    fn empty_crypto_boundaries_omitted_from_json() {
+        let fa = FunctionAnalysis {
+            name: "stub".into(),
+            exported: false,
+            params: vec![],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Unknown,
+            start_line: 1,
+            end_line: 1,
+            literals: vec![],
+            crypto_boundaries: vec![],
+        };
+        let json = serde_json::to_value(&fa).expect("serialize");
+        assert!(
+            !json.as_object().unwrap().contains_key("crypto_boundaries"),
+            "empty crypto_boundaries should not appear in JSON"
+        );
+    }
+
+    #[test]
+    fn missing_crypto_boundaries_defaults_to_empty() {
+        let json = r#"{"name":"stub","params":[],"branches":[],"dependencies":[],"return_type":{"kind":"unknown"},"start_line":1,"end_line":1}"#;
+        let fa: FunctionAnalysis = serde_json::from_str(json).expect("deserialize");
+        assert!(fa.crypto_boundaries.is_empty());
     }
 }

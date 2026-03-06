@@ -182,6 +182,7 @@ mod tests {
             start_line: 1,
             end_line: 10,
             literals: vec![],
+            crypto_boundaries: vec![],
         }
     }
 

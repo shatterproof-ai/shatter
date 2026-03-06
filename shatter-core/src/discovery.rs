@@ -25,6 +25,15 @@ impl Language {
             _ => None,
         }
     }
+
+    /// Returns the language name as used in the crypto registry TOML.
+    pub fn as_registry_str(&self) -> &'static str {
+        match self {
+            Language::TypeScript => "typescript",
+            Language::Go => "go",
+            Language::Rust => "rust",
+        }
+    }
 }
 
 /// Options controlling which files are discovered.

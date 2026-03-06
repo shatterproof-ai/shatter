@@ -8,9 +8,12 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::analysis_cache::AnalysisCache;
+use crate::crypto_registry::CryptoRegistry;
 use crate::discovery::Language;
 use crate::frontend::{Frontend, FrontendError};
-use crate::protocol::{Command as ProtoCommand, ExternalDependency, FunctionAnalysis, ResponseResult};
+use crate::protocol::{
+    Command as ProtoCommand, CryptoBoundary, ExternalDependency, FunctionAnalysis, ResponseResult,
+};
 use crate::types::{ParamInfo, TypeInfo};
 
 /// A single function entry in the registry.
@@ -28,6 +31,8 @@ pub struct FunctionEntry {
     pub return_type: TypeInfo,
     /// Dependencies (calls to other project functions or external symbols).
     pub dependencies: Vec<ExternalDependency>,
+    /// Cryptographic API boundaries detected during analysis.
+    pub crypto_boundaries: Vec<CryptoBoundary>,
     /// Number of branch points in the function.
     pub branch_count: usize,
     /// First line of the function in source.
@@ -121,6 +126,15 @@ pub async fn batch_analyze(
     let mut entries = Vec::new();
     let mut index = HashMap::new();
 
+    // Load crypto registry once for classifying dependencies across all files.
+    let crypto_registry = match CryptoRegistry::load() {
+        Ok(r) => Some(r),
+        Err(e) => {
+            log::warn!("failed to load crypto registry, skipping crypto classification: {e}");
+            None
+        }
+    };
+
     for (file_path, language) in files {
         // Check the analysis cache before calling the frontend.
         if let Some(cache) = analysis_cache
@@ -130,7 +144,12 @@ pub async fn batch_analyze(
                 let qualified = FunctionRegistry::qualified_name(file_path, &func.name);
                 let idx = entries.len();
                 index.insert(qualified, idx);
-                entries.push(function_entry_from_analysis(file_path.clone(), func));
+                entries.push(function_entry_from_analysis(
+                    file_path.clone(),
+                    func,
+                    crypto_registry.as_ref(),
+                    language.as_registry_str(),
+                ));
             }
             continue;
         }
@@ -190,16 +209,30 @@ pub async fn batch_analyze(
             let qualified = FunctionRegistry::qualified_name(file_path, &func.name);
             let idx = entries.len();
             index.insert(qualified, idx);
-            entries.push(function_entry_from_analysis(file_path.clone(), func));
+            entries.push(function_entry_from_analysis(
+                file_path.clone(),
+                func,
+                crypto_registry.as_ref(),
+                language.as_registry_str(),
+            ));
         }
     }
 
     Ok(FunctionRegistry { entries, index })
 }
 
-/// Convert a protocol [`FunctionAnalysis`] into a [`FunctionEntry`].
-fn function_entry_from_analysis(file_path: PathBuf, analysis: FunctionAnalysis) -> FunctionEntry {
+/// Convert a protocol [`FunctionAnalysis`] into a [`FunctionEntry`],
+/// enriching with crypto boundary classification when a registry is available.
+fn function_entry_from_analysis(
+    file_path: PathBuf,
+    analysis: FunctionAnalysis,
+    crypto_registry: Option<&CryptoRegistry>,
+    language: &str,
+) -> FunctionEntry {
     let branch_count = analysis.branches.len();
+    let crypto_boundaries = crypto_registry
+        .map(|r| r.classify_all_dependencies(&analysis.dependencies, language))
+        .unwrap_or_default();
     FunctionEntry {
         file_path,
         name: analysis.name,
@@ -207,6 +240,7 @@ fn function_entry_from_analysis(file_path: PathBuf, analysis: FunctionAnalysis) 
         params: analysis.params,
         return_type: analysis.return_type,
         dependencies: analysis.dependencies,
+        crypto_boundaries,
         branch_count,
         start_line: analysis.start_line,
         end_line: analysis.end_line,
@@ -245,6 +279,7 @@ mod tests {
             start_line: 1,
             end_line: 10,
             literals: vec![],
+            crypto_boundaries: vec![],
         }
     }
 
@@ -313,9 +348,10 @@ mod tests {
             start_line: 1,
             end_line: 15,
             literals: vec![],
+            crypto_boundaries: vec![],
         };
 
-        let entry = function_entry_from_analysis(PathBuf::from("src/app.ts"), analysis);
+        let entry = function_entry_from_analysis(PathBuf::from("src/app.ts"), analysis, None, "typescript");
 
         assert_eq!(entry.file_path, PathBuf::from("src/app.ts"));
         assert_eq!(entry.name, "myFunc");
@@ -332,7 +368,7 @@ mod tests {
     #[test]
     fn function_entry_unexported_function() {
         let analysis = make_analysis("private_helper", false, 0);
-        let entry = function_entry_from_analysis(PathBuf::from("src/utils.ts"), analysis);
+        let entry = function_entry_from_analysis(PathBuf::from("src/utils.ts"), analysis, None, "typescript");
         assert!(!entry.exported);
     }
 
@@ -357,6 +393,7 @@ mod tests {
             branch_count: 2,
             start_line: 1,
             end_line: 10,
+            crypto_boundaries: vec![],
         };
         index.insert(
             FunctionRegistry::qualified_name(Path::new("src/app.ts"), "funcA"),
@@ -374,6 +411,7 @@ mod tests {
             branch_count: 0,
             start_line: 11,
             end_line: 20,
+            crypto_boundaries: vec![],
         };
         index.insert(
             FunctionRegistry::qualified_name(Path::new("src/app.ts"), "funcB"),
@@ -391,6 +429,7 @@ mod tests {
             branch_count: 1,
             start_line: 1,
             end_line: 5,
+            crypto_boundaries: vec![],
         };
         index.insert(
             FunctionRegistry::qualified_name(Path::new("src/utils.ts"), "helper"),
@@ -419,6 +458,7 @@ mod tests {
             branch_count: 3,
             start_line: 1,
             end_line: 10,
+            crypto_boundaries: vec![],
         };
         index.insert("src/app.ts::funcA".to_string(), 0);
         entries.push(entry);
@@ -457,6 +497,7 @@ mod tests {
                 branch_count: 0,
                 start_line: 1,
                 end_line: 10,
+                crypto_boundaries: vec![],
             });
         }
 
@@ -493,6 +534,7 @@ mod tests {
                 branch_count: 0,
                 start_line: 1,
                 end_line: 10,
+                crypto_boundaries: vec![],
             });
         }
 
@@ -517,7 +559,7 @@ mod tests {
     #[test]
     fn function_entry_preserves_dependencies() {
         let analysis = make_analysis_with_deps("caller", true, vec!["dep1", "dep2"]);
-        let entry = function_entry_from_analysis(PathBuf::from("src/main.ts"), analysis);
+        let entry = function_entry_from_analysis(PathBuf::from("src/main.ts"), analysis, None, "typescript");
 
         assert_eq!(entry.dependencies.len(), 2);
         assert_eq!(entry.dependencies[0].symbol, "dep1");
@@ -527,14 +569,14 @@ mod tests {
     #[test]
     fn function_entry_branch_count_matches_branches() {
         let analysis = make_analysis("branchy", true, 5);
-        let entry = function_entry_from_analysis(PathBuf::from("src/app.ts"), analysis);
+        let entry = function_entry_from_analysis(PathBuf::from("src/app.ts"), analysis, None, "typescript");
         assert_eq!(entry.branch_count, 5);
     }
 
     #[test]
     fn function_entry_zero_branches() {
         let analysis = make_analysis("simple", true, 0);
-        let entry = function_entry_from_analysis(PathBuf::from("src/app.ts"), analysis);
+        let entry = function_entry_from_analysis(PathBuf::from("src/app.ts"), analysis, None, "typescript");
         assert_eq!(entry.branch_count, 0);
     }
 

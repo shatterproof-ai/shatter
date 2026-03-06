@@ -141,17 +141,29 @@ type LiteralValue struct {
 	Pattern string `json:"pattern,omitempty"` // regex literals only
 }
 
+// CryptoBoundary represents a detected cryptographic API boundary within a function.
+// Populated by core after analysis; frontends leave this empty.
+type CryptoBoundary struct {
+	Symbol       string            `json:"symbol"`
+	SourceModule string            `json:"source_module"`
+	Direction    string            `json:"direction"`
+	Output       string            `json:"output"`
+	ParamRoles   map[string]string `json:"param_roles,omitempty"`
+	CallSites    []int             `json:"call_sites"`
+}
+
 // FunctionAnalysis is the result of analyzing a single function.
 type FunctionAnalysis struct {
-	Name         string               `json:"name"`
-	Exported     bool                 `json:"exported,omitempty"`
-	Params       []ParamInfo          `json:"params"`
-	Branches     []BranchInfo         `json:"branches"`
-	Dependencies []ExternalDependency `json:"dependencies"`
-	ReturnType   TypeInfo             `json:"return_type"`
-	StartLine    int                  `json:"start_line"`
-	EndLine      int                  `json:"end_line"`
-	Literals     []LiteralValue       `json:"literals,omitempty"`
+	Name              string               `json:"name"`
+	Exported          bool                 `json:"exported,omitempty"`
+	Params            []ParamInfo          `json:"params"`
+	Branches          []BranchInfo         `json:"branches"`
+	Dependencies      []ExternalDependency `json:"dependencies"`
+	ReturnType        TypeInfo             `json:"return_type"`
+	StartLine         int                  `json:"start_line"`
+	EndLine           int                  `json:"end_line"`
+	Literals          []LiteralValue       `json:"literals,omitempty"`
+	CryptoBoundaries  []CryptoBoundary     `json:"crypto_boundaries,omitempty"`
 }
 
 // BranchInfo describes a branch point in the source code.

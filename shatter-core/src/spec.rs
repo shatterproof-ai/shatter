@@ -1524,6 +1524,7 @@ mod tests {
             start_line: start,
             end_line: end,
             literals: vec![],
+            crypto_boundaries: vec![],
         }
     }
 
