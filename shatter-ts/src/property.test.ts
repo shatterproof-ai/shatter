@@ -4,6 +4,7 @@
  * Validates serialization round-trips and structural invariants that
  * hand-written fixtures might miss.
  */
+import { describe, it, expect } from "vitest";
 import fc from "fast-check";
 import type {
   BinOpKind,
