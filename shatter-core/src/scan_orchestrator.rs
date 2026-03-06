@@ -1102,10 +1102,6 @@ pub fn format_parallel_scan_report(result: &ParallelScanResult) -> String {
         result.workers_used,
     ));
 
-    out.push_str("\nTest order: ");
-    out.push_str(&result.test_order.join(" -> "));
-    out.push('\n');
-
     for func_result in &result.function_results {
         out.push_str(&format!("\n-- {} --\n", func_result.function_name));
         out.push_str(&explorer::format_exploration_report_verbose(
@@ -1167,10 +1163,6 @@ pub fn format_scan_report(result: &ScanResult) -> String {
         "Scan complete: {} function(s) tested\n",
         result.function_results.len()
     ));
-
-    out.push_str("\nTest order: ");
-    out.push_str(&result.test_order.join(" → "));
-    out.push('\n');
 
     for func_result in &result.function_results {
         out.push_str(&format!("\n── {} ──\n", func_result.function_name));
@@ -1615,7 +1607,7 @@ mod tests {
 
         let report = format_scan_report(&result);
         assert!(report.contains("2 function(s) tested"));
-        assert!(report.contains("leaf → caller"));
+        assert!(!report.contains("Test order"));
         assert!(report.contains("Mocks used: 1 via behavior map (leaf)"));
         assert!(report.contains("Behavior coverage of leaf: 2/3"));
     }
@@ -1912,7 +1904,7 @@ mod tests {
         assert!(report.contains("1 function(s) tested"));
         assert!(report.contains("1 skipped"));
         assert!(report.contains("4 worker(s)"));
-        assert!(report.contains("f1 -> f2"));
+        assert!(!report.contains("Test order"));
         assert!(report.contains("Skipped functions:"));
         assert!(report.contains("f2: timed out after 30s"));
     }
