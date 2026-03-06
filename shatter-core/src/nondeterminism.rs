@@ -172,6 +172,88 @@ fn count_leaves(v: &Value) -> usize {
     }
 }
 
+// --- Name-based heuristics for nondeterminism detection ---
+
+/// How a [`NamePattern`] matches against a field name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchKind {
+    /// Field name ends with the pattern (case-insensitive).
+    Suffix,
+    /// Field name contains the pattern anywhere (case-insensitive).
+    Substring,
+}
+
+/// A pattern that suggests a field is nondeterministic based on its name.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NamePattern {
+    pub pattern: &'static str,
+    pub match_kind: MatchKind,
+    /// Base confidence (0.0–1.0) before input-echo adjustment.
+    pub confidence: f64,
+}
+
+/// Confidence reduction factor when a field name matches an input parameter name,
+/// suggesting the value is echoed rather than generated.
+const INPUT_ECHO_DISCOUNT: f64 = 0.5;
+
+/// Default patterns ordered by confidence descending. First match wins,
+/// so more specific patterns (higher confidence) come first.
+pub const NAME_PATTERNS: &[NamePattern] = &[
+    NamePattern { pattern: "uuid",      match_kind: MatchKind::Suffix,    confidence: 0.95 },
+    NamePattern { pattern: "token",     match_kind: MatchKind::Suffix,    confidence: 0.90 },
+    NamePattern { pattern: "nonce",     match_kind: MatchKind::Suffix,    confidence: 0.90 },
+    NamePattern { pattern: "random",    match_kind: MatchKind::Substring, confidence: 0.85 },
+    NamePattern { pattern: "timestamp", match_kind: MatchKind::Suffix,    confidence: 0.80 },
+    NamePattern { pattern: "_at",       match_kind: MatchKind::Suffix,    confidence: 0.80 },
+    NamePattern { pattern: "id",        match_kind: MatchKind::Suffix,    confidence: 0.60 },
+];
+
+/// Result of a successful name-heuristic match.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NameHeuristicResult {
+    /// The pattern string that matched.
+    pub matched_pattern: &'static str,
+    /// Confidence after input-echo adjustment (0.0–1.0).
+    pub confidence: f64,
+}
+
+/// Check whether `field_name` matches any known nondeterministic name pattern.
+///
+/// For dot-separated paths (e.g. `"return.requestId"`), only the last segment
+/// is matched. When the last segment case-insensitively equals any entry in
+/// `input_param_names`, confidence is halved (the field likely echoes an input).
+pub fn check_name_heuristics(
+    field_name: &str,
+    input_param_names: &[&str],
+) -> Option<NameHeuristicResult> {
+    let segment = field_name.rsplit('.').next().unwrap_or(field_name);
+    let lower = segment.to_ascii_lowercase();
+
+    for pat in NAME_PATTERNS {
+        let pat_lower = pat.pattern.to_ascii_lowercase();
+        let matched = match pat.match_kind {
+            MatchKind::Suffix => lower.ends_with(&pat_lower) && lower.len() > pat_lower.len(),
+            MatchKind::Substring => lower.contains(&pat_lower),
+        };
+
+        if matched {
+            let is_echo = input_param_names.iter().any(|p| {
+                p.eq_ignore_ascii_case(segment)
+            });
+            let confidence = if is_echo {
+                pat.confidence * INPUT_ECHO_DISCOUNT
+            } else {
+                pat.confidence
+            };
+            return Some(NameHeuristicResult {
+                matched_pattern: pat.pattern,
+                confidence,
+            });
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -416,5 +498,131 @@ mod tests {
 
         assert_eq!(field.evidence.len(), 2);
         assert_eq!(field.confidence, Confidence::High);
+    }
+
+    // --- name heuristic tests ---
+
+    #[test]
+    fn name_heuristic_uuid_suffix() {
+        let r = check_name_heuristics("requestUuid", &[]).unwrap();
+        assert_eq!(r.matched_pattern, "uuid");
+        assert!((r.confidence - 0.95).abs() < 1e-10);
+    }
+
+    #[test]
+    fn name_heuristic_token_suffix() {
+        let r = check_name_heuristics("authToken", &[]).unwrap();
+        assert_eq!(r.matched_pattern, "token");
+        assert!((r.confidence - 0.90).abs() < 1e-10);
+    }
+
+    #[test]
+    fn name_heuristic_nonce_suffix() {
+        let r = check_name_heuristics("sessionNonce", &[]).unwrap();
+        assert_eq!(r.matched_pattern, "nonce");
+        assert!((r.confidence - 0.90).abs() < 1e-10);
+    }
+
+    #[test]
+    fn name_heuristic_random_substring() {
+        let r = check_name_heuristics("myRandomValue", &[]).unwrap();
+        assert_eq!(r.matched_pattern, "random");
+        assert!((r.confidence - 0.85).abs() < 1e-10);
+    }
+
+    #[test]
+    fn name_heuristic_timestamp_suffix() {
+        let r = check_name_heuristics("createdTimestamp", &[]).unwrap();
+        assert_eq!(r.matched_pattern, "timestamp");
+        assert!((r.confidence - 0.80).abs() < 1e-10);
+    }
+
+    #[test]
+    fn name_heuristic_at_suffix() {
+        let r = check_name_heuristics("updated_at", &[]).unwrap();
+        assert_eq!(r.matched_pattern, "_at");
+        assert!((r.confidence - 0.80).abs() < 1e-10);
+    }
+
+    #[test]
+    fn name_heuristic_id_suffix() {
+        let r = check_name_heuristics("requestId", &[]).unwrap();
+        assert_eq!(r.matched_pattern, "id");
+        assert!((r.confidence - 0.60).abs() < 1e-10);
+    }
+
+    #[test]
+    fn name_heuristic_case_insensitive() {
+        let r = check_name_heuristics("RequestUUID", &[]).unwrap();
+        assert_eq!(r.matched_pattern, "uuid");
+
+        let r2 = check_name_heuristics("SESSION_TOKEN", &[]).unwrap();
+        assert_eq!(r2.matched_pattern, "token");
+    }
+
+    #[test]
+    fn name_heuristic_dot_path_uses_last_segment() {
+        let r = check_name_heuristics("return.response.requestId", &[]).unwrap();
+        assert_eq!(r.matched_pattern, "id");
+
+        let r2 = check_name_heuristics("param0.authToken", &[]).unwrap();
+        assert_eq!(r2.matched_pattern, "token");
+    }
+
+    #[test]
+    fn name_heuristic_input_echo_reduces_confidence() {
+        let r = check_name_heuristics("requestId", &["requestId"]).unwrap();
+        assert_eq!(r.matched_pattern, "id");
+        assert!((r.confidence - 0.60 * INPUT_ECHO_DISCOUNT).abs() < 1e-10);
+    }
+
+    #[test]
+    fn name_heuristic_input_echo_case_insensitive() {
+        let r = check_name_heuristics("AuthToken", &["authtoken"]).unwrap();
+        assert!((r.confidence - 0.90 * INPUT_ECHO_DISCOUNT).abs() < 1e-10);
+    }
+
+    #[test]
+    fn name_heuristic_no_match() {
+        assert!(check_name_heuristics("name", &[]).is_none());
+        assert!(check_name_heuristics("count", &[]).is_none());
+        assert!(check_name_heuristics("email", &[]).is_none());
+    }
+
+    #[test]
+    fn name_heuristic_suffix_requires_prefix() {
+        // "id" alone equals the pattern — no prefix chars, so suffix match fails.
+        assert!(check_name_heuristics("id", &[]).is_none());
+        // "uuid" ends with "id" and has prefix chars, so it matches "id".
+        let r = check_name_heuristics("uuid", &[]).unwrap();
+        assert_eq!(r.matched_pattern, "id");
+    }
+
+    #[test]
+    fn name_heuristic_suffix_no_false_positive_on_interior() {
+        // "video" ends with "id" + "eo", not with "id" — but "avid" does NOT
+        // end with "id" in a meaningful way. Let's test "video" doesn't match.
+        assert!(check_name_heuristics("video", &[]).is_none());
+    }
+
+    #[test]
+    fn name_heuristic_highest_confidence_wins() {
+        // "randomUuid" matches both "random" (substring, 0.85) and "uuid" (suffix, 0.95).
+        // "uuid" comes first in the table, so it wins.
+        let r = check_name_heuristics("randomUuid", &[]).unwrap();
+        assert_eq!(r.matched_pattern, "uuid");
+        assert!((r.confidence - 0.95).abs() < 1e-10);
+    }
+
+    #[test]
+    fn name_heuristic_pattern_table_ordered_by_confidence() {
+        for window in NAME_PATTERNS.windows(2) {
+            assert!(
+                window[0].confidence >= window[1].confidence,
+                "NAME_PATTERNS not ordered by confidence: {} ({}) before {} ({})",
+                window[0].pattern, window[0].confidence,
+                window[1].pattern, window[1].confidence,
+            );
+        }
     }
 }
