@@ -10,6 +10,7 @@
 //! Inputs from Z3 are prioritized over fuzzed or seed inputs so that the
 //! solver-guided exploration is always tried first.
 
+use contracts::requires;
 use std::collections::{BinaryHeap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
@@ -291,6 +292,8 @@ fn concrete_to_json(value: &ConcreteValue) -> serde_json::Value {
 /// support simple flat parameters — if the variable name matches the parameter
 /// index convention (param_0, param_1, …) or the base is a single param, we
 /// update it directly.
+#[requires(base_inputs.len() == param_names.len(), "base_inputs and param_names must be positionally aligned")]
+#[contracts::ensures(ret.len() == base_inputs.len(), "overlay must preserve input vector length")]
 fn overlay_solved_values(
     base_inputs: &[serde_json::Value],
     solved: &std::collections::HashMap<String, ConcreteValue>,
