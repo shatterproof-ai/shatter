@@ -1,0 +1,74 @@
+name: 'Shatter'
+description: 'Automatic exploratory testing via concolic execution'
+
+branding:
+  icon: 'zap'
+  color: 'purple'
+
+inputs:
+  directory:
+    description: 'Directory to scan (relative to workspace root)'
+    required: false
+    default: '.'
+  command:
+    description: 'Shatter command to run (scan, explore, etc.)'
+    required: false
+    default: 'scan'
+  language:
+    description: 'Language to analyze (ts, go, rust). Auto-detected if omitted.'
+    required: false
+  timeout:
+    description: 'Per-function execution timeout in seconds'
+    required: false
+    default: '30'
+  version:
+    description: 'Image tag to use (e.g. latest, 0.1.0)'
+    required: false
+    default: 'latest'
+
+outputs:
+  exit-code:
+    description: 'Exit code from the shatter command'
+    value: ${{ steps.run.outputs.exit-code }}
+  report-file:
+    description: 'Path to the generated report directory, if any'
+    value: ${{ steps.run.outputs.report-file }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Run Shatter
+      id: run
+      shell: bash
+      run: |
+        args="${{ inputs.command }}"
+
+        # Add directory for scan/explore commands
+        if [ "${{ inputs.command }}" = "scan" ] || [ "${{ inputs.command }}" = "explore" ]; then
+          args="${args} /repo/${{ inputs.directory }}"
+        fi
+
+        # Add language flag if specified
+        if [ -n "${{ inputs.language }}" ]; then
+          args="${args} --language ${{ inputs.language }}"
+        fi
+
+        # Add timeout
+        args="${args} --timeout ${{ inputs.timeout }}"
+
+        set +e
+        docker run --rm \
+          -v "${{ github.workspace }}:/repo" \
+          "ghcr.io/${{ github.repository }}:${{ inputs.version }}" \
+          ${args}
+        exit_code=$?
+        set -e
+
+        echo "exit-code=${exit_code}" >> "$GITHUB_OUTPUT"
+
+        # Check for report directory
+        if [ -d "${{ github.workspace }}/shatter-report" ]; then
+          echo "report-file=shatter-report" >> "$GITHUB_OUTPUT"
+        fi
+
+        exit ${exit_code}

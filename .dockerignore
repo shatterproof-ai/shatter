@@ -1,0 +1,20 @@
+# Allowlist pattern: exclude everything, then include what we need
+*
+
+# Workspace Cargo files
+!Cargo.toml
+!Cargo.lock
+
+# Rust crates
+!shatter-core/
+!shatter-cli/
+!shatter-rust/
+
+# Language frontends (needed by build.rs)
+!shatter-ts/
+!shatter-go/
+
+# Exclude nested build artifacts even within included dirs
+shatter-ts/node_modules/
+shatter-ts/dist/
+shatter-rust/target/
