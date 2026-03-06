@@ -19,6 +19,18 @@ pub const MAX_TRACES: usize = 64;
 /// Fraction of indeterminate branches above which a trace is too uncertain.
 const INDETERMINATE_THRESHOLD: f64 = 0.5;
 
+/// Every Nth skip verdict, execute anyway to validate the prediction.
+pub const TRIAGE_SAMPLE_INTERVAL: usize = 20;
+
+/// Minimum verdicts before evaluating whether triage is useful.
+pub const MIN_VERDICTS_FOR_EVAL: usize = 20;
+
+/// Minimum fraction of Skip verdicts for triage to remain active.
+pub const MIN_SKIP_RATE: f64 = 0.10;
+
+/// Maximum fraction of sampled skips that turned out wrong before disabling.
+pub const MAX_MISPREDICTION_RATE: f64 = 0.25;
+
 /// Predicted direction for a single branch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BranchPrediction {
@@ -41,6 +53,15 @@ pub enum TriageVerdict {
     Indeterminate,
 }
 
+/// Why triage was disabled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TriageDisableReason {
+    /// Fewer than [`MIN_SKIP_RATE`] of verdicts were Skip.
+    LowSkipRate,
+    /// More than [`MAX_MISPREDICTION_RATE`] of sampled skips were wrong.
+    HighMisprediction,
+}
+
 /// Accumulates branch traces from observed executions and predicts whether
 /// candidate inputs will produce novel paths.
 pub struct TriageState {
@@ -52,6 +73,16 @@ pub struct TriageState {
     observed_directions: HashSet<(u32, bool)>,
     /// Parameter names for constraint evaluation.
     param_names: Vec<String>,
+    /// Total verdicts issued.
+    total_verdicts: usize,
+    /// Number of Skip verdicts issued.
+    skip_verdicts: usize,
+    /// Number of sampled skip verdicts validated by actual execution.
+    samples_taken: usize,
+    /// Number of samples where predicted path hash differed from actual.
+    mispredictions: usize,
+    /// Set when triage disables itself.
+    disable_reason: Option<TriageDisableReason>,
 }
 
 impl TriageState {
@@ -61,6 +92,11 @@ impl TriageState {
             trace_keys: HashSet::new(),
             observed_directions: HashSet::new(),
             param_names,
+            total_verdicts: 0,
+            skip_verdicts: 0,
+            samples_taken: 0,
+            mispredictions: 0,
+            disable_reason: None,
         }
     }
 
@@ -98,12 +134,69 @@ impl TriageState {
         self.observed_directions.len()
     }
 
+    /// Whether triage has been disabled.
+    pub fn is_disabled(&self) -> bool {
+        self.disable_reason.is_some()
+    }
+
+    /// Why triage was disabled, if at all.
+    pub fn disable_reason(&self) -> Option<TriageDisableReason> {
+        self.disable_reason
+    }
+
+    /// Record a verdict and check whether triage should disable itself
+    /// due to low skip rate. Call this after every `triage_candidate` call.
+    pub fn record_verdict(&mut self, verdict: &TriageVerdict) {
+        if self.is_disabled() {
+            return;
+        }
+        self.total_verdicts += 1;
+        if *verdict == TriageVerdict::Skip {
+            self.skip_verdicts += 1;
+        }
+        if self.total_verdicts >= MIN_VERDICTS_FOR_EVAL {
+            let skip_rate = self.skip_verdicts as f64 / self.total_verdicts as f64;
+            if skip_rate < MIN_SKIP_RATE {
+                self.disable_reason = Some(TriageDisableReason::LowSkipRate);
+            }
+        }
+    }
+
+    /// Whether the current skip verdict should be sampled (executed anyway)
+    /// to validate prediction accuracy. Returns true every
+    /// [`TRIAGE_SAMPLE_INTERVAL`]th skip verdict.
+    pub fn should_sample(&self) -> bool {
+        self.skip_verdicts > 0 && self.skip_verdicts.is_multiple_of(TRIAGE_SAMPLE_INTERVAL)
+    }
+
+    /// Record the result of a sampled skip execution. If the actual path hash
+    /// differs from the predicted one, it counts as a misprediction.
+    /// Disables triage when the misprediction rate exceeds
+    /// [`MAX_MISPREDICTION_RATE`].
+    pub fn record_sample(&mut self, predicted_path_hash: u64, actual_path_hash: u64) {
+        if self.is_disabled() {
+            return;
+        }
+        self.samples_taken += 1;
+        if predicted_path_hash != actual_path_hash {
+            self.mispredictions += 1;
+        }
+        let misprediction_rate = self.mispredictions as f64 / self.samples_taken as f64;
+        if misprediction_rate > MAX_MISPREDICTION_RATE {
+            self.disable_reason = Some(TriageDisableReason::HighMisprediction);
+        }
+    }
+
     /// Predict whether executing `inputs` would produce a novel path.
+    /// Returns `Indeterminate` immediately if triage has been disabled.
     pub fn triage_candidate(
         &self,
         inputs: &[Value],
         covered_paths: &HashSet<u64>,
     ) -> TriageVerdict {
+        if self.is_disabled() {
+            return TriageVerdict::Indeterminate;
+        }
         if self.traces.is_empty() {
             return TriageVerdict::Indeterminate;
         }
@@ -1611,6 +1704,151 @@ mod tests {
                 novel_count: 1,
                 first_novel_depth: 0,
             }
+        );
+    }
+
+    // --- Adaptive self-disabling ---
+
+    #[test]
+    fn no_disable_before_min_verdicts() {
+        let mut state = TriageState::new(names(&["x"]));
+        // Issue 19 Execute verdicts (all non-skip) — still below threshold.
+        for _ in 0..MIN_VERDICTS_FOR_EVAL - 1 {
+            state.record_verdict(&TriageVerdict::Execute {
+                novel_count: 1,
+                first_novel_depth: 0,
+            });
+        }
+        assert!(!state.is_disabled());
+    }
+
+    #[test]
+    fn low_skip_rate_disables_triage() {
+        let mut state = TriageState::new(names(&["x"]));
+        // 1 skip + 19 executes = 5% skip rate < MIN_SKIP_RATE (10%).
+        state.record_verdict(&TriageVerdict::Skip);
+        for _ in 0..MIN_VERDICTS_FOR_EVAL - 1 {
+            state.record_verdict(&TriageVerdict::Execute {
+                novel_count: 1,
+                first_novel_depth: 0,
+            });
+        }
+        assert!(state.is_disabled());
+        assert_eq!(
+            state.disable_reason(),
+            Some(TriageDisableReason::LowSkipRate)
+        );
+    }
+
+    #[test]
+    fn sufficient_skip_rate_stays_enabled() {
+        let mut state = TriageState::new(names(&["x"]));
+        // 4 skips + 16 executes = 20% skip rate > MIN_SKIP_RATE (10%).
+        for _ in 0..4 {
+            state.record_verdict(&TriageVerdict::Skip);
+        }
+        for _ in 0..16 {
+            state.record_verdict(&TriageVerdict::Execute {
+                novel_count: 1,
+                first_novel_depth: 0,
+            });
+        }
+        assert!(!state.is_disabled());
+    }
+
+    #[test]
+    fn should_sample_at_interval() {
+        let mut state = TriageState::new(names(&["x"]));
+        assert!(!state.should_sample()); // 0 skips
+
+        for i in 1..=TRIAGE_SAMPLE_INTERVAL * 2 {
+            state.record_verdict(&TriageVerdict::Skip);
+            if i % TRIAGE_SAMPLE_INTERVAL == 0 {
+                assert!(state.should_sample(), "should sample at skip #{i}");
+            } else {
+                assert!(!state.should_sample(), "should not sample at skip #{i}");
+            }
+        }
+    }
+
+    #[test]
+    fn misprediction_disables_triage() {
+        let mut state = TriageState::new(names(&["x"]));
+        // 3 correct + 2 wrong = 40% misprediction > MAX_MISPREDICTION_RATE (25%).
+        state.record_sample(100, 100);
+        state.record_sample(100, 100);
+        state.record_sample(100, 100);
+        assert!(!state.is_disabled());
+
+        state.record_sample(100, 200); // 1/4 = 25%, not > 25%
+        assert!(!state.is_disabled());
+
+        state.record_sample(100, 200); // 2/5 = 40% > 25%
+        assert!(state.is_disabled());
+        assert_eq!(
+            state.disable_reason(),
+            Some(TriageDisableReason::HighMisprediction)
+        );
+    }
+
+    #[test]
+    fn misprediction_within_tolerance_stays_enabled() {
+        let mut state = TriageState::new(names(&["x"]));
+        // 4 correct, 1 wrong → 20% misprediction < MAX_MISPREDICTION_RATE (25%).
+        for _ in 0..4 {
+            state.record_sample(100, 100);
+        }
+        state.record_sample(100, 200);
+        assert!(!state.is_disabled());
+    }
+
+    #[test]
+    fn disabled_triage_returns_indeterminate() {
+        let mut state = TriageState::new(names(&["x"]));
+        let trace = vec![make_decision(1, true, x_gt_0())];
+        state.update(&trace);
+
+        // Force disable via misprediction.
+        state.record_sample(1, 2);
+        assert!(state.is_disabled());
+
+        let covered = HashSet::new();
+        let verdict = state.triage_candidate(&[json!(5)], &covered);
+        assert_eq!(verdict, TriageVerdict::Indeterminate);
+    }
+
+    #[test]
+    fn record_verdict_noop_when_disabled() {
+        let mut state = TriageState::new(names(&["x"]));
+        state.record_sample(1, 2); // disables
+        assert!(state.is_disabled());
+
+        let before_total = state.total_verdicts;
+        state.record_verdict(&TriageVerdict::Skip);
+        assert_eq!(state.total_verdicts, before_total);
+    }
+
+    #[test]
+    fn record_sample_noop_when_disabled() {
+        let mut state = TriageState::new(names(&["x"]));
+        state.record_sample(1, 2); // disables
+        let before_samples = state.samples_taken;
+
+        state.record_sample(3, 4);
+        assert_eq!(state.samples_taken, before_samples);
+    }
+
+    #[test]
+    fn indeterminate_verdicts_count_toward_total() {
+        let mut state = TriageState::new(names(&["x"]));
+        // All indeterminate = 0% skip rate.
+        for _ in 0..MIN_VERDICTS_FOR_EVAL {
+            state.record_verdict(&TriageVerdict::Indeterminate);
+        }
+        assert!(state.is_disabled());
+        assert_eq!(
+            state.disable_reason(),
+            Some(TriageDisableReason::LowSkipRate)
         );
     }
 }
