@@ -3,8 +3,10 @@
 //! Presence in the nondeterministic field list means "we have evidence
 //! this is nondeterministic." Absence does NOT assert determinism.
 
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::LazyLock;
 
 /// How nondeterminism was detected for a field or parameter.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -170,6 +172,130 @@ fn count_leaves(v: &Value) -> usize {
         Value::Array(a) if !a.is_empty() => a.iter().map(count_leaves).sum(),
         _ => 1,
     }
+}
+
+// --- Value-pattern heuristics ---
+
+/// A matched value pattern indicating likely nondeterminism.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValuePatternMatch {
+    /// Human-readable pattern name (e.g., "uuid_v4", "iso8601_datetime").
+    pub pattern_name: String,
+    /// Confidence that this pattern indicates nondeterminism.
+    pub confidence: Confidence,
+}
+
+/// Pattern name constants — used in both production code and tests.
+pub const PATTERN_UUID_V4: &str = "uuid_v4";
+pub const PATTERN_ISO8601_DATETIME: &str = "iso8601_datetime";
+pub const PATTERN_UNIX_TIMESTAMP_S: &str = "unix_timestamp_seconds";
+pub const PATTERN_UNIX_TIMESTAMP_MS: &str = "unix_timestamp_millis";
+pub const PATTERN_JWT: &str = "jwt_token";
+pub const PATTERN_SHA256_HEX: &str = "sha256_hex";
+pub const PATTERN_RANDOM_HEX: &str = "random_hex";
+
+/// Epoch boundaries for unix timestamp detection (2020-01-01 to 2030-01-01).
+const UNIX_TS_MIN_S: i64 = 1_577_836_800;
+const UNIX_TS_MAX_S: i64 = 1_893_456_000;
+const UNIX_TS_MIN_MS: i64 = UNIX_TS_MIN_S * 1_000;
+const UNIX_TS_MAX_MS: i64 = UNIX_TS_MAX_S * 1_000;
+
+/// Minimum length for random hex string detection.
+const RANDOM_HEX_MIN_LEN: usize = 32;
+
+/// Exact length of a SHA-256 hex digest.
+const SHA256_HEX_LEN: usize = 64;
+
+static RE_UUID_V4: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+        .expect("uuid_v4 regex")
+});
+
+static RE_ISO8601: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}").expect("iso8601 regex")
+});
+
+static RE_JWT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$").expect("jwt regex")
+});
+
+static RE_HEX_LOWER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^[0-9a-f]+$").expect("hex regex")
+});
+
+/// Check a JSON value against known nondeterministic value patterns.
+///
+/// For strings: tests UUID v4, ISO 8601 datetime, JWT, SHA-256 hex, and random hex.
+/// For numbers: tests unix timestamp ranges (seconds and milliseconds).
+/// SHA-256 (64 hex chars) is preferred over generic random hex when both match.
+pub fn check_value_patterns(value: &Value) -> Vec<ValuePatternMatch> {
+    match value {
+        Value::String(s) => check_string_patterns(s),
+        Value::Number(n) => check_number_patterns(n),
+        _ => Vec::new(),
+    }
+}
+
+fn check_string_patterns(s: &str) -> Vec<ValuePatternMatch> {
+    let mut matches = Vec::new();
+
+    if RE_UUID_V4.is_match(s) {
+        matches.push(ValuePatternMatch {
+            pattern_name: PATTERN_UUID_V4.into(),
+            confidence: Confidence::High,
+        });
+    }
+
+    if RE_ISO8601.is_match(s) {
+        matches.push(ValuePatternMatch {
+            pattern_name: PATTERN_ISO8601_DATETIME.into(),
+            confidence: Confidence::High,
+        });
+    }
+
+    if RE_JWT.is_match(s) {
+        matches.push(ValuePatternMatch {
+            pattern_name: PATTERN_JWT.into(),
+            confidence: Confidence::High,
+        });
+    }
+
+    // Hex string patterns: prefer SHA-256 (specific) over generic random hex.
+    if s.len() >= RANDOM_HEX_MIN_LEN && RE_HEX_LOWER.is_match(s) {
+        if s.len() == SHA256_HEX_LEN {
+            matches.push(ValuePatternMatch {
+                pattern_name: PATTERN_SHA256_HEX.into(),
+                confidence: Confidence::Medium,
+            });
+        } else {
+            matches.push(ValuePatternMatch {
+                pattern_name: PATTERN_RANDOM_HEX.into(),
+                confidence: Confidence::Medium,
+            });
+        }
+    }
+
+    matches
+}
+
+fn check_number_patterns(n: &serde_json::Number) -> Vec<ValuePatternMatch> {
+    let mut matches = Vec::new();
+
+    if let Some(v) = n.as_i64() {
+        if (UNIX_TS_MIN_S..=UNIX_TS_MAX_S).contains(&v) {
+            matches.push(ValuePatternMatch {
+                pattern_name: PATTERN_UNIX_TIMESTAMP_S.into(),
+                confidence: Confidence::Medium,
+            });
+        } else if (UNIX_TS_MIN_MS..=UNIX_TS_MAX_MS).contains(&v) {
+            matches.push(ValuePatternMatch {
+                pattern_name: PATTERN_UNIX_TIMESTAMP_MS.into(),
+                confidence: Confidence::Medium,
+            });
+        }
+    }
+
+    matches
 }
 
 #[cfg(test)]
@@ -416,5 +542,163 @@ mod tests {
 
         assert_eq!(field.evidence.len(), 2);
         assert_eq!(field.confidence, Confidence::High);
+    }
+
+    // --- value pattern heuristic tests ---
+
+    #[test]
+    fn pattern_uuid_v4() {
+        let v = json!("550e8400-e29b-41d4-a716-446655440000");
+        let matches = check_value_patterns(&v);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].pattern_name, PATTERN_UUID_V4);
+        assert_eq!(matches[0].confidence, Confidence::High);
+    }
+
+    #[test]
+    fn pattern_uuid_v4_uppercase() {
+        let v = json!("550E8400-E29B-41D4-A716-446655440000");
+        let matches = check_value_patterns(&v);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].pattern_name, PATTERN_UUID_V4);
+    }
+
+    #[test]
+    fn pattern_uuid_v4_rejects_v1() {
+        // Version nibble is 1, not 4.
+        let v = json!("550e8400-e29b-11d4-a716-446655440000");
+        let matches = check_value_patterns(&v);
+        assert!(
+            matches.iter().all(|m| m.pattern_name != PATTERN_UUID_V4),
+            "v1 UUID should not match uuid_v4 pattern"
+        );
+    }
+
+    #[test]
+    fn pattern_iso8601_datetime() {
+        let v = json!("2026-03-05T14:30:00Z");
+        let matches = check_value_patterns(&v);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].pattern_name, PATTERN_ISO8601_DATETIME);
+        assert_eq!(matches[0].confidence, Confidence::High);
+    }
+
+    #[test]
+    fn pattern_iso8601_with_offset() {
+        let v = json!("2026-03-05T14:30:00+05:30");
+        let matches = check_value_patterns(&v);
+        assert!(matches.iter().any(|m| m.pattern_name == PATTERN_ISO8601_DATETIME));
+    }
+
+    #[test]
+    fn pattern_iso8601_rejects_date_only() {
+        let v = json!("2026-03-05");
+        let matches = check_value_patterns(&v);
+        assert!(matches.iter().all(|m| m.pattern_name != PATTERN_ISO8601_DATETIME));
+    }
+
+    #[test]
+    fn pattern_jwt_token() {
+        // Real JWT structure: header.payload.signature (all base64url).
+        let v = json!("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U");
+        let matches = check_value_patterns(&v);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].pattern_name, PATTERN_JWT);
+        assert_eq!(matches[0].confidence, Confidence::High);
+    }
+
+    #[test]
+    fn pattern_jwt_rejects_non_jwt() {
+        let v = json!("not.a.jwt");
+        let matches = check_value_patterns(&v);
+        assert!(matches.iter().all(|m| m.pattern_name != PATTERN_JWT));
+    }
+
+    #[test]
+    fn pattern_sha256_hex() {
+        let v = json!("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+        let matches = check_value_patterns(&v);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].pattern_name, PATTERN_SHA256_HEX);
+        assert_eq!(matches[0].confidence, Confidence::Medium);
+    }
+
+    #[test]
+    fn pattern_random_hex_long() {
+        // 48 hex chars — not SHA-256 length, so classified as random hex.
+        let v = json!("a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6");
+        let matches = check_value_patterns(&v);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].pattern_name, PATTERN_RANDOM_HEX);
+        assert_eq!(matches[0].confidence, Confidence::Medium);
+    }
+
+    #[test]
+    fn pattern_hex_too_short() {
+        // 16 hex chars — below RANDOM_HEX_MIN_LEN threshold.
+        let v = json!("a1b2c3d4e5f6a1b2");
+        let matches = check_value_patterns(&v);
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn pattern_unix_timestamp_seconds() {
+        // 2026-01-01 ~ 1767225600
+        let v = json!(1_767_225_600_i64);
+        let matches = check_value_patterns(&v);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].pattern_name, PATTERN_UNIX_TIMESTAMP_S);
+        assert_eq!(matches[0].confidence, Confidence::Medium);
+    }
+
+    #[test]
+    fn pattern_unix_timestamp_millis() {
+        let v = json!(1_767_225_600_000_i64);
+        let matches = check_value_patterns(&v);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].pattern_name, PATTERN_UNIX_TIMESTAMP_MS);
+    }
+
+    #[test]
+    fn pattern_number_outside_timestamp_range() {
+        let v = json!(42);
+        let matches = check_value_patterns(&v);
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn pattern_null_and_bool() {
+        assert!(check_value_patterns(&json!(null)).is_empty());
+        assert!(check_value_patterns(&json!(true)).is_empty());
+    }
+
+    #[test]
+    fn pattern_empty_string() {
+        assert!(check_value_patterns(&json!("")).is_empty());
+    }
+
+    #[test]
+    fn pattern_non_hex_string() {
+        // Contains 'g' which is not hex.
+        let v = json!("g1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4");
+        let matches = check_value_patterns(&v);
+        assert!(matches.iter().all(|m| m.pattern_name != PATTERN_RANDOM_HEX));
+    }
+
+    #[test]
+    fn pattern_match_serialization_round_trip() {
+        let m = ValuePatternMatch {
+            pattern_name: PATTERN_UUID_V4.into(),
+            confidence: Confidence::High,
+        };
+        let json_str = serde_json::to_string(&m).expect("serialize");
+        let restored: ValuePatternMatch = serde_json::from_str(&json_str).expect("deserialize");
+        assert_eq!(m, restored);
+    }
+
+    #[test]
+    fn pattern_object_and_array_return_empty() {
+        assert!(check_value_patterns(&json!({"id": "abc"})).is_empty());
+        assert!(check_value_patterns(&json!([1, 2, 3])).is_empty());
     }
 }
