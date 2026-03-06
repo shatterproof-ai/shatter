@@ -479,3 +479,82 @@ func TestFunctionAnalysis_EmptyLiteralsOmitted(t *testing.T) {
 		t.Error("empty literals should be omitted from JSON")
 	}
 }
+
+func TestCryptoBoundaryRoundTrip(t *testing.T) {
+	cb := CryptoBoundary{
+		Symbol:       "createDecipheriv",
+		SourceModule: "crypto",
+		Direction:    "decrypt",
+		Output:       "plaintext",
+		ParamRoles:   map[string]string{"0": "algorithm", "1": "key", "2": "iv"},
+		CallSites:    []int{5, 12},
+	}
+	data, err := json.Marshal(cb)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded CryptoBoundary
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.Symbol != cb.Symbol {
+		t.Errorf("symbol = %q, want %q", decoded.Symbol, cb.Symbol)
+	}
+	if decoded.Direction != cb.Direction {
+		t.Errorf("direction = %q, want %q", decoded.Direction, cb.Direction)
+	}
+	if len(decoded.ParamRoles) != 3 {
+		t.Errorf("param_roles len = %d, want 3", len(decoded.ParamRoles))
+	}
+}
+
+func TestFunctionAnalysisCryptoBoundariesOmittedWhenEmpty(t *testing.T) {
+	fa := FunctionAnalysis{
+		Name:         "stub",
+		Params:       []ParamInfo{},
+		Branches:     []BranchInfo{},
+		Dependencies: []ExternalDependency{},
+		ReturnType:   TypeInfo{Kind: "unknown"},
+		StartLine:    1,
+		EndLine:      1,
+	}
+	data, _ := json.Marshal(fa)
+	var raw map[string]any
+	json.Unmarshal(data, &raw)
+	if _, has := raw["crypto_boundaries"]; has {
+		t.Error("empty crypto_boundaries should be omitted from JSON")
+	}
+}
+
+func TestFunctionAnalysisCryptoBoundariesRoundTrip(t *testing.T) {
+	fa := FunctionAnalysis{
+		Name:         "decrypt",
+		Params:       []ParamInfo{},
+		Branches:     []BranchInfo{},
+		Dependencies: []ExternalDependency{},
+		ReturnType:   TypeInfo{Kind: "str"},
+		StartLine:    1,
+		EndLine:      10,
+		CryptoBoundaries: []CryptoBoundary{{
+			Symbol:       "createDecipheriv",
+			SourceModule: "crypto",
+			Direction:    "decrypt",
+			Output:       "plaintext",
+			CallSites:    []int{3},
+		}},
+	}
+	data, err := json.Marshal(fa)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded FunctionAnalysis
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(decoded.CryptoBoundaries) != 1 {
+		t.Fatalf("crypto_boundaries len = %d, want 1", len(decoded.CryptoBoundaries))
+	}
+	if decoded.CryptoBoundaries[0].Symbol != "createDecipheriv" {
+		t.Errorf("symbol = %q, want createDecipheriv", decoded.CryptoBoundaries[0].Symbol)
+	}
+}

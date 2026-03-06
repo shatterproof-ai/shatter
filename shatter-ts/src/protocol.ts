@@ -219,6 +219,15 @@ export type LiteralValue =
   | { type: "bool"; value: boolean }
   | { type: "regex"; pattern: string };
 
+export interface CryptoBoundary {
+  symbol: string;
+  source_module: string;
+  direction: "encrypt" | "decrypt" | "both";
+  output: "ciphertext" | "plaintext" | "key" | "hash" | "signature" | "verified";
+  param_roles: Record<string, "key" | "data" | "iv" | "nonce" | "tag" | "aad" | "algorithm">;
+  call_sites: number[];
+}
+
 export interface FunctionAnalysis {
   name: string;
   exported?: boolean;
@@ -229,6 +238,7 @@ export interface FunctionAnalysis {
   start_line: number;
   end_line: number;
   literals?: LiteralValue[];
+  crypto_boundaries?: CryptoBoundary[];
 }
 
 export interface ParamInfo {

@@ -1523,6 +1523,7 @@ mod tests {
             start_line: 1,
             end_line: 5,
             literals: vec![],
+            crypto_boundaries: vec![],
         }
     }
 
@@ -2062,6 +2063,7 @@ mod tests {
                 start_line: 1,
                 end_line: 5,
                 literals: vec![],
+                crypto_boundaries: vec![],
             },
             FunctionAnalysis {
                 name: "caller".to_string(),
@@ -2084,6 +2086,7 @@ mod tests {
                 start_line: 1,
                 end_line: 5,
                 literals: vec![],
+                crypto_boundaries: vec![],
             },
         ];
 
@@ -2154,6 +2157,7 @@ mod tests {
             start_line: 1,
             end_line: 5,
             literals: vec![],
+            crypto_boundaries: vec![],
         }];
 
         let mut file_map = HashMap::new();
@@ -2213,6 +2217,7 @@ mod tests {
             start_line: 1,
             end_line: 5,
             literals: vec![],
+            crypto_boundaries: vec![],
         }];
 
         let mut file_map = HashMap::new();
@@ -2281,6 +2286,7 @@ mod tests {
                 start_line: 1,
                 end_line: 5,
                 literals: vec![],
+                crypto_boundaries: vec![],
             },
             FunctionAnalysis {
                 name: "fn_b".to_string(),
@@ -2296,6 +2302,7 @@ mod tests {
                 start_line: 1,
                 end_line: 5,
                 literals: vec![],
+                crypto_boundaries: vec![],
             },
         ];
 
@@ -2369,6 +2376,7 @@ mod tests {
                 start_line: 1,
                 end_line: 5,
                 literals: vec![],
+                crypto_boundaries: vec![],
             },
             FunctionAnalysis {
                 name: "slow_b".to_string(),
@@ -2384,6 +2392,7 @@ mod tests {
                 start_line: 1,
                 end_line: 5,
                 literals: vec![],
+                crypto_boundaries: vec![],
             },
         ];
 
@@ -2453,6 +2462,7 @@ mod tests {
             start_line: 1,
             end_line: 10,
             literals: vec![],
+            crypto_boundaries: vec![],
         }
     }
 
@@ -2631,6 +2641,7 @@ mod tests {
                 branch_count: 2,
                 start_line: 1,
                 end_line: 10,
+                crypto_boundaries: vec![],
             });
         }
         for i in 0..10 {
@@ -2651,6 +2662,7 @@ mod tests {
                 branch_count: 3,
                 start_line: 1,
                 end_line: 10,
+                crypto_boundaries: vec![],
             });
         }
         for i in 0..10 {
@@ -2671,6 +2683,7 @@ mod tests {
                 branch_count: 5,
                 start_line: 1,
                 end_line: 10,
+                crypto_boundaries: vec![],
             });
         }
 
@@ -2761,6 +2774,7 @@ mod tests {
                 branch_count: i % 10,
                 start_line: 1,
                 end_line: 10,
+                crypto_boundaries: vec![],
             })
             .collect();
 
@@ -2807,6 +2821,7 @@ mod tests {
                 branch_count: 0,
                 start_line: 1,
                 end_line: 10,
+                crypto_boundaries: vec![],
             },
             FunctionEntry {
                 file_path: PathBuf::from("/src/b.ts"),
@@ -2825,6 +2840,7 @@ mod tests {
                 branch_count: 3,
                 start_line: 1,
                 end_line: 10,
+                crypto_boundaries: vec![],
             },
             FunctionEntry {
                 file_path: PathBuf::from("/src/a.ts"),
@@ -2843,6 +2859,7 @@ mod tests {
                 branch_count: 5,
                 start_line: 1,
                 end_line: 10,
+                crypto_boundaries: vec![],
             },
         ];
 

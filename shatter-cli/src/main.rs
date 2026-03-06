@@ -1576,6 +1576,7 @@ async fn run_scan(
             start_line: entry.start_line,
             end_line: entry.end_line,
             literals: vec![],
+            crypto_boundaries: vec![],
         });
     }
 

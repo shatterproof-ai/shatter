@@ -236,6 +236,7 @@ fn analyze_function(
         start_line,
         end_line,
         literals,
+        crypto_boundaries: vec![],
     }
 }
 

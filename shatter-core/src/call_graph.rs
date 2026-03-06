@@ -443,6 +443,7 @@ mod tests {
                 branch_count: 0,
                 start_line: 1,
                 end_line: 10,
+                crypto_boundaries: vec![],
             });
         }
 
@@ -483,6 +484,7 @@ mod tests {
                 branch_count: 0,
                 start_line: 1,
                 end_line: 10,
+                crypto_boundaries: vec![],
             });
         }
 

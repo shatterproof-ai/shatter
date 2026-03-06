@@ -465,6 +465,7 @@ mod tests {
             end_line: 50,
             exported: true,
             literals: vec![],
+            crypto_boundaries: vec![],
         }
     }
 
