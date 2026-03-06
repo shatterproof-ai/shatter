@@ -102,19 +102,49 @@ pub fn boundaries_for(ty: &ParamType) -> Vec<BoundaryValue> {
 
 **Walkthrough gate**: The walkthrough exercises the full pipeline end-to-end (analyze, explore, scan, export, spec). Run it after any change to CLI commands, frontend handlers, protocol types, or example files. The walkthrough prints an **ERROR SUMMARY** at the end and exits with code 1 if any step produced errors — check this summary, investigate failures, and fix before merging. Known exceptions: `stale` exit code 1 is informational (means "some functions are stale"), and scan errors for `11-opaque-types.ts` and `12-external-deps.ts` are expected.
 
-### Property-Based Testing Standards
+### Formal Methods & Verification
 
-Every component uses property-based testing: **proptest** (Rust), **fast-check** (TypeScript), **rapid** (Go), plus Go native fuzzing (`testing.F`). PBT is not optional decoration — it is a primary testing strategy alongside unit tests and E2E tests.
+Four complementary tools, each with a distinct role. PBT is the workhorse; the others fill gaps PBT can't reach.
+
+| Tool | Role | When to use |
+|---|---|---|
+| **Property-based testing** | Invariant discovery, regression prevention | Any non-trivial public function with invariants |
+| **Native fuzzing** | Crash resistance at parsing boundaries | Code that deserializes untrusted input |
+| **Contracts** (`contracts` crate) | Runtime assertions at trust boundaries | Only where Rust's type system can't express the invariant (see below) |
+| **Kani model checking** (deferred — P4) | Exhaustive verification of critical algorithms | Highest-stakes properties only (solver correctness). Not yet in use. |
+
+#### Property-Based Testing (primary strategy)
+
+Every component uses PBT: **proptest** (Rust), **fast-check** (TypeScript), **rapid** (Go). PBT is not optional decoration — it is a primary testing strategy alongside unit tests and E2E tests.
 
 **When adding or modifying a public function**, add property tests that cover its core invariants:
 - **Roundtrip properties**: serialize → deserialize → equality (table stakes — always include for serializable types)
 - **Semantic invariants**: "output types match input types", "length is preserved", "ordering is maintained" — these catch real bugs that fixed examples miss
 - **Pipeline composition**: test functions composed together, not just in isolation. The solver bridge (constraints → solve → overlay) and the explore loop (execute → classify → worklist) are especially important.
-- **Negative properties**: malformed/adversarial input never causes panics. Use fuzz targets (Go `testing.F`, Rust `cargo-fuzz`) for byte-level mutation at deserialization boundaries.
+- **Negative properties**: malformed/adversarial input never causes panics
 
 **Shared generators**: reuse `test_arbitraries.rs` (Rust), `arbSymExpr`/`arbTypeInfo` (TS), `genTypeInfo` (Go). Don't reinvent type generators per test file.
 
-**Coverage target**: every module that handles untrusted input, crosses an FFI boundary, or maintains state should have proptest/PBT coverage of its core invariants — not just serialization.
+**Coverage target**: every module that handles untrusted input, crosses an FFI boundary, or maintains state should have PBT coverage of its core invariants — not just serialization.
+
+See sub-crate CLAUDE.md files for per-component PBT priorities (`shatter-core`, `shatter-ts`, `shatter-go`).
+
+#### Native Fuzzing
+
+- **Go**: `testing.F` in `*_fuzz_test.go` files — byte-level mutation for crash/panic discovery at parsing boundaries. Seed corpus from existing test fixtures.
+- **Rust**: `cargo-fuzz` for deserialization boundaries.
+- Add a fuzz target for any code that deserializes untrusted input (protocol messages, subprocess JSON).
+
+#### Contracts
+
+High bar. Use `#[requires]`/`#[ensures]` only where ALL THREE hold: (1) trust boundary, (2) type gap, (3) silent corruption. See `shatter-core/CLAUDE.md` for the full policy, qualifying sites, and what does NOT qualify.
+
+#### Anti-Patterns
+
+- Contracts that restate type signatures — use the type system instead
+- Proptest for trivial getters/setters — specific examples are clearer
+- PBT that only tests serialization roundtrips without semantic invariants — roundtrips are table stakes, not the goal
+- Duplicating generators across test files — use shared generators in `test_arbitraries.rs` / `arbSymExpr` / `genTypeInfo`
 
 ### Completion Checklist
 
