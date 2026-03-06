@@ -137,3 +137,7 @@ dist
 .yarn/build-state.yml
 .yarn/install-state.gz
 .pnp.*
+
+# Shatter cache (machine-specific, should not be committed)
+.shatter/cache/
+# Shatter seeds pool — commit for reproducibility (.shatter/seeds/)
