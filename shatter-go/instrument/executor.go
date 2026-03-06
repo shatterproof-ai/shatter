@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"go/ast"
+	"math"
 	"go/importer"
 	"go/parser"
 	"go/printer"
@@ -26,7 +27,7 @@ const defaultBuildTimeout = 30 * time.Second
 // env var (in seconds) with a fallback to defaultExecTimeout.
 func execTimeout() time.Duration {
 	if s := os.Getenv("SHATTER_EXEC_TIMEOUT"); s != "" {
-		if secs, err := strconv.ParseFloat(s, 64); err == nil && secs > 0 {
+		if secs, err := strconv.ParseFloat(s, 64); err == nil && secs > 0 && !math.IsInf(secs, 0) && !math.IsNaN(secs) {
 			return time.Duration(secs * float64(time.Second))
 		}
 	}
@@ -37,7 +38,7 @@ func execTimeout() time.Duration {
 // env var (in seconds) with a fallback to defaultBuildTimeout.
 func buildTimeout() time.Duration {
 	if s := os.Getenv("SHATTER_BUILD_TIMEOUT"); s != "" {
-		if secs, err := strconv.ParseFloat(s, 64); err == nil && secs > 0 {
+		if secs, err := strconv.ParseFloat(s, 64); err == nil && secs > 0 && !math.IsInf(secs, 0) && !math.IsNaN(secs) {
 			return time.Duration(secs * float64(time.Second))
 		}
 	}

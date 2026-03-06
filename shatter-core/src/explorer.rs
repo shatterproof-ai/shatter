@@ -2124,4 +2124,74 @@ mod tests {
         assert!(harvested > 0, "non-boundary user seed should be harvested from random explorer");
         frontend.shutdown().await.expect("shutdown failed");
     }
+
+    // -----------------------------------------------------------------------
+    // Property-based tests
+    // -----------------------------------------------------------------------
+
+    mod prop_tests {
+        use super::*;
+        use crate::test_arbitraries::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn path_hash_is_deterministic(er in arb_execute_result()) {
+                let buckets = LoopBuckets::none();
+                let h1 = path_hash(&er, &buckets);
+                let h2 = path_hash(&er, &buckets);
+                prop_assert_eq!(h1, h2, "path_hash must be deterministic");
+            }
+
+            #[test]
+            fn path_hash_sensitive_to_taken_bit(
+                branch_id in 0..50u32,
+                line in 1..200u32,
+            ) {
+                // Flipping the taken bit on a single branch should change the hash.
+                let constraint = crate::execution_record::SymConstraint::Unknown {
+                    hint: String::new(),
+                };
+                let perf = crate::protocol::PerformanceMetrics {
+                    wall_time_ms: 0.0,
+                    cpu_time_us: 0,
+                    heap_used_bytes: 0,
+                    heap_allocated_bytes: 0,
+                };
+                let base = crate::protocol::ExecuteResult {
+                    return_value: None,
+                    thrown_error: None,
+                    branch_path: vec![crate::execution_record::BranchDecision {
+                        branch_id,
+                        line,
+                        taken: true,
+                        constraint: constraint.clone(),
+                    }],
+                    lines_executed: vec![],
+                    calls_to_external: vec![],
+                    path_constraints: vec![],
+                    scope_events: vec![],
+                    side_effects: vec![],
+                    performance: perf.clone(),
+                    capture_truncation: None,
+                };
+                let flipped = crate::protocol::ExecuteResult {
+                    branch_path: vec![crate::execution_record::BranchDecision {
+                        branch_id,
+                        line,
+                        taken: false,
+                        constraint,
+                    }],
+                    performance: perf,
+                    ..base.clone()
+                };
+                let buckets = LoopBuckets::none();
+                prop_assert_ne!(
+                    path_hash(&base, &buckets),
+                    path_hash(&flipped, &buckets),
+                    "flipping taken bit should change path_hash"
+                );
+            }
+        }
+    }
 }

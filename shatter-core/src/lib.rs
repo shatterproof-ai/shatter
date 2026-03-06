@@ -57,3 +57,6 @@ pub mod string_mutation;
 pub mod sym_expr;
 pub mod triage;
 pub mod types;
+
+#[cfg(test)]
+mod test_arbitraries;

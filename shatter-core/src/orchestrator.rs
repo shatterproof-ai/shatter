@@ -1534,4 +1534,65 @@ mod tests {
 
         frontend.shutdown().await.expect("shutdown failed");
     }
+
+    // -----------------------------------------------------------------------
+    // Property-based tests
+    // -----------------------------------------------------------------------
+
+    mod prop_tests {
+        use super::*;
+        use crate::solver::ConcreteValue;
+        use crate::test_arbitraries::arb_json_value;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn overlay_preserves_length(
+                len in 1..6usize,
+            ) {
+                let base: Vec<serde_json::Value> =
+                    (0..len).map(|i| serde_json::json!(i as i64)).collect();
+                let names: Vec<String> =
+                    (0..len).map(|i| format!("p{i}")).collect();
+                // Empty solved map — output must equal input length.
+                let solved = std::collections::HashMap::new();
+                let result = overlay_solved_values(&base, &solved, &names);
+                prop_assert_eq!(
+                    base.len(),
+                    result.len(),
+                    "overlay_solved_values changed vector length"
+                );
+            }
+
+            #[test]
+            fn overlay_with_known_param_updates_value(idx in 0..5usize) {
+                let len = idx + 1;
+                let base: Vec<serde_json::Value> =
+                    (0..len).map(|i| serde_json::json!(i as i64)).collect();
+                let names: Vec<String> =
+                    (0..len).map(|i| format!("p{i}")).collect();
+                let mut solved = std::collections::HashMap::new();
+                solved.insert(format!("p{idx}"), ConcreteValue::Int(999));
+                let result = overlay_solved_values(&base, &solved, &names);
+                prop_assert_eq!(result.len(), base.len());
+                prop_assert_eq!(&result[idx], &serde_json::json!(999));
+            }
+
+            #[test]
+            fn overlay_ignores_unknown_names(
+                base_val in arb_json_value(),
+            ) {
+                let base = vec![base_val.clone()];
+                let names = vec!["x".to_string()];
+                let mut solved = std::collections::HashMap::new();
+                // "unknown_var" doesn't match "x", so base should be unchanged.
+                // Exception: single-param heuristic fires for non-dotted names,
+                // so use a dotted name to avoid that path.
+                solved.insert("unknown.derived".to_string(), ConcreteValue::Int(42));
+                let result = overlay_solved_values(&base, &solved, &names);
+                prop_assert_eq!(result.len(), 1);
+                prop_assert_eq!(&result[0], &base_val);
+            }
+        }
+    }
 }
