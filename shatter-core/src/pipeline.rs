@@ -334,6 +334,8 @@ mod tests {
             termination_reason: crate::orchestrator::TerminationReason::WorklistExhausted,
             raw_results: vec![],
             discoveries: vec![(0, DiscoveryMethod::Random)],
+            triage_skipped: 0,
+            triage_mispredictions: 0,
         };
 
         let output: ObservationOutput = concolic.into();

@@ -24,6 +24,7 @@ use crate::frontend::{Frontend, FrontendError};
 use crate::protocol::{Command, ExecuteResult, ResponseResult};
 use crate::solver::{self, ConcreteValue, SolveResult};
 use crate::sym_expr::SymExpr;
+use crate::triage::{TriageState, TriageVerdict};
 use crate::types::{ComplexKind, ParamInfo};
 
 /// Parsed frontend capabilities from the handshake response.
@@ -187,6 +188,10 @@ pub struct ExploreResult {
     pub raw_results: Vec<(Vec<serde_json::Value>, ExecuteResult)>,
     /// Per-branch discovery attribution with method (Z3, Random, UserProvided).
     pub discoveries: Vec<(u32, DiscoveryMethod)>,
+    /// Number of inputs skipped by triage prediction.
+    pub triage_skipped: usize,
+    /// Number of sampled skip predictions that were wrong.
+    pub triage_mispredictions: usize,
 }
 
 /// Errors that can occur during concolic exploration.
@@ -331,6 +336,9 @@ pub async fn explore(
     let mut seen_branch_sides: HashSet<(u32, bool)> = HashSet::new();
     let mut frontier_set = FrontierSet::new();
     let mut rng = StdRng::from_os_rng();
+    let mut triage_state = TriageState::new(param_names.clone());
+    let mut triage_skipped: usize = 0;
+    let mut triage_mispredictions: usize = 0;
 
     // Add user-provided candidates with highest priority.
     for inputs in user_inputs {
@@ -362,6 +370,26 @@ pub async fn explore(
             break;
         }
 
+        // Triage: predict whether this input will produce a novel path.
+        // Skip triage for user-provided inputs — always execute those.
+        let is_sampled_skip = if entry.source != InputSource::UserProvided {
+            let verdict = triage_state.triage_candidate(&entry.inputs, &covered_paths);
+            triage_state.record_verdict(&verdict);
+            if verdict == TriageVerdict::Skip {
+                if triage_state.should_sample() {
+                    // Execute anyway to validate the prediction.
+                    true
+                } else {
+                    triage_skipped += 1;
+                    continue;
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
         // Execute concretely via the frontend.
         let response = frontend
             .send(Command::Execute {
@@ -389,14 +417,25 @@ pub async fn explore(
 
         let path_id = hash_branch_path(&exec_result.branch_path);
 
+        // Validate sampled skip prediction before modifying covered_paths.
+        if is_sampled_skip {
+            let already_covered = covered_paths.contains(&path_id);
+            // Sentinel values: equal if prediction correct, different if misprediction.
+            triage_state.record_sample(0, if already_covered { 0 } else { 1 });
+            if !already_covered {
+                triage_mispredictions += 1;
+            }
+        }
+
         if !covered_paths.insert(path_id) {
             // Already covered this path — skip solving.
             plateau_counter += 1;
             continue;
         }
 
-        // New path discovered — reset plateau counter.
+        // New path discovered — reset plateau counter and update triage state.
         plateau_counter = 0;
+        triage_state.update(&exec_result.branch_path);
 
         // Track per-branch discovery attribution from input source.
         let method = match entry.source {
@@ -549,6 +588,8 @@ pub async fn explore(
         termination_reason,
         raw_results,
         discoveries,
+        triage_skipped,
+        triage_mispredictions,
     })
 }
 
