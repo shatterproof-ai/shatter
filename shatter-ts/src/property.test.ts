@@ -4,8 +4,8 @@
  * Validates serialization round-trips and structural invariants that
  * hand-written fixtures might miss.
  */
-import { describe, it, expect } from "vitest";
 import fc from "fast-check";
+import ts from "typescript";
 import type {
   BinOpKind,
   UnOpKind,
@@ -36,6 +36,7 @@ import type {
   ErrorInfo,
 } from "./protocol.js";
 import { PROTOCOL_VERSION } from "./protocol.js";
+import { buildSymExpr, buildSymExprWithFlow } from "./instrumentor.js";
 
 // ---------------------------------------------------------------------------
 // Arbitraries — leaf types
@@ -402,5 +403,201 @@ describe("property: TraceEvent round-trips", () => {
         expect(decoded).toEqual(te);
       }),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SymExpr builder parity tests
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse a TS expression string and extract the expression AST node.
+ * Wraps the expression in `const __expr = EXPR;` so the compiler parses it.
+ */
+function parseExpr(exprSource: string): ts.Expression {
+  const source = `const __expr = ${exprSource};`;
+  const sf = ts.createSourceFile("test.ts", source, ts.ScriptTarget.ESNext, true);
+  const stmt = sf.statements[0] as ts.VariableStatement;
+  const decl = stmt.declarationList.declarations[0]!;
+  return decl.initializer!;
+}
+
+/**
+ * Check if a SymExpr tree contains at least one non-unknown leaf.
+ * When all leaves are unknown, buildSymExprWithFlow intentionally returns
+ * unknown as an optimization — this is not a parity violation.
+ */
+function hasNonUnknownLeaf(expr: SymExpr): boolean {
+  if (expr.kind === "param" || expr.kind === "const") return true;
+  if (expr.kind === "bin_op") return hasNonUnknownLeaf(expr.left) || hasNonUnknownLeaf(expr.right);
+  if (expr.kind === "un_op") return hasNonUnknownLeaf(expr.operand);
+  if (expr.kind === "call") {
+    const recOk = expr.receiver ? hasNonUnknownLeaf(expr.receiver) : false;
+    return recOk || expr.args.some(hasNonUnknownLeaf);
+  }
+  return false;
+}
+
+const PARAM_NAME = "x";
+const paramNames = new Set([PARAM_NAME]);
+const resolveName = (name: string): SymExpr | undefined =>
+  name === PARAM_NAME ? { kind: "param", name: PARAM_NAME, path: [] } : undefined;
+
+/** Generator for binary operator source tokens that binaryTokenToOp handles. */
+const arbBinOp = fc.constantFrom(
+  "===", "!==", "==", "!=",
+  "<", "<=", ">", ">=",
+  "+", "-", "*", "/", "%",
+  "&&", "||",
+  "&", "|", "^",
+);
+
+/** Generator for unary prefix operator source tokens. */
+const arbUnOp = fc.constantFrom("!", "-", "~");
+
+/**
+ * Generator for TypeScript expression source code involving param `x`.
+ * Each generated expression should be parseable and involve the param
+ * so at least one builder returns a non-unknown result.
+ */
+const arbExprSource: fc.Arbitrary<string> = fc.letrec<{ expr: string }>(tie => ({
+  expr: fc.oneof(
+    { depthIdentifier: "exprdepth", maxDepth: 2 },
+    // Param identifier
+    fc.constant(PARAM_NAME),
+    // Numeric literals
+    fc.integer({ min: -1000, max: 1000 }).map(n => String(n < 0 ? `(${n})` : n)),
+    // String literals
+    fc.stringMatching(/^[a-z]{0,5}$/).map(s => `"${s}"`),
+    // Boolean literals
+    fc.boolean().map(b => String(b)),
+    // null
+    fc.constant("null"),
+    // Property access on param
+    fc.stringMatching(/^[a-z]{1,5}$/).map(prop => `${PARAM_NAME}.${prop}`),
+    // Binary expression with param
+    arbBinOp.chain(op =>
+      tie("expr").map(right => `(${PARAM_NAME} ${op} ${right})`),
+    ),
+    // Unary prefix
+    arbUnOp.map(op => `(${op}${PARAM_NAME})`),
+    // typeof
+    fc.constant(`(typeof ${PARAM_NAME})`),
+    // Method call on param
+    fc.stringMatching(/^[a-z]{1,5}$/).map(m => `${PARAM_NAME}.${m}()`),
+    // Method call with argument
+    fc.tuple(
+      fc.stringMatching(/^[a-z]{1,5}$/),
+      fc.stringMatching(/^[a-z]{0,3}$/),
+    ).map(([m, arg]) => `${PARAM_NAME}.${m}("${arg}")`),
+    // Free function call with param arg
+    fc.stringMatching(/^[a-z]{1,5}$/).map(fn => `${fn}(${PARAM_NAME})`),
+  ),
+})).expr;
+
+describe("property: buildSymExpr / buildSymExprWithFlow parity", () => {
+  it("both builders handle param-involving expressions consistently", () => {
+    fc.assert(
+      fc.property(arbExprSource, (source) => {
+        let node: ts.Expression;
+        try {
+          node = parseExpr(source);
+        } catch {
+          return; // skip unparseable expressions
+        }
+
+        const fromBuildSymExpr = buildSymExpr(node, paramNames);
+        const fromBuildWithFlow = buildSymExprWithFlow(node, resolveName);
+
+        const exprResult = fromBuildSymExpr.kind !== "unknown";
+        const flowResult = fromBuildWithFlow.kind !== "unknown";
+
+        // If buildSymExpr returns non-unknown, buildSymExprWithFlow should too
+        // UNLESS the result has no non-unknown leaves (the "all-unknown
+        // optimization" in buildSymExprWithFlow is intentional).
+        if (exprResult && !flowResult) {
+          expect(hasNonUnknownLeaf(fromBuildSymExpr)).toBe(false);
+        }
+
+        // If buildSymExprWithFlow returns non-unknown, buildSymExpr must too.
+        // There is no case where flow handles something that expr doesn't.
+        if (flowResult) {
+          expect(exprResult).toBe(true);
+        }
+      }),
+      { numRuns: 500 },
+    );
+  });
+
+  it("individual AST node types are handled by both builders", () => {
+    // Fixed test cases for each AST node type — these are deterministic
+    // regression anchors complementing the random property above.
+    const cases: Array<{ label: string; source: string }> = [
+      { label: "Identifier (param)", source: "x" },
+      { label: "NumericLiteral (int)", source: "42" },
+      { label: "NumericLiteral (float)", source: "3.14" },
+      { label: "StringLiteral", source: '"hello"' },
+      { label: "TrueKeyword", source: "true" },
+      { label: "FalseKeyword", source: "false" },
+      { label: "NullKeyword", source: "null" },
+      { label: "BinaryExpression (eq)", source: "x === 1" },
+      { label: "BinaryExpression (add)", source: "x + 1" },
+      { label: "BinaryExpression (and)", source: "x && true" },
+      { label: "PrefixUnaryExpression (not)", source: "!x" },
+      { label: "PrefixUnaryExpression (neg)", source: "-x" },
+      { label: "PrefixUnaryExpression (bitwise_not)", source: "~x" },
+      { label: "PropertyAccessExpression", source: "x.length" },
+      { label: "TypeOfExpression", source: "typeof x" },
+      { label: "CallExpression (method)", source: 'x.indexOf("a")' },
+      { label: "CallExpression (method no args)", source: "x.trim()" },
+      { label: "CallExpression (free fn)", source: "parseInt(x)" },
+      { label: "ParenthesizedExpression", source: "(x)" },
+    ];
+
+    for (const { label, source } of cases) {
+      const node = parseExpr(source);
+      const fromExpr = buildSymExpr(node, paramNames);
+      const fromFlow = buildSymExprWithFlow(node, resolveName);
+
+      // Both must return non-unknown for param-involving expressions
+      if (fromExpr.kind === "unknown") {
+        throw new Error(`buildSymExpr returned unknown for ${label}: ${source}`);
+      }
+      if (fromFlow.kind === "unknown") {
+        throw new Error(`buildSymExprWithFlow returned unknown for ${label}: ${source}`);
+      }
+    }
+  });
+
+  it("both builders return unknown for non-param identifiers", () => {
+    const node = parseExpr("unknownVar");
+    const fromExpr = buildSymExpr(node, paramNames);
+    const fromFlow = buildSymExprWithFlow(node, resolveName);
+
+    expect(fromExpr.kind).toBe("unknown");
+    expect(fromFlow.kind).toBe("unknown");
+  });
+
+  it("nested expressions maintain parity", () => {
+    const nestedCases = [
+      'x.length > 0',
+      'x.indexOf("@") !== -1',
+      'typeof x === "string"',
+      '!(x > 0)',
+      'x + 1 > 0',
+    ];
+
+    for (const source of nestedCases) {
+      const node = parseExpr(source);
+      const fromExpr = buildSymExpr(node, paramNames);
+      const fromFlow = buildSymExprWithFlow(node, resolveName);
+
+      if (fromExpr.kind === "unknown") {
+        throw new Error(`buildSymExpr returned unknown for: ${source}`);
+      }
+      if (fromFlow.kind === "unknown") {
+        throw new Error(`buildSymExprWithFlow returned unknown for: ${source}`);
+      }
+    }
   });
 });
