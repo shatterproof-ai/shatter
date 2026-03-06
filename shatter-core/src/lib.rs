@@ -47,6 +47,7 @@ pub mod reporter;
 pub mod scan_orchestrator;
 pub mod scm;
 pub mod scope;
+pub mod shrink;
 pub mod snapshot;
 pub mod spec;
 pub mod spec_diff;
