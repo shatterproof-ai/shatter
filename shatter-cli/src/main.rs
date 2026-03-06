@@ -294,6 +294,18 @@ enum CliCommand {
         #[arg(long)]
         exclude: Vec<String>,
 
+        /// Scan only files with uncommitted changes (staged + unstaged).
+        #[arg(long, conflicts_with = "since")]
+        changed: bool,
+
+        /// Scan only files changed between <ref> and HEAD.
+        #[arg(long, conflicts_with = "changed")]
+        since: Option<String>,
+
+        /// Include untracked files when using --changed.
+        #[arg(long, requires = "changed")]
+        include_untracked: bool,
+
         /// Scan all functions, including non-exported ones.
         #[arg(long)]
         all: bool,
@@ -1394,6 +1406,9 @@ async fn run_scan(
     language_filter: Option<&str>,
     include_patterns: &[String],
     exclude_patterns: &[String],
+    changed: bool,
+    since: Option<&str>,
+    include_untracked: bool,
     all_functions: bool,
     max_depth: Option<usize>,
     max_iterations: u32,
@@ -1467,8 +1482,29 @@ async fn run_scan(
         respect_gitignore: true,
         max_depth,
     };
-    let files = discovery::discover_files(&root, &options)
-        .map_err(|e| format!("file discovery failed: {e}"))?;
+    let files = if changed || since.is_some() {
+        use shatter_core::scm::{ScmProvider, detect_provider};
+        let provider = detect_provider(&root)
+            .map_err(|e| format!("SCM detection failed: {e}"))?;
+        let scm_files = if let Some(base_ref) = since {
+            provider.diff_files(&root, base_ref)
+        } else {
+            provider.changed_files(&root, include_untracked)
+        }
+        .map_err(|e| format!("SCM file query failed: {e}"))?;
+
+        if scm_files.is_empty() {
+            log::info!("No changed files found");
+            return Ok(());
+        }
+        log::info!("SCM reports {} changed file(s)", scm_files.len());
+
+        discovery::filter_file_list(&root, scm_files, &options)
+            .map_err(|e| format!("file filtering failed: {e}"))?
+    } else {
+        discovery::discover_files(&root, &options)
+            .map_err(|e| format!("file discovery failed: {e}"))?
+    };
 
     // Filter by language if specified.
     let files: Vec<(PathBuf, DiscoveryLanguage)> = if let Some(lang) = language_filter {
@@ -2963,6 +2999,9 @@ async fn main() -> ExitCode {
             language,
             include,
             exclude,
+            changed,
+            since,
+            include_untracked,
             all,
             max_depth,
             timeout_per_fn,
@@ -2998,6 +3037,9 @@ async fn main() -> ExitCode {
                 language.as_deref(),
                 &include,
                 &exclude,
+                changed,
+                since.as_deref(),
+                include_untracked,
                 all,
                 max_depth,
                 max_iterations,

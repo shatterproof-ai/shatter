@@ -44,6 +44,7 @@ pub mod report_style;
 pub mod revalidation;
 pub mod reporter;
 pub mod scan_orchestrator;
+pub mod scm;
 pub mod scope;
 pub mod snapshot;
 pub mod spec;

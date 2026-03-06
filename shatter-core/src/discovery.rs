@@ -228,6 +228,85 @@ fn walk_dir(
     Ok(())
 }
 
+/// Filter a pre-supplied list of file paths through the same exclude/include/language
+/// stack used by [`discover_files`]. Useful when an external source (e.g. SCM provider)
+/// supplies the candidate file list instead of directory walking.
+///
+/// Paths in `files` should be absolute. Paths that don't start with `root` are skipped.
+/// Returns `(absolute_path, Language)` pairs, sorted by path.
+pub fn filter_file_list(
+    root: &Path,
+    files: Vec<PathBuf>,
+    options: &DiscoveryOptions,
+) -> Result<Vec<(PathBuf, Language)>, DiscoveryError> {
+    let include_set = build_glob_set(&options.include_patterns)?;
+    let exclude_set = build_glob_set(&options.exclude_patterns)?;
+    let default_exclude_set = build_glob_set(
+        &DEFAULT_EXCLUDES.iter().map(|s| (*s).to_string()).collect::<Vec<_>>(),
+    )?;
+
+    let ignore_matcher = if options.respect_gitignore {
+        load_ignore_file(&root.join(".gitignore"))
+    } else {
+        None
+    };
+    let shatter_ignore_matcher = load_ignore_file(&root.join(".shatterignore"));
+
+    let mut results = Vec::new();
+
+    for path in files {
+        let relative = match path.strip_prefix(root) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+
+        // Skip directories
+        if path.is_dir() {
+            continue;
+        }
+
+        if let Some(ref set) = default_exclude_set
+            && set.is_match(relative)
+        {
+            continue;
+        }
+
+        if let Some(ref set) = exclude_set
+            && set.is_match(relative)
+        {
+            continue;
+        }
+
+        if let Some(ref set) = ignore_matcher
+            && set.is_match(relative)
+        {
+            continue;
+        }
+
+        if let Some(ref set) = shatter_ignore_matcher
+            && set.is_match(relative)
+        {
+            continue;
+        }
+
+        let ext = path.extension().and_then(|e| e.to_str());
+        let Some(language) = ext.and_then(Language::from_extension) else {
+            continue;
+        };
+
+        if let Some(ref set) = include_set
+            && !set.is_match(relative)
+        {
+            continue;
+        }
+
+        results.push((path, language));
+    }
+
+    results.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(results)
+}
+
 /// Build a `GlobSet` from pattern strings. Returns `None` if patterns is empty.
 fn build_glob_set(patterns: &[String]) -> Result<Option<GlobSet>, DiscoveryError> {
     if patterns.is_empty() {
@@ -491,5 +570,129 @@ mod tests {
         let results = discover_files(dir.path(), &DiscoveryOptions::default()).expect("discover");
         let names: Vec<_> = results.iter().map(|(p, _)| p.file_name().unwrap().to_str().unwrap().to_string()).collect();
         assert_eq!(names, vec!["a.ts", "m.ts", "z.ts"]);
+    }
+
+    // --- filter_file_list tests ---
+
+    #[test]
+    fn filter_keeps_source_files_and_detects_language() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        create_file(dir.path(), "src/app.ts");
+        create_file(dir.path(), "src/handler.go");
+        create_file(dir.path(), "README.md");
+
+        let files = vec![
+            dir.path().join("src/app.ts"),
+            dir.path().join("src/handler.go"),
+            dir.path().join("README.md"),
+        ];
+
+        let results = filter_file_list(dir.path(), files, &DiscoveryOptions::default())
+            .expect("filter");
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().any(|(_, l)| *l == Language::TypeScript));
+        assert!(results.iter().any(|(_, l)| *l == Language::Go));
+    }
+
+    #[test]
+    fn filter_applies_default_excludes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        create_file(dir.path(), "src/app.ts");
+        create_file(dir.path(), "node_modules/pkg/index.ts");
+
+        let files = vec![
+            dir.path().join("src/app.ts"),
+            dir.path().join("node_modules/pkg/index.ts"),
+        ];
+
+        let results = filter_file_list(dir.path(), files, &DiscoveryOptions::default())
+            .expect("filter");
+        assert_eq!(results.len(), 1);
+        assert!(results[0].0.ends_with("app.ts"));
+    }
+
+    #[test]
+    fn filter_applies_user_excludes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        create_file(dir.path(), "src/app.ts");
+        create_file(dir.path(), "src/generated.ts");
+
+        let files = vec![
+            dir.path().join("src/app.ts"),
+            dir.path().join("src/generated.ts"),
+        ];
+
+        let options = DiscoveryOptions {
+            exclude_patterns: vec!["**/generated.*".to_string()],
+            ..Default::default()
+        };
+        let results = filter_file_list(dir.path(), files, &options).expect("filter");
+        assert_eq!(results.len(), 1);
+        assert!(results[0].0.ends_with("app.ts"));
+    }
+
+    #[test]
+    fn filter_applies_user_includes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        create_file(dir.path(), "src/app.ts");
+        create_file(dir.path(), "src/handler.go");
+
+        let files = vec![
+            dir.path().join("src/app.ts"),
+            dir.path().join("src/handler.go"),
+        ];
+
+        let options = DiscoveryOptions {
+            include_patterns: vec!["**/*.ts".to_string()],
+            ..Default::default()
+        };
+        let results = filter_file_list(dir.path(), files, &options).expect("filter");
+        assert_eq!(results.len(), 1);
+        assert!(results[0].0.ends_with("app.ts"));
+    }
+
+    #[test]
+    fn filter_skips_paths_outside_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        create_file(dir.path(), "src/app.ts");
+
+        let files = vec![
+            dir.path().join("src/app.ts"),
+            PathBuf::from("/somewhere/else/foo.ts"),
+        ];
+
+        let results = filter_file_list(dir.path(), files, &DiscoveryOptions::default())
+            .expect("filter");
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn filter_results_are_sorted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        create_file(dir.path(), "z.ts");
+        create_file(dir.path(), "a.ts");
+        create_file(dir.path(), "m.ts");
+
+        let files = vec![
+            dir.path().join("z.ts"),
+            dir.path().join("a.ts"),
+            dir.path().join("m.ts"),
+        ];
+
+        let results = filter_file_list(dir.path(), files, &DiscoveryOptions::default())
+            .expect("filter");
+        let names: Vec<_> = results
+            .iter()
+            .map(|(p, _)| p.file_name().unwrap().to_str().unwrap().to_string())
+            .collect();
+        assert_eq!(names, vec!["a.ts", "m.ts", "z.ts"]);
+    }
+
+    #[test]
+    fn filter_empty_list_returns_empty() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let results = filter_file_list(dir.path(), vec![], &DiscoveryOptions::default())
+            .expect("filter");
+        assert!(results.is_empty());
     }
 }
