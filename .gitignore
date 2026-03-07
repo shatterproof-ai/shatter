@@ -141,3 +141,7 @@ dist
 # Shatter cache (machine-specific, should not be committed)
 .shatter/cache/
 # Shatter seeds pool — commit for reproducibility (.shatter/seeds/)
+
+# Dolt database files (added by bd init)
+.dolt/
+*.db
