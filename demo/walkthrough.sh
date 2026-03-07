@@ -15,6 +15,18 @@ DELAY=2
 DRY_RUN=false
 SHATTER="cargo run --quiet --bin shatter --"
 
+# Use a temporary cache directory so the walkthrough never pollutes .shatter/
+# in the repo (reserved for running shatter on shatter itself).
+export SHATTER_CACHE_DIR
+SHATTER_CACHE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/shatter-demo-cache.XXXXXX")"
+
+# Error tracking: collect failures for a summary at the end.
+ERROR_LOG="$(mktemp "${TMPDIR:-/tmp}/shatter-walkthrough-errors.XXXXXX")"
+STEP_ERRORS=0
+
+cleanup() { rm -rf "$SHATTER_CACHE_DIR" "$ERROR_LOG"; }
+trap cleanup EXIT
+
 # Ensure bindgen can find stdbool.h via GCC's include path (avoids requiring libclang-dev)
 if command -v gcc &>/dev/null; then
     export BINDGEN_EXTRA_CLANG_ARGS="${BINDGEN_EXTRA_CLANG_ARGS:-} -I$(gcc -print-file-name=include)"
@@ -85,16 +97,36 @@ run_cmd() {
     if [[ "$DRY_RUN" == true ]]; then
         echo "${DIM}  (dry-run: skipped)${RESET}"
     else
-        if "$@" </dev/null; then
+        # Capture combined output (stdout+stderr) while still displaying it.
+        # We scan the captured output afterward for error indicators.
+        local output_tmp
+        output_tmp="$(mktemp)"
+        if "$@" </dev/null > >(tee -a "$output_tmp") 2> >(tee -a "$output_tmp" >&2); then
             true
         else
             local rc=$?
             echo ""
             echo "${RED}  Command exited with status ${rc}${RESET}"
+            echo "  Step ${CURRENT_STEP}: exit code ${rc}" >> "$ERROR_LOG"
+            STEP_ERRORS=$((STEP_ERRORS + 1))
         fi
+        # Wait for tee subprocesses to flush
+        wait 2>/dev/null || true
+        # Scan for error indicators in the captured output
+        local error_pattern='\[error\]|failed to deserialize|panic|SIGSEGV|error: exploration error'
+        if grep -qiE "$error_pattern" "$output_tmp" 2>/dev/null; then
+            echo "  Step ${CURRENT_STEP}: errors detected:" >> "$ERROR_LOG"
+            grep -iE "$error_pattern" "$output_tmp" \
+                | sed 's/^/    /' >> "$ERROR_LOG"
+            STEP_ERRORS=$((STEP_ERRORS + 1))
+        fi
+        rm -f "$output_tmp"
     fi
     echo ""
 }
+
+# Track current step number for error reporting
+CURRENT_STEP=0
 
 pause() {
     if [[ "$MODE" == "interactive" ]]; then
@@ -108,6 +140,7 @@ pause() {
 step() {
     local num="$1" total="$2" title="$3" desc="$4"
     shift 4
+    CURRENT_STEP="$num"
     banner "$num" "$total" "$title" "$desc"
     run_cmd "$@"
     pause
@@ -175,8 +208,8 @@ step 5 $TOTAL "Scan Standalone TypeScript" \
 
 # Stage 6: Cache behavior maps
 step 6 $TOTAL "Explore with Disk Cache" \
-    "Persist behavior maps to disk for reuse across runs" \
-    $SHATTER explore --cache-dir /tmp/shatter-demo-cache "${EXAMPLES[@]}"
+    "Persist behavior maps to disk for reuse across runs (SHATTER_CACHE_DIR)" \
+    $SHATTER explore "${EXAMPLES[@]}"
 
 # Stage 7: Analyze Go functions
 step 7 $TOTAL "Analyze Go Functions" \
@@ -364,8 +397,23 @@ step 41 $TOTAL "Clean Re-exploration" \
     $SHATTER explore --output /tmp/shatter-spec.json --clean "${EXAMPLES[0]}"
 
 # Stage 42: Stale command
+# The spec from step 38 only explored classifyNumber. The file also exports
+# compareMagnitudes, so `stale` correctly reports it as stale. Exit code 1
+# means "some functions are stale or removed" — this is informational, not a failure.
 step 42 $TOTAL "Stale Check" \
-    "Check which functions are stale relative to an existing spec file" \
-    $SHATTER stale "examples/standalone/ts/01-arithmetic.ts" /tmp/shatter-spec.json
+    "Check staleness relative to spec from step 38 (exit 1 = stale found, expected here)" \
+    bash -c "$SHATTER stale 'examples/standalone/ts/01-arithmetic.ts' /tmp/shatter-spec.json; echo '(exit code 1 is expected: compareMagnitudes was not in the spec from step 38)'"
 
-echo "${BOLD}${GREEN}Walkthrough complete.${RESET}"
+# ─── Error Summary ────────────────────────────────────────────────────
+if [[ -s "$ERROR_LOG" ]]; then
+    echo ""
+    echo "${BOLD}${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+    echo "${BOLD}${RED}  ERROR SUMMARY (${STEP_ERRORS} issue(s))${RESET}"
+    echo "${BOLD}${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+    cat "$ERROR_LOG"
+    echo ""
+    echo "${BOLD}${GREEN}Walkthrough complete with errors.${RESET}"
+    exit 1
+else
+    echo "${BOLD}${GREEN}Walkthrough complete. All steps passed.${RESET}"
+fi

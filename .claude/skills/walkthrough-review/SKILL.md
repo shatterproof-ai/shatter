@@ -150,6 +150,21 @@ The output should indicate whether exploration is complete (all paths found) or 
 
 **Fail** if there's no way to distinguish "3 paths, fully explored" from "3 paths found before hitting the iteration cap."
 
+### K. No errors, crashes, or skipped functions due to bugs
+
+The walkthrough is also a correctness gate. Check the ERROR SUMMARY at the end of the output, and scan for:
+
+- `[error]` lines in stderr (exploration errors, deserialization failures, frontend crashes)
+- `Command exited with status N` (unexpected non-zero exit codes)
+- Functions skipped due to errors (e.g., "skipped: error: exploration error: ...")
+- `failed to deserialize`, `panic`, `SIGSEGV`, or similar crash indicators
+
+**Expected failures** (do NOT count as errors):
+- `stale` command exit code 1 (means "some functions are stale" — informational, not a failure)
+- Scan errors for `11-opaque-types.ts` and `12-external-deps.ts` (opaque types, missing external modules)
+
+**Fail** if any step produces unexpected errors, crashes, or skips functions that should succeed. File a beads issue for each distinct failure.
+
 ## Output Format
 
 Structure your report as:
