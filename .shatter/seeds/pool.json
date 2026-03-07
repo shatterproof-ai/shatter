@@ -1,0 +1,24 @@
+{
+  "bucket_cap": 50,
+  "buckets": {
+    "{\"kind\":\"str\"}": [
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "classifyString",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "str"
+        },
+        "value": "http"
+      }
+    ]
+  },
+  "epoch": 0,
+  "version": 2
+}
