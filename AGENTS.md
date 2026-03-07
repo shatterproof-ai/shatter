@@ -88,11 +88,11 @@ bigger, break it down.
 **Rule of thumb:** If you can't describe the issue in one sentence without "and",
 it's two issues.
 
-Use the correct issue type:
-- `epic` — a grouping container for related features/tasks. Not directly workable.
-- `feature` — delivers new user-visible or agent-visible capability
-- `task` — scaffold, chore, or infrastructure work (e.g., project init, CI setup)
+**Always specify `--type` explicitly** — never rely on the default. Use the correct issue type:
+- `feature` — delivers new user-visible or agent-visible capability (most issues are features)
 - `bug` — something broken that needs fixing
+- `epic` — a grouping container for related features/tasks. Not directly workable.
+- `task` — narrow infrastructure chore with no user-visible effect (CI config, project init, doc-only changes). If it adds capability, it's a `feature`.
 
 ### Creating Epics
 
@@ -349,8 +349,8 @@ bd ready --json
 **Create new issues:**
 
 ```bash
-bd create "Issue title" --description="Detailed context" -t bug|feature|task -p 0-4 --json
-bd create "Issue title" --description="What this issue is about" -p 1 --deps discovered-from:bd-123 --json
+bd create "Issue title" --description="Detailed context" -t feature -p 0-4 --json  # ALWAYS specify -t
+bd create "Issue title" --description="What this issue is about" -t bug -p 1 --deps discovered-from:bd-123 --json
 ```
 
 **Claim and update:**
