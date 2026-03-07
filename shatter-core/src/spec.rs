@@ -2241,6 +2241,165 @@ mod tests {
                 };
                 prop_assert_eq!(si.kind, expected);
             }
+
+        }
+
+        // ── merge_file_spec_bundles properties ──────────────────────
+
+        fn arb_file_spec_bundle(
+            max_fns: usize,
+        ) -> impl Strategy<Value = FileSpecBundle> {
+            prop::collection::vec(arb_function_spec(), 0..=max_fns).prop_map(|mut specs| {
+                let mut seen = std::collections::HashSet::new();
+                specs.retain(|s| seen.insert(s.function_name.clone()));
+                FileSpecBundle {
+                    file: "test.ts".to_string(),
+                    functions: specs,
+                }
+            })
+        }
+
+        proptest! {
+            #[test]
+            fn merge_output_count(
+                existing in arb_file_spec_bundle(5),
+                new_specs_raw in prop::collection::vec(arb_function_spec(), 0..=3),
+            ) {
+                // Deduplicate new_specs
+                let mut seen = std::collections::HashSet::new();
+                let new_specs: Vec<FunctionSpec> = new_specs_raw
+                    .into_iter()
+                    .filter(|s| seen.insert(s.function_name.clone()))
+                    .collect();
+
+                // current_function_names = all existing + all new
+                let current_names: HashSet<String> = existing
+                    .functions
+                    .iter()
+                    .map(|f| f.function_name.clone())
+                    .chain(new_specs.iter().map(|f| f.function_name.clone()))
+                    .collect();
+
+                let merged = merge_file_spec_bundles(&existing, &new_specs, &current_names);
+
+                // Every function in current_names should appear exactly once
+                prop_assert_eq!(merged.functions.len(), current_names.len());
+
+                let merged_names: HashSet<&str> =
+                    merged.functions.iter().map(|f| f.function_name.as_str()).collect();
+                prop_assert_eq!(merged_names.len(), merged.functions.len(),
+                    "merged bundle has duplicate function names");
+            }
+
+            #[test]
+            fn merge_new_specs_override_existing(
+                existing in arb_file_spec_bundle(4),
+                override_fp in "[a-f0-9]{8}",
+            ) {
+                if existing.functions.is_empty() {
+                    return Ok(());
+                }
+                // Create a new_spec that overrides the first existing function
+                let mut override_spec = existing.functions[0].clone();
+                override_spec.fingerprint = Some(override_fp.clone());
+
+                let current_names: HashSet<String> = existing
+                    .functions
+                    .iter()
+                    .map(|f| f.function_name.clone())
+                    .collect();
+
+                let merged = merge_file_spec_bundles(
+                    &existing,
+                    &[override_spec],
+                    &current_names,
+                );
+
+                let result = merged
+                    .functions
+                    .iter()
+                    .find(|f| f.function_name == existing.functions[0].function_name)
+                    .expect("overridden function should be in merged result");
+
+                prop_assert_eq!(result.fingerprint.as_deref(), Some(override_fp.as_str()),
+                    "new_spec should override existing spec");
+            }
+
+            #[test]
+            fn merge_drops_removed(
+                existing in arb_file_spec_bundle(5),
+            ) {
+                if existing.functions.is_empty() {
+                    return Ok(());
+                }
+                // Remove the first function from current_names
+                let removed_name = existing.functions[0].function_name.clone();
+                let current_names: HashSet<String> = existing
+                    .functions
+                    .iter()
+                    .skip(1)
+                    .map(|f| f.function_name.clone())
+                    .collect();
+
+                let merged = merge_file_spec_bundles(&existing, &[], &current_names);
+
+                let merged_names: HashSet<&str> =
+                    merged.functions.iter().map(|f| f.function_name.as_str()).collect();
+                prop_assert!(!merged_names.contains(removed_name.as_str()),
+                    "removed function should not appear in merged result");
+            }
+
+            #[test]
+            fn merge_result_subset_of_current_names(
+                existing in arb_file_spec_bundle(5),
+                new_specs_raw in prop::collection::vec(arb_function_spec(), 0..=3),
+            ) {
+                let mut seen = std::collections::HashSet::new();
+                let new_specs: Vec<FunctionSpec> = new_specs_raw
+                    .into_iter()
+                    .filter(|s| seen.insert(s.function_name.clone()))
+                    .collect();
+
+                // Use a subset of names as current (some existing may be "removed")
+                let current_names: HashSet<String> = existing
+                    .functions
+                    .iter()
+                    .map(|f| f.function_name.clone())
+                    .chain(new_specs.iter().map(|f| f.function_name.clone()))
+                    .collect();
+
+                let merged = merge_file_spec_bundles(&existing, &new_specs, &current_names);
+
+                for f in &merged.functions {
+                    prop_assert!(
+                        current_names.contains(&f.function_name),
+                        "merged function '{}' not in current_function_names",
+                        f.function_name
+                    );
+                }
+            }
+
+            #[test]
+            fn merge_idempotent_with_empty_new_specs(
+                existing in arb_file_spec_bundle(5),
+            ) {
+                let current_names: HashSet<String> = existing
+                    .functions
+                    .iter()
+                    .map(|f| f.function_name.clone())
+                    .collect();
+
+                let merged = merge_file_spec_bundles(&existing, &[], &current_names);
+
+                // Same functions, same count
+                prop_assert_eq!(merged.functions.len(), existing.functions.len());
+
+                let merged_names: HashSet<&str> =
+                    merged.functions.iter().map(|f| f.function_name.as_str()).collect();
+                for f in &existing.functions {
+                    prop_assert!(merged_names.contains(f.function_name.as_str()));
+                }
+            }
         }
     }
 }
