@@ -683,6 +683,8 @@ mod tests {
     use super::*;
     use crate::execution_record::{BranchDecision, SymConstraint};
     use crate::sym_expr::ConstValue;
+    use crate::test_arbitraries::{arb_branch_decision, arb_json_value, arb_sym_expr};
+    use proptest::prelude::*;
     use serde_json::json;
 
     fn names(ns: &[&str]) -> Vec<String> {
@@ -1850,5 +1852,179 @@ mod tests {
             state.disable_reason(),
             Some(TriageDisableReason::LowSkipRate)
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Property-based tests
+    // -----------------------------------------------------------------------
+
+    proptest! {
+        /// evaluate_constraint is deterministic: same inputs always produce the
+        /// same result.
+        #[test]
+        fn evaluate_constraint_deterministic(
+            expr in arb_sym_expr(2),
+            params in prop::collection::vec(arb_json_value(), 0..=3),
+            param_names in prop::collection::vec("[a-z]{1,4}", 0..=3),
+        ) {
+            let r1 = evaluate_constraint(&expr, &params, &param_names);
+            let r2 = evaluate_constraint(&expr, &params, &param_names);
+            prop_assert_eq!(r1, r2);
+        }
+
+        /// evaluate_constraint never panics on arbitrary SymExpr trees.
+        #[test]
+        fn evaluate_constraint_no_panic(
+            expr in arb_sym_expr(3),
+            params in prop::collection::vec(arb_json_value(), 0..=4),
+            param_names in prop::collection::vec("[a-z]{1,4}", 0..=4),
+        ) {
+            let _ = evaluate_constraint(&expr, &params, &param_names);
+        }
+
+        /// predict_branch result is consistent with evaluate_constraint.
+        #[test]
+        fn predict_branch_consistent_with_evaluator(
+            decision in arb_branch_decision(),
+            params in prop::collection::vec(arb_json_value(), 0..=3),
+            param_names in prop::collection::vec("[a-z]{1,4}", 0..=3),
+        ) {
+            let prediction = predict_branch(&decision, &params, &param_names);
+            let expr = match &decision.constraint {
+                SymConstraint::Expr { expr } => expr,
+                SymConstraint::Unknown { .. } => {
+                    prop_assert_eq!(prediction, BranchPrediction::Indeterminate);
+                    return Ok(());
+                }
+            };
+            match evaluate_constraint(expr, &params, &param_names) {
+                Some(val) => {
+                    let expected = if is_truthy(&val) {
+                        BranchPrediction::Taken
+                    } else {
+                        BranchPrediction::NotTaken
+                    };
+                    prop_assert_eq!(prediction, expected);
+                }
+                None => {
+                    prop_assert_eq!(prediction, BranchPrediction::Indeterminate);
+                }
+            }
+        }
+
+        /// trace_count() never exceeds MAX_TRACES.
+        #[test]
+        fn triage_state_trace_count_bounded(
+            traces in prop::collection::vec(
+                prop::collection::vec(arb_branch_decision(), 1..=5),
+                0..=100,
+            ),
+        ) {
+            let mut state = TriageState::new(vec!["x".into()]);
+            for trace in &traces {
+                state.update(trace);
+            }
+            prop_assert!(state.trace_count() <= MAX_TRACES);
+        }
+
+        /// observed_direction_count monotonically increases with updates.
+        #[test]
+        fn observed_directions_monotonic(
+            traces in prop::collection::vec(
+                prop::collection::vec(arb_branch_decision(), 1..=3),
+                1..=10,
+            ),
+        ) {
+            let mut state = TriageState::new(vec!["x".into()]);
+            let mut prev_count = 0;
+            for trace in &traces {
+                state.update(trace);
+                let new_count = state.observed_direction_count();
+                prop_assert!(new_count >= prev_count);
+                prev_count = new_count;
+            }
+        }
+
+        /// Duplicate traces don't increase trace_count.
+        #[test]
+        fn update_idempotent_for_same_branch_ids(
+            trace in prop::collection::vec(arb_branch_decision(), 1..=5),
+        ) {
+            let mut state = TriageState::new(vec!["x".into()]);
+            state.update(&trace);
+            let count_after_first = state.trace_count();
+            state.update(&trace);
+            prop_assert_eq!(state.trace_count(), count_after_first);
+        }
+
+        /// Once disabled, triage_candidate always returns Indeterminate.
+        #[test]
+        fn disabled_always_indeterminate(
+            params in prop::collection::vec(arb_json_value(), 1..=3),
+        ) {
+            let mut state = TriageState::new(vec!["x".into()]);
+            // Force disable via misprediction.
+            state.record_sample(1, 2);
+            prop_assert!(state.is_disabled());
+
+            let covered = HashSet::new();
+            let verdict = state.triage_candidate(&params, &covered);
+            prop_assert_eq!(verdict, TriageVerdict::Indeterminate);
+        }
+
+        /// With no traces, verdict is always Indeterminate.
+        #[test]
+        fn empty_traces_indeterminate(
+            params in prop::collection::vec(arb_json_value(), 0..=3),
+        ) {
+            let state = TriageState::new(vec!["x".into()]);
+            let covered = HashSet::new();
+            let verdict = state.triage_candidate(&params, &covered);
+            prop_assert_eq!(verdict, TriageVerdict::Indeterminate);
+        }
+
+        /// Recording only non-Skip verdicts eventually disables triage
+        /// (once MIN_VERDICTS_FOR_EVAL is reached).
+        #[test]
+        fn all_execute_verdicts_disable(
+            extra in 0..50usize,
+        ) {
+            let mut state = TriageState::new(vec!["x".into()]);
+            let total = MIN_VERDICTS_FOR_EVAL + extra;
+            for _ in 0..total {
+                state.record_verdict(&TriageVerdict::Execute {
+                    novel_count: 1,
+                    first_novel_depth: 0,
+                });
+            }
+            prop_assert!(state.is_disabled());
+            prop_assert_eq!(
+                state.disable_reason(),
+                Some(TriageDisableReason::LowSkipRate)
+            );
+        }
+
+        /// Once disabled, record_verdict and record_sample are no-ops —
+        /// counters freeze.
+        #[test]
+        fn disabled_freezes_counters(
+            n_verdicts in 1..20usize,
+            n_samples in 1..10usize,
+        ) {
+            let mut state = TriageState::new(vec!["x".into()]);
+            state.record_sample(1, 2); // disables
+            prop_assert!(state.is_disabled());
+
+            let tv = state.total_verdicts;
+            let st = state.samples_taken;
+            for _ in 0..n_verdicts {
+                state.record_verdict(&TriageVerdict::Skip);
+            }
+            for _ in 0..n_samples {
+                state.record_sample(0, 1);
+            }
+            prop_assert_eq!(state.total_verdicts, tv);
+            prop_assert_eq!(state.samples_taken, st);
+        }
     }
 }

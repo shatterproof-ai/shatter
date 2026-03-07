@@ -23,6 +23,7 @@ use crate::protocol::{
 };
 use crate::spec::{ConcreteExample, FunctionSpec, Postcondition, Provenance, SpecClass};
 use crate::sym_expr::{BinOpKind, ConstValue, SymExpr, UnOpKind};
+use crate::triage::{BranchPrediction, TriageDisableReason, TriageVerdict};
 use crate::types::{ComplexKind, ParamInfo, TypeInfo};
 
 // ---------------------------------------------------------------------------
@@ -996,4 +997,35 @@ pub fn arb_behavior_map() -> impl Strategy<Value = BehaviorMap> {
             fingerprint: None,
             nondeterministic_fields: vec![],
         })
+}
+
+// ---------------------------------------------------------------------------
+// Triage strategies
+// ---------------------------------------------------------------------------
+
+pub fn arb_branch_prediction() -> impl Strategy<Value = BranchPrediction> {
+    prop_oneof![
+        Just(BranchPrediction::Taken),
+        Just(BranchPrediction::NotTaken),
+        Just(BranchPrediction::Indeterminate),
+    ]
+}
+
+pub fn arb_triage_verdict() -> impl Strategy<Value = TriageVerdict> {
+    prop_oneof![
+        Just(TriageVerdict::Skip),
+        (1..20usize, 0..10usize)
+            .prop_map(|(novel_count, first_novel_depth)| TriageVerdict::Execute {
+                novel_count,
+                first_novel_depth,
+            }),
+        Just(TriageVerdict::Indeterminate),
+    ]
+}
+
+pub fn arb_triage_disable_reason() -> impl Strategy<Value = TriageDisableReason> {
+    prop_oneof![
+        Just(TriageDisableReason::LowSkipRate),
+        Just(TriageDisableReason::HighMisprediction),
+    ]
 }
