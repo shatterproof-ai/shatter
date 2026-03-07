@@ -242,7 +242,7 @@ describe("handleRequest", () => {
     });
 
     it("instruments a real function successfully", async () => {
-      const exampleFile = path.resolve(__dirname, "../../examples/typescript/src/01-arithmetic.ts");
+      const exampleFile = path.resolve(__dirname, "../../examples/standalone/ts/01-arithmetic.ts");
       const { response, shutdown } = await handleRequest(
         makeRequest({ command: "instrument", file: exampleFile, function: "classifyNumber", mocks: [] })
       );
@@ -265,7 +265,7 @@ describe("handleRequest", () => {
     });
 
     it("executes a real function after analyze", async () => {
-      const exampleFile = path.resolve(__dirname, "../../examples/typescript/src/01-arithmetic.ts");
+      const exampleFile = path.resolve(__dirname, "../../examples/standalone/ts/01-arithmetic.ts");
 
       // First analyze so the handler knows the file
       await handleRequest(
@@ -297,7 +297,7 @@ describe("handleRequest", () => {
     it("executes via file:function format with relative path", async () => {
       // Node.js 24+ requires absolute paths for createRequire().
       // Relative paths in file:function format must be resolved before use.
-      const relPath = path.relative(process.cwd(), path.resolve(__dirname, "../../examples/typescript/src/01-arithmetic.ts"));
+      const relPath = path.relative(process.cwd(), path.resolve(__dirname, "../../examples/standalone/ts/01-arithmetic.ts"));
 
       const { response } = await handleRequest(
         makeRequest({
@@ -315,7 +315,7 @@ describe("handleRequest", () => {
 
     it("executes after analyze with relative path", async () => {
       // Verify lastAnalyzedFile stores an absolute path even when given relative.
-      const relPath = path.relative(process.cwd(), path.resolve(__dirname, "../../examples/typescript/src/01-arithmetic.ts"));
+      const relPath = path.relative(process.cwd(), path.resolve(__dirname, "../../examples/standalone/ts/01-arithmetic.ts"));
 
       await handleRequest(
         makeRequest({
@@ -340,7 +340,7 @@ describe("handleRequest", () => {
     });
 
     it("executes instrumented code with relative path", async () => {
-      const relPath = path.relative(process.cwd(), path.resolve(__dirname, "../../examples/typescript/src/01-arithmetic.ts"));
+      const relPath = path.relative(process.cwd(), path.resolve(__dirname, "../../examples/standalone/ts/01-arithmetic.ts"));
 
       // Instrument with relative path
       await handleRequest(

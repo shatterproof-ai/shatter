@@ -15,7 +15,7 @@ import { PROTOCOL_VERSION } from "./protocol.js";
 import type { SideEffect, TraceEvent } from "./protocol.js";
 
 const FIXTURES_DIR = path.resolve(__dirname, "__fixtures__");
-const EXAMPLES_DIR = path.resolve(__dirname, "../../examples/typescript/src");
+const EXAMPLES_DIR = path.resolve(__dirname, "../../examples/standalone/ts");
 
 beforeEach(() => {
   clearModuleCache();
