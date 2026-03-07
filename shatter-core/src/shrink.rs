@@ -524,4 +524,177 @@ mod tests {
             }
         }
     }
+
+    // -------------------------------------------------------------------
+    // Property-based tests
+    // -------------------------------------------------------------------
+
+    mod prop_tests {
+        use super::*;
+        use proptest::prelude::*;
+        use serde_json::json;
+
+        proptest! {
+            #[test]
+            fn shrink_never_contains_original_int(n in any::<i64>()) {
+                let val = json!(n);
+                let candidates = shrink_candidates(&val, &TypeInfo::Int);
+                prop_assert!(
+                    !candidates.contains(&val),
+                    "candidates for {val:?} should not contain original"
+                );
+            }
+
+            #[test]
+            fn shrink_never_contains_original_float(
+                n in (-1000i32..1000).prop_map(|n| f64::from(n))
+            ) {
+                let val = json!(n);
+                let candidates = shrink_candidates(&val, &TypeInfo::Float);
+                prop_assert!(
+                    !candidates.contains(&val),
+                    "candidates for {val:?} should not contain original"
+                );
+            }
+
+            #[test]
+            fn shrink_never_contains_original_str(s in ".{0,20}") {
+                let val = json!(s);
+                let candidates = shrink_candidates(&val, &TypeInfo::Str);
+                prop_assert!(
+                    !candidates.contains(&val),
+                    "candidates for {val:?} should not contain original"
+                );
+            }
+
+            #[test]
+            fn shrink_int_candidates_are_ints(n in any::<i64>()) {
+                let val = json!(n);
+                for c in shrink_candidates(&val, &TypeInfo::Int) {
+                    prop_assert!(
+                        c.is_i64() || c.is_u64(),
+                        "shrink candidate {c:?} is not an int"
+                    );
+                }
+            }
+
+            #[test]
+            fn shrink_float_candidates_are_floats(
+                n in (-1000i32..1000).prop_map(|n| f64::from(n))
+            ) {
+                let val = json!(n);
+                for c in shrink_candidates(&val, &TypeInfo::Float) {
+                    prop_assert!(
+                        c.is_f64() || c.is_i64() || c.is_u64(),
+                        "shrink candidate {c:?} is not a float"
+                    );
+                }
+            }
+
+            #[test]
+            fn shrink_str_candidates_are_strings(s in ".{0,20}") {
+                let val = json!(s);
+                for c in shrink_candidates(&val, &TypeInfo::Str) {
+                    prop_assert!(c.is_string(),
+                        "shrink candidate {c:?} is not a string");
+                }
+            }
+
+            #[test]
+            fn shrink_int_abs_leq_or_boundary(n in -1_000_000i64..1_000_000i64) {
+                let val = json!(n);
+                let abs_n = n.unsigned_abs();
+                for c in shrink_candidates(&val, &TypeInfo::Int) {
+                    let c_n = c.as_i64().unwrap();
+                    let is_boundary = c_n == 0 || c_n == 1 || c_n == -1;
+                    prop_assert!(
+                        c_n.unsigned_abs() <= abs_n || is_boundary,
+                        "shrink candidate {c_n} has |c| > |{n}| and is not a boundary"
+                    );
+                }
+            }
+
+            #[test]
+            fn shrink_str_len_leq_original(s in ".{0,30}") {
+                let val = json!(s);
+                let orig_len = s.chars().count();
+                for c in shrink_candidates(&val, &TypeInfo::Str) {
+                    let c_str = c.as_str().unwrap();
+                    prop_assert!(
+                        c_str.chars().count() <= orig_len,
+                        "shrink candidate {:?} longer than original {:?}",
+                        c_str, s
+                    );
+                }
+            }
+
+            #[test]
+            fn shrink_array_len_leq_original(len in 0..6usize) {
+                let arr: Vec<Value> = (0..len).map(|i| json!(i as i64)).collect();
+                let val = Value::Array(arr);
+                let typ = TypeInfo::Array { element: Box::new(TypeInfo::Int) };
+
+                for c in shrink_candidates(&val, &typ) {
+                    let c_arr = c.as_array().unwrap();
+                    prop_assert!(
+                        c_arr.len() <= len,
+                        "shrink candidate array len {} > original len {}",
+                        c_arr.len(), len
+                    );
+                }
+            }
+
+            #[test]
+            fn shrink_no_duplicates_int(n in any::<i64>()) {
+                let candidates = shrink_candidates(&json!(n), &TypeInfo::Int);
+                for (i, a) in candidates.iter().enumerate() {
+                    for (j, b) in candidates.iter().enumerate() {
+                        if i != j {
+                            prop_assert!(a != b, "duplicate candidates for {}", n);
+                        }
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn shrink_zero_int_minimal() {
+            let candidates = shrink_candidates(&json!(0), &TypeInfo::Int);
+            assert!(!candidates.contains(&json!(0)));
+            for c in &candidates {
+                let n = c.as_i64().unwrap();
+                assert!(n.abs() <= 1, "candidate {n} is not minimal");
+            }
+        }
+
+        #[test]
+        fn shrink_empty_string_minimal() {
+            let candidates = shrink_candidates(&json!(""), &TypeInfo::Str);
+            assert!(candidates.is_empty());
+        }
+
+        #[test]
+        fn shrink_false_minimal() {
+            let candidates = shrink_candidates(&json!(false), &TypeInfo::Bool);
+            assert!(candidates.is_empty());
+        }
+
+        #[test]
+        fn shrink_null_nullable_minimal() {
+            let typ = TypeInfo::Nullable {
+                inner: Box::new(TypeInfo::Int),
+            };
+            let candidates = shrink_candidates(&json!(null), &typ);
+            assert!(candidates.is_empty());
+        }
+
+        #[test]
+        fn shrink_empty_array_minimal() {
+            let typ = TypeInfo::Array {
+                element: Box::new(TypeInfo::Int),
+            };
+            let candidates = shrink_candidates(&json!([]), &typ);
+            assert!(candidates.is_empty());
+        }
+    }
 }

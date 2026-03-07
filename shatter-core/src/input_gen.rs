@@ -3088,10 +3088,32 @@ mod tests {
 
     mod prop_tests {
         use super::*;
+        use crate::test_arbitraries::arb_param_info;
         use crate::types::ParamInfo;
         use proptest::prelude::*;
         use rand::SeedableRng;
         use rand::rngs::StdRng;
+        use serde_json::json;
+
+        /// Check whether a JSON value is compatible with a TypeInfo.
+        /// Allows for JSON's type coercions (e.g. integers are valid floats,
+        /// NaN/Infinity encode as null in JSON).
+        fn value_matches_type(value: &serde_json::Value, typ: &TypeInfo) -> bool {
+            match typ {
+                TypeInfo::Int => value.is_i64() || value.is_u64(),
+                // NaN and Infinity serialize to JSON null — accept null for Float.
+                TypeInfo::Float => value.is_f64() || value.is_i64() || value.is_u64() || value.is_null(),
+                TypeInfo::Str => value.is_string(),
+                TypeInfo::Bool => value.is_boolean(),
+                TypeInfo::Array { .. } => value.is_array(),
+                TypeInfo::Object { .. } => value.is_object(),
+                TypeInfo::Nullable { inner } => value.is_null() || value_matches_type(value, inner),
+                TypeInfo::Union { variants } => {
+                    variants.is_empty() || variants.iter().any(|v| value_matches_type(value, v))
+                }
+                TypeInfo::Complex { .. } | TypeInfo::Opaque { .. } | TypeInfo::Unknown => true,
+            }
+        }
 
         proptest! {
             #[test]
@@ -3147,6 +3169,149 @@ mod tests {
                     mutated.len(),
                     "mutate_inputs changed vector length"
                 );
+            }
+
+            // -----------------------------------------------------------------
+            // mutate_inputs: vector-level type preservation with arbitrary types
+            // -----------------------------------------------------------------
+
+            #[test]
+            fn mutate_inputs_preserves_types_arbitrary(
+                seed in 0..10000u64,
+                typs in prop::collection::vec(
+                    prop_oneof![
+                        Just(TypeInfo::Int),
+                        Just(TypeInfo::Float),
+                        Just(TypeInfo::Bool),
+                    ],
+                    1..=5,
+                ),
+            ) {
+                let params: Vec<ParamInfo> = typs
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, typ)| ParamInfo {
+                        name: format!("p{i}"),
+                        typ,
+                        type_name: None,
+                    })
+                    .collect();
+                let mut rng = StdRng::seed_from_u64(seed);
+                let inputs: Vec<serde_json::Value> = params
+                    .iter()
+                    .map(|p| generate_random_value(&p.typ, &mut rng, None))
+                    .collect();
+                let mut rng2 = StdRng::seed_from_u64(seed.wrapping_add(1));
+                let mutated = mutate_inputs(&inputs, &params, 1.0, &[], &mut rng2);
+
+                prop_assert_eq!(mutated.len(), params.len(),
+                    "mutate_inputs changed vector length");
+
+                for (i, (val, param)) in mutated.iter().zip(params.iter()).enumerate() {
+                    prop_assert!(
+                        value_matches_type(val, &param.typ),
+                        "mutated[{i}] = {val:?} doesn't match type {:?}",
+                        param.typ
+                    );
+                }
+            }
+
+            // -----------------------------------------------------------------
+            // mutate_inputs: mutation with rate=1.0 actually changes something
+            // -----------------------------------------------------------------
+
+            #[test]
+            fn mutate_inputs_actually_mutates(seed in 0..10000u64) {
+                let params = vec![
+                    ParamInfo { name: "a".into(), typ: TypeInfo::Int, type_name: None },
+                    ParamInfo { name: "b".into(), typ: TypeInfo::Str, type_name: None },
+                    ParamInfo { name: "c".into(), typ: TypeInfo::Bool, type_name: None },
+                ];
+                let inputs = vec![json!(42), json!("hello"), json!(true)];
+
+                // Try multiple RNG seeds — at least one should produce a mutation.
+                let mut any_diff = false;
+                for offset in 0..20u64 {
+                    let mut rng = StdRng::seed_from_u64(seed.wrapping_add(offset));
+                    let mutated = mutate_inputs(&inputs, &params, 1.0, &[], &mut rng);
+                    if mutated != inputs {
+                        any_diff = true;
+                        break;
+                    }
+                }
+                prop_assert!(any_diff,
+                    "mutate_inputs with rate=1.0 never changed anything over 20 tries");
+            }
+
+            // -----------------------------------------------------------------
+            // crossover_inputs: length preservation
+            // -----------------------------------------------------------------
+
+            #[test]
+            fn crossover_inputs_preserves_length_arbitrary(
+                seed in 0..10000u64,
+                params in prop::collection::vec(arb_param_info(), 1..=5),
+            ) {
+                let mut rng = StdRng::seed_from_u64(seed);
+                let parent_a: Vec<serde_json::Value> = params
+                    .iter()
+                    .map(|p| generate_random_value(&p.typ, &mut rng, None))
+                    .collect();
+                let parent_b: Vec<serde_json::Value> = params
+                    .iter()
+                    .map(|p| generate_random_value(&p.typ, &mut rng, None))
+                    .collect();
+
+                let mut rng2 = StdRng::seed_from_u64(seed.wrapping_add(1));
+                let (child1, child2) = crossover_inputs(
+                    &parent_a, &parent_b, &params, 1.0, &mut rng2,
+                );
+
+                let expected_len = parent_a.len().min(parent_b.len()).min(params.len());
+                prop_assert_eq!(child1.len(), expected_len,
+                    "child1 length mismatch");
+                prop_assert_eq!(child2.len(), expected_len,
+                    "child2 length mismatch");
+            }
+
+            // -----------------------------------------------------------------
+            // crossover_inputs: type compatibility of children
+            // -----------------------------------------------------------------
+
+            #[test]
+            fn crossover_inputs_type_compatible(
+                seed in 0..10000u64,
+                params in prop::collection::vec(arb_param_info(), 1..=5),
+            ) {
+                let mut rng = StdRng::seed_from_u64(seed);
+                let parent_a: Vec<serde_json::Value> = params
+                    .iter()
+                    .map(|p| generate_random_value(&p.typ, &mut rng, None))
+                    .collect();
+                let parent_b: Vec<serde_json::Value> = params
+                    .iter()
+                    .map(|p| generate_random_value(&p.typ, &mut rng, None))
+                    .collect();
+
+                let mut rng2 = StdRng::seed_from_u64(seed.wrapping_add(1));
+                let (child1, child2) = crossover_inputs(
+                    &parent_a, &parent_b, &params, 1.0, &mut rng2,
+                );
+
+                for (i, param) in params.iter().enumerate() {
+                    if let Some(v) = child1.get(i) {
+                        prop_assert!(
+                            value_matches_type(v, &param.typ),
+                            "child1[{i}] = {v:?} doesn't match {:?}", param.typ
+                        );
+                    }
+                    if let Some(v) = child2.get(i) {
+                        prop_assert!(
+                            value_matches_type(v, &param.typ),
+                            "child2[{i}] = {v:?} doesn't match {:?}", param.typ
+                        );
+                    }
+                }
             }
         }
     }
