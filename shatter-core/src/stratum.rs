@@ -314,4 +314,118 @@ mod tests {
         let result = filter_layers(&layers, &(5..=7));
         assert!(result.is_empty());
     }
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// Generate a valid stratum spec string.
+        fn arb_stratum_spec() -> impl Strategy<Value = String> {
+            prop_oneof![
+                // Single positive index
+                (0..100usize).prop_map(|v| v.to_string()),
+                // Single negative index
+                (0..100usize).prop_map(|v| format!("-{v}")),
+                // Range with both bounds (positive)
+                (0..50usize, 0..50usize).prop_map(|(a, b)| format!("{a}..{b}")),
+                // Range with both bounds (negative)
+                (0..50usize, 0..50usize).prop_map(|(a, b)| format!("-{a}..-{b}")),
+                // Range with open start
+                (0..100usize).prop_map(|v| format!("..{v}")),
+                // Range with open start (negative end)
+                (0..100usize).prop_map(|v| format!("..-{v}")),
+                // Range with open end
+                (0..100usize).prop_map(|v| format!("{v}..")),
+                // Range with open end (negative start)
+                (0..100usize).prop_map(|v| format!("-{v}..")),
+                // Mixed: positive start, negative end
+                (0..50usize, 0..50usize).prop_map(|(a, b)| format!("{a}..-{b}")),
+                // Mixed: negative start, positive end
+                (0..50usize, 0..50usize).prop_map(|(a, b)| format!("-{a}..{b}")),
+            ]
+        }
+
+        proptest! {
+            /// Any valid spec string parses successfully.
+            #[test]
+            fn valid_specs_always_parse(spec_str in arb_stratum_spec()) {
+                prop_assert!(parse_stratum_spec(&spec_str).is_ok(),
+                    "failed to parse valid spec: {}", spec_str);
+            }
+
+            /// Resolved range bounds are always within 0..=max_layer.
+            #[test]
+            fn resolved_range_within_bounds(
+                spec_str in arb_stratum_spec(),
+                max_layer in 0..50usize,
+            ) {
+                let spec = parse_stratum_spec(&spec_str).unwrap();
+                if let Ok(range) = resolve_range(&spec, max_layer) {
+                    prop_assert!(*range.start() <= max_layer,
+                        "start {} > max_layer {}", range.start(), max_layer);
+                    prop_assert!(*range.end() <= max_layer,
+                        "end {} > max_layer {}", range.end(), max_layer);
+                    prop_assert!(range.start() <= range.end(),
+                        "start {} > end {}", range.start(), range.end());
+                }
+            }
+
+            /// Negative-zero always resolves to max_layer.
+            #[test]
+            fn negative_zero_is_max_layer(max_layer in 0..100usize) {
+                let spec = parse_stratum_spec("-0").unwrap();
+                let range = resolve_range(&spec, max_layer).unwrap();
+                prop_assert_eq!(*range.start(), max_layer);
+                prop_assert_eq!(*range.end(), max_layer);
+            }
+
+            /// Open-ended ranges span the full extent in their open direction.
+            #[test]
+            fn open_start_begins_at_zero(end_val in 0..50usize, max_layer in 0..50usize) {
+                let spec = parse_stratum_spec(&format!("..{end_val}")).unwrap();
+                if let Ok(range) = resolve_range(&spec, max_layer) {
+                    prop_assert_eq!(*range.start(), 0);
+                }
+            }
+
+            #[test]
+            fn open_end_reaches_max_layer(start_val in 0..50usize, max_layer in 0..50usize) {
+                let spec = parse_stratum_spec(&format!("{start_val}..")).unwrap();
+                if let Ok(range) = resolve_range(&spec, max_layer) {
+                    prop_assert_eq!(*range.end(), max_layer);
+                }
+            }
+
+            /// filter_layers returns only indices within the given range.
+            #[test]
+            fn filter_layers_indices_in_range(
+                num_layers in 1..20usize,
+                range_start in 0..20usize,
+                range_end in 0..20usize,
+            ) {
+                let layers: Vec<Vec<String>> = (0..num_layers)
+                    .map(|i| vec![format!("fn_{i}")])
+                    .collect();
+                let start = range_start.min(range_end);
+                let end = range_start.max(range_end);
+                let range = start..=end;
+                let result = filter_layers(&layers, &range);
+                for (idx, _) in &result {
+                    prop_assert!(range.contains(idx),
+                        "filtered index {} not in range {:?}", idx, range);
+                    prop_assert!(*idx < num_layers,
+                        "filtered index {} >= num_layers {}", idx, num_layers);
+                }
+                // Count should match the overlap between range and 0..num_layers.
+                let expected = (start..=end).filter(|i| *i < num_layers).count();
+                prop_assert_eq!(result.len(), expected);
+            }
+
+            /// Arbitrary strings never cause panics in parse (may return Err).
+            #[test]
+            fn arbitrary_input_never_panics(s in ".*") {
+                let _ = parse_stratum_spec(&s);
+            }
+        }
+    }
 }
