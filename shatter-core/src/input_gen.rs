@@ -1597,6 +1597,196 @@ fn crossover_string(a: &Value, b: &Value, rng: &mut impl Rng) -> (Value, Value) 
 }
 
 // ---------------------------------------------------------------------------
+// Type-aware shrink candidates
+// ---------------------------------------------------------------------------
+
+/// Produce progressively simpler variants of `value` consistent with `type_info`.
+///
+/// Returns candidates ordered roughly from "most simplified" to "least simplified".
+/// Never includes the original value. Used for minimal witness shrinking and
+/// boundary refinement — the inverse of mutation.
+pub fn shrink_candidates(value: &Value, type_info: &TypeInfo) -> Vec<Value> {
+    let candidates = match type_info {
+        TypeInfo::Int => shrink_int(value),
+        TypeInfo::Float => shrink_float(value),
+        TypeInfo::Str => shrink_str(value),
+        TypeInfo::Bool => shrink_bool(value),
+        TypeInfo::Array { element } => shrink_array(value, element),
+        TypeInfo::Object { fields } => shrink_object(value, fields),
+        TypeInfo::Nullable { inner } => shrink_nullable(value, inner),
+        TypeInfo::Union { variants } => shrink_union(value, variants),
+        TypeInfo::Complex { .. } | TypeInfo::Opaque { .. } | TypeInfo::Unknown => Vec::new(),
+    };
+    // Filter out duplicates and any candidate that equals the original.
+    let mut seen = Vec::with_capacity(candidates.len());
+    for c in candidates {
+        if c != *value && !seen.contains(&c) {
+            seen.push(c);
+        }
+    }
+    seen
+}
+
+fn shrink_int(value: &Value) -> Vec<Value> {
+    let n = match value.as_i64() {
+        Some(n) => n,
+        None => return Vec::new(),
+    };
+    let mut out = Vec::with_capacity(4);
+    let half = n / 2;
+    if half != n {
+        out.push(json!(half));
+    }
+    if n != 0 {
+        out.push(json!(0));
+    }
+    if n != 1 {
+        out.push(json!(1));
+    }
+    if n != -1 {
+        out.push(json!(-1));
+    }
+    out
+}
+
+fn shrink_float(value: &Value) -> Vec<Value> {
+    let n = match value.as_f64() {
+        Some(n) if n.is_finite() => n,
+        // NaN / Infinity / non-float → shrink to 0.0
+        Some(_) => return vec![json!(0.0)],
+        None => return Vec::new(),
+    };
+    let mut out = Vec::with_capacity(4);
+    let half = n / 2.0;
+    if (half - n).abs() > f64::EPSILON {
+        out.push(json!(half));
+    }
+    if n.abs() > f64::EPSILON {
+        out.push(json!(0.0));
+    }
+    if (n - 1.0).abs() > f64::EPSILON {
+        out.push(json!(1.0));
+    }
+    if (n + 1.0).abs() > f64::EPSILON {
+        out.push(json!(-1.0));
+    }
+    out
+}
+
+fn shrink_str(value: &Value) -> Vec<Value> {
+    let s = match value.as_str() {
+        Some(s) => s,
+        None => return Vec::new(),
+    };
+    if s.is_empty() {
+        return Vec::new();
+    }
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = Vec::with_capacity(4);
+    // Remove last char
+    if chars.len() > 1 {
+        let without_last: String = chars[..chars.len() - 1].iter().collect();
+        out.push(json!(without_last));
+    }
+    // Remove first char
+    if chars.len() > 1 {
+        let without_first: String = chars[1..].iter().collect();
+        out.push(json!(without_first));
+    }
+    // Empty string
+    out.push(json!(""));
+    // Single first char
+    if chars.len() > 1 {
+        out.push(json!(chars[0].to_string()));
+    }
+    out
+}
+
+fn shrink_bool(value: &Value) -> Vec<Value> {
+    match value.as_bool() {
+        Some(true) => vec![json!(false)],
+        _ => Vec::new(),
+    }
+}
+
+fn shrink_array(value: &Value, element: &TypeInfo) -> Vec<Value> {
+    let arr = match value.as_array() {
+        Some(a) => a,
+        None => return Vec::new(),
+    };
+    if arr.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(3 + arr.len());
+    // Remove last element
+    if arr.len() > 1 {
+        out.push(json!(arr[..arr.len() - 1]));
+    }
+    // Remove first element
+    if arr.len() > 1 {
+        out.push(json!(arr[1..]));
+    }
+    // Empty array
+    out.push(json!([]));
+    // Shrink each element individually
+    for (i, elem) in arr.iter().enumerate() {
+        for shrunk in shrink_candidates(elem, element) {
+            let mut new_arr = arr.clone();
+            new_arr[i] = shrunk;
+            out.push(Value::Array(new_arr));
+        }
+    }
+    out
+}
+
+fn shrink_object(value: &Value, fields: &[(String, TypeInfo)]) -> Vec<Value> {
+    let obj = match value.as_object() {
+        Some(o) => o,
+        None => return Vec::new(),
+    };
+    if fields.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(fields.len() * 2);
+    // Remove each field one at a time
+    for (name, _) in fields {
+        if obj.contains_key(name) {
+            let mut reduced = obj.clone();
+            reduced.remove(name);
+            out.push(Value::Object(reduced));
+        }
+    }
+    // Shrink each field value individually
+    for (name, typ) in fields {
+        if let Some(val) = obj.get(name) {
+            for shrunk in shrink_candidates(val, typ) {
+                let mut new_obj = obj.clone();
+                new_obj.insert(name.clone(), shrunk);
+                out.push(Value::Object(new_obj));
+            }
+        }
+    }
+    out
+}
+
+fn shrink_nullable(value: &Value, inner: &TypeInfo) -> Vec<Value> {
+    let mut out = Vec::with_capacity(4);
+    if !value.is_null() {
+        out.push(Value::Null);
+        out.extend(shrink_candidates(value, inner));
+    }
+    out
+}
+
+fn shrink_union(value: &Value, variants: &[TypeInfo]) -> Vec<Value> {
+    let mut out = Vec::new();
+    for variant in variants {
+        out.extend(shrink_candidates(value, variant));
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
 // Literal-derived candidate inputs
 // ---------------------------------------------------------------------------
 
@@ -3083,6 +3273,119 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // shrink_candidates unit tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn shrink_int_42() {
+        let candidates = shrink_candidates(&json!(42), &TypeInfo::Int);
+        assert!(candidates.contains(&json!(21)), "should contain halved value");
+        assert!(candidates.contains(&json!(0)), "should contain 0");
+        assert!(candidates.contains(&json!(1)), "should contain 1");
+        assert!(candidates.contains(&json!(-1)), "should contain -1");
+        assert!(!candidates.contains(&json!(42)), "should not contain original");
+    }
+
+    #[test]
+    fn shrink_int_zero() {
+        let candidates = shrink_candidates(&json!(0), &TypeInfo::Int);
+        assert!(!candidates.contains(&json!(0)), "should not contain original");
+        assert!(candidates.contains(&json!(1)));
+        assert!(candidates.contains(&json!(-1)));
+    }
+
+    #[test]
+    fn shrink_str_hello() {
+        let candidates = shrink_candidates(&json!("hello"), &TypeInfo::Str);
+        assert!(candidates.contains(&json!("hell")), "remove last char");
+        assert!(candidates.contains(&json!("ello")), "remove first char");
+        assert!(candidates.contains(&json!("")), "empty string");
+        assert!(candidates.contains(&json!("h")), "single first char");
+        assert!(!candidates.contains(&json!("hello")), "no original");
+    }
+
+    #[test]
+    fn shrink_str_empty() {
+        let candidates = shrink_candidates(&json!(""), &TypeInfo::Str);
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn shrink_str_single_char() {
+        let candidates = shrink_candidates(&json!("x"), &TypeInfo::Str);
+        assert!(candidates.contains(&json!("")), "should contain empty");
+        assert!(!candidates.contains(&json!("x")), "no original");
+    }
+
+    #[test]
+    fn shrink_bool_true() {
+        let candidates = shrink_candidates(&json!(true), &TypeInfo::Bool);
+        assert_eq!(candidates, vec![json!(false)]);
+    }
+
+    #[test]
+    fn shrink_bool_false() {
+        let candidates = shrink_candidates(&json!(false), &TypeInfo::Bool);
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn shrink_array_three_elements() {
+        let typ = TypeInfo::Array { element: Box::new(TypeInfo::Int) };
+        let candidates = shrink_candidates(&json!([1, 2, 3]), &typ);
+        assert!(candidates.contains(&json!([1, 2])), "remove last");
+        assert!(candidates.contains(&json!([2, 3])), "remove first");
+        assert!(candidates.contains(&json!([])), "empty");
+    }
+
+    #[test]
+    fn shrink_array_empty() {
+        let typ = TypeInfo::Array { element: Box::new(TypeInfo::Int) };
+        let candidates = shrink_candidates(&json!([]), &typ);
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn shrink_nullable_non_null() {
+        let typ = TypeInfo::Nullable { inner: Box::new(TypeInfo::Int) };
+        let candidates = shrink_candidates(&json!(42), &typ);
+        assert!(candidates.contains(&Value::Null), "should contain null");
+    }
+
+    #[test]
+    fn shrink_nullable_null() {
+        let typ = TypeInfo::Nullable { inner: Box::new(TypeInfo::Int) };
+        let candidates = shrink_candidates(&Value::Null, &typ);
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn shrink_object_removes_fields() {
+        let typ = TypeInfo::Object {
+            fields: vec![
+                ("a".into(), TypeInfo::Int),
+                ("b".into(), TypeInfo::Str),
+            ],
+        };
+        let val = json!({"a": 10, "b": "hi"});
+        let candidates = shrink_candidates(&val, &typ);
+        assert!(candidates.contains(&json!({"b": "hi"})), "remove field a");
+        assert!(candidates.contains(&json!({"a": 10})), "remove field b");
+    }
+
+    #[test]
+    fn shrink_no_duplicates() {
+        // shrink_candidates(1, Int) would produce [0, 1, -1] but 1 is the original
+        // and 0 is half — make sure no dupes
+        let candidates = shrink_candidates(&json!(1), &TypeInfo::Int);
+        let mut seen = Vec::new();
+        for c in &candidates {
+            assert!(!seen.contains(c), "duplicate candidate: {c:?}");
+            seen.push(c.clone());
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Property-based tests
     // -----------------------------------------------------------------------
 
@@ -3310,6 +3613,124 @@ mod tests {
                             value_matches_type(v, &param.typ),
                             "child2[{i}] = {v:?} doesn't match {:?}", param.typ
                         );
+                    }
+                }
+            }
+
+            // -----------------------------------------------------------------
+            // shrink_candidates: type preservation
+            // -----------------------------------------------------------------
+
+            #[test]
+            fn shrink_candidates_preserve_type(
+                seed in 0..10000u64,
+                typs in prop::collection::vec(
+                    prop_oneof![
+                        Just(TypeInfo::Int),
+                        Just(TypeInfo::Float),
+                        Just(TypeInfo::Bool),
+                        Just(TypeInfo::Str),
+                        Just(TypeInfo::Nullable { inner: Box::new(TypeInfo::Int) }),
+                    ],
+                    1..=5,
+                ),
+            ) {
+                let mut rng = StdRng::seed_from_u64(seed);
+                for typ in &typs {
+                    let value = generate_random_value(typ, &mut rng, None);
+                    let candidates = shrink_candidates(&value, typ);
+                    for (i, c) in candidates.iter().enumerate() {
+                        prop_assert!(
+                            value_matches_type(c, typ),
+                            "shrink candidate[{i}] = {c:?} doesn't match type {typ:?} (original: {value:?})"
+                        );
+                    }
+                }
+            }
+
+            // -----------------------------------------------------------------
+            // shrink_candidates: no identity
+            // -----------------------------------------------------------------
+
+            #[test]
+            fn shrink_candidates_exclude_original(
+                seed in 0..10000u64,
+                typs in prop::collection::vec(
+                    prop_oneof![
+                        Just(TypeInfo::Int),
+                        Just(TypeInfo::Float),
+                        Just(TypeInfo::Bool),
+                        Just(TypeInfo::Str),
+                    ],
+                    1..=5,
+                ),
+            ) {
+                let mut rng = StdRng::seed_from_u64(seed);
+                for typ in &typs {
+                    let value = generate_random_value(typ, &mut rng, None);
+                    let candidates = shrink_candidates(&value, typ);
+                    for c in &candidates {
+                        prop_assert!(
+                            c != &value,
+                            "shrink candidate equals original: {value:?}"
+                        );
+                    }
+                }
+            }
+
+            // -----------------------------------------------------------------
+            // shrink_candidates: int shrinks toward zero
+            // -----------------------------------------------------------------
+
+            #[test]
+            fn shrink_int_toward_zero(val in -1_000_000i64..1_000_000i64) {
+                let value = json!(val);
+                let candidates = shrink_candidates(&value, &TypeInfo::Int);
+                let abs_orig = val.unsigned_abs();
+                for c in &candidates {
+                    if let Some(n) = c.as_i64() {
+                        // All candidates should have abs <= abs(original),
+                        // except for the boundary values 1 and -1 when original is 0
+                        if val != 0 {
+                            prop_assert!(
+                                n.unsigned_abs() <= abs_orig,
+                                "shrink candidate {n} has larger abs than original {val}"
+                            );
+                        }
+                    }
+                }
+            }
+
+            // -----------------------------------------------------------------
+            // shrink_candidates: no duplicates
+            // -----------------------------------------------------------------
+
+            #[test]
+            fn shrink_candidates_no_duplicates(
+                seed in 0..10000u64,
+                typs in prop::collection::vec(
+                    prop_oneof![
+                        Just(TypeInfo::Int),
+                        Just(TypeInfo::Float),
+                        Just(TypeInfo::Bool),
+                        Just(TypeInfo::Str),
+                    ],
+                    1..=3,
+                ),
+            ) {
+                let mut rng = StdRng::seed_from_u64(seed);
+                for typ in &typs {
+                    let value = generate_random_value(typ, &mut rng, None);
+                    let candidates = shrink_candidates(&value, typ);
+                    for (i, a) in candidates.iter().enumerate() {
+                        for (j, b) in candidates.iter().enumerate() {
+                            if i != j {
+                                prop_assert!(
+                                    a != b,
+                                    "duplicate shrink candidates at [{i}] and [{j}]: {a:?}"
+                                );
+                            }
+                        }
                     }
                 }
             }
