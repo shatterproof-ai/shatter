@@ -1085,4 +1085,60 @@ mod tests {
         let it_count = output.matches("  it('").count();
         assert_eq!(it_count, 3, "expected 3 it blocks, output:\n{output}");
     }
+
+    // ── Property-based tests ─────────────────────────────────────────────
+
+    mod proptests {
+        use super::*;
+        use crate::test_arbitraries::arb_behavior_map;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn jest_export_structural_validity(
+                map in arb_behavior_map(),
+                fname in "[a-zA-Z_][a-zA-Z0-9_]{0,12}",
+            ) {
+                let output = generate_jest_tests(&map, &fname, "./src/module");
+
+                let import_expect = format!("import {{ {} }}", fname);
+                let describe_expect = format!("describe('{}',", fname);
+                prop_assert!(output.contains(&import_expect));
+                prop_assert!(output.contains(&describe_expect));
+
+                let it_count = output.matches("  it('").count();
+                prop_assert_eq!(it_count, map.behaviors.len());
+            }
+
+            #[test]
+            fn go_export_structural_validity(
+                map in arb_behavior_map(),
+                fname in "[a-zA-Z_][a-zA-Z0-9_]{0,12}",
+            ) {
+                let output = generate_go_tests(&map, &fname, "main");
+
+                prop_assert!(output.contains("package main"));
+                prop_assert!(output.contains("import \"testing\""));
+                prop_assert!(output.contains("func Test"));
+            }
+
+            #[test]
+            fn vitest_export_structural_validity(
+                map in arb_behavior_map(),
+                fname in "[a-zA-Z_][a-zA-Z0-9_]{0,12}",
+            ) {
+                let output = generate_vitest_tests(&map, &fname, "./src/module");
+
+                let import_expect = format!("import {{ {} }}", fname);
+                let describe_expect = format!("describe('{}',", fname);
+                let vitest_import = "import { describe, it, expect } from 'vitest'";
+                prop_assert!(output.contains(vitest_import));
+                prop_assert!(output.contains(&import_expect));
+                prop_assert!(output.contains(&describe_expect));
+
+                let it_count = output.matches("  it('").count();
+                prop_assert_eq!(it_count, map.behaviors.len());
+            }
+        }
+    }
 }
