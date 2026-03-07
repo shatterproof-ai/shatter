@@ -4,6 +4,12 @@
 //! parameter types, and branch structure. When a fingerprint matches a
 //! previously cached value, the function is unchanged and can be skipped
 //! during re-exploration.
+//!
+//! The module supports two modes:
+//! - **Single-file**: [`compute_deep_fingerprints`] computes deep FPs within one file.
+//! - **Cross-file**: [`compute_cross_file_deep_fingerprints`] uses a [`CallGraph`] to
+//!   compose fingerprints across file boundaries, and [`compute_cross_file_staleness`]
+//!   propagates staleness transitively through the call graph.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
@@ -11,6 +17,7 @@ use std::path::Path;
 
 use sha2::{Digest, Sha256};
 
+use crate::call_graph::CallGraph;
 use crate::protocol::FunctionAnalysis;
 
 /// Compute a hex-encoded SHA-256 fingerprint for a function.
@@ -232,6 +239,236 @@ pub fn extract_function_source(
     let start = (start_line as usize).saturating_sub(1);
     let end = (end_line as usize).min(lines.len());
     Ok(lines[start..end].join("\n"))
+}
+
+// ---------------------------------------------------------------------------
+// Cross-file fingerprint registry and staleness analysis
+// ---------------------------------------------------------------------------
+
+/// Cross-file registry of shallow and deep fingerprints, keyed by qualified
+/// function name (`file_path::function_name`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FingerprintRegistry {
+    shallow: HashMap<String, String>,
+    deep: HashMap<String, String>,
+    /// Which qualified callee names were incorporated into each function's deep FP.
+    dependencies: HashMap<String, HashSet<String>>,
+}
+
+impl FingerprintRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn set_shallow(&mut self, qualified_name: &str, fp: String) {
+        self.shallow.insert(qualified_name.to_string(), fp);
+    }
+
+    pub fn set_deep(&mut self, qualified_name: &str, fp: String) {
+        self.deep.insert(qualified_name.to_string(), fp);
+    }
+
+    pub fn set_dependencies(&mut self, qualified_name: &str, deps: HashSet<String>) {
+        self.dependencies.insert(qualified_name.to_string(), deps);
+    }
+
+    pub fn shallow(&self, qualified_name: &str) -> Option<&str> {
+        self.shallow.get(qualified_name).map(String::as_str)
+    }
+
+    pub fn deep(&self, qualified_name: &str) -> Option<&str> {
+        self.deep.get(qualified_name).map(String::as_str)
+    }
+
+    pub fn dependencies(&self, qualified_name: &str) -> Option<&HashSet<String>> {
+        self.dependencies.get(qualified_name)
+    }
+
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.shallow.keys().map(String::as_str)
+    }
+
+    pub fn len(&self) -> usize {
+        self.shallow.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.shallow.is_empty()
+    }
+}
+
+/// Compute deep fingerprints for all functions across files using a [`CallGraph`].
+///
+/// Uses the call graph's topological ordering (leaves first) to ensure callee
+/// deep FPs are available before processing callers. Functions not present in
+/// `shallow_fps` are skipped. Cycles are broken by processing remaining
+/// functions with partial callee fingerprints (same strategy as the single-file
+/// version).
+///
+/// `shallow_fps` maps qualified name → shallow fingerprint. The call graph
+/// provides cross-file dependency edges.
+pub fn compute_cross_file_deep_fingerprints(
+    shallow_fps: &HashMap<String, String>,
+    call_graph: &CallGraph,
+) -> FingerprintRegistry {
+    let mut registry = FingerprintRegistry::new();
+    for (name, fp) in shallow_fps {
+        registry.set_shallow(name, fp.clone());
+    }
+
+    let layers = call_graph.topological_layers();
+    let mut deep_map: HashMap<String, String> = HashMap::new();
+
+    for layer in &layers {
+        for func_name in layer {
+            let sfp = match shallow_fps.get(func_name) {
+                Some(fp) => fp,
+                None => continue,
+            };
+
+            let callees_vec = call_graph.callees_of(func_name);
+            let callees: HashSet<String> = callees_vec.into_iter().map(String::from).collect();
+            let dfp = compute_deep_fingerprint(sfp, &deep_map, &callees);
+
+            deep_map.insert(func_name.clone(), dfp.clone());
+            registry.set_deep(func_name, dfp);
+            registry.set_dependencies(func_name, callees);
+        }
+    }
+
+    // Handle any functions in shallow_fps but not in the call graph (isolated).
+    for (name, sfp) in shallow_fps {
+        if !deep_map.contains_key(name) {
+            let dfp = compute_deep_fingerprint(sfp, &deep_map, &HashSet::new());
+            deep_map.insert(name.clone(), dfp.clone());
+            registry.set_deep(name, dfp);
+            registry.set_dependencies(name, HashSet::new());
+        }
+    }
+
+    registry
+}
+
+/// Why a function was marked stale in cross-file staleness analysis.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StalenessReason {
+    /// The function's own source, params, or branches changed.
+    SourceChanged,
+    /// A transitive callee's fingerprint changed. Contains the callee's qualified name.
+    CalleeChanged(String),
+    /// The function is new (not in the previous registry).
+    New,
+    /// The previous registry had no fingerprint for this function.
+    NoPreviousFingerprint,
+}
+
+/// Result of cross-file staleness analysis using qualified names.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CrossFileIncrementalPlan {
+    /// Qualified names of functions needing re-exploration.
+    pub stale: Vec<String>,
+    /// Qualified names of functions whose deep FP matches (reuse cache).
+    pub fresh: Vec<String>,
+    /// Qualified names present in old registry but absent now (deleted).
+    pub removed: Vec<String>,
+    /// For each stale function, why it's stale.
+    pub stale_reasons: HashMap<String, StalenessReason>,
+}
+
+/// Compare current fingerprints against previous ones to determine cross-file staleness.
+///
+/// A function is stale if its deep fingerprint differs from the previous registry,
+/// or if it's new / has no previous fingerprint. Staleness propagates transitively
+/// through the call graph: if function X is directly stale, all transitive callers
+/// of X are also marked stale (with [`StalenessReason::CalleeChanged`]).
+pub fn compute_cross_file_staleness(
+    current: &FingerprintRegistry,
+    previous: &FingerprintRegistry,
+    call_graph: &CallGraph,
+) -> CrossFileIncrementalPlan {
+    let current_names: HashSet<&str> = current.names().collect();
+    let previous_names: HashSet<&str> = previous.names().collect();
+
+    // Phase 1: identify directly changed functions.
+    let mut directly_stale: Vec<String> = Vec::new();
+    let mut direct_reasons: HashMap<String, StalenessReason> = HashMap::new();
+    let mut fresh: Vec<String> = Vec::new();
+
+    for name in &current_names {
+        let current_deep = current.deep(name);
+        let previous_deep = previous.deep(name);
+
+        match (current_deep, previous_deep) {
+            (Some(cur), Some(prev)) if cur == prev => {
+                fresh.push(name.to_string());
+            }
+            (Some(_), Some(_)) => {
+                directly_stale.push(name.to_string());
+                direct_reasons.insert(name.to_string(), StalenessReason::SourceChanged);
+            }
+            (_, None) if previous_names.contains(name) => {
+                directly_stale.push(name.to_string());
+                direct_reasons.insert(name.to_string(), StalenessReason::NoPreviousFingerprint);
+            }
+            _ => {
+                directly_stale.push(name.to_string());
+                direct_reasons.insert(name.to_string(), StalenessReason::New);
+            }
+        }
+    }
+
+    // Phase 2: propagate staleness transitively through the call graph.
+    let seed_refs: Vec<&str> = directly_stale.iter().map(String::as_str).collect();
+    let all_affected = call_graph.transitive_callers_of(&seed_refs);
+
+    let mut stale_reasons: HashMap<String, StalenessReason> = direct_reasons;
+
+    // Move transitively-stale functions from fresh to stale.
+    let mut final_fresh: Vec<String> = Vec::new();
+    let mut propagated_stale: Vec<String> = Vec::new();
+
+    for name in fresh {
+        if all_affected.contains(&name) {
+            // Find the direct callee that caused this propagation.
+            let reason = find_stale_callee(&name, &stale_reasons, call_graph)
+                .unwrap_or_else(|| StalenessReason::CalleeChanged(String::new()));
+            stale_reasons.insert(name.clone(), reason);
+            propagated_stale.push(name);
+        } else {
+            final_fresh.push(name);
+        }
+    }
+
+    let mut all_stale = directly_stale;
+    all_stale.extend(propagated_stale);
+
+    // Phase 3: detect removed functions.
+    let removed: Vec<String> = previous_names
+        .iter()
+        .filter(|name| !current_names.contains(*name))
+        .map(|name| name.to_string())
+        .collect();
+
+    CrossFileIncrementalPlan {
+        stale: all_stale,
+        fresh: final_fresh,
+        removed,
+        stale_reasons,
+    }
+}
+
+/// Find a direct callee of `func_name` that is stale, for the CalleeChanged reason.
+fn find_stale_callee(
+    func_name: &str,
+    stale_reasons: &HashMap<String, StalenessReason>,
+    call_graph: &CallGraph,
+) -> Option<StalenessReason> {
+    for callee in call_graph.callees_of(func_name) {
+        if stale_reasons.contains_key(callee) {
+            return Some(StalenessReason::CalleeChanged(callee.to_string()));
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -599,6 +836,341 @@ mod tests {
             assert_eq!(fp.len(), 64);
         }
     }
+
+    // --- FingerprintRegistry tests ---
+
+    #[test]
+    fn registry_basic_crud() {
+        let mut reg = FingerprintRegistry::new();
+        assert!(reg.is_empty());
+        assert_eq!(reg.len(), 0);
+
+        reg.set_shallow("a.ts::foo", "shallow1".into());
+        reg.set_deep("a.ts::foo", "deep1".into());
+        reg.set_dependencies("a.ts::foo", ["a.ts::bar".into()].into_iter().collect());
+
+        assert_eq!(reg.len(), 1);
+        assert!(!reg.is_empty());
+        assert_eq!(reg.shallow("a.ts::foo"), Some("shallow1"));
+        assert_eq!(reg.deep("a.ts::foo"), Some("deep1"));
+        assert!(reg.dependencies("a.ts::foo").unwrap().contains("a.ts::bar"));
+        assert_eq!(reg.shallow("nonexistent"), None);
+    }
+
+    #[test]
+    fn registry_names_iteration() {
+        let mut reg = FingerprintRegistry::new();
+        reg.set_shallow("a.ts::foo", "s1".into());
+        reg.set_shallow("b.ts::bar", "s2".into());
+
+        let names: HashSet<&str> = reg.names().collect();
+        assert_eq!(names.len(), 2);
+        assert!(names.contains("a.ts::foo"));
+        assert!(names.contains("b.ts::bar"));
+    }
+
+    // --- compute_cross_file_deep_fingerprints tests ---
+
+    mod cross_file {
+        use super::*;
+        use crate::batch_analyze::{FunctionEntry, FunctionRegistry};
+        use crate::call_graph::CallGraph;
+        use crate::protocol::{DependencyKind, ExternalDependency};
+        use std::path::PathBuf;
+
+        fn make_registry_for_graph(
+            funcs: &[(&str, &str, Vec<(&str, &str)>)],
+        ) -> FunctionRegistry {
+            let mut entries = Vec::new();
+            let mut index = HashMap::new();
+            for (file, name, deps) in funcs {
+                let qn = FunctionRegistry::qualified_name(&PathBuf::from(file), name);
+                let idx = entries.len();
+                index.insert(qn, idx);
+                entries.push(FunctionEntry {
+                    file_path: PathBuf::from(file),
+                    name: name.to_string(),
+                    exported: true,
+                    params: vec![],
+                    return_type: TypeInfo::Unknown,
+                    dependencies: deps
+                        .iter()
+                        .map(|(sym, module)| ExternalDependency {
+                            kind: DependencyKind::FunctionCall,
+                            symbol: sym.to_string(),
+                            source_module: module.to_string(),
+                            return_type: TypeInfo::Unknown,
+                            param_types: vec![],
+                            call_sites: vec![],
+                        })
+                        .collect(),
+                    branch_count: 0,
+                    start_line: 1,
+                    end_line: 10,
+                    crypto_boundaries: vec![],
+                });
+            }
+            FunctionRegistry::from_raw(entries, index)
+        }
+
+        #[test]
+        fn cross_file_composition() {
+            let reg = make_registry_for_graph(&[
+                ("src/b.ts", "helper", vec![]),
+                ("src/a.ts", "main", vec![("helper", "src/b.ts")]),
+            ]);
+            let graph = CallGraph::from_registry(&reg);
+
+            let mut shallow = HashMap::new();
+            shallow.insert("src/b.ts::helper".into(), "aaa".repeat(22)[..64].to_string());
+            shallow.insert("src/a.ts::main".into(), "bbb".repeat(22)[..64].to_string());
+
+            let fp_reg = compute_cross_file_deep_fingerprints(&shallow, &graph);
+
+            assert_eq!(fp_reg.len(), 2);
+            assert!(fp_reg.deep("src/b.ts::helper").is_some());
+            assert!(fp_reg.deep("src/a.ts::main").is_some());
+
+            // main's deep FP should differ from a standalone computation without callees.
+            let main_standalone = compute_deep_fingerprint(
+                shallow.get("src/a.ts::main").unwrap(),
+                &HashMap::new(),
+                &HashSet::new(),
+            );
+            assert_ne!(fp_reg.deep("src/a.ts::main").unwrap(), main_standalone);
+        }
+
+        #[test]
+        fn cross_file_callee_change_propagates() {
+            let reg = make_registry_for_graph(&[
+                ("src/b.ts", "helper", vec![]),
+                ("src/a.ts", "main", vec![("helper", "src/b.ts")]),
+            ]);
+            let graph = CallGraph::from_registry(&reg);
+
+            // Version 1: helper has one shallow FP.
+            let mut shallow_v1 = HashMap::new();
+            shallow_v1.insert("src/b.ts::helper".into(), "a".repeat(64));
+            shallow_v1.insert("src/a.ts::main".into(), "b".repeat(64));
+            let reg1 = compute_cross_file_deep_fingerprints(&shallow_v1, &graph);
+
+            // Version 2: helper's shallow FP changes, main's stays the same.
+            let mut shallow_v2 = HashMap::new();
+            shallow_v2.insert("src/b.ts::helper".into(), "c".repeat(64));
+            shallow_v2.insert("src/a.ts::main".into(), "b".repeat(64));
+            let reg2 = compute_cross_file_deep_fingerprints(&shallow_v2, &graph);
+
+            // helper's deep FP changes.
+            assert_ne!(reg1.deep("src/b.ts::helper"), reg2.deep("src/b.ts::helper"));
+            // main's deep FP also changes (callee changed).
+            assert_ne!(reg1.deep("src/a.ts::main"), reg2.deep("src/a.ts::main"));
+        }
+
+        #[test]
+        fn cross_file_diamond() {
+            // a::top → b::left, a::top → c::right, b::left → d::leaf, c::right → d::leaf
+            let reg = make_registry_for_graph(&[
+                ("src/d.ts", "leaf", vec![]),
+                ("src/b.ts", "left", vec![("leaf", "src/d.ts")]),
+                ("src/c.ts", "right", vec![("leaf", "src/d.ts")]),
+                ("src/a.ts", "top", vec![("left", "src/b.ts"), ("right", "src/c.ts")]),
+            ]);
+            let graph = CallGraph::from_registry(&reg);
+
+            let shallow: HashMap<String, String> = [
+                ("src/d.ts::leaf", "d"),
+                ("src/b.ts::left", "b"),
+                ("src/c.ts::right", "c"),
+                ("src/a.ts::top", "a"),
+            ]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.repeat(64)))
+            .collect();
+
+            let fp_reg = compute_cross_file_deep_fingerprints(&shallow, &graph);
+            assert_eq!(fp_reg.len(), 4);
+
+            // All should have 64-char hex deep FPs.
+            for name in fp_reg.names() {
+                let dfp = fp_reg.deep(name).unwrap();
+                assert_eq!(dfp.len(), 64, "deep FP for {name} should be 64 chars");
+            }
+        }
+
+        #[test]
+        fn cross_file_isolated_function() {
+            // A function in shallow_fps but not in the call graph.
+            let reg = make_registry_for_graph(&[]);
+            let graph = CallGraph::from_registry(&reg);
+
+            let mut shallow = HashMap::new();
+            shallow.insert("orphan.ts::lonely".into(), "x".repeat(64));
+
+            let fp_reg = compute_cross_file_deep_fingerprints(&shallow, &graph);
+            assert_eq!(fp_reg.len(), 1);
+            assert!(fp_reg.deep("orphan.ts::lonely").is_some());
+        }
+
+        // --- compute_cross_file_staleness tests ---
+
+        #[test]
+        fn staleness_all_fresh() {
+            let reg = make_registry_for_graph(&[
+                ("src/a.ts", "foo", vec![]),
+            ]);
+            let graph = CallGraph::from_registry(&reg);
+
+            let mut current = FingerprintRegistry::new();
+            current.set_shallow("src/a.ts::foo", "s1".into());
+            current.set_deep("src/a.ts::foo", "d1".into());
+
+            let previous = current.clone();
+
+            let plan = compute_cross_file_staleness(&current, &previous, &graph);
+            assert!(plan.stale.is_empty());
+            assert_eq!(plan.fresh, vec!["src/a.ts::foo"]);
+            assert!(plan.removed.is_empty());
+        }
+
+        #[test]
+        fn staleness_direct_source_change() {
+            let reg = make_registry_for_graph(&[("src/a.ts", "foo", vec![])]);
+            let graph = CallGraph::from_registry(&reg);
+
+            let mut previous = FingerprintRegistry::new();
+            previous.set_shallow("src/a.ts::foo", "s1".into());
+            previous.set_deep("src/a.ts::foo", "d1".into());
+
+            let mut current = FingerprintRegistry::new();
+            current.set_shallow("src/a.ts::foo", "s2".into());
+            current.set_deep("src/a.ts::foo", "d2".into());
+
+            let plan = compute_cross_file_staleness(&current, &previous, &graph);
+            assert_eq!(plan.stale, vec!["src/a.ts::foo"]);
+            assert!(plan.fresh.is_empty());
+            assert_eq!(
+                plan.stale_reasons["src/a.ts::foo"],
+                StalenessReason::SourceChanged
+            );
+        }
+
+        #[test]
+        fn staleness_transitive_propagation() {
+            // main → helper: helper changes → main is stale (CalleeChanged).
+            // When deep FPs are computed per-file (without cross-file awareness),
+            // main's deep FP may stay the same even though its cross-file callee
+            // changed. The transitive propagation catches this.
+            let reg = make_registry_for_graph(&[
+                ("src/b.ts", "helper", vec![]),
+                ("src/a.ts", "main", vec![("helper", "src/b.ts")]),
+            ]);
+            let graph = CallGraph::from_registry(&reg);
+
+            let mut previous = FingerprintRegistry::new();
+            previous.set_shallow("src/b.ts::helper", "s1".into());
+            previous.set_deep("src/b.ts::helper", "d1".into());
+            previous.set_shallow("src/a.ts::main", "s2".into());
+            previous.set_deep("src/a.ts::main", "d2".into());
+
+            let mut current = FingerprintRegistry::new();
+            current.set_shallow("src/b.ts::helper", "s1_changed".into());
+            current.set_deep("src/b.ts::helper", "d1_changed".into());
+            // main's own source unchanged, and per-file deep FP unchanged
+            // (cross-file callee was out of scope during per-file computation).
+            current.set_shallow("src/a.ts::main", "s2".into());
+            current.set_deep("src/a.ts::main", "d2".into());
+
+            let plan = compute_cross_file_staleness(&current, &previous, &graph);
+            assert!(plan.stale.contains(&"src/b.ts::helper".to_string()));
+            assert!(plan.stale.contains(&"src/a.ts::main".to_string()));
+            assert!(plan.fresh.is_empty());
+
+            assert_eq!(
+                plan.stale_reasons["src/b.ts::helper"],
+                StalenessReason::SourceChanged
+            );
+            assert!(matches!(
+                &plan.stale_reasons["src/a.ts::main"],
+                StalenessReason::CalleeChanged(callee) if callee == "src/b.ts::helper"
+            ));
+        }
+
+        #[test]
+        fn staleness_new_function() {
+            let reg = make_registry_for_graph(&[("src/a.ts", "new_fn", vec![])]);
+            let graph = CallGraph::from_registry(&reg);
+
+            let mut current = FingerprintRegistry::new();
+            current.set_shallow("src/a.ts::new_fn", "s1".into());
+            current.set_deep("src/a.ts::new_fn", "d1".into());
+
+            let previous = FingerprintRegistry::new();
+
+            let plan = compute_cross_file_staleness(&current, &previous, &graph);
+            assert_eq!(plan.stale, vec!["src/a.ts::new_fn"]);
+            assert_eq!(
+                plan.stale_reasons["src/a.ts::new_fn"],
+                StalenessReason::New
+            );
+        }
+
+        #[test]
+        fn staleness_removed_function() {
+            let reg = make_registry_for_graph(&[]);
+            let graph = CallGraph::from_registry(&reg);
+
+            let mut previous = FingerprintRegistry::new();
+            previous.set_shallow("src/a.ts::deleted", "s1".into());
+            previous.set_deep("src/a.ts::deleted", "d1".into());
+
+            let current = FingerprintRegistry::new();
+
+            let plan = compute_cross_file_staleness(&current, &previous, &graph);
+            assert!(plan.stale.is_empty());
+            assert!(plan.fresh.is_empty());
+            assert_eq!(plan.removed, vec!["src/a.ts::deleted"]);
+        }
+
+        #[test]
+        fn staleness_diamond_propagation() {
+            // top → left, top → right, left → leaf, right → leaf
+            // leaf changes → left, right, top all stale via transitive propagation
+            let reg = make_registry_for_graph(&[
+                ("src/d.ts", "leaf", vec![]),
+                ("src/b.ts", "left", vec![("leaf", "src/d.ts")]),
+                ("src/c.ts", "right", vec![("leaf", "src/d.ts")]),
+                ("src/a.ts", "top", vec![("left", "src/b.ts"), ("right", "src/c.ts")]),
+            ]);
+            let graph = CallGraph::from_registry(&reg);
+
+            let names = [
+                "src/d.ts::leaf",
+                "src/b.ts::left",
+                "src/c.ts::right",
+                "src/a.ts::top",
+            ];
+
+            let mut previous = FingerprintRegistry::new();
+            for (i, name) in names.iter().enumerate() {
+                previous.set_shallow(name, format!("s{i}"));
+                previous.set_deep(name, format!("d{i}"));
+            }
+
+            let mut current = FingerprintRegistry::new();
+            // Only leaf changes directly.
+            current.set_shallow("src/d.ts::leaf", "s0_new".into());
+            current.set_deep("src/d.ts::leaf", "d0_new".into());
+            // Others: per-file deep FPs unchanged (cross-file callee out of scope).
+            for (i, name) in names[1..].iter().enumerate() {
+                current.set_shallow(name, format!("s{}", i + 1));
+                current.set_deep(name, format!("d{}", i + 1));
+            }
+
+            let plan = compute_cross_file_staleness(&current, &previous, &graph);
+            assert_eq!(plan.stale.len(), 4);
+            assert!(plan.fresh.is_empty());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -668,6 +1240,92 @@ mod proptests {
             let fp1 = compute_function_fingerprint(&src1, &analysis);
             let fp2 = compute_function_fingerprint(&src2, &analysis);
             prop_assert_ne!(fp1, fp2);
+        }
+
+        /// Cross-file deep FPs are deterministic: same inputs → same registry.
+        #[test]
+        fn cross_file_deterministic(
+            fp1 in "[a-f0-9]{64}",
+            fp2 in "[a-f0-9]{64}",
+        ) {
+            use crate::batch_analyze::{FunctionEntry, FunctionRegistry};
+            use crate::call_graph::CallGraph;
+            use crate::protocol::{DependencyKind, ExternalDependency};
+            use std::path::PathBuf;
+
+            let mut entries = Vec::new();
+            let mut index = HashMap::new();
+
+            // Two functions: leaf and caller
+            let qn1 = FunctionRegistry::qualified_name(&PathBuf::from("a.ts"), "leaf");
+            index.insert(qn1, 0);
+            entries.push(FunctionEntry {
+                file_path: PathBuf::from("a.ts"),
+                name: "leaf".into(),
+                exported: true,
+                params: vec![],
+                return_type: crate::types::TypeInfo::Unknown,
+                dependencies: vec![],
+                branch_count: 0,
+                start_line: 1,
+                end_line: 5,
+                crypto_boundaries: vec![],
+            });
+
+            let qn2 = FunctionRegistry::qualified_name(&PathBuf::from("b.ts"), "caller");
+            index.insert(qn2, 1);
+            entries.push(FunctionEntry {
+                file_path: PathBuf::from("b.ts"),
+                name: "caller".into(),
+                exported: true,
+                params: vec![],
+                return_type: crate::types::TypeInfo::Unknown,
+                dependencies: vec![ExternalDependency {
+                    kind: DependencyKind::FunctionCall,
+                    symbol: "leaf".into(),
+                    source_module: "a.ts".into(),
+                    return_type: crate::types::TypeInfo::Unknown,
+                    param_types: vec![],
+                    call_sites: vec![],
+                }],
+                branch_count: 0,
+                start_line: 1,
+                end_line: 5,
+                crypto_boundaries: vec![],
+            });
+
+            let freg = FunctionRegistry::from_raw(entries, index);
+            let graph = CallGraph::from_registry(&freg);
+
+            let mut shallow = HashMap::new();
+            shallow.insert("a.ts::leaf".into(), fp1);
+            shallow.insert("b.ts::caller".into(), fp2);
+
+            let reg1 = compute_cross_file_deep_fingerprints(&shallow, &graph);
+            let reg2 = compute_cross_file_deep_fingerprints(&shallow, &graph);
+
+            prop_assert_eq!(reg1.deep("a.ts::leaf"), reg2.deep("a.ts::leaf"));
+            prop_assert_eq!(reg1.deep("b.ts::caller"), reg2.deep("b.ts::caller"));
+        }
+
+        /// All deep FPs in the registry are 64-char hex strings.
+        #[test]
+        fn cross_file_deep_fp_length_invariant(
+            fp in "[a-f0-9]{64}",
+        ) {
+            use crate::call_graph::CallGraph;
+            use crate::batch_analyze::FunctionRegistry;
+
+            let freg = FunctionRegistry::from_raw(vec![], HashMap::new());
+            let graph = CallGraph::from_registry(&freg);
+
+            let mut shallow = HashMap::new();
+            shallow.insert("test::func".into(), fp);
+
+            let reg = compute_cross_file_deep_fingerprints(&shallow, &graph);
+            let dfp = reg.deep("test::func").unwrap();
+            prop_assert_eq!(dfp.len(), 64);
+            prop_assert!(dfp.chars().all(|c| c.is_ascii_hexdigit()));
         }
     }
 }

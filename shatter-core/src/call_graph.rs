@@ -149,6 +149,31 @@ impl CallGraph {
         }
     }
 
+    /// Compute the transitive closure of callers for a set of seed functions.
+    ///
+    /// Returns all functions that transitively depend on any seed (i.e., all
+    /// functions that would need re-exploration if any seed changes). Seeds
+    /// themselves are included in the result. Unknown names are silently ignored.
+    pub fn transitive_callers_of(&self, seeds: &[&str]) -> HashSet<String> {
+        let mut visited = HashSet::new();
+        let mut queue = std::collections::VecDeque::new();
+        for &s in seeds {
+            if let Some(&idx) = self.node_index.get(s)
+                && visited.insert(idx)
+            {
+                queue.push_back(idx);
+            }
+        }
+        while let Some(idx) = queue.pop_front() {
+            for &caller_idx in &self.rev[idx] {
+                if visited.insert(caller_idx) {
+                    queue.push_back(caller_idx);
+                }
+            }
+        }
+        visited.into_iter().map(|i| self.nodes[i].clone()).collect()
+    }
+
     /// Compute topological layers (Kahn's algorithm).
     ///
     /// Layer 0 contains leaf functions (no outgoing calls to other project functions).
@@ -1007,5 +1032,119 @@ mod tests {
         for (i, batch) in batches.iter().enumerate() {
             assert_eq!(batch.layer, i);
         }
+    }
+
+    // --- transitive_callers_of tests ---
+
+    #[test]
+    fn transitive_callers_linear_chain() {
+        // A → B → C: transitive callers of C = {A, B, C}
+        let registry = make_registry(&[
+            ("src/a.ts", "A", vec!["B"]),
+            ("src/a.ts", "B", vec!["C"]),
+            ("src/a.ts", "C", vec![]),
+        ]);
+        let graph = CallGraph::from_registry(&registry);
+        let c_qn = "src/a.ts::C";
+
+        let callers = graph.transitive_callers_of(&[c_qn]);
+        assert_eq!(callers.len(), 3);
+        assert!(callers.contains("src/a.ts::A"));
+        assert!(callers.contains("src/a.ts::B"));
+        assert!(callers.contains(c_qn));
+    }
+
+    #[test]
+    fn transitive_callers_diamond() {
+        // A → B, A → C, B → D, C → D: transitive callers of D = {A, B, C, D}
+        let registry = make_registry(&[
+            ("src/a.ts", "A", vec!["B", "C"]),
+            ("src/a.ts", "B", vec!["D"]),
+            ("src/a.ts", "C", vec!["D"]),
+            ("src/a.ts", "D", vec![]),
+        ]);
+        let graph = CallGraph::from_registry(&registry);
+
+        let callers = graph.transitive_callers_of(&["src/a.ts::D"]);
+        assert_eq!(callers.len(), 4);
+    }
+
+    #[test]
+    fn transitive_callers_cycle() {
+        // A → B → C → A: transitive callers of any = all three
+        let registry = make_registry(&[
+            ("src/a.ts", "A", vec!["B"]),
+            ("src/a.ts", "B", vec!["C"]),
+            ("src/a.ts", "C", vec!["A"]),
+        ]);
+        let graph = CallGraph::from_registry(&registry);
+
+        let callers = graph.transitive_callers_of(&["src/a.ts::A"]);
+        assert_eq!(callers.len(), 3);
+    }
+
+    #[test]
+    fn transitive_callers_empty_seeds() {
+        let registry = make_registry(&[("src/a.ts", "A", vec![])]);
+        let graph = CallGraph::from_registry(&registry);
+
+        let callers = graph.transitive_callers_of(&[]);
+        assert!(callers.is_empty());
+    }
+
+    #[test]
+    fn transitive_callers_unknown_seed() {
+        let registry = make_registry(&[("src/a.ts", "A", vec![])]);
+        let graph = CallGraph::from_registry(&registry);
+
+        let callers = graph.transitive_callers_of(&["nonexistent::func"]);
+        assert!(callers.is_empty());
+    }
+
+    #[test]
+    fn transitive_callers_disjoint_subgraphs() {
+        // A → B, C → D (disjoint): transitive callers of B = {A, B}, not {C, D}
+        let registry = make_registry(&[
+            ("src/a.ts", "A", vec!["B"]),
+            ("src/a.ts", "B", vec![]),
+            ("src/a.ts", "C", vec!["D"]),
+            ("src/a.ts", "D", vec![]),
+        ]);
+        let graph = CallGraph::from_registry(&registry);
+
+        let callers = graph.transitive_callers_of(&["src/a.ts::B"]);
+        assert_eq!(callers.len(), 2);
+        assert!(callers.contains("src/a.ts::A"));
+        assert!(callers.contains("src/a.ts::B"));
+    }
+
+    #[test]
+    fn transitive_callers_multiple_seeds() {
+        // A → B, C → D: seeds = {B, D} → callers = {A, B, C, D}
+        let registry = make_registry(&[
+            ("src/a.ts", "A", vec!["B"]),
+            ("src/a.ts", "B", vec![]),
+            ("src/a.ts", "C", vec!["D"]),
+            ("src/a.ts", "D", vec![]),
+        ]);
+        let graph = CallGraph::from_registry(&registry);
+
+        let callers = graph.transitive_callers_of(&["src/a.ts::B", "src/a.ts::D"]);
+        assert_eq!(callers.len(), 4);
+    }
+
+    #[test]
+    fn transitive_callers_cross_file() {
+        // src/a.ts::main → src/b.ts::helper: callers of helper = {main, helper}
+        let registry = make_registry_with_modules(&[
+            ("src/a.ts", "main", vec![("helper", "src/b.ts")]),
+            ("src/b.ts", "helper", vec![]),
+        ]);
+        let graph = CallGraph::from_registry(&registry);
+
+        let callers = graph.transitive_callers_of(&["src/b.ts::helper"]);
+        assert_eq!(callers.len(), 2);
+        assert!(callers.contains("src/a.ts::main"));
+        assert!(callers.contains("src/b.ts::helper"));
     }
 }
