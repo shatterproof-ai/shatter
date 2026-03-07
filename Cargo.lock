@@ -297,6 +297,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c74b8349d32d297c9134b8c88677813a227df8f779daa29bfc29c183fe3dca6"
 
 [[package]]
+name = "contracts"
+version = "0.6.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "008eb94d541da40512913ef5e0707c3fb0e7280ba1af13f062461e46dd96ef7e"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "convert_case"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1928,6 +1939,7 @@ dependencies = [
 name = "shatter-core"
 version = "0.1.0"
 dependencies = [
+ "contracts",
  "fs2",
  "globset",
  "hex",

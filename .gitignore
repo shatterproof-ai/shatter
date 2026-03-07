@@ -141,7 +141,8 @@ dist
 # Shatter runtime state (machine-specific)
 **/.shatter/*
 !**/.shatter/seeds/
-!**/.shatter/seeds/**
+!**/.shatter/seeds/*.json
+**/.shatter/seeds/*.lock
 # Shatter generated reports
 shatter-report/
 
