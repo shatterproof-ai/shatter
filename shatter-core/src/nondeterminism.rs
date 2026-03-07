@@ -26,6 +26,9 @@ pub enum NondeterminismEvidence {
     PatternMatch { pattern: String },
     /// Name heuristic suggests nondeterminism (e.g., "timestamp", "random", "uuid").
     NameHeuristic { matched_name: String },
+    /// Value matches a slow nondeterminism pattern: deterministic within a run but
+    /// likely to vary across runs (dates, near-current timestamps, monotonic counters).
+    SlowPattern { pattern_type: String },
 }
 
 /// Confidence that a field is nondeterministic, based on accumulated evidence.
@@ -211,6 +214,9 @@ pub const NAME_PATTERNS: &[NamePattern] = &[
     NamePattern { pattern: "random",    match_kind: MatchKind::Substring, confidence: 0.85 },
     NamePattern { pattern: "timestamp", match_kind: MatchKind::Suffix,    confidence: 0.80 },
     NamePattern { pattern: "_at",       match_kind: MatchKind::Suffix,    confidence: 0.80 },
+    NamePattern { pattern: "date",      match_kind: MatchKind::Suffix,    confidence: 0.70 },
+    NamePattern { pattern: "hostname",  match_kind: MatchKind::Suffix,    confidence: 0.65 },
+    NamePattern { pattern: "pid",       match_kind: MatchKind::Suffix,    confidence: 0.60 },
     NamePattern { pattern: "id",        match_kind: MatchKind::Suffix,    confidence: 0.60 },
 ];
 
@@ -279,6 +285,10 @@ pub const PATTERN_UNIX_TIMESTAMP_MS: &str = "unix_timestamp_millis";
 pub const PATTERN_JWT: &str = "jwt_token";
 pub const PATTERN_SHA256_HEX: &str = "sha256_hex";
 pub const PATTERN_RANDOM_HEX: &str = "random_hex";
+pub const PATTERN_DATE_ONLY: &str = "date_only";
+pub const PATTERN_LOCALE_DATE: &str = "locale_date";
+pub const PATTERN_MONOTONIC_COUNTER: &str = "monotonic_counter";
+pub const PATTERN_ENV_VALUE: &str = "environment_value";
 
 /// Epoch boundaries for unix timestamp detection (2020-01-01 to 2030-01-01).
 const UNIX_TS_MIN_S: i64 = 1_577_836_800;
@@ -308,6 +318,31 @@ static RE_JWT: LazyLock<Regex> = LazyLock::new(|| {
 static RE_HEX_LOWER: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)^[0-9a-f]+$").expect("hex regex")
 });
+
+/// ISO date without time component (e.g. "2026-03-06").
+static RE_DATE_ISO_ONLY: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\d{4}-\d{2}-\d{2}$").expect("date_iso regex")
+});
+
+/// US-style date format MM/DD/YYYY.
+static RE_DATE_US: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\d{2}/\d{2}/\d{4}$").expect("date_us regex")
+});
+
+/// English locale date (e.g. "March 6, 2026" or "6 March 2026").
+static RE_DATE_LOCALE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^(?:(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4}|\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4})$")
+        .expect("date_locale regex")
+});
+
+/// Maximum step between consecutive values to qualify as a monotonic counter.
+const MONOTONIC_COUNTER_MAX_STEP: i64 = 100;
+
+/// Maximum string length for environment value heuristic (hostnames, PIDs).
+const ENV_VALUE_MAX_STRING_LEN: usize = 64;
+
+/// Field name patterns that suggest environment-dependent values.
+const ENV_FIELD_PATTERNS: &[&str] = &["host", "hostname", "pid", "ppid", "port"];
 
 /// Check a JSON value against known nondeterministic value patterns.
 ///
@@ -343,6 +378,21 @@ fn check_string_patterns(s: &str) -> Vec<ValuePatternMatch> {
         matches.push(ValuePatternMatch {
             pattern_name: PATTERN_JWT.into(),
             confidence: Confidence::High,
+        });
+    }
+
+    // Date-only patterns (slow nondeterminism — stable within a run, vary across days).
+    if RE_DATE_ISO_ONLY.is_match(s) || RE_DATE_US.is_match(s) {
+        matches.push(ValuePatternMatch {
+            pattern_name: PATTERN_DATE_ONLY.into(),
+            confidence: Confidence::Medium,
+        });
+    }
+
+    if RE_DATE_LOCALE.is_match(s) {
+        matches.push(ValuePatternMatch {
+            pattern_name: PATTERN_LOCALE_DATE.into(),
+            confidence: Confidence::Medium,
         });
     }
 
@@ -560,6 +610,72 @@ pub fn select_sample_indices(
     selected
 }
 
+// --- Cross-run slow nondeterminism detection ---
+
+/// Detect slow nondeterminism patterns by comparing the same field's values across runs.
+///
+/// Checks for monotonic counters (strictly increasing integers with bounded steps).
+/// Requires at least 2 values; confidence is `Low` for 2 values, `Medium` for 3+.
+pub fn check_cross_run_patterns(values: &[Value]) -> Vec<ValuePatternMatch> {
+    let mut matches = Vec::new();
+
+    // Extract integer values for monotonic counter check.
+    let ints: Vec<i64> = values.iter().filter_map(|v| v.as_i64()).collect();
+
+    if ints.len() >= 2 && ints.len() == values.len() {
+        let is_monotonic = ints.windows(2).all(|w| {
+            let step = w[1] - w[0];
+            step > 0 && step <= MONOTONIC_COUNTER_MAX_STEP
+        });
+
+        if is_monotonic {
+            let confidence = if ints.len() >= 3 {
+                Confidence::Medium
+            } else {
+                Confidence::Low
+            };
+            matches.push(ValuePatternMatch {
+                pattern_name: PATTERN_MONOTONIC_COUNTER.into(),
+                confidence,
+            });
+        }
+    }
+
+    matches
+}
+
+/// Detect environment-dependent values by combining field name with value shape.
+///
+/// Returns a match when the field name contains a known environment pattern
+/// (e.g. "hostname", "pid") AND the value is a short string or small integer.
+pub fn check_env_value_heuristic(
+    field_name: &str,
+    value: &Value,
+) -> Option<ValuePatternMatch> {
+    let segment = field_name.rsplit('.').next().unwrap_or(field_name);
+    let lower = segment.to_ascii_lowercase();
+
+    let name_matches = ENV_FIELD_PATTERNS.iter().any(|pat| lower.contains(pat));
+    if !name_matches {
+        return None;
+    }
+
+    let value_plausible = match value {
+        Value::String(s) => !s.is_empty() && s.len() <= ENV_VALUE_MAX_STRING_LEN,
+        Value::Number(n) => n.as_i64().is_some_and(|v| v >= 0),
+        _ => false,
+    };
+
+    if value_plausible {
+        Some(ValuePatternMatch {
+            pattern_name: PATTERN_ENV_VALUE.into(),
+            confidence: Confidence::Low,
+        })
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -609,6 +725,9 @@ mod tests {
             },
             NondeterminismEvidence::NameHeuristic {
                 matched_name: "uuid".into(),
+            },
+            NondeterminismEvidence::SlowPattern {
+                pattern_type: PATTERN_DATE_ONLY.into(),
             },
         ];
 
@@ -1338,5 +1457,222 @@ mod tests {
         assert_eq!(indices[0], 0);
         // Index 2 has the most different JSON length.
         assert_eq!(indices[1], 2);
+    }
+
+    // --- slow nondeterminism: date pattern tests ---
+
+    #[test]
+    fn pattern_date_iso_only() {
+        let v = json!("2026-03-06");
+        let matches = check_value_patterns(&v);
+        assert!(matches.iter().any(|m| m.pattern_name == PATTERN_DATE_ONLY));
+        assert!(matches.iter().any(|m| m.confidence == Confidence::Medium));
+    }
+
+    #[test]
+    fn pattern_date_us_format() {
+        let v = json!("03/06/2026");
+        let matches = check_value_patterns(&v);
+        assert!(matches.iter().any(|m| m.pattern_name == PATTERN_DATE_ONLY));
+    }
+
+    #[test]
+    fn pattern_date_locale_month_first() {
+        let v = json!("March 6, 2026");
+        let matches = check_value_patterns(&v);
+        assert!(matches.iter().any(|m| m.pattern_name == PATTERN_LOCALE_DATE));
+    }
+
+    #[test]
+    fn pattern_date_locale_day_first() {
+        let v = json!("6 March 2026");
+        let matches = check_value_patterns(&v);
+        assert!(matches.iter().any(|m| m.pattern_name == PATTERN_LOCALE_DATE));
+    }
+
+    #[test]
+    fn pattern_date_locale_case_insensitive() {
+        let v = json!("JANUARY 1, 2026");
+        let matches = check_value_patterns(&v);
+        assert!(matches.iter().any(|m| m.pattern_name == PATTERN_LOCALE_DATE));
+    }
+
+    #[test]
+    fn pattern_date_rejects_partial() {
+        // Not a complete date pattern.
+        assert!(check_value_patterns(&json!("2026-03")).is_empty());
+        assert!(check_value_patterns(&json!("March")).is_empty());
+        assert!(check_value_patterns(&json!("hello world")).is_empty());
+    }
+
+    #[test]
+    fn pattern_iso8601_still_works_separately() {
+        // Full ISO 8601 datetime should match iso8601_datetime, NOT date_only.
+        let v = json!("2026-03-06T12:00:00Z");
+        let matches = check_value_patterns(&v);
+        assert!(matches.iter().any(|m| m.pattern_name == PATTERN_ISO8601_DATETIME));
+        assert!(matches.iter().all(|m| m.pattern_name != PATTERN_DATE_ONLY));
+    }
+
+    // --- slow nondeterminism: monotonic counter tests ---
+
+    #[test]
+    fn cross_run_monotonic_counter_three_values() {
+        let values = vec![json!(1), json!(2), json!(3)];
+        let matches = check_cross_run_patterns(&values);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].pattern_name, PATTERN_MONOTONIC_COUNTER);
+        assert_eq!(matches[0].confidence, Confidence::Medium);
+    }
+
+    #[test]
+    fn cross_run_monotonic_counter_two_values_low_confidence() {
+        let values = vec![json!(100), json!(101)];
+        let matches = check_cross_run_patterns(&values);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].pattern_name, PATTERN_MONOTONIC_COUNTER);
+        assert_eq!(matches[0].confidence, Confidence::Low);
+    }
+
+    #[test]
+    fn cross_run_monotonic_counter_large_step_within_bound() {
+        let values = vec![json!(1), json!(50), json!(100)];
+        let matches = check_cross_run_patterns(&values);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].pattern_name, PATTERN_MONOTONIC_COUNTER);
+    }
+
+    #[test]
+    fn cross_run_monotonic_counter_step_too_large() {
+        let values = vec![json!(1), json!(200), json!(400)];
+        let matches = check_cross_run_patterns(&values);
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn cross_run_not_monotonic_decreasing() {
+        let values = vec![json!(3), json!(2), json!(1)];
+        let matches = check_cross_run_patterns(&values);
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn cross_run_not_monotonic_equal() {
+        let values = vec![json!(5), json!(5), json!(5)];
+        let matches = check_cross_run_patterns(&values);
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn cross_run_mixed_types_no_match() {
+        let values = vec![json!(1), json!("two"), json!(3)];
+        let matches = check_cross_run_patterns(&values);
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn cross_run_single_value_no_match() {
+        let values = vec![json!(42)];
+        let matches = check_cross_run_patterns(&values);
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn cross_run_empty_no_match() {
+        let matches = check_cross_run_patterns(&[]);
+        assert!(matches.is_empty());
+    }
+
+    // --- slow nondeterminism: environment value heuristic tests ---
+
+    #[test]
+    fn env_heuristic_hostname_string() {
+        let m = check_env_value_heuristic("serverHostname", &json!("web-prod-01"));
+        assert!(m.is_some());
+        let m = m.unwrap();
+        assert_eq!(m.pattern_name, PATTERN_ENV_VALUE);
+        assert_eq!(m.confidence, Confidence::Low);
+    }
+
+    #[test]
+    fn env_heuristic_pid_integer() {
+        let m = check_env_value_heuristic("processPid", &json!(12345));
+        assert!(m.is_some());
+        assert_eq!(m.unwrap().pattern_name, PATTERN_ENV_VALUE);
+    }
+
+    #[test]
+    fn env_heuristic_dot_path() {
+        let m = check_env_value_heuristic("config.host", &json!("localhost"));
+        assert!(m.is_some());
+    }
+
+    #[test]
+    fn env_heuristic_unrelated_field() {
+        assert!(check_env_value_heuristic("userName", &json!("alice")).is_none());
+    }
+
+    #[test]
+    fn env_heuristic_empty_string_rejected() {
+        assert!(check_env_value_heuristic("hostname", &json!("")).is_none());
+    }
+
+    #[test]
+    fn env_heuristic_long_string_rejected() {
+        let long = "a".repeat(ENV_VALUE_MAX_STRING_LEN + 1);
+        assert!(check_env_value_heuristic("hostname", &json!(long)).is_none());
+    }
+
+    #[test]
+    fn env_heuristic_negative_pid_rejected() {
+        assert!(check_env_value_heuristic("pid", &json!(-1)).is_none());
+    }
+
+    #[test]
+    fn env_heuristic_bool_rejected() {
+        assert!(check_env_value_heuristic("hostname", &json!(true)).is_none());
+    }
+
+    // --- slow nondeterminism: name heuristic additions ---
+
+    #[test]
+    fn name_heuristic_date_suffix() {
+        let r = check_name_heuristics("createdDate", &[]).unwrap();
+        assert_eq!(r.matched_pattern, "date");
+        assert!((r.confidence - 0.70).abs() < 1e-10);
+    }
+
+    #[test]
+    fn name_heuristic_hostname_suffix() {
+        let r = check_name_heuristics("serverHostname", &[]).unwrap();
+        assert_eq!(r.matched_pattern, "hostname");
+        assert!((r.confidence - 0.65).abs() < 1e-10);
+    }
+
+    #[test]
+    fn name_heuristic_pid_suffix() {
+        let r = check_name_heuristics("processPid", &[]).unwrap();
+        assert_eq!(r.matched_pattern, "pid");
+        assert!((r.confidence - 0.60).abs() < 1e-10);
+    }
+
+    #[test]
+    fn name_heuristic_pid_bare_matches_id() {
+        // "pid" doesn't match "pid" suffix (no prefix chars), but matches "id" suffix.
+        let r = check_name_heuristics("pid", &[]).unwrap();
+        assert_eq!(r.matched_pattern, "id");
+    }
+
+    // --- SlowPattern evidence serialization ---
+
+    #[test]
+    fn slow_pattern_evidence_round_trip() {
+        let evidence = NondeterminismEvidence::SlowPattern {
+            pattern_type: PATTERN_MONOTONIC_COUNTER.into(),
+        };
+        let json_str = serde_json::to_string(&evidence).expect("serialize");
+        let restored: NondeterminismEvidence =
+            serde_json::from_str(&json_str).expect("deserialize");
+        assert_eq!(evidence, restored);
     }
 }
