@@ -795,6 +795,56 @@ fn extract_concrete_values(
     result
 }
 
+/// Check that solved `ConcreteValue` types are compatible with declared `ParamInfo` types.
+/// Used as an `#[ensures]` postcondition on `solve_for_new_path`. Returns `true` when
+/// the result is an error, unsat, or when all solved values match their param types.
+/// A mismatch (e.g. `ConcreteValue::Int` for a `TypeInfo::Str` param) returns `false`.
+fn solved_values_match_param_types(
+    result: Result<&SolveResult, &SolverError>,
+    param_infos: &[ParamInfo],
+) -> bool {
+    let solved = match result {
+        Ok(SolveResult::Sat(map)) => map,
+        // Errors and Unsat trivially satisfy the postcondition.
+        _ => return true,
+    };
+    let param_map: HashMap<&str, &TypeInfo> = param_infos
+        .iter()
+        .map(|p| (p.name.as_str(), &p.typ))
+        .collect();
+    for (name, value) in solved {
+        if let Some(ty) = param_map.get(name.as_str())
+            && !concrete_value_matches_type(value, ty)
+        {
+            return false;
+        }
+        // Solved variables not in param_infos are sub-paths (e.g. "config.timeout")
+        // or synthesized — no type to check against.
+    }
+    true
+}
+
+/// Whether a `ConcreteValue` is compatible with a `TypeInfo`.
+fn concrete_value_matches_type(value: &ConcreteValue, ty: &TypeInfo) -> bool {
+    match (value, ty) {
+        // Numeric types are interchangeable — Z3 may solve a Float param as Int
+        // when the constraints only use integer comparisons, and vice versa.
+        (ConcreteValue::Int(_) | ConcreteValue::Float(_), TypeInfo::Int | TypeInfo::Float) => true,
+        (ConcreteValue::Str(_), TypeInfo::Str) => true,
+        (ConcreteValue::Bool(_), TypeInfo::Bool) => true,
+        // Nullable<inner> — the solved value should match the inner type
+        (_, TypeInfo::Nullable { inner }) => concrete_value_matches_type(value, inner),
+        // Complex value wraps a repr that Z3 solved — accept any complex match.
+        (ConcreteValue::Complex { .. }, TypeInfo::Complex { .. }) => true,
+        // Int is the Z3 default for types it can't represent (arrays, objects, unions,
+        // unknown, opaque). Accept Int for any non-primitive type.
+        (ConcreteValue::Int(_), _) => {
+            !matches!(ty, TypeInfo::Str | TypeInfo::Bool)
+        }
+        _ => false,
+    }
+}
+
 /// Solve a list of path constraints, negating the constraint at `negate_index`
 /// to explore a new execution path.
 ///
@@ -805,6 +855,8 @@ fn extract_concrete_values(
 /// Returns `SolveResult::Sat` with concrete variable assignments if satisfiable,
 /// or `SolveResult::Unsat` if no inputs can reach the negated path.
 #[requires(negate_index < constraints.len(), "negate_index must be within constraints bounds")]
+#[contracts::ensures(solved_values_match_param_types(ret.as_ref(), param_infos),
+    "solved value types must be compatible with declared ParamInfo types")]
 pub fn solve_for_new_path(
     constraints: &[SymExpr],
     negate_index: usize,
@@ -816,6 +868,27 @@ pub fn solve_for_new_path(
             "negate_index {negate_index} out of bounds (len={})",
             constraints.len()
         )));
+    }
+
+    // Debug-only: verify constraint param names exist in param_infos when
+    // param_infos is non-empty. Unknown params get default Int sort in Z3,
+    // which silently produces wrong solutions for String/Bool params.
+    #[cfg(debug_assertions)]
+    if !param_infos.is_empty() {
+        let known: std::collections::HashSet<&str> =
+            param_infos.iter().map(|p| p.name.as_str()).collect();
+        for constraint in constraints {
+            for name in crate::sym_expr::extract_param_names(constraint) {
+                // Sub-path params (e.g. "config.timeout") won't match top-level names
+                if !name.contains('.') {
+                    debug_assert!(
+                        known.contains(name.as_str()),
+                        "constraint references unknown param {name:?}, \
+                         known params: {known:?}"
+                    );
+                }
+            }
+        }
     }
 
     let mut cfg = Config::new();
@@ -2541,5 +2614,109 @@ mod tests {
                 prop_assert_eq!(sorts.len(), expected.len());
             }
         }
+    }
+
+    #[test]
+    fn postcondition_accepts_matching_int_type() {
+        let mut map = HashMap::new();
+        map.insert("x".into(), ConcreteValue::Int(42));
+        let result: Result<SolveResult, SolverError> = Ok(SolveResult::Sat(map));
+        let params = vec![ParamInfo {
+            name: "x".into(),
+            typ: TypeInfo::Int,
+            type_name: None,
+        }];
+        assert!(solved_values_match_param_types(result.as_ref(), &params));
+    }
+
+    #[test]
+    fn postcondition_accepts_matching_str_type() {
+        let mut map = HashMap::new();
+        map.insert("s".into(), ConcreteValue::Str("hello".into()));
+        let result: Result<SolveResult, SolverError> = Ok(SolveResult::Sat(map));
+        let params = vec![ParamInfo {
+            name: "s".into(),
+            typ: TypeInfo::Str,
+            type_name: None,
+        }];
+        assert!(solved_values_match_param_types(result.as_ref(), &params));
+    }
+
+    #[test]
+    fn postcondition_rejects_int_for_str_param() {
+        let mut map = HashMap::new();
+        map.insert("s".into(), ConcreteValue::Int(42));
+        let result: Result<SolveResult, SolverError> = Ok(SolveResult::Sat(map));
+        let params = vec![ParamInfo {
+            name: "s".into(),
+            typ: TypeInfo::Str,
+            type_name: None,
+        }];
+        assert!(!solved_values_match_param_types(result.as_ref(), &params));
+    }
+
+    #[test]
+    fn postcondition_accepts_int_for_unknown_type() {
+        let mut map = HashMap::new();
+        map.insert("x".into(), ConcreteValue::Int(0));
+        let result: Result<SolveResult, SolverError> = Ok(SolveResult::Sat(map));
+        let params = vec![ParamInfo {
+            name: "x".into(),
+            typ: TypeInfo::Unknown,
+            type_name: None,
+        }];
+        assert!(solved_values_match_param_types(result.as_ref(), &params));
+    }
+
+    #[test]
+    fn postcondition_accepts_nullable_inner_match() {
+        let mut map = HashMap::new();
+        map.insert("s".into(), ConcreteValue::Str("hello".into()));
+        let result: Result<SolveResult, SolverError> = Ok(SolveResult::Sat(map));
+        let params = vec![ParamInfo {
+            name: "s".into(),
+            typ: TypeInfo::Nullable {
+                inner: Box::new(TypeInfo::Str),
+            },
+            type_name: None,
+        }];
+        assert!(solved_values_match_param_types(result.as_ref(), &params));
+    }
+
+    #[test]
+    fn postcondition_trivially_true_for_unsat() {
+        let result: Result<SolveResult, SolverError> = Ok(SolveResult::Unsat);
+        let params = vec![ParamInfo {
+            name: "x".into(),
+            typ: TypeInfo::Str,
+            type_name: None,
+        }];
+        assert!(solved_values_match_param_types(result.as_ref(), &params));
+    }
+
+    #[test]
+    fn postcondition_trivially_true_for_error() {
+        let result: Result<SolveResult, SolverError> =
+            Err(SolverError::Unsat);
+        let params = vec![ParamInfo {
+            name: "x".into(),
+            typ: TypeInfo::Str,
+            type_name: None,
+        }];
+        assert!(solved_values_match_param_types(result.as_ref(), &params));
+    }
+
+    #[test]
+    fn postcondition_ignores_unknown_solved_vars() {
+        let mut map = HashMap::new();
+        map.insert("config.timeout".into(), ConcreteValue::Int(30));
+        let result: Result<SolveResult, SolverError> = Ok(SolveResult::Sat(map));
+        // No param named "config.timeout" — should pass
+        let params = vec![ParamInfo {
+            name: "config".into(),
+            typ: TypeInfo::Object { fields: vec![] },
+            type_name: None,
+        }];
+        assert!(solved_values_match_param_types(result.as_ref(), &params));
     }
 }
