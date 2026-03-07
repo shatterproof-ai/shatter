@@ -2159,4 +2159,88 @@ mod tests {
         let deserialized: SpecInvariant = serde_json::from_str(&json).expect("json deserialize");
         assert_eq!(si, deserialized);
     }
+
+    // ── Property-based tests ─────────────────────────────────────────────
+
+    mod proptests {
+        use super::*;
+        use crate::test_arbitraries::{arb_classified_invariant, arb_function_spec};
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn function_spec_json_roundtrip(spec in arb_function_spec()) {
+                let json_str = serde_json::to_string_pretty(&spec).expect("json serialize");
+                let deserialized: FunctionSpec =
+                    serde_json::from_str(&json_str).expect("json deserialize");
+                prop_assert_eq!(spec, deserialized);
+            }
+
+            #[test]
+            fn function_spec_yaml_roundtrip(spec in arb_function_spec()) {
+                let yaml_str = serde_yaml::to_string(&spec).expect("yaml serialize");
+                let deserialized: FunctionSpec =
+                    serde_yaml::from_str(&yaml_str).expect("yaml deserialize");
+                prop_assert_eq!(spec, deserialized);
+            }
+
+            #[test]
+            fn format_spec_markdown_structural_validity(spec in arb_function_spec()) {
+                let md = format_spec_markdown(&spec);
+
+                // Always non-empty and contains the function name
+                prop_assert!(!md.is_empty());
+                prop_assert!(
+                    md.contains(&spec.function_name),
+                    "markdown should contain function name '{}', got:\n{}",
+                    spec.function_name,
+                    &md[..md.len().min(200)]
+                );
+
+                // All class labels appear in the output
+                for class in &spec.classes {
+                    prop_assert!(
+                        md.contains(&class.label),
+                        "markdown should contain class label '{}', got:\n{}",
+                        class.label,
+                        &md[..md.len().min(500)]
+                    );
+                }
+            }
+
+            #[test]
+            fn invariant_conversion_preserves_label(ci in arb_classified_invariant()) {
+                let si = SpecInvariant::from(&ci);
+                prop_assert_eq!(&si.property, &ci.label);
+            }
+
+            #[test]
+            fn invariant_conversion_maps_confidence(ci in arb_classified_invariant()) {
+                let si = SpecInvariant::from(&ci);
+                let expected = if ci.confidence >= 0.95 {
+                    ConfidenceLevel::High
+                } else if ci.confidence >= 0.75 {
+                    ConfidenceLevel::Medium
+                } else {
+                    ConfidenceLevel::Low
+                };
+                prop_assert_eq!(si.confidence, expected);
+            }
+
+            #[test]
+            fn invariant_conversion_maps_category(ci in arb_classified_invariant()) {
+                let si = SpecInvariant::from(&ci);
+                // Verify the category is a valid InvariantCategory matching the kind
+                let expected = match &ci.invariant.kind {
+                    crate::invariants::InvariantKind::NumericComparison { .. } => InvariantCategory::NumericBound,
+                    crate::invariants::InvariantKind::NumericConstant { .. } => InvariantCategory::ConstantValue,
+                    crate::invariants::InvariantKind::NotNull { .. } | crate::invariants::InvariantKind::IsNull { .. } => InvariantCategory::Nullability,
+                    crate::invariants::InvariantKind::StringNonEmpty { .. } | crate::invariants::InvariantKind::StringLength { .. } => InvariantCategory::StringConstraint,
+                    crate::invariants::InvariantKind::OutputEqualsInput { .. } => InvariantCategory::InputOutputRelation,
+                    crate::invariants::InvariantKind::AlwaysTrue { .. } | crate::invariants::InvariantKind::AlwaysFalse { .. } => InvariantCategory::BooleanConstant,
+                };
+                prop_assert_eq!(si.kind, expected);
+            }
+        }
+    }
 }

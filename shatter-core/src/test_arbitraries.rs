@@ -6,18 +6,22 @@
 use proptest::prelude::*;
 use serde_json::json;
 
+use crate::behavior::{Behavior, BehaviorMap};
 use crate::config::SetupMode;
 use crate::crypto_registry::{CryptoDirection, OutputSemantics, ParamRole};
+use crate::equivalence::{BranchPath, BranchStep, Precondition};
 use crate::execution_record::{
     BranchDecision, ErrorInfo, ExternalCall, ScopeEvent, SideEffect, SymConstraint, TraceEvent,
     TruncationInfo,
 };
+use crate::invariants::{ComparisonOp, Invariant, InvariantKind, InvariantTarget, ClassifiedInvariant};
 use crate::protocol::{
     BranchInfo, BranchType, Command, CryptoBoundary, DependencyKind, ErrorCode,
     ExecuteResult, ExternalDependency, FunctionAnalysis, GeneratorKind, LiteralValue,
     MockBehavior, MockConfig, PerformanceMetrics, Request, Response, ResponseResult,
     PROTOCOL_VERSION,
 };
+use crate::spec::{ConcreteExample, FunctionSpec, Postcondition, Provenance, SpecClass};
 use crate::sym_expr::{BinOpKind, ConstValue, SymExpr, UnOpKind};
 use crate::types::{ComplexKind, ParamInfo, TypeInfo};
 
@@ -737,4 +741,244 @@ pub fn arb_response() -> impl Strategy<Value = Response> {
         id,
         result,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Spec / export / invariant strategies
+// ---------------------------------------------------------------------------
+
+pub fn arb_comparison_op() -> impl Strategy<Value = ComparisonOp> {
+    prop_oneof![
+        Just(ComparisonOp::Gt),
+        Just(ComparisonOp::Ge),
+        Just(ComparisonOp::Lt),
+        Just(ComparisonOp::Le),
+    ]
+}
+
+pub fn arb_invariant_target() -> impl Strategy<Value = InvariantTarget> {
+    prop_oneof![Just(InvariantTarget::Input), Just(InvariantTarget::Output),]
+}
+
+fn arb_json_path() -> impl Strategy<Value = Vec<String>> {
+    prop::collection::vec(arb_ident(), 0..=3)
+}
+
+pub fn arb_invariant_kind() -> impl Strategy<Value = InvariantKind> {
+    prop_oneof![
+        (arb_json_path(), arb_comparison_op(), -1000i32..1000i32)
+            .prop_map(|(path, op, v)| InvariantKind::NumericComparison {
+                path,
+                op,
+                value: f64::from(v),
+            }),
+        (arb_json_path(), -1000i32..1000i32)
+            .prop_map(|(path, v)| InvariantKind::NumericConstant {
+                path,
+                value: f64::from(v),
+            }),
+        arb_json_path().prop_map(|path| InvariantKind::NotNull { path }),
+        arb_json_path().prop_map(|path| InvariantKind::IsNull { path }),
+        arb_json_path().prop_map(|path| InvariantKind::StringNonEmpty { path }),
+        (arb_json_path(), arb_comparison_op(), 0..100usize)
+            .prop_map(|(path, op, value)| InvariantKind::StringLength { path, op, value }),
+        (arb_json_path(), 0..5usize, arb_json_path())
+            .prop_map(|(output_path, param_index, input_path)| {
+                InvariantKind::OutputEqualsInput { output_path, param_index, input_path }
+            }),
+        arb_json_path().prop_map(|path| InvariantKind::AlwaysTrue { path }),
+        arb_json_path().prop_map(|path| InvariantKind::AlwaysFalse { path }),
+    ]
+}
+
+pub fn arb_invariant() -> impl Strategy<Value = Invariant> {
+    (arb_short_string(), arb_invariant_target(), arb_invariant_kind()).prop_map(
+        |(description, target, kind)| Invariant {
+            description,
+            target,
+            kind,
+        },
+    )
+}
+
+pub fn arb_classified_invariant() -> impl Strategy<Value = ClassifiedInvariant> {
+    (
+        arb_invariant(),
+        arb_invariant_target(),
+        arb_short_string(),
+        // Use integer-based confidence to avoid NaN/precision issues
+        0..=100u32,
+        1..100usize,
+    )
+        .prop_map(|(invariant, target, label, conf_pct, total_count)| {
+            let confidence = f64::from(conf_pct) / 100.0;
+            let satisfied_count = ((confidence * total_count as f64).round() as usize).min(total_count);
+            ClassifiedInvariant {
+                invariant,
+                target,
+                label,
+                confidence,
+                satisfied_count,
+                total_count,
+            }
+        })
+}
+
+pub fn arb_branch_step() -> impl Strategy<Value = BranchStep> {
+    (0..100u32, any::<bool>()).prop_map(|(branch_id, taken)| BranchStep { branch_id, taken })
+}
+
+pub fn arb_branch_path() -> impl Strategy<Value = BranchPath> {
+    prop::collection::vec(arb_branch_step(), 0..=5).prop_map(BranchPath)
+}
+
+pub fn arb_precondition() -> impl Strategy<Value = Precondition> {
+    prop_oneof![
+        (0..5usize).prop_map(|i| Precondition::AllPositive { param_index: i }),
+        (0..5usize).prop_map(|i| Precondition::AllNegative { param_index: i }),
+        (0..5usize).prop_map(|i| Precondition::AllZero { param_index: i }),
+        (0..5usize, arb_json_value()).prop_map(|(i, value)| Precondition::AllEqual {
+            param_index: i,
+            value,
+        }),
+        (0..5usize, arb_ident()).prop_map(|(i, type_name)| Precondition::SameType {
+            param_index: i,
+            type_name,
+        }),
+    ]
+}
+
+pub fn arb_postcondition() -> impl Strategy<Value = Postcondition> {
+    prop_oneof![
+        arb_json_value().prop_map(|value| Postcondition::Returns { value }),
+        arb_error_info().prop_map(|error| Postcondition::Throws { error }),
+        Just(Postcondition::ReturnsVoid),
+    ]
+}
+
+pub fn arb_provenance() -> impl Strategy<Value = Provenance> {
+    prop_oneof![Just(Provenance::Proven), Just(Provenance::Observed),]
+}
+
+pub fn arb_concrete_example() -> impl Strategy<Value = ConcreteExample> {
+    (
+        prop::collection::vec(arb_json_value(), 0..=4),
+        proptest::option::of(arb_json_value_non_null()),
+        proptest::option::of(arb_error_info()),
+    )
+        .prop_map(|(inputs, return_value, thrown_error)| ConcreteExample {
+            inputs,
+            return_value,
+            thrown_error,
+        })
+}
+
+pub fn arb_spec_class() -> impl Strategy<Value = SpecClass> {
+    (
+        arb_short_string(),
+        arb_branch_path(),
+        prop::collection::vec(arb_precondition(), 0..=3),
+        arb_postcondition(),
+        prop::collection::vec(arb_side_effect(), 0..=2),
+        prop::collection::vec(arb_concrete_example(), 1..=3),
+        1..50usize,
+        arb_provenance(),
+        arb_provenance(),
+        prop::collection::vec(arb_classified_invariant(), 0..=2),
+    )
+        .prop_map(
+            |(
+                label,
+                branch_path,
+                preconditions,
+                postcondition,
+                side_effects,
+                examples,
+                sample_count,
+                pre_prov,
+                post_prov,
+                invariants,
+            )| SpecClass {
+                label,
+                branch_path,
+                preconditions,
+                postcondition,
+                side_effects,
+                examples,
+                sample_count,
+                precondition_provenance: pre_prov,
+                postcondition_provenance: post_prov,
+                invariants,
+            },
+        )
+}
+
+pub fn arb_function_spec() -> impl Strategy<Value = FunctionSpec> {
+    (
+        arb_ident(),
+        proptest::option::of(arb_short_string()),
+        prop::collection::vec(arb_spec_class(), 0..=4),
+        0..1000u32,
+        0..500usize,
+        0..500u32,
+        prop::collection::vec(arb_classified_invariant(), 0..=2),
+        proptest::option::of(arb_ident()),
+    )
+        .prop_map(
+            |(
+                function_name,
+                location,
+                classes,
+                iterations,
+                lines_covered,
+                total_lines,
+                invariants,
+                fingerprint,
+            )| FunctionSpec {
+                function_name,
+                location,
+                classes,
+                iterations,
+                lines_covered,
+                total_lines,
+                invariants,
+                fingerprint,
+                nondeterministic_fields: vec![],
+            },
+        )
+}
+
+pub fn arb_behavior() -> impl Strategy<Value = Behavior> {
+    (
+        0..1000u32,
+        prop::collection::vec(arb_json_value(), 0..=4),
+        proptest::option::of(arb_json_value_non_null()),
+        proptest::option::of(arb_error_info()),
+        prop::collection::vec(arb_branch_decision(), 0..=5),
+        prop::collection::vec(arb_side_effect(), 0..=2),
+    )
+        .prop_map(
+            |(id, input_args, return_value, thrown_error, branch_path, side_effects)| Behavior {
+                id,
+                input_args,
+                return_value,
+                thrown_error,
+                branch_path,
+                side_effects,
+                dependency_trace: None,
+            },
+        )
+}
+
+pub fn arb_behavior_map() -> impl Strategy<Value = BehaviorMap> {
+    (
+        arb_ident(),
+        prop::collection::vec(arb_behavior(), 0..=5),
+    )
+        .prop_map(|(function_id, behaviors)| BehaviorMap {
+            function_id,
+            behaviors,
+            fingerprint: None,
+            nondeterministic_fields: vec![],
+        })
 }
