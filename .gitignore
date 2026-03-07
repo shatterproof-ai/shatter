@@ -138,9 +138,16 @@ dist
 .yarn/install-state.gz
 .pnp.*
 
-# Shatter cache (machine-specific, should not be committed)
-.shatter/cache/
-# Shatter seeds pool — commit for reproducibility (.shatter/seeds/)
+# Shatter runtime state (machine-specific)
+**/.shatter/*
+!**/.shatter/seeds/
+!**/.shatter/seeds/**
+# Shatter generated reports
+shatter-report/
+
+# Root npm artifacts (not a real npm project)
+/package.json
+/package-lock.json
 
 # Dolt database files (added by bd init)
 .dolt/
