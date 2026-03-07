@@ -233,7 +233,7 @@ pub fn hash_branch_path(branch_path: &[crate::execution_record::BranchDecision])
 ///
 /// Returns `None` for branches with `Unknown` constraints; those are skipped
 /// by the solver but may be targeted by fuzzing.
-fn extract_sym_constraints(result: &ExecuteResult) -> Vec<Option<SymExpr>> {
+pub(crate) fn extract_sym_constraints(result: &ExecuteResult) -> Vec<Option<SymExpr>> {
     result
         .branch_path
         .iter()
@@ -263,7 +263,7 @@ fn extract_sym_constraints(result: &ExecuteResult) -> Vec<Option<SymExpr>> {
 /// The solver unwraps complex types to their repr for solving, but when
 /// converting back to JSON we need to re-wrap with the type tag so the
 /// frontend can reconstruct the native value.
-fn concrete_to_json(value: &ConcreteValue) -> serde_json::Value {
+pub(crate) fn concrete_to_json(value: &ConcreteValue) -> serde_json::Value {
     match value {
         ConcreteValue::Int(i) => serde_json::json!(*i),
         ConcreteValue::Float(f) => serde_json::json!(*f),
@@ -294,7 +294,7 @@ fn concrete_to_json(value: &ConcreteValue) -> serde_json::Value {
 /// update it directly.
 #[requires(base_inputs.len() == param_names.len(), "base_inputs and param_names must be positionally aligned")]
 #[contracts::ensures(ret.len() == base_inputs.len(), "overlay must preserve input vector length")]
-fn overlay_solved_values(
+pub(crate) fn overlay_solved_values(
     base_inputs: &[serde_json::Value],
     solved: &std::collections::HashMap<String, ConcreteValue>,
     param_names: &[String],

@@ -12,6 +12,8 @@ use crate::orchestrator::fuzz_inputs;
 use crate::execution_record::SymConstraint;
 use crate::orchestrator::FrontendCapabilities;
 use crate::protocol::{ExecuteResult, LiteralValue};
+use crate::solver::{self, SolveResult};
+use crate::sym_expr::SymExpr;
 use crate::types::{ParamInfo, TypeInfo};
 
 // ---------------------------------------------------------------------------
@@ -691,6 +693,91 @@ impl InputStrategy for FuzzerStrategy {
 
     fn name(&self) -> &str {
         "fuzzer"
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Z3SolverStrategy — infinite, feedback-driven constraint solving
+// ---------------------------------------------------------------------------
+
+/// Strategy name constant for Z3 solver, used for discovery attribution.
+const Z3_SOLVER_STRATEGY_NAME: &str = "z3_solver";
+
+/// Reactive strategy that uses Z3 constraint solving to generate inputs
+/// targeting unexplored branches.
+///
+/// `feedback()` extracts symbolic constraints from execution results, negates
+/// each solvable constraint, solves with Z3, and overlays solutions onto the
+/// base inputs. Solved inputs queue in `pending` and drain via `next()`.
+///
+/// Infinite: produces work while unsolved constraints exist, but the queue
+/// may be empty between feedback cycles.
+pub struct Z3SolverStrategy {
+    solver_timeout_ms: Option<u64>,
+    param_infos: Vec<ParamInfo>,
+    pending: VecDeque<Vec<Value>>,
+}
+
+impl Z3SolverStrategy {
+    pub fn new(solver_timeout_ms: Option<u64>, param_infos: Vec<ParamInfo>) -> Self {
+        Self {
+            solver_timeout_ms,
+            param_infos,
+            pending: VecDeque::new(),
+        }
+    }
+}
+
+impl InputStrategy for Z3SolverStrategy {
+    fn next(&mut self, _ctx: &StrategyContext) -> Option<Vec<Value>> {
+        self.pending.pop_front()
+    }
+
+    fn feedback(&mut self, inputs: &[Value], result: &ExecuteResult, _was_new_path: bool) {
+        let sym_constraints = crate::orchestrator::extract_sym_constraints(result);
+
+        let solvable: Vec<SymExpr> = sym_constraints
+            .iter()
+            .filter_map(|c| c.clone())
+            .collect();
+
+        if solvable.is_empty() {
+            return;
+        }
+
+        let param_names: Vec<String> = self.param_infos.iter().map(|p| p.name.clone()).collect();
+
+        for solve_idx in 0..solvable.len() {
+            // solve_for_new_path may fail (unsupported expressions, type mismatches,
+            // or constraint/param misalignment). Treat all failures as "no solution".
+            let solve_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                solver::solve_for_new_path(
+                    &solvable,
+                    solve_idx,
+                    self.solver_timeout_ms,
+                    &self.param_infos,
+                )
+            }));
+
+            match solve_result {
+                Ok(Ok(SolveResult::Sat(values))) => {
+                    let new_inputs = crate::orchestrator::overlay_solved_values(
+                        inputs,
+                        &values,
+                        &param_names,
+                    );
+                    self.pending.push_back(new_inputs);
+                }
+                _ => {
+                    // Unsat, solver error, or panic (debug_assert on param mismatch).
+                    // Stall tracking is the orchestrator's responsibility.
+                }
+            }
+        }
+    }
+
+    fn name(&self) -> &str {
+        Z3_SOLVER_STRATEGY_NAME
     }
 }
 
@@ -1464,5 +1551,242 @@ mod tests {
         }
         // Should have generated multiple distinct candidates.
         assert!(seen.len() >= 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // Z3SolverStrategy tests
+    // -----------------------------------------------------------------------
+
+    fn make_z3_solver(params: Vec<ParamInfo>) -> Z3SolverStrategy {
+        Z3SolverStrategy::new(Some(1000), params)
+    }
+
+    fn int_param(name: &str) -> ParamInfo {
+        ParamInfo {
+            name: name.into(),
+            typ: TypeInfo::Int,
+            type_name: None,
+        }
+    }
+
+    #[test]
+    fn z3_solver_next_returns_none_without_feedback() {
+        let mut s = make_z3_solver(vec![int_param("x")]);
+        assert!(s.next(&empty_ctx()).is_none());
+    }
+
+    #[test]
+    fn z3_solver_name() {
+        let s = make_z3_solver(vec![]);
+        assert_eq!(s.name(), Z3_SOLVER_STRATEGY_NAME);
+    }
+
+    #[test]
+    fn z3_solver_is_infinite() {
+        let s = make_z3_solver(vec![]);
+        assert!(s.estimated_size().is_none());
+    }
+
+    #[test]
+    fn z3_solver_empty_branch_path_yields_nothing() {
+        let mut s = make_z3_solver(vec![int_param("x")]);
+        let result = make_exec_result(); // empty branch_path
+        s.feedback(&[Value::from(0)], &result, false);
+        assert!(s.next(&empty_ctx()).is_none());
+    }
+
+    #[test]
+    fn z3_solver_unknown_constraints_yield_nothing() {
+        let mut s = make_z3_solver(vec![int_param("x")]);
+        let result = make_exec_result_with_unknown();
+        s.feedback(&[Value::from(0)], &result, false);
+        assert!(s.next(&empty_ctx()).is_none());
+    }
+
+    #[test]
+    fn z3_solver_solvable_constraint_queues_input() {
+        use crate::execution_record::BranchDecision;
+        use crate::sym_expr::{BinOpKind, ConstValue, SymExpr};
+
+        let mut s = make_z3_solver(vec![int_param("x")]);
+
+        // Constraint: x == 5 (taken=true). Solver negates to x != 5 → SAT.
+        let constraint = SymExpr::BinOp {
+            op: BinOpKind::Eq,
+            left: Box::new(SymExpr::Param {
+                name: "x".into(),
+                path: vec![],
+            }),
+            right: Box::new(SymExpr::Const(ConstValue::Int(5))),
+        };
+        let result: ExecuteResult = serde_json::from_value(serde_json::json!({
+            "return_value": 0,
+            "branch_path": [{
+                "branch_id": 1,
+                "line": 10,
+                "taken": true,
+                "constraint": { "kind": "expr", "expr": constraint }
+            }],
+            "lines_executed": [10],
+            "path_constraints": [],
+            "performance": {
+                "wall_time_ms": 1.0,
+                "cpu_time_us": 0,
+                "heap_used_bytes": 0,
+                "heap_allocated_bytes": 0
+            }
+        }))
+        .expect("valid ExecuteResult JSON");
+
+        s.feedback(&[Value::from(5)], &result, false);
+
+        let solved = s.next(&empty_ctx());
+        assert!(solved.is_some(), "Z3 should produce a solved input for x != 5");
+        let solved = solved.unwrap();
+        assert_eq!(solved.len(), 1, "output must preserve input vector length");
+        // The solved value should differ from 5.
+        assert_ne!(solved[0], Value::from(5));
+    }
+
+    #[test]
+    fn z3_solver_output_preserves_input_length() {
+        use crate::sym_expr::{BinOpKind, ConstValue, SymExpr};
+
+        let params = vec![int_param("a"), int_param("b")];
+        let mut s = make_z3_solver(params);
+
+        let constraint = SymExpr::BinOp {
+            op: BinOpKind::Eq,
+            left: Box::new(SymExpr::Param {
+                name: "a".into(),
+                path: vec![],
+            }),
+            right: Box::new(SymExpr::Const(ConstValue::Int(10))),
+        };
+        let result: ExecuteResult = serde_json::from_value(serde_json::json!({
+            "return_value": 0,
+            "branch_path": [{
+                "branch_id": 1,
+                "line": 5,
+                "taken": true,
+                "constraint": { "kind": "expr", "expr": constraint }
+            }],
+            "lines_executed": [5],
+            "path_constraints": [],
+            "performance": {
+                "wall_time_ms": 1.0,
+                "cpu_time_us": 0,
+                "heap_used_bytes": 0,
+                "heap_allocated_bytes": 0
+            }
+        }))
+        .expect("valid ExecuteResult JSON");
+
+        s.feedback(&[Value::from(10), Value::from(20)], &result, false);
+
+        while let Some(output) = s.next(&empty_ctx()) {
+            assert_eq!(output.len(), 2, "output must preserve input vector length");
+        }
+    }
+
+    #[test]
+    fn z3_solver_multiple_feedbacks_accumulate() {
+        use crate::sym_expr::{BinOpKind, ConstValue, SymExpr};
+
+        let mut s = make_z3_solver(vec![int_param("x")]);
+
+        let make_result = |val: i64| -> ExecuteResult {
+            let constraint = SymExpr::BinOp {
+                op: BinOpKind::Eq,
+                left: Box::new(SymExpr::Param {
+                    name: "x".into(),
+                    path: vec![],
+                }),
+                right: Box::new(SymExpr::Const(ConstValue::Int(val))),
+            };
+            serde_json::from_value(serde_json::json!({
+                "return_value": 0,
+                "branch_path": [{
+                    "branch_id": 1,
+                    "line": 10,
+                    "taken": true,
+                    "constraint": { "kind": "expr", "expr": constraint }
+                }],
+                "lines_executed": [10],
+                "path_constraints": [],
+                "performance": {
+                    "wall_time_ms": 1.0,
+                    "cpu_time_us": 0,
+                    "heap_used_bytes": 0,
+                    "heap_allocated_bytes": 0
+                }
+            }))
+            .expect("valid ExecuteResult JSON")
+        };
+
+        s.feedback(&[Value::from(5)], &make_result(5), false);
+        s.feedback(&[Value::from(10)], &make_result(10), true);
+
+        // Should have accumulated solved inputs from both feedback calls.
+        let mut count = 0;
+        while s.next(&empty_ctx()).is_some() {
+            count += 1;
+        }
+        assert!(count >= 2, "expected at least 2 solved inputs, got {count}");
+    }
+
+    mod z3_solver_proptests {
+        use super::*;
+        use crate::test_arbitraries::{arb_execute_result, arb_param_info};
+        use proptest::prelude::*;
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(30))]
+
+            /// Feeding arbitrary ExecuteResults to Z3SolverStrategy must never panic.
+            #[test]
+            fn feedback_never_panics(
+                er in arb_execute_result(),
+                len in 1..4usize,
+            ) {
+                let params: Vec<ParamInfo> = (0..len)
+                    .map(|i| ParamInfo {
+                        name: format!("p{i}"),
+                        typ: TypeInfo::Int,
+                        type_name: None,
+                    })
+                    .collect();
+                let inputs: Vec<Value> = (0..len).map(|i| Value::from(i as i64)).collect();
+                let mut s = Z3SolverStrategy::new(Some(500), params);
+                // Must not panic.
+                s.feedback(&inputs, &er, false);
+            }
+
+            /// Any solved inputs produced must have the same length as the input vector.
+            #[test]
+            fn output_preserves_length(
+                er in arb_execute_result(),
+                len in 1..4usize,
+            ) {
+                let params: Vec<ParamInfo> = (0..len)
+                    .map(|i| ParamInfo {
+                        name: format!("p{i}"),
+                        typ: TypeInfo::Int,
+                        type_name: None,
+                    })
+                    .collect();
+                let inputs: Vec<Value> = (0..len).map(|i| Value::from(i as i64)).collect();
+                let ctx = StrategyContext {
+                    params: params.clone(),
+                    literals: vec![],
+                    capabilities: FrontendCapabilities::from_raw(&[]),
+                };
+                let mut s = Z3SolverStrategy::new(Some(500), params);
+                s.feedback(&inputs, &er, false);
+                while let Some(output) = s.next(&ctx) {
+                    prop_assert_eq!(output.len(), len);
+                }
+            }
+        }
     }
 }
