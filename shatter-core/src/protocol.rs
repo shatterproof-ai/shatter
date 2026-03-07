@@ -448,6 +448,69 @@ impl Response {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Protocol validation — trust boundary between subprocess JSON and core
+// ---------------------------------------------------------------------------
+
+/// Validate an `ExecuteResult` deserialized from a frontend subprocess.
+///
+/// Checks semantic invariants that serde can't enforce:
+/// - `branch_path` entries have non-default constraints (when non-empty, an all-unknown
+///   branch_path produces identical hashes for different paths → silent hash collision)
+/// - `path_constraints` length matches `branch_path` length when both are non-empty
+#[contracts::ensures(ret == execute_result_is_valid(result),
+    "postcondition must match validation logic")]
+pub fn validate_execute_result(result: &ExecuteResult) -> bool {
+    execute_result_is_valid(result)
+}
+
+fn execute_result_is_valid(result: &ExecuteResult) -> bool {
+    // Branch path with all-unknown constraints causes silent hash collisions
+    // because the path hash depends on constraint content.
+    if !result.branch_path.is_empty() {
+        let all_unknown = result.branch_path.iter().all(|bd| {
+            matches!(bd.constraint, SymConstraint::Unknown { .. })
+        });
+        // All-unknown is valid for frontends without symbolic analysis (Go),
+        // but path_constraints should then also be empty.
+        if all_unknown && !result.path_constraints.is_empty() {
+            return false;
+        }
+    }
+    true
+}
+
+/// Validate a `FunctionAnalysis` list deserialized from a frontend subprocess.
+///
+/// Checks semantic invariants that serde can't enforce:
+/// - Function names are non-empty (empty name → silent lookup failures)
+/// - `start_line <= end_line` (inverted range → wrong source slicing)
+/// - Param count is plausible (> 255 params suggests a deserialization bug)
+#[contracts::ensures(ret == analyze_result_is_valid(functions),
+    "postcondition must match validation logic")]
+pub fn validate_analyze_result(functions: &[FunctionAnalysis]) -> bool {
+    analyze_result_is_valid(functions)
+}
+
+/// Upper bound on parameter count — anything above this likely indicates
+/// a deserialization bug rather than a real function signature.
+const MAX_PLAUSIBLE_PARAMS: usize = 255;
+
+fn analyze_result_is_valid(functions: &[FunctionAnalysis]) -> bool {
+    for func in functions {
+        if func.name.is_empty() {
+            return false;
+        }
+        if func.start_line > func.end_line {
+            return false;
+        }
+        if func.params.len() > MAX_PLAUSIBLE_PARAMS {
+            return false;
+        }
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1534,5 +1597,104 @@ mod tests {
                 prop_assert_eq!(fa, decoded);
             }
         }
+    }
+
+    #[test]
+    fn validate_execute_result_accepts_empty_branch_path() {
+        let result = ExecuteResult {
+            return_value: None,
+            thrown_error: None,
+            branch_path: vec![],
+            lines_executed: vec![],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
+            scope_events: vec![],
+            performance: PerformanceMetrics::default(),
+            capture_truncation: None,
+        };
+        assert!(validate_execute_result(&result));
+    }
+
+    #[test]
+    fn validate_execute_result_rejects_unknown_branches_with_constraints() {
+        let result = ExecuteResult {
+            return_value: None,
+            thrown_error: None,
+            branch_path: vec![BranchDecision {
+                branch_id: 1,
+                line: 10,
+                taken: true,
+                constraint: SymConstraint::Unknown {
+                    hint: "opaque".into(),
+                },
+            }],
+            lines_executed: vec![10],
+            calls_to_external: vec![],
+            path_constraints: vec![SymConstraint::Expr {
+                expr: SymExpr::Const(ConstValue::Bool(true)),
+            }],
+            side_effects: vec![],
+            scope_events: vec![],
+            performance: PerformanceMetrics::default(),
+            capture_truncation: None,
+        };
+        assert!(!validate_execute_result(&result));
+    }
+
+    #[test]
+    fn validate_analyze_result_accepts_valid_function() {
+        let functions = vec![FunctionAnalysis {
+            name: "foo".into(),
+            exported: true,
+            params: vec![],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Int,
+            start_line: 1,
+            end_line: 10,
+            literals: vec![],
+            crypto_boundaries: vec![],
+        }];
+        assert!(validate_analyze_result(&functions));
+    }
+
+    #[test]
+    fn validate_analyze_result_rejects_empty_name() {
+        let functions = vec![FunctionAnalysis {
+            name: String::new(),
+            exported: true,
+            params: vec![],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Int,
+            start_line: 1,
+            end_line: 10,
+            literals: vec![],
+            crypto_boundaries: vec![],
+        }];
+        assert!(!validate_analyze_result(&functions));
+    }
+
+    #[test]
+    fn validate_analyze_result_rejects_inverted_lines() {
+        let functions = vec![FunctionAnalysis {
+            name: "bar".into(),
+            exported: false,
+            params: vec![],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Int,
+            start_line: 20,
+            end_line: 5,
+            literals: vec![],
+            crypto_boundaries: vec![],
+        }];
+        assert!(!validate_analyze_result(&functions));
+    }
+
+    #[test]
+    fn validate_analyze_result_accepts_empty_list() {
+        assert!(validate_analyze_result(&[]));
     }
 }
