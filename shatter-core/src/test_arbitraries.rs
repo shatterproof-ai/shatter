@@ -337,6 +337,21 @@ pub fn arb_param_info() -> impl Strategy<Value = ParamInfo> {
 }
 
 // ---------------------------------------------------------------------------
+// Orchestrator strategies
+// ---------------------------------------------------------------------------
+
+pub fn arb_input_source() -> impl Strategy<Value = crate::orchestrator::InputSource> {
+    use crate::orchestrator::InputSource;
+    prop_oneof![
+        Just(InputSource::Seed),
+        Just(InputSource::Fuzzed),
+        Just(InputSource::Drilled),
+        Just(InputSource::Z3Solved),
+        Just(InputSource::UserProvided),
+    ]
+}
+
+// ---------------------------------------------------------------------------
 // Execution record strategies
 // ---------------------------------------------------------------------------
 

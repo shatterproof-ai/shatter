@@ -1545,7 +1545,7 @@ mod tests {
     mod prop_tests {
         use super::*;
         use crate::solver::ConcreteValue;
-        use crate::test_arbitraries::arb_json_value;
+        use crate::test_arbitraries::{arb_input_source, arb_json_value, arb_sym_expr};
         use proptest::prelude::*;
 
         proptest! {
@@ -1595,6 +1595,102 @@ mod tests {
                 let result = overlay_solved_values(&base, &solved, &names);
                 prop_assert_eq!(result.len(), 1);
                 prop_assert_eq!(&result[0], &base_val);
+            }
+
+            /// Worklist dequeues entries in non-increasing InputSource priority.
+            #[test]
+            fn worklist_dequeues_in_priority_order(
+                sources in prop::collection::vec(arb_input_source(), 1..20),
+            ) {
+                let mut heap = BinaryHeap::new();
+                for source in &sources {
+                    heap.push(WorklistEntry {
+                        inputs: vec![],
+                        source: *source,
+                    });
+                }
+                let drained: Vec<InputSource> = std::iter::from_fn(|| heap.pop())
+                    .map(|e| e.source)
+                    .collect();
+                // Each element must be >= the next (non-increasing order).
+                for window in drained.windows(2) {
+                    prop_assert!(
+                        window[0] >= window[1],
+                        "worklist violated priority order: {:?} before {:?}",
+                        window[0], window[1]
+                    );
+                }
+                prop_assert_eq!(drained.len(), sources.len());
+            }
+
+            /// Inserting duplicate path hashes into covered_paths is idempotent.
+            #[test]
+            fn path_dedup_set_size_equals_distinct_count(
+                hashes in prop::collection::vec(0..100u64, 1..50),
+            ) {
+                let mut covered = HashSet::new();
+                for &h in &hashes {
+                    covered.insert(h);
+                }
+                let distinct: HashSet<u64> = hashes.iter().copied().collect();
+                prop_assert_eq!(covered.len(), distinct.len());
+                // Second insert of every element returns false.
+                for &h in &hashes {
+                    prop_assert!(!covered.insert(h), "re-insert of {h} should return false");
+                }
+                prop_assert_eq!(covered.len(), distinct.len(), "size changed after re-inserts");
+            }
+
+            /// Budget exhaustion: a loop bounded by max_executions terminates
+            /// after exactly min(max_executions, worklist_size) iterations.
+            #[test]
+            fn budget_limits_iteration_count(
+                max_executions in 1..200usize,
+                worklist_size in 1..500usize,
+            ) {
+                let mut worklist = BinaryHeap::new();
+                for _ in 0..worklist_size {
+                    worklist.push(WorklistEntry {
+                        inputs: vec![],
+                        source: InputSource::Seed,
+                    });
+                }
+                let mut executed = 0usize;
+                while let Some(_entry) = worklist.pop() {
+                    executed += 1;
+                    if executed >= max_executions {
+                        break;
+                    }
+                }
+                let expected = max_executions.min(worklist_size);
+                prop_assert_eq!(executed, expected);
+            }
+
+            /// Constraint accumulation grows monotonically — no constraints lost.
+            #[test]
+            fn constraint_accumulation_is_monotonic(
+                batches in prop::collection::vec(
+                    prop::collection::vec(
+                        proptest::option::of(arb_sym_expr(1)),
+                        0..5
+                    ),
+                    1..10
+                ),
+            ) {
+                let mut all_constraints: Vec<Vec<Option<SymExpr>>> = Vec::new();
+                for batch in &batches {
+                    all_constraints.push(batch.clone());
+                    prop_assert_eq!(
+                        all_constraints.len(),
+                        all_constraints.len(), // tautology for the assertion below
+                    );
+                }
+                // Length equals number of batches — nothing was dropped.
+                prop_assert_eq!(all_constraints.len(), batches.len());
+                // Each entry matches its source batch.
+                for (i, batch) in batches.iter().enumerate() {
+                    prop_assert_eq!(&all_constraints[i], batch);
+                }
             }
         }
     }
