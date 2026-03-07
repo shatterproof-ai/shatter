@@ -1,6 +1,6 @@
 import * as path from "node:path";
-import { handleRequest, parseRequest, clearInstrumentedSources } from "./handlers.js";
-import { clearModuleCache } from "./executor.js";
+import { handleRequest, parseRequest, clearInstrumentedSources, instrumentedSourcesSize } from "./handlers.js";
+import { clearModuleCache, compiledModuleCacheSize } from "./executor.js";
 import {
   PROTOCOL_VERSION,
   type Request,
@@ -604,6 +604,56 @@ describe("handleRequest", () => {
         expect(response.capabilities).toContain("setup");
         expect(response.capabilities).toContain("generate");
       }
+    });
+  });
+
+  describe("memory management", () => {
+    it("teardown clears instrumented sources and module cache", async () => {
+      const setupFile = path.resolve(__dirname, "__fixtures__", "setup-module.ts");
+      const fixtureFile = path.resolve(__dirname, "__fixtures__", "primitives.ts");
+      const exampleFile = path.resolve(__dirname, "../../examples/standalone/ts/01-arithmetic.ts");
+
+      // Instrument a function — populates instrumentedSources cache
+      await handleRequest(
+        makeRequest({ command: "instrument", file: exampleFile, function: "classifyNumber", mocks: [] })
+      );
+      expect(instrumentedSourcesSize()).toBeGreaterThan(0);
+
+      // Execute without prior instrument — populates compiledModuleCache via loadModule()
+      await handleRequest(
+        makeRequest({ command: "analyze", file: fixtureFile })
+      );
+      await handleRequest(
+        makeRequest({ command: "execute", function: `${fixtureFile}:add`, inputs: [1, 2], mocks: [] })
+      );
+      expect(compiledModuleCacheSize()).toBeGreaterThan(0);
+
+      // Setup then teardown — should clear both caches
+      await handleRequest(
+        makeRequest({ command: "setup", file: setupFile, function: "testFn", mode: "per_function" })
+      );
+      await handleRequest(
+        makeRequest({ command: "teardown", function: "testFn" })
+      );
+
+      expect(instrumentedSourcesSize()).toBe(0);
+      expect(compiledModuleCacheSize()).toBe(0);
+    });
+
+    it("shutdown clears instrumented sources and module cache", async () => {
+      const exampleFile = path.resolve(__dirname, "../../examples/standalone/ts/01-arithmetic.ts");
+
+      // Instrument to populate cache
+      await handleRequest(
+        makeRequest({ command: "instrument", file: exampleFile, function: "classifyNumber", mocks: [] })
+      );
+      expect(instrumentedSourcesSize()).toBeGreaterThan(0);
+
+      // Shutdown should clear all caches
+      await handleRequest(makeRequest({ command: "shutdown" }));
+
+      expect(instrumentedSourcesSize()).toBe(0);
+      expect(compiledModuleCacheSize()).toBe(0);
     });
   });
 

@@ -789,3 +789,8 @@ export function buildExecuteResponse(
 export function clearModuleCache(): void {
   compiledModuleCache.clear();
 }
+
+/** Number of cached compiled modules. Exposed for testing. */
+export function compiledModuleCacheSize(): number {
+  return compiledModuleCache.size;
+}

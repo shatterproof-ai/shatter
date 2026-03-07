@@ -22,6 +22,7 @@ import {
   executeInstrumented,
   buildExecuteResponse,
   setProjectRoot,
+  clearModuleCache,
 } from "./executor.js";
 import {
   loadSetupModule,
@@ -259,6 +260,8 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
 
         runTeardown(stored.module, request.function, stored.context);
         setupContexts.delete(request.function);
+        instrumentedSources.clear();
+        clearModuleCache();
 
         return {
           response: {
@@ -327,6 +330,8 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
 
     case "shutdown":
       await clearWasmCache();
+      instrumentedSources.clear();
+      clearModuleCache();
       return {
         response: {
           protocol_version: PROTOCOL_VERSION,
@@ -433,4 +438,9 @@ export function clearInstrumentedSources(): void {
   instrumentedSources.clear();
   loadedSetupModules.clear();
   setupContexts.clear();
+}
+
+/** Number of cached instrumented sources. Exposed for testing. */
+export function instrumentedSourcesSize(): number {
+  return instrumentedSources.size;
 }
