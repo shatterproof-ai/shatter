@@ -1,0 +1,6607 @@
+{
+  "bucket_cap": 50,
+  "buckets": {
+    "{\"kind\":\"array\",\"element\":{\"kind\":\"unknown\"}}": [
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          "null"
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          "hello"
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          " "
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          ""
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          "true"
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          "mdoivye"
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          "test"
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          "ezcvhipulccklegerexy"
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          "0"
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          "nygu"
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          "nockkcvzqsolyboadywf"
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          "tupipmiggzkacxjnbqjt"
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          "ynqbqnvaqghwhirps"
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          "z"
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          "ceywguxhidprnnnwju"
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          "eewusd"
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          "glnoswdwnjpuqjfvrg"
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          "lxtawmjdssywecpkkcqb"
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          "cxto"
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          "h"
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          "grhulnmlsuihx"
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          "kjcupuhjeqwvkryzqxtd"
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          "igbzbpfigllyihenuvv"
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          "cg"
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          "xnsihabzqfiqjffoxkxt"
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          "gvanoxryhektew"
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          "wzlecbphumiwbxtjnh"
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          "fuzr"
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          "sukxbmtsjxtfv"
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          "mogrvubmxcdbw"
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          "cwqrzm"
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          "jkpdlgkvjvnevxsn"
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          "zgxmyxg"
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          "dkakpmt"
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          "aiiezxivnfmdbmxpc"
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          "dzubxr"
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          "x"
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          "xybkbwszlqflwdetd"
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          "klrgm"
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          "odmvmb"
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {},
+          "glzikroeqllwbmmykts"
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {
+            "close": 0.5,
+            "execute": 574,
+            "query": 2.0
+          },
+          "Bob Smith",
+          958.1095396548226
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {
+            "close": -1,
+            "execute": "null",
+            "query": "0"
+          },
+          "Bob Smith",
+          10.0
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {
+            "close": "wakrhatryl",
+            "execute": "test",
+            "query": true
+          },
+          "Bob Smith",
+          -2.0
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {
+            "close": true,
+            "execute": -573,
+            "query": 522
+          },
+          "Bob Smith",
+          10.0
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {
+            "close": " ",
+            "execute": 807,
+            "query": -1
+          },
+          "Bob Smith",
+          0.0
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {
+            "close": 234,
+            "execute": true,
+            "query": " "
+          },
+          "Bob Smith",
+          -0.5
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {
+            "close": 436,
+            "execute": "null",
+            "query": "uxhlxt"
+          },
+          "Bob Smith",
+          2.0
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {
+            "close": " ",
+            "execute": true,
+            "query": true
+          },
+          "Bob Smith",
+          2.0
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          {
+            "close": false,
+            "execute": "hello",
+            "query": 0.0
+          },
+          "Bob Smith",
+          152.93214916707143
+        ]
+      }
+    ],
+    "{\"kind\":\"float\"}": [
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "float"
+        },
+        "value": -166.20182997233803
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "float"
+        },
+        "value": 10.0
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "float"
+        },
+        "value": 152.93214916707143
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "float"
+        },
+        "value": 116.88272249656302
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "float"
+        },
+        "value": 513.5166330215047
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "float"
+        },
+        "value": -839.1508690904841
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "float"
+        },
+        "value": 564.5140734370489
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "float"
+        },
+        "value": 40.0
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "float"
+        },
+        "value": 823.5931054690409
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "float"
+        },
+        "value": 75.0
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "float"
+        },
+        "value": 11.0
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "float"
+        },
+        "value": -733.6456496218347
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "float"
+        },
+        "value": 695.0772038670823
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "float"
+        },
+        "value": -41.0
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "float"
+        },
+        "value": 753.0849193436318
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "float"
+        },
+        "value": -53.0
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "float"
+        },
+        "value": 440.8470321930715
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "float"
+        },
+        "value": 110.4382462611752
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "float"
+        },
+        "value": 962.6172084226451
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "float"
+        },
+        "value": -31.0
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "float"
+        },
+        "value": -654.5539541107592
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "float"
+        },
+        "value": -859.8880752580098
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "float"
+        },
+        "value": -71.0
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "float"
+        },
+        "value": -412.6222577801309
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "float"
+        },
+        "value": -32.0
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "float"
+        },
+        "value": -38.15047977483528
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "float"
+        },
+        "value": -781.705871046976
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "float"
+        },
+        "value": -57.43229149392266
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "float"
+        },
+        "value": 24.0
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "float"
+        },
+        "value": 306.5781492938729
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "float"
+        },
+        "value": 976.634346678448
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "float"
+        },
+        "value": 958.1095396548226
+      }
+    ],
+    "{\"kind\":\"object\",\"fields\":[[\"query\",{\"kind\":\"unknown\"}],[\"execute\",{\"kind\":\"unknown\"}],[\"close\",{\"kind\":\"unknown\"}]]}": [
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": 0.5,
+          "execute": "dunblqvlvxzgz",
+          "query": -12.603204388344352
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": true,
+          "execute": true,
+          "query": 766
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": false,
+          "execute": 0.5,
+          "query": true
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": "hello",
+          "execute": "true",
+          "query": 807
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": false,
+          "execute": -404,
+          "query": 270
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": -266,
+          "execute": true,
+          "query": "uxhibpjtymdzlv"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": -28.0,
+          "execute": 0.5,
+          "query": 0.0
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": -492.1745603895231,
+          "execute": "mq",
+          "query": false
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": 1,
+          "execute": -292,
+          "query": false
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": 595.2613147308491,
+          "execute": true,
+          "query": 233
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": "hzyqpjk",
+          "execute": -9223372036854775808,
+          "query": true
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": false,
+          "execute": 9223372036854775807,
+          "query": ""
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": false,
+          "execute": 9223372036854775807,
+          "query": false
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": "true",
+          "execute": false,
+          "query": 9223372036854775807
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": " ",
+          "execute": 1.0,
+          "query": 9223372036854775807
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": -655,
+          "execute": true,
+          "query": 1.0
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": 793,
+          "execute": -1,
+          "query": -198.5478251163779
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": false,
+          "execute": -367,
+          "query": ""
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": "test",
+          "execute": 2.0,
+          "query": false
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": "test",
+          "execute": true,
+          "query": "null"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": "gvvtejypalaclw",
+          "execute": 810.0284679411595,
+          "query": true
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": "yeoecxfvndycqatrwes",
+          "execute": "hello",
+          "query": true
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": 970.465171413054,
+          "execute": -480.6461830843344,
+          "query": -804
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": true,
+          "execute": 10.0,
+          "query": -373.47170965116266
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": -1,
+          "execute": " ",
+          "query": true
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": 0.5,
+          "execute": "hlwadtosxbcayphuxpl",
+          "query": 1.0
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": -1,
+          "execute": 722,
+          "query": 0.5
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": -0.5,
+          "execute": 74,
+          "query": 0.5
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": 943.6783768696712,
+          "execute": false,
+          "query": 0.5
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": "null",
+          "execute": true,
+          "query": " "
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": "true",
+          "execute": false,
+          "query": 362.37655401885377
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": -318,
+          "execute": 0,
+          "query": 85.0
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": 835,
+          "execute": 690,
+          "query": 166
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": false,
+          "execute": -410,
+          "query": false
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": true,
+          "execute": -479,
+          "query": 1.0
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": "test",
+          "execute": 10.0,
+          "query": 0.5
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": -1.0,
+          "execute": "",
+          "query": true
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": -2.0,
+          "execute": 10.0,
+          "query": -1.0
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": false,
+          "execute": false,
+          "query": -9223372036854775808
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": -1,
+          "execute": "true",
+          "query": false
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": 10.0,
+          "execute": -1,
+          "query": -836
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": 10.0,
+          "execute": false,
+          "query": -846.2525775558794
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": true,
+          "execute": 683,
+          "query": -203
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": -1,
+          "execute": 545.7217798973427,
+          "query": "null"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": true,
+          "execute": "hello",
+          "query": "0"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": "null",
+          "execute": "0",
+          "query": 0
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": true,
+          "execute": -12.0,
+          "query": 959
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": -53.0,
+          "execute": -591.9370435515709,
+          "query": false
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithDbConnection",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": 377,
+          "execute": false,
+          "query": 80.0
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "query",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "execute",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "close",
+              {
+                "kind": "unknown"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "close": -754,
+          "execute": "yy",
+          "query": -18.754561263817095
+        }
+      }
+    ],
+    "{\"kind\":\"object\",\"fields\":[[\"write\",{\"kind\":\"unknown\"}],[\"end\",{\"kind\":\"unknown\"}],[\"destroyed\",{\"kind\":\"bool\"}]]}": [
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": "hello",
+          "write": true
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": "0",
+          "write": "true"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": "null",
+          "write": false
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": 229,
+          "write": -741.8280807870606
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": "0",
+          "write": -95
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": "mpairtacqzasmxdxi",
+          "write": true
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": true,
+          "write": "gruiion"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": true,
+          "write": false
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": 679.0840975195738,
+          "write": "xniimzeuq"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": 9223372036854775807,
+          "write": "true"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": -96.0,
+          "write": 2.0
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": "null",
+          "write": -2.0
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": -2.0,
+          "write": -667
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": 9223372036854775807,
+          "write": 976
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": -1.0,
+          "write": 9223372036854775807
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": -1.0,
+          "write": false
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": true,
+          "write": -879
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": -103.48437423315944,
+          "write": 2.0
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": "hgiyebumhxnp",
+          "write": ""
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": -0.5,
+          "write": -1
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": false,
+          "write": "hello"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": true,
+          "write": " "
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": "0",
+          "write": "null"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": false,
+          "write": true
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": -700,
+          "write": "true"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": 0.5,
+          "write": "hello"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": "",
+          "write": true
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": -1.0,
+          "write": "null"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": -881,
+          "write": "iacehmnpvaeltzg"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": " ",
+          "write": "wqdsubsgrxihf"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": false,
+          "write": "true"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": 378,
+          "write": 432.6359545899989
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": " ",
+          "write": -688.7974487028465
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": 1,
+          "write": -1.0
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": 1.0,
+          "write": false
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": true,
+          "write": "uvgbfmdlnet"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": " ",
+          "write": ""
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": -2.0,
+          "write": 1
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": -893,
+          "write": 841
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": true,
+          "write": -61.0
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": "vsfr",
+          "write": 810
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "processWithSocket",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "fields": [
+            [
+              "write",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "end",
+              {
+                "kind": "unknown"
+              }
+            ],
+            [
+              "destroyed",
+              {
+                "kind": "bool"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "destroyed": false,
+          "end": -1,
+          "write": 0.0
+        }
+      }
+    ],
+    "{\"kind\":\"str\"}": [
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          },
+          {
+            "branch_id": 3,
+            "function": "queryTable",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "str"
+        },
+        "value": "hello"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "str"
+        },
+        "value": "mdoivye"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          },
+          {
+            "branch_id": 3,
+            "function": "queryTable",
+            "severity": "rare_path"
+          },
+          {
+            "branch_id": 2,
+            "function": "queryTable",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "str"
+        },
+        "value": "test"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "str"
+        },
+        "value": "ezcvhipulccklegerexy"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "str"
+        },
+        "value": "nygu"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "str"
+        },
+        "value": "nockkcvzqsolyboadywf"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "str"
+        },
+        "value": "tupipmiggzkacxjnbqjt"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "str"
+        },
+        "value": "ynqbqnvaqghwhirps"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "str"
+        },
+        "value": "z"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "str"
+        },
+        "value": "ceywguxhidprnnnwju"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "str"
+        },
+        "value": "eewusd"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "str"
+        },
+        "value": "glnoswdwnjpuqjfvrg"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "str"
+        },
+        "value": "lxtawmjdssywecpkkcqb"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "str"
+        },
+        "value": "cxto"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "str"
+        },
+        "value": "h"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "str"
+        },
+        "value": "grhulnmlsuihx"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "str"
+        },
+        "value": "kjcupuhjeqwvkryzqxtd"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "str"
+        },
+        "value": "igbzbpfigllyihenuvv"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "str"
+        },
+        "value": "cg"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "str"
+        },
+        "value": "xnsihabzqfiqjffoxkxt"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "str"
+        },
+        "value": "gvanoxryhektew"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "str"
+        },
+        "value": "wzlecbphumiwbxtjnh"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "str"
+        },
+        "value": "fuzr"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "str"
+        },
+        "value": "sukxbmtsjxtfv"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "str"
+        },
+        "value": "mogrvubmxcdbw"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "str"
+        },
+        "value": "cwqrzm"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "str"
+        },
+        "value": "jkpdlgkvjvnevxsn"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "str"
+        },
+        "value": "zgxmyxg"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "str"
+        },
+        "value": "dkakpmt"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "str"
+        },
+        "value": "aiiezxivnfmdbmxpc"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "str"
+        },
+        "value": "dzubxr"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "str"
+        },
+        "value": "x"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "str"
+        },
+        "value": "xybkbwszlqflwdetd"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "str"
+        },
+        "value": "klrgm"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "str"
+        },
+        "value": "odmvmb"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "computeFromPrimitives",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "str"
+        },
+        "value": "glzikroeqllwbmmykts"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "processWithMixedParams",
+            "severity": "handled_error"
+          },
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "str"
+        },
+        "value": "Bob Smith"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 2,
+            "function": "queryTable",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "str"
+        },
+        "value": "frfhgfzilwvinlcbd"
+      }
+    ],
+    "{\"kind\":\"unknown\"}": [
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": "null"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          },
+          {
+            "branch_id": 1,
+            "function": "queryTable",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": false
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": -882
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          },
+          {
+            "branch_id": 0,
+            "function": "queryTable",
+            "severity": "handled_error"
+          },
+          {
+            "branch_id": 1,
+            "function": "queryTable",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": -9223372036854775808
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": -74.0
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          },
+          {
+            "branch_id": 1,
+            "function": "queryTable",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": 2.0
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          },
+          {
+            "branch_id": 1,
+            "function": "queryTable",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": 9223372036854775807
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          },
+          {
+            "branch_id": 0,
+            "function": "queryTable",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": true
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          },
+          {
+            "branch_id": 3,
+            "function": "queryTable",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": "0"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          },
+          {
+            "branch_id": 0,
+            "function": "queryTable",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": 0.0
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": -933
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": "test"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          },
+          {
+            "branch_id": 1,
+            "function": "queryTable",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": 1
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          },
+          {
+            "branch_id": 1,
+            "function": "queryTable",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": 0.5
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          },
+          {
+            "branch_id": 0,
+            "function": "queryTable",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": "true"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          },
+          {
+            "branch_id": 1,
+            "function": "queryTable",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": " "
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": -633
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": "gzcafxjfyozwqh"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": "jh"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": 86.0
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          },
+          {
+            "branch_id": 1,
+            "function": "queryTable",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": -1
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": -639.9893631702436
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          },
+          {
+            "branch_id": 1,
+            "function": "queryTable",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": 0
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          },
+          {
+            "branch_id": 2,
+            "function": "queryTable",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": ""
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": "lolu"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": -915.015255650648
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": 10.0
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          },
+          {
+            "branch_id": 1,
+            "function": "queryTable",
+            "severity": "handled_error"
+          },
+          {
+            "branch_id": 0,
+            "function": "queryTable",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": "hello"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          },
+          {
+            "branch_id": 0,
+            "function": "queryTable",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": -0.5
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          },
+          {
+            "branch_id": 1,
+            "function": "queryTable",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": -1.0
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          },
+          {
+            "branch_id": 1,
+            "function": "queryTable",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": 1.0
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": 362
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": -2.0
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": "eovmxkyenxzvopsv"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": -627
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": 564.8627392858257
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": -836
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": -711
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": 30.0
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": "ednko"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": 579
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "teardown",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": -24.0
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "queryTable",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": 868.0451478763312
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "queryTable",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": 108.05210226721148
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "queryTable",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": 761
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "queryTable",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": -405.3330844345222
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 3,
+            "function": "queryTable",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": "n"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "queryTable",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": 863
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "queryTable",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 1,
+        "last_hit_epoch": 1,
+        "type": {
+          "kind": "unknown"
+        },
+        "value": "jggvqfvmadyhtqunxqdd"
+      }
+    ]
+  },
+  "epoch": 2,
+  "version": 2
+}
