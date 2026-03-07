@@ -9,7 +9,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use shatter_core::analysis_cache::AnalysisCache;
 use shatter_core::batch_analyze::{self, FunctionRegistry};
 use shatter_core::behavior::BehaviorMap;
-use shatter_core::cache::BehaviorMapCache;
+use shatter_core::cache::{BehaviorMapCache, SpecCache};
 use shatter_core::call_graph::CallGraph;
 use shatter_core::config::{self as shatter_config, ShatterConfig};
 use shatter_core::discovery::{self, DiscoveryOptions, Language as DiscoveryLanguage};
@@ -908,14 +908,18 @@ async fn run_explore(
     let _scope_matcher = ScopeMatcher::new(&scope_config)
         .map_err(|e| format!("invalid scope config: {e}"))?;
 
-    let cache = if no_cache {
-        None
+    let (cache, spec_cache) = if no_cache {
+        (None, None)
     } else {
         let dir = match cache_dir {
             Some(p) => p.to_path_buf(),
             None => BehaviorMapCache::default_dir(&std::env::current_dir()?),
         };
-        Some(BehaviorMapCache::new(dir).map_err(|e| format!("failed to initialize cache: {e}"))?)
+        let bm = BehaviorMapCache::new(dir.clone())
+            .map_err(|e| format!("failed to initialize cache: {e}"))?;
+        let sc = SpecCache::new(dir)
+            .map_err(|e| format!("failed to initialize spec cache: {e}"))?;
+        (Some(bm), Some(sc))
     };
 
     let parsed: Vec<Target> = targets
@@ -1133,8 +1137,16 @@ async fn run_explore(
         let mut skipped_unexecutable: Vec<(String, Vec<executability::SkipReason>)> = Vec::new();
         let mut file_specs: Vec<shatter_core::spec::FunctionSpec> = Vec::new();
         for func in &functions {
-            // Skip fresh functions in incremental mode
+            // Skip fresh functions in incremental mode, but load cached spec if available.
             if fresh_set.contains(&func.name) {
+                if show_spec || detect_invariants {
+                    let function_id = format!("{}:{}", file_str, func.name);
+                    if let Some(ref sc) = spec_cache
+                        && let Ok(Some(cached_spec)) = sc.load(&function_id)
+                    {
+                        file_specs.push(cached_spec);
+                    }
+                }
                 continue;
             }
 
@@ -1340,6 +1352,14 @@ async fn run_explore(
                         } else {
                             shatter_core::spec::build_spec(&result, eq_classes, location, fingerprint)
                         };
+
+                        // Cache the spec for future incremental runs.
+                        if let Some(ref sc) = spec_cache
+                            && let Err(e) = sc.store(&function_id, &spec)
+                        {
+                            log::debug!("Failed to cache spec for {function_id}: {e}");
+                        }
+
                         if output_path.is_some() {
                             // Collect for file-level bundle output
                             file_specs.push(spec);

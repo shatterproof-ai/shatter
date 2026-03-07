@@ -600,3 +600,74 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use crate::test_arbitraries::arb_function_analysis;
+    use proptest::prelude::*;
+    use std::collections::{HashMap, HashSet};
+
+    proptest! {
+        /// Fingerprints are deterministic: same inputs always produce the same hash.
+        #[test]
+        fn fingerprint_deterministic(
+            source in ".*",
+            analysis in arb_function_analysis(),
+        ) {
+            let fp1 = compute_function_fingerprint(&source, &analysis);
+            let fp2 = compute_function_fingerprint(&source, &analysis);
+            prop_assert_eq!(&fp1, &fp2);
+        }
+
+        /// Fingerprints are always 64-character hex strings (SHA-256).
+        #[test]
+        fn fingerprint_length_invariant(
+            source in ".*",
+            analysis in arb_function_analysis(),
+        ) {
+            let fp = compute_function_fingerprint(&source, &analysis);
+            prop_assert_eq!(fp.len(), 64);
+            prop_assert!(fp.chars().all(|c| c.is_ascii_hexdigit()));
+        }
+
+        /// Deep fingerprints are deterministic.
+        #[test]
+        fn deep_fingerprint_deterministic(
+            shallow in "[a-f0-9]{64}",
+            callee_name in "[a-z_]{1,20}",
+            callee_fp in "[a-f0-9]{64}",
+        ) {
+            let callee_fps: HashMap<String, String> =
+                [(callee_name.clone(), callee_fp)].into_iter().collect();
+            let callees: HashSet<String> = [callee_name].into_iter().collect();
+
+            let fp1 = compute_deep_fingerprint(&shallow, &callee_fps, &callees);
+            let fp2 = compute_deep_fingerprint(&shallow, &callee_fps, &callees);
+            prop_assert_eq!(&fp1, &fp2);
+        }
+
+        /// Deep fingerprints are always 64-character hex strings.
+        #[test]
+        fn deep_fingerprint_length_invariant(
+            shallow in "[a-f0-9]{64}",
+        ) {
+            let fp = compute_deep_fingerprint(&shallow, &HashMap::new(), &HashSet::new());
+            prop_assert_eq!(fp.len(), 64);
+            prop_assert!(fp.chars().all(|c| c.is_ascii_hexdigit()));
+        }
+
+        /// Different source text produces different fingerprints (collision resistance).
+        #[test]
+        fn different_source_different_fingerprint(
+            src1 in ".{1,100}",
+            src2 in ".{1,100}",
+            analysis in arb_function_analysis(),
+        ) {
+            prop_assume!(src1 != src2);
+            let fp1 = compute_function_fingerprint(&src1, &analysis);
+            let fp2 = compute_function_fingerprint(&src2, &analysis);
+            prop_assert_ne!(fp1, fp2);
+        }
+    }
+}

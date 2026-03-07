@@ -1,13 +1,20 @@
-//! Disk cache for [`BehaviorMap`]s, enabling persistence across runs.
+//! Disk cache for [`BehaviorMap`]s and [`FunctionSpec`]s, enabling persistence across runs.
 //!
 //! When shatter explores a function, the resulting behavior map is stored to disk
 //! so it can be reloaded in future runs — critical for compositional testing where
 //! function B's behavior map is reused when testing function A.
+//!
+//! Cache entries include the protocol version so that protocol upgrades
+//! automatically invalidate stale entries.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+
 use crate::behavior::BehaviorMap;
+use crate::protocol::PROTOCOL_VERSION;
+use crate::spec::FunctionSpec;
 
 /// Errors that can occur during cache operations.
 #[derive(Debug, thiserror::Error)]
@@ -16,6 +23,56 @@ pub enum CacheError {
     Io(#[from] std::io::Error),
     #[error("cache serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
+}
+
+/// Versioned envelope for cached BehaviorMap entries.
+/// Protocol version changes invalidate all cached entries.
+#[derive(Debug, Serialize, Deserialize)]
+struct BehaviorMapCacheEntry {
+    protocol_version: String,
+    behavior_map: BehaviorMap,
+}
+
+/// Versioned envelope for cached FunctionSpec entries.
+#[derive(Debug, Serialize, Deserialize)]
+struct SpecCacheEntry {
+    protocol_version: String,
+    spec: FunctionSpec,
+}
+
+/// Compute the base path (without extension) for a function ID within a cache directory.
+///
+/// Mirrors the source tree structure:
+/// - `src/auth.ts:validateToken` → `src/auth.ts/validateToken`
+/// - `src/auth.ts:TokenValidator.validate` → `src/auth.ts/TokenValidator/validate`
+/// - `simpleFunc` → `simpleFunc`
+fn cache_base_path(cache_dir: &Path, function_id: &str) -> PathBuf {
+    let mut path = cache_dir.to_path_buf();
+
+    let (file_part, func_part) = match function_id.split_once(':') {
+        Some((f, func)) => (Some(f), func),
+        None => (None, function_id),
+    };
+
+    if let Some(file) = file_part {
+        for component in file.split('/') {
+            if !component.is_empty() {
+                path.push(sanitize_component(component));
+            }
+        }
+    }
+
+    match func_part.split_once('.') {
+        Some((class_name, method_name)) => {
+            path.push(sanitize_component(class_name));
+            path.push(sanitize_component(method_name));
+        }
+        None => {
+            path.push(sanitize_component(func_part));
+        }
+    }
+
+    path
 }
 
 /// Disk-backed cache for storing and loading [`BehaviorMap`]s.
@@ -35,13 +92,21 @@ impl BehaviorMapCache {
 
     /// Load a behavior map for the given function ID, if one exists.
     ///
-    /// Returns `Ok(None)` if no cached map exists for this function.
+    /// Returns `Ok(None)` on cache miss, protocol version mismatch,
+    /// or deserialization failure (gracefully handles old cache format).
     pub fn load(&self, function_id: &str) -> Result<Option<BehaviorMap>, CacheError> {
         let path = self.path_for(function_id);
         match fs::read_to_string(&path) {
             Ok(contents) => {
-                let map: BehaviorMap = serde_json::from_str(&contents)?;
-                Ok(Some(map))
+                let entry: BehaviorMapCacheEntry = match serde_json::from_str(&contents) {
+                    Ok(e) => e,
+                    // Old bare-JSON format or corrupt entry → cache miss
+                    Err(_) => return Ok(None),
+                };
+                if entry.protocol_version != PROTOCOL_VERSION {
+                    return Ok(None);
+                }
+                Ok(Some(entry.behavior_map))
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(CacheError::Io(e)),
@@ -51,14 +116,16 @@ impl BehaviorMapCache {
     /// Store a behavior map to disk using atomic write (temp file + rename).
     pub fn store(&self, map: &BehaviorMap) -> Result<(), CacheError> {
         let path = self.path_for(&map.function_id);
-        let json = serde_json::to_string_pretty(map)?;
+        let entry = BehaviorMapCacheEntry {
+            protocol_version: PROTOCOL_VERSION.to_string(),
+            behavior_map: map.clone(),
+        };
+        let json = serde_json::to_string_pretty(&entry)?;
 
-        // Ensure parent directories exist for hierarchical cache paths.
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
 
-        // Atomic write: write to a temp file in the same directory, then rename.
         let tmp_path = path.with_extension("json.tmp");
         fs::write(&tmp_path, json)?;
         fs::rename(&tmp_path, &path)?;
@@ -68,9 +135,8 @@ impl BehaviorMapCache {
 
     /// Check whether a cached behavior map exists and its fingerprint matches.
     ///
-    /// Returns `true` if the cache contains a map for `function_id` whose
-    /// fingerprint equals `current_fingerprint`. Returns `false` if no cached
-    /// map exists, the cached map has no fingerprint, or the fingerprints differ.
+    /// Returns `true` if the cache contains a version-compatible map for
+    /// `function_id` whose fingerprint equals `current_fingerprint`.
     pub fn is_fresh(
         &self,
         function_id: &str,
@@ -90,41 +156,96 @@ impl BehaviorMapCache {
         project_root.join(".shatter").join("cache")
     }
 
-    /// Compute the file path for a given function ID.
-    ///
-    /// Mirrors the source tree structure:
-    /// - `src/auth.ts:validateToken` → `src/auth.ts/validateToken.json`
-    /// - `src/auth.ts:TokenValidator.validate` → `src/auth.ts/TokenValidator/validate.json`
-    /// - `simpleFunc` (no colon) → `simpleFunc.json`
     fn path_for(&self, function_id: &str) -> PathBuf {
-        let mut path = self.cache_dir.clone();
+        let mut p = cache_base_path(&self.cache_dir, function_id);
+        p.set_extension("json");
+        p
+    }
+}
 
-        let (file_part, func_part) = match function_id.split_once(':') {
-            Some((f, func)) => (Some(f), func),
-            None => (None, function_id),
-        };
+/// Disk-backed cache for storing and loading [`FunctionSpec`]s.
+///
+/// Colocated with behavior map cache entries using `.spec.json` extension.
+#[derive(Debug)]
+pub struct SpecCache {
+    cache_dir: PathBuf,
+}
 
-        // Append file path components (each sanitized individually).
-        if let Some(file) = file_part {
-            for component in file.split('/') {
-                if !component.is_empty() {
-                    path.push(sanitize_component(component));
+impl SpecCache {
+    /// Create a new spec cache backed by the given directory.
+    ///
+    /// Creates the directory (and parents) if it doesn't exist.
+    pub fn new(cache_dir: PathBuf) -> Result<Self, CacheError> {
+        fs::create_dir_all(&cache_dir)?;
+        Ok(Self { cache_dir })
+    }
+
+    /// Load a function spec for the given function ID, if one exists.
+    ///
+    /// Returns `Ok(None)` on cache miss, protocol version mismatch,
+    /// or deserialization failure.
+    pub fn load(&self, function_id: &str) -> Result<Option<FunctionSpec>, CacheError> {
+        let path = self.path_for(function_id);
+        match fs::read_to_string(&path) {
+            Ok(contents) => {
+                let entry: SpecCacheEntry = match serde_json::from_str(&contents) {
+                    Ok(e) => e,
+                    Err(_) => return Ok(None),
+                };
+                if entry.protocol_version != PROTOCOL_VERSION {
+                    return Ok(None);
                 }
+                Ok(Some(entry.spec))
             }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(CacheError::Io(e)),
+        }
+    }
+
+    /// Store a function spec to disk using atomic write (temp file + rename).
+    pub fn store(&self, function_id: &str, spec: &FunctionSpec) -> Result<(), CacheError> {
+        let path = self.path_for(function_id);
+        let entry = SpecCacheEntry {
+            protocol_version: PROTOCOL_VERSION.to_string(),
+            spec: spec.clone(),
+        };
+        let json = serde_json::to_string_pretty(&entry)?;
+
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
         }
 
-        // Split func_part on '.' for class.method.
-        match func_part.split_once('.') {
-            Some((class_name, method_name)) => {
-                path.push(sanitize_component(class_name));
-                path.push(format!("{}.json", sanitize_component(method_name)));
-            }
-            None => {
-                path.push(format!("{}.json", sanitize_component(func_part)));
-            }
-        }
+        let tmp_path = path.with_extension("spec.json.tmp");
+        fs::write(&tmp_path, json)?;
+        fs::rename(&tmp_path, &path)?;
 
-        path
+        Ok(())
+    }
+
+    /// Check whether a cached spec exists and its fingerprint matches.
+    pub fn is_fresh(
+        &self,
+        function_id: &str,
+        current_fingerprint: &str,
+    ) -> Result<bool, CacheError> {
+        match self.load(function_id)? {
+            Some(spec) => Ok(spec
+                .fingerprint
+                .as_deref()
+                .is_some_and(|fp| fp == current_fingerprint)),
+            None => Ok(false),
+        }
+    }
+
+    /// Default spec cache directory (same as behavior map cache).
+    pub fn default_dir(project_root: &Path) -> PathBuf {
+        project_root.join(".shatter").join("cache")
+    }
+
+    fn path_for(&self, function_id: &str) -> PathBuf {
+        let mut p = cache_base_path(&self.cache_dir, function_id);
+        p.set_extension("spec.json");
+        p
     }
 }
 
@@ -167,6 +288,22 @@ mod tests {
             nondeterministic_fields: vec![],
         }
     }
+
+    fn sample_spec(function_name: &str) -> FunctionSpec {
+        FunctionSpec {
+            function_name: function_name.to_string(),
+            location: Some("test.ts:1".to_string()),
+            classes: vec![],
+            iterations: 10,
+            lines_covered: 5,
+            total_lines: 10,
+            invariants: vec![],
+            fingerprint: None,
+            nondeterministic_fields: vec![],
+        }
+    }
+
+    // --- BehaviorMapCache tests ---
 
     #[test]
     fn store_and_load_round_trip() {
@@ -256,7 +393,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
 
-        // No colon → simple file directly in cache_dir
         let map = sample_map("simpleFunc");
         cache.store(&map).unwrap();
 
@@ -285,9 +421,9 @@ mod tests {
 
     #[test]
     fn default_dir_is_relative_to_project_root() {
-        let root = Path::new("/home/user/myproject");
-        let dir = BehaviorMapCache::default_dir(root);
-        assert_eq!(dir, PathBuf::from("/home/user/myproject/.shatter/cache"));
+        let dir = tempfile::tempdir().unwrap();
+        let cache_dir = BehaviorMapCache::default_dir(dir.path());
+        assert_eq!(cache_dir, dir.path().join(".shatter").join("cache"));
     }
 
     #[test]
@@ -329,7 +465,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
 
-        // Map without fingerprint
         let map = sample_map("myFunc");
         cache.store(&map).unwrap();
 
@@ -367,16 +502,195 @@ mod tests {
     }
 
     #[test]
-    fn load_old_cache_without_nondeterministic_fields() {
+    fn old_bare_json_format_returns_none() {
         let dir = tempfile::tempdir().unwrap();
         let cache_dir = dir.path().to_path_buf();
         let cache = BehaviorMapCache::new(cache_dir.clone()).unwrap();
 
-        // Write JSON without nondeterministic_fields (simulates old cache format).
+        // Write bare JSON without versioned envelope (simulates pre-upgrade cache).
         let json = r#"{"function_id":"oldFunc","behaviors":[]}"#;
         std::fs::write(cache_dir.join("oldFunc.json"), json).unwrap();
 
-        let loaded = cache.load("oldFunc").unwrap().unwrap();
-        assert!(loaded.nondeterministic_fields.is_empty());
+        // Old format gracefully becomes a cache miss.
+        let loaded = cache.load("oldFunc").unwrap();
+        assert_eq!(loaded, None);
+    }
+
+    #[test]
+    fn protocol_version_mismatch_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
+
+        let map = sample_map("myFunc");
+        cache.store(&map).unwrap();
+
+        // Manually overwrite with a different protocol version.
+        let path = dir.path().join("myFunc.json");
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let tampered = contents.replace(PROTOCOL_VERSION, "0.0.0-fake");
+        std::fs::write(&path, tampered).unwrap();
+
+        let loaded = cache.load("myFunc").unwrap();
+        assert_eq!(loaded, None);
+    }
+
+    // --- SpecCache tests ---
+
+    #[test]
+    fn spec_store_and_load_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = SpecCache::new(dir.path().to_path_buf()).unwrap();
+
+        let spec = sample_spec("myFunc");
+        cache.store("myFunc", &spec).unwrap();
+
+        let loaded = cache.load("myFunc").unwrap();
+        assert_eq!(loaded, Some(spec));
+    }
+
+    #[test]
+    fn spec_load_returns_none_for_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = SpecCache::new(dir.path().to_path_buf()).unwrap();
+
+        assert_eq!(cache.load("nonexistent").unwrap(), None);
+    }
+
+    #[test]
+    fn spec_protocol_version_mismatch_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = SpecCache::new(dir.path().to_path_buf()).unwrap();
+
+        let spec = sample_spec("myFunc");
+        cache.store("myFunc", &spec).unwrap();
+
+        let path = dir.path().join("myFunc.spec.json");
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let tampered = contents.replace(PROTOCOL_VERSION, "0.0.0-fake");
+        std::fs::write(&path, tampered).unwrap();
+
+        assert_eq!(cache.load("myFunc").unwrap(), None);
+    }
+
+    #[test]
+    fn spec_is_fresh_with_matching_fingerprint() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = SpecCache::new(dir.path().to_path_buf()).unwrap();
+
+        let mut spec = sample_spec("myFunc");
+        spec.fingerprint = Some("fp123".to_string());
+        cache.store("myFunc", &spec).unwrap();
+
+        assert!(cache.is_fresh("myFunc", "fp123").unwrap());
+        assert!(!cache.is_fresh("myFunc", "different").unwrap());
+    }
+
+    #[test]
+    fn spec_hierarchical_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = SpecCache::new(dir.path().to_path_buf()).unwrap();
+
+        let spec = sample_spec("validate");
+        cache.store("src/auth.ts:TokenValidator.validate", &spec).unwrap();
+
+        let loaded = cache.load("src/auth.ts:TokenValidator.validate").unwrap();
+        assert_eq!(loaded, Some(spec));
+
+        let expected = dir
+            .path()
+            .join("src")
+            .join("auth.ts")
+            .join("TokenValidator")
+            .join("validate.spec.json");
+        assert!(expected.exists());
+    }
+
+    #[test]
+    fn spec_and_behavior_map_coexist() {
+        let dir = tempfile::tempdir().unwrap();
+        let bm_cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
+        let spec_cache = SpecCache::new(dir.path().to_path_buf()).unwrap();
+
+        let map = sample_map("src/math.ts:add");
+        let spec = sample_spec("add");
+
+        bm_cache.store(&map).unwrap();
+        spec_cache.store("src/math.ts:add", &spec).unwrap();
+
+        // Both can be loaded independently.
+        assert_eq!(bm_cache.load("src/math.ts:add").unwrap(), Some(map));
+        assert_eq!(spec_cache.load("src/math.ts:add").unwrap(), Some(spec));
+
+        // Separate files exist.
+        let bm_file = dir.path().join("src").join("math.ts").join("add.json");
+        let spec_file = dir.path().join("src").join("math.ts").join("add.spec.json");
+        assert!(bm_file.exists());
+        assert!(spec_file.exists());
+    }
+}
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use crate::test_arbitraries::{arb_behavior_map, arb_function_spec};
+    use proptest::prelude::*;
+
+    proptest! {
+        /// BehaviorMap survives store → load roundtrip.
+        #[test]
+        fn behavior_map_cache_roundtrip(map in arb_behavior_map()) {
+            let dir = tempfile::tempdir().unwrap();
+            let cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
+
+            cache.store(&map).unwrap();
+            let loaded = cache.load(&map.function_id).unwrap();
+
+            prop_assert_eq!(loaded, Some(map));
+        }
+
+        /// FunctionSpec survives store → load roundtrip.
+        #[test]
+        fn spec_cache_roundtrip(spec in arb_function_spec()) {
+            let dir = tempfile::tempdir().unwrap();
+            let cache = SpecCache::new(dir.path().to_path_buf()).unwrap();
+
+            // Use a safe function_id (no path separators that might conflict).
+            let function_id = "test_file.ts:testFunc";
+            cache.store(function_id, &spec).unwrap();
+            let loaded = cache.load(function_id).unwrap();
+
+            prop_assert_eq!(loaded, Some(spec));
+        }
+
+        /// Freshness check is consistent: store with fingerprint, then is_fresh matches.
+        #[test]
+        fn behavior_map_freshness_consistent(
+            mut map in arb_behavior_map(),
+            fp in "[a-f0-9]{64}",
+        ) {
+            let dir = tempfile::tempdir().unwrap();
+            let cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
+
+            map.fingerprint = Some(fp.clone());
+            cache.store(&map).unwrap();
+
+            prop_assert!(cache.is_fresh(&map.function_id, &fp).unwrap());
+        }
+
+        /// Spec freshness check is consistent.
+        #[test]
+        fn spec_freshness_consistent(
+            mut spec in arb_function_spec(),
+            fp in "[a-f0-9]{64}",
+        ) {
+            let dir = tempfile::tempdir().unwrap();
+            let cache = SpecCache::new(dir.path().to_path_buf()).unwrap();
+
+            spec.fingerprint = Some(fp.clone());
+            let fid = "test.ts:func";
+            cache.store(fid, &spec).unwrap();
+
+            prop_assert!(cache.is_fresh(fid, &fp).unwrap());
+        }
     }
 }
