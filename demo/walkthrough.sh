@@ -168,7 +168,7 @@ RUST_EXAMPLES=(
     "examples/standalone/rust/04_errors.rs:safe_divide"
 )
 
-TOTAL=42
+TOTAL=43
 
 # ─── Walkthrough ──────────────────────────────────────────────────────
 
@@ -403,6 +403,13 @@ step 41 $TOTAL "Clean Re-exploration" \
 step 42 $TOTAL "Stale Check" \
     "Check staleness relative to spec from step 38 (exit 1 = stale found, expected here)" \
     bash -c "$SHATTER stale 'examples/standalone/ts/01-arithmetic.ts' /tmp/shatter-spec.json; echo '(exit code 1 is expected: compareMagnitudes was not in the spec from step 38)'"
+
+# Stage 43: Revalidate command
+# Re-execute cached behaviors to check for drift/regressions. Uses cache
+# populated by earlier explore steps. Exit code 0 = no regressions found.
+step 43 $TOTAL "Revalidate" \
+    "Revalidate cached behaviors for the arithmetic example" \
+    $SHATTER revalidate 'examples/standalone/ts/01-arithmetic.ts'
 
 # ─── Error Summary ────────────────────────────────────────────────────
 if [[ -s "$ERROR_LOG" ]]; then
