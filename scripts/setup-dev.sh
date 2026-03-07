@@ -169,6 +169,72 @@ if ! $CHECK_ONLY; then
     run_build "shatter-go"      "$REPO_ROOT/shatter-go"    go build ./...
 fi
 
+# --- Beads issue tracker -----------------------------------------------------
+step "Beads issue tracker"
+
+if command -v bd &>/dev/null; then
+    info "bd $(bd version 2>&1 | head -1 | awk '{print $3}')"
+else
+    miss "bd (beads) not found"
+    if $CHECK_ONLY; then
+        MISSING=$((MISSING + 1))
+    else
+        if command -v go &>/dev/null; then
+            warn "Installing beads via go install..."
+            go install github.com/beads-dev/beads/cmd/bd@latest 2>&1 | tail -3 || true
+            if command -v bd &>/dev/null; then
+                info "Installed bd $(bd version 2>&1 | head -1 | awk '{print $3}')"
+            else
+                warn "go install failed — install bd manually. See https://github.com/steveyegge/beads"
+            fi
+        else
+            warn "Install bd manually. See https://github.com/steveyegge/beads"
+        fi
+    fi
+fi
+
+# Restore beads database from backup if Dolt database is missing (fresh clone)
+if [ -d "$REPO_ROOT/.beads" ] && [ ! -d "$REPO_ROOT/.beads/dolt" ]; then
+    if command -v bd &>/dev/null; then
+        if $CHECK_ONLY; then
+            miss "Beads database not initialized (run setup to restore from backup)"
+            MISSING=$((MISSING + 1))
+        else
+            warn "Beads database missing (fresh clone) — initializing and restoring..."
+            (cd "$REPO_ROOT" && bd init --prefix=str 2>&1 | tail -3) || true
+            if [ -f "$REPO_ROOT/.beads/backup/issues.jsonl" ]; then
+                warn "Restoring from JSONL backup..."
+                (cd "$REPO_ROOT" && bd backup restore 2>&1 | tail -3)
+                info "Beads database restored from backup"
+            elif [ -f "$REPO_ROOT/.beads/issues.jsonl" ]; then
+                warn "Restoring from issues.jsonl..."
+                (cd "$REPO_ROOT" && bd import "$REPO_ROOT/.beads/issues.jsonl" 2>&1 | tail -3) || true
+                info "Beads database restored from issues.jsonl"
+            else
+                warn "No backup found — beads database will be empty"
+            fi
+        fi
+    fi
+elif [ -d "$REPO_ROOT/.beads/dolt" ] && command -v bd &>/dev/null; then
+    info "Beads database present"
+fi
+
+# Install beads git hooks if missing
+if command -v bd &>/dev/null && [ -d "$REPO_ROOT/.beads" ]; then
+    if [ ! -f "$REPO_ROOT/.git/hooks/pre-push" ] || ! grep -q "BEADS" "$REPO_ROOT/.git/hooks/pre-push" 2>/dev/null; then
+        if $CHECK_ONLY; then
+            miss "Beads git hooks not installed (run bd hooks install)"
+            MISSING=$((MISSING + 1))
+        else
+            warn "Installing beads git hooks..."
+            (cd "$REPO_ROOT" && bd hooks install 2>&1 | tail -3)
+            info "Beads git hooks installed"
+        fi
+    else
+        info "Beads git hooks installed"
+    fi
+fi
+
 # --- Summary ------------------------------------------------------------------
 echo ""
 if $CHECK_ONLY; then
@@ -184,5 +250,6 @@ else
     echo "  Quick test:      cargo test"
     echo "  Full test:       cargo test && (cd shatter-ts && npm test) && (cd shatter-go && go test ./...)"
     echo "  Clippy:          cargo clippy -- -D warnings"
+    echo "  Issue tracker:   bd ready"
 fi
 echo ""
