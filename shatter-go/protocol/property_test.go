@@ -1,7 +1,13 @@
 package protocol
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"pgregory.net/rapid"
@@ -203,6 +209,177 @@ func TestPropertyParamInfoRoundTrip(t *testing.T) {
 		}
 		if decoded.Type.Kind != pi.Type.Kind {
 			t.Fatalf("type kind: got %q, want %q", decoded.Type.Kind, pi.Type.Kind)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Semantic properties — handler ordering
+// ---------------------------------------------------------------------------
+
+// genNonShutdownCommand produces commands that don't require filesystem access
+// and don't trigger shutdown. Each returns a valid response or structured error.
+func genNonShutdownCommand() *rapid.Generator[string] {
+	return rapid.SampledFrom([]string{
+		"handshake",
+		"bogus_command", // unknown → error response
+	})
+}
+
+// TestPropertyHandlerResponseOrdering verifies that for any sequence of valid
+// requests, the handler produces responses with matching IDs in the same order
+// (no reordering, no drops). Shutdown terminates processing.
+func TestPropertyHandlerResponseOrdering(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		// Generate 1-5 non-shutdown commands followed by shutdown
+		n := rapid.IntRange(1, 5).Draw(t, "numCommands")
+		var lines []string
+		var expectedIDs []int
+
+		for i := 0; i < n; i++ {
+			cmd := genNonShutdownCommand().Draw(t, fmt.Sprintf("cmd%d", i))
+			line := fmt.Sprintf(`{"protocol_version":%q,"id":%d,"command":%q}`, ProtocolVersion, i+1, cmd)
+			lines = append(lines, line)
+			expectedIDs = append(expectedIDs, i+1)
+		}
+		// Append shutdown
+		shutdownID := n + 1
+		lines = append(lines, fmt.Sprintf(`{"protocol_version":%q,"id":%d,"command":"shutdown"}`, ProtocolVersion, shutdownID))
+		expectedIDs = append(expectedIDs, shutdownID)
+
+		input := strings.Join(lines, "\n") + "\n"
+		var out bytes.Buffer
+		h := NewHandlerWithLogLevel(strings.NewReader(input), &out, &bytes.Buffer{}, "error")
+
+		if err := h.Run(); err != nil {
+			t.Fatalf("handler.Run(): %v", err)
+		}
+
+		// Parse responses
+		scanner := bufio.NewScanner(&out)
+		var gotIDs []int
+		for scanner.Scan() {
+			var resp Response
+			if err := json.Unmarshal(scanner.Bytes(), &resp); err != nil {
+				t.Fatalf("unmarshal response: %v", err)
+			}
+			gotIDs = append(gotIDs, resp.ID)
+		}
+
+		if len(gotIDs) != len(expectedIDs) {
+			t.Fatalf("response count: got %d, want %d", len(gotIDs), len(expectedIDs))
+		}
+		for i := range expectedIDs {
+			if gotIDs[i] != expectedIDs[i] {
+				t.Fatalf("response[%d] ID: got %d, want %d", i, gotIDs[i], expectedIDs[i])
+			}
+		}
+	})
+}
+
+// TestPropertyHandlerShutdownStopsProcessing verifies that requests after
+// shutdown are not processed.
+func TestPropertyHandlerShutdownStopsProcessing(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		// N commands after shutdown — none should produce responses
+		nAfter := rapid.IntRange(1, 3).Draw(t, "afterCount")
+
+		var lines []string
+		lines = append(lines, fmt.Sprintf(`{"protocol_version":%q,"id":1,"command":"shutdown"}`, ProtocolVersion))
+		for i := 0; i < nAfter; i++ {
+			lines = append(lines, fmt.Sprintf(`{"protocol_version":%q,"id":%d,"command":"handshake"}`, ProtocolVersion, 100+i))
+		}
+
+		input := strings.Join(lines, "\n") + "\n"
+		var out bytes.Buffer
+		h := NewHandlerWithLogLevel(strings.NewReader(input), &out, &bytes.Buffer{}, "error")
+		h.Run()
+
+		scanner := bufio.NewScanner(&out)
+		count := 0
+		for scanner.Scan() {
+			count++
+		}
+		// Only the shutdown_ack response should appear
+		if count != 1 {
+			t.Fatalf("expected 1 response (shutdown_ack), got %d", count)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Semantic properties — analysis parameter extraction
+// ---------------------------------------------------------------------------
+
+// goTypeMap maps Go type names to the Shatter TypeInfo.Kind the analyzer produces.
+var goTypeMap = map[string]string{
+	"int":     "int",
+	"int64":   "int",
+	"float64": "float",
+	"string":  "str",
+	"bool":    "bool",
+}
+
+// TestPropertyAnalyzeExtractsCorrectParams generates simple Go functions with
+// known signatures and verifies AnalyzeFile extracts the right parameter count,
+// names, and types.
+func TestPropertyAnalyzeExtractsCorrectParams(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		goTypes := []string{"int", "int64", "float64", "string", "bool"}
+
+		nParams := rapid.IntRange(0, 4).Draw(t, "nParams")
+		type paramSpec struct {
+			name   string
+			goType string
+		}
+		var params []paramSpec
+		for i := 0; i < nParams; i++ {
+			name := rapid.StringMatching(`[a-z][a-z0-9]{0,5}`).Draw(t, fmt.Sprintf("name%d", i))
+			goType := rapid.SampledFrom(goTypes).Draw(t, fmt.Sprintf("type%d", i))
+			params = append(params, paramSpec{name: name, goType: goType})
+		}
+
+		// Build source
+		var paramList []string
+		for _, p := range params {
+			paramList = append(paramList, fmt.Sprintf("%s %s", p.name, p.goType))
+		}
+		src := fmt.Sprintf("package p\n\nfunc Foo(%s) int { return 0 }\n", strings.Join(paramList, ", "))
+
+		// Write to temp file
+		dir, err := os.MkdirTemp("", "shatter-go-prop-*")
+		if err != nil {
+			t.Fatalf("mkdirtemp: %v", err)
+		}
+		defer os.RemoveAll(dir)
+		fpath := filepath.Join(dir, "test.go")
+		if err := os.WriteFile(fpath, []byte(src), 0o644); err != nil {
+			t.Fatalf("write temp file: %v", err)
+		}
+
+		results, err := AnalyzeFile(fpath, "Foo")
+		if err != nil {
+			t.Fatalf("AnalyzeFile: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 function, got %d", len(results))
+		}
+
+		fa := results[0]
+		if fa.Name != "Foo" {
+			t.Fatalf("name: got %q, want %q", fa.Name, "Foo")
+		}
+		if len(fa.Params) != nParams {
+			t.Fatalf("param count: got %d, want %d", len(fa.Params), nParams)
+		}
+		for i, p := range params {
+			if fa.Params[i].Name != p.name {
+				t.Fatalf("param[%d] name: got %q, want %q", i, fa.Params[i].Name, p.name)
+			}
+			expectedKind := goTypeMap[p.goType]
+			if fa.Params[i].Type.Kind != expectedKind {
+				t.Fatalf("param[%d] type: got %q, want %q (Go type %s)", i, fa.Params[i].Type.Kind, expectedKind, p.goType)
+			}
 		}
 	})
 }
