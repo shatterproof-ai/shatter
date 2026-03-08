@@ -12,15 +12,13 @@
 //! topological layer are explored concurrently. Per-function timeouts prevent
 //! a single slow function from stalling the entire scan.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex;
-
-use std::collections::HashSet;
 
 use crate::auto_mock;
 use crate::behavior::{BehaviorCoverage, BehaviorMap, CallGraph, CallGraphError, TestOrderEntry};
@@ -99,6 +97,8 @@ pub enum MockSource {
     CachedBehaviorMap,
     /// Auto-generated type-aware stub (no behavior map available).
     TypeAwareStub,
+    /// Auto-mock for a function excluded by `--stratum` filtering.
+    StratumExcluded,
 }
 
 /// A mock that was used during function exploration.
@@ -262,15 +262,23 @@ pub async fn scan(
     let all_layers = build_layers(&order_entries, &call_graph);
 
     // Apply stratum filter: only explore functions in selected layers.
-    let filtered_layers: Vec<Vec<String>> = if let Some(ref spec) = config.stratum {
+    let (filtered_layers, stratum_excluded) = if let Some(ref spec) = config.stratum {
         let max_layer = if all_layers.is_empty() { 0 } else { all_layers.len() - 1 };
         let range = crate::stratum::resolve_range(spec, max_layer)?;
-        crate::stratum::filter_layers(&all_layers, &range)
+        let selected: Vec<Vec<String>> = crate::stratum::filter_layers(&all_layers, &range)
             .into_iter()
             .map(|(_, funcs)| funcs.clone())
-            .collect()
+            .collect();
+        let selected_set: HashSet<String> = selected.iter().flatten().cloned().collect();
+        let excluded: HashSet<String> = all_layers
+            .iter()
+            .flatten()
+            .filter(|f| !selected_set.contains(f.as_str()))
+            .cloned()
+            .collect();
+        (selected, excluded)
     } else {
-        all_layers
+        (all_layers, HashSet::new())
     };
 
     // Flatten filtered layers into function names for iteration.
@@ -393,9 +401,14 @@ pub async fn scan(
             &mocks,
         );
         for am in &auto_mocks {
+            let source = if stratum_excluded.contains(&am.symbol) {
+                MockSource::StratumExcluded
+            } else {
+                MockSource::TypeAwareStub
+            };
             mocks_used.push(MockUsage {
                 name: am.symbol.clone(),
-                source: MockSource::TypeAwareStub,
+                source,
             });
         }
         mocks.extend(auto_mocks);
@@ -586,15 +599,23 @@ pub async fn parallel_scan(
     let all_layers = build_layers(&order_entries, &call_graph);
 
     // Apply stratum filter: only explore functions in selected layers.
-    let layers: Vec<Vec<String>> = if let Some(ref spec) = config.stratum {
+    let (layers, stratum_excluded) = if let Some(ref spec) = config.stratum {
         let max_layer = if all_layers.is_empty() { 0 } else { all_layers.len() - 1 };
         let range = crate::stratum::resolve_range(spec, max_layer)?;
-        crate::stratum::filter_layers(&all_layers, &range)
+        let selected: Vec<Vec<String>> = crate::stratum::filter_layers(&all_layers, &range)
             .into_iter()
             .map(|(_, funcs)| funcs.clone())
-            .collect()
+            .collect();
+        let selected_set: HashSet<String> = selected.iter().flatten().cloned().collect();
+        let excluded: HashSet<String> = all_layers
+            .iter()
+            .flatten()
+            .filter(|f| !selected_set.contains(f.as_str()))
+            .cloned()
+            .collect();
+        (selected, excluded)
     } else {
-        all_layers
+        (all_layers, HashSet::new())
     };
 
     let analysis_map: HashMap<&str, &FunctionAnalysis> =
@@ -771,9 +792,14 @@ pub async fn parallel_scan(
                 &mocks,
             );
             for am in &auto_mocks {
+                let source = if stratum_excluded.contains(&am.symbol) {
+                    MockSource::StratumExcluded
+                } else {
+                    MockSource::TypeAwareStub
+                };
                 mocks_used.push(MockUsage {
                     name: am.symbol.clone(),
-                    source: MockSource::TypeAwareStub,
+                    source,
                 });
             }
             mocks.extend(auto_mocks);
@@ -1090,6 +1116,11 @@ fn format_mocks_used(mocks: &[MockUsage]) -> String {
         .filter(|m| m.source == MockSource::TypeAwareStub)
         .map(|m| m.name.as_str())
         .collect();
+    let excluded: Vec<&str> = mocks
+        .iter()
+        .filter(|m| m.source == MockSource::StratumExcluded)
+        .map(|m| m.name.as_str())
+        .collect();
 
     let mut parts = Vec::new();
     if !cached.is_empty() {
@@ -1097,6 +1128,9 @@ fn format_mocks_used(mocks: &[MockUsage]) -> String {
     }
     if !stubs.is_empty() {
         parts.push(format!("{} via type-aware stub ({})", stubs.len(), stubs.join(", ")));
+    }
+    if !excluded.is_empty() {
+        parts.push(format!("{} stratum-excluded ({})", excluded.len(), excluded.join(", ")));
     }
     parts.join("; ")
 }
@@ -2912,6 +2946,142 @@ mod tests {
 
         assert_eq!(selected.len(), 1);
         assert!(selected.contains("fn_c"));
+    }
+
+    /// Verify stratum-excluded mock source is correctly assigned when
+    /// scanning a middle layer whose callees are outside the selected stratum.
+    #[test]
+    fn stratum_excluded_mock_source_attribution() {
+        use crate::call_graph::CallGraph as CgCallGraph;
+        use crate::batch_analyze::FunctionEntry;
+        use crate::types::TypeInfo;
+        use std::path::PathBuf;
+
+        // 3-layer chain: fn_a (layer 2) → fn_b (layer 1) → fn_c (layer 0)
+        let entries = vec![
+            FunctionEntry {
+                file_path: PathBuf::from("src/c.ts"),
+                name: "fn_c".to_string(),
+                exported: true,
+                params: vec![],
+                return_type: TypeInfo::Int,
+                dependencies: vec![],
+                branch_count: 1,
+                start_line: 1,
+                end_line: 10,
+                crypto_boundaries: vec![],
+            },
+            FunctionEntry {
+                file_path: PathBuf::from("src/b.ts"),
+                name: "fn_b".to_string(),
+                exported: true,
+                params: vec![],
+                return_type: TypeInfo::Int,
+                dependencies: vec![crate::protocol::ExternalDependency {
+                    symbol: "fn_c".to_string(),
+                    kind: crate::protocol::DependencyKind::FunctionCall,
+                    source_module: String::new(),
+                    return_type: TypeInfo::Int,
+                    param_types: vec![],
+                    call_sites: vec![],
+                }],
+                branch_count: 3,
+                start_line: 1,
+                end_line: 10,
+                crypto_boundaries: vec![],
+            },
+            FunctionEntry {
+                file_path: PathBuf::from("src/a.ts"),
+                name: "fn_a".to_string(),
+                exported: true,
+                params: vec![],
+                return_type: TypeInfo::Int,
+                dependencies: vec![crate::protocol::ExternalDependency {
+                    symbol: "fn_b".to_string(),
+                    kind: crate::protocol::DependencyKind::FunctionCall,
+                    source_module: String::new(),
+                    return_type: TypeInfo::Int,
+                    param_types: vec![],
+                    call_sites: vec![],
+                }],
+                branch_count: 5,
+                start_line: 1,
+                end_line: 10,
+                crypto_boundaries: vec![],
+            },
+        ];
+
+        let registry = {
+            let mut index = std::collections::HashMap::new();
+            for (i, e) in entries.iter().enumerate() {
+                index.insert(e.name.clone(), i);
+            }
+            crate::batch_analyze::FunctionRegistry::from_raw(entries, index)
+        };
+        let cg = CgCallGraph::from_registry(&registry);
+        let layers = cg.topological_layers();
+        assert!(layers.len() >= 3, "expected at least 3 layers");
+
+        // Select stratum "1" — only fn_b (middle layer).
+        let spec = crate::stratum::parse_stratum_spec("1").unwrap();
+        let max_layer = layers.len() - 1;
+        let range = crate::stratum::resolve_range(&spec, max_layer).unwrap();
+
+        let selected: Vec<Vec<String>> = crate::stratum::filter_layers(&layers, &range)
+            .into_iter()
+            .map(|(_, funcs)| funcs.clone())
+            .collect();
+        let selected_set: std::collections::HashSet<String> =
+            selected.iter().flatten().cloned().collect();
+        let excluded: std::collections::HashSet<String> = layers
+            .iter()
+            .flatten()
+            .filter(|f| !selected_set.contains(f.as_str()))
+            .cloned()
+            .collect();
+
+        // fn_b should be selected; fn_a and fn_c excluded.
+        let selected_bare: std::collections::HashSet<String> = selected_set
+            .iter()
+            .map(|qn| qn.rsplit_once("::").map_or(qn.clone(), |(_, n)| n.to_string()))
+            .collect();
+        assert!(selected_bare.contains("fn_b"), "fn_b should be in selected stratum");
+        assert!(!selected_bare.contains("fn_a"), "fn_a should be excluded");
+        assert!(!selected_bare.contains("fn_c"), "fn_c should be excluded");
+
+        // fn_c is a callee of fn_b and excluded — should get StratumExcluded source.
+        let excluded_bare: std::collections::HashSet<String> = excluded
+            .iter()
+            .map(|qn| qn.rsplit_once("::").map_or(qn.clone(), |(_, n)| n.to_string()))
+            .collect();
+        assert!(excluded_bare.contains("fn_c"), "fn_c should be in excluded set");
+        assert!(excluded_bare.contains("fn_a"), "fn_a should be in excluded set");
+
+        // Simulate mock source attribution: fn_c is a dependency of fn_b
+        // and is in the excluded set → StratumExcluded.
+        let mock_source = if excluded.iter().any(|e| e.contains("fn_c")) {
+            MockSource::StratumExcluded
+        } else {
+            MockSource::TypeAwareStub
+        };
+        assert_eq!(mock_source, MockSource::StratumExcluded);
+    }
+
+    /// Verify format_mocks_used includes stratum-excluded mocks.
+    #[test]
+    fn format_mocks_used_includes_stratum_excluded() {
+        let mocks = vec![
+            MockUsage { name: "dep_a".into(), source: MockSource::CachedBehaviorMap },
+            MockUsage { name: "dep_b".into(), source: MockSource::TypeAwareStub },
+            MockUsage { name: "dep_c".into(), source: MockSource::StratumExcluded },
+        ];
+        let formatted = format_mocks_used(&mocks);
+        assert!(formatted.contains("behavior map"), "should mention behavior map");
+        assert!(formatted.contains("type-aware stub"), "should mention type-aware stub");
+        assert!(formatted.contains("stratum-excluded"), "should mention stratum-excluded");
+        assert!(formatted.contains("dep_a"));
+        assert!(formatted.contains("dep_b"));
+        assert!(formatted.contains("dep_c"));
     }
 
     // ── config candidate inputs ────────────────────────────────────
