@@ -659,6 +659,14 @@ enum CliCommand {
         /// Memory limit in MB for the frontend process.
         #[arg(long)]
         memory_limit: Option<u64>,
+
+        /// Cache directory for loading cross-file dependency fingerprints.
+        #[arg(long)]
+        cache_dir: Option<PathBuf>,
+
+        /// Disable cache (skip cross-file dependency tracking).
+        #[arg(long)]
+        no_cache: bool,
     },
 
     /// Run tests with impact analysis: only execute tests affected by changed files.
@@ -887,6 +895,43 @@ fn parse_loop_buckets(s: &str) -> Result<explorer::LoopBuckets, Box<dyn std::err
     Ok(explorer::LoopBuckets::from_boundaries(boundaries))
 }
 
+/// Load cached fingerprints for cross-file dependencies of the given functions.
+///
+/// For each function's external dependencies that are NOT in the current file,
+/// attempts to load the callee's cached behavior map and extract its stored
+/// fingerprint. Returns a map from callee name to deep fingerprint.
+fn load_external_fingerprints(
+    functions: &[shatter_core::protocol::FunctionAnalysis],
+    cache: Option<&BehaviorMapCache>,
+) -> std::collections::HashMap<String, String> {
+    let mut external_fps = std::collections::HashMap::new();
+    let cache = match cache {
+        Some(c) => c,
+        None => return external_fps,
+    };
+
+    let local_names: std::collections::HashSet<&str> =
+        functions.iter().map(|f| f.name.as_str()).collect();
+
+    for func in functions {
+        for dep in &func.dependencies {
+            if local_names.contains(dep.symbol.as_str()) {
+                continue;
+            }
+            if external_fps.contains_key(&dep.symbol) {
+                continue;
+            }
+            if let Ok(Some(cached_map)) = cache.load(&dep.symbol)
+                && let Some(fp) = cached_map.fingerprint
+            {
+                external_fps.insert(dep.symbol.clone(), fp);
+            }
+        }
+    }
+
+    external_fps
+}
+
 /// Run the explore command.
 // Each argument corresponds to a CLI flag; grouping into a struct would add indirection
 // without improving clarity since this is only called from one callsite.
@@ -1061,6 +1106,9 @@ async fn run_explore(
             continue;
         }
 
+        // Load cached fingerprints for cross-file dependencies.
+        let external_fingerprints = load_external_fingerprints(&functions, cache.as_ref());
+
         // Incremental plan: compare fingerprints against existing spec when --output is set
         use std::collections::HashSet;
         let incremental_plan = if let Some(out) = output_path
@@ -1069,7 +1117,7 @@ async fn run_explore(
         {
             match shatter_core::spec::read_file_spec_bundle(out) {
                 Ok(existing) => {
-                    match shatter_core::spec::compute_incremental_plan(&target.file, &functions, &existing) {
+                    match shatter_core::spec::compute_incremental_plan(&target.file, &functions, &existing, &external_fingerprints) {
                         Ok(plan) => Some((plan, existing)),
                         Err(e) => {
                             log::debug!("Failed to compute incremental plan: {e}");
@@ -1145,7 +1193,7 @@ async fn run_explore(
 
         // Compute deep fingerprints (call-graph-aware) for spec output.
         let deep_fingerprints: std::collections::HashMap<String, String> =
-            shatter_core::fingerprint::compute_deep_fingerprints(&target.file, &functions)
+            shatter_core::fingerprint::compute_deep_fingerprints(&target.file, &functions, &external_fingerprints)
                 .unwrap_or_default();
 
         // Track function count for header/footer.
@@ -2922,6 +2970,8 @@ async fn run_stale(
     memory_limit: Option<u64>,
     log_level: LogLevel,
     project_dir: Option<&Path>,
+    cache_dir: Option<&Path>,
+    no_cache: bool,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let target = parse_target(source)?;
     let file_str = target.file.to_string_lossy();
@@ -2956,10 +3006,21 @@ async fn run_stale(
 
     shutdown_frontend(frontend).await;
 
+    let bm_cache = if no_cache {
+        None
+    } else {
+        let dir = match cache_dir {
+            Some(p) => p.to_path_buf(),
+            None => BehaviorMapCache::default_dir(&std::env::current_dir()?),
+        };
+        BehaviorMapCache::new(dir).ok()
+    };
+    let external_fingerprints = load_external_fingerprints(&functions, bm_cache.as_ref());
+
     let existing = shatter_core::spec::read_file_spec_bundle(spec_path)
         .map_err(|e| format!("failed to read spec file {}: {e}", spec_path.display()))?;
 
-    let plan = shatter_core::spec::compute_incremental_plan(&target.file, &functions, &existing)
+    let plan = shatter_core::spec::compute_incremental_plan(&target.file, &functions, &existing, &external_fingerprints)
         .map_err(|e| format!("failed to compute incremental plan: {e}"))?;
 
     let all_fresh = plan.stale.is_empty() && plan.removed.is_empty();
@@ -3295,6 +3356,8 @@ async fn main() -> ExitCode {
             exec_timeout,
             build_timeout,
             memory_limit,
+            cache_dir,
+            no_cache,
         } => {
             match run_stale(
                 &source,
@@ -3306,6 +3369,8 @@ async fn main() -> ExitCode {
                 memory_limit,
                 log_level,
                 cli.project_dir.as_deref(),
+                cache_dir.as_deref(),
+                no_cache,
             )
             .await
             {
