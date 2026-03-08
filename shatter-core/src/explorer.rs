@@ -461,12 +461,12 @@ pub fn classify_error_intent(result: &crate::protocol::ExecuteResult) -> Option<
 }
 
 /// Check whether the frontend declared support for a specific command.
-fn frontend_supports(caps: &FrontendCapabilities, command: &str) -> bool {
+pub(crate) fn frontend_supports(caps: &FrontendCapabilities, command: &str) -> bool {
     caps.commands.contains(command)
 }
 
 /// Send a Setup command to the frontend and return the setup_context.
-async fn send_setup(
+pub(crate) async fn send_setup(
     frontend: &mut Frontend,
     setup_file: &str,
     function: &str,
@@ -494,7 +494,7 @@ async fn send_setup(
 }
 
 /// Send a Teardown command to the frontend.
-async fn send_teardown(frontend: &mut Frontend, function: &str) -> Result<(), ExploreError> {
+pub(crate) async fn send_teardown(frontend: &mut Frontend, function: &str) -> Result<(), ExploreError> {
     let response = frontend
         .send(ProtoCommand::Teardown {
             function: function.to_string(),

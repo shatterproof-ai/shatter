@@ -35,6 +35,7 @@ pub mod log_level;
 pub mod mock_gen;
 pub mod nondeterminism;
 pub mod invariants;
+pub mod observe;
 pub mod orchestrator;
 pub mod pipeline;
 pub mod project;
