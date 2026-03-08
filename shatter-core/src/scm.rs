@@ -99,8 +99,22 @@ pub fn detect_provider(root: &Path) -> Result<GitProvider, ScmError> {
     }
 }
 
+/// Compute the git blob hash for a file (content-addressable identifier).
+/// Uses `git hash-object` which hashes the file content as git would store it.
+pub fn blob_hash(root: &Path, file: &Path) -> Result<String, ScmError> {
+    let file_str = file.to_string_lossy();
+    let output = run_git(root, &["hash-object", &file_str])?;
+    Ok(output.trim().to_string())
+}
+
+/// Get the current HEAD commit hash (short form).
+pub fn head_commit(root: &Path) -> Result<String, ScmError> {
+    let output = run_git(root, &["rev-parse", "--short", "HEAD"])?;
+    Ok(output.trim().to_string())
+}
+
 /// Run a git command in the given directory and return stdout as a string.
-fn run_git(root: &Path, args: &[&str]) -> Result<String, ScmError> {
+pub(crate) fn run_git(root: &Path, args: &[&str]) -> Result<String, ScmError> {
     let output = Command::new("git")
         .args(args)
         .current_dir(root)
