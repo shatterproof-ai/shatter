@@ -24,6 +24,12 @@ struct HandleTableInner {
     next_id: u32,
 }
 
+impl Default for HandleTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HandleTable {
     pub fn new() -> Self {
         Self {
@@ -60,12 +66,23 @@ impl HandleTable {
     pub fn len(&self) -> usize {
         self.handles.lock().expect("handle table lock poisoned").map.len()
     }
+
+    /// Whether the table is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 /// Registry dispatches generate requests to WASM plugins or native generators.
 pub struct NativeRegistry {
     generators: HashMap<String, NativeGeneratorFn>,
     pub handles: HandleTable,
+}
+
+impl Default for NativeRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl NativeRegistry {

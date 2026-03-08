@@ -1,9 +1,14 @@
+// Binary re-exports the lib modules; many public APIs are only exercised via
+// the library crate's tests, not from `main()` directly.
+#![allow(dead_code)]
+
 mod analyzer;
 mod executor;
 mod generators;
 mod handler;
 mod instrument;
 mod protocol;
+mod setup;
 mod wasm_generator;
 
 use std::io;
