@@ -28,8 +28,11 @@ use crate::drilling;
 use crate::execution_record::SymConstraint;
 use crate::frontier::{Frontier, FrontierSet};
 use crate::frontend::{Frontend, FrontendError};
+use crate::genetic_fitness::{FitnessContext, FitnessWeights};
+use crate::input_gen;
 use crate::protocol::{Command, ExecuteResult, ResponseResult};
 use crate::solver::{self, ConcreteValue, SolveResult};
+use crate::strategy::MetaStrategy;
 use crate::sym_expr::SymExpr;
 use crate::triage::{TriageState, TriageVerdict};
 use crate::types::{ComplexKind, ParamInfo};
@@ -104,6 +107,15 @@ pub struct ExploreConfig {
 /// Default maximum total executions before stopping exploration.
 pub const DEFAULT_MAX_EXECUTIONS: usize = 500;
 
+/// Number of type-aware mutation rounds per unknown-constraint fuzz pass.
+const MUTATE_ROUNDS_PER_UNKNOWN: usize = 3;
+
+/// Mutation rate for type-aware fuzzing of unknown constraints (0.0–1.0).
+///
+/// Set high (1.0) because unknown constraints have no symbolic guidance,
+/// so aggressive mutation is needed to explore the input space.
+const MUTATE_RATE_UNKNOWN: f64 = 1.0;
+
 impl Default for ExploreConfig {
     fn default() -> Self {
         Self {
@@ -141,13 +153,20 @@ pub struct WorklistEntry {
     pub inputs: Vec<serde_json::Value>,
     /// How these inputs were generated.
     pub source: InputSource,
+    /// Optional fitness score (0.0–1.0) from genetic scoring.
+    ///
+    /// When present, fitness is the primary ordering key for the worklist's
+    /// BinaryHeap. When absent (`None`), the entry falls back to source-based
+    /// ordering, which preserves backward compatibility with the pre-genetic
+    /// pipeline.
+    pub fitness: Option<f64>,
 }
 
 impl Eq for WorklistEntry {}
 
 impl PartialEq for WorklistEntry {
     fn eq(&self, other: &Self) -> bool {
-        self.source == other.source
+        self.source == other.source && self.fitness_key() == other.fitness_key()
     }
 }
 
@@ -158,8 +177,30 @@ impl PartialOrd for WorklistEntry {
 }
 
 impl Ord for WorklistEntry {
+    /// Primary ordering: fitness score (higher is better). Entries with a
+    /// fitness score always outrank entries without one. Among entries without
+    /// fitness, the original source-based priority applies.
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.source.cmp(&other.source)
+        match (self.fitness, other.fitness) {
+            (Some(_), None) => std::cmp::Ordering::Greater,
+            (None, Some(_)) => std::cmp::Ordering::Less,
+            (Some(_), Some(_)) => self
+                .fitness_key()
+                .cmp(&other.fitness_key())
+                .then_with(|| self.source.cmp(&other.source)),
+            (None, None) => self.source.cmp(&other.source),
+        }
+    }
+}
+
+impl WorklistEntry {
+    /// Convert fitness f64 to an integer key for total ordering.
+    ///
+    /// Multiplies by 1_000_000 and truncates to i64 so that BinaryHeap
+    /// (which requires Ord) can rank by fitness without floating-point
+    /// comparison issues.
+    fn fitness_key(&self) -> i64 {
+        self.fitness.map_or(0, |f| (f * 1_000_000.0) as i64)
     }
 }
 
@@ -474,7 +515,7 @@ struct ExploreBudget {
 /// - Try boundary search for Unknown constraints (interpolate between witnesses)
 /// - Fall back to blind fuzzing for Unknown constraints without witnesses
 /// - Drill stalled frontiers with targeted mutations
-#[allow(clippy::too_many_arguments)] // boundary search needs access to raw_results and seen_branch_sides
+#[allow(clippy::too_many_arguments)] // boundary search + fitness scoring need broad context
 fn solve_and_generate(
     observations: &[Observation],
     frontier_set: &mut FrontierSet,
@@ -484,6 +525,9 @@ fn solve_and_generate(
     seen_branch_sides: &std::collections::HashSet<(u32, bool)>,
     config: &ExploreConfig,
     rng: &mut StdRng,
+    target_branches: &HashSet<u32>,
+    fitness_context: &mut FitnessContext,
+    fitness_weights: &FitnessWeights,
 ) -> SolveOutput {
     let mut output = SolveOutput::default();
 
@@ -509,6 +553,7 @@ fn solve_and_generate(
                         output.candidates.push(WorklistEntry {
                             inputs: new_inputs,
                             source: InputSource::Z3Solved,
+                            fitness: None,
                         });
                         output.z3_count += 1;
                     }
@@ -550,6 +595,7 @@ fn solve_and_generate(
                         output.candidates.push(WorklistEntry {
                             inputs: interp,
                             source: InputSource::BoundarySearch,
+                            fitness: None,
                         });
                         output.boundary_count += 1;
                     }
@@ -564,14 +610,35 @@ fn solve_and_generate(
             }
         }
 
-        // Fall back to blind fuzzing if boundary search wasn't applicable.
+        // Fall back to type-aware mutation if boundary search wasn't applicable.
+        //
+        // Uses input_gen::mutate_inputs (type-aware, respects param types) for
+        // several rounds, plus the legacy fuzz_inputs as a cheap supplement.
         if !boundary_attempted {
             for (i, constraint_opt) in sym_constraints.iter().enumerate() {
                 if constraint_opt.is_none() && i < obs.result.branch_path.len() {
+                    // Type-aware mutations (3 rounds at full mutation rate).
+                    for _ in 0..MUTATE_ROUNDS_PER_UNKNOWN {
+                        let mutated = input_gen::mutate_inputs(
+                            &obs.inputs,
+                            param_infos,
+                            MUTATE_RATE_UNKNOWN,
+                            &[],
+                            rng,
+                        );
+                        output.candidates.push(WorklistEntry {
+                            inputs: mutated,
+                            source: InputSource::Fuzzed,
+                            fitness: None,
+                        });
+                        output.fuzz_count += 1;
+                    }
+                    // Legacy deterministic fuzz as supplement.
                     for fuzzed in fuzz_inputs(&obs.inputs) {
                         output.candidates.push(WorklistEntry {
                             inputs: fuzzed,
                             source: InputSource::Fuzzed,
+                            fitness: None,
                         });
                         output.fuzz_count += 1;
                     }
@@ -609,10 +676,31 @@ fn solve_and_generate(
                 output.candidates.push(WorklistEntry {
                     inputs,
                     source: InputSource::Drilled,
+                    fitness: None,
                 });
                 output.drill_count += 1;
             }
             frontier_set.increment_stall(frontier.branch_id);
+        }
+    }
+
+    // Score each candidate using genetic fitness. The parent observation's
+    // branch path gives us approximate fitness context: candidates derived
+    // from high-fitness executions should be explored first.
+    if !target_branches.is_empty() {
+        for candidate in &mut output.candidates {
+            // Create a synthetic ExecuteResult from the parent observation's
+            // branch path to estimate fitness. This gives candidates a
+            // relative ranking even before execution.
+            if let Some(parent_obs) = observations.iter().find(|o| o.is_new_path) {
+                let breakdown = crate::genetic_fitness::score(
+                    &parent_obs.result,
+                    target_branches,
+                    fitness_context,
+                    fitness_weights,
+                );
+                candidate.fitness = Some(breakdown.total);
+            }
         }
     }
 
@@ -657,11 +745,28 @@ pub async fn explore(
     let mut triage_skipped: usize = 0;
     let mut triage_mispredictions: usize = 0;
 
+    // Fitness context shares novelty state with covered_paths — the
+    // orchestrator marks paths as seen in both sets whenever a new path
+    // is discovered, keeping FitnessContext's novelty scoring in sync.
+    let mut fitness_context = FitnessContext::new();
+    let fitness_weights = FitnessWeights::default();
+
+    // Target branches: branch IDs seen so far on only one side (not yet
+    // covered on the opposite). Updated after each new-path observation.
+    // Used by fitness scoring to compute proximity/coverage scores.
+    let mut target_branches: HashSet<u32> = HashSet::new();
+
+    // MetaStrategy integration point: strategies will be registered here
+    // by a follow-up issue that replaces the hardcoded seed/fuzz/drill
+    // generation with adaptive strategy selection.
+    let _meta_strategy: MetaStrategy = MetaStrategy::new(vec![], Default::default());
+
     // Add user-provided candidates with highest priority.
     for inputs in user_inputs {
         worklist.push(WorklistEntry {
             inputs,
             source: InputSource::UserProvided,
+            fitness: None,
         });
     }
 
@@ -670,6 +775,7 @@ pub async fn explore(
         worklist.push(WorklistEntry {
             inputs,
             source: InputSource::Seed,
+            fitness: None,
         });
     }
 
@@ -818,14 +924,18 @@ pub async fn explore(
             }
         }
 
-        // Update frontier set: track which branch sides have been seen.
+        // Update frontier set and target branches: track which branch sides
+        // have been seen. Branches seen on only one side are targets for
+        // fitness scoring.
         for decision in &obs.result.branch_path {
             seen_branch_sides.insert((decision.branch_id, decision.taken));
             let opposite_seen =
                 seen_branch_sides.contains(&(decision.branch_id, !decision.taken));
             if opposite_seen {
                 frontier_set.remove(decision.branch_id);
+                target_branches.remove(&decision.branch_id);
             } else {
+                target_branches.insert(decision.branch_id);
                 let prev_stall = frontier_set
                     .iter()
                     .find(|f| f.branch_id == decision.branch_id)
@@ -844,6 +954,10 @@ pub async fn explore(
             }
         }
 
+        // Sync fitness context: mark this path as seen so future fitness
+        // scoring correctly identifies repeat paths as non-novel.
+        fitness_context.mark_seen(obs.path_id);
+
         executions.push(obs.result.clone());
 
         // Phase 2: Solve/Generate — produce new candidates from this observation.
@@ -856,6 +970,9 @@ pub async fn explore(
             &seen_branch_sides,
             config,
             &mut rng,
+            &target_branches,
+            &mut fitness_context,
+            &fitness_weights,
         );
 
         z3_generated += solve_output.z3_count;
@@ -1367,31 +1484,37 @@ mod tests {
         );
     }
 
-    /// Verify that the worklist priority queue drains Z3-solved inputs before seeds.
+    /// Verify that the worklist priority queue drains Z3-solved inputs before seeds
+    /// when no fitness scores are present.
     #[test]
     fn worklist_drains_in_priority_order() {
         let mut worklist = BinaryHeap::new();
 
-        // Push in arbitrary order.
+        // Push in arbitrary order — all without fitness scores.
         worklist.push(WorklistEntry {
             inputs: vec![serde_json::json!("seed1")],
             source: InputSource::Seed,
+            fitness: None,
         });
         worklist.push(WorklistEntry {
             inputs: vec![serde_json::json!("z3_1")],
             source: InputSource::Z3Solved,
+            fitness: None,
         });
         worklist.push(WorklistEntry {
             inputs: vec![serde_json::json!("fuzz1")],
             source: InputSource::Fuzzed,
+            fitness: None,
         });
         worklist.push(WorklistEntry {
             inputs: vec![serde_json::json!("z3_2")],
             source: InputSource::Z3Solved,
+            fitness: None,
         });
         worklist.push(WorklistEntry {
             inputs: vec![serde_json::json!("seed2")],
             source: InputSource::Seed,
+            fitness: None,
         });
 
         let sources: Vec<_> = std::iter::from_fn(|| worklist.pop())
@@ -1408,6 +1531,92 @@ mod tests {
                 InputSource::Seed,
             ]
         );
+    }
+
+    /// Fitness-scored entries outrank entries without fitness in the worklist.
+    #[test]
+    fn fitness_entries_outrank_no_fitness() {
+        let mut worklist = BinaryHeap::new();
+
+        worklist.push(WorklistEntry {
+            inputs: vec![serde_json::json!("z3")],
+            source: InputSource::Z3Solved,
+            fitness: None,
+        });
+        worklist.push(WorklistEntry {
+            inputs: vec![serde_json::json!("low_fit")],
+            source: InputSource::Seed,
+            fitness: Some(0.1),
+        });
+
+        // The fitness-scored entry (even with low fitness and Seed source)
+        // should come out before the unscored Z3Solved entry.
+        let first = worklist.pop().unwrap();
+        assert!(first.fitness.is_some(), "fitness entry should drain first");
+        let second = worklist.pop().unwrap();
+        assert!(second.fitness.is_none());
+    }
+
+    /// Higher fitness scores drain before lower ones.
+    #[test]
+    fn higher_fitness_drains_first() {
+        let mut worklist = BinaryHeap::new();
+
+        worklist.push(WorklistEntry {
+            inputs: vec![serde_json::json!("low")],
+            source: InputSource::Fuzzed,
+            fitness: Some(0.2),
+        });
+        worklist.push(WorklistEntry {
+            inputs: vec![serde_json::json!("high")],
+            source: InputSource::Fuzzed,
+            fitness: Some(0.9),
+        });
+        worklist.push(WorklistEntry {
+            inputs: vec![serde_json::json!("mid")],
+            source: InputSource::Fuzzed,
+            fitness: Some(0.5),
+        });
+
+        let drained: Vec<f64> = std::iter::from_fn(|| worklist.pop())
+            .map(|e| e.fitness.unwrap())
+            .collect();
+        assert_eq!(drained, vec![0.9, 0.5, 0.2]);
+    }
+
+    /// Equal fitness falls back to source ordering.
+    #[test]
+    fn equal_fitness_falls_back_to_source() {
+        let mut worklist = BinaryHeap::new();
+
+        worklist.push(WorklistEntry {
+            inputs: vec![],
+            source: InputSource::Seed,
+            fitness: Some(0.5),
+        });
+        worklist.push(WorklistEntry {
+            inputs: vec![],
+            source: InputSource::Z3Solved,
+            fitness: Some(0.5),
+        });
+
+        let first = worklist.pop().unwrap();
+        assert_eq!(first.source, InputSource::Z3Solved);
+        let second = worklist.pop().unwrap();
+        assert_eq!(second.source, InputSource::Seed);
+    }
+
+    /// FitnessContext::from_seen_paths pre-seeds novelty tracking so already-
+    /// discovered paths are not scored as novel.
+    #[test]
+    fn fitness_context_from_seen_paths_marks_existing() {
+        let mut seen = HashSet::new();
+        seen.insert(42u64);
+        seen.insert(99u64);
+
+        let mut ctx = FitnessContext::from_seen_paths(seen);
+        assert!(!ctx.mark_seen(42), "pre-seeded path should not be novel");
+        assert!(ctx.mark_seen(100), "unseen path should be novel");
     }
 
     // -- Observation and SolveOutput tests --
@@ -1451,6 +1660,9 @@ mod tests {
             &std::collections::HashSet::new(),
             &ExploreConfig::default(),
             &mut rng,
+            &HashSet::new(),
+            &mut FitnessContext::new(),
+            &FitnessWeights::default(),
         );
 
         assert!(output.candidates.is_empty());
@@ -1494,6 +1706,9 @@ mod tests {
             &std::collections::HashSet::new(),
             &ExploreConfig::default(),
             &mut rng,
+            &HashSet::new(),
+            &mut FitnessContext::new(),
+            &FitnessWeights::default(),
         );
 
         assert!(output.fuzz_count > 0, "should produce fuzz candidates for unknown constraints");
@@ -1548,6 +1763,9 @@ mod tests {
             &std::collections::HashSet::new(),
             &ExploreConfig::default(),
             &mut rng,
+            &HashSet::new(),
+            &mut FitnessContext::new(),
+            &FitnessWeights::default(),
         );
 
         assert!(output.z3_count > 0, "should produce Z3 candidates for solvable constraints");
@@ -1960,6 +2178,7 @@ mod tests {
                     heap.push(WorklistEntry {
                         inputs: vec![],
                         source: *source,
+                        fitness: None,
                     });
                 }
                 let drained: Vec<InputSource> = std::iter::from_fn(|| heap.pop())
@@ -2006,6 +2225,7 @@ mod tests {
                     worklist.push(WorklistEntry {
                         inputs: vec![],
                         source: InputSource::Seed,
+                        fitness: None,
                     });
                 }
                 let mut executed = 0usize;
