@@ -613,3 +613,42 @@
 {"actor":"Ketan Gangatirkar","comment":"Added label: core","created_at":"2026-03-07T21:47:29Z","event_type":"label_added","id":613,"issue_id":"str-0s76.8","new_value":null,"old_value":null}
 {"actor":"Ketan Gangatirkar","comment":"Added label: protocol","created_at":"2026-03-07T21:47:29Z","event_type":"label_added","id":614,"issue_id":"str-0s76.8","new_value":null,"old_value":null}
 {"actor":"Ketan Gangatirkar","comment":"Added label: setup","created_at":"2026-03-07T21:47:29Z","event_type":"label_added","id":615,"issue_id":"str-0s76.8","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-07T21:47:49Z","event_type":"closed","id":616,"issue_id":"str-q33","new_value":"Closed","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-07T21:47:49Z","event_type":"closed","id":617,"issue_id":"str-ncs","new_value":"Closed","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-07T21:47:49Z","event_type":"closed","id":618,"issue_id":"str-zwgc","new_value":"Closed","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-07T21:48:18Z","event_type":"created","id":619,"issue_id":"str-0s76.9","new_value":"","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":"Added label: typescript","created_at":"2026-03-07T21:48:18Z","event_type":"label_added","id":620,"issue_id":"str-0s76.9","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":"Added label: frontend","created_at":"2026-03-07T21:48:18Z","event_type":"label_added","id":621,"issue_id":"str-0s76.9","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":"Added label: core","created_at":"2026-03-07T21:48:19Z","event_type":"label_added","id":622,"issue_id":"str-0s76.9","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":"Added label: protocol","created_at":"2026-03-07T21:48:19Z","event_type":"label_added","id":623,"issue_id":"str-0s76.9","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":"Added label: setup","created_at":"2026-03-07T21:48:19Z","event_type":"label_added","id":624,"issue_id":"str-0s76.9","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-07T21:48:48Z","event_type":"created","id":625,"issue_id":"str-0s76.10","new_value":"","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":"Added label: go","created_at":"2026-03-07T21:48:48Z","event_type":"label_added","id":626,"issue_id":"str-0s76.10","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":"Added label: frontend","created_at":"2026-03-07T21:48:48Z","event_type":"label_added","id":627,"issue_id":"str-0s76.10","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":"Added label: core","created_at":"2026-03-07T21:48:48Z","event_type":"label_added","id":628,"issue_id":"str-0s76.10","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":"Added label: protocol","created_at":"2026-03-07T21:48:48Z","event_type":"label_added","id":629,"issue_id":"str-0s76.10","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":"Added label: setup","created_at":"2026-03-07T21:48:48Z","event_type":"label_added","id":630,"issue_id":"str-0s76.10","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-07T21:49:11Z","event_type":"created","id":631,"issue_id":"str-0s76.11","new_value":"","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":"Added label: rust","created_at":"2026-03-07T21:49:11Z","event_type":"label_added","id":632,"issue_id":"str-0s76.11","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":"Added label: frontend","created_at":"2026-03-07T21:49:11Z","event_type":"label_added","id":633,"issue_id":"str-0s76.11","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":"Added label: core","created_at":"2026-03-07T21:49:11Z","event_type":"label_added","id":634,"issue_id":"str-0s76.11","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":"Added label: protocol","created_at":"2026-03-07T21:49:11Z","event_type":"label_added","id":635,"issue_id":"str-0s76.11","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":"Added label: setup","created_at":"2026-03-07T21:49:11Z","event_type":"label_added","id":636,"issue_id":"str-0s76.11","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-07T21:52:03Z","event_type":"created","id":638,"issue_id":"str-cl53","new_value":"","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-07T21:52:10Z","event_type":"status_changed","id":639,"issue_id":"str-cl53","new_value":"{\"status\":\"deferred\"}","old_value":"{\"id\":\"str-cl53\",\"title\":\"Test impact analysis: coverage-based selective test execution\",\"description\":\"Plan in docs/plans/str-zwgc-test-impact-analysis.md\",\"status\":\"open\",\"priority\":2,\"issue_type\":\"task\",\"owner\":\"33678+ketang@users.noreply.github.com\",\"created_at\":\"2026-03-08T03:52:03Z\",\"created_by\":\"Ketan Gangatirkar\",\"updated_at\":\"2026-03-08T03:52:03Z\"}"}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-07T21:52:23Z","event_type":"closed","id":640,"issue_id":"str-1fr","new_value":"Closed","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-07T21:52:23Z","event_type":"closed","id":641,"issue_id":"str-au5","new_value":"Closed","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-07T21:52:23Z","event_type":"closed","id":642,"issue_id":"str-ol3","new_value":"Closed","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-07T21:52:26Z","event_type":"created","id":643,"issue_id":"str-0s76.12","new_value":"","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":"Added label: core","created_at":"2026-03-07T21:52:26Z","event_type":"label_added","id":644,"issue_id":"str-0s76.12","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":"Added label: testing","created_at":"2026-03-07T21:52:26Z","event_type":"label_added","id":645,"issue_id":"str-0s76.12","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":"Added label: e2e","created_at":"2026-03-07T21:52:26Z","event_type":"label_added","id":646,"issue_id":"str-0s76.12","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":"Added label: protocol","created_at":"2026-03-07T21:52:26Z","event_type":"label_added","id":647,"issue_id":"str-0s76.12","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":"Added label: setup","created_at":"2026-03-07T21:52:26Z","event_type":"label_added","id":648,"issue_id":"str-0s76.12","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-07T21:53:11Z","event_type":"created","id":649,"issue_id":"str-0s76.13","new_value":"","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":"Added label: cli","created_at":"2026-03-07T21:53:11Z","event_type":"label_added","id":650,"issue_id":"str-0s76.13","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":"Added label: docs","created_at":"2026-03-07T21:53:11Z","event_type":"label_added","id":651,"issue_id":"str-0s76.13","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":"Added label: core","created_at":"2026-03-07T21:53:11Z","event_type":"label_added","id":652,"issue_id":"str-0s76.13","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":"Added label: protocol","created_at":"2026-03-07T21:53:11Z","event_type":"label_added","id":653,"issue_id":"str-0s76.13","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":"Added label: setup","created_at":"2026-03-07T21:53:11Z","event_type":"label_added","id":654,"issue_id":"str-0s76.13","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-07T22:39:22Z","event_type":"closed","id":655,"issue_id":"str-a7s","new_value":"Closed","old_value":""}
