@@ -15,6 +15,17 @@ export const FRONTEND_LANGUAGE = "typescript";
 
 export type SetupMode = "per_function" | "per_execution";
 
+export type SetupLevel = "session" | "file" | "function" | "execution";
+
+export interface SetupContextEntry {
+  level: SetupLevel;
+  context: unknown;
+}
+
+export interface SetupContextStack {
+  contexts: SetupContextEntry[];
+}
+
 export type GeneratorKind = "type_name" | "param_name";
 
 export type Command =
@@ -65,20 +76,22 @@ export interface ExecuteRequest extends BaseRequest {
   function: string;
   inputs: unknown[];
   mocks: MockConfig[];
-  setup_context?: unknown;
+  setup_context?: SetupContextStack | null;
 }
 
 export interface SetupRequest extends BaseRequest {
   command: "setup";
   file: string;
-  function: string;
-  mode: SetupMode;
+  scope: string;
+  level: SetupLevel;
+  parent_context?: SetupContextStack | null;
   project_root?: string | null;
 }
 
 export interface TeardownRequest extends BaseRequest {
   command: "teardown";
-  function: string;
+  scope: string;
+  level: SetupLevel;
 }
 
 export interface GenerateRequest extends BaseRequest {

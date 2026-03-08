@@ -14,6 +14,7 @@ import {
   type Request,
   type Response,
   type ErrorResponse,
+  type SetupLevel,
 } from "./protocol.js";
 import { analyzeFile } from "./analyzer.js";
 import { instrumentFunction } from "./instrumentor.js";
@@ -62,10 +63,16 @@ const instrumentedSources = new Map<string, string>();
 const loadedSetupModules = new Map<string, SetupModule>();
 
 /**
- * Setup contexts from the most recent setup call, keyed by function name.
- * Stored so teardown can pass the context back to the teardown function.
+ * Setup contexts keyed by "level:scope" (e.g. "function:myFunc", "session:main").
+ * Separate keys per level ensure that session-, file-, function-, and
+ * execution-level contexts coexist without collision.
  */
 const setupContexts = new Map<string, { module: SetupModule; context: unknown }>();
+
+/** Build a composite cache key for the setup context map. */
+function setupContextKey(level: SetupLevel, scope: string): string {
+  return `${level}:${scope}`;
+}
 
 /**
  * Dispatch a parsed request to the appropriate handler.
@@ -223,8 +230,11 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
           loadedSetupModules.set(request.file, setupModule);
         }
 
-        const setupContext = runSetup(setupModule, request.function, request.mode);
-        setupContexts.set(request.function, { module: setupModule, context: setupContext });
+        const setupContext = await runSetup(
+          setupModule, request.scope, request.level, request.parent_context,
+        );
+        const ctxKey = setupContextKey(request.level, request.scope);
+        setupContexts.set(ctxKey, { module: setupModule, context: setupContext });
 
         return {
           response: {
@@ -246,20 +256,21 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
 
     case "teardown": {
       try {
-        const stored = setupContexts.get(request.function);
+        const ctxKey = setupContextKey(request.level, request.scope);
+        const stored = setupContexts.get(ctxKey);
         if (!stored) {
           return {
             response: errorResponse(
               request.id,
               "internal_error",
-              `No setup context found for function: ${request.function}. Call setup first.`,
+              `No setup context found for ${request.level}:${request.scope}. Call setup first.`,
             ),
             shutdown: false,
           };
         }
 
-        runTeardown(stored.module, request.function, stored.context);
-        setupContexts.delete(request.function);
+        await runTeardown(stored.module, request.scope, stored.context);
+        setupContexts.delete(ctxKey);
         instrumentedSources.clear();
         clearModuleCache();
 
@@ -443,4 +454,9 @@ export function clearInstrumentedSources(): void {
 /** Number of cached instrumented sources. Exposed for testing. */
 export function instrumentedSourcesSize(): number {
   return instrumentedSources.size;
+}
+
+/** Number of cached setup contexts. Exposed for testing. */
+export function setupContextsSize(): number {
+  return setupContexts.size;
 }

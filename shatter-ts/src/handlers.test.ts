@@ -1,5 +1,5 @@
 import * as path from "node:path";
-import { handleRequest, parseRequest, clearInstrumentedSources, instrumentedSourcesSize } from "./handlers.js";
+import { handleRequest, parseRequest, clearInstrumentedSources, instrumentedSourcesSize, setupContextsSize } from "./handlers.js";
 import { clearModuleCache, compiledModuleCacheSize } from "./executor.js";
 import {
   PROTOCOL_VERSION,
@@ -9,6 +9,10 @@ import {
   type TeardownAckResponse,
   type GenerateResponse,
   type ExecuteResponse,
+  type SetupLevel,
+  type SetupContextStack,
+  type SetupRequest,
+  type TeardownRequest,
 } from "./protocol.js";
 
 describe("parseRequest", () => {
@@ -83,23 +87,31 @@ describe("parseRequest", () => {
     }
   });
 
-  it("accepts valid setup request", () => {
+  it("accepts valid setup request with level and scope", () => {
     const result = parseRequest(
-      `{"id":1,"protocol_version":"${PROTOCOL_VERSION}","command":"setup","file":"s.ts","function":"fn","mode":"per_function"}`
+      `{"id":1,"protocol_version":"${PROTOCOL_VERSION}","command":"setup","file":"s.ts","scope":"fn","level":"function"}`
     );
     expect("request" in result).toBe(true);
     if ("request" in result) {
       expect(result.request.command).toBe("setup");
+      if (result.request.command === "setup") {
+        expect(result.request.scope).toBe("fn");
+        expect(result.request.level).toBe("function");
+      }
     }
   });
 
-  it("accepts valid teardown request", () => {
+  it("accepts valid teardown request with level and scope", () => {
     const result = parseRequest(
-      `{"id":2,"protocol_version":"${PROTOCOL_VERSION}","command":"teardown","function":"fn"}`
+      `{"id":2,"protocol_version":"${PROTOCOL_VERSION}","command":"teardown","scope":"fn","level":"function"}`
     );
     expect("request" in result).toBe(true);
     if ("request" in result) {
       expect(result.request.command).toBe("teardown");
+      if (result.request.command === "teardown") {
+        expect(result.request.scope).toBe("fn");
+        expect(result.request.level).toBe("function");
+      }
     }
   });
 
@@ -434,40 +446,96 @@ describe("handleRequest", () => {
   });
 
   describe("setup", () => {
-    it("loads setup file and returns setup_context", async () => {
+    it("loads setup file and returns setup_context with function level", async () => {
       const setupFile = path.resolve(__dirname, "__fixtures__", "setup-module.ts");
       const { response, shutdown } = await handleRequest(
-        makeRequest({ command: "setup", file: setupFile, function: "myFunc", mode: "per_function" })
+        makeRequest({ command: "setup", file: setupFile, scope: "myFunc", level: "function" })
       );
       expect(shutdown).toBe(false);
       expect(response.status).toBe("setup");
       if (response.status === "setup") {
         expect(response.setup_context).toEqual({
           db: "test_db_conn",
-          functionName: "myFunc",
-          mode: "per_function",
+          scope: "myFunc",
+          parentLevels: [],
         });
       }
     });
 
-    it("works with per_execution mode", async () => {
+    it("works with execution level", async () => {
       const setupFile = path.resolve(__dirname, "__fixtures__", "setup-module.ts");
       const { response } = await handleRequest(
-        makeRequest({ command: "setup", file: setupFile, function: "auth", mode: "per_execution" })
+        makeRequest({ command: "setup", file: setupFile, scope: "auth", level: "execution" })
       );
       expect(response.status).toBe("setup");
       if (response.status === "setup") {
         expect(response.setup_context).toEqual({
           db: "test_db_conn",
-          functionName: "auth",
-          mode: "per_execution",
+          scope: "auth",
+          parentLevels: [],
         });
       }
     });
 
+    it("works with session level", async () => {
+      const setupFile = path.resolve(__dirname, "__fixtures__", "setup-module.ts");
+      const { response } = await handleRequest(
+        makeRequest({ command: "setup", file: setupFile, scope: "global", level: "session" })
+      );
+      expect(response.status).toBe("setup");
+      if (response.status === "setup") {
+        expect(response.setup_context).toEqual({
+          db: "test_db_conn",
+          scope: "global",
+          parentLevels: [],
+        });
+      }
+    });
+
+    it("passes parent_context to setup function", async () => {
+      const setupFile = path.resolve(__dirname, "__fixtures__", "setup-module.ts");
+      const parentContext: SetupContextStack = {
+        contexts: [
+          { level: "session", context: { sessionId: "s1" } },
+        ],
+      };
+      const { response } = await handleRequest(
+        makeRequest({ command: "setup", file: setupFile, scope: "myFile.ts", level: "file", parent_context: parentContext })
+      );
+      expect(response.status).toBe("setup");
+      if (response.status === "setup") {
+        expect(response.setup_context).toEqual({
+          db: "test_db_conn",
+          scope: "myFile.ts",
+          parentLevels: ["session"],
+        });
+      }
+    });
+
+    it("maintains separate context caches per level", async () => {
+      const setupFile = path.resolve(__dirname, "__fixtures__", "setup-module.ts");
+      await handleRequest(
+        makeRequest({ command: "setup", file: setupFile, scope: "global", level: "session" })
+      );
+      await handleRequest(
+        makeRequest({ command: "setup", file: setupFile, scope: "global", level: "function" })
+      );
+      expect(setupContextsSize()).toBe(2);
+
+      await handleRequest(
+        makeRequest({ command: "teardown", scope: "global", level: "function" })
+      );
+      expect(setupContextsSize()).toBe(1);
+
+      await handleRequest(
+        makeRequest({ command: "teardown", scope: "global", level: "session" })
+      );
+      expect(setupContextsSize()).toBe(0);
+    });
+
     it("returns file_not_found for missing setup file", async () => {
       const { response } = await handleRequest(
-        makeRequest({ command: "setup", file: "/nonexistent/setup.ts", function: "f", mode: "per_function" })
+        makeRequest({ command: "setup", file: "/nonexistent/setup.ts", scope: "f", level: "function" })
       );
       expect(response.status).toBe("error");
       if (response.status === "error") {
@@ -478,7 +546,7 @@ describe("handleRequest", () => {
     it("returns error when setup export is missing", async () => {
       const fixtureFile = path.resolve(__dirname, "__fixtures__", "primitives.ts");
       const { response } = await handleRequest(
-        makeRequest({ command: "setup", file: fixtureFile, function: "f", mode: "per_function" })
+        makeRequest({ command: "setup", file: fixtureFile, scope: "f", level: "function" })
       );
       expect(response.status).toBe("error");
       if (response.status === "error") {
@@ -491,13 +559,11 @@ describe("handleRequest", () => {
   describe("teardown", () => {
     it("tears down after a successful setup", async () => {
       const setupFile = path.resolve(__dirname, "__fixtures__", "setup-module.ts");
-      // First do setup
       await handleRequest(
-        makeRequest({ command: "setup", file: setupFile, function: "myFunc", mode: "per_function" })
+        makeRequest({ command: "setup", file: setupFile, scope: "myFunc", level: "function" })
       );
-      // Then teardown
       const { response, shutdown } = await handleRequest(
-        makeRequest({ command: "teardown", function: "myFunc" })
+        makeRequest({ command: "teardown", scope: "myFunc", level: "function" })
       );
       expect(shutdown).toBe(false);
       expect(response.status).toBe("teardown_ack");
@@ -505,7 +571,7 @@ describe("handleRequest", () => {
 
     it("returns error when no setup context exists", async () => {
       const { response } = await handleRequest(
-        makeRequest({ command: "teardown", function: "neverSetUp" })
+        makeRequest({ command: "teardown", scope: "neverSetUp", level: "function" })
       );
       expect(response.status).toBe("error");
       if (response.status === "error") {
@@ -516,15 +582,13 @@ describe("handleRequest", () => {
 
     it("returns error when setup file has no teardown export", async () => {
       const setupFile = path.resolve(__dirname, "__fixtures__", "setup-no-teardown.ts");
-      // Setup succeeds
       const { response: setupResp } = await handleRequest(
-        makeRequest({ command: "setup", file: setupFile, function: "fn", mode: "per_function" })
+        makeRequest({ command: "setup", file: setupFile, scope: "fn", level: "function" })
       );
       expect(setupResp.status).toBe("setup");
 
-      // Teardown fails because no teardown() export
       const { response } = await handleRequest(
-        makeRequest({ command: "teardown", function: "fn" })
+        makeRequest({ command: "teardown", scope: "fn", level: "function" })
       );
       expect(response.status).toBe("error");
       if (response.status === "error") {
@@ -630,10 +694,10 @@ describe("handleRequest", () => {
 
       // Setup then teardown — should clear both caches
       await handleRequest(
-        makeRequest({ command: "setup", file: setupFile, function: "testFn", mode: "per_function" })
+        makeRequest({ command: "setup", file: setupFile, scope: "testFn", level: "function" })
       );
       await handleRequest(
-        makeRequest({ command: "teardown", function: "testFn" })
+        makeRequest({ command: "teardown", scope: "testFn", level: "function" })
       );
 
       expect(instrumentedSourcesSize()).toBe(0);
@@ -670,8 +734,8 @@ describe("handleRequest", () => {
           command === "analyze" ? { command, file: "t.ts" } :
           command === "instrument" ? { command, file: "t.ts", function: "f", mocks: [] } :
           command === "execute" ? { command, function: "f", inputs: [], mocks: [] } :
-          command === "setup" ? { command, file: "s.ts", function: "f", mode: "per_function" as const } :
-          command === "teardown" ? { command, function: "f" } :
+          command === "setup" ? { command, file: "s.ts", scope: "f", level: "function" as SetupLevel } :
+          command === "teardown" ? { command, scope: "f", level: "function" as SetupLevel } :
           command === "generate" ? { command, file: "g.ts", name: "T", kind: "type_name" as const } :
           { command }
         );
@@ -816,6 +880,66 @@ describe("protocol round-trip", () => {
       expect(parsed.generator_id).toBe("wasm-user-gen");
       expect(parsed.recipe).toEqual({ seed: 42, variant: "admin" });
     }
+  });
+
+  it("SetupRequest with level and parent_context round-trips through JSON", () => {
+    const request: SetupRequest = {
+      protocol_version: PROTOCOL_VERSION,
+      id: 40,
+      command: "setup",
+      file: "test.ts",
+      scope: "myFunc",
+      level: "function",
+      parent_context: {
+        contexts: [
+          { level: "session", context: { sessionId: "abc" } },
+          { level: "file", context: { fileHandle: 42 } },
+        ],
+      },
+    };
+    const json = JSON.stringify(request);
+    const parsed = JSON.parse(json) as SetupRequest;
+    expect(parsed.command).toBe("setup");
+    expect(parsed.scope).toBe("myFunc");
+    expect(parsed.level).toBe("function");
+    expect(parsed.parent_context).toBeDefined();
+    expect(parsed.parent_context!.contexts).toHaveLength(2);
+    expect(parsed.parent_context!.contexts[0]!.level).toBe("session");
+    expect(parsed.parent_context!.contexts[1]!.level).toBe("file");
+  });
+
+  it("TeardownRequest with level round-trips through JSON", () => {
+    const request: TeardownRequest = {
+      protocol_version: PROTOCOL_VERSION,
+      id: 41,
+      command: "teardown",
+      scope: "myFunc",
+      level: "function",
+    };
+    const json = JSON.stringify(request);
+    const parsed = JSON.parse(json) as TeardownRequest;
+    expect(parsed.command).toBe("teardown");
+    expect(parsed.scope).toBe("myFunc");
+    expect(parsed.level).toBe("function");
+  });
+
+  it("SetupContextStack round-trips through JSON", () => {
+    const stack: SetupContextStack = {
+      contexts: [
+        { level: "session", context: { id: 1 } },
+        { level: "file", context: "file_handle" },
+        { level: "function", context: null },
+        { level: "execution", context: [1, 2, 3] },
+      ],
+    };
+    const json = JSON.stringify(stack);
+    const parsed = JSON.parse(json) as SetupContextStack;
+    expect(parsed.contexts).toHaveLength(4);
+    expect(parsed.contexts[0]!.level).toBe("session");
+    expect(parsed.contexts[1]!.level).toBe("file");
+    expect(parsed.contexts[2]!.level).toBe("function");
+    expect(parsed.contexts[3]!.level).toBe("execution");
+    expect(parsed).toEqual(stack);
   });
 
   it("execute response with scope_events round-trips through JSON", () => {

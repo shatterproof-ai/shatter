@@ -25,6 +25,11 @@ import type {
   AnalyzeRequest,
   ExecuteRequest,
   ShutdownRequest,
+  SetupRequest,
+  TeardownRequest,
+  SetupLevel,
+  SetupContextEntry,
+  SetupContextStack,
   Request,
   HandshakeResponse,
   AnalyzeResponse,
@@ -220,6 +225,23 @@ const arbFunctionAnalysis: fc.Arbitrary<FunctionAnalysis> = fc.record({
 });
 
 // ---------------------------------------------------------------------------
+// Arbitraries — setup types
+// ---------------------------------------------------------------------------
+
+const arbSetupLevel: fc.Arbitrary<SetupLevel> = fc.constantFrom(
+  "session", "file", "function", "execution",
+);
+
+const arbSetupContextEntry: fc.Arbitrary<SetupContextEntry> = fc.record({
+  level: arbSetupLevel,
+  context: fc.oneof(fc.integer(), fc.string({ maxLength: 10 }), fc.constant(null), fc.record({ id: fc.nat(100) })),
+});
+
+const arbSetupContextStack: fc.Arbitrary<SetupContextStack> = fc.record({
+  contexts: fc.array(arbSetupContextEntry, { maxLength: 4 }),
+});
+
+// ---------------------------------------------------------------------------
 // Arbitraries — full protocol messages
 // ---------------------------------------------------------------------------
 
@@ -244,6 +266,21 @@ const arbRequest: fc.Arbitrary<Request> = fc.oneof(
     inputs: fc.array(fc.oneof(fc.integer(), fc.constant("hello"), fc.boolean()), { maxLength: 4 }),
     mocks: fc.constant([]),
   }) as fc.Arbitrary<ExecuteRequest>,
+  fc.record({
+    protocol_version: fc.constant(PROTOCOL_VERSION),
+    id: fc.nat(1000),
+    command: fc.constant("setup" as const),
+    file: arbIdent,
+    scope: arbIdent,
+    level: arbSetupLevel,
+  }) as fc.Arbitrary<SetupRequest>,
+  fc.record({
+    protocol_version: fc.constant(PROTOCOL_VERSION),
+    id: fc.nat(1000),
+    command: fc.constant("teardown" as const),
+    scope: arbIdent,
+    level: arbSetupLevel,
+  }) as fc.Arbitrary<TeardownRequest>,
   fc.record({
     protocol_version: fc.constant(PROTOCOL_VERSION),
     id: fc.nat(1000),
@@ -297,6 +334,59 @@ describe("property: protocol message round-trips", () => {
         const decoded = JSON.parse(json) as Response;
         expect(decoded).toEqual(resp);
       }),
+    );
+  });
+
+  it("SetupContextStack survives JSON round-trip", () => {
+    fc.assert(
+      fc.property(arbSetupContextStack, (stack) => {
+        const json = JSON.stringify(stack);
+        const decoded = JSON.parse(json) as SetupContextStack;
+        expect(decoded).toEqual(stack);
+        expect(decoded.contexts).toHaveLength(stack.contexts.length);
+      }),
+    );
+  });
+
+  it("SetupRequest with parent_context survives JSON round-trip", () => {
+    fc.assert(
+      fc.property(
+        fc.record({
+          protocol_version: fc.constant(PROTOCOL_VERSION),
+          id: fc.nat(1000),
+          command: fc.constant("setup" as const),
+          file: arbIdent,
+          scope: arbIdent,
+          level: arbSetupLevel,
+          parent_context: fc.option(arbSetupContextStack, { nil: null }),
+        }),
+        (req) => {
+          const json = JSON.stringify(req);
+          const decoded = JSON.parse(json) as SetupRequest;
+          expect(decoded.command).toBe("setup");
+          expect(decoded.scope).toBe(req.scope);
+          expect(decoded.level).toBe(req.level);
+        },
+      ),
+    );
+  });
+
+  it("TeardownRequest with level survives JSON round-trip", () => {
+    fc.assert(
+      fc.property(
+        fc.record({
+          protocol_version: fc.constant(PROTOCOL_VERSION),
+          id: fc.nat(1000),
+          command: fc.constant("teardown" as const),
+          scope: arbIdent,
+          level: arbSetupLevel,
+        }),
+        (req) => {
+          const json = JSON.stringify(req);
+          const decoded = JSON.parse(json) as TeardownRequest;
+          expect(decoded).toEqual(req);
+        },
+      ),
     );
   });
 });

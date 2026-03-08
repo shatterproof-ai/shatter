@@ -10,7 +10,25 @@ import * as fs from "node:fs";
 import * as vm from "node:vm";
 import * as path from "node:path";
 import { createRequire } from "node:module";
-import type { SetupMode, GeneratorKind } from "./protocol.js";
+import type { SetupLevel, SetupContextStack, GeneratorKind } from "./protocol.js";
+
+/** Default setup timeout in milliseconds (30 seconds). */
+const DEFAULT_SETUP_TIMEOUT_MS = 30_000;
+
+/**
+ * Read SHATTER_SETUP_TIMEOUT env var (seconds) and return milliseconds.
+ * Default: 30s. Ignores non-positive or non-numeric values.
+ */
+export function getSetupTimeoutMs(): number {
+  const raw = process.env["SHATTER_SETUP_TIMEOUT"];
+  if (raw !== undefined) {
+    const secs = parseFloat(raw);
+    if (Number.isFinite(secs) && secs > 0) {
+      return secs * 1000;
+    }
+  }
+  return DEFAULT_SETUP_TIMEOUT_MS;
+}
 
 /** A loaded setup module with its exports available for calling. */
 export interface SetupModule {
@@ -80,13 +98,15 @@ export function loadSetupModule(file: string): SetupModule {
 /**
  * Run the setup() export from a loaded setup module.
  *
- * Calls `module.setup(functionName, mode)` and returns the setup_context.
+ * Calls `module.setup(scope, parentContext?)` and returns the setup_context.
+ * Supports both sync and async setup functions. Applies SHATTER_SETUP_TIMEOUT.
  */
-export function runSetup(
+export async function runSetup(
   setupModule: SetupModule,
-  functionName: string,
-  mode: SetupMode,
-): unknown {
+  scope: string,
+  _level: SetupLevel,
+  parentContext?: SetupContextStack | null,
+): Promise<unknown> {
   const setupFn = setupModule.exports["setup"];
   if (typeof setupFn !== "function") {
     throw new Error(
@@ -94,19 +114,36 @@ export function runSetup(
       `Available exports: ${Object.keys(setupModule.exports).join(", ")}`,
     );
   }
-  return (setupFn as (fn: string, mode: string) => unknown)(functionName, mode);
+
+  const result = (setupFn as (scope: string, parentContext?: SetupContextStack | null) => unknown)(
+    scope,
+    parentContext ?? null,
+  );
+
+  // Handle async setup functions
+  if (result != null && typeof (result as PromiseLike<unknown>).then === "function") {
+    const timeoutMs = getSetupTimeoutMs();
+    return Promise.race([
+      result as Promise<unknown>,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`Setup timed out after ${timeoutMs}ms`)), timeoutMs),
+      ),
+    ]);
+  }
+
+  return result;
 }
 
 /**
  * Run the teardown() export from a loaded setup module.
  *
- * Calls `module.teardown(functionName, setupContext)`.
+ * Calls `module.teardown(scope, setupContext)`. Supports async teardown.
  */
-export function runTeardown(
+export async function runTeardown(
   setupModule: SetupModule,
-  functionName: string,
+  scope: string,
   setupContext: unknown,
-): void {
+): Promise<void> {
   const teardownFn = setupModule.exports["teardown"];
   if (typeof teardownFn !== "function") {
     throw new Error(
@@ -114,7 +151,18 @@ export function runTeardown(
       `Available exports: ${Object.keys(setupModule.exports).join(", ")}`,
     );
   }
-  (teardownFn as (fn: string, ctx: unknown) => void)(functionName, setupContext);
+  const result = (teardownFn as (scope: string, ctx: unknown) => unknown)(scope, setupContext);
+
+  // Handle async teardown functions
+  if (result != null && typeof (result as PromiseLike<unknown>).then === "function") {
+    const timeoutMs = getSetupTimeoutMs();
+    await Promise.race([
+      result as Promise<unknown>,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`Teardown timed out after ${timeoutMs}ms`)), timeoutMs),
+      ),
+    ]);
+  }
 }
 
 /**
