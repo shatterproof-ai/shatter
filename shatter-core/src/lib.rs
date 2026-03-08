@@ -59,6 +59,7 @@ pub mod strategy;
 pub mod string_mutation;
 pub mod sym_expr;
 pub mod test_impact;
+pub mod test_prioritization;
 pub mod test_runner;
 pub mod triage;
 pub mod types;
