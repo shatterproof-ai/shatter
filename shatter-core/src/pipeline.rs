@@ -367,6 +367,7 @@ mod tests {
             total_executions: 10,
             z3_generated: 3,
             fuzz_generated: 1,
+            boundary_generated: 0,
             drill_generated: 0,
             termination_reason: crate::orchestrator::TerminationReason::WorklistExhausted,
             raw_results: vec![],
