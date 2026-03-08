@@ -113,14 +113,19 @@ pub fn compute_deep_fingerprint(
 /// For each analysis, computes a shallow fingerprint from source text + metadata,
 /// then composes it with callee deep fingerprints. Functions are processed in
 /// dependency order (leaves first via Kahn's algorithm on out-edges) so callee
-/// fingerprints are available when computing callers. Out-of-scope callees
-/// (not in `analyses`) are ignored. Cycles are broken by processing remaining
-/// functions with partial callee fingerprints.
+/// fingerprints are available when computing callers. Cycles are broken by
+/// processing remaining functions with partial callee fingerprints.
+///
+/// `external_fingerprints` provides deep fingerprints for cross-file callees
+/// (looked up from cache). These are seeded into the deep fingerprint map so
+/// that cross-file dependency changes propagate to callers' fingerprints.
+/// The return map contains only functions from `analyses`, not external entries.
 ///
 /// Returns a map from function name to deep fingerprint.
 pub fn compute_deep_fingerprints(
     file_path: &Path,
     analyses: &[FunctionAnalysis],
+    external_fingerprints: &HashMap<String, String>,
 ) -> Result<HashMap<String, String>, std::io::Error> {
     let name_set: HashSet<&str> = analyses.iter().map(|a| a.name.as_str()).collect();
 
@@ -131,8 +136,8 @@ pub fn compute_deep_fingerprints(
         shallow.insert(func.name.clone(), compute_function_fingerprint(&source, func));
     }
 
-    // Build in-scope callee sets per function.
-    let callees_map: HashMap<&str, HashSet<String>> = analyses
+    // Build in-scope callee sets (for Kahn's algorithm ordering).
+    let infile_callees_map: HashMap<&str, HashSet<String>> = analyses
         .iter()
         .map(|func| {
             let callees: HashSet<String> = func
@@ -145,21 +150,35 @@ pub fn compute_deep_fingerprints(
         })
         .collect();
 
-    // Kahn's algorithm: process leaves (no in-scope callees) first.
-    // out_degree = number of unprocessed in-scope callees.
+    // Build full callee sets (including cross-file deps) for deep FP computation.
+    let all_callees_map: HashMap<&str, HashSet<String>> = analyses
+        .iter()
+        .map(|func| {
+            let callees: HashSet<String> = func
+                .dependencies
+                .iter()
+                .map(|d| d.symbol.clone())
+                .collect();
+            (func.name.as_str(), callees)
+        })
+        .collect();
+
+    // Kahn's algorithm: process leaves (no in-file callees) first.
     let mut out_degree: HashMap<&str, usize> = analyses
         .iter()
         .map(|f| {
             (
                 f.name.as_str(),
-                callees_map.get(f.name.as_str()).map_or(0, HashSet::len),
+                infile_callees_map
+                    .get(f.name.as_str())
+                    .map_or(0, HashSet::len),
             )
         })
         .collect();
 
-    // Reverse: callee → list of callers.
+    // Reverse: callee → list of callers (in-file only, for topo ordering).
     let mut reverse: HashMap<&str, Vec<&str>> = HashMap::new();
-    for (&caller, callees) in &callees_map {
+    for (&caller, callees) in &infile_callees_map {
         for callee in callees {
             reverse.entry(callee.as_str()).or_default().push(caller);
         }
@@ -172,11 +191,12 @@ pub fn compute_deep_fingerprints(
         .collect();
     queue.sort();
 
-    let mut deep: HashMap<String, String> = HashMap::new();
+    // Seed with external fingerprints so cross-file callees are available.
+    let mut deep: HashMap<String, String> = external_fingerprints.clone();
 
     while let Some(func_name) = queue.pop() {
         if let Some(sfp) = shallow.get(func_name) {
-            let callees = callees_map
+            let callees = all_callees_map
                 .get(func_name)
                 .cloned()
                 .unwrap_or_default();
@@ -204,7 +224,7 @@ pub fn compute_deep_fingerprints(
         if !deep.contains_key(&func.name)
             && let Some(sfp) = shallow.get(&func.name)
         {
-            let callees = callees_map
+            let callees = all_callees_map
                 .get(func.name.as_str())
                 .cloned()
                 .unwrap_or_default();
@@ -214,6 +234,9 @@ pub fn compute_deep_fingerprints(
             );
         }
     }
+
+    // Filter to only functions from this file (don't leak external entries).
+    deep.retain(|k, _| name_set.contains(k.as_str()));
 
     Ok(deep)
 }
@@ -491,7 +514,7 @@ mod tests {
         std::fs::write(&file, "function leaf() { return 1; }\n").unwrap();
 
         let analyses = vec![make_analysis("leaf", 1, 1, vec![])];
-        let fps = compute_deep_fingerprints(&file, &analyses).unwrap();
+        let fps = compute_deep_fingerprints(&file, &analyses, &HashMap::new()).unwrap();
 
         assert_eq!(fps.len(), 1);
         assert!(fps.contains_key("leaf"));
@@ -512,7 +535,7 @@ mod tests {
             make_analysis("leaf", 1, 1, vec![]),
             make_analysis("caller", 2, 2, vec!["leaf"]),
         ];
-        let fps = compute_deep_fingerprints(&file, &analyses).unwrap();
+        let fps = compute_deep_fingerprints(&file, &analyses, &HashMap::new()).unwrap();
 
         assert_eq!(fps.len(), 2);
 
@@ -551,8 +574,8 @@ mod tests {
             make_analysis("caller", 2, 2, vec!["leaf"]),
         ];
 
-        let fps1 = compute_deep_fingerprints(&file1, &analyses).unwrap();
-        let fps2 = compute_deep_fingerprints(&file2, &analyses).unwrap();
+        let fps1 = compute_deep_fingerprints(&file1, &analyses, &HashMap::new()).unwrap();
+        let fps2 = compute_deep_fingerprints(&file2, &analyses, &HashMap::new()).unwrap();
 
         // leaf changed → leaf's FP differs
         assert_ne!(fps1["leaf"], fps2["leaf"]);
@@ -568,7 +591,7 @@ mod tests {
 
         // "external" is not in analyses — should be ignored
         let analyses = vec![make_analysis("caller", 1, 1, vec!["external"])];
-        let fps = compute_deep_fingerprints(&file, &analyses).unwrap();
+        let fps = compute_deep_fingerprints(&file, &analyses, &HashMap::new()).unwrap();
 
         assert_eq!(fps.len(), 1);
         assert!(fps.contains_key("caller"));
@@ -591,13 +614,82 @@ mod tests {
             make_analysis("a", 4, 4, vec!["b", "c"]),
         ];
 
-        let fps = compute_deep_fingerprints(&file, &analyses).unwrap();
+        let fps = compute_deep_fingerprints(&file, &analyses, &HashMap::new()).unwrap();
         assert_eq!(fps.len(), 4);
 
         // All should have valid 64-char hex fingerprints.
         for (_, fp) in &fps {
             assert_eq!(fp.len(), 64);
         }
+    }
+    #[test]
+    fn deep_fingerprints_cross_file_callee_changes_caller() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.ts");
+        std::fs::write(&file, "function caller() { return external(); }\n").unwrap();
+
+        // "external" is a cross-file dep — not in analyses but in external_fingerprints.
+        let analyses = vec![make_analysis("caller", 1, 1, vec!["external"])];
+
+        let ext_v1: HashMap<String, String> =
+            [("external".into(), "aaa".repeat(22))].into_iter().collect();
+        let ext_v2: HashMap<String, String> =
+            [("external".into(), "bbb".repeat(22))].into_iter().collect();
+
+        let fps_v1 = compute_deep_fingerprints(&file, &analyses, &ext_v1).unwrap();
+        let fps_v2 = compute_deep_fingerprints(&file, &analyses, &ext_v2).unwrap();
+
+        // caller's deep FP should change when the external callee's FP changes.
+        assert_ne!(fps_v1["caller"], fps_v2["caller"]);
+    }
+
+    #[test]
+    fn deep_fingerprints_external_entries_not_leaked() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.ts");
+        std::fs::write(&file, "function caller() { return external(); }\n").unwrap();
+
+        let analyses = vec![make_analysis("caller", 1, 1, vec!["external"])];
+        let ext: HashMap<String, String> =
+            [("external".into(), "aaa".repeat(22))].into_iter().collect();
+
+        let fps = compute_deep_fingerprints(&file, &analyses, &ext).unwrap();
+
+        // Only functions from analyses should appear in the result.
+        assert_eq!(fps.len(), 1);
+        assert!(fps.contains_key("caller"));
+        assert!(!fps.contains_key("external"));
+    }
+
+    #[test]
+    fn deep_fingerprints_empty_external_preserves_behavior() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.ts");
+        std::fs::write(
+            &file,
+            "function leaf() { return 1; }\nfunction caller() { return leaf(); }\n",
+        )
+        .unwrap();
+
+        let analyses = vec![
+            make_analysis("leaf", 1, 1, vec![]),
+            make_analysis("caller", 2, 2, vec!["leaf"]),
+        ];
+
+        let fps = compute_deep_fingerprints(&file, &analyses, &HashMap::new()).unwrap();
+        assert_eq!(fps.len(), 2);
+
+        // caller's deep FP should still incorporate leaf (in-file dep).
+        let caller_shallow = compute_function_fingerprint(
+            "function caller() { return leaf(); }",
+            &analyses[1],
+        );
+        let caller_no_deps = compute_deep_fingerprint(
+            &caller_shallow,
+            &HashMap::new(),
+            &HashSet::new(),
+        );
+        assert_ne!(fps["caller"], caller_no_deps);
     }
 }
 
@@ -667,6 +759,27 @@ mod proptests {
             prop_assume!(src1 != src2);
             let fp1 = compute_function_fingerprint(&src1, &analysis);
             let fp2 = compute_function_fingerprint(&src2, &analysis);
+            prop_assert_ne!(fp1, fp2);
+        }
+
+        /// External callee fingerprint change propagates to caller's deep fingerprint.
+        #[test]
+        fn external_callee_change_propagates(
+            shallow in "[a-f0-9]{64}",
+            ext_fp1 in "[a-f0-9]{64}",
+            ext_fp2 in "[a-f0-9]{64}",
+            callee_name in "[a-z_]{1,20}",
+        ) {
+            prop_assume!(ext_fp1 != ext_fp2);
+            let callees: HashSet<String> = [callee_name.clone()].into_iter().collect();
+
+            let ext1: HashMap<String, String> =
+                [(callee_name.clone(), ext_fp1)].into_iter().collect();
+            let ext2: HashMap<String, String> =
+                [(callee_name, ext_fp2)].into_iter().collect();
+
+            let fp1 = compute_deep_fingerprint(&shallow, &ext1, &callees);
+            let fp2 = compute_deep_fingerprint(&shallow, &ext2, &callees);
             prop_assert_ne!(fp1, fp2);
         }
     }

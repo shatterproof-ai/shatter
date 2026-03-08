@@ -681,6 +681,7 @@ pub fn compute_incremental_plan(
     file_path: &Path,
     current_analyses: &[FunctionAnalysis],
     existing: &FileSpecBundle,
+    external_fingerprints: &std::collections::HashMap<String, String>,
 ) -> Result<IncrementalPlan, std::io::Error> {
     let existing_by_name: std::collections::HashMap<&str, &FunctionSpec> = existing
         .functions
@@ -688,7 +689,7 @@ pub fn compute_incremental_plan(
         .map(|f| (f.function_name.as_str(), f))
         .collect();
 
-    let deep_fps = compute_deep_fingerprints(file_path, current_analyses)?;
+    let deep_fps = compute_deep_fingerprints(file_path, current_analyses, external_fingerprints)?;
 
     let mut stale = Vec::new();
     let mut fresh = Vec::new();
@@ -1707,7 +1708,7 @@ mod tests {
 
         let analysis = make_analysis("add", 1, 4);
         let deep_fps =
-            crate::fingerprint::compute_deep_fingerprints(&file, &[analysis.clone()]).unwrap();
+            crate::fingerprint::compute_deep_fingerprints(&file, &[analysis.clone()], &std::collections::HashMap::new()).unwrap();
         let fp = &deep_fps["add"];
 
         let existing = FileSpecBundle {
@@ -1715,7 +1716,7 @@ mod tests {
             functions: vec![make_spec_with_fingerprint("add", Some(fp))],
         };
 
-        let plan = compute_incremental_plan(&file, &[analysis], &existing).unwrap();
+        let plan = compute_incremental_plan(&file, &[analysis], &existing, &std::collections::HashMap::new()).unwrap();
         assert!(plan.stale.is_empty(), "expected no stale, got: {:?}", plan.stale);
         assert_eq!(plan.fresh, vec!["add"]);
         assert!(plan.removed.is_empty());
@@ -1734,7 +1735,7 @@ mod tests {
             functions: vec![make_spec_with_fingerprint("add", Some("old_fp_mismatch"))],
         };
 
-        let plan = compute_incremental_plan(&file, &[analysis], &existing).unwrap();
+        let plan = compute_incremental_plan(&file, &[analysis], &existing, &std::collections::HashMap::new()).unwrap();
         assert_eq!(plan.stale, vec!["add"]);
         assert!(plan.fresh.is_empty());
         assert!(plan.removed.is_empty());
@@ -1753,7 +1754,7 @@ mod tests {
             functions: vec![make_spec_with_fingerprint("add", None)],
         };
 
-        let plan = compute_incremental_plan(&file, &[analysis], &existing).unwrap();
+        let plan = compute_incremental_plan(&file, &[analysis], &existing, &std::collections::HashMap::new()).unwrap();
         assert_eq!(plan.stale, vec!["add"]);
         assert!(plan.fresh.is_empty());
     }
@@ -1770,7 +1771,7 @@ mod tests {
             functions: vec![],
         };
 
-        let plan = compute_incremental_plan(&file, &[analysis], &existing).unwrap();
+        let plan = compute_incremental_plan(&file, &[analysis], &existing, &std::collections::HashMap::new()).unwrap();
         assert_eq!(plan.stale, vec!["add"]);
         assert!(plan.fresh.is_empty());
         assert!(plan.removed.is_empty());
@@ -1791,7 +1792,7 @@ mod tests {
         };
 
         let analysis = make_analysis("add", 1, 4);
-        let plan = compute_incremental_plan(&file, &[analysis], &existing).unwrap();
+        let plan = compute_incremental_plan(&file, &[analysis], &existing, &std::collections::HashMap::new()).unwrap();
         assert_eq!(plan.removed, vec!["removed_fn"]);
     }
 
@@ -1832,7 +1833,7 @@ mod tests {
         ];
 
         let deep_fps_v1 =
-            crate::fingerprint::compute_deep_fingerprints(&file, &analyses_v1).unwrap();
+            crate::fingerprint::compute_deep_fingerprints(&file, &analyses_v1, &std::collections::HashMap::new()).unwrap();
 
         let existing = FileSpecBundle {
             file: "test.ts".to_string(),
@@ -1852,7 +1853,7 @@ mod tests {
             make_analysis_with_deps("caller", 5, 7, vec!["leaf"]),
         ];
 
-        let plan = compute_incremental_plan(&file, &analyses_v2, &existing).unwrap();
+        let plan = compute_incremental_plan(&file, &analyses_v2, &existing, &std::collections::HashMap::new()).unwrap();
 
         // Both should be stale: leaf changed directly, caller transitively.
         assert!(plan.stale.contains(&"leaf".to_string()), "leaf should be stale");
