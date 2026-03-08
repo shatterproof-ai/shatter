@@ -12,6 +12,7 @@ import (
 
 	"github.com/shatter-dev/shatter/shatter-go/generators"
 	"github.com/shatter-dev/shatter/shatter-go/instrument"
+	"github.com/shatter-dev/shatter/shatter-go/setup"
 )
 
 const frontendVersion = "0.1.0"
@@ -24,6 +25,7 @@ type Handler struct {
 	log              *slog.Logger
 	lastAnalyzedFile string // remembered from the most recent analyze command
 	registry         *generators.Registry
+	setupLoader      *setup.Loader
 }
 
 // NewHandler creates a handler reading from r, writing responses to w,
@@ -32,10 +34,11 @@ func NewHandler(r io.Reader, w io.Writer, logw io.Writer) *Handler {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024) // 10MB max line
 	return &Handler{
-		reader:   scanner,
-		writer:   w,
-		log:      slog.New(newPrefixHandler(logw, slogLevelFromEnv())),
-		registry: generators.NewRegistry(),
+		reader:      scanner,
+		writer:      w,
+		log:         slog.New(newPrefixHandler(logw, slogLevelFromEnv())),
+		registry:    generators.NewRegistry(),
+		setupLoader: setup.NewLoader(),
 	}
 }
 
@@ -44,10 +47,11 @@ func NewHandlerWithLogLevel(r io.Reader, w io.Writer, logw io.Writer, level stri
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
 	return &Handler{
-		reader:   scanner,
-		writer:   w,
-		log:      slog.New(newPrefixHandler(logw, slogLevelFromString(level))),
-		registry: generators.NewRegistry(),
+		reader:      scanner,
+		writer:      w,
+		log:         slog.New(newPrefixHandler(logw, slogLevelFromString(level))),
+		registry:    generators.NewRegistry(),
+		setupLoader: setup.NewLoader(),
 	}
 }
 
@@ -395,16 +399,79 @@ func convertSideEffects(effects []instrument.SideEffect) []SideEffect {
 }
 
 func (h *Handler) handleSetup(resp Response, req Request) Response {
-	resp.Status = "error"
-	resp.Code = ErrInternalError
-	resp.Message = "setup command not yet implemented"
+	if req.File == "" {
+		resp.Status = "error"
+		resp.Code = ErrInvalidRequest
+		resp.Message = "setup command requires a file path"
+		return resp
+	}
+	if req.Scope == "" {
+		resp.Status = "error"
+		resp.Code = ErrInvalidRequest
+		resp.Message = "setup command requires a scope"
+		return resp
+	}
+	if !req.Level.IsValid() {
+		resp.Status = "error"
+		resp.Code = ErrInvalidRequest
+		resp.Message = fmt.Sprintf("setup command requires a valid level, got %q", req.Level)
+		return resp
+	}
+
+	if _, err := os.Stat(req.File); err != nil {
+		resp.Status = "error"
+		resp.Code = ErrFileNotFound
+		resp.Message = fmt.Sprintf("setup file not found: %s", req.File)
+		return resp
+	}
+
+	var parentCtxJSON json.RawMessage
+	if req.ParentContext != nil {
+		data, err := json.Marshal(req.ParentContext)
+		if err != nil {
+			resp.Status = "error"
+			resp.Code = ErrInternalError
+			resp.Message = fmt.Sprintf("marshaling parent context: %v", err)
+			return resp
+		}
+		parentCtxJSON = data
+	}
+
+	h.log.Debug("Running setup", "file", req.File, "scope", req.Scope, "level", req.Level)
+
+	ctx, err := h.setupLoader.RunSetup(req.File, req.Scope, string(req.Level), req.ProjectRoot, parentCtxJSON)
+	if err != nil {
+		resp.Status = "error"
+		resp.Code = ErrInternalError
+		resp.Message = fmt.Sprintf("setup failed: %v", err)
+		return resp
+	}
+
+	resp.Status = "setup"
+	ctxCopy := json.RawMessage(ctx)
+	resp.SetupContext = &ctxCopy
 	return resp
 }
 
 func (h *Handler) handleTeardown(resp Response, req Request) Response {
-	resp.Status = "error"
-	resp.Code = ErrInternalError
-	resp.Message = "teardown command not yet implemented"
+	if req.Scope == "" {
+		resp.Status = "error"
+		resp.Code = ErrInvalidRequest
+		resp.Message = "teardown command requires a scope"
+		return resp
+	}
+	if !req.Level.IsValid() {
+		resp.Status = "error"
+		resp.Code = ErrInvalidRequest
+		resp.Message = fmt.Sprintf("teardown command requires a valid level, got %q", req.Level)
+		return resp
+	}
+
+	h.log.Debug("Running teardown", "scope", req.Scope, "level", req.Level)
+
+	h.setupLoader.Teardown(req.Scope, string(req.Level))
+
+	resp.Status = "teardown_ack"
 	return resp
 }
 
@@ -454,6 +521,7 @@ func (h *Handler) Registry() *generators.Registry {
 
 func (h *Handler) handleShutdown(resp Response) Response {
 	h.registry.Close()
+	h.setupLoader.Close()
 	resp.Status = "shutdown_ack"
 	return resp
 }
@@ -468,4 +536,3 @@ func (h *Handler) send(resp Response) error {
 	_, err = io.WriteString(h.writer, line)
 	return err
 }
-

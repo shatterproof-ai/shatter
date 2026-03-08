@@ -19,8 +19,8 @@ func FuzzProtocolParse(f *testing.F) {
 		reqJSON(3, "instrument", `"file":"src/main.go"`),
 		reqJSON(4, "execute", `"file":"src/main.go","function":"Foo","inputs":[1,2]`),
 		reqJSON(5, "shutdown"),
-		reqJSON(6, "setup", `"file":"./s.ts","function":"fn1","mode":"per_function"`),
-		reqJSON(7, "teardown", `"function":"fn1"`),
+		reqJSON(6, "setup", `"file":"./s.ts","scope":"fn1","level":"function"`),
+		reqJSON(7, "teardown", `"scope":"fn1","level":"function"`),
 		reqJSON(8, "generate", `"file":"./g.wasm","name":"User","kind":"type_name"`),
 		// Edge cases
 		`{}`,
@@ -54,7 +54,7 @@ func FuzzRequestDeserialize(f *testing.F) {
 		`{"protocol_version":"0.1.0","id":2,"command":"analyze","file":"main.go","function":"Foo"}`,
 		`{"protocol_version":"0.1.0","id":3,"command":"execute","file":"x.go","function":"F","inputs":[1,"hello",true,null]}`,
 		`{"protocol_version":"0.1.0","id":4,"command":"generate","file":"g.wasm","name":"User","kind":"type_name","recipe":{"seed":42}}`,
-		`{"protocol_version":"0.1.0","id":5,"command":"setup","file":"s.ts","function":"fn1","mode":"per_execution"}`,
+		`{"protocol_version":"0.1.0","id":5,"command":"setup","file":"s.ts","scope":"fn1","level":"execution"}`,
 		`{}`,
 		`{"command":null}`,
 		`{"id":"not_a_number"}`,
@@ -164,6 +164,34 @@ func FuzzObjectFieldDeserialize(f *testing.F) {
 		}
 		var field2 ObjectField
 		json.Unmarshal(remarshaled, &field2) //nolint:errcheck
+	})
+}
+
+// FuzzSetupContextStackDeserialize fuzzes the SetupContextStack type which
+// carries layered setup state through the protocol.
+func FuzzSetupContextStackDeserialize(f *testing.F) {
+	seeds := []string{
+		`{"contexts":[]}`,
+		`{"contexts":[{"level":"session","context":{"id":"s1"}}]}`,
+		`{"contexts":[{"level":"session","context":{}},{"level":"function","context":{"db":"test"}}]}`,
+		`{}`,
+		`{"contexts":null}`,
+		`{"contexts":[{"level":"bogus","context":null}]}`,
+	}
+	for _, s := range seeds {
+		f.Add([]byte(s))
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		var stack SetupContextStack
+		if err := json.Unmarshal(data, &stack); err != nil {
+			return
+		}
+		remarshaled, err := json.Marshal(stack)
+		if err != nil {
+			return
+		}
+		var stack2 SetupContextStack
+		json.Unmarshal(remarshaled, &stack2) //nolint:errcheck
 	})
 }
 

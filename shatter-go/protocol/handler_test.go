@@ -595,26 +595,48 @@ func TestGenerateWithoutNameReturnsError(t *testing.T) {
 	}
 }
 
-func TestSetupTeardownStubsTableDriven(t *testing.T) {
+func TestSetupValidationTableDriven(t *testing.T) {
 	tests := []struct {
-		name    string
-		request string
-		wantID  int
+		name     string
+		request  string
+		wantID   int
+		wantCode string
 	}{
 		{
-			name:    "setup per_function",
-			request: reqJSON(20, "setup", `"file":"./setup.ts","function":"fn1","mode":"per_function"`),
-			wantID:  20,
+			name:     "setup missing file",
+			request:  reqJSON(20, "setup", `"scope":"fn1","level":"function"`),
+			wantID:   20,
+			wantCode: ErrInvalidRequest,
 		},
 		{
-			name:    "setup per_execution",
-			request: reqJSON(21, "setup", `"file":"./setup.ts","function":"fn1","mode":"per_execution"`),
-			wantID:  21,
+			name:     "setup missing scope",
+			request:  reqJSON(21, "setup", `"file":"./setup.go","level":"function"`),
+			wantID:   21,
+			wantCode: ErrInvalidRequest,
 		},
 		{
-			name:    "teardown",
-			request: reqJSON(22, "teardown", `"function":"fn1"`),
-			wantID:  22,
+			name:     "setup invalid level",
+			request:  reqJSON(22, "setup", `"file":"./setup.go","scope":"fn1","level":"bogus"`),
+			wantID:   22,
+			wantCode: ErrInvalidRequest,
+		},
+		{
+			name:     "setup file not found",
+			request:  reqJSON(23, "setup", `"file":"./nonexistent.go","scope":"fn1","level":"function"`),
+			wantID:   23,
+			wantCode: ErrFileNotFound,
+		},
+		{
+			name:     "teardown missing scope",
+			request:  reqJSON(24, "teardown", `"level":"function"`),
+			wantID:   24,
+			wantCode: ErrInvalidRequest,
+		},
+		{
+			name:     "teardown invalid level",
+			request:  reqJSON(25, "teardown", `"scope":"fn1","level":"bogus"`),
+			wantID:   25,
+			wantCode: ErrInvalidRequest,
 		},
 	}
 
@@ -624,19 +646,54 @@ func TestSetupTeardownStubsTableDriven(t *testing.T) {
 			if resp.Status != "error" {
 				t.Errorf("status = %q, want error", resp.Status)
 			}
-			if resp.Code != ErrInternalError {
-				t.Errorf("code = %q, want internal_error", resp.Code)
-			}
-			if !strings.Contains(resp.Message, "not yet implemented") {
-				t.Errorf("message = %q, should contain 'not yet implemented'", resp.Message)
+			if resp.Code != tt.wantCode {
+				t.Errorf("code = %q, want %q", resp.Code, tt.wantCode)
 			}
 			if resp.ID != tt.wantID {
 				t.Errorf("id = %d, want %d", resp.ID, tt.wantID)
 			}
 			if resp.ProtocolVersion != ProtocolVersion {
-				t.Errorf("protocol_version = %q, want 0.1.0", resp.ProtocolVersion)
+				t.Errorf("protocol_version = %q, want %s", resp.ProtocolVersion, ProtocolVersion)
 			}
 		})
+	}
+}
+
+func TestSetupWithValidFileReturnsContext(t *testing.T) {
+	// Create a temp Go file that prints setup context JSON to stdout.
+	tmp := filepath.Join(t.TempDir(), "setup_fixture.go")
+	src := "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"{\\\"db\\\":\\\"test_db\\\",\\\"ready\\\":true}\")\n}\n"
+	if err := os.WriteFile(tmp, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	req := reqJSON(30, "setup", fmt.Sprintf(`"file":"%s","scope":"myFunc","level":"function"`, tmp))
+	resp := sendRecv(t, req)
+	if resp.Status != "setup" {
+		t.Fatalf("status = %q, want setup (message: %s)", resp.Status, resp.Message)
+	}
+	if resp.SetupContext == nil {
+		t.Fatal("setup_context must not be nil")
+	}
+	// Verify the context contains the expected JSON
+	var ctx map[string]interface{}
+	if err := json.Unmarshal(*resp.SetupContext, &ctx); err != nil {
+		t.Fatalf("unmarshal setup_context: %v", err)
+	}
+	if ctx["db"] != "test_db" {
+		t.Errorf("setup_context.db = %v, want test_db", ctx["db"])
+	}
+	if ctx["ready"] != true {
+		t.Errorf("setup_context.ready = %v, want true", ctx["ready"])
+	}
+}
+
+func TestTeardownReturnsAck(t *testing.T) {
+	resp := sendRecv(t, reqJSON(31, "teardown", `"scope":"myFunc","level":"function"`))
+	if resp.Status != "teardown_ack" {
+		t.Errorf("status = %q, want teardown_ack", resp.Status)
+	}
+	if resp.ID != 31 {
+		t.Errorf("id = %d, want 31", resp.ID)
 	}
 }
 
@@ -683,8 +740,8 @@ func TestGenerateUnsupportedExtensionTableDriven(t *testing.T) {
 func TestNewCommandsInConversationSequence(t *testing.T) {
 	responses := conversation(t,
 		reqJSON(1, "handshake", `"capabilities":["analyze"]`),
-		reqJSON(2, "setup", `"file":"./setup.ts","function":"fn1","mode":"per_function"`),
-		reqJSON(3, "teardown", `"function":"fn1"`),
+		reqJSON(2, "setup", `"file":"./nonexistent.go","scope":"fn1","level":"function"`),
+		reqJSON(3, "teardown", `"scope":"fn1","level":"function"`),
 		reqJSON(4, "generate", `"file":"./gen.ts","name":"User","kind":"type_name"`),
 		reqJSON(5, "shutdown"),
 	)
@@ -694,13 +751,13 @@ func TestNewCommandsInConversationSequence(t *testing.T) {
 	if responses[0].Status != "handshake" {
 		t.Errorf("response[0].status = %q, want handshake", responses[0].Status)
 	}
-	if responses[1].Status != "error" || responses[1].Code != "internal_error" {
-		t.Errorf("response[1] = status:%q code:%q, want error/internal_error", responses[1].Status, responses[1].Code)
+	if responses[1].Status != "error" || responses[1].Code != ErrFileNotFound {
+		t.Errorf("response[1] = status:%q code:%q, want error/file_not_found", responses[1].Status, responses[1].Code)
 	}
-	if responses[2].Status != "error" || responses[2].Code != "internal_error" {
-		t.Errorf("response[2] = status:%q code:%q, want error/internal_error", responses[2].Status, responses[2].Code)
+	if responses[2].Status != "teardown_ack" {
+		t.Errorf("response[2].status = %q, want teardown_ack", responses[2].Status)
 	}
-	if responses[3].Status != "error" || responses[3].Code != "internal_error" {
+	if responses[3].Status != "error" || responses[3].Code != ErrInternalError {
 		t.Errorf("response[3] = status:%q code:%q, want error/internal_error", responses[3].Status, responses[3].Code)
 	}
 	if responses[4].Status != "shutdown_ack" {
@@ -710,23 +767,27 @@ func TestNewCommandsInConversationSequence(t *testing.T) {
 
 func TestNewCommandRequestDeserialization(t *testing.T) {
 	tests := []struct {
-		name     string
-		json     string
-		wantCmd  string
-		wantFile string
-		wantFunc string
+		name      string
+		json      string
+		wantCmd   string
+		wantFile  string
+		wantScope string
+		wantLevel SetupLevel
 	}{
 		{
-			name:     "setup request",
-			json:     reqJSON(1, "setup", `"file":"./setup.ts","function":"fn1","mode":"per_function"`),
-			wantCmd:  "setup",
-			wantFile: "./setup.ts",
-			wantFunc: "fn1",
+			name:      "setup request",
+			json:      reqJSON(1, "setup", `"file":"./setup.go","scope":"fn1","level":"function"`),
+			wantCmd:   "setup",
+			wantFile:  "./setup.go",
+			wantScope: "fn1",
+			wantLevel: SetupLevelFunction,
 		},
 		{
-			name:    "teardown request",
-			json:    reqJSON(2, "teardown", `"function":"fn1"`),
-			wantCmd: "teardown",
+			name:      "teardown request",
+			json:      reqJSON(2, "teardown", `"scope":"fn1","level":"function"`),
+			wantCmd:   "teardown",
+			wantScope: "fn1",
+			wantLevel: SetupLevelFunction,
 		},
 		{
 			name:     "generate request",
@@ -748,34 +809,46 @@ func TestNewCommandRequestDeserialization(t *testing.T) {
 			if tt.wantFile != "" && req.File != tt.wantFile {
 				t.Errorf("file = %q, want %q", req.File, tt.wantFile)
 			}
-			if tt.wantFunc != "" {
-				if req.Function == nil || *req.Function != tt.wantFunc {
-					got := "<nil>"
-					if req.Function != nil {
-						got = *req.Function
-					}
-					t.Errorf("function = %q, want %q", got, tt.wantFunc)
-				}
+			if tt.wantScope != "" && req.Scope != tt.wantScope {
+				t.Errorf("scope = %q, want %q", req.Scope, tt.wantScope)
+			}
+			if tt.wantLevel != "" && req.Level != tt.wantLevel {
+				t.Errorf("level = %q, want %q", req.Level, tt.wantLevel)
 			}
 		})
 	}
 }
 
-func TestSetupRequestDeserializesMode(t *testing.T) {
+func TestSetupRequestDeserializesLevel(t *testing.T) {
 	tests := []struct {
-		name     string
-		json     string
-		wantMode string
+		name      string
+		json      string
+		wantLevel SetupLevel
+		wantScope string
 	}{
 		{
-			name:     "per_function",
-			json:     reqJSON(1, "setup", `"file":"./s.ts","function":"f","mode":"per_function"`),
-			wantMode: "per_function",
+			name:      "session",
+			json:      reqJSON(1, "setup", `"file":"./s.go","scope":"proj","level":"session"`),
+			wantLevel: SetupLevelSession,
+			wantScope: "proj",
 		},
 		{
-			name:     "per_execution",
-			json:     reqJSON(1, "setup", `"file":"./s.ts","function":"f","mode":"per_execution"`),
-			wantMode: "per_execution",
+			name:      "file",
+			json:      reqJSON(1, "setup", `"file":"./s.go","scope":"mod","level":"file"`),
+			wantLevel: SetupLevelFile,
+			wantScope: "mod",
+		},
+		{
+			name:      "function",
+			json:      reqJSON(1, "setup", `"file":"./s.go","scope":"fn1","level":"function"`),
+			wantLevel: SetupLevelFunction,
+			wantScope: "fn1",
+		},
+		{
+			name:      "execution",
+			json:      reqJSON(1, "setup", `"file":"./s.go","scope":"fn1","level":"execution"`),
+			wantLevel: SetupLevelExecution,
+			wantScope: "fn1",
 		},
 	}
 	for _, tt := range tests {
@@ -784,10 +857,41 @@ func TestSetupRequestDeserializesMode(t *testing.T) {
 			if err := json.Unmarshal([]byte(tt.json), &req); err != nil {
 				t.Fatalf("unmarshal: %v", err)
 			}
-			if req.Mode != tt.wantMode {
-				t.Errorf("mode = %q, want %q", req.Mode, tt.wantMode)
+			if req.Level != tt.wantLevel {
+				t.Errorf("level = %q, want %q", req.Level, tt.wantLevel)
+			}
+			if req.Scope != tt.wantScope {
+				t.Errorf("scope = %q, want %q", req.Scope, tt.wantScope)
 			}
 		})
+	}
+}
+
+func TestSetupRequestWithParentContextDeserializes(t *testing.T) {
+	reqStr := reqJSON(1, "setup", `"file":"./s.go","scope":"fn1","level":"function","parent_context":{"contexts":[{"level":"session","context":{"id":"s1"}},{"level":"file","context":{"path":"f.go"}}]}`)
+	var req Request
+	if err := json.Unmarshal([]byte(reqStr), &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if req.ParentContext == nil {
+		t.Fatal("parent_context must not be nil")
+	}
+	if len(req.ParentContext.Contexts) != 2 {
+		t.Fatalf("parent_context.contexts len = %d, want 2", len(req.ParentContext.Contexts))
+	}
+	if req.ParentContext.Contexts[0].Level != SetupLevelSession {
+		t.Errorf("contexts[0].level = %q, want session", req.ParentContext.Contexts[0].Level)
+	}
+	if req.ParentContext.Contexts[1].Level != SetupLevelFile {
+		t.Errorf("contexts[1].level = %q, want file", req.ParentContext.Contexts[1].Level)
+	}
+	// Verify the nested context values are preserved
+	var ctx0 map[string]interface{}
+	if err := json.Unmarshal(*req.ParentContext.Contexts[0].Context, &ctx0); err != nil {
+		t.Fatalf("unmarshal contexts[0].context: %v", err)
+	}
+	if ctx0["id"] != "s1" {
+		t.Errorf("contexts[0].context.id = %v, want s1", ctx0["id"])
 	}
 }
 
