@@ -9,7 +9,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use shatter_core::analysis_cache::AnalysisCache;
 use shatter_core::batch_analyze::{self, FunctionRegistry};
 use shatter_core::behavior::BehaviorMap;
-use shatter_core::cache::{BehaviorMapCache, SpecCache};
+use shatter_core::cache::BehaviorMapCache;
 use shatter_core::call_graph::CallGraph;
 use shatter_core::config::{self as shatter_config, ShatterConfig};
 use shatter_core::discovery::{self, DiscoveryOptions, Language as DiscoveryLanguage};
@@ -18,12 +18,13 @@ use shatter_core::executability;
 use shatter_core::export;
 use shatter_core::frontend::{Frontend, FrontendConfig};
 use shatter_core::log_level::LogLevel;
+use shatter_core::test_impact::{self, CoverageMap};
+use shatter_core::test_runner::{self, TestTier};
 use shatter_core::protocol::{Command as ProtoCommand, ResponseResult};
 use shatter_core::report;
 use shatter_core::scan_orchestrator::{self, ScanConfig, SkippedFunction};
 use shatter_core::spec::FileSpecBundle;
 use shatter_core::scope::{ScopeConfig, ScopeMatcher};
-use shatter_core::revalidation::{self, RevalidationVerdict};
 use shatter_core::snapshot;
 
 mod embedded_frontend;
@@ -660,40 +661,34 @@ enum CliCommand {
         memory_limit: Option<u64>,
     },
 
-    /// Revalidate cached behaviors against current code.
+    /// Run tests with impact analysis: only execute tests affected by changed files.
     ///
-    /// Re-executes previously-interesting inputs and classifies each as
-    /// confirmed, drift, flaky, regression, or severity change.
-    /// Exit code: 0 = no regressions/upgrades, 1 = regression or severity upgrade found.
-    Revalidate {
-        /// Source file to revalidate (e.g., "src/math.ts").
-        #[arg(required = true)]
-        source: String,
-
-        /// Cache directory containing behavior maps.
-        /// Falls back to SHATTER_CACHE_DIR env var, then `.shatter/cache/`.
-        #[arg(long, env = "SHATTER_CACHE_DIR")]
-        cache_dir: Option<PathBuf>,
-
-        /// Output format: "text" (default) or "json".
-        #[arg(long, default_value = "text")]
-        format: String,
-
-        /// Per-request timeout in seconds for frontend communication.
-        #[arg(long, default_value_t = 30)]
-        request_timeout: u64,
-
-        /// Execution timeout in seconds for each function invocation.
-        #[arg(long, default_value_t = 10)]
-        exec_timeout: u64,
-
-        /// Build timeout in seconds for compiling instrumented code.
-        #[arg(long, default_value_t = 30)]
-        build_timeout: u64,
-
-        /// Memory limit in MB for the frontend process.
+    /// Uses a coverage map to determine which tests touch which source files,
+    /// then queries git for changes and runs only the affected subset.
+    Test {
+        /// Run all tests, bypassing impact analysis.
         #[arg(long)]
-        memory_limit: Option<u64>,
+        all: bool,
+
+        /// Force coverage recording to refresh the coverage map.
+        #[arg(long)]
+        record: bool,
+
+        /// Run a specific test tier and write a success marker.
+        #[arg(long)]
+        tier: Option<String>,
+
+        /// Base git ref for change detection (default: HEAD).
+        #[arg(long, default_value = "HEAD")]
+        base: String,
+
+        /// Include untracked files in change detection.
+        #[arg(long)]
+        include_untracked: bool,
+
+        /// Dry run: show which tests would run without executing them.
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -945,18 +940,14 @@ async fn run_explore(
     let _scope_matcher = ScopeMatcher::new(&scope_config)
         .map_err(|e| format!("invalid scope config: {e}"))?;
 
-    let (cache, spec_cache) = if no_cache {
-        (None, None)
+    let cache = if no_cache {
+        None
     } else {
         let dir = match cache_dir {
             Some(p) => p.to_path_buf(),
             None => BehaviorMapCache::default_dir(&std::env::current_dir()?),
         };
-        let bm = BehaviorMapCache::new(dir.clone())
-            .map_err(|e| format!("failed to initialize cache: {e}"))?;
-        let sc = SpecCache::new(dir)
-            .map_err(|e| format!("failed to initialize spec cache: {e}"))?;
-        (Some(bm), Some(sc))
+        Some(BehaviorMapCache::new(dir).map_err(|e| format!("failed to initialize cache: {e}"))?)
     };
 
     let parsed: Vec<Target> = targets
@@ -1174,16 +1165,8 @@ async fn run_explore(
         let mut skipped_unexecutable: Vec<(String, Vec<executability::SkipReason>)> = Vec::new();
         let mut file_specs: Vec<shatter_core::spec::FunctionSpec> = Vec::new();
         for func in &functions {
-            // Skip fresh functions in incremental mode, but load cached spec if available.
+            // Skip fresh functions in incremental mode
             if fresh_set.contains(&func.name) {
-                if show_spec || detect_invariants {
-                    let function_id = format!("{}:{}", file_str, func.name);
-                    if let Some(ref sc) = spec_cache
-                        && let Ok(Some(cached_spec)) = sc.load(&function_id)
-                    {
-                        file_specs.push(cached_spec);
-                    }
-                }
                 continue;
             }
 
@@ -1389,14 +1372,6 @@ async fn run_explore(
                         } else {
                             shatter_core::spec::build_spec(&result, eq_classes, location, fingerprint)
                         };
-
-                        // Cache the spec for future incremental runs.
-                        if let Some(ref sc) = spec_cache
-                            && let Err(e) = sc.store(&function_id, &spec)
-                        {
-                            log::debug!("Failed to cache spec for {function_id}: {e}");
-                        }
-
                         if output_path.is_some() {
                             // Collect for file-level bundle output
                             file_specs.push(spec);
@@ -3024,274 +2999,6 @@ async fn run_stale(
     Ok(all_fresh)
 }
 
-/// Run the revalidate command: re-execute cached behaviors and classify drift.
-///
-/// Returns `Ok(true)` if no regressions or severity upgrades were found.
-// Each argument corresponds to a CLI flag; this is only called from one callsite.
-#[allow(clippy::too_many_arguments)] // CLI flag decomposition — single callsite
-async fn run_revalidate(
-    source: &str,
-    cache_dir: Option<&Path>,
-    format: &str,
-    request_timeout: u64,
-    exec_timeout: u64,
-    build_timeout: u64,
-    memory_limit: Option<u64>,
-    log_level: LogLevel,
-    project_dir: Option<&Path>,
-    use_color: bool,
-) -> Result<bool, Box<dyn std::error::Error>> {
-    let target = parse_target(source)?;
-    let file_str = target.file.to_string_lossy();
-    let project_root_str = resolve_project_root(project_dir, &target.file);
-    let colors = Colors::new(use_color);
-
-    // Resolve cache directory.
-    let cache_path = match cache_dir {
-        Some(p) => p.to_path_buf(),
-        None => BehaviorMapCache::default_dir(
-            &project_root_str
-                .as_ref()
-                .map(PathBuf::from)
-                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default()),
-        ),
-    };
-    let cache = BehaviorMapCache::new(cache_path)
-        .map_err(|e| format!("failed to initialize cache: {e}"))?;
-
-    // Spawn frontend for analyze + execute.
-    let req_timeout = Duration::from_secs(request_timeout);
-    let config = frontend_config(
-        target.language,
-        req_timeout,
-        log_level,
-        exec_timeout,
-        build_timeout,
-        memory_limit,
-        None,
-    )?;
-    let mut frontend = Frontend::spawn(&config).await.map_err(|e| {
-        format!(
-            "failed to spawn {} frontend: {e}",
-            target.language.label()
-        )
-    })?;
-
-    // Analyze to get current function list and compute fingerprints.
-    let analyze_response = frontend
-        .send(ProtoCommand::Analyze {
-            file: file_str.to_string(),
-            function: target.function.clone(),
-            project_root: project_root_str,
-        })
-        .await
-        .map_err(|e| format!("analyze failed: {e}"))?;
-
-    let functions = match &analyze_response.result {
-        ResponseResult::Analyze { functions } => functions.clone(),
-        ResponseResult::Error { code, message, .. } => {
-            shutdown_frontend(frontend).await;
-            return Err(format!("analyze error ({code:?}): {message}").into());
-        }
-        other => {
-            shutdown_frontend(frontend).await;
-            return Err(format!("unexpected analyze response: {other:?}").into());
-        }
-    };
-
-    let deep_fingerprints =
-        shatter_core::fingerprint::compute_deep_fingerprints(&target.file, &functions)
-            .unwrap_or_default();
-
-    // For each function, load cached behavior map and revalidate.
-    let mut all_reports: Vec<(String, Vec<revalidation::RevalidationReport>)> = Vec::new();
-    let mut revalidated_count = 0usize;
-    let mut skipped_count = 0usize;
-
-    for func in &functions {
-        let function_id = format!("{}:{}", file_str, func.name);
-        let bm = match cache.load(&function_id) {
-            Ok(Some(bm)) if !bm.behaviors.is_empty() => bm,
-            _ => {
-                skipped_count += 1;
-                continue;
-            }
-        };
-
-        let current_fp = deep_fingerprints.get(&func.name).map(|s| s.as_str());
-
-        match revalidation::revalidate_behaviors(&mut frontend, &bm, current_fp).await {
-            Ok(reports) => {
-                revalidated_count += reports.len();
-                all_reports.push((function_id, reports));
-            }
-            Err(e) => {
-                log::warn!("revalidation failed for {}: {e}", func.name);
-                skipped_count += 1;
-            }
-        }
-    }
-
-    shutdown_frontend(frontend).await;
-
-    // Tally verdict counts.
-    let mut confirmed = 0usize;
-    let mut drift = 0usize;
-    let mut flaky = 0usize;
-    let mut regression = 0usize;
-    let mut sev_down = 0usize;
-    let mut sev_up = 0usize;
-
-    for (_, reports) in &all_reports {
-        for r in reports {
-            match r.verdict {
-                RevalidationVerdict::Confirmed => confirmed += 1,
-                RevalidationVerdict::ExpectedDrift => drift += 1,
-                RevalidationVerdict::Flaky => flaky += 1,
-                RevalidationVerdict::PotentialRegression => regression += 1,
-                RevalidationVerdict::SeverityDowngrade => sev_down += 1,
-                RevalidationVerdict::SeverityUpgrade => sev_up += 1,
-            }
-        }
-    }
-
-    let has_regressions = regression > 0 || sev_up > 0;
-
-    if format == "json" {
-        let flat_reports: Vec<&revalidation::RevalidationReport> =
-            all_reports.iter().flat_map(|(_, rs)| rs.iter()).collect();
-        let output = serde_json::json!({
-            "reports": flat_reports,
-            "summary": {
-                "total": revalidated_count,
-                "confirmed": confirmed,
-                "expected_drift": drift,
-                "flaky": flaky,
-                "potential_regression": regression,
-                "severity_downgrade": sev_down,
-                "severity_upgrade": sev_up,
-                "skipped": skipped_count,
-            },
-            "has_regressions": has_regressions,
-        });
-        println!("{}", serde_json::to_string_pretty(&output)?);
-    } else {
-        // Text output: per-function summary with verdict labels.
-        for (function_id, reports) in &all_reports {
-            let dominant = dominant_verdict(reports);
-            let label = verdict_label(dominant, &colors);
-            let summary = verdict_summary_line(reports);
-            println!("{function_id} {label} {summary}");
-
-            // Show non-confirmed details.
-            for r in reports {
-                if r.verdict != RevalidationVerdict::Confirmed {
-                    let input_str = serde_json::to_string(&r.input_vector)
-                        .unwrap_or_else(|_| "?".to_string());
-                    println!("  Input: {input_str} -> {}", r.verdict);
-                }
-            }
-        }
-
-        if all_reports.is_empty() && skipped_count > 0 {
-            println!("No cached behaviors found to revalidate.");
-        }
-
-        // Summary line.
-        println!();
-        println!(
-            "Summary: {} revalidated, {} confirmed, {} drift, {} regression, {} flaky, {} severity changes{}",
-            revalidated_count,
-            confirmed,
-            drift,
-            regression,
-            flaky,
-            sev_down + sev_up,
-            if skipped_count > 0 {
-                format!(", {} skipped", skipped_count)
-            } else {
-                String::new()
-            },
-        );
-
-        if has_regressions {
-            println!(
-                "{}Exit code: 1 (regressions or severity upgrades found){}",
-                colors.bold, colors.reset,
-            );
-        }
-    }
-
-    Ok(!has_regressions)
-}
-
-/// Pick the most severe verdict from a set of reports for the function-level label.
-fn dominant_verdict(reports: &[revalidation::RevalidationReport]) -> RevalidationVerdict {
-    let dominated_order = |v: &RevalidationVerdict| match v {
-        RevalidationVerdict::SeverityUpgrade => 5,
-        RevalidationVerdict::PotentialRegression => 4,
-        RevalidationVerdict::Flaky => 3,
-        RevalidationVerdict::SeverityDowngrade => 2,
-        RevalidationVerdict::ExpectedDrift => 1,
-        RevalidationVerdict::Confirmed => 0,
-    };
-    reports
-        .iter()
-        .map(|r| r.verdict)
-        .max_by_key(dominated_order)
-        .unwrap_or(RevalidationVerdict::Confirmed)
-}
-
-fn verdict_label(verdict: RevalidationVerdict, colors: &Colors) -> String {
-    format!(
-        "{}{}{}",
-        colors.bold,
-        match verdict {
-            RevalidationVerdict::Confirmed => "[CONFIRMED]",
-            RevalidationVerdict::ExpectedDrift => "[DRIFT]",
-            RevalidationVerdict::Flaky => "[FLAKY]",
-            RevalidationVerdict::PotentialRegression => "[REGRESSION]",
-            RevalidationVerdict::SeverityDowngrade => "[SEVERITY↓]",
-            RevalidationVerdict::SeverityUpgrade => "[SEVERITY↑]",
-        },
-        colors.reset,
-    )
-}
-
-fn verdict_summary_line(reports: &[revalidation::RevalidationReport]) -> String {
-    let total = reports.len();
-    let confirmed = reports
-        .iter()
-        .filter(|r| r.verdict == RevalidationVerdict::Confirmed)
-        .count();
-    if confirmed == total {
-        format!("{total}/{total} behaviors confirmed")
-    } else {
-        let mut parts = Vec::new();
-        let counts: Vec<(RevalidationVerdict, usize)> = [
-            RevalidationVerdict::Confirmed,
-            RevalidationVerdict::ExpectedDrift,
-            RevalidationVerdict::Flaky,
-            RevalidationVerdict::PotentialRegression,
-            RevalidationVerdict::SeverityDowngrade,
-            RevalidationVerdict::SeverityUpgrade,
-        ]
-        .iter()
-        .map(|v| {
-            (
-                *v,
-                reports.iter().filter(|r| r.verdict == *v).count(),
-            )
-        })
-        .filter(|(_, c)| *c > 0)
-        .collect();
-        for (v, c) in counts {
-            parts.push(format!("{c} {v}"));
-        }
-        parts.join(", ")
-    }
-}
-
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -3561,6 +3268,25 @@ async fn main() -> ExitCode {
             output,
         } => run_build_frontend(&language, config.as_deref(), output.as_deref())
             .map_err(|e| e.into()),
+        CliCommand::Test {
+            all,
+            record,
+            tier,
+            base,
+            include_untracked,
+            dry_run,
+        } => {
+            match run_test(all, record, tier, &base, include_untracked, dry_run, use_color) {
+                Ok(success) => {
+                    return if success {
+                        ExitCode::SUCCESS
+                    } else {
+                        ExitCode::FAILURE
+                    };
+                }
+                Err(e) => Err(e),
+            }
+        }
         CliCommand::Stale {
             source,
             spec,
@@ -3592,39 +3318,6 @@ async fn main() -> ExitCode {
                 Err(e) => Err(e),
             }
         }
-        CliCommand::Revalidate {
-            source,
-            cache_dir,
-            format,
-            request_timeout,
-            exec_timeout,
-            build_timeout,
-            memory_limit,
-        } => {
-            match run_revalidate(
-                &source,
-                cache_dir.as_deref(),
-                &format,
-                request_timeout,
-                exec_timeout,
-                build_timeout,
-                memory_limit,
-                log_level,
-                cli.project_dir.as_deref(),
-                use_color,
-            )
-            .await
-            {
-                Ok(no_regressions) => {
-                    return if no_regressions {
-                        ExitCode::SUCCESS
-                    } else {
-                        ExitCode::FAILURE
-                    };
-                }
-                Err(e) => Err(e),
-            }
-        }
     };
 
     match result {
@@ -3634,6 +3327,217 @@ async fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Run tests with impact analysis, tier execution, or coverage recording.
+fn run_test(
+    all: bool,
+    record: bool,
+    tier: Option<String>,
+    base: &str,
+    include_untracked: bool,
+    dry_run: bool,
+    use_color: bool,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let project_root = std::env::current_dir()?;
+    let shatter_dir = project_root.join(".shatter");
+
+    // --- Tier mode: run predefined tier commands ---
+    if let Some(tier_str) = &tier {
+        let tier_val: TestTier = tier_str
+            .parse()
+            .map_err(|e: String| -> Box<dyn std::error::Error> { e.into() })?;
+        eprintln!("Running {} tier...", tier_val);
+        let success = test_runner::run_tier(tier_val, &project_root)?;
+        if success {
+            let commit = test_runner::git_head_commit(&project_root).unwrap_or_default();
+            test_impact::write_tier_marker(&shatter_dir, tier_val.as_str(), &commit)?;
+            eprintln!("Tier {tier_val} passed. Marker written.");
+        } else {
+            eprintln!("Tier {tier_val} FAILED.");
+        }
+        return Ok(success);
+    }
+
+    // --- Record mode: run all tests with coverage instrumentation ---
+    if record {
+        eprintln!("Recording coverage...");
+        let runners = test_runner::detect_runners(&project_root);
+        if runners.is_empty() {
+            eprintln!("No test runners detected.");
+            return Ok(false);
+        }
+
+        let mut map = CoverageMap::empty();
+        let mut all_success = true;
+
+        for runner in &runners {
+            eprintln!("  Running {} in {}...", runner.kind, runner.root.display());
+            match test_runner::run_with_coverage(runner, &project_root) {
+                Ok(coverage) => {
+                    if !coverage.run_result.success {
+                        eprintln!("  {} tests FAILED", runner.kind);
+                        all_success = false;
+                    }
+                    map.update_from_coverage(&coverage.test_file_map, &project_root)?;
+                }
+                Err(e) => {
+                    eprintln!("  {} coverage failed: {e}", runner.kind);
+                    all_success = false;
+                }
+            }
+        }
+
+        map.save(&shatter_dir)?;
+        eprintln!(
+            "Coverage map saved ({} test entries).",
+            map.data.entries.len()
+        );
+        return Ok(all_success);
+    }
+
+    // --- All mode: run all tests without filtering ---
+    if all {
+        eprintln!("Running all tests...");
+        let runners = test_runner::detect_runners(&project_root);
+        let mut all_success = true;
+        for runner in &runners {
+            eprintln!("  Running {} in {}...", runner.kind, runner.root.display());
+            let result = test_runner::run_tests(runner, &[])?;
+            if !result.success {
+                eprintln!("  {} FAILED ({:.1}s)", runner.kind, result.duration.as_secs_f64());
+                all_success = false;
+            } else {
+                eprintln!("  {} passed ({:.1}s)", runner.kind, result.duration.as_secs_f64());
+            }
+        }
+        return Ok(all_success);
+    }
+
+    // --- Default: impact analysis ---
+    let map = match CoverageMap::load(&shatter_dir) {
+        Ok(m) => m,
+        Err(test_impact::TiaError::NoCoverageMap { .. }) => {
+            eprintln!("No coverage map found. Run `shatter test --record` first to build one.");
+            return Ok(false);
+        }
+        Err(e) => return Err(e.into()),
+    };
+
+    let scm_provider = shatter_core::scm::detect_provider(&project_root)?;
+    use shatter_core::scm::ScmProvider;
+    let changed = if base == "HEAD" {
+        scm_provider.changed_files(&project_root, include_untracked)?
+    } else {
+        let mut files = scm_provider.diff_files(&project_root, base)?;
+        if include_untracked {
+            let uncommitted = scm_provider.changed_files(&project_root, true)?;
+            for f in uncommitted {
+                if !files.contains(&f) {
+                    files.push(f);
+                }
+            }
+        }
+        files
+    };
+
+    // Convert to relative paths
+    let changed_relative: Vec<String> = changed
+        .iter()
+        .filter_map(|p| p.strip_prefix(&project_root).ok())
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
+
+    if changed_relative.is_empty() {
+        eprintln!("No changed files detected. Nothing to test.");
+        return Ok(true);
+    }
+
+    let query = map.query_affected(&changed_relative);
+
+    if dry_run {
+        let header = format!("{} changed file(s), {} affected test(s):",
+            query.changed_files.len(),
+            query.affected_tests.len());
+        if use_color {
+            eprintln!("\x1b[1m{header}\x1b[0m");
+        } else {
+            eprintln!("{header}");
+        }
+        eprintln!();
+        eprintln!("Changed files:");
+        for f in &query.changed_files {
+            eprintln!("  {f}");
+        }
+        eprintln!();
+        eprintln!("Affected tests:");
+        for t in &query.affected_tests {
+            eprintln!("  {t}");
+        }
+        if !query.unmapped_files.is_empty() {
+            eprintln!();
+            eprintln!("Unmapped files (not in coverage map):");
+            for f in &query.unmapped_files {
+                eprintln!("  {f}");
+            }
+        }
+        return Ok(true);
+    }
+
+    if query.affected_tests.is_empty() {
+        if query.unmapped_files.is_empty() {
+            eprintln!("No affected tests found. All changes are in untested files.");
+        } else {
+            eprintln!(
+                "No affected tests found. {} file(s) not in coverage map — consider `shatter test --record`.",
+                query.unmapped_files.len()
+            );
+        }
+        return Ok(true);
+    }
+
+    eprintln!(
+        "Running {} affected test(s) for {} changed file(s)...",
+        query.affected_tests.len(),
+        query.changed_files.len()
+    );
+
+    let runners = test_runner::detect_runners(&project_root);
+    let mut all_success = true;
+    for runner in &runners {
+        // Filter tests relevant to this runner
+        let runner_prefix = match runner.kind {
+            test_runner::RunnerKind::Cargo => "",
+            test_runner::RunnerKind::Vitest => "shatter-ts",
+            test_runner::RunnerKind::GoTest => "shatter-go",
+        };
+
+        let runner_tests: Vec<String> = if runner_prefix.is_empty() {
+            query.affected_tests.clone()
+        } else {
+            query
+                .affected_tests
+                .iter()
+                .filter(|t| t.contains(runner_prefix))
+                .cloned()
+                .collect()
+        };
+
+        if runner_tests.is_empty() {
+            continue;
+        }
+
+        eprintln!("  Running {} ({} test(s))...", runner.kind, runner_tests.len());
+        let result = test_runner::run_tests(runner, &runner_tests)?;
+        if !result.success {
+            eprintln!("  {} FAILED ({:.1}s)", runner.kind, result.duration.as_secs_f64());
+            all_success = false;
+        } else {
+            eprintln!("  {} passed ({:.1}s)", runner.kind, result.duration.as_secs_f64());
+        }
+    }
+
+    Ok(all_success)
 }
 
 /// Build a custom frontend binary with user-provided native generators.
@@ -5282,102 +5186,63 @@ mod tests {
     }
 
     #[test]
-    fn cli_parses_revalidate_subcommand() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "revalidate",
-            "src/math.ts",
-        ]);
+    fn cli_parses_test_subcommand_defaults() {
+        let cli = Cli::parse_from(["shatter", "test"]);
         match cli.command {
-            CliCommand::Revalidate { source, cache_dir, format, request_timeout, exec_timeout, .. } => {
-                assert_eq!(source, "src/math.ts");
-                assert!(cache_dir.is_none());
-                assert_eq!(format, "text");
-                assert_eq!(request_timeout, 30);
-                assert_eq!(exec_timeout, 10);
+            CliCommand::Test { all, record, tier, base, include_untracked, dry_run } => {
+                assert!(!all);
+                assert!(!record);
+                assert!(tier.is_none());
+                assert_eq!(base, "HEAD");
+                assert!(!include_untracked);
+                assert!(!dry_run);
             }
-            _ => panic!("expected Revalidate command"),
+            _ => panic!("expected Test command"),
         }
     }
 
     #[test]
-    fn cli_parses_revalidate_with_json_format() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "revalidate",
-            "--format", "json",
-            "src/math.ts",
-        ]);
+    fn cli_parses_test_all() {
+        let cli = Cli::parse_from(["shatter", "test", "--all"]);
         match cli.command {
-            CliCommand::Revalidate { format, .. } => {
-                assert_eq!(format, "json");
+            CliCommand::Test { all, .. } => {
+                assert!(all);
             }
-            _ => panic!("expected Revalidate command"),
+            _ => panic!("expected Test command"),
         }
     }
 
     #[test]
-    fn dominant_verdict_picks_most_severe() {
-        use shatter_core::revalidation::{RevalidationReport, RevalidationVerdict};
-        use shatter_core::interesting_pool::Severity;
-        let make = |v: RevalidationVerdict| RevalidationReport {
-            function_name: "test".to_string(),
-            input_vector: vec![],
-            expected_branch_path: vec![],
-            observed_branch_path: vec![],
-            expected_severity: Severity::RarePath,
-            observed_severity: Some(Severity::RarePath),
-            verdict: v,
-            timestamp_epoch_ms: 0,
-        };
-        let reports = vec![
-            make(RevalidationVerdict::Confirmed),
-            make(RevalidationVerdict::ExpectedDrift),
-            make(RevalidationVerdict::PotentialRegression),
-        ];
-        assert_eq!(
-            super::dominant_verdict(&reports),
-            RevalidationVerdict::PotentialRegression,
-        );
-    }
-
-    #[test]
-    fn verdict_summary_all_confirmed() {
-        use shatter_core::revalidation::{RevalidationReport, RevalidationVerdict};
-        use shatter_core::interesting_pool::Severity;
-        let make = |v: RevalidationVerdict| RevalidationReport {
-            function_name: "test".to_string(),
-            input_vector: vec![],
-            expected_branch_path: vec![],
-            observed_branch_path: vec![],
-            expected_severity: Severity::RarePath,
-            observed_severity: Some(Severity::RarePath),
-            verdict: v,
-            timestamp_epoch_ms: 0,
-        };
-        let reports = vec![
-            make(RevalidationVerdict::Confirmed),
-            make(RevalidationVerdict::Confirmed),
-        ];
-        assert_eq!(
-            super::verdict_summary_line(&reports),
-            "2/2 behaviors confirmed",
-        );
-    }
-
-    #[test]
-    fn cli_parses_revalidate_with_cache_dir() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "revalidate",
-            "--cache-dir", "/tmp/my-cache",
-            "src/math.ts",
-        ]);
+    fn cli_parses_test_record() {
+        let cli = Cli::parse_from(["shatter", "test", "--record"]);
         match cli.command {
-            CliCommand::Revalidate { cache_dir, .. } => {
-                assert_eq!(cache_dir, Some(PathBuf::from("/tmp/my-cache")));
+            CliCommand::Test { record, .. } => {
+                assert!(record);
             }
-            _ => panic!("expected Revalidate command"),
+            _ => panic!("expected Test command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_test_tier() {
+        let cli = Cli::parse_from(["shatter", "test", "--tier", "quick"]);
+        match cli.command {
+            CliCommand::Test { tier, .. } => {
+                assert_eq!(tier, Some("quick".to_string()));
+            }
+            _ => panic!("expected Test command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_test_dry_run() {
+        let cli = Cli::parse_from(["shatter", "test", "--dry-run", "--include-untracked"]);
+        match cli.command {
+            CliCommand::Test { dry_run, include_untracked, .. } => {
+                assert!(dry_run);
+                assert!(include_untracked);
+            }
+            _ => panic!("expected Test command"),
         }
     }
 }
