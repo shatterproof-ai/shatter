@@ -23,6 +23,7 @@ use crate::input_gen::{
 use crate::orchestrator::FrontendCapabilities;
 use crate::protocol::{
     Command as ProtoCommand, ExecuteResult, FunctionAnalysis, MockConfig, ResponseResult,
+    SetupContextEntry, SetupContextStack, SetupLevel,
 };
 
 /// Iteration count bucket boundaries for scope-aware path hashing.
@@ -465,26 +466,34 @@ pub(crate) fn frontend_supports(caps: &FrontendCapabilities, command: &str) -> b
     caps.commands.contains(command)
 }
 
-/// Send a Setup command to the frontend and return the setup_context.
+/// Send a Setup command to the frontend and return a `SetupContextStack`
+/// containing the returned context at the given level.
 pub(crate) async fn send_setup(
     frontend: &mut Frontend,
     setup_file: &str,
-    function: &str,
+    scope: &str,
     mode: SetupMode,
     project_root: Option<String>,
-) -> Result<Option<serde_json::Value>, ExploreError> {
+) -> Result<Option<SetupContextStack>, ExploreError> {
+    let level = SetupLevel::from(mode);
     let response = frontend
         .send(ProtoCommand::Setup {
             file: setup_file.to_string(),
-            function: function.to_string(),
-            mode,
+            scope: scope.to_string(),
+            level,
             project_root,
+            parent_context: None,
         })
         .await?;
     match response.result {
-        ResponseResult::Setup { setup_context } => Ok(Some(setup_context)),
+        ResponseResult::Setup { setup_context } => Ok(Some(SetupContextStack {
+            contexts: vec![SetupContextEntry {
+                level,
+                context: setup_context,
+            }],
+        })),
         ResponseResult::Error { message, .. } => {
-            log::warn!("setup error for {function}: {message}");
+            log::warn!("setup error for {scope}: {message}");
             Ok(None)
         }
         other => Err(ExploreError::UnexpectedResponse(format!(
@@ -494,16 +503,18 @@ pub(crate) async fn send_setup(
 }
 
 /// Send a Teardown command to the frontend.
-pub(crate) async fn send_teardown(frontend: &mut Frontend, function: &str) -> Result<(), ExploreError> {
+pub(crate) async fn send_teardown(frontend: &mut Frontend, scope: &str, mode: SetupMode) -> Result<(), ExploreError> {
+    let level = SetupLevel::from(mode);
     let response = frontend
         .send(ProtoCommand::Teardown {
-            function: function.to_string(),
+            scope: scope.to_string(),
+            level,
         })
         .await?;
     match response.result {
         ResponseResult::TeardownAck => Ok(()),
         ResponseResult::Error { message, .. } => {
-            log::warn!("teardown error for {function}: {message}");
+            log::warn!("teardown error for {scope}: {message}");
             Ok(())
         }
         other => Err(ExploreError::UnexpectedResponse(format!(
@@ -559,7 +570,7 @@ pub async fn explore_function(
     let per_function_setup = has_setup && config.setup_mode == SetupMode::PerFunction;
     let per_execution_setup = has_setup && config.setup_mode == SetupMode::PerExecution;
 
-    let mut setup_context: Option<serde_json::Value> = None;
+    let mut setup_context: Option<SetupContextStack> = None;
 
     if per_function_setup
         && let Some(ref setup_file) = config.setup_file
@@ -777,7 +788,7 @@ pub async fn explore_function(
 
         // --- Per-execution teardown ---
         if per_execution_setup && frontend_supports(&config.capabilities, "teardown") {
-            send_teardown(frontend, &analysis.name).await?;
+            send_teardown(frontend, &analysis.name, config.setup_mode).await?;
         }
 
         for &line in &exec_result.lines_executed {
@@ -815,7 +826,7 @@ pub async fn explore_function(
 
     // --- Per-function teardown ---
     if per_function_setup && frontend_supports(&config.capabilities, "teardown") {
-        send_teardown(frontend, &analysis.name).await?;
+        send_teardown(frontend, &analysis.name, config.setup_mode).await?;
     }
 
     let total_lines = instrumentable_line_count

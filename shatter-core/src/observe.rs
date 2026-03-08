@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::config::SetupMode;
+use crate::protocol::SetupContextStack;
 use crate::coverage_metrics::DiscoveryMethod;
 use crate::explorer::{
     classify_error_intent, frontend_supports, path_hash, send_setup, send_teardown,
@@ -114,7 +115,7 @@ pub async fn observe_batch(
     function_name: &str,
     inputs: Vec<Vec<serde_json::Value>>,
     mocks: &[MockConfig],
-    setup_context: Option<&serde_json::Value>,
+    setup_context: Option<&SetupContextStack>,
     loop_buckets: &LoopBuckets,
     timeout: Option<Duration>,
 ) -> Result<BatchObservation, ObserveError> {
@@ -256,7 +257,7 @@ pub async fn observe_function(
     let per_function_setup = has_setup && config.setup_mode == SetupMode::PerFunction;
     let per_execution_setup = has_setup && config.setup_mode == SetupMode::PerExecution;
 
-    let mut setup_context: Option<serde_json::Value> = None;
+    let mut setup_context: Option<SetupContextStack> = None;
 
     if per_function_setup
         && let Some(ref setup_file) = config.setup_file
@@ -296,7 +297,7 @@ pub async fn observe_function(
 
     // --- Per-function teardown ---
     if per_function_setup && frontend_supports(&config.capabilities, "teardown") {
-        send_teardown(frontend, &analysis.name).await?;
+        send_teardown(frontend, &analysis.name, config.setup_mode).await?;
     }
 
     let total_lines = instrumentable_line_count
@@ -376,7 +377,7 @@ async fn observe_batch_with_per_execution_setup(
 
         // Per-execution teardown
         if frontend_supports(&config.capabilities, "teardown") {
-            send_teardown(frontend, &analysis.name).await?;
+            send_teardown(frontend, &analysis.name, config.setup_mode).await?;
         }
 
         for &line in &exec_result.lines_executed {
