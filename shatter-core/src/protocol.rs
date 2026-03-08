@@ -8,7 +8,6 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::SetupMode;
 use crate::crypto_registry::{CryptoDirection, OutputSemantics, ParamRole};
 use crate::execution_record::{
     BranchDecision, ErrorInfo, ExternalCall, SideEffect, SymConstraint, TraceEvent,
@@ -19,6 +18,45 @@ use crate::types::{ParamInfo, TypeInfo};
 
 /// Current protocol version.
 pub const PROTOCOL_VERSION: &str = "0.1.0";
+
+// ---------------------------------------------------------------------------
+// Setup lifecycle types
+// ---------------------------------------------------------------------------
+
+/// Granularity level for setup/teardown lifecycle management.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SetupLevel {
+    Session,
+    File,
+    Function,
+    Execution,
+}
+
+/// A single entry in a setup context stack, associating a lifecycle level
+/// with the opaque context value returned by its Setup command.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SetupContextEntry {
+    pub level: SetupLevel,
+    pub context: serde_json::Value,
+}
+
+/// Stack of active setup contexts, ordered from outermost (session) to
+/// innermost (execution). Passed to Execute so frontends can restore
+/// all active setup state.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SetupContextStack {
+    pub contexts: Vec<SetupContextEntry>,
+}
+
+impl From<crate::config::SetupMode> for SetupLevel {
+    fn from(mode: crate::config::SetupMode) -> Self {
+        match mode {
+            crate::config::SetupMode::PerFunction => SetupLevel::Function,
+            crate::config::SetupMode::PerExecution => SetupLevel::Execution,
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Request: Core → Frontend
@@ -75,26 +113,31 @@ pub enum Command {
         inputs: Vec<serde_json::Value>,
         /// Mock configurations for external dependencies.
         mocks: Vec<MockConfig>,
-        /// Opaque context returned by a prior Setup command, if any.
+        /// Stack of active setup contexts from enclosing Setup commands, if any.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        setup_context: Option<serde_json::Value>,
+        setup_context: Option<SetupContextStack>,
     },
     /// Run a setup file to initialize state before function execution.
     Setup {
         /// Path to the setup file.
         file: String,
-        /// Name of the function this setup is associated with.
-        function: String,
-        /// When to run setup relative to executions.
-        mode: SetupMode,
+        /// Scope identifier (function name, file path, or session label).
+        scope: String,
+        /// Lifecycle level for this setup.
+        level: SetupLevel,
         /// Detected project root directory, if any.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         project_root: Option<String>,
+        /// Parent context stack from enclosing setup levels, if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_context: Option<SetupContextStack>,
     },
     /// Tear down state established by a prior Setup command.
     Teardown {
-        /// Name of the function whose setup should be torn down.
-        function: String,
+        /// Scope identifier matching the corresponding Setup command.
+        scope: String,
+        /// Lifecycle level matching the corresponding Setup command.
+        level: SetupLevel,
     },
     /// Invoke a custom generator to produce a value for a type or parameter.
     Generate {
@@ -1184,9 +1227,10 @@ mod tests {
             20,
             Command::Setup {
                 file: "./setup/global.ts".into(),
-                function: "processOrder".into(),
-                mode: crate::config::SetupMode::PerFunction,
+                scope: "processOrder".into(),
+                level: SetupLevel::Function,
                 project_root: None,
+                parent_context: None,
             },
         ));
     }
@@ -1197,9 +1241,57 @@ mod tests {
             21,
             Command::Setup {
                 file: "./setup/auth.ts".into(),
-                function: "authenticate".into(),
-                mode: crate::config::SetupMode::PerExecution,
+                scope: "authenticate".into(),
+                level: SetupLevel::Execution,
                 project_root: None,
+                parent_context: None,
+            },
+        ));
+    }
+
+    #[test]
+    fn setup_request_session_level_round_trips() {
+        round_trip(&Request::new(
+            22,
+            Command::Setup {
+                file: "./setup/session.ts".into(),
+                scope: "test-session".into(),
+                level: SetupLevel::Session,
+                project_root: None,
+                parent_context: None,
+            },
+        ));
+    }
+
+    #[test]
+    fn setup_request_file_level_round_trips() {
+        round_trip(&Request::new(
+            23,
+            Command::Setup {
+                file: "./setup/file.ts".into(),
+                scope: "src/auth.ts".into(),
+                level: SetupLevel::File,
+                project_root: None,
+                parent_context: None,
+            },
+        ));
+    }
+
+    #[test]
+    fn setup_request_with_parent_context_round_trips() {
+        round_trip(&Request::new(
+            24,
+            Command::Setup {
+                file: "./setup/func.ts".into(),
+                scope: "processOrder".into(),
+                level: SetupLevel::Function,
+                project_root: None,
+                parent_context: Some(SetupContextStack {
+                    contexts: vec![SetupContextEntry {
+                        level: SetupLevel::Session,
+                        context: serde_json::json!({"session_id": "s1"}),
+                    }],
+                }),
             },
         ));
     }
@@ -1207,9 +1299,10 @@ mod tests {
     #[test]
     fn teardown_request_round_trips() {
         round_trip(&Request::new(
-            22,
+            25,
             Command::Teardown {
-                function: "processOrder".into(),
+                scope: "processOrder".into(),
+                level: SetupLevel::Function,
             },
         ));
     }
@@ -1284,12 +1377,17 @@ mod tests {
     #[test]
     fn execute_request_with_setup_context_round_trips() {
         round_trip(&Request::new(
-            25,
+            30,
             Command::Execute {
                 function: "processOrder".into(),
                 inputs: vec![serde_json::json!({"id": 1})],
                 mocks: vec![],
-                setup_context: Some(serde_json::json!({"db_handle": "conn_42"})),
+                setup_context: Some(SetupContextStack {
+                    contexts: vec![SetupContextEntry {
+                        level: SetupLevel::Function,
+                        context: serde_json::json!({"db_handle": "conn_42"}),
+                    }],
+                }),
             },
         ));
     }
@@ -1310,7 +1408,7 @@ mod tests {
     #[test]
     fn execute_request_without_setup_context_omits_field_in_json() {
         let req = Request::new(
-            27,
+            31,
             Command::Execute {
                 function: "myFunc".into(),
                 inputs: vec![serde_json::json!(1)],
@@ -1325,32 +1423,35 @@ mod tests {
     #[test]
     fn setup_request_serializes_with_command_tag() {
         let req = Request::new(
-            30,
+            32,
             Command::Setup {
                 file: "./setup.ts".into(),
-                function: "fn1".into(),
-                mode: crate::config::SetupMode::PerFunction,
+                scope: "fn1".into(),
+                level: SetupLevel::Function,
                 project_root: None,
+                parent_context: None,
             },
         );
         let json = serde_json::to_value(&req).expect("serialize");
         assert_eq!(json["command"], "setup");
         assert_eq!(json["file"], "./setup.ts");
-        assert_eq!(json["function"], "fn1");
-        assert_eq!(json["mode"], "per_function");
+        assert_eq!(json["scope"], "fn1");
+        assert_eq!(json["level"], "function");
     }
 
     #[test]
     fn teardown_request_serializes_with_command_tag() {
         let req = Request::new(
-            31,
+            33,
             Command::Teardown {
-                function: "fn1".into(),
+                scope: "fn1".into(),
+                level: SetupLevel::Function,
             },
         );
         let json = serde_json::to_value(&req).expect("serialize");
         assert_eq!(json["command"], "teardown");
-        assert_eq!(json["function"], "fn1");
+        assert_eq!(json["scope"], "fn1");
+        assert_eq!(json["level"], "function");
     }
 
     #[test]

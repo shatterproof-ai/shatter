@@ -7,7 +7,7 @@ use proptest::prelude::*;
 use serde_json::json;
 
 use crate::behavior::{Behavior, BehaviorMap};
-use crate::config::SetupMode;
+use crate::protocol::{SetupContextEntry, SetupContextStack, SetupLevel};
 use crate::crypto_registry::{CryptoDirection, OutputSemantics, ParamRole};
 use crate::equivalence::{BranchPath, BranchStep, Precondition};
 use crate::execution_record::{
@@ -176,8 +176,25 @@ pub fn arb_error_code() -> impl Strategy<Value = ErrorCode> {
     ]
 }
 
-pub fn arb_setup_mode() -> impl Strategy<Value = SetupMode> {
-    prop_oneof![Just(SetupMode::PerFunction), Just(SetupMode::PerExecution),]
+pub fn arb_setup_level() -> impl Strategy<Value = SetupLevel> {
+    prop_oneof![
+        Just(SetupLevel::Session),
+        Just(SetupLevel::File),
+        Just(SetupLevel::Function),
+        Just(SetupLevel::Execution),
+    ]
+}
+
+pub fn arb_setup_context_entry() -> impl Strategy<Value = SetupContextEntry> {
+    (arb_setup_level(), arb_json_value()).prop_map(|(level, context)| SetupContextEntry {
+        level,
+        context,
+    })
+}
+
+pub fn arb_setup_context_stack() -> impl Strategy<Value = SetupContextStack> {
+    prop::collection::vec(arb_setup_context_entry(), 0..=3)
+        .prop_map(|contexts| SetupContextStack { contexts })
 }
 
 pub fn arb_mock_behavior() -> impl Strategy<Value = MockBehavior> {
@@ -671,22 +688,25 @@ pub fn arb_command() -> impl Strategy<Value = Command> {
             arb_ident(),
             prop::collection::vec(arb_json_value(), 0..=4),
             prop::collection::vec(arb_mock_config(), 0..=2),
+            proptest::option::of(arb_setup_context_stack()),
         )
-            .prop_map(|(function, inputs, mocks)| Command::Execute {
+            .prop_map(|(function, inputs, mocks, setup_context)| Command::Execute {
                 function,
                 inputs,
                 mocks,
-                setup_context: None,
+                setup_context,
             }),
-        (arb_ident(), arb_ident(), arb_setup_mode()).prop_map(|(file, function, mode)| {
+        (arb_ident(), arb_ident(), arb_setup_level()).prop_map(|(file, scope, level)| {
             Command::Setup {
                 file,
-                function,
-                mode,
+                scope,
+                level,
                 project_root: None,
+                parent_context: None,
             }
         }),
-        arb_ident().prop_map(|function| Command::Teardown { function }),
+        (arb_ident(), arb_setup_level())
+            .prop_map(|(scope, level)| Command::Teardown { scope, level }),
         (arb_ident(), arb_ident(), arb_generator_kind()).prop_map(|(file, name, kind)| {
             Command::Generate {
                 file,
