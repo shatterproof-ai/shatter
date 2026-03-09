@@ -49,15 +49,6 @@ pub struct SetupContextStack {
     pub contexts: Vec<SetupContextEntry>,
 }
 
-impl From<crate::config::SetupMode> for SetupLevel {
-    fn from(mode: crate::config::SetupMode) -> Self {
-        match mode {
-            crate::config::SetupMode::PerFunction => SetupLevel::Function,
-            crate::config::SetupMode::PerExecution => SetupLevel::Execution,
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Request: Core → Frontend
 // ---------------------------------------------------------------------------
