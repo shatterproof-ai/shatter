@@ -697,6 +697,15 @@ enum CliCommand {
         /// Dry run: show which tests would run without executing them.
         #[arg(long)]
         dry_run: bool,
+
+        /// Prioritize test execution order by marginal coverage per unit time.
+        #[arg(long)]
+        prioritize: bool,
+
+        /// Time budget for test execution (e.g. "10s", "2m"). Tests beyond this
+        /// cumulative time are skipped. Implies --prioritize.
+        #[arg(long, value_parser = parse_budget_flag)]
+        budget: Option<std::time::Duration>,
     },
 }
 
@@ -893,6 +902,11 @@ fn parse_loop_buckets(s: &str) -> Result<explorer::LoopBuckets, Box<dyn std::err
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("invalid --loop-buckets value \"{s}\": {e}"))?;
     Ok(explorer::LoopBuckets::from_boundaries(boundaries))
+}
+
+/// Clap value_parser for `--budget`: delegates to test_prioritization::parse_budget.
+fn parse_budget_flag(s: &str) -> Result<std::time::Duration, String> {
+    shatter_core::test_prioritization::parse_budget(s).map_err(|e| e.to_string())
 }
 
 /// Load cached fingerprints for cross-file dependencies of the given functions.
@@ -3336,8 +3350,10 @@ async fn main() -> ExitCode {
             base,
             include_untracked,
             dry_run,
+            prioritize,
+            budget,
         } => {
-            match run_test(all, record, tier, &base, include_untracked, dry_run, use_color) {
+            match run_test(all, record, tier, &base, include_untracked, dry_run, prioritize, budget, use_color) {
                 Ok(success) => {
                     return if success {
                         ExitCode::SUCCESS
@@ -3395,6 +3411,7 @@ async fn main() -> ExitCode {
 }
 
 /// Run tests with impact analysis, tier execution, or coverage recording.
+#[allow(clippy::too_many_arguments)] // CLI dispatch — one param per flag
 fn run_test(
     all: bool,
     record: bool,
@@ -3402,6 +3419,8 @@ fn run_test(
     base: &str,
     include_untracked: bool,
     dry_run: bool,
+    prioritize: bool,
+    budget: Option<std::time::Duration>,
     use_color: bool,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let project_root = std::env::current_dir()?;
@@ -3561,9 +3580,36 @@ fn run_test(
         return Ok(true);
     }
 
+    // --- Prioritization: order tests by marginal coverage / time ---
+    let effective_prioritize = prioritize || budget.is_some();
+    let affected_tests = if effective_prioritize {
+        use shatter_core::test_prioritization;
+
+        // Build test cases from coverage map, then filter to affected tests
+        let durations = std::collections::BTreeMap::new();
+        let result = test_prioritization::prioritize_affected(
+            &map,
+            &query.affected_tests,
+            &durations,
+            &test_prioritization::PrioritizeConfig {
+                budget: budget.unwrap_or(std::time::Duration::ZERO),
+                use_recency: true,
+            },
+            Some(&project_root),
+        )
+        .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?;
+
+        let report = test_prioritization::format_prioritize_report(&result, use_color);
+        eprint!("{report}");
+
+        result.ordered.iter().map(|r| r.test.id.clone()).collect::<Vec<_>>()
+    } else {
+        query.affected_tests.clone()
+    };
+
     eprintln!(
         "Running {} affected test(s) for {} changed file(s)...",
-        query.affected_tests.len(),
+        affected_tests.len(),
         query.changed_files.len()
     );
 
@@ -3578,10 +3624,9 @@ fn run_test(
         };
 
         let runner_tests: Vec<String> = if runner_prefix.is_empty() {
-            query.affected_tests.clone()
+            affected_tests.clone()
         } else {
-            query
-                .affected_tests
+            affected_tests
                 .iter()
                 .filter(|t| t.contains(runner_prefix))
                 .cloned()
@@ -5254,13 +5299,15 @@ mod tests {
     fn cli_parses_test_subcommand_defaults() {
         let cli = Cli::parse_from(["shatter", "test"]);
         match cli.command {
-            CliCommand::Test { all, record, tier, base, include_untracked, dry_run } => {
+            CliCommand::Test { all, record, tier, base, include_untracked, dry_run, prioritize, budget } => {
                 assert!(!all);
                 assert!(!record);
                 assert!(tier.is_none());
                 assert_eq!(base, "HEAD");
                 assert!(!include_untracked);
                 assert!(!dry_run);
+                assert!(!prioritize);
+                assert!(budget.is_none());
             }
             _ => panic!("expected Test command"),
         }
@@ -5306,6 +5353,51 @@ mod tests {
             CliCommand::Test { dry_run, include_untracked, .. } => {
                 assert!(dry_run);
                 assert!(include_untracked);
+            }
+            _ => panic!("expected Test command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_test_prioritize() {
+        let cli = Cli::parse_from(["shatter", "test", "--prioritize"]);
+        match cli.command {
+            CliCommand::Test { prioritize, budget, .. } => {
+                assert!(prioritize);
+                assert!(budget.is_none());
+            }
+            _ => panic!("expected Test command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_test_budget_seconds() {
+        let cli = Cli::parse_from(["shatter", "test", "--budget", "10s"]);
+        match cli.command {
+            CliCommand::Test { budget, .. } => {
+                assert_eq!(budget, Some(std::time::Duration::from_secs(10)));
+            }
+            _ => panic!("expected Test command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_test_budget_minutes() {
+        let cli = Cli::parse_from(["shatter", "test", "--budget", "2m"]);
+        match cli.command {
+            CliCommand::Test { budget, .. } => {
+                assert_eq!(budget, Some(std::time::Duration::from_secs(120)));
+            }
+            _ => panic!("expected Test command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_test_budget_combined() {
+        let cli = Cli::parse_from(["shatter", "test", "--budget", "1m30s"]);
+        match cli.command {
+            CliCommand::Test { budget, .. } => {
+                assert_eq!(budget, Some(std::time::Duration::from_secs(90)));
             }
             _ => panic!("expected Test command"),
         }
