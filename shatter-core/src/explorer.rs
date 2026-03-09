@@ -25,6 +25,7 @@ use crate::protocol::{
     Command as ProtoCommand, ExecuteResult, FunctionAnalysis, MockConfig, ResponseResult,
     SetupContextEntry, SetupContextStack,
 };
+use crate::setup_manager::SetupManager;
 
 /// Iteration count bucket boundaries for scope-aware path hashing.
 ///
@@ -522,10 +523,15 @@ pub(crate) async fn send_teardown(frontend: &mut Frontend, scope: &str, level: S
 }
 
 /// Explore a single function by generating random inputs and executing them.
+///
+/// When `setup_mgr` is provided, setup lifecycle is tracked through the
+/// `SetupManager` (context caching, failure tracking, skip decisions).
+/// When `None`, uses the legacy direct-send approach.
 pub async fn explore_function(
     frontend: &mut Frontend,
     analysis: &FunctionAnalysis,
     config: &ExploreConfig,
+    mut setup_mgr: Option<&mut SetupManager>,
 ) -> Result<ObservationOutput, ExploreError> {
     let instrument_response = frontend
         .send(ProtoCommand::Instrument {
@@ -570,11 +576,30 @@ pub async fn explore_function(
 
     let mut setup_context: Option<SetupContextStack> = None;
 
-    if per_function_setup
+    // When a SetupManager is provided, check should_skip and cache contexts.
+    let skip_setup = setup_mgr.as_ref().is_some_and(|m| m.should_skip(config.setup_level));
+
+    if per_function_setup && !skip_setup
         && let Some(ref setup_file) = config.setup_file
     {
-        setup_context =
-            send_setup(frontend, setup_file, &analysis.name, config.setup_level, config.project_root.clone()).await?;
+        match send_setup(frontend, setup_file, &analysis.name, config.setup_level, config.project_root.clone()).await? {
+            Some(ctx) => {
+                if let Some(ref mut mgr) = setup_mgr
+                    && let Some(entry) = ctx.contexts.first()
+                {
+                    let _ = mgr.setup(config.setup_level, &analysis.name, entry.context.clone());
+                }
+                setup_context = Some(ctx);
+            }
+            None => {
+                if let Some(ref mut mgr) = setup_mgr {
+                    let _ = mgr.record_failure(
+                        config.setup_level,
+                        format!("setup returned no context for {}", analysis.name),
+                    );
+                }
+            }
+        }
     }
 
     // --- Generator prefetch ---
@@ -727,11 +752,27 @@ pub async fn explore_function(
         iterations += 1;
 
         // --- Per-execution setup ---
-        if per_execution_setup
+        if per_execution_setup && !skip_setup
             && let Some(ref setup_file) = config.setup_file
         {
-            setup_context =
-                send_setup(frontend, setup_file, &analysis.name, config.setup_level, config.project_root.clone()).await?;
+            match send_setup(frontend, setup_file, &analysis.name, config.setup_level, config.project_root.clone()).await? {
+                Some(ctx) => {
+                    if let Some(ref mut mgr) = setup_mgr
+                        && let Some(entry) = ctx.contexts.first()
+                    {
+                        let _ = mgr.setup(config.setup_level, &analysis.name, entry.context.clone());
+                    }
+                    setup_context = Some(ctx);
+                }
+                None => {
+                    if let Some(ref mut mgr) = setup_mgr {
+                        let _ = mgr.record_failure(
+                            config.setup_level,
+                            format!("per-execution setup returned no context for {}", analysis.name),
+                        );
+                    }
+                }
+            }
         }
 
         // --- Input generation ---
@@ -785,8 +826,11 @@ pub async fn explore_function(
         };
 
         // --- Per-execution teardown ---
-        if per_execution_setup && frontend_supports(&config.capabilities, "teardown") {
+        if per_execution_setup && !skip_setup && frontend_supports(&config.capabilities, "teardown") {
             send_teardown(frontend, &analysis.name, config.setup_level).await?;
+            if let Some(ref mut mgr) = setup_mgr {
+                mgr.teardown(config.setup_level, &analysis.name);
+            }
         }
 
         for &line in &exec_result.lines_executed {
@@ -823,8 +867,11 @@ pub async fn explore_function(
     }
 
     // --- Per-function teardown ---
-    if per_function_setup && frontend_supports(&config.capabilities, "teardown") {
+    if per_function_setup && !skip_setup && frontend_supports(&config.capabilities, "teardown") {
         send_teardown(frontend, &analysis.name, config.setup_level).await?;
+        if let Some(ref mut mgr) = setup_mgr {
+            mgr.teardown(config.setup_level, &analysis.name);
+        }
     }
 
     let total_lines = instrumentable_line_count
@@ -1914,7 +1961,7 @@ mod tests {
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
         };
-        let result = explore_function(&mut frontend, &analysis, &config)
+        let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("should succeed with noop frontend");
         assert_eq!(result.function_name, "stub");
         assert_eq!(result.iterations, 3);
@@ -1938,7 +1985,7 @@ mod tests {
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
         };
-        let result = explore_function(&mut frontend, &analysis, &config)
+        let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("per_function setup should succeed");
         assert_eq!(result.function_name, "stub");
         assert_eq!(result.iterations, 2);
@@ -1962,7 +2009,7 @@ mod tests {
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
         };
-        let result = explore_function(&mut frontend, &analysis, &config)
+        let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("per_execution setup should succeed");
         assert_eq!(result.function_name, "stub");
         assert_eq!(result.iterations, 2);
@@ -1985,7 +2032,7 @@ mod tests {
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
         };
-        let result = explore_function(&mut frontend, &analysis, &config)
+        let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("should succeed without setup capability");
         assert_eq!(result.iterations, 2);
         frontend.shutdown().await.expect("shutdown failed");
@@ -2012,7 +2059,7 @@ mod tests {
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
         };
-        let result = explore_function(&mut frontend, &analysis, &config)
+        let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("generators should succeed");
         assert_eq!(result.iterations, 2);
         assert_eq!(result.unique_paths, 1);
@@ -2035,7 +2082,7 @@ mod tests {
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
         };
-        let result = explore_function(&mut frontend, &analysis, &config)
+        let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("no generators should succeed");
         assert_eq!(result.iterations, 3);
         frontend.shutdown().await.expect("shutdown failed");
@@ -2057,7 +2104,7 @@ mod tests {
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
         };
-        let result = explore_function(&mut frontend, &analysis, &config)
+        let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("user seeds should succeed");
         assert_eq!(result.iterations, 5);
         // The first execution should use the user-provided seed value.
@@ -2082,7 +2129,7 @@ mod tests {
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
         };
-        let result = explore_function(&mut frontend, &analysis, &config)
+        let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("candidate inputs should succeed");
         // Literal-derived inputs come first (from stub_analysis literals),
         // then candidate_inputs, then pool_seeds.
@@ -2119,7 +2166,7 @@ mod tests {
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
         };
-        let result = explore_function(&mut frontend, &analysis, &config)
+        let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("should succeed with noop frontend");
         assert!(!result.raw_results.is_empty(), "raw_results should be populated");
 
