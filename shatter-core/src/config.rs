@@ -14,14 +14,20 @@ use std::path::{Path, PathBuf};
 use globset::{Glob, GlobMatcher};
 use serde::{Deserialize, Serialize};
 
-/// When to run the setup file relative to function executions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SetupMode {
-    /// Run setup once before all executions of a function (default).
-    PerFunction,
-    /// Run setup before each individual execution.
-    PerExecution,
+use crate::protocol::SetupLevel;
+
+/// Default setup timeout in seconds, applied when no explicit value is configured.
+pub const DEFAULT_SETUP_TIMEOUT_SECS: u64 = 30;
+
+/// Session-level setup configuration: a setup file run once before any file
+/// in the test session.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+pub struct SessionSetupConfig {
+    /// Path to the session setup file, relative to the `.shatter/` directory.
+    pub file: String,
+    /// Timeout in seconds for session setup/teardown (overrides `setup_timeout`).
+    #[serde(default)]
+    pub timeout: Option<u64>,
 }
 
 /// Error type for config operations.
@@ -143,9 +149,22 @@ pub struct DefaultsConfig {
     #[serde(default)]
     pub setup: Option<String>,
 
-    /// When to run the setup file.
+    /// Lifecycle level controlling when setup runs (defaults to `Function`).
     #[serde(default)]
-    pub setup_mode: Option<SetupMode>,
+    pub setup_level: Option<SetupLevel>,
+
+    /// Timeout in seconds for setup/teardown operations.
+    #[serde(default)]
+    pub setup_timeout: Option<u64>,
+
+    /// Session-level setup configuration (runs once before any file).
+    #[serde(default)]
+    pub session_setup: Option<SessionSetupConfig>,
+
+    /// File-level setup: glob pattern → setup file path (relative to `.shatter/`).
+    /// Each matching source file gets its own setup invocation at `SetupLevel::File`.
+    #[serde(default)]
+    pub file_setup: Option<HashMap<String, String>>,
 
     /// Type-name-to-generator-file mappings (e.g. `"User": "./generators/user.js"`).
     #[serde(default)]
@@ -188,9 +207,13 @@ pub struct FunctionConfig {
     #[serde(default)]
     pub setup: Option<String>,
 
-    /// When to run the setup file.
+    /// Lifecycle level controlling when setup runs (overrides default).
     #[serde(default)]
-    pub setup_mode: Option<SetupMode>,
+    pub setup_level: Option<SetupLevel>,
+
+    /// Timeout in seconds for setup/teardown operations (overrides default).
+    #[serde(default)]
+    pub setup_timeout: Option<u64>,
 
     /// Type-name-to-generator-file mappings, overriding defaults.
     #[serde(default)]
@@ -261,8 +284,17 @@ pub struct ResolvedFunctionConfig {
     /// Resolved absolute path to the setup file, if any.
     pub setup: Option<PathBuf>,
 
-    /// When to run the setup file (defaults to `PerFunction`).
-    pub setup_mode: SetupMode,
+    /// Lifecycle level controlling when setup runs (defaults to `Function`).
+    pub setup_level: SetupLevel,
+
+    /// Timeout in seconds for setup/teardown operations.
+    pub setup_timeout: u64,
+
+    /// Session-level setup configuration, if any.
+    pub session_setup: Option<SessionSetupConfig>,
+
+    /// File-level setup: glob pattern → resolved absolute path to setup file.
+    pub file_setup: HashMap<String, PathBuf>,
 
     /// Merged type-name-to-generator-file mappings (absolute paths).
     pub generators: HashMap<String, PathBuf>,
@@ -358,12 +390,15 @@ pub fn merge_configs(configs: &[ShatterConfig]) -> ShatterConfig {
     let mut max_iterations = None;
     let mut timeout = None;
     let mut setup = None;
-    let mut setup_mode = None;
+    let mut setup_level = None;
+    let mut setup_timeout = None;
+    let mut session_setup = None;
 
-    // Merge generators maps: start from farthest, overlay nearer.
+    // Merge generators and file_setup maps: start from farthest, overlay nearer.
     // This lets a near config override specific keys while inheriting the rest.
     let mut generators: Option<HashMap<String, String>> = None;
     let mut param_generators: Option<HashMap<String, String>> = None;
+    let mut file_setup: Option<HashMap<String, String>> = None;
 
     for config in configs.iter().rev() {
         if let Some(ref g) = config.defaults.generators {
@@ -374,6 +409,11 @@ pub fn merge_configs(configs: &[ShatterConfig]) -> ShatterConfig {
         if let Some(ref pg) = config.defaults.param_generators {
             param_generators.get_or_insert_with(HashMap::new).extend(
                 pg.iter().map(|(k, v)| (k.clone(), v.clone())),
+            );
+        }
+        if let Some(ref fs) = config.defaults.file_setup {
+            file_setup.get_or_insert_with(HashMap::new).extend(
+                fs.iter().map(|(k, v)| (k.clone(), v.clone())),
             );
         }
     }
@@ -388,8 +428,14 @@ pub fn merge_configs(configs: &[ShatterConfig]) -> ShatterConfig {
         if setup.is_none() {
             setup = config.defaults.setup.clone();
         }
-        if setup_mode.is_none() {
-            setup_mode = config.defaults.setup_mode;
+        if setup_level.is_none() {
+            setup_level = config.defaults.setup_level;
+        }
+        if setup_timeout.is_none() {
+            setup_timeout = config.defaults.setup_timeout;
+        }
+        if session_setup.is_none() {
+            session_setup = config.defaults.session_setup.clone();
         }
     }
 
@@ -441,7 +487,10 @@ pub fn merge_configs(configs: &[ShatterConfig]) -> ShatterConfig {
             max_iterations,
             timeout,
             setup,
-            setup_mode,
+            setup_level,
+            setup_timeout,
+            session_setup,
+            file_setup,
             generators,
             param_generators,
             mocks: None,
@@ -501,10 +550,15 @@ fn resolve_from_merged(
         .and_then(|fc| fc.skip)
         .unwrap_or(false);
 
-    let setup_mode = func_config
-        .and_then(|fc| fc.setup_mode)
-        .or(config.defaults.setup_mode)
-        .unwrap_or(SetupMode::PerFunction);
+    let setup_level = func_config
+        .and_then(|fc| fc.setup_level)
+        .or(config.defaults.setup_level)
+        .unwrap_or(SetupLevel::Function);
+
+    let setup_timeout = func_config
+        .and_then(|fc| fc.setup_timeout)
+        .or(config.defaults.setup_timeout)
+        .unwrap_or(DEFAULT_SETUP_TIMEOUT_SECS);
 
     // Merge mock overrides: defaults first, then function-level overrides on top.
     let mut mock_overrides: HashMap<String, crate::auto_mock::MockOverride> = config
@@ -528,7 +582,10 @@ fn resolve_from_merged(
         // Setup and generator paths are resolved to absolute paths by
         // resolve_function_config_with_inputs, which has access to .shatter/ dirs.
         setup: None,
-        setup_mode,
+        setup_level,
+        setup_timeout,
+        session_setup: config.defaults.session_setup.clone(),
+        file_setup: HashMap::new(),
         generators: HashMap::new(),
         param_generators: HashMap::new(),
         mock_overrides,
@@ -592,6 +649,15 @@ pub fn resolve_function_config_with_inputs(
             && let Some(setup_rel) = &dc.config.defaults.setup
         {
             resolved.setup = Some(dc.shatter_dir.join(setup_rel));
+        }
+    }
+
+    // Resolve file_setup: walk farthest-to-nearest so nearer configs override.
+    for dc in discovered.iter().rev() {
+        if let Some(ref fs) = dc.config.defaults.file_setup {
+            for (glob_pattern, setup_rel) in fs {
+                resolved.file_setup.insert(glob_pattern.clone(), dc.shatter_dir.join(setup_rel));
+            }
         }
     }
 
@@ -842,7 +908,8 @@ functions:
                 inputs: None,
                 skip: None,
                 setup: None,
-                setup_mode: None,
+                setup_level: None,
+                setup_timeout: None,
                 generators: None,
                 param_generators: None,
                 mocks: None,
@@ -859,7 +926,8 @@ functions:
                 inputs: None,
                 skip: None,
                 setup: None,
-                setup_mode: None,
+                setup_level: None,
+                setup_timeout: None,
                 generators: None,
                 param_generators: None,
                 mocks: None,
@@ -900,7 +968,8 @@ functions:
                 inputs: None,
                 skip: None,
                 setup: None,
-                setup_mode: None,
+                setup_level: None,
+                setup_timeout: None,
                 generators: None,
                 param_generators: None,
                 mocks: None,
@@ -962,7 +1031,8 @@ functions:
                 inputs: None,
                 skip: Some(true),
                 setup: None,
-                setup_mode: None,
+                setup_level: None,
+                setup_timeout: None,
                 generators: None,
                 param_generators: None,
                 mocks: None,
@@ -1109,33 +1179,41 @@ functions:
     }
 
     #[test]
-    fn setup_mode_serialization_round_trip() {
-        let per_func = SetupMode::PerFunction;
-        let json = serde_json::to_string(&per_func).unwrap();
-        assert_eq!(json, "\"per_function\"");
-        let deserialized: SetupMode = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized, SetupMode::PerFunction);
+    fn setup_level_serialization_round_trip() {
+        use crate::protocol::SetupLevel;
 
-        let per_exec = SetupMode::PerExecution;
-        let json = serde_json::to_string(&per_exec).unwrap();
-        assert_eq!(json, "\"per_execution\"");
-        let deserialized: SetupMode = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized, SetupMode::PerExecution);
+        for (level, expected_json) in [
+            (SetupLevel::Session, "\"session\""),
+            (SetupLevel::File, "\"file\""),
+            (SetupLevel::Function, "\"function\""),
+            (SetupLevel::Execution, "\"execution\""),
+        ] {
+            let json = serde_json::to_string(&level).unwrap();
+            assert_eq!(json, expected_json);
+            let deserialized: SetupLevel = serde_json::from_str(&json).unwrap();
+            assert_eq!(deserialized, level);
+        }
     }
 
     #[test]
-    fn setup_mode_yaml_round_trip() {
-        let yaml = "per_function";
-        let mode: SetupMode = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(mode, SetupMode::PerFunction);
+    fn setup_level_yaml_round_trip() {
+        use crate::protocol::SetupLevel;
 
-        let yaml = "per_execution";
-        let mode: SetupMode = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(mode, SetupMode::PerExecution);
+        for (yaml, expected) in [
+            ("session", SetupLevel::Session),
+            ("file", SetupLevel::File),
+            ("function", SetupLevel::Function),
+            ("execution", SetupLevel::Execution),
+        ] {
+            let level: SetupLevel = serde_yaml::from_str(yaml).unwrap();
+            assert_eq!(level, expected);
+        }
     }
 
     #[test]
     fn parse_config_with_setup_and_generators() {
+        use crate::protocol::SetupLevel;
+
         let dir = TempDir::new().unwrap();
         let config_path = dir.path().join("config.yaml");
         fs::write(
@@ -1144,7 +1222,13 @@ functions:
 defaults:
   max_iterations: 100
   setup: ./setup/global.ts
-  setup_mode: per_execution
+  setup_level: execution
+  setup_timeout: 45
+  session_setup:
+    file: ./setup/session.ts
+    timeout: 60
+  file_setup:
+    "src/**/*.ts": ./setup/ts-files.ts
   generators:
     User: ./generators/user.ts
     Order: ./generators/order.ts
@@ -1154,7 +1238,8 @@ defaults:
 functions:
   "src/auth.ts:*":
     setup: ./setup/auth.ts
-    setup_mode: per_function
+    setup_level: function
+    setup_timeout: 20
     generators:
       User: ./generators/auth_user.ts
     param_generators:
@@ -1167,7 +1252,13 @@ functions:
 
         // Defaults
         assert_eq!(config.defaults.setup.as_deref(), Some("./setup/global.ts"));
-        assert_eq!(config.defaults.setup_mode, Some(SetupMode::PerExecution));
+        assert_eq!(config.defaults.setup_level, Some(SetupLevel::Execution));
+        assert_eq!(config.defaults.setup_timeout, Some(45));
+        let session = config.defaults.session_setup.as_ref().unwrap();
+        assert_eq!(session.file, "./setup/session.ts");
+        assert_eq!(session.timeout, Some(60));
+        let file_setup = config.defaults.file_setup.as_ref().unwrap();
+        assert_eq!(file_setup["src/**/*.ts"], "./setup/ts-files.ts");
         let generators = config.defaults.generators.as_ref().unwrap();
         assert_eq!(generators.len(), 2);
         assert_eq!(generators["User"], "./generators/user.ts");
@@ -1178,7 +1269,8 @@ functions:
         // Function overrides
         let auth = &config.functions["src/auth.ts:*"];
         assert_eq!(auth.setup.as_deref(), Some("./setup/auth.ts"));
-        assert_eq!(auth.setup_mode, Some(SetupMode::PerFunction));
+        assert_eq!(auth.setup_level, Some(SetupLevel::Function));
+        assert_eq!(auth.setup_timeout, Some(20));
         let auth_gens = auth.generators.as_ref().unwrap();
         assert_eq!(auth_gens["User"], "./generators/auth_user.ts");
         let auth_pgens = auth.param_generators.as_ref().unwrap();
@@ -1197,7 +1289,10 @@ functions:
 
         let config = parse_config(&config_path).unwrap();
         assert_eq!(config.defaults.setup, None);
-        assert_eq!(config.defaults.setup_mode, None);
+        assert_eq!(config.defaults.setup_level, None);
+        assert_eq!(config.defaults.setup_timeout, None);
+        assert_eq!(config.defaults.session_setup, None);
+        assert_eq!(config.defaults.file_setup, None);
         assert_eq!(config.defaults.generators, None);
         assert_eq!(config.defaults.param_generators, None);
     }
@@ -1242,10 +1337,17 @@ functions:
 
     #[test]
     fn merge_configs_setup_nearest_wins() {
+        use crate::protocol::SetupLevel;
+
         let near = ShatterConfig {
             defaults: DefaultsConfig {
                 setup: Some("./setup/near.ts".to_string()),
-                setup_mode: Some(SetupMode::PerExecution),
+                setup_level: Some(SetupLevel::Execution),
+                setup_timeout: Some(45),
+                session_setup: Some(SessionSetupConfig {
+                    file: "./setup/near-session.ts".into(),
+                    timeout: Some(90),
+                }),
                 ..DefaultsConfig::default()
             },
             functions: HashMap::new(),
@@ -1254,7 +1356,12 @@ functions:
         let far = ShatterConfig {
             defaults: DefaultsConfig {
                 setup: Some("./setup/far.ts".to_string()),
-                setup_mode: Some(SetupMode::PerFunction),
+                setup_level: Some(SetupLevel::Function),
+                setup_timeout: Some(20),
+                session_setup: Some(SessionSetupConfig {
+                    file: "./setup/far-session.ts".into(),
+                    timeout: None,
+                }),
                 ..DefaultsConfig::default()
             },
             functions: HashMap::new(),
@@ -1263,11 +1370,16 @@ functions:
 
         let merged = merge_configs(&[near, far]);
         assert_eq!(merged.defaults.setup.as_deref(), Some("./setup/near.ts"));
-        assert_eq!(merged.defaults.setup_mode, Some(SetupMode::PerExecution));
+        assert_eq!(merged.defaults.setup_level, Some(SetupLevel::Execution));
+        assert_eq!(merged.defaults.setup_timeout, Some(45));
+        let session = merged.defaults.session_setup.as_ref().unwrap();
+        assert_eq!(session.file, "./setup/near-session.ts");
     }
 
     #[test]
     fn resolve_config_with_setup_from_function() {
+        use crate::protocol::SetupLevel;
+
         let root = TempDir::new().unwrap();
         let shatter_dir = root.path().join(".shatter");
         fs::create_dir_all(&shatter_dir).unwrap();
@@ -1277,11 +1389,13 @@ functions:
             r#"
 defaults:
   setup: ./setup/default.ts
-  setup_mode: per_function
+  setup_level: function
+  setup_timeout: 45
 functions:
   "myFunc":
     setup: ./setup/custom.ts
-    setup_mode: per_execution
+    setup_level: execution
+    setup_timeout: 10
 "#,
         )
         .unwrap();
@@ -1297,11 +1411,14 @@ functions:
 
         // Function-level setup overrides defaults
         assert_eq!(resolved.setup, Some(shatter_dir.join("./setup/custom.ts")));
-        assert_eq!(resolved.setup_mode, SetupMode::PerExecution);
+        assert_eq!(resolved.setup_level, SetupLevel::Execution);
+        assert_eq!(resolved.setup_timeout, 10);
     }
 
     #[test]
     fn resolve_config_with_setup_from_defaults() {
+        use crate::protocol::SetupLevel;
+
         let root = TempDir::new().unwrap();
         let shatter_dir = root.path().join(".shatter");
         fs::create_dir_all(&shatter_dir).unwrap();
@@ -1311,7 +1428,7 @@ functions:
             r#"
 defaults:
   setup: ./setup/default.ts
-  setup_mode: per_execution
+  setup_level: execution
 "#,
         )
         .unwrap();
@@ -1326,7 +1443,7 @@ defaults:
         .unwrap();
 
         assert_eq!(resolved.setup, Some(shatter_dir.join("./setup/default.ts")));
-        assert_eq!(resolved.setup_mode, SetupMode::PerExecution);
+        assert_eq!(resolved.setup_level, SetupLevel::Execution);
     }
 
     #[test]
@@ -1393,16 +1510,20 @@ functions:
         .unwrap();
 
         assert_eq!(resolved.setup, None);
-        assert_eq!(resolved.setup_mode, SetupMode::PerFunction); // default
+        assert_eq!(resolved.setup_level, SetupLevel::Function); // default
+        assert_eq!(resolved.setup_timeout, DEFAULT_SETUP_TIMEOUT_SECS);
+        assert!(resolved.session_setup.is_none());
+        assert!(resolved.file_setup.is_empty());
         assert!(resolved.generators.is_empty());
         assert!(resolved.param_generators.is_empty());
     }
 
     #[test]
-    fn resolve_function_config_setup_mode_defaults_to_per_function() {
+    fn resolve_function_config_setup_level_defaults_to_function() {
         let resolved =
             resolve_function_config("any/func", &[], 100, 60).unwrap();
-        assert_eq!(resolved.setup_mode, SetupMode::PerFunction);
+        assert_eq!(resolved.setup_level, SetupLevel::Function);
+        assert_eq!(resolved.setup_timeout, DEFAULT_SETUP_TIMEOUT_SECS);
     }
 
     #[test]
@@ -1643,5 +1764,279 @@ nondeterminism:
         let b = ShatterConfig::default();
         let merged = merge_configs(&[a, b]);
         assert!(merged.nondeterminism.is_none());
+    }
+
+    #[test]
+    fn session_setup_config_yaml_round_trip() {
+        let config = SessionSetupConfig {
+            file: "./setup/session.ts".into(),
+            timeout: Some(120),
+        };
+        let yaml = serde_yaml::to_string(&config).expect("serialize");
+        let restored: SessionSetupConfig = serde_yaml::from_str(&yaml).expect("deserialize");
+        assert_eq!(config, restored);
+    }
+
+    #[test]
+    fn session_setup_config_without_timeout() {
+        let yaml = "file: ./setup/session.ts\n";
+        let config: SessionSetupConfig = serde_yaml::from_str(yaml).expect("deserialize");
+        assert_eq!(config.file, "./setup/session.ts");
+        assert_eq!(config.timeout, None);
+    }
+
+    #[test]
+    fn parse_config_with_file_setup() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.yaml");
+        fs::write(
+            &config_path,
+            r#"
+defaults:
+  file_setup:
+    "src/**/*.ts": ./setup/ts-files.ts
+    "src/**/*.go": ./setup/go-files.go
+"#,
+        )
+        .unwrap();
+
+        let config = parse_config(&config_path).unwrap();
+        let file_setup = config.defaults.file_setup.as_ref().unwrap();
+        assert_eq!(file_setup.len(), 2);
+        assert_eq!(file_setup["src/**/*.ts"], "./setup/ts-files.ts");
+        assert_eq!(file_setup["src/**/*.go"], "./setup/go-files.go");
+    }
+
+    #[test]
+    fn merge_configs_file_setup_near_overrides_far() {
+        let far = ShatterConfig {
+            defaults: DefaultsConfig {
+                file_setup: Some(HashMap::from([
+                    ("src/**/*.ts".to_string(), "./setup/far-ts.ts".to_string()),
+                    ("src/**/*.go".to_string(), "./setup/go.go".to_string()),
+                ])),
+                ..DefaultsConfig::default()
+            },
+            ..ShatterConfig::default()
+        };
+        let near = ShatterConfig {
+            defaults: DefaultsConfig {
+                file_setup: Some(HashMap::from([
+                    ("src/**/*.ts".to_string(), "./setup/near-ts.ts".to_string()),
+                ])),
+                ..DefaultsConfig::default()
+            },
+            ..ShatterConfig::default()
+        };
+
+        let merged = merge_configs(&[near, far]);
+        let file_setup = merged.defaults.file_setup.unwrap();
+        assert_eq!(file_setup["src/**/*.ts"], "./setup/near-ts.ts");
+        assert_eq!(file_setup["src/**/*.go"], "./setup/go.go");
+    }
+
+    #[test]
+    fn resolve_config_with_file_setup() {
+        let root = TempDir::new().unwrap();
+        let shatter_dir = root.path().join(".shatter");
+        fs::create_dir_all(&shatter_dir).unwrap();
+
+        fs::write(
+            shatter_dir.join("config.yaml"),
+            r#"
+defaults:
+  file_setup:
+    "src/**/*.ts": ./setup/ts-files.ts
+"#,
+        )
+        .unwrap();
+
+        let resolved = resolve_function_config_with_inputs(
+            "anyFunc",
+            root.path(),
+            None,
+            100,
+            60,
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolved.file_setup["src/**/*.ts"],
+            shatter_dir.join("./setup/ts-files.ts")
+        );
+    }
+
+    #[test]
+    fn resolve_config_session_setup_from_defaults() {
+        let root = TempDir::new().unwrap();
+        let shatter_dir = root.path().join(".shatter");
+        fs::create_dir_all(&shatter_dir).unwrap();
+
+        fs::write(
+            shatter_dir.join("config.yaml"),
+            r#"
+defaults:
+  session_setup:
+    file: ./setup/session.ts
+    timeout: 120
+"#,
+        )
+        .unwrap();
+
+        let resolved = resolve_function_config_with_inputs(
+            "anyFunc",
+            root.path(),
+            None,
+            100,
+            60,
+        )
+        .unwrap();
+
+        let session = resolved.session_setup.as_ref().unwrap();
+        assert_eq!(session.file, "./setup/session.ts");
+        assert_eq!(session.timeout, Some(120));
+    }
+
+    #[test]
+    fn defaults_config_round_trip_with_all_setup_fields() {
+        let config = ShatterConfig {
+            defaults: DefaultsConfig {
+                max_iterations: Some(200),
+                setup: Some("./setup/func.ts".into()),
+                setup_level: Some(SetupLevel::Execution),
+                setup_timeout: Some(45),
+                session_setup: Some(SessionSetupConfig {
+                    file: "./setup/session.ts".into(),
+                    timeout: Some(90),
+                }),
+                file_setup: Some(HashMap::from([
+                    ("src/**/*.ts".to_string(), "./setup/ts.ts".to_string()),
+                ])),
+                ..DefaultsConfig::default()
+            },
+            ..ShatterConfig::default()
+        };
+
+        let yaml = serde_yaml::to_string(&config).expect("serialize");
+        let restored: ShatterConfig = serde_yaml::from_str(&yaml).expect("deserialize");
+        assert_eq!(config, restored);
+    }
+
+    mod prop_tests {
+        use super::*;
+        use crate::test_arbitraries::arb_setup_level;
+        use proptest::prelude::*;
+
+        fn arb_session_setup_config() -> impl Strategy<Value = SessionSetupConfig> {
+            (
+                "[a-z./]{1,30}",
+                proptest::option::of(1u64..3600),
+            )
+                .prop_map(|(file, timeout)| SessionSetupConfig { file, timeout })
+        }
+
+        fn arb_file_setup_map() -> impl Strategy<Value = HashMap<String, String>> {
+            proptest::collection::hash_map("[a-z*/.]{1,20}", "[a-z./]{1,20}", 0..3)
+        }
+
+        fn arb_defaults_config() -> impl Strategy<Value = DefaultsConfig> {
+            (
+                proptest::option::of(1u32..10000),
+                proptest::option::of(1u64..3600),
+                proptest::option::of("[a-z./]{1,30}"),
+                proptest::option::of(arb_setup_level()),
+                proptest::option::of(1u64..3600),
+                proptest::option::of(arb_session_setup_config()),
+                proptest::option::of(arb_file_setup_map()),
+            )
+                .prop_map(
+                    |(max_iterations, timeout, setup, setup_level, setup_timeout, session_setup, file_setup)| {
+                        DefaultsConfig {
+                            max_iterations,
+                            timeout,
+                            setup,
+                            setup_level,
+                            setup_timeout,
+                            session_setup,
+                            file_setup,
+                            generators: None,
+                            param_generators: None,
+                            mocks: None,
+                            genetic: None,
+                        }
+                    },
+                )
+        }
+
+        proptest! {
+            #[test]
+            fn session_setup_config_yaml_roundtrip(config in arb_session_setup_config()) {
+                let yaml = serde_yaml::to_string(&config).expect("serialize");
+                let restored: SessionSetupConfig =
+                    serde_yaml::from_str(&yaml).expect("deserialize");
+                prop_assert_eq!(config, restored);
+            }
+
+            #[test]
+            fn defaults_config_yaml_roundtrip(defaults in arb_defaults_config()) {
+                let yaml = serde_yaml::to_string(&defaults).expect("serialize");
+                let restored: DefaultsConfig =
+                    serde_yaml::from_str(&yaml).expect("deserialize");
+                prop_assert_eq!(defaults, restored);
+            }
+
+            #[test]
+            fn setup_level_in_config_roundtrip(level in arb_setup_level()) {
+                let config = DefaultsConfig {
+                    setup_level: Some(level),
+                    ..DefaultsConfig::default()
+                };
+                let yaml = serde_yaml::to_string(&config).expect("serialize");
+                let restored: DefaultsConfig =
+                    serde_yaml::from_str(&yaml).expect("deserialize");
+                prop_assert_eq!(config.setup_level, restored.setup_level);
+            }
+
+            /// Merging a single config is identity.
+            #[test]
+            fn merge_single_config_is_identity(defaults in arb_defaults_config()) {
+                let config = ShatterConfig {
+                    defaults: defaults.clone(),
+                    ..ShatterConfig::default()
+                };
+                let merged = merge_configs(&[config]);
+                prop_assert_eq!(merged.defaults.setup_level, defaults.setup_level);
+                prop_assert_eq!(merged.defaults.setup_timeout, defaults.setup_timeout);
+                prop_assert_eq!(merged.defaults.session_setup, defaults.session_setup);
+            }
+
+            /// Near config's setup fields always win over far config's.
+            #[test]
+            fn merge_near_setup_wins(
+                near_defaults in arb_defaults_config(),
+                far_defaults in arb_defaults_config(),
+            ) {
+                let near = ShatterConfig {
+                    defaults: near_defaults.clone(),
+                    ..ShatterConfig::default()
+                };
+                let far = ShatterConfig {
+                    defaults: far_defaults,
+                    ..ShatterConfig::default()
+                };
+                let merged = merge_configs(&[near, far]);
+
+                // Nearest non-None wins for scalar fields.
+                if near_defaults.setup_level.is_some() {
+                    prop_assert_eq!(merged.defaults.setup_level, near_defaults.setup_level);
+                }
+                if near_defaults.setup_timeout.is_some() {
+                    prop_assert_eq!(merged.defaults.setup_timeout, near_defaults.setup_timeout);
+                }
+                if near_defaults.session_setup.is_some() {
+                    prop_assert_eq!(merged.defaults.session_setup, near_defaults.session_setup);
+                }
+            }
+        }
     }
 }

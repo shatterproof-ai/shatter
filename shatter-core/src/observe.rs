@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::SetupMode;
+use crate::protocol::SetupLevel;
 use crate::protocol::SetupContextStack;
 use crate::coverage_metrics::DiscoveryMethod;
 use crate::explorer::{
@@ -56,7 +56,7 @@ pub struct ObserveConfig {
     /// Path to the setup file, if configured.
     pub setup_file: Option<String>,
     /// When to run setup relative to executions.
-    pub setup_mode: SetupMode,
+    pub setup_level: SetupLevel,
     /// Frontend capabilities (used to gate setup/teardown commands).
     pub capabilities: FrontendCapabilities,
     /// Detected project root directory.
@@ -75,7 +75,7 @@ impl From<&crate::explorer::ExploreConfig> for ObserveConfig {
             file: ec.file.clone(),
             mocks: ec.mocks.clone(),
             setup_file: ec.setup_file.clone(),
-            setup_mode: ec.setup_mode,
+            setup_level: ec.setup_level,
             capabilities: ec.capabilities.clone(),
             project_root: ec.project_root.clone(),
             loop_buckets: ec.loop_buckets.clone(),
@@ -254,8 +254,8 @@ pub async fn observe_function(
     // --- Setup lifecycle ---
     let has_setup =
         config.setup_file.is_some() && frontend_supports(&config.capabilities, "setup");
-    let per_function_setup = has_setup && config.setup_mode == SetupMode::PerFunction;
-    let per_execution_setup = has_setup && config.setup_mode == SetupMode::PerExecution;
+    let per_function_setup = has_setup && config.setup_level == SetupLevel::Function;
+    let per_execution_setup = has_setup && config.setup_level == SetupLevel::Execution;
 
     let mut setup_context: Option<SetupContextStack> = None;
 
@@ -266,7 +266,7 @@ pub async fn observe_function(
             frontend,
             setup_file,
             &analysis.name,
-            config.setup_mode,
+            config.setup_level,
             config.project_root.clone(),
         )
         .await?;
@@ -297,7 +297,7 @@ pub async fn observe_function(
 
     // --- Per-function teardown ---
     if per_function_setup && frontend_supports(&config.capabilities, "teardown") {
-        send_teardown(frontend, &analysis.name, config.setup_mode).await?;
+        send_teardown(frontend, &analysis.name, config.setup_level).await?;
     }
 
     let total_lines = instrumentable_line_count
@@ -344,7 +344,7 @@ async fn observe_batch_with_per_execution_setup(
                 frontend,
                 setup_file,
                 &analysis.name,
-                config.setup_mode,
+                config.setup_level,
                 config.project_root.clone(),
             )
             .await?
@@ -377,7 +377,7 @@ async fn observe_batch_with_per_execution_setup(
 
         // Per-execution teardown
         if frontend_supports(&config.capabilities, "teardown") {
-            send_teardown(frontend, &analysis.name, config.setup_mode).await?;
+            send_teardown(frontend, &analysis.name, config.setup_level).await?;
         }
 
         for &line in &exec_result.lines_executed {
@@ -533,7 +533,7 @@ mod tests {
             seed: Some(42),
             mocks: vec![],
             setup_file: None,
-            setup_mode: SetupMode::PerFunction,
+            setup_level: SetupLevel::Function,
             value_sources: vec![],
             capabilities: FrontendCapabilities {
                 commands: std::collections::HashSet::new(),

@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
-use crate::config::SetupMode;
+use crate::protocol::SetupLevel;
 use crate::coverage_metrics::DiscoveryMethod;
 use crate::frontend::{Frontend, FrontendError};
 use crate::input_gen::{
@@ -23,7 +23,7 @@ use crate::input_gen::{
 use crate::orchestrator::FrontendCapabilities;
 use crate::protocol::{
     Command as ProtoCommand, ExecuteResult, FunctionAnalysis, MockConfig, ResponseResult,
-    SetupContextEntry, SetupContextStack, SetupLevel,
+    SetupContextEntry, SetupContextStack,
 };
 
 /// Iteration count bucket boundaries for scope-aware path hashing.
@@ -87,7 +87,7 @@ pub struct ExploreConfig {
     /// Path to the setup file, if configured.
     pub setup_file: Option<String>,
     /// When to run setup relative to executions.
-    pub setup_mode: SetupMode,
+    pub setup_level: SetupLevel,
     /// Where each parameter's value should come from.
     pub value_sources: Vec<ValueSource>,
     /// Frontend capabilities (used to gate setup/generate commands).
@@ -472,10 +472,9 @@ pub(crate) async fn send_setup(
     frontend: &mut Frontend,
     setup_file: &str,
     scope: &str,
-    mode: SetupMode,
+    level: SetupLevel,
     project_root: Option<String>,
 ) -> Result<Option<SetupContextStack>, ExploreError> {
-    let level = SetupLevel::from(mode);
     let response = frontend
         .send(ProtoCommand::Setup {
             file: setup_file.to_string(),
@@ -503,8 +502,7 @@ pub(crate) async fn send_setup(
 }
 
 /// Send a Teardown command to the frontend.
-pub(crate) async fn send_teardown(frontend: &mut Frontend, scope: &str, mode: SetupMode) -> Result<(), ExploreError> {
-    let level = SetupLevel::from(mode);
+pub(crate) async fn send_teardown(frontend: &mut Frontend, scope: &str, level: SetupLevel) -> Result<(), ExploreError> {
     let response = frontend
         .send(ProtoCommand::Teardown {
             scope: scope.to_string(),
@@ -567,8 +565,8 @@ pub async fn explore_function(
     // --- Setup lifecycle ---
     let has_setup =
         config.setup_file.is_some() && frontend_supports(&config.capabilities, "setup");
-    let per_function_setup = has_setup && config.setup_mode == SetupMode::PerFunction;
-    let per_execution_setup = has_setup && config.setup_mode == SetupMode::PerExecution;
+    let per_function_setup = has_setup && config.setup_level == SetupLevel::Function;
+    let per_execution_setup = has_setup && config.setup_level == SetupLevel::Execution;
 
     let mut setup_context: Option<SetupContextStack> = None;
 
@@ -576,7 +574,7 @@ pub async fn explore_function(
         && let Some(ref setup_file) = config.setup_file
     {
         setup_context =
-            send_setup(frontend, setup_file, &analysis.name, config.setup_mode, config.project_root.clone()).await?;
+            send_setup(frontend, setup_file, &analysis.name, config.setup_level, config.project_root.clone()).await?;
     }
 
     // --- Generator prefetch ---
@@ -733,7 +731,7 @@ pub async fn explore_function(
             && let Some(ref setup_file) = config.setup_file
         {
             setup_context =
-                send_setup(frontend, setup_file, &analysis.name, config.setup_mode, config.project_root.clone()).await?;
+                send_setup(frontend, setup_file, &analysis.name, config.setup_level, config.project_root.clone()).await?;
         }
 
         // --- Input generation ---
@@ -788,7 +786,7 @@ pub async fn explore_function(
 
         // --- Per-execution teardown ---
         if per_execution_setup && frontend_supports(&config.capabilities, "teardown") {
-            send_teardown(frontend, &analysis.name, config.setup_mode).await?;
+            send_teardown(frontend, &analysis.name, config.setup_level).await?;
         }
 
         for &line in &exec_result.lines_executed {
@@ -826,7 +824,7 @@ pub async fn explore_function(
 
     // --- Per-function teardown ---
     if per_function_setup && frontend_supports(&config.capabilities, "teardown") {
-        send_teardown(frontend, &analysis.name, config.setup_mode).await?;
+        send_teardown(frontend, &analysis.name, config.setup_level).await?;
     }
 
     let total_lines = instrumentable_line_count
@@ -1103,7 +1101,7 @@ fn format_value_short(v: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::SetupMode;
+    use crate::protocol::SetupLevel;
     use crate::execution_record::{BranchDecision, ErrorInfo, SymConstraint};
     use crate::input_gen::ValueSource;
     use crate::orchestrator::FrontendCapabilities;
@@ -1907,7 +1905,7 @@ mod tests {
         let analysis = stub_analysis();
         let config = ExploreConfig {
             file: "test.ts".into(), max_iterations: 3, seed: Some(42), mocks: vec![],
-            setup_file: None, setup_mode: SetupMode::PerFunction,
+            setup_file: None, setup_level: SetupLevel::Function,
             value_sources: vec![], capabilities: FrontendCapabilities::default(),
             user_seeds: vec![],
             candidate_inputs: vec![],
@@ -1931,7 +1929,7 @@ mod tests {
         let caps = FrontendCapabilities::from_raw(&capabilities_with(&["setup", "teardown"]));
         let config = ExploreConfig {
             file: "test.ts".into(), max_iterations: 2, seed: Some(42), mocks: vec![],
-            setup_file: Some("setup.ts".into()), setup_mode: SetupMode::PerFunction,
+            setup_file: Some("setup.ts".into()), setup_level: SetupLevel::Function,
             value_sources: vec![], capabilities: caps,
             user_seeds: vec![],
             candidate_inputs: vec![],
@@ -1955,7 +1953,7 @@ mod tests {
         let caps = FrontendCapabilities::from_raw(&capabilities_with(&["setup", "teardown"]));
         let config = ExploreConfig {
             file: "test.ts".into(), max_iterations: 2, seed: Some(42), mocks: vec![],
-            setup_file: Some("setup.ts".into()), setup_mode: SetupMode::PerExecution,
+            setup_file: Some("setup.ts".into()), setup_level: SetupLevel::Execution,
             value_sources: vec![], capabilities: caps,
             user_seeds: vec![],
             candidate_inputs: vec![],
@@ -1978,7 +1976,7 @@ mod tests {
         let caps = FrontendCapabilities::from_raw(&capabilities_with(&[]));
         let config = ExploreConfig {
             file: "test.ts".into(), max_iterations: 2, seed: Some(42), mocks: vec![],
-            setup_file: Some("setup.ts".into()), setup_mode: SetupMode::PerFunction,
+            setup_file: Some("setup.ts".into()), setup_level: SetupLevel::Function,
             value_sources: vec![], capabilities: caps,
             user_seeds: vec![],
             candidate_inputs: vec![],
@@ -2000,7 +1998,7 @@ mod tests {
         let caps = FrontendCapabilities::from_raw(&capabilities_with(&["generate"]));
         let config = ExploreConfig {
             file: "test.ts".into(), max_iterations: 2, seed: Some(42), mocks: vec![],
-            setup_file: None, setup_mode: SetupMode::PerFunction,
+            setup_file: None, setup_level: SetupLevel::Function,
             value_sources: vec![ValueSource::CustomGenerator {
                 generator_name: "x".into(), param_name: Some("x".into()),
                 generator_file: "gen.ts".into(),
@@ -2028,7 +2026,7 @@ mod tests {
         let caps = FrontendCapabilities::from_raw(&capabilities_with(&["generate"]));
         let config = ExploreConfig {
             file: "test.ts".into(), max_iterations: 3, seed: Some(42), mocks: vec![],
-            setup_file: None, setup_mode: SetupMode::PerFunction,
+            setup_file: None, setup_level: SetupLevel::Function,
             value_sources: vec![], capabilities: caps,
             user_seeds: vec![],
             candidate_inputs: vec![],
@@ -2050,7 +2048,7 @@ mod tests {
         let user_seed_value = vec![serde_json::json!(999)];
         let config = ExploreConfig {
             file: "test.ts".into(), max_iterations: 5, seed: Some(42), mocks: vec![],
-            setup_file: None, setup_mode: SetupMode::PerFunction,
+            setup_file: None, setup_level: SetupLevel::Function,
             value_sources: vec![], capabilities: FrontendCapabilities::default(),
             user_seeds: vec![user_seed_value.clone()],
             candidate_inputs: vec![],
@@ -2075,7 +2073,7 @@ mod tests {
         let pool_value = vec![serde_json::json!(888)];
         let config = ExploreConfig {
             file: "test.ts".into(), max_iterations: 10, seed: Some(42), mocks: vec![],
-            setup_file: None, setup_mode: SetupMode::PerFunction,
+            setup_file: None, setup_level: SetupLevel::Function,
             value_sources: vec![], capabilities: FrontendCapabilities::default(),
             user_seeds: vec![],
             candidate_inputs: vec![candidate_value.clone()],
@@ -2112,7 +2110,7 @@ mod tests {
         let non_boundary_seed = vec![serde_json::json!(42)];
         let config = ExploreConfig {
             file: "test.ts".into(), max_iterations: 1, seed: Some(99), mocks: vec![],
-            setup_file: None, setup_mode: SetupMode::PerFunction,
+            setup_file: None, setup_level: SetupLevel::Function,
             value_sources: vec![], capabilities: FrontendCapabilities::default(),
             user_seeds: vec![non_boundary_seed],
             candidate_inputs: vec![],
