@@ -2,7 +2,9 @@
 //!
 //! Walks a directory tree to find source files for analysis, respecting
 //! `.gitignore`, `.shatterignore`, and user-specified include/exclude patterns.
+//! Also discovers convention-based setup files for the multi-level setup lifecycle.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
@@ -359,6 +361,117 @@ fn load_ignore_file(path: &Path) -> Option<GlobSet> {
     builder.build().ok()
 }
 
+// ---------------------------------------------------------------------------
+// Convention-based setup file discovery
+// ---------------------------------------------------------------------------
+
+/// Filename for session-level setup in the project root: `shatter.setup.{ext}`.
+const SESSION_SETUP_ROOT_PREFIX: &str = "shatter.setup";
+
+/// Filename for session-level setup inside `.shatter/`: `setup.{ext}`.
+const SESSION_SETUP_DIR_NAME: &str = "setup";
+
+/// Infix marker for file-level setup files co-located with source:
+/// `<stem>.shatter.setup.{ext}`.
+const FILE_SETUP_INFIX: &str = ".shatter.setup.";
+
+/// The `.shatter` directory name.
+const SHATTER_DIR: &str = ".shatter";
+
+/// Discovered setup files organized by lifecycle level.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DiscoveredSetupFiles {
+    /// Session-level setup file (at most one).
+    pub session: Option<PathBuf>,
+    /// File-level setup entries: source file path → co-located setup file path.
+    pub file_level: HashMap<PathBuf, PathBuf>,
+}
+
+/// Config overrides that suppress convention-based discovery at specific levels.
+#[derive(Debug, Clone, Default)]
+pub struct SetupConfigOverride {
+    /// If `Some`, use this path instead of convention-discovered session setup.
+    /// Convention discovery for session level is skipped entirely.
+    pub session_file: Option<PathBuf>,
+    /// If `Some`, use these mappings instead of convention-discovered file-level setup.
+    /// Keys are source file paths, values are setup file paths.
+    pub file_level: Option<HashMap<PathBuf, PathBuf>>,
+}
+
+/// Discover setup files by convention, with optional config overrides.
+///
+/// Convention rules:
+/// - **Session**: `{root}/shatter.setup.{ext}` (root-level takes precedence)
+///   or `{root}/.shatter/setup.{ext}`.
+/// - **File-level**: `{dir}/{stem}.shatter.setup.{ext}` co-located with each
+///   source file in `source_files`.
+///
+/// When `config_override` specifies a value for a level, convention discovery
+/// for that level is skipped and the override is used directly.
+pub fn discover_setup_files(
+    project_root: &Path,
+    language_ext: &str,
+    source_files: &[PathBuf],
+    config_override: &SetupConfigOverride,
+) -> DiscoveredSetupFiles {
+    let session = if let Some(ref override_path) = config_override.session_file {
+        Some(override_path.clone())
+    } else {
+        discover_session_setup(project_root, language_ext)
+    };
+
+    let file_level = if let Some(ref override_map) = config_override.file_level {
+        override_map.clone()
+    } else {
+        discover_file_setup(language_ext, source_files)
+    };
+
+    DiscoveredSetupFiles {
+        session,
+        file_level,
+    }
+}
+
+/// Look for a session-level setup file by convention.
+/// Root-level `shatter.setup.{ext}` takes precedence over `.shatter/setup.{ext}`.
+fn discover_session_setup(project_root: &Path, language_ext: &str) -> Option<PathBuf> {
+    let root_candidate = project_root.join(format!("{SESSION_SETUP_ROOT_PREFIX}.{language_ext}"));
+    if root_candidate.is_file() {
+        return Some(root_candidate);
+    }
+
+    let dir_candidate = project_root
+        .join(SHATTER_DIR)
+        .join(format!("{SESSION_SETUP_DIR_NAME}.{language_ext}"));
+    if dir_candidate.is_file() {
+        return Some(dir_candidate);
+    }
+
+    None
+}
+
+/// Find file-level setup files co-located with source files.
+fn discover_file_setup(
+    language_ext: &str,
+    source_files: &[PathBuf],
+) -> HashMap<PathBuf, PathBuf> {
+    let mut result = HashMap::new();
+    for source in source_files {
+        let Some(stem) = source.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let Some(parent) = source.parent() else {
+            continue;
+        };
+        let setup_name = format!("{stem}{FILE_SETUP_INFIX}{language_ext}");
+        let setup_path = parent.join(&setup_name);
+        if setup_path.is_file() {
+            result.insert(source.clone(), setup_path);
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -694,5 +807,205 @@ mod tests {
         let results = filter_file_list(dir.path(), vec![], &DiscoveryOptions::default())
             .expect("filter");
         assert!(results.is_empty());
+    }
+
+    // --- setup file discovery tests ---
+
+    #[test]
+    fn setup_discovers_session_in_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        create_file(dir.path(), "shatter.setup.ts");
+
+        let result = discover_setup_files(
+            dir.path(),
+            "ts",
+            &[],
+            &SetupConfigOverride::default(),
+        );
+        assert_eq!(result.session, Some(dir.path().join("shatter.setup.ts")));
+        assert!(result.file_level.is_empty());
+    }
+
+    #[test]
+    fn setup_discovers_session_in_shatter_dir() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        create_file(dir.path(), ".shatter/setup.ts");
+
+        let result = discover_setup_files(
+            dir.path(),
+            "ts",
+            &[],
+            &SetupConfigOverride::default(),
+        );
+        assert_eq!(
+            result.session,
+            Some(dir.path().join(".shatter/setup.ts"))
+        );
+    }
+
+    #[test]
+    fn setup_root_takes_precedence_over_shatter_dir() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        create_file(dir.path(), "shatter.setup.ts");
+        create_file(dir.path(), ".shatter/setup.ts");
+
+        let result = discover_setup_files(
+            dir.path(),
+            "ts",
+            &[],
+            &SetupConfigOverride::default(),
+        );
+        assert_eq!(result.session, Some(dir.path().join("shatter.setup.ts")));
+    }
+
+    #[test]
+    fn setup_discovers_file_level_colocated() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        create_file(dir.path(), "src/auth.ts");
+        create_file(dir.path(), "src/auth.shatter.setup.ts");
+
+        let sources = vec![dir.path().join("src/auth.ts")];
+        let result = discover_setup_files(
+            dir.path(),
+            "ts",
+            &sources,
+            &SetupConfigOverride::default(),
+        );
+        assert!(result.session.is_none());
+        assert_eq!(result.file_level.len(), 1);
+        assert_eq!(
+            result.file_level[&dir.path().join("src/auth.ts")],
+            dir.path().join("src/auth.shatter.setup.ts")
+        );
+    }
+
+    #[test]
+    fn setup_config_overrides_session() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Convention file exists but should be ignored
+        create_file(dir.path(), "shatter.setup.ts");
+
+        let override_path = dir.path().join("custom/my-setup.ts");
+        let result = discover_setup_files(
+            dir.path(),
+            "ts",
+            &[],
+            &SetupConfigOverride {
+                session_file: Some(override_path.clone()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(result.session, Some(override_path));
+    }
+
+    #[test]
+    fn setup_config_overrides_file_level() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        create_file(dir.path(), "src/auth.ts");
+        // Convention file exists but should be ignored
+        create_file(dir.path(), "src/auth.shatter.setup.ts");
+
+        let mut file_overrides = HashMap::new();
+        let custom = dir.path().join("setups/auth-setup.ts");
+        file_overrides.insert(dir.path().join("src/auth.ts"), custom.clone());
+
+        let result = discover_setup_files(
+            dir.path(),
+            "ts",
+            &[dir.path().join("src/auth.ts")],
+            &SetupConfigOverride {
+                file_level: Some(file_overrides),
+                ..Default::default()
+            },
+        );
+        assert_eq!(result.file_level[&dir.path().join("src/auth.ts")], custom);
+    }
+
+    #[test]
+    fn setup_no_files_returns_empty() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let result = discover_setup_files(
+            dir.path(),
+            "ts",
+            &[],
+            &SetupConfigOverride::default(),
+        );
+        assert_eq!(result, DiscoveredSetupFiles::default());
+    }
+
+    #[test]
+    fn setup_multiple_levels_simultaneously() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        create_file(dir.path(), "shatter.setup.go");
+        create_file(dir.path(), "pkg/handler.go");
+        create_file(dir.path(), "pkg/handler.shatter.setup.go");
+
+        let sources = vec![dir.path().join("pkg/handler.go")];
+        let result = discover_setup_files(
+            dir.path(),
+            "go",
+            &sources,
+            &SetupConfigOverride::default(),
+        );
+        assert_eq!(result.session, Some(dir.path().join("shatter.setup.go")));
+        assert_eq!(result.file_level.len(), 1);
+        assert_eq!(
+            result.file_level[&dir.path().join("pkg/handler.go")],
+            dir.path().join("pkg/handler.shatter.setup.go")
+        );
+    }
+
+    #[test]
+    fn setup_ignores_source_without_colocated_setup() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        create_file(dir.path(), "src/auth.ts");
+        create_file(dir.path(), "src/db.ts");
+        create_file(dir.path(), "src/auth.shatter.setup.ts");
+        // No setup for db.ts
+
+        let sources = vec![
+            dir.path().join("src/auth.ts"),
+            dir.path().join("src/db.ts"),
+        ];
+        let result = discover_setup_files(
+            dir.path(),
+            "ts",
+            &sources,
+            &SetupConfigOverride::default(),
+        );
+        assert_eq!(result.file_level.len(), 1);
+        assert!(result.file_level.contains_key(&dir.path().join("src/auth.ts")));
+        assert!(!result.file_level.contains_key(&dir.path().join("src/db.ts")));
+    }
+
+    #[test]
+    fn setup_wrong_extension_not_discovered() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Setup file is .ts but we're looking for .go
+        create_file(dir.path(), "shatter.setup.ts");
+
+        let result = discover_setup_files(
+            dir.path(),
+            "go",
+            &[],
+            &SetupConfigOverride::default(),
+        );
+        assert!(result.session.is_none());
+    }
+
+    #[test]
+    fn setup_empty_sources_returns_empty_file_level() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        create_file(dir.path(), "shatter.setup.ts");
+
+        let result = discover_setup_files(
+            dir.path(),
+            "ts",
+            &[],
+            &SetupConfigOverride::default(),
+        );
+        assert!(result.session.is_some());
+        assert!(result.file_level.is_empty());
     }
 }
