@@ -49,6 +49,7 @@ pub mod reporter;
 pub mod scan_orchestrator;
 pub mod scm;
 pub mod scope;
+pub mod setup_manager;
 pub mod shrink;
 pub mod snapshot;
 pub mod spec;

@@ -24,7 +24,7 @@ pub const PROTOCOL_VERSION: &str = "0.1.0";
 // ---------------------------------------------------------------------------
 
 /// Granularity level for setup/teardown lifecycle management.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SetupLevel {
     Session,
