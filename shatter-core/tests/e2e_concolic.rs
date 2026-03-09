@@ -157,6 +157,7 @@ async fn concolic_classifynumber_discovers_all_branches() {
         vec![], // no user-provided inputs
         &analysis.params,
         &config,
+        None,
     )
     .await
     .expect("concolic exploration failed");
@@ -240,6 +241,7 @@ async fn concolic_comparemagnitudes_discovers_compound_branches() {
         vec![],
         &analysis.params,
         &config,
+        None,
     )
     .await
     .expect("concolic exploration failed");
@@ -314,6 +316,7 @@ async fn concolic_safedivide_discovers_error_paths() {
         vec![],
         &analysis.params,
         &config,
+        None,
     )
     .await
     .expect("concolic exploration failed");
@@ -397,6 +400,7 @@ async fn concolic_validateemail_discovers_string_paths() {
         vec![], // no user-provided inputs
         &analysis.params,
         &config,
+        None,
     )
     .await
     .expect("concolic exploration failed");
@@ -480,6 +484,7 @@ async fn concolic_validateemail_with_literal_seeds() {
         vec![], // no user-provided inputs
         &analysis.params,
         &config,
+        None,
     )
     .await
     .expect("concolic exploration failed");
