@@ -13,4 +13,4 @@ const (
 )
 
 // CommandCapabilities lists the standard protocol commands this frontend supports.
-var CommandCapabilities = []string{"analyze", "execute", "instrument", "generate"}
+var CommandCapabilities = []string{"analyze", "execute", "instrument", "generate", "setup", "teardown"}

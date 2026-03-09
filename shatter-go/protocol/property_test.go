@@ -126,7 +126,39 @@ func genResponse() *rapid.Generator[Response] {
 				Status:          "shutdown_ack",
 			}
 		}),
+		rapid.Custom[Response](func(t *rapid.T) Response {
+			return Response{
+				ProtocolVersion: ProtocolVersion,
+				ID:              rapid.IntRange(0, 1000).Draw(t, "id"),
+				Status:          "teardown_ack",
+			}
+		}),
 	)
+}
+
+
+func genSetupLevel() *rapid.Generator[SetupLevel] {
+	return rapid.SampledFrom(ValidSetupLevels)
+}
+
+func genSetupContextEntry() *rapid.Generator[SetupContextEntry] {
+	return rapid.Custom[SetupContextEntry](func(t *rapid.T) SetupContextEntry {
+		level := genSetupLevel().Draw(t, "level")
+		ctx := fmt.Sprintf(`{"key":"%s"}`, genIdent().Draw(t, "ctxKey"))
+		raw := json.RawMessage(ctx)
+		return SetupContextEntry{Level: level, Context: &raw}
+	})
+}
+
+func genSetupContextStack() *rapid.Generator[SetupContextStack] {
+	return rapid.Custom[SetupContextStack](func(t *rapid.T) SetupContextStack {
+		n := rapid.IntRange(0, 4).Draw(t, "numContexts")
+		entries := make([]SetupContextEntry, n)
+		for i := 0; i < n; i++ {
+			entries[i] = genSetupContextEntry().Draw(t, fmt.Sprintf("entry%d", i))
+		}
+		return SetupContextStack{Contexts: entries}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -212,6 +244,71 @@ func TestPropertyParamInfoRoundTrip(t *testing.T) {
 		}
 	})
 }
+func TestPropertySetupLevelRoundTrip(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		level := genSetupLevel().Draw(t, "level")
+		data, err := json.Marshal(level)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var decoded SetupLevel
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if decoded != level {
+			t.Fatalf("level mismatch: got %q, want %q", decoded, level)
+		}
+	})
+}
+
+func TestPropertySetupContextStackRoundTrip(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		stack := genSetupContextStack().Draw(t, "stack")
+		data, err := json.Marshal(stack)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var decoded SetupContextStack
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if len(decoded.Contexts) != len(stack.Contexts) {
+			t.Fatalf("contexts count: got %d, want %d", len(decoded.Contexts), len(stack.Contexts))
+		}
+		for i := range stack.Contexts {
+			if decoded.Contexts[i].Level != stack.Contexts[i].Level {
+				t.Fatalf("contexts[%d].level: got %q, want %q", i, decoded.Contexts[i].Level, stack.Contexts[i].Level)
+			}
+		}
+	})
+}
+
+func TestPropertySetupLevelIsValid(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		level := genSetupLevel().Draw(t, "level")
+		if !level.IsValid() {
+			t.Fatalf("generated level %q should be valid", level)
+		}
+	})
+}
+
+func TestPropertySetupLevelInvalidString(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		s := rapid.StringMatching(`[a-z]{1,10}`).Draw(t, "str")
+		level := SetupLevel(s)
+		// If it happens to match a valid level, skip
+		for _, valid := range ValidSetupLevels {
+			if level == valid {
+				return
+			}
+		}
+		if level.IsValid() {
+			t.Fatalf("random string %q should not be a valid level", s)
+		}
+	})
+}
+
+
 
 // ---------------------------------------------------------------------------
 // Semantic properties — handler ordering

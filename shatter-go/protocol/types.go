@@ -12,6 +12,46 @@ import (
 
 const ProtocolVersion = "0.1.0"
 
+// SetupLevel defines the lifecycle granularity for setup/teardown.
+// Values match the Rust core's SetupLevel enum (snake_case serialization).
+type SetupLevel string
+
+const (
+	SetupLevelSession   SetupLevel = "session"
+	SetupLevelFile      SetupLevel = "file"
+	SetupLevelFunction  SetupLevel = "function"
+	SetupLevelExecution SetupLevel = "execution"
+)
+
+// ValidSetupLevels lists all valid setup levels for validation.
+var ValidSetupLevels = []SetupLevel{
+	SetupLevelSession, SetupLevelFile, SetupLevelFunction, SetupLevelExecution,
+}
+
+// IsValid returns true if the level is a recognized setup level.
+func (l SetupLevel) IsValid() bool {
+	for _, v := range ValidSetupLevels {
+		if l == v {
+			return true
+		}
+	}
+	return false
+}
+
+// SetupContextEntry associates a lifecycle level with the opaque context
+// value returned by its Setup command.
+type SetupContextEntry struct {
+	Level   SetupLevel       `json:"level"`
+	Context *json.RawMessage `json:"context"`
+}
+
+// SetupContextStack is a stack of active setup contexts, ordered from
+// outermost (session) to innermost (execution). Passed to Execute so
+// frontends can restore all active setup state.
+type SetupContextStack struct {
+	Contexts []SetupContextEntry `json:"contexts"`
+}
+
 // Request is a message from the core engine to the frontend.
 type Request struct {
 	ProtocolVersion string `json:"protocol_version"`
@@ -30,11 +70,13 @@ type Request struct {
 	Mocks []MockConfig `json:"mocks,omitempty"`
 
 	// Execute fields
-	Inputs       []json.RawMessage `json:"inputs,omitempty"`
-	SetupContext *json.RawMessage  `json:"setup_context,omitempty"`
+	Inputs       []json.RawMessage  `json:"inputs,omitempty"`
+	SetupContext *SetupContextStack `json:"setup_context,omitempty"`
 
-	// Setup fields
-	Mode string `json:"mode,omitempty"`
+	// Setup/Teardown fields
+	Scope         string             `json:"scope,omitempty"`
+	Level         SetupLevel         `json:"level,omitempty"`
+	ParentContext *SetupContextStack `json:"parent_context,omitempty"`
 
 	// Generate fields
 	Name   string           `json:"name,omitempty"`
