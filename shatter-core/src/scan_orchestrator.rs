@@ -446,7 +446,7 @@ pub async fn scan(
             timeout_explore: config.timeout_explore,
         };
 
-        let exploration = explorer::explore_function(frontend, analysis, &explore_config).await?;
+        let exploration = explorer::explore_function(frontend, analysis, &explore_config, None).await?;
 
         // Harvest interesting inputs into the cross-function pool.
         interesting_pool::harvest_from_exploration(
@@ -1061,7 +1061,7 @@ async fn explore_single_function(
     fingerprint: Option<String>,
     input_pool: &Mutex<InterestingPool>,
 ) -> Result<FunctionResult, ScanError> {
-    let exploration = explorer::explore_function(frontend, analysis, explore_config).await?;
+    let exploration = explorer::explore_function(frontend, analysis, explore_config, None).await?;
 
     // Harvest interesting inputs into the cross-function pool.
     {

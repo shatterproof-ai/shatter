@@ -1360,7 +1360,7 @@ async fn run_explore(
                     }
                 }
             } else {
-                explorer::explore_function(&mut frontend, func, &explore_config).await
+                explorer::explore_function(&mut frontend, func, &explore_config, None).await
             };
 
             match explore_result {
@@ -2342,7 +2342,7 @@ async fn run_export_tests(
         for func in &functions {
             log::info!("Exploring {}...", func.name);
 
-            match explorer::explore_function(&mut frontend, func, &explore_config).await {
+            match explorer::explore_function(&mut frontend, func, &explore_config, None).await {
                 Ok(result) => {
                     let behavior_map = BehaviorMap::from_exploration_result(&func.name, &result);
 
@@ -2685,7 +2685,7 @@ async fn run_run(
                 timeout_explore: None,
                 };
 
-            match explorer::explore_function(frontend, &func_analysis, &explore_config).await {
+            match explorer::explore_function(frontend, &func_analysis, &explore_config, None).await {
                 Ok(result) => {
                     log::debug!(
                         "{}: {} path(s), {}/{} lines",
