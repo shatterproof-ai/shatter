@@ -8,6 +8,12 @@ pub struct WasmCache {
     plugins: HashMap<String, Plugin>,
 }
 
+impl Default for WasmCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WasmCache {
     pub fn new() -> Self {
         Self {

@@ -224,6 +224,33 @@ pub const FRONTEND_VERSION: &str = "0.1.0";
 /// Language identifier for this frontend.
 pub const FRONTEND_LANGUAGE: &str = "rust";
 
+/// Granularity level for setup/teardown lifecycle management.
+/// Matches `SetupLevel` in shatter-core/src/protocol.rs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SetupLevel {
+    Session,
+    File,
+    Function,
+    Execution,
+}
+
+/// A single entry in a setup context stack, associating a lifecycle level
+/// with the opaque context value returned by its Setup command.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SetupContextEntry {
+    pub level: SetupLevel,
+    pub context: serde_json::Value,
+}
+
+/// Stack of active setup contexts, ordered from outermost (session) to
+/// innermost (execution). Passed to Execute so frontends can restore
+/// all active setup state.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SetupContextStack {
+    pub contexts: Vec<SetupContextEntry>,
+}
+
 /// A request message from the core engine to this frontend.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Request {
@@ -247,16 +274,21 @@ pub struct Request {
     pub inputs: Vec<serde_json::Value>,
     #[serde(default)]
     pub mocks: Vec<serde_json::Value>,
-    /// Opaque context returned by a prior Setup command, if any.
-    #[allow(dead_code)] // will be used when setup+execute context passing is implemented
+    /// Stack of active setup contexts from enclosing Setup commands, if any.
+    #[allow(dead_code)] // carried on Execute requests; handler will forward when execute passes context
     #[serde(default)]
-    pub setup_context: Option<serde_json::Value>,
+    pub setup_context: Option<SetupContextStack>,
 
     // Setup fields
-    /// When to run setup relative to executions ("per_function" or "per_execution").
-    #[allow(dead_code)] // will be used when setup is implemented
+    /// Lifecycle level for this setup/teardown (session, file, function, execution).
     #[serde(default)]
-    pub mode: Option<String>,
+    pub level: Option<SetupLevel>,
+    /// Scope identifier (function name, file path, or session label).
+    #[serde(default)]
+    pub scope: Option<String>,
+    /// Parent context stack from enclosing setup levels.
+    #[serde(default)]
+    pub parent_context: Option<SetupContextStack>,
 
     // Generate fields
     /// Name of the type or parameter to generate a value for.
@@ -498,22 +530,65 @@ mod tests {
 
     #[test]
     fn setup_request_deserializes() {
-        let json = r#"{"protocol_version":"0.1.0","id":20,"command":"setup","file":"./setup.ts","function":"processOrder","mode":"per_function"}"#;
+        let json = r#"{"protocol_version":"0.1.0","id":20,"command":"setup","file":"./setup.rs","scope":"processOrder","level":"function"}"#;
         let req: Request = serde_json::from_str(json).expect("deserialize setup");
         assert_eq!(req.id, 20);
         assert_eq!(req.command, "setup");
-        assert_eq!(req.file.as_deref(), Some("./setup.ts"));
-        assert_eq!(req.function.as_deref(), Some("processOrder"));
-        assert_eq!(req.mode.as_deref(), Some("per_function"));
+        assert_eq!(req.file.as_deref(), Some("./setup.rs"));
+        assert_eq!(req.scope.as_deref(), Some("processOrder"));
+        assert_eq!(req.level, Some(SetupLevel::Function));
+    }
+
+    #[test]
+    fn setup_request_with_parent_context_deserializes() {
+        let json = r#"{"protocol_version":"0.1.0","id":21,"command":"setup","file":"./setup.rs","scope":"myFunc","level":"execution","parent_context":{"contexts":[{"level":"session","context":{"db":"conn_42"}}]}}"#;
+        let req: Request = serde_json::from_str(json).expect("deserialize setup with parent_context");
+        assert_eq!(req.level, Some(SetupLevel::Execution));
+        let parent = req.parent_context.expect("parent_context present");
+        assert_eq!(parent.contexts.len(), 1);
+        assert_eq!(parent.contexts[0].level, SetupLevel::Session);
+    }
+
+    #[test]
+    fn setup_level_all_variants_round_trip() {
+        round_trip(&SetupLevel::Session);
+        round_trip(&SetupLevel::File);
+        round_trip(&SetupLevel::Function);
+        round_trip(&SetupLevel::Execution);
+    }
+
+    #[test]
+    fn setup_context_entry_round_trips() {
+        round_trip(&SetupContextEntry {
+            level: SetupLevel::Function,
+            context: serde_json::json!({"db": "conn_42"}),
+        });
+    }
+
+    #[test]
+    fn setup_context_stack_round_trips() {
+        round_trip(&SetupContextStack {
+            contexts: vec![
+                SetupContextEntry {
+                    level: SetupLevel::Session,
+                    context: serde_json::json!({"session_id": "abc"}),
+                },
+                SetupContextEntry {
+                    level: SetupLevel::Function,
+                    context: serde_json::json!({"db": "conn_42"}),
+                },
+            ],
+        });
     }
 
     #[test]
     fn teardown_request_deserializes() {
-        let json = r#"{"protocol_version":"0.1.0","id":22,"command":"teardown","function":"processOrder"}"#;
+        let json = r#"{"protocol_version":"0.1.0","id":22,"command":"teardown","scope":"processOrder","level":"function"}"#;
         let req: Request = serde_json::from_str(json).expect("deserialize teardown");
         assert_eq!(req.id, 22);
         assert_eq!(req.command, "teardown");
-        assert_eq!(req.function.as_deref(), Some("processOrder"));
+        assert_eq!(req.scope.as_deref(), Some("processOrder"));
+        assert_eq!(req.level, Some(SetupLevel::Function));
     }
 
     #[test]
@@ -529,9 +604,12 @@ mod tests {
 
     #[test]
     fn execute_request_with_setup_context_deserializes() {
-        let json = r#"{"protocol_version":"0.1.0","id":25,"command":"execute","function":"fn1","inputs":[1],"mocks":[],"setup_context":{"db":"conn_42"}}"#;
+        let json = r#"{"protocol_version":"0.1.0","id":25,"command":"execute","function":"fn1","inputs":[1],"mocks":[],"setup_context":{"contexts":[{"level":"session","context":{"db":"conn_42"}}]}}"#;
         let req: Request = serde_json::from_str(json).expect("deserialize execute with setup_context");
-        assert_eq!(req.setup_context, Some(serde_json::json!({"db": "conn_42"})));
+        let ctx = req.setup_context.expect("setup_context present");
+        assert_eq!(ctx.contexts.len(), 1);
+        assert_eq!(ctx.contexts[0].level, SetupLevel::Session);
+        assert_eq!(ctx.contexts[0].context, serde_json::json!({"db": "conn_42"}));
     }
 
     #[test]

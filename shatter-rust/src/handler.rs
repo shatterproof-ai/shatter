@@ -181,7 +181,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             "instrument" => (self.handle_instrument(resp, req), false),
             "execute" => (self.handle_execute(resp, req), false),
             "setup" => (self.handle_setup(resp, req), false),
-            "teardown" => (self.handle_teardown(resp), false),
+            "teardown" => (self.handle_teardown(resp, req), false),
             "generate" => (self.handle_generate(resp, req), false),
             "shutdown" => (self.handle_shutdown(resp), true),
             _ => {
@@ -378,30 +378,94 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
     }
 
     fn handle_setup(&self, mut resp: Response, req: &Request) -> Response {
-        if req.file.is_none() {
-            resp.status = "error".to_string();
-            resp.code = Some("invalid_request".to_string());
-            resp.message = Some("setup command requires a file path".to_string());
-            return resp;
-        }
-        if req.function.is_none() {
-            resp.status = "error".to_string();
-            resp.code = Some("invalid_request".to_string());
-            resp.message = Some("setup command requires a function name".to_string());
-            return resp;
-        }
+        let file_path = match &req.file {
+            Some(f) => f,
+            None => {
+                resp.status = "error".to_string();
+                resp.code = Some("invalid_request".to_string());
+                resp.message = Some("setup command requires a file path".to_string());
+                return resp;
+            }
+        };
+        let level = match &req.level {
+            Some(l) => *l,
+            None => {
+                resp.status = "error".to_string();
+                resp.code = Some("invalid_request".to_string());
+                resp.message = Some("setup command requires a level".to_string());
+                return resp;
+            }
+        };
+        let scope = match &req.scope {
+            Some(s) => s.as_str(),
+            None => {
+                resp.status = "error".to_string();
+                resp.code = Some("invalid_request".to_string());
+                resp.message = Some("setup command requires a scope".to_string());
+                return resp;
+            }
+        };
 
-        resp.status = "error".to_string();
-        resp.code = Some("internal_error".to_string());
-        resp.message = Some("setup command not yet implemented".to_string());
-        resp
+        let path = std::path::Path::new(file_path);
+        match crate::setup::run_setup(path, level, scope, req.parent_context.as_ref()) {
+            Ok(result) => {
+                resp.status = "setup".to_string();
+                resp.setup_context = Some(result.context);
+                resp
+            }
+            Err(crate::setup::SetupError::FileNotFound(_)) => {
+                resp.status = "error".to_string();
+                resp.code = Some("file_not_found".to_string());
+                resp.message = Some(format!("setup file not found: {file_path}"));
+                resp
+            }
+            Err(crate::setup::SetupError::CompilationFailed(msg)) => {
+                resp.status = "error".to_string();
+                resp.code = Some("compilation_error".to_string());
+                resp.message = Some(msg);
+                resp
+            }
+            Err(e) => {
+                resp.status = "error".to_string();
+                resp.code = Some("internal_error".to_string());
+                resp.message = Some(e.to_string());
+                resp
+            }
+        }
     }
 
-    fn handle_teardown(&self, mut resp: Response) -> Response {
-        resp.status = "error".to_string();
-        resp.code = Some("internal_error".to_string());
-        resp.message = Some("teardown command not yet implemented".to_string());
-        resp
+    fn handle_teardown(&self, mut resp: Response, req: &Request) -> Response {
+        let level = match &req.level {
+            Some(l) => *l,
+            None => {
+                resp.status = "error".to_string();
+                resp.code = Some("invalid_request".to_string());
+                resp.message = Some("teardown command requires a level".to_string());
+                return resp;
+            }
+        };
+        let scope = match &req.scope {
+            Some(s) => s.as_str(),
+            None => {
+                resp.status = "error".to_string();
+                resp.code = Some("invalid_request".to_string());
+                resp.message = Some("teardown command requires a scope".to_string());
+                return resp;
+            }
+        };
+
+        match crate::setup::run_teardown(level, scope) {
+            Ok(()) => {
+                resp.status = "teardown".to_string();
+                resp
+            }
+            Err(e) => {
+                resp.status = "error".to_string();
+                resp.code = Some("internal_error".to_string());
+                resp.message = Some(e.to_string());
+                resp
+            }
+        }
     }
 
     fn handle_generate(&mut self, mut resp: Response, req: &Request) -> Response {
@@ -792,7 +856,7 @@ mod tests {
     #[test]
     fn setup_without_file_returns_error() {
         let resp = send_recv(
-            r#"{"protocol_version":"0.1.0","id":10,"command":"setup","function":"myFunc","mode":"per_function"}"#,
+            r#"{"protocol_version":"0.1.0","id":10,"command":"setup","scope":"myFunc","level":"function"}"#,
         );
         assert_eq!(resp.status, "error");
         assert_eq!(resp.code.as_deref(), Some("invalid_request"));
@@ -800,23 +864,63 @@ mod tests {
     }
 
     #[test]
-    fn setup_without_function_returns_error() {
+    fn setup_without_level_returns_error() {
         let resp = send_recv(
-            r#"{"protocol_version":"0.1.0","id":10,"command":"setup","file":"./setup.ts","mode":"per_function"}"#,
+            r#"{"protocol_version":"0.1.0","id":10,"command":"setup","file":"./setup.rs","scope":"myFunc"}"#,
         );
         assert_eq!(resp.status, "error");
         assert_eq!(resp.code.as_deref(), Some("invalid_request"));
-        assert!(resp.message.as_deref().unwrap_or("").contains("function"));
+        assert!(resp.message.as_deref().unwrap_or("").contains("level"));
     }
 
     #[test]
-    fn setup_with_valid_fields_returns_not_implemented() {
+    fn setup_without_scope_returns_error() {
         let resp = send_recv(
-            r#"{"protocol_version":"0.1.0","id":10,"command":"setup","file":"./setup.ts","function":"myFunc","mode":"per_function"}"#,
+            r#"{"protocol_version":"0.1.0","id":10,"command":"setup","file":"./setup.rs","level":"function"}"#,
         );
         assert_eq!(resp.status, "error");
-        assert_eq!(resp.code.as_deref(), Some("internal_error"));
-        assert!(resp.message.as_deref().unwrap_or("").contains("not yet implemented"));
+        assert_eq!(resp.code.as_deref(), Some("invalid_request"));
+        assert!(resp.message.as_deref().unwrap_or("").contains("scope"));
+    }
+
+    #[test]
+    fn setup_with_nonexistent_file_returns_file_not_found() {
+        let resp = send_recv(
+            r#"{"protocol_version":"0.1.0","id":10,"command":"setup","file":"./nonexistent_setup.rs","scope":"myFunc","level":"function"}"#,
+        );
+        assert_eq!(resp.status, "error");
+        assert_eq!(resp.code.as_deref(), Some("file_not_found"));
+    }
+
+    // -- Teardown command tests --
+
+    #[test]
+    fn teardown_without_level_returns_error() {
+        let resp = send_recv(
+            r#"{"protocol_version":"0.1.0","id":11,"command":"teardown","scope":"myFunc"}"#,
+        );
+        assert_eq!(resp.status, "error");
+        assert_eq!(resp.code.as_deref(), Some("invalid_request"));
+        assert!(resp.message.as_deref().unwrap_or("").contains("level"));
+    }
+
+    #[test]
+    fn teardown_without_scope_returns_error() {
+        let resp = send_recv(
+            r#"{"protocol_version":"0.1.0","id":11,"command":"teardown","level":"function"}"#,
+        );
+        assert_eq!(resp.status, "error");
+        assert_eq!(resp.code.as_deref(), Some("invalid_request"));
+        assert!(resp.message.as_deref().unwrap_or("").contains("scope"));
+    }
+
+    #[test]
+    fn teardown_with_valid_fields_returns_success() {
+        let resp = send_recv(
+            r#"{"protocol_version":"0.1.0","id":11,"command":"teardown","scope":"myFunc","level":"function"}"#,
+        );
+        assert_eq!(resp.status, "teardown");
+        assert_eq!(resp.id, 11);
     }
 
     // -- Generate command tests --
@@ -867,19 +971,20 @@ mod tests {
     fn setup_teardown_generate_in_conversation() {
         let responses = conversation(&[
             r#"{"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze"]}"#,
-            r#"{"protocol_version":"0.1.0","id":2,"command":"setup","file":"./setup.ts","function":"fn1","mode":"per_function"}"#,
-            r#"{"protocol_version":"0.1.0","id":3,"command":"teardown","function":"fn1"}"#,
+            r#"{"protocol_version":"0.1.0","id":2,"command":"setup","file":"./nonexistent_setup.rs","scope":"fn1","level":"function"}"#,
+            r#"{"protocol_version":"0.1.0","id":3,"command":"teardown","scope":"fn1","level":"function"}"#,
             r#"{"protocol_version":"0.1.0","id":4,"command":"generate","file":"./gen.ts","name":"User","kind":"type_name"}"#,
             r#"{"protocol_version":"0.1.0","id":5,"command":"shutdown"}"#,
         ]);
         assert_eq!(responses.len(), 5);
         assert_eq!(responses[0].status, "handshake");
         assert_eq!(responses[0].id, 1);
-        // setup and teardown return "not yet implemented" errors
-        for i in 1..=2 {
-            assert_eq!(responses[i].status, "error");
-            assert_eq!(responses[i].code.as_deref(), Some("internal_error"));
-        }
+        // setup with nonexistent file returns file_not_found error
+        assert_eq!(responses[1].status, "error");
+        assert_eq!(responses[1].code.as_deref(), Some("file_not_found"));
+        // teardown succeeds (no-op for now)
+        assert_eq!(responses[2].status, "teardown");
+        assert_eq!(responses[2].id, 3);
         // generate with non-wasm file returns "unsupported generator file type"
         assert_eq!(responses[3].status, "error");
         assert_eq!(responses[3].code.as_deref(), Some("invalid_request"));
@@ -890,8 +995,8 @@ mod tests {
     #[test]
     fn new_commands_echo_correct_request_ids() {
         let responses = conversation(&[
-            r#"{"protocol_version":"0.1.0","id":100,"command":"setup","file":"./s.ts","function":"f","mode":"per_function"}"#,
-            r#"{"protocol_version":"0.1.0","id":200,"command":"teardown","function":"f"}"#,
+            r#"{"protocol_version":"0.1.0","id":100,"command":"setup","file":"./nonexistent.rs","scope":"f","level":"function"}"#,
+            r#"{"protocol_version":"0.1.0","id":200,"command":"teardown","scope":"f","level":"function"}"#,
             r#"{"protocol_version":"0.1.0","id":300,"command":"generate","file":"./g.ts","name":"T","kind":"type_name"}"#,
         ]);
         assert_eq!(responses[0].id, 100);
