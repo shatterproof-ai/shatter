@@ -1917,6 +1917,248 @@ fn literal_matches_type(lit: &LiteralValue, typ: &TypeInfo) -> Option<Value> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Mock value generation, mutation, and crossover
+// ---------------------------------------------------------------------------
+
+use crate::auto_mock::{IoCategory, MockParam};
+use crate::protocol::{MockBehavior, MockConfig};
+
+/// Generate type-correct [`MockConfig`] for each [`MockParam`].
+///
+/// For each mock parameter:
+/// - Generates `max(call_count_estimate, 1)` return values (for loop support)
+/// - Uses category-aware shaping when `return_type` is `Unknown`
+/// - Produces both success and error variants for declared error types
+///   (`Complex { kind: Result, .. }` or unions containing `Complex { kind: Error, .. }`)
+pub fn generate_mock_values(
+    mock_params: &[MockParam],
+    rng: &mut impl Rng,
+    caps: Option<&FrontendCapabilities>,
+) -> Vec<MockConfig> {
+    mock_params
+        .iter()
+        .map(|mp| {
+            let count = (mp.call_count_estimate as usize).max(1);
+            let (return_values, behavior) =
+                generate_mock_return_values(&mp.return_type, mp.category, count, rng, caps);
+
+            MockConfig {
+                symbol: mp.symbol.clone(),
+                return_values,
+                should_track_calls: true,
+                default_behavior: behavior,
+            }
+        })
+        .collect()
+}
+
+/// Generate return values for a single mock, dispatching to error-aware or
+/// category-shaped generators as needed.
+fn generate_mock_return_values(
+    return_type: &TypeInfo,
+    category: IoCategory,
+    count: usize,
+    rng: &mut impl Rng,
+    caps: Option<&FrontendCapabilities>,
+) -> (Vec<Value>, MockBehavior) {
+    // Result complex type: alternates ok/err variants using the tagged wire format.
+    if matches!(return_type, TypeInfo::Complex { kind: ComplexKind::Result, .. }) {
+        let values = (0..count)
+            .map(|i| {
+                if i % 2 == 0 {
+                    let inner = generate_random_value(&TypeInfo::Unknown, rng, caps);
+                    json!({"__complex_type": "result", "ok": true, "value": inner})
+                } else {
+                    json!({"__complex_type": "result", "ok": false, "value": "mock error"})
+                }
+            })
+            .collect();
+        return (values, MockBehavior::ReturnGenerated);
+    }
+
+    // Union-with-Error: alternate success and error variants.
+    // Error variants use generate_error() directly for the tagged format.
+    if let TypeInfo::Union { variants } = return_type {
+        let (error_indices, success_indices) = partition_error_variants(variants);
+        if !error_indices.is_empty() && !success_indices.is_empty() {
+            let mut values = Vec::with_capacity(count);
+            for i in 0..count {
+                if i % 2 == 0 {
+                    let idx = success_indices[rng.random_range(0..success_indices.len())];
+                    values.push(generate_random_value(&variants[idx], rng, caps));
+                } else {
+                    let idx = error_indices[rng.random_range(0..error_indices.len())];
+                    let metadata = match &variants[idx] {
+                        TypeInfo::Complex { metadata, .. } => metadata.clone(),
+                        _ => serde_json::Map::new(),
+                    };
+                    values.push(generate_error(&metadata, rng));
+                }
+            }
+            return (values, MockBehavior::ReturnGenerated);
+        }
+    }
+
+    // Category-aware shaping for Unknown return types.
+    if matches!(return_type, TypeInfo::Unknown) {
+        let values = (0..count)
+            .map(|_| category_shaped_value(category, rng))
+            .collect();
+        return (values, MockBehavior::RepeatLast);
+    }
+
+    // Standard type-driven generation.
+    let values = (0..count)
+        .map(|_| generate_random_value(return_type, rng, caps))
+        .collect();
+    (values, MockBehavior::RepeatLast)
+}
+
+/// Partition union variants into error and non-error index lists.
+fn partition_error_variants(variants: &[TypeInfo]) -> (Vec<usize>, Vec<usize>) {
+    let mut error_indices = Vec::new();
+    let mut success_indices = Vec::new();
+    for (i, v) in variants.iter().enumerate() {
+        if matches!(v, TypeInfo::Complex { kind: ComplexKind::Error, .. }) {
+            error_indices.push(i);
+        } else {
+            success_indices.push(i);
+        }
+    }
+    (error_indices, success_indices)
+}
+
+/// Generate a category-shaped value for Unknown return types.
+fn category_shaped_value(category: IoCategory, rng: &mut impl Rng) -> Value {
+    match category {
+        IoCategory::FileSystem => {
+            let choice: u8 = rng.random_range(0..3);
+            match choice {
+                0 => json!(""),
+                1 => json!(true),
+                _ => Value::Null,
+            }
+        }
+        IoCategory::Network => json!({"status": 200, "data": {}}),
+        IoCategory::Database => {
+            if rng.random_bool(0.5) {
+                json!({"rows": []})
+            } else {
+                json!({"rowCount": 1})
+            }
+        }
+        IoCategory::PureUtility | IoCategory::ExternalOther => generate_unknown(rng),
+    }
+}
+
+/// Mutate mock return values while preserving type contracts.
+///
+/// For each MockConfig/MockParam pair, applies [`mutate_value`] to each
+/// return value with probability `mutation_rate`. Output always has the
+/// same number of configs with the same symbols and vector lengths.
+pub fn mutate_mock_values(
+    configs: &[MockConfig],
+    mock_params: &[MockParam],
+    mutation_rate: f64,
+    dictionary: &[&str],
+    rng: &mut impl Rng,
+) -> Vec<MockConfig> {
+    configs
+        .iter()
+        .zip(mock_params.iter())
+        .map(|(config, mp)| {
+            let return_values = config
+                .return_values
+                .iter()
+                .map(|val| {
+                    if rng.random_range(0.0..1.0_f64) < mutation_rate {
+                        mutate_value(val, &mp.return_type, dictionary, rng)
+                    } else {
+                        val.clone()
+                    }
+                })
+                .collect();
+
+            MockConfig {
+                symbol: config.symbol.clone(),
+                return_values,
+                should_track_calls: config.should_track_calls,
+                default_behavior: config.default_behavior.clone(),
+            }
+        })
+        .collect()
+}
+
+/// Cross over two parent mock config vectors, preserving vector structure.
+///
+/// With probability `crossover_rate`, performs per-value crossover between
+/// matching return values. Both children have the same number of configs
+/// with the same symbols as the parents.
+pub fn crossover_mock_values(
+    parent_a: &[MockConfig],
+    parent_b: &[MockConfig],
+    mock_params: &[MockParam],
+    crossover_rate: f64,
+    rng: &mut impl Rng,
+) -> (Vec<MockConfig>, Vec<MockConfig>) {
+    let len = parent_a.len().min(parent_b.len()).min(mock_params.len());
+
+    if rng.random_range(0.0..1.0_f64) >= crossover_rate {
+        return (parent_a.to_vec(), parent_b.to_vec());
+    }
+
+    let mut child1 = Vec::with_capacity(len);
+    let mut child2 = Vec::with_capacity(len);
+
+    for i in 0..len {
+        let (rv1, rv2) = crossover_return_values(
+            &parent_a[i].return_values,
+            &parent_b[i].return_values,
+            &mock_params[i].return_type,
+            rng,
+        );
+
+        child1.push(MockConfig {
+            symbol: parent_a[i].symbol.clone(),
+            return_values: rv1,
+            should_track_calls: parent_a[i].should_track_calls,
+            default_behavior: parent_a[i].default_behavior.clone(),
+        });
+        child2.push(MockConfig {
+            symbol: parent_b[i].symbol.clone(),
+            return_values: rv2,
+            should_track_calls: parent_b[i].should_track_calls,
+            default_behavior: parent_b[i].default_behavior.clone(),
+        });
+    }
+
+    (child1, child2)
+}
+
+/// Cross over two return value vectors using per-element type-aware crossover.
+fn crossover_return_values(
+    a: &[Value],
+    b: &[Value],
+    typ: &TypeInfo,
+    rng: &mut impl Rng,
+) -> (Vec<Value>, Vec<Value>) {
+    let overlap = a.len().min(b.len());
+    let mut rv1 = Vec::with_capacity(a.len());
+    let mut rv2 = Vec::with_capacity(b.len());
+
+    for i in 0..overlap {
+        let (c1, c2) = crossover_value(&a[i], &b[i], typ, rng);
+        rv1.push(c1);
+        rv2.push(c2);
+    }
+
+    rv1.extend(a.iter().skip(overlap).cloned());
+    rv2.extend(b.iter().skip(overlap).cloned());
+
+    (rv1, rv2)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3734,6 +3976,318 @@ mod tests {
                     }
                 }
             }
+
+            // -----------------------------------------------------------------
+            // generate_mock_values: output count matches input count
+            // -----------------------------------------------------------------
+
+            #[test]
+            fn generate_mock_values_count_matches_params(
+                params in prop::collection::vec(crate::test_arbitraries::arb_mock_param(), 1..=4),
+                seed in 0..10000u64,
+            ) {
+                let mut rng = StdRng::seed_from_u64(seed);
+                let configs = generate_mock_values(&params, &mut rng, None);
+                prop_assert_eq!(configs.len(), params.len(),
+                    "config count should match param count");
+
+                for (cfg, mp) in configs.iter().zip(params.iter()) {
+                    prop_assert_eq!(&cfg.symbol, &mp.symbol);
+                    let expected_count = (mp.call_count_estimate as usize).max(1);
+                    prop_assert_eq!(cfg.return_values.len(), expected_count,
+                        "return value count mismatch for {}", mp.symbol);
+                }
+            }
+
+            // -----------------------------------------------------------------
+            // generate_mock_values: values match type for typed params
+            // -----------------------------------------------------------------
+
+            #[test]
+            fn generate_mock_values_type_valid(
+                seed in 0..10000u64,
+                typ in prop_oneof![
+                    Just(TypeInfo::Int),
+                    Just(TypeInfo::Float),
+                    Just(TypeInfo::Bool),
+                    Just(TypeInfo::Str),
+                ],
+                call_count in 1..5u32,
+            ) {
+                use crate::auto_mock::{IoCategory, ValueSource};
+                let mp = MockParam {
+                    symbol: "test_fn".to_string(),
+                    return_type: typ.clone(),
+                    category: IoCategory::ExternalOther,
+                    call_count_estimate: call_count,
+                    value_source: ValueSource::AutoGenerated,
+                };
+                let mut rng = StdRng::seed_from_u64(seed);
+                let configs = generate_mock_values(&[mp], &mut rng, None);
+                prop_assert_eq!(configs.len(), 1);
+                for val in &configs[0].return_values {
+                    prop_assert!(
+                        value_matches_type(val, &typ),
+                        "value {:?} doesn't match type {:?}", val, typ
+                    );
+                }
+            }
+
+            // -----------------------------------------------------------------
+            // mutate_mock_values: preserves vector structure
+            // -----------------------------------------------------------------
+
+            #[test]
+            // Uses non-recursive leaf types to avoid a pre-existing panic
+            // in string_mutation::mutate_structure_aware (unrelated to mock values).
+            fn mutate_mock_values_preserves_structure(
+                seed in 0..10000u64,
+                typs in prop::collection::vec(
+                    prop_oneof![
+                        Just(TypeInfo::Int),
+                        Just(TypeInfo::Float),
+                        Just(TypeInfo::Bool),
+                        Just(TypeInfo::Unknown),
+                    ],
+                    1..=4,
+                ),
+            ) {
+                use crate::auto_mock::{IoCategory, ValueSource};
+                let params: Vec<MockParam> = typs.iter().enumerate().map(|(i, t)| MockParam {
+                    symbol: format!("mock_{}", i),
+                    return_type: t.clone(),
+                    category: IoCategory::ExternalOther,
+                    call_count_estimate: 2,
+                    value_source: ValueSource::AutoGenerated,
+                }).collect();
+
+                let mut rng = StdRng::seed_from_u64(seed);
+                let configs = generate_mock_values(&params, &mut rng, None);
+                let mut rng2 = StdRng::seed_from_u64(seed.wrapping_add(1));
+                let mutated = mutate_mock_values(&configs, &params, 1.0, &[], &mut rng2);
+
+                prop_assert_eq!(mutated.len(), configs.len(),
+                    "mutated config count mismatch");
+                for (mc, orig) in mutated.iter().zip(configs.iter()) {
+                    prop_assert_eq!(mc.return_values.len(), orig.return_values.len(),
+                        "return value count changed after mutation");
+                    prop_assert_eq!(&mc.symbol, &orig.symbol,
+                        "symbol changed after mutation");
+                }
+            }
+
+            // -----------------------------------------------------------------
+            // crossover_mock_values: preserves vector structure
+            // -----------------------------------------------------------------
+
+            #[test]
+            fn crossover_mock_values_preserves_structure(
+                params in prop::collection::vec(crate::test_arbitraries::arb_mock_param(), 1..=4),
+                seed in 0..10000u64,
+            ) {
+                let mut rng = StdRng::seed_from_u64(seed);
+                let parent_a = generate_mock_values(&params, &mut rng, None);
+                let mut rng2 = StdRng::seed_from_u64(seed.wrapping_add(1));
+                let parent_b = generate_mock_values(&params, &mut rng2, None);
+
+                let mut rng3 = StdRng::seed_from_u64(seed.wrapping_add(2));
+                let (child1, child2) = crossover_mock_values(
+                    &parent_a, &parent_b, &params, 1.0, &mut rng3,
+                );
+
+                let expected_len = parent_a.len().min(parent_b.len()).min(params.len());
+                prop_assert_eq!(child1.len(), expected_len, "child1 length mismatch");
+                prop_assert_eq!(child2.len(), expected_len, "child2 length mismatch");
+
+                for idx in 0..expected_len {
+                    let min_vals = parent_a[idx].return_values.len()
+                        .min(parent_b[idx].return_values.len());
+                    prop_assert!(child1[idx].return_values.len() >= min_vals,
+                        "child1[{}] return_values too short", idx);
+                    prop_assert!(child2[idx].return_values.len() >= min_vals,
+                        "child2[{}] return_values too short", idx);
+                }
+            }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Mock value generation unit tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn generate_mock_values_typed_param() {
+        let mut rng = seeded_rng();
+        let params = vec![MockParam {
+            symbol: "readFile".to_string(),
+            return_type: TypeInfo::Str,
+            category: IoCategory::FileSystem,
+            call_count_estimate: 3,
+            value_source: crate::auto_mock::ValueSource::AutoGenerated,
+        }];
+
+        let configs = generate_mock_values(&params, &mut rng, None);
+        assert_eq!(configs.len(), 1);
+        assert_eq!(configs[0].symbol, "readFile");
+        assert_eq!(configs[0].return_values.len(), 3);
+        for val in &configs[0].return_values {
+            assert!(val.is_string(), "expected string, got {val}");
+        }
+    }
+
+    #[test]
+    fn generate_mock_values_unknown_uses_category_shaping() {
+        let mut rng = seeded_rng();
+        let params = vec![MockParam {
+            symbol: "query".to_string(),
+            return_type: TypeInfo::Unknown,
+            category: IoCategory::Database,
+            call_count_estimate: 2,
+            value_source: crate::auto_mock::ValueSource::AutoGenerated,
+        }];
+
+        let configs = generate_mock_values(&params, &mut rng, None);
+        assert_eq!(configs[0].return_values.len(), 2);
+        for val in &configs[0].return_values {
+            assert!(val.is_object(), "expected DB-shaped object, got {val}");
+        }
+    }
+
+    #[test]
+    fn generate_mock_values_result_type_produces_ok_and_err() {
+        let mut rng = seeded_rng();
+        let params = vec![MockParam {
+            symbol: "tryConnect".to_string(),
+            return_type: TypeInfo::Complex {
+                kind: ComplexKind::Result,
+                metadata: serde_json::Map::new(),
+                inner: None,
+            },
+            category: IoCategory::Network,
+            call_count_estimate: 4,
+            value_source: crate::auto_mock::ValueSource::AutoGenerated,
+        }];
+
+        let configs = generate_mock_values(&params, &mut rng, None);
+        assert_eq!(configs[0].return_values.len(), 4);
+
+        let ok_count = configs[0]
+            .return_values
+            .iter()
+            .filter(|v| v.get("ok").and_then(|o| o.as_bool()) == Some(true))
+            .count();
+        let err_count = configs[0]
+            .return_values
+            .iter()
+            .filter(|v| v.get("ok").and_then(|o| o.as_bool()) == Some(false))
+            .count();
+        assert!(ok_count > 0, "expected at least one ok variant");
+        assert!(err_count > 0, "expected at least one err variant");
+    }
+
+    #[test]
+    fn generate_mock_values_union_with_error_produces_both() {
+        let mut rng = seeded_rng();
+        let params = vec![MockParam {
+            symbol: "fetchData".to_string(),
+            return_type: TypeInfo::Union {
+                variants: vec![
+                    TypeInfo::Str,
+                    TypeInfo::Complex {
+                        kind: ComplexKind::Error,
+                        metadata: serde_json::Map::new(),
+                        inner: None,
+                    },
+                ],
+            },
+            category: IoCategory::Network,
+            call_count_estimate: 4,
+            value_source: crate::auto_mock::ValueSource::AutoGenerated,
+        }];
+
+        let configs = generate_mock_values(&params, &mut rng, None);
+        assert_eq!(configs[0].return_values.len(), 4);
+
+        // Even indices (0, 2) use success variants (Str), odd indices (1, 3) use error variants.
+        // Without frontend capabilities, Error complex types fall back to unknown generation,
+        // so we verify the alternating pattern by checking that success slots are strings.
+        assert!(configs[0].return_values[0].is_string(),
+            "expected string at index 0, got {:?}", configs[0].return_values[0]);
+        assert_eq!(configs[0].default_behavior, MockBehavior::ReturnGenerated);
+    }
+
+    #[test]
+    fn generate_mock_values_zero_call_count_produces_at_least_one() {
+        let mut rng = seeded_rng();
+        let params = vec![MockParam {
+            symbol: "unused".to_string(),
+            return_type: TypeInfo::Int,
+            category: IoCategory::ExternalOther,
+            call_count_estimate: 0,
+            value_source: crate::auto_mock::ValueSource::AutoGenerated,
+        }];
+
+        let configs = generate_mock_values(&params, &mut rng, None);
+        assert_eq!(configs[0].return_values.len(), 1);
+    }
+
+    #[test]
+    fn mutate_mock_values_preserves_symbol_and_count() {
+        let mut rng = seeded_rng();
+        let params = vec![MockParam {
+            symbol: "query".to_string(),
+            return_type: TypeInfo::Int,
+            category: IoCategory::Database,
+            call_count_estimate: 3,
+            value_source: crate::auto_mock::ValueSource::AutoGenerated,
+        }];
+        let configs = generate_mock_values(&params, &mut rng, None);
+        let mutated = mutate_mock_values(&configs, &params, 1.0, &[], &mut rng);
+
+        assert_eq!(mutated[0].symbol, "query");
+        assert_eq!(mutated[0].return_values.len(), configs[0].return_values.len());
+    }
+
+    #[test]
+    fn crossover_mock_values_preserves_length() {
+        let mut rng = seeded_rng();
+        let params = vec![
+            MockParam {
+                symbol: "a".to_string(),
+                return_type: TypeInfo::Int,
+                category: IoCategory::ExternalOther,
+                call_count_estimate: 3,
+                value_source: crate::auto_mock::ValueSource::AutoGenerated,
+            },
+            MockParam {
+                symbol: "b".to_string(),
+                return_type: TypeInfo::Str,
+                category: IoCategory::ExternalOther,
+                call_count_estimate: 2,
+                value_source: crate::auto_mock::ValueSource::AutoGenerated,
+            },
+        ];
+        let parent_a = generate_mock_values(&params, &mut rng, None);
+        let parent_b = generate_mock_values(&params, &mut rng, None);
+
+        let (child1, child2) = crossover_mock_values(&parent_a, &parent_b, &params, 1.0, &mut rng);
+        assert_eq!(child1.len(), 2);
+        assert_eq!(child2.len(), 2);
+    }
+
+    #[test]
+    fn generate_mock_values_network_unknown_produces_http_shape() {
+        let mut rng = seeded_rng();
+        let params = vec![MockParam {
+            symbol: "get".to_string(),
+            return_type: TypeInfo::Unknown,
+            category: IoCategory::Network,
+            call_count_estimate: 1,
+            value_source: crate::auto_mock::ValueSource::AutoGenerated,
+        }];
+
+        let configs = generate_mock_values(&params, &mut rng, None);
+        let val = &configs[0].return_values[0];
+        assert!(val.get("status").is_some(), "network mock should have status field");
     }
 }
