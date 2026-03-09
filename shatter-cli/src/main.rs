@@ -293,6 +293,15 @@ enum CliCommand {
         /// Disable loading and saving the cross-function seed pool.
         #[arg(long)]
         no_seeds: bool,
+
+        /// Override all setup/teardown timeouts (seconds). Sets SHATTER_SETUP_TIMEOUT
+        /// env var before spawning frontends.
+        #[arg(long)]
+        setup_timeout: Option<u64>,
+
+        /// Treat setup failures as fatal errors (abort exploration immediately).
+        #[arg(long)]
+        fail_on_setup_error: bool,
     },
 
     /// Scan a directory for source files, analyze and explore all functions in
@@ -468,6 +477,15 @@ enum CliCommand {
         /// Disable loading and saving the cross-function seed pool.
         #[arg(long)]
         no_seeds: bool,
+
+        /// Override all setup/teardown timeouts (seconds). Sets SHATTER_SETUP_TIMEOUT
+        /// env var before spawning frontends.
+        #[arg(long)]
+        setup_timeout: Option<u64>,
+
+        /// Treat setup failures as fatal errors (abort scan immediately).
+        #[arg(long)]
+        fail_on_setup_error: bool,
     },
 
     /// Export generated tests from behavior maps produced by exploration.
@@ -3134,7 +3152,19 @@ async fn main() -> ExitCode {
             timeout_explore,
             seeds_dir,
             no_seeds,
+            setup_timeout,
+            fail_on_setup_error: _,
         } => {
+            // Set SHATTER_SETUP_TIMEOUT env var for frontends if --setup-timeout provided.
+            if let Some(secs) = setup_timeout {
+                // Safety: CLI is single-threaded at this point (before spawning frontends).
+                unsafe {
+                    std::env::set_var(
+                        shatter_core::setup_manager::SETUP_TIMEOUT_ENV_VAR,
+                        secs.to_string(),
+                    );
+                }
+            }
             run_explore(
                 &targets,
                 max_iterations,
@@ -3211,7 +3241,19 @@ async fn main() -> ExitCode {
             timeout_explore,
             seeds_dir,
             no_seeds,
+            setup_timeout,
+            fail_on_setup_error: _,
         } => {
+            // Set SHATTER_SETUP_TIMEOUT env var for frontends if --setup-timeout provided.
+            if let Some(secs) = setup_timeout {
+                // Safety: CLI is single-threaded at this point (before spawning frontends).
+                unsafe {
+                    std::env::set_var(
+                        shatter_core::setup_manager::SETUP_TIMEOUT_ENV_VAR,
+                        secs.to_string(),
+                    );
+                }
+            }
             run_scan(
                 &directory,
                 language.as_deref(),
