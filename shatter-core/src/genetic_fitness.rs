@@ -58,6 +58,20 @@ impl FitnessContext {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// Create a `FitnessContext` pre-seeded with already-seen path hashes.
+    ///
+    /// This allows sharing novelty state with the orchestrator's `covered_paths`,
+    /// so paths already discovered before fitness scoring starts are not scored
+    /// as novel.
+    pub fn from_seen_paths(seen_paths: HashSet<u64>) -> Self {
+        Self { seen_paths }
+    }
+
+    /// Record a path hash as seen, returning true if it was new.
+    pub fn mark_seen(&mut self, path_hash: u64) -> bool {
+        self.seen_paths.insert(path_hash)
+    }
 }
 
 /// Score an execution result against a set of target (uncovered) branch IDs.
