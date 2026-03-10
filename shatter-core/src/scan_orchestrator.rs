@@ -30,6 +30,7 @@ use crate::frontend::{Frontend, FrontendConfig, FrontendError};
 use crate::interesting_pool::{self, InterestingPool};
 use crate::mock_gen::mock_config_from_behavior_map;
 use crate::protocol::{ExecuteResult, FunctionAnalysis, MockConfig};
+use crate::setup_manager::SetupManager;
 
 /// Configuration for a scan run.
 #[derive(Debug, Clone)]
@@ -75,6 +76,10 @@ pub struct ScanConfig {
     /// Per-function exploration wall-clock timeout. Whichever of this or
     /// `max_iterations_per_function` triggers first stops the loop.
     pub timeout_explore: Option<Duration>,
+    /// Optional setup manager for multi-level setup lifecycle.
+    /// When provided, the scan orchestrator runs session setup before the scan,
+    /// file setup/teardown per source file, and session teardown at the end.
+    pub setup_manager: Option<SetupManager>,
 }
 
 /// Context about sampling mode, for report headers.
@@ -2160,6 +2165,7 @@ mod tests {
             project_root: None,
             config_dir: None,
             timeout_explore: None,
+            setup_manager: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2230,6 +2236,7 @@ mod tests {
             project_root: None,
             config_dir: None,
             timeout_explore: None,
+            setup_manager: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2296,6 +2303,7 @@ mod tests {
             project_root: None,
             config_dir: None,
             timeout_explore: None,
+            setup_manager: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2379,6 +2387,7 @@ mod tests {
             project_root: None,
             config_dir: None,
             timeout_explore: None,
+            setup_manager: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2472,6 +2481,7 @@ mod tests {
             project_root: None,
             config_dir: None,
             timeout_explore: None,
+            setup_manager: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2549,6 +2559,7 @@ mod tests {
             project_root: None,
             config_dir: None,
             timeout_explore: None,
+            setup_manager: None,
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -2600,6 +2611,7 @@ mod tests {
             project_root: None,
             config_dir: None,
             timeout_explore: None,
+            setup_manager: None,
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -2635,6 +2647,7 @@ mod tests {
             project_root: None,
             config_dir: None,
             timeout_explore: None,
+            setup_manager: None,
         };
 
         let plan = format_dry_run_plan(&analyses, &skipped, &config).expect("should succeed");
@@ -2660,6 +2673,7 @@ mod tests {
             project_root: None,
             config_dir: None,
             timeout_explore: None,
+            setup_manager: None,
         };
 
         let plan = format_dry_run_plan(&[], &[], &config).expect("should succeed");

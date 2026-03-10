@@ -157,7 +157,7 @@ pub type SetupContext = serde_json::Value;
 ///
 /// Caches context values returned by setup commands so teardown can reference
 /// them, and tracks failures to enable `should_skip` decisions.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SetupManager {
     /// Cached context per level. Key is (level, scope) where scope is a
     /// distinguishing string (e.g., file path for File level, function name

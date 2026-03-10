@@ -1988,6 +1988,7 @@ async fn run_scan(
             project_root: project_root_str.clone(),
             config_dir: Some(std::path::PathBuf::from(directory)),
             timeout_explore: timeout_explore.map(Duration::from_secs_f64),
+            setup_manager: None,
         };
         let plan = scan_orchestrator::format_dry_run_plan(
             &all_analyses,
@@ -2057,6 +2058,7 @@ async fn run_scan(
         project_root: project_root_str.clone(),
         config_dir: Some(std::path::PathBuf::from(directory)),
         timeout_explore: timeout_explore.map(Duration::from_secs_f64),
+        setup_manager: None,
     };
 
     let scan_start = Instant::now();
