@@ -1,12 +1,2836 @@
 {
   "bucket_cap": 50,
   "buckets": {
+    "{\"kind\":\"float\"}": [
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "safeDivide",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": 10.0
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "safeDivide",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": -169.24290213011477
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "safeDivide",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": -14.799703893503988
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "safeDivide",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": 902.6268537365296
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "safeDivide",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": 59.0
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "safeDivide",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": 27.0
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "safeDivide",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": 34.0
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "safeDivide",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": 620.6179473923905
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "safeDivide",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": -125.61595185303304
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "safeDivide",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": -987.875801581104
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "safeDivide",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": 80.0
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "safeDivide",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": 619.437498379818
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "safeDivide",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": -75.0
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "safeDivide",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": -966.5304373905794
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "safeDivide",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": 13.0
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "safeDivide",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": 892.250407606582
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "safeDivide",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": -92.0
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "safeDivide",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": 528.932960635761
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "safeDivide",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": 105.58415012661112
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "safeDivide",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": 925.355204287764
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "safeDivide",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": 30.533105854303585
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "safeDivide",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": 215.55137577859364
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "safeDivide",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": -37.0
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "safeDivide",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": 836.6080255511433
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "safeDivide",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": 580.4016774953916
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "safeDivide",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": -969.9693167928656
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "safeDivide",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": 14.0
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "safeDivide",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": 60.0
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "safeDivide",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": 202.32871311799636
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "safeDivide",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": 99.43823166546964
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "safeDivide",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": -572.3923556413811
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "safeDivide",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": -585.3247607117145
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "safeDivide",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": 38.0
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "safeDivide",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": -558.5257100676913
+      }
+    ],
+    "{\"kind\":\"object\",\"fields\":[[\"name\",{\"kind\":\"str\"}],[\"age\",{\"kind\":\"float\"}],[\"isVerified\",{\"kind\":\"bool\"}],[\"role\",{\"kind\":\"str\"}]]}": [
+      {
+        "behaviors": [
+          {
+            "branch_id": 4,
+            "function": "categorizeUser",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": 284.9570986495644,
+          "isVerified": true,
+          "name": "htpudbbiqvoutohzttrs",
+          "role": "null"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 3,
+            "function": "categorizeUser",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": 94.0,
+          "isVerified": false,
+          "name": "hyjoobifbcuvnjjv",
+          "role": " "
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -58.0,
+          "isVerified": false,
+          "name": " ",
+          "role": "wfrtihjjuzaxiho"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -284.11841942691444,
+          "isVerified": true,
+          "name": "pwmzgafblyzohxt",
+          "role": "hello"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 2,
+            "function": "categorizeUser",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": 13.0,
+          "isVerified": true,
+          "name": "null",
+          "role": " "
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -2.0,
+          "isVerified": false,
+          "name": "dtm",
+          "role": "hello"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -446.4075551982254,
+          "isVerified": false,
+          "name": "true",
+          "role": "null"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -1.0,
+          "isVerified": false,
+          "name": "",
+          "role": "true"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -789.2487229097073,
+          "isVerified": false,
+          "name": "0",
+          "role": "true"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -2.0,
+          "isVerified": true,
+          "name": "test",
+          "role": "hello"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -1.0,
+          "isVerified": false,
+          "name": " ",
+          "role": "0"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -988.3012264008108,
+          "isVerified": true,
+          "name": "zz",
+          "role": "test"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -379.024829541577,
+          "isVerified": true,
+          "name": "hello",
+          "role": "null"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -0.5,
+          "isVerified": true,
+          "name": "0",
+          "role": "mpuyzncgkwswu"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -1.0,
+          "isVerified": true,
+          "name": "0",
+          "role": "true"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -1.0,
+          "isVerified": false,
+          "name": "c",
+          "role": ""
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -0.5,
+          "isVerified": true,
+          "name": "udleomokodi",
+          "role": "true"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -492.5167124064993,
+          "isVerified": true,
+          "name": "gwfv",
+          "role": "0"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -416.5381445568639,
+          "isVerified": false,
+          "name": "arguulb",
+          "role": ""
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -2.0,
+          "isVerified": false,
+          "name": " ",
+          "role": "pbyunlxiantxxjzg"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -2.0,
+          "isVerified": true,
+          "name": "true",
+          "role": "true"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -1.0,
+          "isVerified": true,
+          "name": "0",
+          "role": "0"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -558.5170851837233,
+          "isVerified": false,
+          "name": "true",
+          "role": ""
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -2.0,
+          "isVerified": true,
+          "name": "iiwnthpqrbgkefuno",
+          "role": "test"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -2.0,
+          "isVerified": true,
+          "name": "null",
+          "role": "null"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -2.0,
+          "isVerified": false,
+          "name": "jwuty",
+          "role": "hello"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -147.17607986047597,
+          "isVerified": true,
+          "name": "",
+          "role": "qjhae"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -12.0,
+          "isVerified": true,
+          "name": "null",
+          "role": "nvuq"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -454.3611261624734,
+          "isVerified": false,
+          "name": "vvajiwm",
+          "role": ""
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -2.0,
+          "isVerified": true,
+          "name": "mitncytcntiumhq",
+          "role": " "
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -1.0,
+          "isVerified": false,
+          "name": "test",
+          "role": "test"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -620.1503949992708,
+          "isVerified": false,
+          "name": "zupxbjwxwpkocuoinbh",
+          "role": "0"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -694.2141650981064,
+          "isVerified": true,
+          "name": "null",
+          "role": "hello"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -0.5,
+          "isVerified": true,
+          "name": "crqxgwwaibv",
+          "role": "test"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -1.0,
+          "isVerified": true,
+          "name": "qi",
+          "role": " "
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -676.518360571936,
+          "isVerified": false,
+          "name": "srgxuuzaufgxhkb",
+          "role": "true"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -0.5,
+          "isVerified": true,
+          "name": " ",
+          "role": " "
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -0.5,
+          "isVerified": true,
+          "name": "",
+          "role": " "
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -701.7143442674665,
+          "isVerified": true,
+          "name": "ggntphtvxpdtuu",
+          "role": " "
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -938.8997814988578,
+          "isVerified": false,
+          "name": "",
+          "role": "true"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -723.00840547693,
+          "isVerified": false,
+          "name": "pwmyhyheleroqnz",
+          "role": "uiazxqcpldtxrm"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -1.0,
+          "isVerified": false,
+          "name": "0",
+          "role": "vptppqmoqbqin"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -325.493195127184,
+          "isVerified": false,
+          "name": "rwymdxtp",
+          "role": "bgepvsocxelwgfeylgt"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -952.5680141837104,
+          "isVerified": true,
+          "name": "senehpmfucgkcjc",
+          "role": "0"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -1.0,
+          "isVerified": false,
+          "name": "pggkhqgatqrwspkjdw",
+          "role": "0"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -642.2372859643733,
+          "isVerified": false,
+          "name": "e",
+          "role": "iwoa"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -772.1452026827565,
+          "isVerified": false,
+          "name": "true",
+          "role": "test"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -2.0,
+          "isVerified": false,
+          "name": "ojqwdqiaaxdvkqbkpqum",
+          "role": " "
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -418.76881156217576,
+          "isVerified": true,
+          "name": "null",
+          "role": "test"
+        }
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "categorizeUser",
+            "severity": "handled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "fields": [
+            [
+              "name",
+              {
+                "kind": "str"
+              }
+            ],
+            [
+              "age",
+              {
+                "kind": "float"
+              }
+            ],
+            [
+              "isVerified",
+              {
+                "kind": "bool"
+              }
+            ],
+            [
+              "role",
+              {
+                "kind": "str"
+              }
+            ]
+          ],
+          "kind": "object"
+        },
+        "value": {
+          "age": -0.5,
+          "isVerified": false,
+          "name": "true",
+          "role": "test"
+        }
+      }
+    ],
     "{\"kind\":\"str\"}": [
       {
         "behaviors": [
           {
             "branch_id": 0,
             "function": "classifyString",
+            "severity": "rare_path"
+          },
+          {
+            "branch_id": 2,
+            "function": "classifyString",
+            "severity": "rare_path"
+          },
+          {
+            "branch_id": 2,
+            "function": "ClassifyString",
             "severity": "rare_path"
           }
         ],
