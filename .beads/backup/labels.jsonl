@@ -132,3 +132,5 @@
 {"issue_id":"str-xooq","label":"architecture"}
 {"issue_id":"str-xooq","label":"cli"}
 {"issue_id":"str-xooq","label":"core"}
+{"issue_id":"str-ztqi","label":"loop-analysis"}
+{"issue_id":"str-ztqi","label":"orchestrator"}
