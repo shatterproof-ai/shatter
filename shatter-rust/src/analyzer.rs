@@ -359,6 +359,30 @@ fn convert_type_inner(
         syn::Type::Paren(type_paren) => {
             convert_type_inner(&type_paren.elem, structs, enums, generic_params, converting)
         }
+        syn::Type::TraitObject(trait_obj) => {
+            let label = trait_obj
+                .bounds
+                .iter()
+                .filter_map(|b| {
+                    if let syn::TypeParamBound::Trait(t) = b {
+                        Some(
+                            t.path
+                                .segments
+                                .iter()
+                                .map(|s| s.ident.to_string())
+                                .collect::<Vec<_>>()
+                                .join("::"),
+                        )
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" + ");
+            TypeInfo::Opaque {
+                label: format!("dyn {label}"),
+            }
+        }
         syn::Type::BareFn(_) => TypeInfo::Complex {
             kind: ComplexKind::Closure,
             metadata: HashMap::new(),
@@ -2641,5 +2665,68 @@ mod tests {
                 ..
             }) if matches!(right.as_ref(), SymExpr::Const(ConstValue::Str(s)) if s == "Ok")
         ));
+    }
+
+    // ── Trait object type tests ──
+
+    #[test]
+    fn dyn_trait_ref_maps_to_opaque() {
+        let code = r#"
+            trait DataStore { fn get(&self) -> i32; }
+            fn f(store: &dyn DataStore) -> i32 { store.get() }
+        "#;
+        let f = analyze_fn(code, "f");
+        assert_eq!(
+            f.params[0].typ,
+            TypeInfo::Opaque {
+                label: "dyn DataStore".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn dyn_trait_mut_ref_maps_to_opaque() {
+        let f = analyze_fn(
+            "trait W { fn write(&mut self); } fn f(w: &mut dyn W) {}",
+            "f",
+        );
+        assert_eq!(
+            f.params[0].typ,
+            TypeInfo::Opaque {
+                label: "dyn W".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn dyn_trait_with_multiple_bounds_maps_to_opaque() {
+        let f = analyze_fn(
+            "fn f(x: &(dyn std::fmt::Debug + Send)) {}",
+            "f",
+        );
+        assert_eq!(
+            f.params[0].typ,
+            TypeInfo::Opaque {
+                label: "dyn std::fmt::Debug + Send".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn box_dyn_trait_maps_to_opaque() {
+        let code = r#"
+            trait Handler { fn handle(&self); }
+            fn f(h: Box<dyn Handler>) {}
+        "#;
+        let f = analyze_fn(code, "f");
+        // Box<dyn Handler> maps through Nullable → but convert_type_path
+        // for Box extracts the first generic arg, which is a TraitObject → Opaque.
+        // The actual mapping depends on how Box is handled: it may unwrap to Opaque directly.
+        assert_eq!(
+            f.params[0].typ,
+            TypeInfo::Opaque {
+                label: "dyn Handler".to_string()
+            }
+        );
     }
 }

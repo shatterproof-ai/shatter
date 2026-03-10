@@ -83,7 +83,7 @@ const arbBranchType: fc.Arbitrary<BranchType> = fc.constantFrom(
 const arbErrorCode: fc.Arbitrary<ErrorCode> = fc.constantFrom(
   "file_not_found", "function_not_found", "parse_error",
   "instrumentation_failed", "execution_timeout", "execution_crash",
-  "version_mismatch", "invalid_request", "internal_error",
+  "version_mismatch", "invalid_request", "compilation_error", "internal_error",
 );
 
 // ---------------------------------------------------------------------------

@@ -204,6 +204,11 @@ pub struct Behavior {
     /// external calls or side effects.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dependency_trace: Option<DependencyTrace>,
+    /// Mock configurations active during this execution.
+    /// Records which mock values produced this behavior, enabling downstream
+    /// consumers (export, spec) to reproduce the execution context.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mock_values: Vec<MockConfig>,
 }
 
 /// All observed behaviors for a function, built from execution records.
@@ -247,6 +252,7 @@ impl BehaviorMap {
                 branch_path: record.branch_path.clone(),
                 side_effects: record.side_effects.clone(),
                 dependency_trace,
+                mock_values: vec![],
             });
             next_id += 1;
         }
@@ -278,15 +284,19 @@ impl BehaviorMap {
                     message: msg.clone(),
                     stack: None, error_category: None });
                 // Try to find the matching raw result for this execution to
-                // extract the dependency trace.
-                let dependency_trace = result
+                // extract the dependency trace and mock values.
+                let matching_raw = result
                     .raw_results
                     .iter()
-                    .find(|(inputs, _mocks, _)| *inputs == exec.inputs)
+                    .find(|(inputs, _mocks, _)| *inputs == exec.inputs);
+                let dependency_trace = matching_raw
                     .filter(|(_, _mocks, res)| {
                         !res.calls_to_external.is_empty() || !res.side_effects.is_empty()
                     })
                     .map(|(_, _mocks, res)| build_dependency_trace(res));
+                let mock_values = matching_raw
+                    .map(|(_, mocks, _)| mocks.clone())
+                    .unwrap_or_default();
                 Behavior {
                     id: i as u32,
                     input_args: exec.inputs.clone(),
@@ -295,6 +305,7 @@ impl BehaviorMap {
                     branch_path: vec![],
                     side_effects: vec![],
                     dependency_trace,
+                    mock_values,
                 }
             })
             .collect();
@@ -974,6 +985,7 @@ mod tests {
                     branch_path: vec![],
                     side_effects: vec![],
                     dependency_trace: None,
+                    mock_values: vec![],
                 }],
                 fingerprint: None,
                 nondeterministic_fields: vec![],

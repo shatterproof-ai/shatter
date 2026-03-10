@@ -53,6 +53,8 @@ pub enum ExecuteError {
     CompilationFailed(String),
     /// Binary produced no parseable output.
     OutputParseError(String),
+    /// Function has parameters that cannot be constructed (trait objects, etc.).
+    NonExecutable(String),
 }
 
 impl std::fmt::Display for ExecuteError {
@@ -63,6 +65,7 @@ impl std::fmt::Display for ExecuteError {
             Self::IoError(e) => write!(f, "I/O error: {e}"),
             Self::CompilationFailed(e) => write!(f, "compilation failed: {e}"),
             Self::OutputParseError(e) => write!(f, "output parse error: {e}"),
+            Self::NonExecutable(e) => write!(f, "non-executable: {e}"),
         }
     }
 }
@@ -187,6 +190,30 @@ shatter-rust-runtime = {{ path = "{runtime_path_str}" }}
     )
 }
 
+/// Map a reference parameter type to its owned equivalent for deserialization.
+///
+/// `&str` and `&String` can't be deserialized from `serde_json::Value` because
+/// they require a borrow from the deserializer's input buffer. We deserialize
+/// to the owned type and borrow when calling the function.
+/// Returns true if the type string contains a trait object (`dyn Trait`).
+/// Trait objects cannot be deserialized from JSON, so functions with such
+/// parameters must be marked non-executable.
+fn is_trait_object_type(ty: &str) -> bool {
+    // Normalize spaces and check for `dyn ` keyword preceded by a word boundary.
+    // Covers `&dyn Foo`, `Box<dyn Foo>`, `&mut dyn Foo + Bar`, etc.
+    let normalized = ty.replace('\n', " ");
+    normalized.contains("dyn ")
+}
+
+fn owned_type_for_ref(ty: &str) -> Option<&'static str> {
+    let normalized = ty.replace(' ', "");
+    match normalized.as_str() {
+        "&str" | "&'staticstr" => Some("String"),
+        "&String" | "&'staticString" => Some("String"),
+        _ => None,
+    }
+}
+
 /// Generate the main.rs harness that calls the target function.
 ///
 /// Wraps instrumented source in `mod user_code` to avoid name collisions
@@ -236,19 +263,35 @@ fn generate_harness(
     // Reset runtime state
     h.push_str("    shatter_rust_runtime::reset();\n\n");
 
-    // Deserialize each input parameter
+    // Deserialize each input parameter.
+    // Reference types like `&str` can't be deserialized directly — deserialize
+    // to the owned type (e.g. `String`) and borrow in the function call.
     for (i, (name, ty)) in param_names.iter().zip(param_types.iter()).enumerate() {
         let clean_name = name.strip_prefix("mut ").unwrap_or(name).trim();
-        h.push_str(&format!(
-            "    let {clean_name}: {ty} = serde_json::from_value(inputs[{i}].clone()).unwrap_or_default();\n"
-        ));
+        if let Some(owned_ty) = owned_type_for_ref(ty) {
+            h.push_str(&format!(
+                "    let {clean_name}_owned: {owned_ty} = serde_json::from_value(inputs[{i}].clone()).unwrap_or_default();\n"
+            ));
+        } else {
+            h.push_str(&format!(
+                "    let {clean_name}: {ty} = serde_json::from_value(inputs[{i}].clone()).unwrap_or_default();\n"
+            ));
+        }
     }
     h.push('\n');
 
-    // Build the argument list
-    let arg_list: Vec<&str> = param_names
+    // Build the argument list — reference params use `&name_owned`
+    let arg_list: Vec<String> = param_names
         .iter()
-        .map(|n| n.strip_prefix("mut ").unwrap_or(n).trim())
+        .zip(param_types.iter())
+        .map(|(n, ty)| {
+            let clean = n.strip_prefix("mut ").unwrap_or(n).trim();
+            if owned_type_for_ref(ty).is_some() {
+                format!("&{clean}_owned")
+            } else {
+                clean.to_string()
+            }
+        })
         .collect();
     let args = arg_list.join(", ");
 
@@ -337,6 +380,15 @@ pub fn execute_function(
 
     // Extract function signature for harness generation
     let sig = extract_fn_signature(&source, function_name)?;
+
+    // Reject trait object parameters — they cannot be deserialized from JSON.
+    for (name, ty) in sig.param_names.iter().zip(sig.param_types.iter()) {
+        if is_trait_object_type(ty) {
+            return Err(ExecuteError::NonExecutable(format!(
+                "parameter `{name}` has trait object type `{ty}` which cannot be deserialized"
+            )));
+        }
+    }
 
     if inputs.len() != sig.param_names.len() {
         return Err(ExecuteError::InstrumentError(format!(
@@ -635,6 +687,51 @@ fn main() {
     }
 
     #[test]
+    fn owned_type_for_ref_maps_str_refs() {
+        assert_eq!(owned_type_for_ref("& str"), Some("String"));
+        assert_eq!(owned_type_for_ref("&str"), Some("String"));
+        assert_eq!(owned_type_for_ref("& 'static str"), Some("String"));
+        assert_eq!(owned_type_for_ref("&String"), Some("String"));
+        assert_eq!(owned_type_for_ref("& 'static String"), Some("String"));
+        assert_eq!(owned_type_for_ref("i32"), None);
+        assert_eq!(owned_type_for_ref("String"), None);
+    }
+
+    /// Reproduction test for str-jxap: `&str` parameters must deserialize
+    /// to `String` then borrow, because `serde_json::from_value::<&str>()`
+    /// fails (requires borrowing from the deserializer, not from a `Value`).
+    #[test]
+    fn generate_harness_str_ref_param_deserializes_to_owned() {
+        let source = r#"fn greet(name: &str) -> String { format!("Hello, {name}!") }"#;
+        let harness = generate_harness(
+            source,
+            "greet",
+            &["name".to_string()],
+            &["& str".to_string()],
+            Some("String"),
+            r#"["world"]"#,
+            "[]",
+        )
+        .unwrap();
+
+        // Should deserialize to String (owned), not &str
+        assert!(
+            harness.contains("name_owned: String = serde_json::from_value"),
+            "expected owned String deserialization\n\nharness:\n{harness}"
+        );
+        // Should pass &name_owned to the function
+        assert!(
+            harness.contains("user_code::greet(&name_owned)"),
+            "expected &name_owned in function call\n\nharness:\n{harness}"
+        );
+        // Should NOT try to deserialize directly to &str
+        assert!(
+            !harness.contains("name: & str"),
+            "should not deserialize to &str\n\nharness:\n{harness}"
+        );
+    }
+
+    #[test]
     fn execute_nonexistent_file_returns_error() {
         let result = execute_function("/nonexistent/file.rs", "f", &[], &[], 5000);
         assert!(result.is_err());
@@ -660,6 +757,51 @@ fn main() {
             5000,
         );
         assert!(result.is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn is_trait_object_detects_dyn_ref() {
+        assert!(is_trait_object_type("& dyn DataStore"));
+        assert!(is_trait_object_type("&dyn DataStore"));
+        assert!(is_trait_object_type("&mut dyn Write"));
+        assert!(is_trait_object_type("Box<dyn Handler>"));
+        assert!(is_trait_object_type("&(dyn Debug + Send)"));
+    }
+
+    #[test]
+    fn is_trait_object_rejects_non_dyn() {
+        assert!(!is_trait_object_type("i32"));
+        assert!(!is_trait_object_type("String"));
+        assert!(!is_trait_object_type("&str"));
+        assert!(!is_trait_object_type("Vec<i32>"));
+        assert!(!is_trait_object_type("MyStruct"));
+    }
+
+    #[test]
+    fn execute_trait_object_param_returns_non_executable() {
+        let dir = std::env::temp_dir().join("shatter-test-exec-dyn");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("test.rs");
+        std::fs::write(
+            &file,
+            "trait DataStore { fn get(&self) -> i32; }\nfn query(store: &dyn DataStore) -> i32 { store.get() }",
+        )
+        .unwrap();
+
+        let result = execute_function(
+            &file.to_string_lossy(),
+            "query",
+            &[serde_json::json!(null)],
+            &[],
+            5000,
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, ExecuteError::NonExecutable(_)),
+            "expected NonExecutable, got: {err:?}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

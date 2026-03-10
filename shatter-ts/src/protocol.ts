@@ -141,6 +141,7 @@ export type ErrorCode =
   | "execution_crash"
   | "version_mismatch"
   | "invalid_request"
+  | "compilation_error"
   | "internal_error";
 
 interface BaseResponse {

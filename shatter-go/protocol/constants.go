@@ -7,6 +7,7 @@ const (
 	ErrVersionMismatch  = "version_mismatch"
 	ErrExecutionTimeout = "execution_timeout"
 	ErrExecutionCrash   = "execution_crash"
+	ErrCompilationError = "compilation_error"
 	ErrInternalError    = "internal_error"
 	ErrNotSupported     = "not_supported"
 	ErrParseError       = "parse_error"

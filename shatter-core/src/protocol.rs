@@ -452,6 +452,8 @@ pub enum ErrorCode {
     VersionMismatch,
     /// Invalid or malformed request.
     InvalidRequest,
+    /// Compilation failed (compiled-language frontends like Rust).
+    CompilationError,
     /// Frontend internal error.
     InternalError,
 }

@@ -173,6 +173,7 @@ pub fn arb_error_code() -> impl Strategy<Value = ErrorCode> {
         Just(ErrorCode::ExecutionCrash),
         Just(ErrorCode::VersionMismatch),
         Just(ErrorCode::InvalidRequest),
+        Just(ErrorCode::CompilationError),
         Just(ErrorCode::InternalError),
     ]
 }
@@ -1003,6 +1004,7 @@ pub fn arb_behavior() -> impl Strategy<Value = Behavior> {
                 branch_path,
                 side_effects,
                 dependency_trace: None,
+                mock_values: vec![],
             },
         )
 }

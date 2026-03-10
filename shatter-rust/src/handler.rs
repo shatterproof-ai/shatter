@@ -368,6 +368,12 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
                 resp.message = Some(msg);
                 resp
             }
+            Err(crate::executor::ExecuteError::NonExecutable(msg)) => {
+                resp.status = "error".to_string();
+                resp.code = Some("non_executable".to_string());
+                resp.message = Some(msg);
+                resp
+            }
             Err(e) => {
                 resp.status = "error".to_string();
                 resp.code = Some("internal_error".to_string());

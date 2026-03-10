@@ -115,7 +115,7 @@ func genResponse() *rapid.Generator[Response] {
 				ProtocolVersion: ProtocolVersion,
 				ID:              rapid.IntRange(0, 1000).Draw(t, "id"),
 				Status:          "error",
-				Code:            rapid.SampledFrom([]string{"file_not_found", "internal_error", "parse_error"}).Draw(t, "code"),
+				Code:            rapid.SampledFrom([]string{"file_not_found", "internal_error", "parse_error", "compilation_error"}).Draw(t, "code"),
 				Message:         rapid.StringMatching(`.{0,30}`).Draw(t, "msg"),
 			}
 		}),

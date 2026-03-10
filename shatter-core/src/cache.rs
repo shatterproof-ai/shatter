@@ -283,6 +283,7 @@ mod tests {
                 branch_path: vec![],
                 side_effects: vec![],
                 dependency_trace: None,
+                mock_values: vec![],
             }],
             fingerprint: None,
             nondeterministic_fields: vec![],
@@ -343,6 +344,7 @@ mod tests {
             branch_path: vec![],
             side_effects: vec![],
             dependency_trace: None,
+            mock_values: vec![],
         });
         cache.store(&v2).unwrap();
 

@@ -500,6 +500,7 @@ mod tests {
             branch_path: vec![],
             side_effects: vec![],
             dependency_trace: None,
+            mock_values: vec![],
         };
         assert_eq!(severity_from_behavior(&b), Severity::RarePath);
     }
@@ -520,6 +521,7 @@ mod tests {
             branch_path: vec![],
             side_effects: vec![],
             dependency_trace: None,
+            mock_values: vec![],
         };
         assert_eq!(severity_from_behavior(&b), Severity::UnhandledError);
     }
@@ -540,6 +542,7 @@ mod tests {
             branch_path: vec![],
             side_effects: vec![],
             dependency_trace: None,
+            mock_values: vec![],
         };
         assert_eq!(severity_from_behavior(&b), Severity::HandledError);
     }

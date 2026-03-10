@@ -835,6 +835,7 @@ mod tests {
                     branch_path: vec![],
                     side_effects: vec![],
                     dependency_trace: None,
+                    mock_values: vec![],
                 },
                 Behavior {
                     id: 1,
@@ -844,6 +845,7 @@ mod tests {
                     branch_path: vec![],
                     side_effects: vec![],
                     dependency_trace: None,
+                    mock_values: vec![],
                 },
             ],
             fingerprint: None,

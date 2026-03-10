@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 
+use crate::auto_mock::MockParam;
 use crate::boundary_search;
 use crate::coverage_metrics::DiscoveryMethod;
 use crate::drilling;
@@ -165,6 +166,9 @@ pub struct WorklistEntry {
     /// ordering, which preserves backward compatibility with the pre-genetic
     /// pipeline.
     pub fitness: Option<f64>,
+    /// Per-entry mock configurations for dynamic mock variation.
+    /// When non-empty, these override `ExploreConfig::mocks` for this execution.
+    pub mock_values: Vec<MockConfig>,
 }
 
 impl Eq for WorklistEntry {}
@@ -283,6 +287,8 @@ pub struct Observation {
     pub is_new_path: bool,
     /// Whether this was a sampled skip (triage predicted skip, but we executed anyway to validate).
     pub is_sampled_skip: bool,
+    /// Mock configurations used for this execution.
+    pub mock_values: Vec<MockConfig>,
 }
 
 /// Output of the Solve/Generate phase — new candidate inputs produced from observations.
@@ -465,12 +471,19 @@ async fn observe_one(
         false
     };
 
+    // Use entry-level mocks when available, falling back to config.mocks.
+    let effective_mocks = if entry.mock_values.is_empty() {
+        &config.mocks
+    } else {
+        &entry.mock_values
+    };
+
     // Execute concretely via the frontend.
     let response = frontend
         .send(Command::Execute {
             function: function_name.to_string(),
             inputs: entry.inputs.clone(),
-            mocks: config.mocks.clone(),
+            mocks: effective_mocks.clone(),
             setup_context: setup_context.clone(),
         })
         .await?;
@@ -504,6 +517,7 @@ async fn observe_one(
         path_id,
         is_new_path,
         is_sampled_skip,
+        mock_values: entry.mock_values.clone(),
     })))
 }
 
@@ -535,6 +549,7 @@ fn solve_and_generate(
     target_branches: &HashSet<u32>,
     fitness_context: &mut FitnessContext,
     fitness_weights: &FitnessWeights,
+    mock_params: &[MockParam],
 ) -> SolveOutput {
     let mut output = SolveOutput::default();
 
@@ -561,6 +576,7 @@ fn solve_and_generate(
                             inputs: new_inputs,
                             source: InputSource::Z3Solved,
                             fitness: None,
+                            mock_values: obs.mock_values.clone(),
                         });
                         output.z3_count += 1;
                     }
@@ -603,6 +619,7 @@ fn solve_and_generate(
                             inputs: interp,
                             source: InputSource::BoundarySearch,
                             fitness: None,
+                            mock_values: obs.mock_values.clone(),
                         });
                         output.boundary_count += 1;
                     }
@@ -633,10 +650,22 @@ fn solve_and_generate(
                             &[],
                             rng,
                         );
+                        let mutated_mocks = if !mock_params.is_empty() {
+                            input_gen::mutate_mock_values(
+                                &obs.mock_values,
+                                mock_params,
+                                MUTATE_RATE_UNKNOWN,
+                                &[],
+                                rng,
+                            )
+                        } else {
+                            obs.mock_values.clone()
+                        };
                         output.candidates.push(WorklistEntry {
                             inputs: mutated,
                             source: InputSource::Fuzzed,
                             fitness: None,
+                            mock_values: mutated_mocks,
                         });
                         output.fuzz_count += 1;
                     }
@@ -646,6 +675,7 @@ fn solve_and_generate(
                             inputs: fuzzed,
                             source: InputSource::Fuzzed,
                             fitness: None,
+                            mock_values: obs.mock_values.clone(),
                         });
                         output.fuzz_count += 1;
                     }
@@ -684,6 +714,7 @@ fn solve_and_generate(
                     inputs,
                     source: InputSource::Drilled,
                     fitness: None,
+                    mock_values: vec![],
                 });
                 output.drill_count += 1;
             }
@@ -769,12 +800,20 @@ pub async fn explore(
     // generation with adaptive strategy selection.
     let _meta_strategy: MetaStrategy = MetaStrategy::new(vec![], Default::default());
 
+    // Generate initial mock values when mock_params are configured.
+    let initial_mocks = if !config.mock_params.is_empty() {
+        input_gen::generate_mock_values(&config.mock_params, &mut rng, None)
+    } else {
+        vec![]
+    };
+
     // Add user-provided candidates with highest priority.
     for inputs in user_inputs {
         worklist.push(WorklistEntry {
             inputs,
             source: InputSource::UserProvided,
             fitness: None,
+            mock_values: initial_mocks.clone(),
         });
     }
 
@@ -784,6 +823,7 @@ pub async fn explore(
             inputs,
             source: InputSource::Seed,
             fitness: None,
+            mock_values: initial_mocks.clone(),
         });
     }
 
@@ -909,7 +949,14 @@ pub async fn explore(
         }
 
         // Record raw result for pipeline composability.
-        raw_results.push((obs.inputs.clone(), config.mocks.clone(), obs.result.clone()));
+        // Use the per-execution mock values so downstream consumers see exactly
+        // which mocks were active for each execution.
+        let recorded_mocks = if obs.mock_values.is_empty() {
+            config.mocks.clone()
+        } else {
+            obs.mock_values.clone()
+        };
+        raw_results.push((obs.inputs.clone(), recorded_mocks, obs.result.clone()));
 
         if !obs.is_new_path {
             plateau_counter += 1;
@@ -982,6 +1029,7 @@ pub async fn explore(
             &target_branches,
             &mut fitness_context,
             &fitness_weights,
+            &config.mock_params,
         );
 
         z3_generated += solve_output.z3_count;
@@ -1504,26 +1552,31 @@ mod tests {
             inputs: vec![serde_json::json!("seed1")],
             source: InputSource::Seed,
             fitness: None,
+            mock_values: vec![],
         });
         worklist.push(WorklistEntry {
             inputs: vec![serde_json::json!("z3_1")],
             source: InputSource::Z3Solved,
             fitness: None,
+            mock_values: vec![],
         });
         worklist.push(WorklistEntry {
             inputs: vec![serde_json::json!("fuzz1")],
             source: InputSource::Fuzzed,
             fitness: None,
+            mock_values: vec![],
         });
         worklist.push(WorklistEntry {
             inputs: vec![serde_json::json!("z3_2")],
             source: InputSource::Z3Solved,
             fitness: None,
+            mock_values: vec![],
         });
         worklist.push(WorklistEntry {
             inputs: vec![serde_json::json!("seed2")],
             source: InputSource::Seed,
             fitness: None,
+            mock_values: vec![],
         });
 
         let sources: Vec<_> = std::iter::from_fn(|| worklist.pop())
@@ -1551,11 +1604,13 @@ mod tests {
             inputs: vec![serde_json::json!("z3")],
             source: InputSource::Z3Solved,
             fitness: None,
+            mock_values: vec![],
         });
         worklist.push(WorklistEntry {
             inputs: vec![serde_json::json!("low_fit")],
             source: InputSource::Seed,
             fitness: Some(0.1),
+            mock_values: vec![],
         });
 
         // The fitness-scored entry (even with low fitness and Seed source)
@@ -1575,16 +1630,19 @@ mod tests {
             inputs: vec![serde_json::json!("low")],
             source: InputSource::Fuzzed,
             fitness: Some(0.2),
+            mock_values: vec![],
         });
         worklist.push(WorklistEntry {
             inputs: vec![serde_json::json!("high")],
             source: InputSource::Fuzzed,
             fitness: Some(0.9),
+            mock_values: vec![],
         });
         worklist.push(WorklistEntry {
             inputs: vec![serde_json::json!("mid")],
             source: InputSource::Fuzzed,
             fitness: Some(0.5),
+            mock_values: vec![],
         });
 
         let drained: Vec<f64> = std::iter::from_fn(|| worklist.pop())
@@ -1602,11 +1660,13 @@ mod tests {
             inputs: vec![],
             source: InputSource::Seed,
             fitness: Some(0.5),
+            mock_values: vec![],
         });
         worklist.push(WorklistEntry {
             inputs: vec![],
             source: InputSource::Z3Solved,
             fitness: Some(0.5),
+            mock_values: vec![],
         });
 
         let first = worklist.pop().unwrap();
@@ -1649,6 +1709,7 @@ mod tests {
             path_id: 123,
             is_new_path: false,
             is_sampled_skip: false,
+            mock_values: vec![],
         };
 
         let param_infos = vec![ParamInfo {
@@ -1672,6 +1733,7 @@ mod tests {
             &HashSet::new(),
             &mut FitnessContext::new(),
             &FitnessWeights::default(),
+            &[],
         );
 
         assert!(output.candidates.is_empty());
@@ -1695,6 +1757,7 @@ mod tests {
             path_id: 456,
             is_new_path: true,
             is_sampled_skip: false,
+            mock_values: vec![],
         };
 
         let param_infos = vec![ParamInfo {
@@ -1718,6 +1781,7 @@ mod tests {
             &HashSet::new(),
             &mut FitnessContext::new(),
             &FitnessWeights::default(),
+            &[],
         );
 
         assert!(output.fuzz_count > 0, "should produce fuzz candidates for unknown constraints");
@@ -1752,6 +1816,7 @@ mod tests {
             path_id: 789,
             is_new_path: true,
             is_sampled_skip: false,
+            mock_values: vec![],
         };
 
         let param_infos = vec![ParamInfo {
@@ -1775,6 +1840,7 @@ mod tests {
             &HashSet::new(),
             &mut FitnessContext::new(),
             &FitnessWeights::default(),
+            &[],
         );
 
         assert!(output.z3_count > 0, "should produce Z3 candidates for solvable constraints");
@@ -2195,6 +2261,7 @@ mod tests {
                         inputs: vec![],
                         source: *source,
                         fitness: None,
+                        mock_values: vec![],
                     });
                 }
                 let drained: Vec<InputSource> = std::iter::from_fn(|| heap.pop())
@@ -2242,6 +2309,7 @@ mod tests {
                         inputs: vec![],
                         source: InputSource::Seed,
                         fitness: None,
+                        mock_values: vec![],
                     });
                 }
                 let mut executed = 0usize;

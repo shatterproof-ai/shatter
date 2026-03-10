@@ -812,6 +812,7 @@ mod tests {
                 branch_path: vec![],
                 side_effects: vec![],
                 dependency_trace: None,
+                mock_values: vec![],
             })
             .collect();
 
@@ -1084,6 +1085,7 @@ mod tests {
             branch_path: vec![],
             side_effects: vec![],
             dependency_trace: None,
+            mock_values: vec![],
         });
         func_result
             .exploration

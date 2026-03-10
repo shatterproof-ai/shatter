@@ -13,6 +13,7 @@ set -euo pipefail
 MODE="auto"
 DELAY=2
 DRY_RUN=false
+STEP_TIMEOUT=120  # seconds per step; 0 = no limit
 SHATTER="cargo run --quiet --bin shatter --"
 
 # Use a temporary directory so the walkthrough never pollutes .shatter/
@@ -58,6 +59,7 @@ ${BOLD}OPTIONS${RESET}
     --interactive   Pause after each step (press Enter to continue)
     --auto          (no-op, auto is the default)
     --delay N       Seconds between steps in auto mode (default: 2)
+    --step-timeout N  Per-step timeout in seconds (default: 120, 0 = no limit)
     --dry-run       Print commands without executing them
     --help, -h      Show this help
 
@@ -75,6 +77,7 @@ while [[ $# -gt 0 ]]; do
         --auto)    MODE="auto"; shift ;;  # no-op, auto is already the default
         --interactive) MODE="interactive"; shift ;;
         --delay)   DELAY="$2"; shift 2 ;;
+        --step-timeout) STEP_TIMEOUT="$2"; shift 2 ;;
         --dry-run) DRY_RUN=true; shift ;;
         --help|-h) usage ;;
         *)         echo "${RED}Unknown option: $1${RESET}"; echo "Run with --help for usage."; exit 1 ;;
@@ -103,13 +106,22 @@ run_cmd() {
         # We scan the captured output afterward for error indicators.
         local output_tmp
         output_tmp="$(mktemp)"
-        if "$@" </dev/null > >(tee -a "$output_tmp") 2> >(tee -a "$output_tmp" >&2); then
+        local cmd=("$@")
+        if [[ "$STEP_TIMEOUT" -gt 0 ]]; then
+            cmd=(timeout --signal=TERM --kill-after=10 "$STEP_TIMEOUT" "$@")
+        fi
+        if "${cmd[@]}" </dev/null > >(tee -a "$output_tmp") 2> >(tee -a "$output_tmp" >&2); then
             true
         else
             local rc=$?
             echo ""
-            echo "${RED}  Command exited with status ${rc}${RESET}"
-            echo "  Step ${CURRENT_STEP}: exit code ${rc}" >> "$ERROR_LOG"
+            if [[ $rc -eq 124 ]]; then
+                echo "${RED}  Step timed out after ${STEP_TIMEOUT}s${RESET}"
+                echo "  Step ${CURRENT_STEP}: timed out after ${STEP_TIMEOUT}s" >> "$ERROR_LOG"
+            else
+                echo "${RED}  Command exited with status ${rc}${RESET}"
+                echo "  Step ${CURRENT_STEP}: exit code ${rc}" >> "$ERROR_LOG"
+            fi
             STEP_ERRORS=$((STEP_ERRORS + 1))
         fi
         # Wait for tee subprocesses to flush
@@ -170,7 +182,7 @@ RUST_EXAMPLES=(
     "examples/standalone/rust/04_errors.rs:safe_divide"
 )
 
-TOTAL=43
+TOTAL=45
 
 # ─── Walkthrough ──────────────────────────────────────────────────────
 
@@ -412,6 +424,20 @@ step 42 $TOTAL "Stale Check" \
 step 43 $TOTAL "Revalidate" \
     "Revalidate cached behaviors for the arithmetic example" \
     $SHATTER revalidate 'examples/standalone/ts/01-arithmetic.ts'
+
+# Stage 44: Multi-level setup/teardown
+step 44 $TOTAL "Multi-Level Setup/Teardown" \
+    "Explore with session + file level setup/teardown from .shatter/config.yaml" \
+    $SHATTER explore --config examples/standalone/ts/.shatter/config.yaml \
+    --setup-timeout 30 \
+    "examples/standalone/ts/01-arithmetic.ts:classifyNumber"
+
+# Stage 45: Setup with --fail-on-setup-error
+step 45 $TOTAL "Setup Fail-on-Error" \
+    "Use --fail-on-setup-error to abort immediately on setup failures" \
+    $SHATTER explore --config examples/standalone/ts/.shatter/config.yaml \
+    --setup-timeout 10 --fail-on-setup-error \
+    "examples/standalone/ts/01-arithmetic.ts:classifyNumber"
 
 # ─── Error Summary ────────────────────────────────────────────────────
 if [[ -s "$ERROR_LOG" ]]; then

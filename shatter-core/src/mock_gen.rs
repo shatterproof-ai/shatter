@@ -238,6 +238,7 @@ mod tests {
             branch_path: vec![],
             side_effects: vec![],
             dependency_trace: None,
+            mock_values: vec![],
         }
     }
 
@@ -577,6 +578,7 @@ mod tests {
                     branch_path: vec![],
                     side_effects: vec![],
                     dependency_trace: None,
+                    mock_values: vec![],
                 },
                 make_behavior(1, vec![json!("y")], Some(json!("ok")), None),
             ],
