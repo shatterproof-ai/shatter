@@ -17,8 +17,9 @@ SHATTER="cargo run --quiet --bin shatter --"
 
 # Use a temporary cache directory so the walkthrough never pollutes .shatter/
 # in the repo (reserved for running shatter on shatter itself).
-export SHATTER_CACHE_DIR
+export SHATTER_CACHE_DIR RUST_BACKTRACE
 SHATTER_CACHE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/shatter-demo-cache.XXXXXX")"
+RUST_BACKTRACE="${RUST_BACKTRACE:-1}"
 
 # Error tracking: collect failures for a summary at the end.
 ERROR_LOG="$(mktemp "${TMPDIR:-/tmp}/shatter-walkthrough-errors.XXXXXX")"

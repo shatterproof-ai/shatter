@@ -185,7 +185,10 @@ fn pick_simplest(inputs: &[Vec<serde_json::Value>]) -> usize {
         .enumerate()
         .min_by_key(|(_, args)| {
             let json_len: usize = args.iter().map(|v| v.to_string().len()).sum();
-            let abs_sum = args.iter().map(numeric_magnitude).sum::<u64>();
+            let abs_sum = args
+                .iter()
+                .map(numeric_magnitude)
+                .fold(0u64, u64::saturating_add);
             (json_len, abs_sum)
         })
         .map(|(i, _)| i)
