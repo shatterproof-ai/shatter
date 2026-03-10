@@ -1,3 +1,5 @@
+{"issue_id":"str-0p2j","label":"architecture"}
+{"issue_id":"str-0p2j","label":"core"}
 {"issue_id":"str-0s76","label":"core"}
 {"issue_id":"str-0s76","label":"protocol"}
 {"issue_id":"str-0s76","label":"setup"}
@@ -110,6 +112,10 @@
 {"issue_id":"str-3ky9.9","label":"core"}
 {"issue_id":"str-3ky9.9","label":"mock"}
 {"issue_id":"str-4omc","label":"docs"}
+{"issue_id":"str-77sk","label":"architecture"}
+{"issue_id":"str-77sk","label":"cli"}
+{"issue_id":"str-92xe","label":"core"}
+{"issue_id":"str-92xe","label":"reporting"}
 {"issue_id":"str-99w9","label":"cli"}
 {"issue_id":"str-99w9","label":"docs"}
 {"issue_id":"str-9pjd","label":"docs"}
@@ -123,3 +129,6 @@
 {"issue_id":"str-k3mj","label":"beads"}
 {"issue_id":"str-k3mj","label":"docs"}
 {"issue_id":"str-nhnl","label":"cli"}
+{"issue_id":"str-xooq","label":"architecture"}
+{"issue_id":"str-xooq","label":"cli"}
+{"issue_id":"str-xooq","label":"core"}
