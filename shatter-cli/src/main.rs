@@ -287,7 +287,8 @@ enum CliCommand {
         loop_buckets: String,
 
         /// Directory for cross-function seed pool (default: .shatter/seeds/).
-        #[arg(long, default_value = ".shatter/seeds")]
+        /// Falls back to SHATTER_SEEDS_DIR env var.
+        #[arg(long, default_value = ".shatter/seeds", env = "SHATTER_SEEDS_DIR")]
         seeds_dir: PathBuf,
 
         /// Disable loading and saving the cross-function seed pool.
@@ -471,7 +472,8 @@ enum CliCommand {
         loop_buckets: String,
 
         /// Directory for cross-function seed pool (default: .shatter/seeds/).
-        #[arg(long, default_value = ".shatter/seeds")]
+        /// Falls back to SHATTER_SEEDS_DIR env var.
+        #[arg(long, default_value = ".shatter/seeds", env = "SHATTER_SEEDS_DIR")]
         seeds_dir: PathBuf,
 
         /// Disable loading and saving the cross-function seed pool.

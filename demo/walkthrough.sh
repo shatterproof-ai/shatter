@@ -15,10 +15,11 @@ DELAY=2
 DRY_RUN=false
 SHATTER="cargo run --quiet --bin shatter --"
 
-# Use a temporary cache directory so the walkthrough never pollutes .shatter/
+# Use a temporary directory so the walkthrough never pollutes .shatter/
 # in the repo (reserved for running shatter on shatter itself).
-export SHATTER_CACHE_DIR RUST_BACKTRACE
+export SHATTER_CACHE_DIR SHATTER_SEEDS_DIR RUST_BACKTRACE
 SHATTER_CACHE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/shatter-demo-cache.XXXXXX")"
+SHATTER_SEEDS_DIR="${SHATTER_CACHE_DIR}/seeds"
 RUST_BACKTRACE="${RUST_BACKTRACE:-1}"
 
 # Error tracking: collect failures for a summary at the end.
