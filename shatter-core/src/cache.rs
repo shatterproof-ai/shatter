@@ -151,6 +151,52 @@ impl BehaviorMapCache {
         }
     }
 
+    /// Load all cached behavior maps whose function_id starts with `file_prefix:`.
+    ///
+    /// Scans the cache subdirectory corresponding to `file_prefix` and loads every
+    /// `.json` entry that deserializes successfully and matches the current protocol
+    /// version. Returns an empty vec when the directory doesn't exist.
+    pub fn load_all_for_file(&self, file_prefix: &str) -> Result<Vec<BehaviorMap>, CacheError> {
+        // Build the subdirectory path by reusing the same logic as path_for,
+        // but only the file portion (no function suffix).
+        let mut dir = self.cache_dir.clone();
+        for component in file_prefix.split('/') {
+            if !component.is_empty() {
+                dir.push(sanitize_component(component));
+            }
+        }
+
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+            Err(e) => return Err(CacheError::Io(e)),
+        };
+
+        let mut maps = Vec::new();
+        for entry in entries {
+            let entry = entry?;
+            let path = entry.path();
+            // Only load .json files (skip .spec.json, directories, etc.)
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            if path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .is_some_and(|s| s.ends_with(".spec"))
+            {
+                continue;
+            }
+            if let Ok(contents) = fs::read_to_string(&path)
+                && let Ok(entry) = serde_json::from_str::<BehaviorMapCacheEntry>(&contents)
+                && entry.protocol_version == PROTOCOL_VERSION
+            {
+                maps.push(entry.behavior_map);
+            }
+        }
+        Ok(maps)
+    }
+
     /// Default cache directory relative to a project root: `<project_root>/.shatter/cache/`.
     pub fn default_dir(project_root: &Path) -> PathBuf {
         project_root.join(".shatter").join("cache")

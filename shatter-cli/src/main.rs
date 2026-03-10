@@ -689,6 +689,42 @@ enum CliCommand {
         no_cache: bool,
     },
 
+    /// Re-execute cached behaviors to detect regressions or drift.
+    ///
+    /// Loads behavior maps from the cache for the given source file, spawns a
+    /// frontend to replay each recorded input, and compares the observed behavior
+    /// against the cached expectation. Exit code 0 = no regressions, 1 = issues found.
+    Revalidate {
+        /// Source file whose cached behaviors to revalidate.
+        #[arg(required = true)]
+        source: String,
+
+        /// Cache directory for loading behavior maps.
+        /// Falls back to SHATTER_CACHE_DIR env var, then `.shatter/cache/`.
+        #[arg(long, env = "SHATTER_CACHE_DIR")]
+        cache_dir: Option<PathBuf>,
+
+        /// Per-request timeout in seconds for frontend communication.
+        #[arg(long, default_value_t = 30)]
+        request_timeout: u64,
+
+        /// Execution timeout in seconds for each function invocation.
+        #[arg(long, default_value_t = 10)]
+        exec_timeout: u64,
+
+        /// Build timeout in seconds for compiling instrumented code.
+        #[arg(long, default_value_t = 30)]
+        build_timeout: u64,
+
+        /// Memory limit in MB for the frontend process.
+        #[arg(long)]
+        memory_limit: Option<u64>,
+
+        /// Output format: "text" (default) or "json".
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+
     /// Run tests with impact analysis: only execute tests affected by changed files.
     ///
     /// Uses a coverage map to determine which tests touch which source files,
@@ -1285,13 +1321,17 @@ async fn run_explore(
                 &[],
             );
             let mock_symbols: Vec<String> = auto_mocks.iter().map(|m| m.symbol.clone()).collect();
+            let mock_params = shatter_core::auto_mock::build_mock_params(
+                &func.dependencies,
+                &auto_mocks,
+            );
 
             let explore_config = ExploreConfig {
                 file: file_str.to_string(),
                 max_iterations: resolved.max_iterations,
                 seed: None,
                 mocks: auto_mocks,
-                mock_params: vec![],
+                mock_params,
                 setup_file: resolved.setup.as_ref().map(|p| p.display().to_string()),
                 setup_level: resolved.setup_level,
                 value_sources: shatter_core::input_gen::resolve_value_sources(
@@ -2997,6 +3037,195 @@ async fn shutdown_frontend(frontend: Frontend) {
 }
 
 /// Run the stale command: check which functions are stale relative to a spec file.
+/// Revalidate cached behaviors: replay recorded inputs and classify drift.
+///
+/// Returns `Ok(true)` if all behaviors are confirmed (no regressions),
+/// `Ok(false)` if any issues were found.
+#[allow(clippy::too_many_arguments)]
+async fn run_revalidate(
+    source: &str,
+    cache_dir: Option<&Path>,
+    format: &str,
+    request_timeout: u64,
+    exec_timeout: u64,
+    build_timeout: u64,
+    memory_limit: Option<u64>,
+    log_level: LogLevel,
+    project_dir: Option<&Path>,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let target = parse_target(source)?;
+    let file_str = target.file.to_string_lossy();
+    let project_root_str = resolve_project_root(project_dir, &target.file);
+
+    // Initialize cache.
+    let dir = match cache_dir {
+        Some(p) => p.to_path_buf(),
+        None => BehaviorMapCache::default_dir(&std::env::current_dir()?),
+    };
+    let cache = BehaviorMapCache::new(dir)
+        .map_err(|e| format!("failed to initialize cache: {e}"))?;
+
+    // Spawn a frontend to analyze and replay inputs.
+    let req_timeout = Duration::from_secs(request_timeout);
+    let config = frontend_config(
+        target.language,
+        req_timeout,
+        log_level,
+        exec_timeout,
+        build_timeout,
+        memory_limit,
+        None,
+    )?;
+    let mut frontend = Frontend::spawn(&config).await.map_err(|e| {
+        format!("failed to spawn {} frontend: {e}", target.language.label())
+    })?;
+
+    // Analyze to discover functions and compute fingerprints.
+    let analyze_response = frontend
+        .send(ProtoCommand::Analyze {
+            file: file_str.to_string(),
+            function: target.function.clone(),
+            project_root: project_root_str.clone(),
+        })
+        .await
+        .map_err(|e| format!("analyze failed: {e}"))?;
+
+    let functions = match &analyze_response.result {
+        ResponseResult::Analyze { functions } => functions.clone(),
+        ResponseResult::Error { code, message, .. } => {
+            shutdown_frontend(frontend).await;
+            return Err(format!("analyze error ({code:?}): {message}").into());
+        }
+        other => {
+            shutdown_frontend(frontend).await;
+            return Err(format!("unexpected analyze response: {other:?}").into());
+        }
+    };
+
+    // Load cached behavior maps for each discovered function.
+    let mut behavior_maps = Vec::new();
+    for func in &functions {
+        if let Ok(Some(bm)) = cache.load(&func.name) {
+            behavior_maps.push(bm);
+        }
+    }
+
+    if behavior_maps.is_empty() {
+        shutdown_frontend(frontend).await;
+        if format == "json" {
+            println!("{{\"reports\":[],\"all_confirmed\":true}}");
+        } else {
+            println!("No cached behaviors found for {file_str}. Nothing to revalidate.");
+        }
+        return Ok(true);
+    }
+
+    // Compute deep fingerprints for the analyzed functions.
+    let fingerprints: std::collections::HashMap<String, String> =
+        shatter_core::fingerprint::compute_deep_fingerprints(
+            &target.file,
+            &functions,
+            &std::collections::HashMap::new(),
+        )
+        .unwrap_or_default();
+
+    // Instrument each function that has a cached behavior map.
+    for bm in &behavior_maps {
+        let func_name = bm.function_id.rsplit(':').next().unwrap_or(&bm.function_id);
+        let instrument_response = frontend
+            .send(ProtoCommand::Instrument {
+                file: file_str.to_string(),
+                function: func_name.to_string(),
+                mocks: vec![],
+                project_root: project_root_str.clone(),
+            })
+            .await
+            .map_err(|e| format!("instrument failed for {func_name}: {e}"))?;
+
+        if let ResponseResult::Error { code, message, .. } = &instrument_response.result {
+            shutdown_frontend(frontend).await;
+            return Err(
+                format!("instrument error for {func_name} ({code:?}): {message}").into(),
+            );
+        }
+    }
+
+    // Revalidate each behavior map.
+    let mut all_reports = Vec::new();
+    let mut has_issues = false;
+
+    for bm in &behavior_maps {
+        let func_name = bm.function_id.rsplit(':').next().unwrap_or(&bm.function_id);
+        let current_fp = fingerprints.get(func_name).map(|s| s.as_str());
+
+        let reports = shatter_core::revalidation::revalidate_behaviors(
+            &mut frontend,
+            bm,
+            current_fp,
+        )
+        .await
+        .map_err(|e| format!("revalidation failed for {}: {e}", bm.function_id))?;
+
+        for report in &reports {
+            if report.verdict != shatter_core::revalidation::RevalidationVerdict::Confirmed
+                && report.verdict
+                    != shatter_core::revalidation::RevalidationVerdict::ExpectedDrift
+            {
+                has_issues = true;
+            }
+        }
+        all_reports.extend(reports);
+    }
+
+    shutdown_frontend(frontend).await;
+
+    // Output results.
+    if format == "json" {
+        let output = serde_json::json!({
+            "reports": all_reports,
+            "all_confirmed": !has_issues,
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else if all_reports.is_empty() {
+        println!("No behaviors to revalidate.");
+    } else {
+            for report in &all_reports {
+                let icon = match report.verdict {
+                    shatter_core::revalidation::RevalidationVerdict::Confirmed => "ok",
+                    shatter_core::revalidation::RevalidationVerdict::ExpectedDrift => "drift",
+                    shatter_core::revalidation::RevalidationVerdict::Flaky => "FLAKY",
+                    shatter_core::revalidation::RevalidationVerdict::PotentialRegression => {
+                        "REGRESSION"
+                    }
+                    shatter_core::revalidation::RevalidationVerdict::SeverityDowngrade => {
+                        "DOWNGRADE"
+                    }
+                    shatter_core::revalidation::RevalidationVerdict::SeverityUpgrade => "UPGRADE",
+                };
+                println!(
+                    "  [{icon}] {} ({})",
+                    report.function_name,
+                    report.verdict,
+                );
+            }
+            let confirmed = all_reports
+                .iter()
+                .filter(|r| {
+                    r.verdict == shatter_core::revalidation::RevalidationVerdict::Confirmed
+                        || r.verdict
+                            == shatter_core::revalidation::RevalidationVerdict::ExpectedDrift
+                })
+                .count();
+            println!(
+                "\n{}/{} behaviors confirmed.",
+                confirmed,
+                all_reports.len()
+            );
+    }
+
+    Ok(!has_issues)
+}
+
 ///
 /// Returns `Ok(true)` if all functions are fresh, `Ok(false)` if any are stale or removed.
 // Each argument corresponds to a CLI flag; this is only called from one callsite.
@@ -3443,6 +3672,37 @@ async fn main() -> ExitCode {
             {
                 Ok(all_fresh) => {
                     if all_fresh {
+                        return ExitCode::SUCCESS;
+                    }
+                    return ExitCode::FAILURE;
+                }
+                Err(e) => Err(e),
+            }
+        }
+        CliCommand::Revalidate {
+            source,
+            cache_dir,
+            request_timeout,
+            exec_timeout,
+            build_timeout,
+            memory_limit,
+            format,
+        } => {
+            match run_revalidate(
+                &source,
+                cache_dir.as_deref(),
+                &format,
+                request_timeout,
+                exec_timeout,
+                build_timeout,
+                memory_limit,
+                log_level,
+                cli.project_dir.as_deref(),
+            )
+            .await
+            {
+                Ok(all_confirmed) => {
+                    if all_confirmed {
                         return ExitCode::SUCCESS;
                     }
                     return ExitCode::FAILURE;

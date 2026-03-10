@@ -246,7 +246,7 @@ step 9 $TOTAL "Analyze Rust Functions" \
 # Stage 10: Explore Rust functions
 step 10 $TOTAL "Explore Rust Functions" \
     "Concolic execution on Rust: generate inputs to cover all branches" \
-    $SHATTER explore "${RUST_EXAMPLES[@]}"
+    $SHATTER explore --max-iterations 3 --timeout-explore 25 "${RUST_EXAMPLES[@]}"
 
 # Stage 11: Scan Rust examples (project with deps)
 step 11 $TOTAL "Scan Rust Examples" \
