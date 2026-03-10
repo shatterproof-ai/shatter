@@ -14,11 +14,12 @@ use rand::rngs::StdRng;
 use rand::SeedableRng;
 
 use crate::protocol::SetupLevel;
+use crate::auto_mock::MockParam;
 use crate::coverage_metrics::DiscoveryMethod;
 use crate::frontend::{Frontend, FrontendError};
 use crate::input_gen::{
-    generate_inputs_with_custom, generate_random_inputs, literals_to_candidate_inputs,
-    prefetch_custom_values, PrefetchedValues, ValueSource,
+    generate_inputs_with_custom, generate_mock_values, generate_random_inputs,
+    literals_to_candidate_inputs, prefetch_custom_values, PrefetchedValues, ValueSource,
 };
 use crate::orchestrator::FrontendCapabilities;
 use crate::protocol::{
@@ -85,6 +86,10 @@ pub struct ExploreConfig {
     pub seed: Option<u64>,
     /// Mock configurations to pass to Execute commands.
     pub mocks: Vec<MockConfig>,
+    /// Mock parameters for dynamic per-iteration mock generation.
+    /// When non-empty, fresh mock values are generated each iteration
+    /// instead of reusing the static `mocks` field.
+    pub mock_params: Vec<MockParam>,
     /// Path to the setup file, if configured.
     pub setup_file: Option<String>,
     /// When to run setup relative to executions.
@@ -147,8 +152,9 @@ pub struct ObservationOutput {
     pub total_lines: u32,
     /// Summary of each execution that discovered a new path.
     pub new_path_executions: Vec<ExecutionSummary>,
-    /// Raw execution results paired with their inputs, for building BehaviorMaps.
-    pub raw_results: Vec<(Vec<serde_json::Value>, ExecuteResult)>,
+    /// Raw execution results paired with their inputs and mock configs,
+    /// for building BehaviorMaps that track which mock values produced which outcomes.
+    pub raw_results: Vec<(Vec<serde_json::Value>, Vec<MockConfig>, ExecuteResult)>,
     /// Per-branch discovery attribution: which branch_id was first found by which method.
     pub discoveries: Vec<(u32, DiscoveryMethod)>,
     /// Fields detected as nondeterministic via within-run re-execution sampling.
@@ -623,7 +629,7 @@ pub async fn explore_function(
     let mut seen_paths: HashSet<u64> = HashSet::new();
     let mut all_lines: HashSet<u32> = HashSet::new();
     let mut new_path_executions: Vec<ExecutionSummary> = Vec::new();
-    let mut raw_results: Vec<(Vec<serde_json::Value>, ExecuteResult)> = Vec::new();
+    let mut raw_results: Vec<(Vec<serde_json::Value>, Vec<MockConfig>, ExecuteResult)> = Vec::new();
     let mut iterations: u32 = 0;
     let mut path_counts: HashMap<u64, u32> = HashMap::new();
     let mut seen_branch_ids: HashSet<u32> = HashSet::new();
@@ -688,7 +694,7 @@ pub async fn explore_function(
                         divergent_values.push(v);
                     }
 
-                    raw_results.push((float_inputs.clone(), (**float_result).clone()));
+                    raw_results.push((float_inputs.clone(), config.mocks.clone(), (**float_result).clone()));
                 }
             }
 
@@ -804,11 +810,20 @@ pub async fn explore_function(
             generate_random_inputs(&analysis.params, &mut rng, None)
         };
 
+        // --- Mock generation ---
+        // When mock_params is non-empty, generate fresh mock values each iteration
+        // to vary dependency behavior across exploration runs.
+        let iteration_mocks = if !config.mock_params.is_empty() {
+            generate_mock_values(&config.mock_params, &mut rng, Some(&config.capabilities))
+        } else {
+            config.mocks.clone()
+        };
+
         let response = frontend
             .send(ProtoCommand::Execute {
                 function: analysis.name.clone(),
                 inputs: inputs.clone(),
-                mocks: config.mocks.clone(),
+                mocks: iteration_mocks.clone(),
                 setup_context: setup_context.clone(),
             })
             .await?;
@@ -863,7 +878,7 @@ pub async fn explore_function(
             });
         }
 
-        raw_results.push((inputs, exec_result));
+        raw_results.push((inputs, iteration_mocks, exec_result));
     }
 
     // --- Per-function teardown ---
@@ -1952,6 +1967,7 @@ mod tests {
         let analysis = stub_analysis();
         let config = ExploreConfig {
             file: "test.ts".into(), max_iterations: 3, seed: Some(42), mocks: vec![],
+            mock_params: vec![],
             setup_file: None, setup_level: SetupLevel::Function,
             value_sources: vec![], capabilities: FrontendCapabilities::default(),
             user_seeds: vec![],
@@ -1976,6 +1992,7 @@ mod tests {
         let caps = FrontendCapabilities::from_raw(&capabilities_with(&["setup", "teardown"]));
         let config = ExploreConfig {
             file: "test.ts".into(), max_iterations: 2, seed: Some(42), mocks: vec![],
+            mock_params: vec![],
             setup_file: Some("setup.ts".into()), setup_level: SetupLevel::Function,
             value_sources: vec![], capabilities: caps,
             user_seeds: vec![],
@@ -2000,6 +2017,7 @@ mod tests {
         let caps = FrontendCapabilities::from_raw(&capabilities_with(&["setup", "teardown"]));
         let config = ExploreConfig {
             file: "test.ts".into(), max_iterations: 2, seed: Some(42), mocks: vec![],
+            mock_params: vec![],
             setup_file: Some("setup.ts".into()), setup_level: SetupLevel::Execution,
             value_sources: vec![], capabilities: caps,
             user_seeds: vec![],
@@ -2023,6 +2041,7 @@ mod tests {
         let caps = FrontendCapabilities::from_raw(&capabilities_with(&[]));
         let config = ExploreConfig {
             file: "test.ts".into(), max_iterations: 2, seed: Some(42), mocks: vec![],
+            mock_params: vec![],
             setup_file: Some("setup.ts".into()), setup_level: SetupLevel::Function,
             value_sources: vec![], capabilities: caps,
             user_seeds: vec![],
@@ -2045,6 +2064,7 @@ mod tests {
         let caps = FrontendCapabilities::from_raw(&capabilities_with(&["generate"]));
         let config = ExploreConfig {
             file: "test.ts".into(), max_iterations: 2, seed: Some(42), mocks: vec![],
+            mock_params: vec![],
             setup_file: None, setup_level: SetupLevel::Function,
             value_sources: vec![ValueSource::CustomGenerator {
                 generator_name: "x".into(), param_name: Some("x".into()),
@@ -2073,6 +2093,7 @@ mod tests {
         let caps = FrontendCapabilities::from_raw(&capabilities_with(&["generate"]));
         let config = ExploreConfig {
             file: "test.ts".into(), max_iterations: 3, seed: Some(42), mocks: vec![],
+            mock_params: vec![],
             setup_file: None, setup_level: SetupLevel::Function,
             value_sources: vec![], capabilities: caps,
             user_seeds: vec![],
@@ -2095,6 +2116,7 @@ mod tests {
         let user_seed_value = vec![serde_json::json!(999)];
         let config = ExploreConfig {
             file: "test.ts".into(), max_iterations: 5, seed: Some(42), mocks: vec![],
+            mock_params: vec![],
             setup_file: None, setup_level: SetupLevel::Function,
             value_sources: vec![], capabilities: FrontendCapabilities::default(),
             user_seeds: vec![user_seed_value.clone()],
@@ -2120,6 +2142,7 @@ mod tests {
         let pool_value = vec![serde_json::json!(888)];
         let config = ExploreConfig {
             file: "test.ts".into(), max_iterations: 10, seed: Some(42), mocks: vec![],
+            mock_params: vec![],
             setup_file: None, setup_level: SetupLevel::Function,
             value_sources: vec![], capabilities: FrontendCapabilities::default(),
             user_seeds: vec![],
@@ -2134,8 +2157,8 @@ mod tests {
         // Literal-derived inputs come first (from stub_analysis literals),
         // then candidate_inputs, then pool_seeds.
         // Find the candidate value in raw_results — it should appear before pool value.
-        let candidate_pos = result.raw_results.iter().position(|(inputs, _)| *inputs == candidate_value);
-        let pool_pos = result.raw_results.iter().position(|(inputs, _)| *inputs == pool_value);
+        let candidate_pos = result.raw_results.iter().position(|(inputs, _mocks, _)| *inputs == candidate_value);
+        let pool_pos = result.raw_results.iter().position(|(inputs, _mocks, _)| *inputs == pool_value);
         assert!(candidate_pos.is_some(), "candidate input should be executed");
         assert!(pool_pos.is_some(), "pool seed should be executed");
         assert!(
@@ -2157,6 +2180,7 @@ mod tests {
         let non_boundary_seed = vec![serde_json::json!(42)];
         let config = ExploreConfig {
             file: "test.ts".into(), max_iterations: 1, seed: Some(99), mocks: vec![],
+            mock_params: vec![],
             setup_file: None, setup_level: SetupLevel::Function,
             value_sources: vec![], capabilities: FrontendCapabilities::default(),
             user_seeds: vec![non_boundary_seed],

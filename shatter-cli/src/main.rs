@@ -1123,11 +1123,11 @@ async fn run_explore(
         if analyze_only {
             if log::log_enabled!(log::Level::Info) {
                 for func in &functions {
-                    eprintln!(
+                    println!(
                         "{}{}{}  ({file_str}:{})",
                         colors.bold, func.name, colors.reset, func.start_line
                     );
-                    eprintln!(
+                    println!(
                         "  {}params: {}, branches: {}{}",
                         colors.dim,
                         func.params.len(),
@@ -1177,27 +1177,27 @@ async fn run_explore(
         if dry_run {
             if let Some((ref plan, _)) = incremental_plan {
                 if !plan.stale.is_empty() {
-                    eprintln!("Stale ({}):", plan.stale.len());
+                    println!("Stale ({}):", plan.stale.len());
                     for name in &plan.stale {
-                        eprintln!("  {name}");
+                        println!("  {name}");
                     }
                 }
                 if !plan.fresh.is_empty() {
-                    eprintln!("Fresh ({}):", plan.fresh.len());
+                    println!("Fresh ({}):", plan.fresh.len());
                     for name in &plan.fresh {
-                        eprintln!("  {name}");
+                        println!("  {name}");
                     }
                 }
                 if !plan.removed.is_empty() {
-                    eprintln!("Removed ({}):", plan.removed.len());
+                    println!("Removed ({}):", plan.removed.len());
                     for name in &plan.removed {
-                        eprintln!("  {name}");
+                        println!("  {name}");
                     }
                 }
             } else {
-                eprintln!("No existing spec to compare against — all {} function(s) are stale.", functions.len());
+                println!("No existing spec to compare against — all {} function(s) are stale.", functions.len());
                 for func in &functions {
-                    eprintln!("  {}", func.name);
+                    println!("  {}", func.name);
                 }
             }
             shutdown_frontend(frontend).await;
@@ -1235,7 +1235,7 @@ async fn run_explore(
 
         // Print header on first non-analyze-only target.
         if !analyze_only && !header_printed && log::log_enabled!(log::Level::Info) {
-            eprint!(
+            print!(
                 "\n{bold}\u{2550}\u{2550}\u{2550} Shatter Explore \u{2550}\u{2550}\u{2550}{reset}\n\n",
                 bold = report_style.bold,
                 reset = report_style.reset,
@@ -1291,6 +1291,7 @@ async fn run_explore(
                 max_iterations: resolved.max_iterations,
                 seed: None,
                 mocks: auto_mocks,
+                mock_params: vec![],
                 setup_file: resolved.setup.as_ref().map(|p| p.display().to_string()),
                 setup_level: resolved.setup_level,
                 value_sources: shatter_core::input_gen::resolve_value_sources(
@@ -1355,6 +1356,7 @@ async fn run_explore(
                     max_executions: (explore_config.max_iterations as usize) * 5,
                     plateau_threshold: 20,
                     mocks: explore_config.mocks.clone(),
+                    mock_params: explore_config.mock_params.clone(),
                     solver_timeout_ms: solver_timeout.map(|s| s * 1000),
                     timeout_explore: timeout_explore.map(Duration::from_secs_f64),
                 };
@@ -1420,7 +1422,7 @@ async fn run_explore(
 
                     if log::log_enabled!(log::Level::Info) {
                         if log::log_enabled!(log::Level::Trace) {
-                            eprint!("{}", explorer::format_exploration_report_verbose(&result));
+                            print!("{}", explorer::format_exploration_report_verbose(&result));
                         } else {
                             let report_opts = ReportOptions {
                                 location: Some(format!("{file_str}:{}-{}", func.start_line, func.end_line)),
@@ -1429,15 +1431,15 @@ async fn run_explore(
                                 coverage_metrics: Some(analyze_output.coverage_metrics.clone()),
                                 style: report_style.clone(),
                             };
-                            eprint!("{}", explorer::format_exploration_report(&result, &report_opts));
+                            print!("{}", explorer::format_exploration_report(&result, &report_opts));
                         }
                         if !mock_symbols.is_empty() {
-                            eprintln!("  Mocks used: {}", mock_symbols.join(", "));
+                            println!("  Mocks used: {}", mock_symbols.join(", "));
                         }
                         if use_concolic {
-                            eprintln!("  Explorer: concolic (Z3-backed)");
+                            println!("  Explorer: concolic (Z3-backed)");
                         }
-                        eprintln!();
+                        println!();
                     }
 
                     // Spec output: use eq classes from analyze stage
@@ -1532,7 +1534,7 @@ async fn run_explore(
 
     // Print summary footer.
     if header_printed && log::log_enabled!(log::Level::Info) {
-        eprint!(
+        print!(
             "{}",
             explorer::format_explore_footer(
                 total_paths,
@@ -1998,7 +2000,7 @@ async fn run_scan(
             &scan_config,
         )
         .map_err(|e| format!("failed to build dry-run plan: {e}"))?;
-        eprint!("{plan}");
+        print!("{plan}");
         return Ok(());
     }
 
@@ -2350,6 +2352,7 @@ async fn run_export_tests(
             max_iterations,
             seed: None,
             mocks: vec![],
+            mock_params: vec![],
             setup_file: None,
             setup_level: shatter_core::protocol::SetupLevel::Function,
             value_sources: vec![],
@@ -2696,6 +2699,7 @@ async fn run_run(
                 max_iterations,
                 seed: None,
                 mocks: vec![],
+                mock_params: vec![],
                 setup_file: None,
                 setup_level: shatter_core::protocol::SetupLevel::Function,
                 value_sources: vec![],
@@ -2733,7 +2737,7 @@ async fn run_run(
         }
     }
 
-    eprintln!();
+    println!();
 
     // Step 6: Print summary report
     print_summary_report(
@@ -3580,7 +3584,7 @@ fn run_test(
         .collect();
 
     if changed_relative.is_empty() {
-        eprintln!("No changed files detected. Nothing to test.");
+        println!("No changed files detected. Nothing to test.");
         return Ok(true);
     }
 
@@ -3591,25 +3595,25 @@ fn run_test(
             query.changed_files.len(),
             query.affected_tests.len());
         if use_color {
-            eprintln!("\x1b[1m{header}\x1b[0m");
+            println!("\x1b[1m{header}\x1b[0m");
         } else {
-            eprintln!("{header}");
+            println!("{header}");
         }
-        eprintln!();
-        eprintln!("Changed files:");
+        println!();
+        println!("Changed files:");
         for f in &query.changed_files {
-            eprintln!("  {f}");
+            println!("  {f}");
         }
-        eprintln!();
-        eprintln!("Affected tests:");
+        println!();
+        println!("Affected tests:");
         for t in &query.affected_tests {
-            eprintln!("  {t}");
+            println!("  {t}");
         }
         if !query.unmapped_files.is_empty() {
-            eprintln!();
-            eprintln!("Unmapped files (not in coverage map):");
+            println!();
+            println!("Unmapped files (not in coverage map):");
             for f in &query.unmapped_files {
-                eprintln!("  {f}");
+                println!("  {f}");
             }
         }
         return Ok(true);
@@ -3617,9 +3621,9 @@ fn run_test(
 
     if query.affected_tests.is_empty() {
         if query.unmapped_files.is_empty() {
-            eprintln!("No affected tests found. All changes are in untested files.");
+            println!("No affected tests found. All changes are in untested files.");
         } else {
-            eprintln!(
+            println!(
                 "No affected tests found. {} file(s) not in coverage map — consider `shatter test --record`.",
                 query.unmapped_files.len()
             );
@@ -3647,7 +3651,7 @@ fn run_test(
         .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?;
 
         let report = test_prioritization::format_prioritize_report(&result, use_color);
-        eprint!("{report}");
+        print!("{report}");
 
         result.ordered.iter().map(|r| r.test.id.clone()).collect::<Vec<_>>()
     } else {

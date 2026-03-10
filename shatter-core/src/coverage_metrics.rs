@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::execution_record::SymConstraint;
 use crate::explorer::ObservationOutput;
 use crate::orchestrator::ExploreResult;
-use crate::protocol::{BranchInfo, ExecuteResult, FunctionAnalysis};
+use crate::protocol::{BranchInfo, ExecuteResult, FunctionAnalysis, MockConfig};
 
 /// How a branch was discovered during exploration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -292,13 +292,13 @@ pub fn extract_targets_concolic(
 fn extract_targets_inner(
     branches: &[BranchInfo],
     discoveries: &[(u32, DiscoveryMethod)],
-    raw_results: &[(Vec<serde_json::Value>, ExecuteResult)],
+    raw_results: &[(Vec<serde_json::Value>, Vec<MockConfig>, ExecuteResult)],
 ) -> Vec<TargetBranch> {
     let discovered: HashSet<u32> = discoveries.iter().map(|(id, _)| *id).collect();
 
     // Collect opaque constraint hints from runtime branch decisions.
     let mut opaque_hints: HashMap<u32, String> = HashMap::new();
-    for (_, exec) in raw_results {
+    for (_, _mocks, exec) in raw_results {
         for decision in &exec.branch_path {
             if let SymConstraint::Unknown { hint } = &decision.constraint {
                 opaque_hints
@@ -668,7 +668,7 @@ mod tests {
                 constraint: SymConstraint::Expr { expr },
             },
         ]);
-        let raw_results = vec![(vec![serde_json::json!(5)], exec)];
+        let raw_results = vec![(vec![serde_json::json!(5)], vec![], exec)];
 
         let targets = extract_targets_inner(&analysis.branches, &discoveries, &raw_results);
         assert!(targets.is_empty());
@@ -700,7 +700,7 @@ mod tests {
                 },
             },
         ]);
-        let raw_results = vec![(vec![serde_json::json!(10)], exec)];
+        let raw_results = vec![(vec![serde_json::json!(10)], vec![], exec)];
 
         let targets = extract_targets_inner(&analysis.branches, &discoveries, &raw_results);
 
@@ -744,7 +744,7 @@ mod tests {
                 },
             },
         ]);
-        let raw_results = vec![(vec![serde_json::json!(1)], exec)];
+        let raw_results = vec![(vec![serde_json::json!(1)], vec![], exec)];
 
         let targets = extract_targets_inner(&analysis.branches, &discoveries, &raw_results);
 

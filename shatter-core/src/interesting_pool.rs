@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::boundary_dict;
 use crate::execution_record::ErrorInfo;
 use crate::explorer;
-use crate::protocol::ExecuteResult;
+use crate::protocol::{ExecuteResult, MockConfig};
 use crate::types::{ParamInfo, TypeInfo};
 
 /// How severe the behavior triggered by an input was.
@@ -398,7 +398,7 @@ pub const DEFAULT_RARITY_THRESHOLD: u32 = 2;
 /// Returns the number of pool entries inserted or merged.
 pub fn harvest_from_exploration(
     pool: &mut InterestingPool,
-    raw_results: &[(Vec<serde_json::Value>, ExecuteResult)],
+    raw_results: &[(Vec<serde_json::Value>, Vec<MockConfig>, ExecuteResult)],
     params: &[ParamInfo],
     function_name: &str,
 ) -> usize {
@@ -410,7 +410,7 @@ pub fn harvest_from_exploration(
     let mut path_counts: HashMap<u64, u32> = HashMap::new();
     let hashes: Vec<u64> = raw_results
         .iter()
-        .map(|(_, result)| {
+        .map(|(_, _mocks, result)| {
             let h = explorer::path_hash(result, &explorer::LoopBuckets::default());
             *path_counts.entry(h).or_default() += 1;
             h
@@ -431,7 +431,7 @@ pub fn harvest_from_exploration(
     let epoch = pool.epoch;
     let mut inserted = 0;
 
-    for (idx, (inputs, exec_result)) in raw_results.iter().enumerate() {
+    for (idx, (inputs, _mocks, exec_result)) in raw_results.iter().enumerate() {
         let severity = classify_severity(exec_result.thrown_error.as_ref(), false);
 
         // For RarePath, only harvest if the path is actually rare.
@@ -798,6 +798,7 @@ mod tests {
         // Value 999 is not a boundary value for Int
         let raw = vec![(
             vec![serde_json::json!(999)],
+            vec![],
             make_exec_result_error("TypeError", 5),
         )];
         let count = harvest_from_exploration(&mut pool, &raw, &params, "myFunc");
@@ -819,6 +820,7 @@ mod tests {
         // Single execution → path count = 1, which is ≤ DEFAULT_RARITY_THRESHOLD
         let raw = vec![(
             vec![serde_json::json!("rare_value")],
+            vec![],
             make_exec_result_ok(3),
         )];
         let count = harvest_from_exploration(&mut pool, &raw, &params, "f");
@@ -833,9 +835,9 @@ mod tests {
         // Same branch path for all 3 executions → count = 3 > threshold
         let exec = make_exec_result_ok(1);
         let raw = vec![
-            (vec![serde_json::json!(100)], exec.clone()),
-            (vec![serde_json::json!(200)], exec.clone()),
-            (vec![serde_json::json!(300)], exec),
+            (vec![serde_json::json!(100)], vec![], exec.clone()),
+            (vec![serde_json::json!(200)], vec![], exec.clone()),
+            (vec![serde_json::json!(300)], vec![], exec),
         ];
         let count = harvest_from_exploration(&mut pool, &raw, &params, "f");
         assert_eq!(count, 0);
@@ -850,10 +852,12 @@ mod tests {
         let raw = vec![
             (
                 vec![serde_json::json!(0)],
+                vec![],
                 make_exec_result_error("TypeError", 1),
             ),
             (
                 vec![serde_json::json!(-1)],
+                vec![],
                 make_exec_result_error("TypeError", 2),
             ),
         ];
@@ -868,6 +872,7 @@ mod tests {
         let params = make_params(&[TypeInfo::Int, TypeInfo::Str]);
         let raw = vec![(
             vec![serde_json::json!(42), serde_json::json!("hello")],
+            vec![],
             make_exec_result_error("RangeError", 1),
         )];
         let count = harvest_from_exploration(&mut pool, &raw, &params, "f");
@@ -888,10 +893,12 @@ mod tests {
         let raw = vec![
             (
                 vec![serde_json::json!(999)],
+                vec![],
                 make_exec_result_error("TypeError", 1),
             ),
             (
                 vec![serde_json::json!(999)],
+                vec![],
                 make_exec_result_error("RangeError", 2),
             ),
         ];

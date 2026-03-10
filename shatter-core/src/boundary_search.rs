@@ -8,7 +8,7 @@
 
 use serde_json::Value;
 
-use crate::protocol::ExecuteResult;
+use crate::protocol::{ExecuteResult, MockConfig};
 use crate::types::{ParamInfo, TypeInfo};
 
 /// Maximum interpolation candidates generated per branch per exploration round.
@@ -25,14 +25,14 @@ pub const FLOAT_CONVERGENCE_EPSILON: f64 = 1e-9;
 /// Scans `raw_results` for the most recent true-witness and false-witness
 /// for `branch_id`. Returns `None` if both sides haven't been observed.
 pub fn find_witness_pair(
-    raw_results: &[(Vec<Value>, ExecuteResult)],
+    raw_results: &[(Vec<Value>, Vec<MockConfig>, ExecuteResult)],
     branch_id: u32,
 ) -> Option<(Vec<Value>, Vec<Value>)> {
     let mut true_witness: Option<&Vec<Value>> = None;
     let mut false_witness: Option<&Vec<Value>> = None;
 
     // Iterate in reverse to prefer recent witnesses (more likely near the boundary).
-    for (inputs, result) in raw_results.iter().rev() {
+    for (inputs, _mocks, result) in raw_results.iter().rev() {
         for decision in &result.branch_path {
             if decision.branch_id == branch_id {
                 if decision.taken && true_witness.is_none() {
@@ -351,8 +351,8 @@ mod tests {
     #[test]
     fn find_witness_pair_with_both_sides() {
         let raw = vec![
-            (vec![json!(1)], make_execute_result(0, true)),
-            (vec![json!(10)], make_execute_result(0, false)),
+            (vec![json!(1)], vec![], make_execute_result(0, true)),
+            (vec![json!(10)], vec![], make_execute_result(0, false)),
         ];
         let result = find_witness_pair(&raw, 0);
         assert!(result.is_some());
@@ -364,8 +364,8 @@ mod tests {
     #[test]
     fn find_witness_pair_missing_side() {
         let raw = vec![
-            (vec![json!(1)], make_execute_result(0, true)),
-            (vec![json!(2)], make_execute_result(0, true)),
+            (vec![json!(1)], vec![], make_execute_result(0, true)),
+            (vec![json!(2)], vec![], make_execute_result(0, true)),
         ];
         assert!(find_witness_pair(&raw, 0).is_none());
     }
@@ -373,8 +373,8 @@ mod tests {
     #[test]
     fn find_witness_pair_unknown_branch() {
         let raw = vec![
-            (vec![json!(1)], make_execute_result(0, true)),
-            (vec![json!(10)], make_execute_result(0, false)),
+            (vec![json!(1)], vec![], make_execute_result(0, true)),
+            (vec![json!(10)], vec![], make_execute_result(0, false)),
         ];
         assert!(find_witness_pair(&raw, 99).is_none());
     }
@@ -382,10 +382,10 @@ mod tests {
     #[test]
     fn find_witness_pair_prefers_recent() {
         let raw = vec![
-            (vec![json!(1)], make_execute_result(0, true)),
-            (vec![json!(5)], make_execute_result(0, true)),
-            (vec![json!(10)], make_execute_result(0, false)),
-            (vec![json!(20)], make_execute_result(0, false)),
+            (vec![json!(1)], vec![], make_execute_result(0, true)),
+            (vec![json!(5)], vec![], make_execute_result(0, true)),
+            (vec![json!(10)], vec![], make_execute_result(0, false)),
+            (vec![json!(20)], vec![], make_execute_result(0, false)),
         ];
         let (tw, fw) = find_witness_pair(&raw, 0).unwrap();
         // Reverse iteration: most recent true=5, most recent false=20

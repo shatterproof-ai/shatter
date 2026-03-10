@@ -89,8 +89,8 @@ impl From<&crate::explorer::ExploreConfig> for ObserveConfig {
 /// Lighter-weight than `ObservationOutput` — no function metadata or summary.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BatchObservation {
-    /// Every execution result paired with its inputs.
-    pub raw_results: Vec<(Vec<serde_json::Value>, ExecuteResult)>,
+    /// Every execution result paired with its inputs and mock configs.
+    pub raw_results: Vec<(Vec<serde_json::Value>, Vec<MockConfig>, ExecuteResult)>,
     /// Hashes of unique execution paths observed.
     #[serde(skip)]
     pub unique_path_hashes: HashSet<u64>,
@@ -124,7 +124,7 @@ pub async fn observe_batch(
     let mut seen_branch_ids: HashSet<u32> = HashSet::new();
     let mut discoveries: Vec<(u32, DiscoveryMethod)> = Vec::new();
     let mut new_path_executions: Vec<ExecutionSummary> = Vec::new();
-    let mut raw_results: Vec<(Vec<serde_json::Value>, ExecuteResult)> = Vec::new();
+    let mut raw_results: Vec<(Vec<serde_json::Value>, Vec<MockConfig>, ExecuteResult)> = Vec::new();
 
     let start = Instant::now();
 
@@ -184,7 +184,7 @@ pub async fn observe_batch(
             });
         }
 
-        raw_results.push((input, exec_result));
+        raw_results.push((input, mocks.to_vec(), exec_result));
     }
 
     Ok(BatchObservation {
@@ -329,7 +329,7 @@ async fn observe_batch_with_per_execution_setup(
     let mut seen_branch_ids: HashSet<u32> = HashSet::new();
     let mut discoveries: Vec<(u32, DiscoveryMethod)> = Vec::new();
     let mut new_path_executions: Vec<ExecutionSummary> = Vec::new();
-    let mut raw_results: Vec<(Vec<serde_json::Value>, ExecuteResult)> = Vec::new();
+    let mut raw_results: Vec<(Vec<serde_json::Value>, Vec<MockConfig>, ExecuteResult)> = Vec::new();
 
     let start = Instant::now();
 
@@ -408,7 +408,7 @@ async fn observe_batch_with_per_execution_setup(
             });
         }
 
-        raw_results.push((input, exec_result));
+        raw_results.push((input, config.mocks.clone(), exec_result));
     }
 
     Ok(BatchObservation {
@@ -532,6 +532,7 @@ mod tests {
             max_iterations: 100,
             seed: Some(42),
             mocks: vec![],
+            mock_params: vec![],
             setup_file: None,
             setup_level: SetupLevel::Function,
             value_sources: vec![],

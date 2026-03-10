@@ -742,15 +742,15 @@ fn format_invariant_label(inv: &Invariant, target: InvariantTarget) -> String {
     }
 }
 
-/// Convert raw exploration results (inputs, ExecuteResult pairs) into ExecutionRecords.
+/// Convert raw exploration results into ExecutionRecords.
 pub fn records_from_raw_results(
     function_id: &str,
-    raw_results: &[(Vec<serde_json::Value>, crate::protocol::ExecuteResult)],
+    raw_results: &[(Vec<serde_json::Value>, Vec<crate::protocol::MockConfig>, crate::protocol::ExecuteResult)],
 ) -> Vec<ExecutionRecord> {
     use std::hash::{Hash, Hasher};
     raw_results
         .iter()
-        .map(|(inputs, result)| {
+        .map(|(inputs, _mocks, result)| {
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             let input_str = serde_json::to_string(inputs).unwrap_or_default();
             input_str.hash(&mut hasher);
@@ -1336,6 +1336,7 @@ mod tests {
 
         let raw = vec![(
             vec![json!(42)],
+            vec![],
             ExecuteResult {
                 return_value: Some(json!("positive")),
                 thrown_error: None,

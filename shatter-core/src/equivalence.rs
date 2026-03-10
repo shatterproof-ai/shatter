@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::execution_record::BranchDecision;
-use crate::protocol::ExecuteResult;
+use crate::protocol::{ExecuteResult, MockConfig};
 
 /// An ordered sequence of branch decisions representing a unique execution path.
 ///
@@ -109,7 +109,7 @@ pub enum Precondition {
 /// group, the simplest input is chosen as canonical and common preconditions
 /// are derived.
 pub fn group_into_classes(
-    executions: &[(Vec<serde_json::Value>, ExecuteResult)],
+    executions: &[(Vec<serde_json::Value>, Vec<MockConfig>, ExecuteResult)],
 ) -> Vec<EquivalenceClass> {
     if executions.is_empty() {
         return Vec::new();
@@ -120,7 +120,7 @@ pub fn group_into_classes(
     // Preserve insertion order for deterministic output.
     let mut insertion_order: Vec<BranchPath> = Vec::new();
 
-    for (inputs, result) in executions {
+    for (inputs, _mocks, result) in executions {
         let path = BranchPath::from_decisions(&result.branch_path);
         let member = ClassMember {
             inputs: inputs.clone(),
@@ -318,6 +318,14 @@ mod tests {
         }
     }
 
+    /// Wrap inputs + result into the 3-tuple format expected by group_into_classes.
+    fn entry(
+        inputs: Vec<serde_json::Value>,
+        result: ExecuteResult,
+    ) -> (Vec<serde_json::Value>, Vec<MockConfig>, ExecuteResult) {
+        (inputs, vec![], result)
+    }
+
     fn make_result(
         return_value: Option<serde_json::Value>,
         branch_path: Vec<BranchDecision>,
@@ -362,9 +370,9 @@ mod tests {
     fn same_branches_different_returns_same_class() {
         let path = vec![make_branch(0, true), make_branch(1, false)];
         let executions = vec![
-            (vec![json!(5)], make_result(Some(json!("five")), path.clone())),
-            (vec![json!(7)], make_result(Some(json!("seven")), path.clone())),
-            (vec![json!(3)], make_result(Some(json!("three")), path)),
+            entry(vec![json!(5)], make_result(Some(json!("five")), path.clone())),
+            entry(vec![json!(7)], make_result(Some(json!("seven")), path.clone())),
+            entry(vec![json!(3)], make_result(Some(json!("three")), path)),
         ];
 
         let classes = group_into_classes(&executions);
@@ -377,8 +385,8 @@ mod tests {
         let path_a = vec![make_branch(0, true)];
         let path_b = vec![make_branch(0, false)];
         let executions = vec![
-            (vec![json!(5)], make_result(Some(json!("pos")), path_a)),
-            (vec![json!(-3)], make_result(Some(json!("neg")), path_b)),
+            entry(vec![json!(5)], make_result(Some(json!("pos")), path_a)),
+            entry(vec![json!(-3)], make_result(Some(json!("neg")), path_b)),
         ];
 
         let classes = group_into_classes(&executions);
@@ -389,12 +397,12 @@ mod tests {
     fn canonical_example_is_simplest_input() {
         let path = vec![make_branch(0, true)];
         let executions = vec![
-            (
+            entry(
                 vec![json!(999999)],
                 make_result(Some(json!("big")), path.clone()),
             ),
-            (vec![json!(1)], make_result(Some(json!("small")), path.clone())),
-            (
+            entry(vec![json!(1)], make_result(Some(json!("small")), path.clone())),
+            entry(
                 vec![json!(50000)],
                 make_result(Some(json!("medium")), path),
             ),
@@ -414,7 +422,7 @@ mod tests {
     #[test]
     fn single_execution_produces_one_class() {
         let path = vec![make_branch(0, true)];
-        let executions = vec![(vec![json!(42)], make_result(Some(json!(84)), path))];
+        let executions = vec![entry(vec![json!(42)], make_result(Some(json!(84)), path))];
 
         let classes = group_into_classes(&executions);
         assert_eq!(classes.len(), 1);
@@ -427,9 +435,9 @@ mod tests {
     fn preconditions_all_positive() {
         let path = vec![make_branch(0, true)];
         let executions = vec![
-            (vec![json!(5)], make_result(Some(json!("a")), path.clone())),
-            (vec![json!(10)], make_result(Some(json!("b")), path.clone())),
-            (vec![json!(3)], make_result(Some(json!("c")), path)),
+            entry(vec![json!(5)], make_result(Some(json!("a")), path.clone())),
+            entry(vec![json!(10)], make_result(Some(json!("b")), path.clone())),
+            entry(vec![json!(3)], make_result(Some(json!("c")), path)),
         ];
 
         let classes = group_into_classes(&executions);
@@ -447,9 +455,9 @@ mod tests {
     fn preconditions_all_negative() {
         let path = vec![make_branch(0, false)];
         let executions = vec![
-            (vec![json!(-1)], make_result(Some(json!("a")), path.clone())),
-            (vec![json!(-5)], make_result(Some(json!("b")), path.clone())),
-            (vec![json!(-100)], make_result(Some(json!("c")), path)),
+            entry(vec![json!(-1)], make_result(Some(json!("a")), path.clone())),
+            entry(vec![json!(-5)], make_result(Some(json!("b")), path.clone())),
+            entry(vec![json!(-100)], make_result(Some(json!("c")), path)),
         ];
 
         let classes = group_into_classes(&executions);
@@ -463,9 +471,9 @@ mod tests {
     fn preconditions_all_equal() {
         let path = vec![make_branch(0, true)];
         let executions = vec![
-            (vec![json!("hello")], make_result(Some(json!(1)), path.clone())),
-            (vec![json!("hello")], make_result(Some(json!(2)), path.clone())),
-            (vec![json!("hello")], make_result(Some(json!(3)), path)),
+            entry(vec![json!("hello")], make_result(Some(json!(1)), path.clone())),
+            entry(vec![json!("hello")], make_result(Some(json!(2)), path.clone())),
+            entry(vec![json!("hello")], make_result(Some(json!(3)), path)),
         ];
 
         let classes = group_into_classes(&executions);
@@ -482,15 +490,15 @@ mod tests {
     fn preconditions_same_type() {
         let path = vec![make_branch(0, true)];
         let executions = vec![
-            (
+            entry(
                 vec![json!("alpha")],
                 make_result(Some(json!(1)), path.clone()),
             ),
-            (
+            entry(
                 vec![json!("beta")],
                 make_result(Some(json!(2)), path.clone()),
             ),
-            (vec![json!("gamma")], make_result(Some(json!(3)), path)),
+            entry(vec![json!("gamma")], make_result(Some(json!(3)), path)),
         ];
 
         let classes = group_into_classes(&executions);
@@ -507,11 +515,11 @@ mod tests {
     fn error_executions_grouped_by_branch_path() {
         let path = vec![make_branch(0, true), make_branch(1, true)];
         let executions = vec![
-            (
+            entry(
                 vec![json!(0)],
                 make_error_result("Error", "division by zero", path.clone()),
             ),
-            (
+            entry(
                 vec![json!(null)],
                 make_error_result("TypeError", "null input", path),
             ),
@@ -557,8 +565,8 @@ mod tests {
         // When frontends don't report branch_path, all executions have
         // empty branch paths and end up in one class.
         let executions = vec![
-            (vec![json!(1)], make_result(Some(json!("a")), vec![])),
-            (vec![json!(2)], make_result(Some(json!("b")), vec![])),
+            entry(vec![json!(1)], make_result(Some(json!("a")), vec![])),
+            entry(vec![json!(2)], make_result(Some(json!("b")), vec![])),
         ];
 
         let classes = group_into_classes(&executions);
@@ -570,11 +578,11 @@ mod tests {
     fn canonical_example_prefers_shorter_json() {
         let path = vec![make_branch(0, true)];
         let executions = vec![
-            (
+            entry(
                 vec![json!({"name": "very long string value here", "extra": true})],
                 make_result(Some(json!(1)), path.clone()),
             ),
-            (
+            entry(
                 vec![json!({"a": 1})],
                 make_result(Some(json!(2)), path),
             ),
@@ -588,11 +596,11 @@ mod tests {
     fn multiple_params_preconditions() {
         let path = vec![make_branch(0, true)];
         let executions = vec![
-            (
+            entry(
                 vec![json!(5), json!(-1)],
                 make_result(Some(json!("a")), path.clone()),
             ),
-            (
+            entry(
                 vec![json!(10), json!(-2)],
                 make_result(Some(json!("b")), path),
             ),

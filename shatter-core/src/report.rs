@@ -190,7 +190,7 @@ fn build_function_report(result: &FunctionResult, file_path: &str) -> FunctionRe
     let total_constraints: usize = exploration
         .raw_results
         .iter()
-        .map(|(_, r)| r.path_constraints.len())
+        .map(|(_, _mocks, r)| r.path_constraints.len())
         .sum();
 
     let coverage_pct = if exploration.total_lines > 0 {

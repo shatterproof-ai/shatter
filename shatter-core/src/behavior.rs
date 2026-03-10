@@ -282,11 +282,11 @@ impl BehaviorMap {
                 let dependency_trace = result
                     .raw_results
                     .iter()
-                    .find(|(inputs, _)| *inputs == exec.inputs)
-                    .filter(|(_, res)| {
+                    .find(|(inputs, _mocks, _)| *inputs == exec.inputs)
+                    .filter(|(_, _mocks, res)| {
                         !res.calls_to_external.is_empty() || !res.side_effects.is_empty()
                     })
-                    .map(|(_, res)| build_dependency_trace(res));
+                    .map(|(_, _mocks, res)| build_dependency_trace(res));
                 Behavior {
                     id: i as u32,
                     input_args: exec.inputs.clone(),
@@ -1328,7 +1328,7 @@ mod tests {
                 thrown_error: None,
                 lines_executed: vec![1, 2],
                 is_new_path: true, error_intent: None }],
-            raw_results: vec![(vec![json!(5)], raw_result)],
+            raw_results: vec![(vec![json!(5)], vec![], raw_result)],
             discoveries: vec![],
             nondeterministic_fields: vec![], float_probe_results: vec![],
        

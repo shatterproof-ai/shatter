@@ -30,7 +30,7 @@ use crate::frontier::{Frontier, FrontierSet};
 use crate::frontend::{Frontend, FrontendError};
 use crate::genetic_fitness::{FitnessContext, FitnessWeights};
 use crate::input_gen;
-use crate::protocol::{Command, ExecuteResult, ResponseResult, SetupContextStack};
+use crate::protocol::{Command, ExecuteResult, MockConfig, ResponseResult, SetupContextStack};
 use crate::solver::{self, ConcreteValue, SolveResult};
 use crate::strategy::MetaStrategy;
 use crate::sym_expr::SymExpr;
@@ -97,6 +97,10 @@ pub struct ExploreConfig {
     pub plateau_threshold: usize,
     /// Mock configurations to pass through to Execute commands.
     pub mocks: Vec<crate::protocol::MockConfig>,
+    /// Mock parameters for dynamic per-iteration mock generation.
+    /// When non-empty, fresh mock values are generated each iteration
+    /// instead of reusing the static `mocks` field.
+    pub mock_params: Vec<crate::auto_mock::MockParam>,
     /// Z3 solver timeout in milliseconds per query. None means no limit.
     pub solver_timeout_ms: Option<u64>,
     /// Per-function exploration wall-clock timeout. Whichever of this or
@@ -123,6 +127,7 @@ impl Default for ExploreConfig {
             max_executions: DEFAULT_MAX_EXECUTIONS,
             plateau_threshold: 20,
             mocks: vec![],
+            mock_params: vec![],
             solver_timeout_ms: None,
             timeout_explore: None,
         }
@@ -242,8 +247,8 @@ pub struct ExploreResult {
     pub drill_generated: usize,
     /// Why the exploration loop stopped.
     pub termination_reason: TerminationReason,
-    /// Raw execution results paired with inputs for pipeline composability.
-    pub raw_results: Vec<(Vec<serde_json::Value>, ExecuteResult)>,
+    /// Raw execution results paired with inputs and mock configs for pipeline composability.
+    pub raw_results: Vec<(Vec<serde_json::Value>, Vec<MockConfig>, ExecuteResult)>,
     /// Per-branch discovery attribution with method (Z3, Random, UserProvided).
     pub discoveries: Vec<(u32, DiscoveryMethod)>,
     /// Number of inputs skipped by triage prediction.
@@ -523,7 +528,7 @@ fn solve_and_generate(
     frontier_set: &mut FrontierSet,
     param_infos: &[ParamInfo],
     param_names: &[String],
-    raw_results: &[(Vec<serde_json::Value>, ExecuteResult)],
+    raw_results: &[(Vec<serde_json::Value>, Vec<MockConfig>, ExecuteResult)],
     seen_branch_sides: &std::collections::HashSet<(u32, bool)>,
     config: &ExploreConfig,
     rng: &mut StdRng,
@@ -732,7 +737,7 @@ pub async fn explore(
     let mut worklist = BinaryHeap::new();
     let mut covered_paths: HashSet<u64> = HashSet::new();
     let mut executions = Vec::new();
-    let mut raw_results: Vec<(Vec<serde_json::Value>, ExecuteResult)> = Vec::new();
+    let mut raw_results: Vec<(Vec<serde_json::Value>, Vec<MockConfig>, ExecuteResult)> = Vec::new();
     let mut seen_branch_ids: HashSet<u32> = HashSet::new();
     let mut discoveries: Vec<(u32, DiscoveryMethod)> = Vec::new();
     let mut total_executions: usize = 0;
@@ -904,7 +909,7 @@ pub async fn explore(
         }
 
         // Record raw result for pipeline composability.
-        raw_results.push((obs.inputs.clone(), obs.result.clone()));
+        raw_results.push((obs.inputs.clone(), config.mocks.clone(), obs.result.clone()));
 
         if !obs.is_new_path {
             plateau_counter += 1;

@@ -37,7 +37,7 @@ pub fn analyze(observe: &ObservationOutput, analysis: &FunctionAnalysis) -> Anal
     let records: Vec<ExecutionRecord> = observe
         .raw_results
         .iter()
-        .map(|(inputs, result)| execution_record_from_result(&observe.function_name, inputs, result))
+        .map(|(inputs, _mocks, result)| execution_record_from_result(&observe.function_name, inputs, result))
         .collect();
 
     let mut behavior_map = BehaviorMap::from_records(&observe.function_name, &records);
@@ -47,7 +47,7 @@ pub fn analyze(observe: &ObservationOutput, analysis: &FunctionAnalysis) -> Anal
     let unique_constraints: HashMap<u32, SymConstraint> = observe
         .raw_results
         .iter()
-        .flat_map(|(_, result)| {
+        .flat_map(|(_, _mocks, result)| {
             result
                 .branch_path
                 .iter()
@@ -122,7 +122,7 @@ impl From<crate::orchestrator::ExploreResult> for ObservationOutput {
 
         // Compute lines covered from raw_results.
         let mut all_lines: std::collections::HashSet<u32> = std::collections::HashSet::new();
-        for (_, result) in &r.raw_results {
+        for (_, _mocks, result) in &r.raw_results {
             for &line in &result.lines_executed {
                 all_lines.insert(line);
             }
@@ -219,7 +219,7 @@ mod tests {
             lines_covered: 3,
             total_lines: 5,
             new_path_executions: vec![],
-            raw_results: vec![(vec![json!(5)], exec_result)],
+            raw_results: vec![(vec![json!(5)], vec![], exec_result)],
             discoveries: vec![(0, DiscoveryMethod::Random)],
             nondeterministic_fields: vec![], float_probe_results: vec![],
         };
@@ -307,9 +307,9 @@ mod tests {
             total_lines: 5,
             new_path_executions: vec![],
             raw_results: vec![
-                (vec![json!(1)], make_result(json!("a"))),
-                (vec![json!(2)], make_result(json!("b"))),
-                (vec![json!(3)], make_result(json!("c"))),
+                (vec![json!(1)], vec![], make_result(json!("a"))),
+                (vec![json!(2)], vec![], make_result(json!("b"))),
+                (vec![json!(3)], vec![], make_result(json!("c"))),
             ],
             discoveries: vec![(0, DiscoveryMethod::Random)],
             nondeterministic_fields: vec![], float_probe_results: vec![],

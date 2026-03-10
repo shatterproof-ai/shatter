@@ -439,6 +439,7 @@ pub async fn scan(
             max_iterations: config.max_iterations_per_function,
             seed: config.seed,
             mocks,
+            mock_params: vec![],
             setup_file: None,
             setup_level: crate::protocol::SetupLevel::Function,
             value_sources: vec![],
@@ -485,7 +486,7 @@ pub async fn scan(
         let records: Vec<ExecutionRecord> = exploration
             .raw_results
             .iter()
-            .map(|(inputs, result)| execution_record_from_result(func_name, inputs, result))
+            .map(|(inputs, _mocks, result)| execution_record_from_result(func_name, inputs, result))
             .collect();
         let mut behavior_coverage: Vec<BehaviorCoverage> = Vec::new();
         for callee in &callees {
@@ -833,6 +834,7 @@ pub async fn parallel_scan(
                 max_iterations: config.max_iterations_per_function,
                 seed: config.seed,
                 mocks,
+                mock_params: vec![],
                 setup_file: None,
                 setup_level: crate::protocol::SetupLevel::Function,
                 value_sources: vec![],
@@ -1087,7 +1089,7 @@ async fn explore_single_function(
     let records: Vec<ExecutionRecord> = exploration
         .raw_results
         .iter()
-        .map(|(inputs, result)| execution_record_from_result(func_name, inputs, result))
+        .map(|(inputs, _mocks, result)| execution_record_from_result(func_name, inputs, result))
         .collect();
     let maps = behavior_maps.lock().await;
     let mut behavior_coverage: Vec<BehaviorCoverage> = Vec::new();

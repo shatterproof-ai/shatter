@@ -6,11 +6,13 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use shatter_core::frontend::{Frontend, FrontendConfig, DEFAULT_REQUEST_TIMEOUT};
-use shatter_core::orchestrator::{self, ExploreConfig, ExploreResult};
-use shatter_core::protocol::{Command as ProtoCommand, ResponseResult};
+use shatter_core::orchestrator::{self, ExploreConfig, ExploreResult, FrontendCapabilities};
+use shatter_core::protocol::{
+    Command as ProtoCommand, ResponseResult, SetupContextEntry, SetupContextStack, SetupLevel,
+};
+use shatter_core::setup_manager::SetupManager;
 
 /// Path to the TypeScript frontend entry point, resolved from the workspace root.
 fn ts_frontend_path() -> PathBuf {
@@ -515,6 +517,536 @@ async fn concolic_validateemail_with_literal_seeds() {
         "str-omrx: expected >=4 unique paths with boundary + literal seeds; got {}. \
          return_values: {return_values:?}",
         result.unique_paths
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
+// ---------------------------------------------------------------------------
+// Setup/Teardown lifecycle E2E tests (str-0s76.12)
+// ---------------------------------------------------------------------------
+
+/// Path to setup fixture files, resolved from the workspace root.
+fn setup_fixtures_dir() -> PathBuf {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    manifest_dir.join("../examples/standalone/ts")
+}
+
+/// Build FrontendCapabilities that include "setup" and "teardown".
+fn capabilities_with_setup() -> FrontendCapabilities {
+    FrontendCapabilities::from_raw(&[
+        "analyze".into(),
+        "execute".into(),
+        "instrument".into(),
+        "setup".into(),
+        "teardown".into(),
+    ])
+}
+
+/// Session-level setup returns a context that can be passed to Execute commands.
+///
+/// Validates the protocol round-trip: Setup -> context returned -> Teardown -> ack.
+/// This tests the core mechanism that all higher-level setup flows depend on.
+#[tokio::test]
+async fn setup_session_context_flows_to_execute() {
+    let setup_file = setup_fixtures_dir().join("setup-session.ts");
+    let setup_file_str = setup_file.to_string_lossy().to_string();
+
+    let mut frontend = spawn_ts_frontend().await;
+
+    // Send session-level Setup command.
+    let response = frontend
+        .send(ProtoCommand::Setup {
+            file: setup_file_str.clone(),
+            scope: "test-session".to_string(),
+            level: SetupLevel::Session,
+            project_root: None,
+            parent_context: None,
+        })
+        .await
+        .expect("setup command failed");
+
+    // Verify setup returned a context with expected fields.
+    let setup_ctx = match response.result {
+        ResponseResult::Setup { setup_context } => {
+            assert!(
+                setup_context.get("sessionId").is_some(),
+                "setup context should contain sessionId; got: {setup_context:?}"
+            );
+            assert_eq!(
+                setup_context.get("scope").and_then(|v| v.as_str()),
+                Some("test-session"),
+                "setup context should echo the scope"
+            );
+            setup_context
+        }
+        ResponseResult::Error { message, .. } => {
+            panic!("setup returned error: {message}");
+        }
+        other => panic!("expected Setup response, got: {other:?}"),
+    };
+
+    // Execute a function with the setup context to verify it flows through.
+    let file = examples_dir().join("01-arithmetic.ts");
+    let file_str = file.to_string_lossy().to_string();
+
+    let _analysis = analyze_function(&mut frontend, &file_str, "classifyNumber").await;
+    instrument_function(&mut frontend, &file_str, "classifyNumber").await;
+
+    let exec_response = frontend
+        .send(ProtoCommand::Execute {
+            function: "classifyNumber".to_string(),
+            inputs: vec![serde_json::json!(5)],
+            mocks: vec![],
+            setup_context: Some(SetupContextStack {
+                contexts: vec![SetupContextEntry {
+                    level: SetupLevel::Session,
+                    context: setup_ctx.clone(),
+                }],
+            }),
+        })
+        .await
+        .expect("execute with setup context failed");
+
+    match &exec_response.result {
+        ResponseResult::Execute(result) => {
+            assert!(
+                result.return_value.is_some() || result.thrown_error.is_some(),
+                "execution should produce a result"
+            );
+        }
+        ResponseResult::Error { message, .. } => {
+            panic!("execute returned error: {message}");
+        }
+        other => panic!("expected Execute response, got: {other:?}"),
+    }
+
+    // Teardown the session.
+    let teardown_response = frontend
+        .send(ProtoCommand::Teardown {
+            scope: "test-session".to_string(),
+            level: SetupLevel::Session,
+        })
+        .await
+        .expect("teardown command failed");
+
+    match teardown_response.result {
+        ResponseResult::TeardownAck => {}
+        ResponseResult::Error { message, .. } => {
+            panic!("teardown returned error: {message}");
+        }
+        other => panic!("expected TeardownAck response, got: {other:?}"),
+    }
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
+/// File-level setup is scoped per source file -- each file gets its own context.
+///
+/// Sends two file-level Setup commands with different scopes, verifying that
+/// each returns a context reflecting its own scope. Then tears down both.
+#[tokio::test]
+async fn setup_file_level_scoped_per_file() {
+    let setup_file = setup_fixtures_dir().join("setup-file-level.ts");
+    let setup_file_str = setup_file.to_string_lossy().to_string();
+
+    let mut frontend = spawn_ts_frontend().await;
+
+    // Setup for file "auth.ts"
+    let response_auth = frontend
+        .send(ProtoCommand::Setup {
+            file: setup_file_str.clone(),
+            scope: "auth.ts".to_string(),
+            level: SetupLevel::File,
+            project_root: None,
+            parent_context: None,
+        })
+        .await
+        .expect("setup for auth.ts failed");
+
+    let ctx_auth = match response_auth.result {
+        ResponseResult::Setup { setup_context } => {
+            assert_eq!(
+                setup_context.get("fileScope").and_then(|v| v.as_str()),
+                Some("auth.ts"),
+                "auth.ts setup should return its own scope"
+            );
+            assert_eq!(
+                setup_context.get("initialized").and_then(|v| v.as_bool()),
+                Some(true),
+            );
+            setup_context
+        }
+        other => panic!("expected Setup response for auth.ts, got: {other:?}"),
+    };
+
+    // Setup for file "data.ts" -- should get a different scope.
+    let response_data = frontend
+        .send(ProtoCommand::Setup {
+            file: setup_file_str.clone(),
+            scope: "data.ts".to_string(),
+            level: SetupLevel::File,
+            project_root: None,
+            parent_context: None,
+        })
+        .await
+        .expect("setup for data.ts failed");
+
+    let ctx_data = match response_data.result {
+        ResponseResult::Setup { setup_context } => {
+            assert_eq!(
+                setup_context.get("fileScope").and_then(|v| v.as_str()),
+                Some("data.ts"),
+                "data.ts setup should return its own scope"
+            );
+            setup_context
+        }
+        other => panic!("expected Setup response for data.ts, got: {other:?}"),
+    };
+
+    // Verify contexts are distinct.
+    assert_ne!(
+        ctx_auth.get("fileScope"),
+        ctx_data.get("fileScope"),
+        "file-level contexts should be scoped independently"
+    );
+
+    // Teardown both files.
+    let td_auth = frontend
+        .send(ProtoCommand::Teardown {
+            scope: "auth.ts".to_string(),
+            level: SetupLevel::File,
+        })
+        .await
+        .expect("teardown auth.ts failed");
+    assert!(
+        matches!(td_auth.result, ResponseResult::TeardownAck),
+        "expected TeardownAck for auth.ts"
+    );
+
+    let td_data = frontend
+        .send(ProtoCommand::Teardown {
+            scope: "data.ts".to_string(),
+            level: SetupLevel::File,
+        })
+        .await
+        .expect("teardown data.ts failed");
+    assert!(
+        matches!(td_data.result, ResponseResult::TeardownAck),
+        "expected TeardownAck for data.ts"
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
+/// When setup fails, the SetupManager records the failure and skips dependent
+/// levels -- inner setup attempts return Skipped errors instead of running.
+///
+/// This tests both the TS frontend (returning an error response on setup failure)
+/// and the Rust SetupManager (tracking failures and blocking dependents).
+#[tokio::test]
+async fn setup_failure_skips_dependents() {
+    let setup_file = setup_fixtures_dir().join("setup-failing.ts");
+    let setup_file_str = setup_file.to_string_lossy().to_string();
+
+    let mut frontend = spawn_ts_frontend().await;
+
+    // Send session-level setup with the failing fixture.
+    let response = frontend
+        .send(ProtoCommand::Setup {
+            file: setup_file_str.clone(),
+            scope: "test-session".to_string(),
+            level: SetupLevel::Session,
+            project_root: None,
+            parent_context: None,
+        })
+        .await
+        .expect("setup command should complete (even if it fails)");
+
+    // The frontend should return an error (the setup() function throws).
+    match &response.result {
+        ResponseResult::Error { message, .. } => {
+            assert!(
+                message.contains("Intentional setup failure"),
+                "error should contain the fixture's message; got: {message}"
+            );
+        }
+        ResponseResult::Setup { .. } => {
+            panic!("expected error from failing setup, got success");
+        }
+        other => panic!("expected Error response, got: {other:?}"),
+    }
+
+    // Record the failure in a SetupManager and verify skip behavior.
+    let mut mgr = SetupManager::from_env();
+    mgr.record_failure(SetupLevel::Session, "Intentional setup failure".into())
+        .expect("record_failure with fail_on_error=false should succeed");
+
+    // Session failure should block all inner levels.
+    assert!(
+        mgr.should_skip(SetupLevel::Session),
+        "session level itself should be marked as skip"
+    );
+    assert!(
+        mgr.should_skip(SetupLevel::File),
+        "file level should be skipped when session failed"
+    );
+    assert!(
+        mgr.should_skip(SetupLevel::Function),
+        "function level should be skipped when session failed"
+    );
+    assert!(
+        mgr.should_skip(SetupLevel::Execution),
+        "execution level should be skipped when session failed"
+    );
+
+    // Attempting setup at File level through the manager should fail with Skipped.
+    let result = mgr.setup(
+        SetupLevel::File,
+        "some-file.ts",
+        serde_json::json!({}),
+    );
+    assert!(result.is_err(), "file setup should be blocked by session failure");
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
+/// Teardown runs in reverse order: inner levels torn down before outer levels.
+///
+/// Sets up Session -> File -> Function levels, then tears down in reverse order
+/// (Function -> File -> Session). Each teardown validates its context, confirming
+/// the protocol supports the full lifecycle.
+#[tokio::test]
+async fn setup_teardown_runs_in_reverse_order() {
+    let setup_file = setup_fixtures_dir().join("setup-teardown-order.ts");
+    let setup_file_str = setup_file.to_string_lossy().to_string();
+
+    let mut frontend = spawn_ts_frontend().await;
+
+    // Setup Session level.
+    let resp_session = frontend
+        .send(ProtoCommand::Setup {
+            file: setup_file_str.clone(),
+            scope: "test-session".to_string(),
+            level: SetupLevel::Session,
+            project_root: None,
+            parent_context: None,
+        })
+        .await
+        .expect("session setup failed");
+    assert!(
+        matches!(&resp_session.result, ResponseResult::Setup { .. }),
+        "session setup should succeed"
+    );
+
+    // Setup File level.
+    let resp_file = frontend
+        .send(ProtoCommand::Setup {
+            file: setup_file_str.clone(),
+            scope: "auth.ts".to_string(),
+            level: SetupLevel::File,
+            project_root: None,
+            parent_context: None,
+        })
+        .await
+        .expect("file setup failed");
+    assert!(
+        matches!(&resp_file.result, ResponseResult::Setup { .. }),
+        "file setup should succeed"
+    );
+
+    // Setup Function level.
+    let resp_func = frontend
+        .send(ProtoCommand::Setup {
+            file: setup_file_str.clone(),
+            scope: "validateToken".to_string(),
+            level: SetupLevel::Function,
+            project_root: None,
+            parent_context: None,
+        })
+        .await
+        .expect("function setup failed");
+    assert!(
+        matches!(&resp_func.result, ResponseResult::Setup { .. }),
+        "function setup should succeed"
+    );
+
+    // Teardown in reverse order: Function -> File -> Session.
+    // Each teardown validates scope matching in the fixture, so wrong-scope
+    // teardown would fail.
+    let td_func = frontend
+        .send(ProtoCommand::Teardown {
+            scope: "validateToken".to_string(),
+            level: SetupLevel::Function,
+        })
+        .await
+        .expect("function teardown failed");
+    assert!(
+        matches!(td_func.result, ResponseResult::TeardownAck),
+        "function teardown should succeed"
+    );
+
+    let td_file = frontend
+        .send(ProtoCommand::Teardown {
+            scope: "auth.ts".to_string(),
+            level: SetupLevel::File,
+        })
+        .await
+        .expect("file teardown failed");
+    assert!(
+        matches!(td_file.result, ResponseResult::TeardownAck),
+        "file teardown should succeed"
+    );
+
+    let td_session = frontend
+        .send(ProtoCommand::Teardown {
+            scope: "test-session".to_string(),
+            level: SetupLevel::Session,
+        })
+        .await
+        .expect("session teardown failed");
+    assert!(
+        matches!(td_session.result, ResponseResult::TeardownAck),
+        "session teardown should succeed"
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
+/// Explorer path: explore_function with setup_file runs setup/teardown lifecycle.
+///
+/// Uses the explorer's explore_function with a setup_file configured, verifying
+/// that exploration succeeds when setup is active. This validates the explorer
+/// path handles setup correctly (parity requirement with orchestrator).
+#[tokio::test]
+async fn explorer_explore_function_with_setup() {
+    let file = examples_dir().join("01-arithmetic.ts");
+    let file_str = file.to_string_lossy().to_string();
+    let setup_file = setup_fixtures_dir().join("setup-session.ts");
+    let setup_file_str = setup_file.to_string_lossy().to_string();
+
+    let mut frontend = spawn_ts_frontend().await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "classifyNumber").await;
+
+    let config = shatter_core::explorer::ExploreConfig {
+        file: file_str.clone(),
+        max_iterations: 10,
+        seed: Some(42),
+        mocks: vec![],
+        setup_file: Some(setup_file_str),
+        setup_level: SetupLevel::Function,
+        value_sources: vec![],
+        capabilities: capabilities_with_setup(),
+        user_seeds: vec![],
+        candidate_inputs: vec![],
+        pool_seeds: vec![],
+        project_root: None,
+        loop_buckets: Default::default(),
+        timeout_explore: None,
+    };
+
+    let mut mgr = SetupManager::from_env();
+    let result = shatter_core::explorer::explore_function(
+        &mut frontend,
+        &analysis,
+        &config,
+        Some(&mut mgr),
+    )
+    .await
+    .expect("explore_function with setup should succeed");
+
+    assert!(
+        result.unique_paths >= 1,
+        "explorer with setup should discover at least 1 path; got {}",
+        result.unique_paths
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
+/// Orchestrator path: explore with setup_context passes context to executions.
+///
+/// Runs orchestrator::explore with a pre-established setup context, verifying
+/// that the orchestrator correctly threads setup context through to Execute
+/// commands. This is the parity test for the orchestrator path.
+#[tokio::test]
+async fn orchestrator_explore_with_setup_context() {
+    let file = examples_dir().join("01-arithmetic.ts");
+    let file_str = file.to_string_lossy().to_string();
+    let setup_file = setup_fixtures_dir().join("setup-session.ts");
+    let setup_file_str = setup_file.to_string_lossy().to_string();
+
+    let mut frontend = spawn_ts_frontend().await;
+
+    // First, establish a setup context via the protocol.
+    let setup_response = frontend
+        .send(ProtoCommand::Setup {
+            file: setup_file_str,
+            scope: "classifyNumber".to_string(),
+            level: SetupLevel::Function,
+            project_root: None,
+            parent_context: None,
+        })
+        .await
+        .expect("setup command failed");
+
+    let setup_ctx = match setup_response.result {
+        ResponseResult::Setup { setup_context } => SetupContextStack {
+            contexts: vec![SetupContextEntry {
+                level: SetupLevel::Function,
+                context: setup_context,
+            }],
+        },
+        other => panic!("expected Setup response, got: {other:?}"),
+    };
+
+    // Analyze and instrument.
+    let analysis = analyze_function(&mut frontend, &file_str, "classifyNumber").await;
+    instrument_function(&mut frontend, &file_str, "classifyNumber").await;
+
+    // Run orchestrator with the setup context.
+    let config = ExploreConfig {
+        max_iterations: 10,
+        max_executions: 50,
+        plateau_threshold: 8,
+        ..Default::default()
+    };
+
+    let seed_inputs = vec![
+        vec![serde_json::json!(5)],
+        vec![serde_json::json!(-3)],
+    ];
+
+    let result = orchestrator::explore(
+        &mut frontend,
+        "classifyNumber",
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        Some(setup_ctx),
+    )
+    .await
+    .expect("orchestrator explore with setup context failed");
+
+    assert!(
+        result.unique_paths >= 2,
+        "orchestrator with setup context should discover at least 2 paths; got {}",
+        result.unique_paths
+    );
+
+    // Teardown.
+    let td = frontend
+        .send(ProtoCommand::Teardown {
+            scope: "classifyNumber".to_string(),
+            level: SetupLevel::Function,
+        })
+        .await
+        .expect("teardown failed");
+    assert!(
+        matches!(td.result, ResponseResult::TeardownAck),
+        "teardown should succeed"
     );
 
     frontend.shutdown().await.expect("frontend shutdown failed");
