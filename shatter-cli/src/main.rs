@@ -230,10 +230,6 @@ enum CliCommand {
         #[arg(long)]
         spec_json: bool,
 
-        /// Output the behavioral specification as YAML with property descriptions.
-        #[arg(long)]
-        spec_yaml: bool,
-
         /// Disable built-in boundary values as seed inputs.
         #[arg(long)]
         no_boundary_values: bool,
@@ -1027,7 +1023,6 @@ async fn run_explore(
     colors: &Colors,
     show_spec: bool,
     spec_as_json: bool,
-    spec_as_yaml: bool,
     detect_invariants: bool,
     use_concolic: bool,
     solver_timeout: Option<u64>,
@@ -1504,11 +1499,6 @@ async fn run_explore(
                             match shatter_core::spec::format_spec_json(&spec) {
                                 Ok(json) => println!("{json}"),
                                 Err(e) => log::error!("Error serializing spec: {e}"),
-                            }
-                        } else if spec_as_yaml {
-                            match shatter_core::spec::format_spec_yaml(&spec) {
-                                Ok(yaml) => print!("{yaml}"),
-                                Err(e) => log::error!("Error serializing spec as YAML: {e}"),
                             }
                         } else {
                             print_markdown(&shatter_core::spec::format_spec_markdown(&spec), use_color);
@@ -3373,7 +3363,6 @@ async fn main() -> ExitCode {
             output,
             spec,
             spec_json,
-            spec_yaml,
             invariants,
             no_boundary_values: _,
             concolic,
@@ -3421,10 +3410,9 @@ async fn main() -> ExitCode {
                 log_level,
                 cli.perf,
                 &colors,
-                spec || spec_json || spec_yaml || output.is_some() || invariants,
+                spec || spec_json || output.is_some() || invariants,
                 spec_json || output.is_some(),
-                spec_yaml,
-                invariants || spec_yaml,
+                invariants,
                 concolic,
                 solver_timeout,
                 memory_limit,
