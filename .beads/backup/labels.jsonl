@@ -109,10 +109,17 @@
 {"issue_id":"str-3ky9.8","label":"test"}
 {"issue_id":"str-3ky9.9","label":"core"}
 {"issue_id":"str-3ky9.9","label":"mock"}
+{"issue_id":"str-4omc","label":"docs"}
+{"issue_id":"str-99w9","label":"cli"}
+{"issue_id":"str-99w9","label":"docs"}
+{"issue_id":"str-9pjd","label":"docs"}
 {"issue_id":"str-e127","label":"rust-frontend"}
 {"issue_id":"str-efdn","label":"cli"}
 {"issue_id":"str-efdn","label":"walkthrough"}
 {"issue_id":"str-fyu8","label":"cli"}
 {"issue_id":"str-fyu8","label":"walkthrough"}
+{"issue_id":"str-h3zb","label":"docs"}
 {"issue_id":"str-jxap","label":"rust-frontend"}
+{"issue_id":"str-k3mj","label":"beads"}
+{"issue_id":"str-k3mj","label":"docs"}
 {"issue_id":"str-nhnl","label":"cli"}
