@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://shatter.dev/protocol/setup-level.schema.json",
+  "title": "Setup Level",
+  "description": "Lifecycle scope for setup/teardown: session > file > function > execution.",
+  "type": "string",
+  "enum": ["session", "file", "function", "execution"]
+}

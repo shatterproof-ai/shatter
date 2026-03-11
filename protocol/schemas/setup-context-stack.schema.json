@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://shatter.dev/protocol/setup-context-stack.schema.json",
+  "title": "Setup Context Stack",
+  "description": "Ordered stack of setup contexts from enclosing levels (outermost first).",
+  "type": "object",
+  "properties": {
+    "contexts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "level": { "$ref": "setup-level.schema.json" },
+          "context": {
+            "description": "Opaque context value returned by the setup at this level."
+          }
+        },
+        "required": ["level", "context"]
+      }
+    }
+  },
+  "required": ["contexts"]
+}

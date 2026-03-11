@@ -1,0 +1,14 @@
+{
+  "protocol_version": "0.1.0",
+  "id": 20,
+  "command": "setup",
+  "file": "./setup.ts",
+  "scope": "processOrder",
+  "level": "function",
+  "project_root": "/tmp/project",
+  "parent_context": {
+    "contexts": [
+      { "level": "session", "context": { "db": "conn_42" } }
+    ]
+  }
+}
