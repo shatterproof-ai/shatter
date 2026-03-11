@@ -1,6 +1,6 @@
 # Shatter Behavioral Specification
 
-> **Living document.** Updated as functionality changes. Last updated: 2026-02-28.
+> **Living document.** Updated as functionality changes. Last updated: 2026-03-10.
 >
 > This spec describes what Shatter does — its observable behavior from a user's perspective. It is the authoritative reference for how each command, feature, and output format should behave. The audit process (`/audit`) compares the actual codebase against this document.
 
@@ -46,6 +46,8 @@ Source code → Analyze → Explore → Cluster → Report
 - **Language frontends**: Separate processes (TypeScript via Node.js, Go via compiled binary). Communicate via NDJSON over stdin/stdout. Handle language-specific parsing, instrumentation, and execution.
 
 ### 1.3 Supported Languages
+
+> **Canonical source of truth** for language support status. Other docs link here.
 
 | Language   | Frontend      | File extensions | Status    |
 |------------|---------------|-----------------|-----------|
