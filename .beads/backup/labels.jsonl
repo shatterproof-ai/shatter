@@ -170,6 +170,8 @@
 {"issue_id":"str-e127","label":"rust-frontend"}
 {"issue_id":"str-efdn","label":"cli"}
 {"issue_id":"str-efdn","label":"walkthrough"}
+{"issue_id":"str-fpgb","label":"protocol"}
+{"issue_id":"str-fpgb","label":"tooling"}
 {"issue_id":"str-fyu8","label":"cli"}
 {"issue_id":"str-fyu8","label":"walkthrough"}
 {"issue_id":"str-h3zb","label":"docs"}

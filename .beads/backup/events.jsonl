@@ -816,3 +816,6 @@
 {"actor":"Ketan Gangatirkar","comment":"Added label: ts","created_at":"2026-03-10T20:39:48Z","event_type":"label_added","id":821,"issue_id":"str-8fcu","new_value":null,"old_value":null}
 {"actor":"Ketan Gangatirkar","comment":"Added label: go","created_at":"2026-03-10T20:39:48Z","event_type":"label_added","id":822,"issue_id":"str-8fcu","new_value":null,"old_value":null}
 {"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-10T20:59:10Z","event_type":"closed","id":823,"issue_id":"str-3ky9.8","new_value":"Closed","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-10T21:16:44Z","event_type":"created","id":824,"issue_id":"str-fpgb","new_value":"","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":"Added label: protocol","created_at":"2026-03-10T21:16:44Z","event_type":"label_added","id":825,"issue_id":"str-fpgb","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":"Added label: tooling","created_at":"2026-03-10T21:16:44Z","event_type":"label_added","id":826,"issue_id":"str-fpgb","new_value":null,"old_value":null}
