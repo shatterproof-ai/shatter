@@ -1,0 +1,10 @@
+{
+  "protocol_version": "0.1.0",
+  "id": 7,
+  "command": "generate",
+  "file": "src/generators.ts",
+  "name": "DatabaseConnection",
+  "kind": "type_name",
+  "recipe": null,
+  "project_root": "."
+}

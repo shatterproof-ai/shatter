@@ -1,0 +1,8 @@
+{
+  "protocol_version": "0.1.0",
+  "id": 2,
+  "command": "analyze",
+  "file": "src/example.ts",
+  "function": "processOrder",
+  "project_root": "."
+}

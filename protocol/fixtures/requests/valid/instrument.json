@@ -1,0 +1,15 @@
+{
+  "protocol_version": "0.1.0",
+  "id": 3,
+  "command": "instrument",
+  "file": "src/example.ts",
+  "function": "processOrder",
+  "mocks": [
+    {
+      "module": "node:fs",
+      "function": "readFileSync",
+      "behavior": "return_generated"
+    }
+  ],
+  "project_root": "."
+}

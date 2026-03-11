@@ -1,0 +1,7 @@
+{
+  "protocol_version": "0.1.0",
+  "id": 6,
+  "command": "teardown",
+  "scope": "test-session",
+  "level": "session"
+}

@@ -1,0 +1,60 @@
+{
+  "protocol_version": "0.1.0",
+  "id": 2,
+  "status": "analyze",
+  "functions": [
+    {
+      "name": "processOrder",
+      "params": [
+        {
+          "name": "quantity",
+          "type": { "kind": "int" }
+        },
+        {
+          "name": "shipping",
+          "type": { "kind": "str" }
+        },
+        {
+          "name": "rush",
+          "type": { "kind": "bool" }
+        }
+      ],
+      "branches": [
+        {
+          "id": 0,
+          "line": 3,
+          "condition_text": "quantity > 10",
+          "condition": {
+            "kind": "bin_op",
+            "op": "gt",
+            "left": { "kind": "param", "name": "quantity", "path": [] },
+            "right": { "kind": "const", "type": "int", "value": 10 }
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 1,
+          "line": 7,
+          "condition_text": "shipping === \"express\"",
+          "condition": {
+            "kind": "bin_op",
+            "op": "eq",
+            "left": { "kind": "param", "name": "shipping", "path": [] },
+            "right": { "kind": "const", "type": "str", "value": "express" }
+          },
+          "branch_type": "if"
+        }
+      ],
+      "dependencies": [
+        {
+          "module": "node:fs",
+          "name": "readFileSync",
+          "kind": "function_call"
+        }
+      ],
+      "return_type": { "kind": "str" },
+      "start_line": 1,
+      "end_line": 15
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "protocol_version": "0.1.0",
+  "id": 9,
+  "status": "error",
+  "code": "compilation_error",
+  "message": "Compilation failed for src/example.rs: unresolved import",
+  "details": {
+    "file": "src/example.rs",
+    "compiler_output": "error[E0432]: unresolved import `foo::bar`\n --> src/example.rs:3:5\n  |\n3 | use foo::bar;\n  |     ^^^^^^^^ no `bar` in `foo`",
+    "exit_code": 1
+  }
+}

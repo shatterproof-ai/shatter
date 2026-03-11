@@ -1,0 +1,12 @@
+{
+  "protocol_version": "0.1.0",
+  "id": 6,
+  "status": "error",
+  "code": "execution_crash",
+  "message": "Execution of 'processOrder' crashed: heap out of memory",
+  "details": {
+    "function": "processOrder",
+    "signal": "SIGKILL",
+    "exit_code": 137
+  }
+}

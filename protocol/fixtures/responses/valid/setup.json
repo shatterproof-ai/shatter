@@ -1,0 +1,9 @@
+{
+  "protocol_version": "0.1.0",
+  "id": 5,
+  "status": "setup",
+  "setup_context": {
+    "db_url": "postgres://localhost:5432/test_db",
+    "session_id": "sess-abc123"
+  }
+}

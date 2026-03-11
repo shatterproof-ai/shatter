@@ -1,0 +1,14 @@
+{
+  "protocol_version": "0.1.0",
+  "id": 5,
+  "status": "error",
+  "code": "execution_timeout",
+  "message": "Execution of 'processOrder' timed out after 15000ms",
+  "details": {
+    "function": "processOrder",
+    "timeout_ms": 15000,
+    "partial_branch_path": [
+      { "branch_id": 0, "line": 3, "taken": true }
+    ]
+  }
+}
