@@ -12,6 +12,10 @@ DOC_TARGETS=(
   README.md
   AGENTS.md
   CLAUDE.md
+  PLAN.md
+  SPEC.md
+  PROTOCOL.md
+  PARITY.md
   docs
 )
 
@@ -48,7 +52,7 @@ step "Documentation file existence sanity checks"
 info "core documentation files present"
 
 if has_cmd markdownlint-cli2; then
-  run_cmd "Markdown lint" markdownlint-cli2 "${DOC_TARGETS[@]}"
+  run_cmd "Markdown lint" markdownlint-cli2 --config "${REPO_ROOT}/.markdownlint-cli2.yaml" "${DOC_TARGETS[@]}"
 elif [[ "${STRICT_OPTIONAL}" == "true" ]]; then
   die "markdownlint-cli2 required by strict mode"
 else
@@ -64,7 +68,7 @@ else
 fi
 
 if has_cmd lychee; then
-  run_cmd "Markdown link check" lychee --no-progress "${DOC_TARGETS[@]}"
+  run_cmd "Markdown link check" lychee --config "${REPO_ROOT}/lychee.toml" --no-progress "${DOC_TARGETS[@]}"
 elif [[ "${STRICT_OPTIONAL}" == "true" ]]; then
   die "lychee required by strict mode"
 else
