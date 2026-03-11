@@ -628,6 +628,24 @@ export async function executeInstrumented(
     if (mock.default_behavior === "passthrough") {
       continue;
     }
+    if (mock.default_behavior === "throw_error") {
+      let callIndex = 0;
+      const returnValues = mock.return_values;
+      mockRegistry[mock.symbol] = (): never => {
+        // Use return_values as error details if available
+        if (returnValues.length > 0) {
+          const idx = Math.min(callIndex, returnValues.length - 1);
+          callIndex++;
+          const errData = returnValues[idx];
+          const message = typeof errData === "object" && errData !== null && "message" in errData
+            ? String((errData as Record<string, unknown>)["message"])
+            : `Mock error: ${mock.symbol}`;
+          throw new Error(message);
+        }
+        throw new Error(`Mock error: ${mock.symbol}`);
+      };
+      continue;
+    }
     let callIndex = 0;
     const returnValues = mock.return_values;
     mockRegistry[mock.symbol] = (...args: unknown[]): unknown => {
