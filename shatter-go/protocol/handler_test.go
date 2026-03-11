@@ -115,6 +115,19 @@ func TestVersionMismatchReturnsError(t *testing.T) {
 	}
 }
 
+func TestMalformedJSONReturnsInvalidRequest(t *testing.T) {
+	resp := sendRecv(t, "this is not valid json{{{")
+	if resp.Status != "error" {
+		t.Errorf("status = %q, want error", resp.Status)
+	}
+	if resp.Code != ErrInvalidRequest {
+		t.Errorf("code = %q, want invalid_request", resp.Code)
+	}
+	if resp.ID != 0 {
+		t.Errorf("id = %d, want 0", resp.ID)
+	}
+}
+
 func TestUnknownCommandReturnsError(t *testing.T) {
 	resp := sendRecv(t, reqJSON(1, "foobar"))
 	if resp.Status != "error" {
