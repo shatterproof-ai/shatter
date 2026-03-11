@@ -479,7 +479,17 @@ func (h *Handler) handleTeardown(resp Response, req Request) Response {
 
 	h.log.Debug("Running teardown", "scope", req.Scope, "level", req.Level)
 
-	h.setupLoader.Teardown(req.Scope, string(req.Level))
+	found := h.setupLoader.Teardown(req.Scope, string(req.Level))
+	if !found {
+		resp.Status = "error"
+		resp.Code = ErrInternalError
+		resp.Message = fmt.Sprintf("No setup context found for %s:%s. Call setup first.", req.Level, req.Scope)
+		return resp
+	}
+
+	// Clear stale session state so the next setup/execute cycle starts clean.
+	h.lastAnalyzedFile = ""
+	h.registry.Handles.Clear()
 
 	resp.Status = "teardown_ack"
 	return resp
