@@ -1,5 +1,6 @@
 .PHONY: help build build-rust build-core build-cli build-rust-frontend build-examples build-ts build-go \
        test test-quick test-standard test-full test-e2e \
+       check-tooling check-rust check-ts check-go check-docs check-meta check-all pre-completion \
        clean lint walkthrough
 
 # -- Build -------------------------------------------------------------------
@@ -52,6 +53,32 @@ test-full: build ## Full: all languages + clippy
 
 test-e2e: build ## E2E: concolic pipeline tests only
 	cargo test --test e2e_concolic
+
+# -- Quality scripts ----------------------------------------------------------
+
+check-tooling: ## Report available required and optional analysis tools
+	./scripts/quality/check-tooling.sh
+
+check-rust: ## Run Rust quality gates
+	./scripts/quality/check-rust.sh
+
+check-ts: ## Run TypeScript quality gates
+	./scripts/quality/check-ts.sh
+
+check-go: ## Run Go quality gates
+	./scripts/quality/check-go.sh
+
+check-docs: ## Run documentation quality gates
+	./scripts/quality/check-docs.sh
+
+check-meta: ## Run repository meta checks (workflow lint, Semgrep)
+	./scripts/quality/check-meta.sh
+
+check-all: ## Run the local/CI aggregate quality script
+	./scripts/quality/check-all.sh
+
+pre-completion: ## Run the pre-completion quality script
+	./scripts/quality/pre-completion.sh
 
 # -- Other --------------------------------------------------------------------
 
