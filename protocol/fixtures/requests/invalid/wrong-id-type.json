@@ -1,0 +1,6 @@
+{
+  "protocol_version": "0.1.0",
+  "id": "not-a-number",
+  "command": "handshake",
+  "capabilities": ["analyze"]
+}

@@ -1,0 +1,17 @@
+{
+  "protocol_version": "0.1.0",
+  "id": 7,
+  "status": "generate",
+  "value": {
+    "host": "localhost",
+    "port": 5432,
+    "database": "test_db",
+    "pool_size": 5
+  },
+  "generator_id": "postgres-test-db",
+  "recipe": {
+    "generator": "DatabaseConnection",
+    "seed": 42,
+    "config": { "host": "localhost", "port": 5432 }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "protocol_version": "0.1.0",
+  "id": 1,
+  "status": "error",
+  "code": "file_not_found",
+  "message": "File not found: src/missing.ts",
+  "details": {
+    "requested_path": "src/missing.ts"
+  }
+}

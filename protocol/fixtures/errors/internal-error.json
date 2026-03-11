@@ -1,0 +1,12 @@
+{
+  "protocol_version": "0.1.0",
+  "id": 10,
+  "status": "error",
+  "code": "internal_error",
+  "message": "Internal error: unexpected null reference in instrumentor",
+  "details": {
+    "stack_trace": "TypeError: Cannot read properties of null (reading 'kind')\n    at buildSymExpr (instrumentor.ts:892:34)\n    at visitBranch (instrumentor.ts:654:21)\n    at Object.visit (instrumentor.ts:412:9)",
+    "frontend": "typescript",
+    "version": "0.1.0"
+  }
+}

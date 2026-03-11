@@ -1,0 +1,10 @@
+{
+  "protocol_version": "0.1.0",
+  "id": 5,
+  "command": "setup",
+  "file": "src/setup.ts",
+  "scope": "test-session",
+  "level": "session",
+  "project_root": ".",
+  "parent_context": null
+}

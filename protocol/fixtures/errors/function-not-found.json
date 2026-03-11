@@ -1,0 +1,12 @@
+{
+  "protocol_version": "0.1.0",
+  "id": 2,
+  "status": "error",
+  "code": "function_not_found",
+  "message": "Function 'nonExistent' not found in src/example.ts",
+  "details": {
+    "file": "src/example.ts",
+    "function": "nonExistent",
+    "available_functions": ["processOrder", "calculateTotal"]
+  }
+}

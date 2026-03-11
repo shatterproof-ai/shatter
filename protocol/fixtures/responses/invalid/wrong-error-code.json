@@ -1,0 +1,7 @@
+{
+  "protocol_version": "0.1.0",
+  "id": 1,
+  "status": "error",
+  "code": "not_a_real_code",
+  "message": "Something went wrong"
+}

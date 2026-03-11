@@ -1,0 +1,17 @@
+{
+  "protocol_version": "0.1.0",
+  "id": 4,
+  "status": "execute",
+  "return_value": 42,
+  "thrown_error": null,
+  "lines_executed": [1, 2, 3],
+  "calls_to_external": [],
+  "path_constraints": [],
+  "side_effects": [],
+  "performance": {
+    "wall_time_ms": 1.0,
+    "cpu_time_us": 500,
+    "heap_used_bytes": 1024,
+    "heap_allocated_bytes": 2048
+  }
+}

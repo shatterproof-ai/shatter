@@ -1,0 +1,13 @@
+{
+  "protocol_version": "0.1.0",
+  "id": 3,
+  "status": "error",
+  "code": "parse_error",
+  "message": "Syntax error in src/broken.ts at line 42",
+  "details": {
+    "file": "src/broken.ts",
+    "line": 42,
+    "column": 15,
+    "snippet": "const x = {;"
+  }
+}

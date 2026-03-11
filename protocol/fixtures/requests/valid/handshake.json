@@ -1,0 +1,6 @@
+{
+  "protocol_version": "0.1.0",
+  "id": 1,
+  "command": "handshake",
+  "capabilities": ["analyze", "instrument", "execute", "setup", "teardown", "generate"]
+}

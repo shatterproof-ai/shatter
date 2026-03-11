@@ -1,0 +1,11 @@
+{
+  "protocol_version": "0.1.0",
+  "id": 8,
+  "status": "error",
+  "code": "invalid_request",
+  "message": "Invalid request: missing required field 'file' for analyze command",
+  "details": {
+    "command": "analyze",
+    "missing_fields": ["file"]
+  }
+}

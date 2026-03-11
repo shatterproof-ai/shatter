@@ -1,0 +1,23 @@
+{
+  "protocol_version": "0.1.0",
+  "id": 4,
+  "command": "execute",
+  "function": "src/example.ts::processOrder",
+  "inputs": [42, "express", true],
+  "mocks": [
+    {
+      "module": "node:fs",
+      "function": "readFileSync",
+      "behavior": "return_generated"
+    }
+  ],
+  "setup_context": {
+    "stack": [
+      {
+        "scope": "test-session",
+        "level": "session",
+        "context": {"db_url": "postgres://localhost/test"}
+      }
+    ]
+  }
+}

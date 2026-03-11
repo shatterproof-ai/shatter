@@ -1,0 +1,12 @@
+{
+  "protocol_version": "0.1.0",
+  "id": 4,
+  "status": "error",
+  "code": "instrumentation_failed",
+  "message": "Failed to instrument function 'processOrder': unsupported generator expression",
+  "details": {
+    "file": "src/example.ts",
+    "function": "processOrder",
+    "reason": "Generator functions are not supported for instrumentation"
+  }
+}
