@@ -1,0 +1,6 @@
+{
+  "protocol_version": "0.1.0",
+  "id": 20,
+  "status": "setup",
+  "setup_context": { "db_connection": "pg://localhost", "transaction_id": "tx_123" }
+}

@@ -27,6 +27,8 @@
     { "$ref": "#/$defs/analyze_response" },
     { "$ref": "#/$defs/instrument_response" },
     { "$ref": "#/$defs/execute_response" },
+    { "$ref": "#/$defs/setup_response" },
+    { "$ref": "#/$defs/teardown_ack_response" },
     { "$ref": "#/$defs/generate_response" },
     { "$ref": "#/$defs/shutdown_ack_response" },
     { "$ref": "#/$defs/error_response" }
@@ -150,6 +152,23 @@
         }
       },
       "required": ["status", "branch_path", "lines_executed", "calls_to_external", "path_constraints", "side_effects", "performance"]
+    },
+    "setup_response": {
+      "type": "object",
+      "properties": {
+        "status": { "const": "setup" },
+        "setup_context": {
+          "description": "Opaque context value to pass to subsequent execute and teardown commands."
+        }
+      },
+      "required": ["status", "setup_context"]
+    },
+    "teardown_ack_response": {
+      "type": "object",
+      "properties": {
+        "status": { "const": "teardown_ack" }
+      },
+      "required": ["status"]
     },
     "generate_response": {
       "type": "object",

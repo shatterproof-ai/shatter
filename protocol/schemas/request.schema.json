@@ -27,6 +27,8 @@
     { "$ref": "#/$defs/analyze_request" },
     { "$ref": "#/$defs/instrument_request" },
     { "$ref": "#/$defs/execute_request" },
+    { "$ref": "#/$defs/setup_request" },
+    { "$ref": "#/$defs/teardown_request" },
     { "$ref": "#/$defs/generate_request" },
     { "$ref": "#/$defs/shutdown_request" }
   ],
@@ -105,6 +107,48 @@
         }
       },
       "required": ["command", "function", "inputs", "mocks"]
+    },
+    "setup_request": {
+      "type": "object",
+      "properties": {
+        "command": { "const": "setup" },
+        "file": {
+          "type": "string",
+          "description": "Path to the setup file."
+        },
+        "scope": {
+          "type": "string",
+          "description": "Identifier for this setup scope (function name, file path, or session label)."
+        },
+        "level": {
+          "$ref": "setup-level.schema.json",
+          "description": "Lifecycle level: session, file, function, or execution."
+        },
+        "project_root": {
+          "type": ["string", "null"],
+          "description": "Path to the detected project root directory."
+        },
+        "parent_context": {
+          "$ref": "setup-context-stack.schema.json",
+          "description": "Contexts from enclosing setup levels, outermost first."
+        }
+      },
+      "required": ["command", "file", "scope", "level"]
+    },
+    "teardown_request": {
+      "type": "object",
+      "properties": {
+        "command": { "const": "teardown" },
+        "scope": {
+          "type": "string",
+          "description": "Scope identifier matching the corresponding setup command."
+        },
+        "level": {
+          "$ref": "setup-level.schema.json",
+          "description": "Lifecycle level: session, file, function, or execution."
+        }
+      },
+      "required": ["command", "scope", "level"]
     },
     "generate_request": {
       "type": "object",
