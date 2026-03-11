@@ -1,0 +1,64 @@
+version: "2"
+
+# golangci-lint v2 configuration for shatter-go.
+# Runs via: scripts/quality/check-go.sh --golangci-lint
+
+run:
+  timeout: 3m
+  modules-download-mode: readonly
+
+linters:
+  default: standard
+  enable:
+    - gocritic
+    - misspell
+
+  settings:
+    errcheck:
+      exclude-functions:
+        - (*os.File).Close
+        - os.RemoveAll
+        - os.Setenv
+        - os.Unsetenv
+        - (io.Closer).Close
+        - encoding/json.Unmarshal
+        # printer.Fprint writing to a bytes.Buffer cannot fail.
+        - go/printer.Fprint
+        # Extism plugin Close is best-effort cleanup.
+        - (*github.com/extism/go-sdk.Plugin).Close
+
+    gocritic:
+      disabled-checks:
+        # if-else chains are idiomatic in Go handler dispatch code.
+        - ifElseChain
+
+    govet:
+      enable-all: true
+      disable:
+        # fieldalignment is noisy; struct sizes in this codebase are small.
+        - fieldalignment
+        # shadow is too aggressive — short-scope err redeclaration is
+        # idiomatic Go and the compiler catches real conflicts.
+        - shadow
+
+    staticcheck:
+      checks:
+        - "all"
+        # Package-level doc comments: not required for internal packages.
+        - "-ST1000"
+        # Quickfix suggestions are useful but not errors.
+        - "-QF*"
+        # S1039 (unnecessary Sprintf): intentional in code-generation
+        # template strings for readability.
+        - "-S1039"
+
+  exclusions:
+    rules:
+      # Test files: relaxed errcheck — test helpers, setup/teardown, and
+      # property test runners use fire-and-forget calls intentionally.
+      - path: _test\.go
+        linters:
+          - errcheck
+
+issues:
+  max-same-issues: 0

@@ -6,10 +6,6 @@ import (
 	"path/filepath"
 )
 
-// nativeSentinel is the JSON value returned to core for live native objects.
-// The frontend recognizes this marker during execute to substitute the real object.
-var nativeSentinel = json.RawMessage(`{"__shatter_native":true}`)
-
 // Registry dispatches generate requests to WASM plugins or native generators.
 type Registry struct {
 	Wasm    *WasmCache
