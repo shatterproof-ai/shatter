@@ -462,7 +462,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
 
         match crate::setup::run_teardown(level, scope) {
             Ok(()) => {
-                resp.status = "teardown".to_string();
+                resp.status = "teardown_ack".to_string();
                 resp
             }
             Err(e) => {
@@ -925,8 +925,16 @@ mod tests {
         let resp = send_recv(
             r#"{"protocol_version":"0.1.0","id":11,"command":"teardown","scope":"myFunc","level":"function"}"#,
         );
-        assert_eq!(resp.status, "teardown");
+        assert_eq!(resp.status, "teardown_ack");
         assert_eq!(resp.id, 11);
+    }
+
+    #[test]
+    fn teardown_ack_matches_protocol_spec() {
+        let resp = send_recv(
+            r#"{"protocol_version":"0.1.0","id":50,"command":"teardown","scope":"cleanup","level":"session"}"#,
+        );
+        assert_eq!(resp.status, "teardown_ack", "teardown must return teardown_ack per protocol spec");
     }
 
     // -- Generate command tests --
@@ -989,7 +997,7 @@ mod tests {
         assert_eq!(responses[1].status, "error");
         assert_eq!(responses[1].code.as_deref(), Some("file_not_found"));
         // teardown succeeds (no-op for now)
-        assert_eq!(responses[2].status, "teardown");
+        assert_eq!(responses[2].status, "teardown_ack");
         assert_eq!(responses[2].id, 3);
         // generate with non-wasm file returns "unsupported generator file type"
         assert_eq!(responses[3].status, "error");
