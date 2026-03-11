@@ -70,6 +70,16 @@ func (h *Handler) Run() error {
 		var req Request
 		if err := json.Unmarshal([]byte(line), &req); err != nil {
 			h.log.Log(context.Background(), LevelTrace, "Failed to parse request", "err", err)
+			errResp := Response{
+				ProtocolVersion: ProtocolVersion,
+				ID:              0,
+				Status:          "error",
+				Code:            ErrInvalidRequest,
+				Message:         fmt.Sprintf("Invalid JSON: %s", err.Error()),
+			}
+			if sendErr := h.send(errResp); sendErr != nil {
+				return fmt.Errorf("writing error response: %w", sendErr)
+			}
 			continue
 		}
 
