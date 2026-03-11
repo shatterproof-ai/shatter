@@ -146,7 +146,7 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
       }
 
       const source = fs.readFileSync(request.file, "utf-8");
-      const result = instrumentFunction(source, request.function, request.file);
+      const result = instrumentFunction(source, request.function, request.file, request.mocks ?? []);
 
       if ("error" in result) {
         return {
