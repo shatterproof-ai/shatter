@@ -4,22 +4,9 @@ Automatic exploratory testing via concolic execution. Shatter analyzes your func
 
 ## Installation
 
-**Quick install** (Linux/macOS):
+Shatter is not yet published to a package registry or public repository. Build from source:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/user/shatter/main/install.sh | bash
-```
-
-**Cargo install**:
-
-```bash
-cargo install --git https://github.com/user/shatter shatter-cli
-```
-
-**Build from source**:
-
-```bash
-git clone https://github.com/user/shatter.git
 cd shatter
 cargo build --release
 # Binary is at target/release/shatter
@@ -284,4 +271,4 @@ Run the interactive walkthrough to see Shatter in action:
 
 ## License
 
-TBD
+Not yet determined.
