@@ -210,6 +210,8 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             "execute".to_string(),
             "generate".to_string(),
             "instrument".to_string(),
+            "setup".to_string(),
+            "teardown".to_string(),
         ]);
         resp
     }
@@ -644,6 +646,8 @@ mod tests {
         assert!(caps.contains(&"execute".to_string()));
         assert!(caps.contains(&"generate".to_string()));
         assert!(caps.contains(&"instrument".to_string()));
+        assert!(caps.contains(&"setup".to_string()), "setup must be advertised");
+        assert!(caps.contains(&"teardown".to_string()), "teardown must be advertised");
     }
 
     #[test]
