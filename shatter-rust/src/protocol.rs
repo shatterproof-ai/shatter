@@ -224,6 +224,27 @@ pub const FRONTEND_VERSION: &str = "0.1.0";
 /// Language identifier for this frontend.
 pub const FRONTEND_LANGUAGE: &str = "rust";
 
+// Error codes matching protocol/registry.yaml (11 codes).
+pub const ERR_FILE_NOT_FOUND: &str = "file_not_found";
+pub const ERR_FUNCTION_NOT_FOUND: &str = "function_not_found";
+pub const ERR_PARSE_ERROR: &str = "parse_error";
+pub const ERR_INSTRUMENTATION_FAILED: &str = "instrumentation_failed";
+pub const ERR_EXECUTION_TIMEOUT: &str = "execution_timeout";
+pub const ERR_EXECUTION_CRASH: &str = "execution_crash";
+pub const ERR_VERSION_MISMATCH: &str = "version_mismatch";
+pub const ERR_INVALID_REQUEST: &str = "invalid_request";
+pub const ERR_COMPILATION_ERROR: &str = "compilation_error";
+pub const ERR_INTERNAL_ERROR: &str = "internal_error";
+pub const ERR_NOT_SUPPORTED: &str = "not_supported";
+
+/// All valid error codes for parity testing.
+pub const ALL_ERROR_CODES: [&str; 11] = [
+    ERR_FILE_NOT_FOUND, ERR_FUNCTION_NOT_FOUND, ERR_PARSE_ERROR,
+    ERR_INSTRUMENTATION_FAILED, ERR_EXECUTION_TIMEOUT, ERR_EXECUTION_CRASH,
+    ERR_VERSION_MISMATCH, ERR_INVALID_REQUEST, ERR_COMPILATION_ERROR,
+    ERR_INTERNAL_ERROR, ERR_NOT_SUPPORTED,
+];
+
 /// Granularity level for setup/teardown lifecycle management.
 /// Matches `SetupLevel` in shatter-core/src/protocol.rs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -184,7 +184,7 @@ func (h *Handler) handleAnalyze(resp Response, req Request) Response {
 	if err != nil {
 		if functionName != "" && isNotFound(err) {
 			resp.Status = "error"
-			resp.Code = "function_not_found"
+			resp.Code = ErrFunctionNotFound
 			resp.Message = fmt.Sprintf("function %q not found in %s", functionName, req.File)
 			return resp
 		}
@@ -278,9 +278,9 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 	if err != nil {
 		resp.Status = "error"
 		if strings.Contains(err.Error(), "function not found") {
-			resp.Code = "function_not_found"
+			resp.Code = ErrFunctionNotFound
 		} else if strings.Contains(err.Error(), "build failed") {
-			resp.Code = "instrumentation_failed"
+			resp.Code = ErrInstrumentationFailed
 		} else if strings.Contains(err.Error(), "timed out") {
 			resp.Code = ErrExecutionTimeout
 		} else {

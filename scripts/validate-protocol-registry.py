@@ -185,18 +185,10 @@ def extract_rust_fe(path: Path) -> dict:
     for m in re.finditer(r'"(handshake|analyze|instrument|execute|setup|teardown|generate|shutdown)"', text):
         commands.add(m.group(1))
 
-    # Error codes
+    # Error codes: extract from ERR_* constants (e.g. pub const ERR_FOO: &str = "foo";)
     error_codes: set[str] = set()
-    for m in re.finditer(r'code.*?"([a-z_]+)"', text):
-        val = m.group(1)
-        # Filter to actual error codes (not random strings)
-        if val in {
-            "file_not_found", "function_not_found", "parse_error",
-            "instrumentation_failed", "execution_timeout", "execution_crash",
-            "version_mismatch", "invalid_request", "compilation_error",
-            "internal_error", "not_supported",
-        }:
-            error_codes.add(val)
+    for m in re.finditer(r'pub const ERR_\w+:\s*&str\s*=\s*"([^"]+)"', text):
+        error_codes.add(m.group(1))
 
     # Statuses
     statuses: set[str] = set()
@@ -236,10 +228,13 @@ def validate(registry: dict, source_name: str, source: dict) -> list[str]:
             issues.append(
                 f"  {category}: '{item}' found in {source_name} but missing from registry"
             )
-        # Only warn about missing-from-source for commands (frontends may not
-        # implement every command/status/error code)
-        if category == "commands":
-            for item in sorted(missing_from_source):
+        for item in sorted(missing_from_source):
+            if category == "error_codes":
+                # Error codes must be defined in every frontend.
+                issues.append(
+                    f"  {category}: '{item}' in registry but missing from {source_name}"
+                )
+            elif category == "commands":
                 issues.append(
                     f"  {category}: '{item}' in registry but not found in {source_name} (may be unimplemented)"
                 )
@@ -300,9 +295,17 @@ def main() -> int:
 
     # --- Report ---
     if all_issues:
-        # Separate hard errors from informational warnings
-        errors = [i for i in all_issues if "missing from registry" in i]
-        warnings = [i for i in all_issues if "missing from registry" not in i]
+        # Separate hard errors from informational warnings.
+        # Hard errors: codes in source but not in registry, or error codes
+        # in registry but missing from a frontend.
+        def is_error(line: str) -> bool:
+            if "missing from registry" in line:
+                return True
+            if "error_codes:" in line and "missing from" in line and "unimplemented" not in line:
+                return True
+            return False
+        errors = [i for i in all_issues if is_error(i)]
+        warnings = [i for i in all_issues if not is_error(i)]
 
         if warnings:
             print("\nWarnings:")

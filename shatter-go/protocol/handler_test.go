@@ -255,7 +255,7 @@ func TestAnalyzeWithMissingFunctionReturnsError(t *testing.T) {
 	if resp.Status != "error" {
 		t.Fatalf("status = %q, want error", resp.Status)
 	}
-	if resp.Code != "function_not_found" {
+	if resp.Code != ErrFunctionNotFound {
 		t.Errorf("code = %q, want function_not_found", resp.Code)
 	}
 }
@@ -436,7 +436,7 @@ func Foo() {}
 	if resp.Status != "error" {
 		t.Fatalf("status = %q, want error", resp.Status)
 	}
-	if resp.Code != "function_not_found" {
+	if resp.Code != ErrFunctionNotFound {
 		t.Errorf("code = %q, want function_not_found", resp.Code)
 	}
 }
