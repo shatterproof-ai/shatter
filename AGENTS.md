@@ -9,7 +9,6 @@ bd ready              # Find available work
 bd show <id>          # View issue details
 bd update <id> --status in_progress  # Claim work
 bd close <id>         # Complete work
-bd sync               # Sync with git
 ```
 
 ## Issue Title Guidelines
@@ -40,7 +39,6 @@ is limited. The **first ~20 characters** must be meaningfully descriptive:
 4. **PUSH TO REMOTE** - This is MANDATORY:
    ```bash
    git pull --rebase
-   bd sync
    git push
    git status  # MUST show "up to date with origin"
    ```
@@ -151,7 +149,7 @@ An issue is not complete until:
 3. The branch is merged to `main` (one branch at a time — do not merge other branches simultaneously)
 4. The branch is deleted after merge
 5. The issue is closed with `bd close <id>`
-6. Changes are pushed to remote with `bd sync && git push`
+6. Changes are pushed to remote with `git push`
 
 Do not leave stale branches. Merge and delete promptly.
 
@@ -393,11 +391,11 @@ bd close bd-42 --reason "Completed" --json
 
 ### Auto-Sync
 
-bd automatically syncs with git:
+bd automatically syncs issue data to git:
 
 - Exports to `.beads/issues.jsonl` after changes (5s debounce)
 - Imports from JSONL when newer (e.g., after `git pull`)
-- No manual export/import needed!
+- No manual export/import needed — use `bd export` if you need a one-off export
 
 ### Important Rules
 
@@ -409,6 +407,6 @@ bd automatically syncs with git:
 - ❌ Do NOT use external issue trackers
 - ❌ Do NOT duplicate tracking systems
 
-For more details, see README.md and docs/QUICKSTART.md.
+For more details, see README.md.
 
 <!-- END BEADS INTEGRATION -->
