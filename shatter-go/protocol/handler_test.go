@@ -700,13 +700,88 @@ func TestSetupWithValidFileReturnsContext(t *testing.T) {
 	}
 }
 
-func TestTeardownReturnsAck(t *testing.T) {
+func TestTeardownWithoutSetupReturnsError(t *testing.T) {
+	// Teardown without prior setup should error — matches TS frontend behavior.
 	resp := sendRecv(t, reqJSON(31, "teardown", `"scope":"myFunc","level":"function"`))
-	if resp.Status != "teardown_ack" {
-		t.Errorf("status = %q, want teardown_ack", resp.Status)
+	if resp.Status != "error" {
+		t.Errorf("status = %q, want error", resp.Status)
+	}
+	if resp.Code != ErrInternalError {
+		t.Errorf("code = %q, want %q", resp.Code, ErrInternalError)
+	}
+	if !strings.Contains(resp.Message, "No setup context") {
+		t.Errorf("message = %q, should contain 'No setup context'", resp.Message)
 	}
 	if resp.ID != 31 {
 		t.Errorf("id = %d, want 31", resp.ID)
+	}
+}
+
+func TestTeardownAfterSetupReturnsAck(t *testing.T) {
+	// Setup then teardown should succeed.
+	tmp := filepath.Join(t.TempDir(), "setup_fixture.go")
+	src := "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"{\\\"ok\\\":true}\")\n}\n"
+	if err := os.WriteFile(tmp, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	responses := conversation(t,
+		reqJSON(1, "handshake", `"capabilities":["analyze"]`),
+		reqJSON(2, "setup", fmt.Sprintf(`"file":"%s","scope":"fn1","level":"function"`, tmp)),
+		reqJSON(3, "teardown", `"scope":"fn1","level":"function"`),
+		reqJSON(4, "shutdown"),
+	)
+	if len(responses) != 4 {
+		t.Fatalf("got %d responses, want 4", len(responses))
+	}
+	if responses[1].Status != "setup" {
+		t.Fatalf("setup status = %q, want setup", responses[1].Status)
+	}
+	if responses[2].Status != "teardown_ack" {
+		t.Errorf("teardown status = %q, want teardown_ack", responses[2].Status)
+	}
+}
+
+func TestTeardownClearsSessionState(t *testing.T) {
+	// After teardown, lastAnalyzedFile should be cleared. An execute without
+	// an explicit file should fail with "missing file" rather than falling
+	// back to a stale analyzed file.
+	tmp := filepath.Join(t.TempDir(), "setup_fixture.go")
+	src := "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"{\\\"ok\\\":true}\")\n}\n"
+	if err := os.WriteFile(tmp, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	goFile := filepath.Join(t.TempDir(), "target.go")
+	goSrc := "package main\n\nfunc Add(a, b int) int { return a + b }\n"
+	if err := os.WriteFile(goFile, []byte(goSrc), 0644); err != nil {
+		t.Fatal(err)
+	}
+	responses := conversation(t,
+		reqJSON(1, "handshake", `"capabilities":["analyze"]`),
+		// analyze sets lastAnalyzedFile
+		reqJSON(2, "analyze", fmt.Sprintf(`"file":"%s"`, goFile)),
+		// setup + teardown should clear it
+		reqJSON(3, "setup", fmt.Sprintf(`"file":"%s","scope":"fn1","level":"function"`, tmp)),
+		reqJSON(4, "teardown", `"scope":"fn1","level":"function"`),
+		// execute without file — should fail because lastAnalyzedFile was cleared
+		reqJSON(5, "execute", `"function":"Add","args":[1,2]`),
+		reqJSON(6, "shutdown"),
+	)
+	if len(responses) != 6 {
+		t.Fatalf("got %d responses, want 6", len(responses))
+	}
+	if responses[3].Status != "teardown_ack" {
+		t.Errorf("teardown status = %q, want teardown_ack", responses[3].Status)
+	}
+	// Execute without file after teardown should error with "requires a file path"
+	// because lastAnalyzedFile was cleared — not a downstream execution error.
+	if responses[4].Status != "error" {
+		t.Errorf("execute status = %q, want error (stale file should be cleared)", responses[4].Status)
+	}
+	if responses[4].Code != ErrInvalidRequest {
+		t.Errorf("execute code = %q, want %q (should be missing-file, not execution error)", responses[4].Code, ErrInvalidRequest)
+	}
+	if !strings.Contains(responses[4].Message, "requires a file path") {
+		t.Errorf("execute message = %q, should contain 'requires a file path'", responses[4].Message)
 	}
 }
 
@@ -767,8 +842,9 @@ func TestNewCommandsInConversationSequence(t *testing.T) {
 	if responses[1].Status != "error" || responses[1].Code != ErrFileNotFound {
 		t.Errorf("response[1] = status:%q code:%q, want error/file_not_found", responses[1].Status, responses[1].Code)
 	}
-	if responses[2].Status != "teardown_ack" {
-		t.Errorf("response[2].status = %q, want teardown_ack", responses[2].Status)
+	// Teardown after failed setup should error — no context was stored.
+	if responses[2].Status != "error" || responses[2].Code != ErrInternalError {
+		t.Errorf("response[2] = status:%q code:%q, want error/internal_error", responses[2].Status, responses[2].Code)
 	}
 	if responses[3].Status != "error" || responses[3].Code != ErrInternalError {
 		t.Errorf("response[3] = status:%q code:%q, want error/internal_error", responses[3].Status, responses[3].Code)
