@@ -220,6 +220,15 @@ Update README.md when build/run/config procedures change.
 
 See `AGENTS.md` for issue tracking (beads), git workflow, and agent operational instructions.
 
+### Issue Decomposition
+
+When turning a plan into issues, follow the end-to-end vertical-slice rule in
+`AGENTS.md`.
+
+The short version: split feature work by user journey or observable capability,
+not by architecture layer. A feature issue may touch multiple layers if that is
+what makes the behavior usable end-to-end.
+
 ### Sprint Workflow
 
 When asked to work on ready issues in parallel, **invoke `/swarm`** (the global skill handles team/worktree/merge mechanics). For epic-based work or Shatter-specific quality gates, also invoke `/swarm-project` which adds wave scheduling via `bd swarm` and runs `/check-all` + `/walkthrough-review`.

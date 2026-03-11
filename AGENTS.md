@@ -54,6 +54,47 @@ is limited. The **first ~20 characters** must be meaningfully descriptive:
 
 ## Creating Issues
 
+### Issue Shape: Prefer End-to-End Value
+
+When breaking down a plan, default to **vertical slices**, not layer slices.
+Each workable issue should deliver **one complete, testable unit of value**,
+even if that unit is very small.
+
+**The key test:** after merging this issue alone, can a user, teammate, or
+agent actually do something new end-to-end? If not, the issue is probably cut
+at the wrong seam.
+
+**Good issue shape:**
+- A thin end-to-end slice through the system for one narrow scenario
+- May touch multiple layers (storage, API, CLI/UI) if that is what makes the
+  scenario actually usable
+- Produces a behavior that can be demonstrated, tested, and described in one
+  sentence of user-facing value
+
+**Bad issue shape:**
+- One issue for database changes, one for API wiring, one for frontend wiring
+  when none of them is useful alone
+- Pure plumbing issues for a feature that only become valuable after several
+  sibling issues land
+- "First backend, then frontend, then integration" breakdowns for user-facing
+  work
+
+**Default rule:** if the work is a `feature`, split by **user journey, use case,
+or behavior**, not by architecture layer.
+
+**Examples:**
+
+| Layer-sliced breakdown | End-to-end breakdown |
+|---|---|
+| `Add DB schema for saved filters` + `Add saved filters API` + `Build saved filters UI` | `Create a saved filter`, `Rename a saved filter`, `Delete a saved filter` |
+| `Branch data Rust types` + `Branch data TS handler` + `Branch data Go handler` | `Scan shows branch source locations`, `Explore reports branch conditions`, `Export includes branch metadata` |
+| `Add parser support` + `Add core model` + `Add CLI flag` | `CLI accepts one new config option and applies it during scan` |
+
+**Exception:** layer- or infrastructure-shaped issues are acceptable only when
+there is genuinely no smaller end-to-end slice worth landing yet. Those should
+usually be `task` or narrowly scoped enabling work, not the default shape for a
+feature plan.
+
 ### Issue Sizing: Keep Issues Small
 
 Every issue should represent **one focused, independently completable unit of work**.
@@ -63,15 +104,17 @@ A well-sized issue can be implemented, tested, and merged in a single session.
 bigger, break it down.
 
 **How to tell an issue is too big:**
-- It touches more than one module or subsystem
 - The description has multiple distinct deliverables or bullet points
-- It requires changes in both core and a frontend
 - You find yourself thinking "first I need to X, then Y, then Z" — each of those is its own issue
 - The acceptance criteria have more than 3 items
+- It bundles multiple user journeys or behaviors into one issue
+- The issue only delivers partial plumbing and depends on sibling issues before
+  any value appears
 
 **What to do instead:**
 - Create an **epic** for the larger goal, then create small child issues under it
-- Each child issue should be one logical step: "add the type", "implement the handler", "write the tests", "update the CLI"
+- Each child issue should be one **end-to-end behavior**: "create one saved
+  filter", "scan one new file pattern", "export one new metadata field"
 - Use `--parent` and `--waits-for` to link children to the epic
 - Use `bd dep add` for ordering constraints between children
 
@@ -79,12 +122,16 @@ bigger, break it down.
 
 | Too big | Break into |
 |---|---|
-| `Add symbolic integer support` | Epic + `Int symbolic type`, `Int constraint gen`, `Int solver integration`, `Int round-trip tests` |
-| `Protocol message for branch data` | `Branch data Rust types`, `Branch data TS handler`, `Branch data Go handler` |
+| `Add symbolic integer support` | Epic + `Int equality branches work end-to-end`, `Int comparisons solve end-to-end`, `Int arithmetic flows through explore` |
+| `Protocol message for branch data` | `Explore reports branch source lines`, `Spec JSON includes branch metadata`, `Scan forwards branch metadata to reports` |
 | `Fix and test path constraint bug` | `Repro test for path constraints`, `Fix path constraint drop` |
 
 **Rule of thumb:** If you can't describe the issue in one sentence without "and",
 it's two issues.
+
+**Second rule of thumb:** If you can only describe the issue as a component
+handoff like "add backend support" or "wire the frontend", it is probably not
+an end-to-end issue yet.
 
 **Always specify `--type` explicitly** — never rely on the default. Use the correct issue type:
 - `feature` — delivers new user-visible or agent-visible capability (most issues are features)
