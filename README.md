@@ -56,7 +56,7 @@ See [SPEC.md §1.3](SPEC.md#13-supported-languages) for the canonical language s
 
 All commands accept targets in `<file>:<function>` format (e.g., `src/math.ts:add`) or `<file>` to target all functions. File extension determines the language frontend (`.ts` = TypeScript, `.go` = Go).
 
-**Global options:** `--log-level <LEVEL>` (error/warn/info/debug/trace), `-v` (debug), `-vv` (trace), `-q` (quiet), `--perf` (show timing stats).
+**Global options:** `--log-level <LEVEL>` (error/warn/info/debug/trace), `-v` (debug), `-vv` (trace), `-q` (quiet), `--perf` (show timing stats), `--project-dir <DIR>` (override project root), `--color <WHEN>` (always/auto/never).
 
 See [`SPEC.md`](SPEC.md) for the full behavioral specification.
 
@@ -72,57 +72,92 @@ shatter explore [OPTIONS] <TARGETS>...
 |------|---------|-------------|
 | `--max-iterations N` | 100 | Maximum exploration iterations per function |
 | `--timeout SECS` | 60 | Timeout in seconds for entire exploration |
+| `--timeout-explore SECS` | -- | Per-function wall-clock timeout (whichever of this or `--max-iterations` triggers first) |
+| `--concolic` | -- | Use the Z3-backed concolic explorer instead of the random explorer |
+| `--genetic` | -- | Enable the genetic algorithm explorer |
 | `--analyze-only` | -- | Only analyze branches, skip exploration |
 | `--show-clusters` | -- | Display behavior clusters in output |
+| `--spec` | -- | Output a behavioral specification (markdown) |
+| `--spec-json` | -- | Output the behavioral specification as JSON |
+| `-o, --output PATH` | -- | Write per-file spec JSON to a file (implies `--spec-json`) |
+| `--invariants` | -- | Enable Daikon-style invariant detection |
 | `--scope PATH` | -- | Path to a `shatter.scope.yaml` file |
+| `--config PATH` | -- | Path to `.shatter/config.yaml` |
+| `--inputs PATH` | -- | Path to a candidate inputs JSON file |
 | `--cache-dir DIR` | `.shatter/cache/` | Directory for caching behavior maps |
 | `--no-cache` | -- | Disable behavior map caching |
+| `--no-boundary-values` | -- | Disable built-in boundary values as seeds |
+| `--seeds-dir DIR` | `.shatter/seeds` | Directory for cross-function seed pool |
+| `--no-seeds` | -- | Disable the cross-function seed pool |
+| `--solver-timeout SECS` | -- | Z3 solver timeout per query |
+| `--memory-limit MB` | -- | Memory limit for the frontend process |
 | `--request-timeout SECS` | 30 | Per-request timeout for frontend responses |
 | `--exec-timeout SECS` | 10 | Per-invocation timeout in the frontend |
 | `--build-timeout SECS` | 30 | Timeout for compiling instrumented code |
-| `--inputs PATH` | -- | Path to a candidate inputs JSON file |
-| `--config PATH` | -- | Path to `.shatter/config.yaml` |
-| `--spec` | -- | Output a behavioral specification (markdown) |
-| `--spec-json` | -- | Output the behavioral specification as JSON |
-| `--no-boundary-values` | -- | Disable built-in boundary values as seeds |
-| `--invariants` | -- | Enable Daikon-style invariant detection |
+| `--setup-timeout SECS` | -- | Override setup/teardown timeouts |
+| `--fail-on-setup-error` | -- | Treat setup failures as fatal (abort immediately) |
+| `--clean` | -- | Ignore existing spec and force full re-exploration |
+| `--dry-run` | -- | Print stale/fresh/removed functions, then exit (requires `--output`) |
+| `--loop-buckets LIST` | `0,1,2,5` | Loop iteration bucket boundaries for path hashing |
+
+Run `shatter explore --help` for the complete option list including genetic algorithm tuning flags.
 
 ```bash
 shatter explore src/shipping.ts:calculateShipping
+shatter explore --concolic --spec --invariants src/math.ts:add
 shatter explore --analyze-only src/shipping.ts
-shatter explore --spec --invariants src/math.ts:add
 ```
 
 ### `shatter scan`
 
-Scan multiple functions in dependency order, using behavior maps as mocks.
+Scan a directory for source files, analyze and explore all functions in dependency order, using behavior maps as mocks.
 
 ```
-shatter scan [OPTIONS] <TARGETS>...
+shatter scan [OPTIONS] <DIRECTORY>
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
+| `--language LANG` | auto | Language to scan: typescript, go (auto-detected from extensions if omitted) |
+| `--include GLOB` | -- | Glob patterns for files to include (repeatable) |
+| `--exclude GLOB` | -- | Glob patterns for files to exclude (repeatable) |
+| `--changed` | -- | Scan only files with uncommitted changes (staged + unstaged) |
+| `--since REF` | -- | Scan only files changed between `<ref>` and HEAD |
+| `--include-untracked` | -- | Include untracked files when using `--changed` |
+| `--all` | -- | Scan all functions, including non-exported ones |
+| `--max-depth N` | -- | Maximum directory traversal depth |
 | `--max-iterations N` | 100 | Maximum iterations per function |
-| `--timeout SECS` | 120 | Timeout for the entire scan |
-| `--analyze-only` | -- | Only analyze, skip exploration |
-| `--scope PATH` | -- | Path to a scope config YAML file |
+| `--timeout-total SECS` | 300 | Total scan timeout |
+| `--timeout-per-fn SECS` | 30 | Per-function timeout (skip on exceed) |
+| `--timeout-explore SECS` | -- | Per-function exploration wall-clock timeout |
+| `--parallelism N` | auto | Number of parallel frontend subprocesses |
+| `-o, --output DIR` | `./shatter-report/` | Output directory for reports |
+| `--format FMT` | json | Report format: json, markdown, or both |
+| `--emit-tests FRAMEWORK` | -- | Generate test files: jest, vitest, or gotest |
+| `--progress` | -- | Emit progress events to stderr |
+| `--dry-run` | -- | Show what would be scanned without executing |
+| `--resume FILE` | -- | Resume a previous scan from a state file |
+| `--mock-config PATH` | -- | Path to a mock configuration YAML file |
+| `--core-sample SIZE` | -- | Representative sample: percentage (`"50%"`) or count (`"20"`) |
+| `--seed N` | -- | Seed for deterministic core sample selection |
+| `--batch RANGE` | -- | Progressive batch index (`"0"`, `"next"`, `"0-2"`). Requires `--core-sample` |
+| `--stratum RANGE` | -- | Call graph layer filter (`"0"` = leaves, `"0..3"`, `"-2..-0"`) |
 | `--cache-dir DIR` | `.shatter/cache/` | Behavior map cache directory |
 | `--no-cache` | -- | Disable caching |
-| `--request-timeout SECS` | 30 | Per-request frontend timeout |
-| `--exec-timeout SECS` | 10 | Per-invocation timeout |
-| `--build-timeout SECS` | 30 | Build timeout |
-| `--parallelism N` | auto | Number of parallel frontend subprocesses |
-| `--timeout-per-fn SECS` | 30 | Per-function timeout (skip on exceed) |
-| `--output-dir DIR` | `./shatter-report/` | Write reports to this directory |
-| `--report FORMAT` | json | Report format: json, markdown, or both |
-| `--progress-json` | -- | Emit structured JSON progress events |
-| `--emit-tests FRAMEWORK` | -- | Generate tests: jest, vitest, or gotest |
-| `--emit-tests-dir DIR` | -- | Output directory for emitted test files |
+| `--genetic` | -- | Enable the genetic algorithm explorer |
+| `--solver-timeout SECS` | -- | Z3 solver timeout per query |
+| `--memory-limit MB` | -- | Memory limit for the frontend process |
+| `--seeds-dir DIR` | `.shatter/seeds` | Cross-function seed pool directory |
+| `--no-seeds` | -- | Disable the cross-function seed pool |
+| `--setup-timeout SECS` | -- | Override setup/teardown timeouts |
+| `--fail-on-setup-error` | -- | Treat setup failures as fatal (abort immediately) |
+
+Run `shatter scan --help` for the complete option list.
 
 ```bash
-shatter scan src/shipping.ts src/utils.ts
-shatter scan --report both --output-dir ./reports src/
+shatter scan src/
+shatter scan --format both -o ./reports src/
+shatter scan --changed --emit-tests jest src/
 ```
 
 ### `shatter export-tests`
@@ -144,6 +179,9 @@ shatter export-tests [OPTIONS] <TARGETS>...
 | `--request-timeout SECS` | 30 | Per-request frontend timeout |
 | `--exec-timeout SECS` | 10 | Per-invocation timeout |
 | `--build-timeout SECS` | 30 | Build timeout |
+| `--memory-limit MB` | -- | Memory limit for the frontend process |
+
+Run `shatter export-tests --help` for the complete option list.
 
 ```bash
 shatter export-tests --framework jest -o shipping.test.ts src/shipping.ts:calculateShipping
@@ -167,6 +205,10 @@ shatter run [OPTIONS] <PATH>
 | `--request-timeout SECS` | 30 | Per-request frontend timeout |
 | `--exec-timeout SECS` | 10 | Per-invocation timeout |
 | `--build-timeout SECS` | 30 | Build timeout |
+| `--solver-timeout SECS` | -- | Z3 solver timeout per query |
+| `--memory-limit MB` | -- | Memory limit for the frontend process |
+
+Run `shatter run --help` for the complete option list.
 
 ```bash
 shatter run .
@@ -185,7 +227,7 @@ shatter diff [OPTIONS] <SNAPSHOT> <CURRENT>
 |------|---------|-------------|
 | `--json` | -- | Output diff as JSON instead of text |
 
-Exit code 0 when all behaviors match, nonzero when regressions are found.
+Exit code 0 when all behaviors match, nonzero when regressions are found. Run `shatter diff --help` for the complete option list.
 
 ```bash
 shatter diff baseline.json current.json
@@ -204,10 +246,108 @@ shatter spec-diff [OPTIONS] <OLD> <NEW>
 |------|---------|-------------|
 | `--json` | -- | Output diff as JSON instead of text |
 
-Accepts spec JSON files produced by `explore --spec-json`. Exit code 0 when specs are equivalent, nonzero when regressions are found.
+Accepts spec JSON files produced by `explore --spec-json`. Exit code 0 when specs are equivalent, nonzero when regressions are found. Run `shatter spec-diff --help` for the complete option list.
 
 ```bash
 shatter spec-diff old-spec.json new-spec.json
+```
+
+### `shatter build-frontend`
+
+Build a custom frontend binary with user-provided native generators. Reads generator paths from `.shatter/config.yaml`, compiles a custom frontend, and writes it to `.shatter/bin/`.
+
+```
+shatter build-frontend [OPTIONS] <LANGUAGE>
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `<LANGUAGE>` | -- | Target language: `go` or `rust` |
+| `--config PATH` | -- | Path to the `.shatter/` directory (auto-discovers if omitted) |
+| `-o, --output DIR` | `.shatter/bin/` | Output directory for the built binary |
+
+Run `shatter build-frontend --help` for the complete option list.
+
+```bash
+shatter build-frontend go
+shatter build-frontend --output ./bin rust
+```
+
+### `shatter stale`
+
+Check which functions in a source file are stale relative to a spec file. Analyzes the source, computes fingerprints, and compares against the spec.
+
+```
+shatter stale [OPTIONS] <SOURCE> <SPEC>
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--format FMT` | text | Output format: `text` or `json` |
+| `--cache-dir DIR` | -- | Cache directory for cross-file dependency fingerprints |
+| `--no-cache` | -- | Disable cache (skip cross-file dependency tracking) |
+| `--request-timeout SECS` | 30 | Per-request frontend timeout |
+| `--exec-timeout SECS` | 10 | Per-invocation timeout |
+| `--build-timeout SECS` | 30 | Build timeout |
+| `--memory-limit MB` | -- | Memory limit for the frontend process |
+
+Exit code 0 = all fresh, 1 = some stale or removed. Run `shatter stale --help` for the complete option list.
+
+```bash
+shatter stale src/math.ts math-spec.json
+shatter stale --format json src/utils.go utils-spec.json
+```
+
+### `shatter revalidate`
+
+Re-execute cached behaviors to detect regressions or drift. Loads behavior maps from the cache, replays each recorded input, and compares observed behavior against the cached expectation.
+
+```
+shatter revalidate [OPTIONS] <SOURCE>
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--cache-dir DIR` | `.shatter/cache/` | Cache directory for loading behavior maps |
+| `--format FMT` | text | Output format: `text` or `json` |
+| `--request-timeout SECS` | 30 | Per-request frontend timeout |
+| `--exec-timeout SECS` | 10 | Per-invocation timeout |
+| `--build-timeout SECS` | 30 | Build timeout |
+| `--memory-limit MB` | -- | Memory limit for the frontend process |
+
+Exit code 0 = no regressions, 1 = issues found. Run `shatter revalidate --help` for the complete option list.
+
+```bash
+shatter revalidate src/shipping.ts
+shatter revalidate --format json src/utils.go
+```
+
+### `shatter test`
+
+Run tests with impact analysis: only execute tests affected by changed files. Uses a coverage map to determine which tests touch which source files.
+
+```
+shatter test [OPTIONS]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--all` | -- | Run all tests, bypassing impact analysis |
+| `--record` | -- | Force coverage recording to refresh the coverage map |
+| `--tier TIER` | -- | Run a specific test tier and write a success marker |
+| `--base REF` | HEAD | Base git ref for change detection |
+| `--include-untracked` | -- | Include untracked files in change detection |
+| `--dry-run` | -- | Show which tests would run without executing them |
+| `--prioritize` | -- | Prioritize test execution order by marginal coverage per unit time |
+| `--budget DURATION` | -- | Time budget for test execution (e.g., `"10s"`, `"2m"`). Implies `--prioritize` |
+
+Run `shatter test --help` for the complete option list.
+
+```bash
+shatter test
+shatter test --all
+shatter test --dry-run --base main
+shatter test --budget 30s
 ```
 
 ## Development
