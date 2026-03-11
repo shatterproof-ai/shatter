@@ -58,8 +58,9 @@ The scripts operate in two modes, controlled by flags:
 `check-tooling.sh` accepts `--strict` (not `--strict-optional`) because its
 *only* job is tool detection — strict mode makes all optional tools required.
 
-`check-rust.sh` additionally accepts `--deny` which passes `-D warnings` to
-clippy (treat warnings as errors). This is always recommended in CI.
+`check-rust.sh` additionally accepts `--deny` which runs `cargo deny check`
+against the repository's `deny.toml` policy (license compliance, vulnerability
+advisories, source provenance). This is always recommended in CI.
 
 ## Recommended CI Stage Layout
 
@@ -190,7 +191,7 @@ To enable strict CI mode fully, install:
 - `golangci-lint`
 - `staticcheck`
 - `govulncheck`
-- `cargo-deny`
+- `cargo-deny` (configured — `deny.toml` checked in)
 - optional later: `cargo-nextest`, `cargo-udeps`, `reviewdog`
 
 ## CI Design Rules
@@ -303,15 +304,18 @@ if changed("shatter-go/go.mod", "shatter-go/go.sum"):
 
 ## Current Limitations
 
-These scripts intentionally do not yet configure or install all optional tools.
-They provide the stable contract that future hooks and CI jobs should call once
-the corresponding analyzer configs are added.
+These scripts intentionally do not install the optional tools. They provide the
+stable contract that hooks and CI jobs should call.
 
-That means:
+**Configured tools** (config checked in, ready for CI):
+
+- `cargo-deny` — dependency policy in `deny.toml` (licenses, advisories, sources)
+
+**Not yet configured:**
 
 - `Semgrep CE` is not yet configured in-repo
 - docs lint tools may be skipped locally when missing
 - generated CLI-doc freshness checks are not yet implemented
 - hook configuration is not yet committed
 
-Those items should be added as follow-up issues after review.
+Those items should be added as follow-up issues.
