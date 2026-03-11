@@ -934,6 +934,7 @@ async fn explorer_explore_function_with_setup() {
         max_iterations: 10,
         seed: Some(42),
         mocks: vec![],
+        mock_params: vec![],
         setup_file: Some(setup_file_str),
         setup_level: SetupLevel::Function,
         value_sources: vec![],
