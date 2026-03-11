@@ -147,6 +147,14 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
                 Ok(r) => r,
                 Err(e) => {
                     self.logf(&format!("Failed to parse request: {e}"));
+                    let err_resp = Response {
+                        id: 0,
+                        status: "error".to_string(),
+                        code: Some("invalid_request".to_string()),
+                        message: Some(format!("Invalid JSON: {e}")),
+                        ..Response::base(0)
+                    };
+                    self.send(&err_resp)?;
                     continue;
                 }
             };
@@ -679,6 +687,29 @@ mod tests {
         );
         assert_eq!(resp.status, "error");
         assert_eq!(resp.code.as_deref(), Some("invalid_request"));
+    }
+
+    #[test]
+    fn malformed_json_returns_invalid_request() {
+        let resp = send_recv("not valid json");
+        assert_eq!(resp.status, "error");
+        assert_eq!(resp.code.as_deref(), Some("invalid_request"));
+        assert_eq!(resp.id, 0);
+        assert!(resp.message.as_deref().unwrap_or("").contains("Invalid JSON"));
+    }
+
+    #[test]
+    fn malformed_json_does_not_abort_handler() {
+        let responses = conversation(&[
+            "not valid json",
+            r#"{"protocol_version":"0.1.0","id":99,"command":"shutdown"}"#,
+        ]);
+        assert_eq!(responses.len(), 2);
+        assert_eq!(responses[0].status, "error");
+        assert_eq!(responses[0].code.as_deref(), Some("invalid_request"));
+        assert_eq!(responses[0].id, 0);
+        assert_eq!(responses[1].status, "shutdown_ack");
+        assert_eq!(responses[1].id, 99);
     }
 
     #[test]
