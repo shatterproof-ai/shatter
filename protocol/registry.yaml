@@ -1,0 +1,251 @@
+# Shatter Protocol Registry
+#
+# Single source of truth for the JSON-over-stdio protocol between
+# shatter-core and language frontends.
+#
+# Validation: python3 scripts/validate-protocol-registry.py
+
+protocol_version: "0.1.0"
+
+# Compatibility policy: core and frontends must agree on major.minor.
+# Patch-level differences are tolerated. On mismatch the frontend
+# returns an error with code "version_mismatch".
+compatibility:
+  strategy: major_minor_match
+  mismatch_error_code: version_mismatch
+
+# --- Commands (core → frontend) ---
+commands:
+  handshake:
+    description: Initial protocol negotiation; frontend advertises capabilities.
+    fields: [capabilities]
+    response_status: handshake
+
+  analyze:
+    description: Extract type info, branches, and dependencies from a function.
+    fields: [file, function, project_root]
+    response_status: analyze
+
+  instrument:
+    description: Instrument a function for symbolic constraint tracking.
+    fields: [file, function, mocks, project_root]
+    response_status: instrument
+
+  execute:
+    description: Run an instrumented function with concrete inputs.
+    fields: [function, inputs, mocks, setup_context]
+    response_status: execute
+
+  setup:
+    description: Initialize state before execution (DB fixtures, env, etc.).
+    fields: [file, scope, level, project_root, parent_context]
+    response_status: setup
+
+  teardown:
+    description: Tear down state established by a prior setup.
+    fields: [scope, level]
+    response_status: teardown_ack
+
+  generate:
+    description: Invoke a custom generator to produce a value for a type or parameter.
+    fields: [file, name, kind, recipe, project_root]
+    response_status: generate
+
+  shutdown:
+    description: Request graceful frontend shutdown.
+    fields: []
+    response_status: shutdown_ack
+
+# --- Response statuses (frontend → core) ---
+statuses:
+  handshake:
+    description: Successful handshake; includes frontend_version, language, capabilities.
+  analyze:
+    description: Analysis complete; includes function metadata.
+  instrument:
+    description: Instrumentation result; includes instrumented flag and output_file.
+  execute:
+    description: Execution complete; includes branch decisions, constraints, side effects.
+  setup:
+    description: Setup complete; returns opaque context for later teardown.
+  teardown_ack:
+    description: Teardown acknowledged.
+  generate:
+    description: Generated value result.
+  shutdown_ack:
+    description: Shutdown acknowledged.
+  error:
+    description: Error response for any command.
+
+# --- Error codes ---
+error_codes:
+  file_not_found:
+    description: File not found or not readable.
+    category: validation
+  function_not_found:
+    description: Function not found in the specified file.
+    category: validation
+  parse_error:
+    description: Syntax or parse error in source code.
+    category: validation
+  instrumentation_failed:
+    description: Instrumentation could not be applied.
+    category: runtime
+  execution_timeout:
+    description: Function execution exceeded the timeout.
+    category: runtime
+  execution_crash:
+    description: Execution crashed (segfault, OOM, unhandled exception).
+    category: runtime
+  version_mismatch:
+    description: Protocol version mismatch between core and frontend.
+    category: infrastructure
+  invalid_request:
+    description: Malformed or unrecognized request.
+    category: validation
+  compilation_error:
+    description: Compilation or transpilation failed.
+    category: runtime
+  internal_error:
+    description: Unexpected frontend internal error.
+    category: infrastructure
+  not_supported:
+    description: Command not supported by this frontend.
+    category: validation
+
+# --- Capabilities ---
+#
+# Frontends advertise capabilities in the handshake response.
+# "command" capabilities gate whether core may send that command.
+# "complex_type:*" capabilities declare supported type generators.
+capabilities:
+  command:
+    - analyze
+    - execute
+    - instrument
+    - setup
+    - teardown
+    - generate
+
+  complex_type:
+    - date
+    - date_time
+    - time
+    - duration
+    - reg_exp
+    - char
+    - symbol
+    - big_int
+    - big_decimal
+    - complex
+    - rational
+    - range
+    - buffer
+    - bit_set
+    - error
+    - option
+    - result
+    - closure
+    - iterator
+    - url
+    - ip_address
+    - uuid
+    - path
+    - money
+    - sem_ver
+    - email
+    - mime_type
+    - color
+    - geo_point
+    - locale
+    - rune
+    - go_byte
+
+# --- Setup levels ---
+setup_levels:
+  - session
+  - file
+  - function
+  - execution
+
+# --- Generator kinds ---
+generator_kinds:
+  - type_name
+  - param_name
+
+# --- Branch types ---
+branch_types:
+  - id: "if"
+    description: if statement
+  - id: else_if
+    description: else-if clause
+  - id: switch
+    description: switch / match statement
+  - id: ternary
+    description: ternary conditional (? :)
+  - id: logical_and
+    description: short-circuit && operator
+  - id: logical_or
+    description: short-circuit || operator
+  - id: "while"
+    description: while loop
+  - id: "for"
+    description: for loop
+  - id: select
+    description: Go select statement
+    language_specific: [go]
+
+# --- Frontends ---
+frontends:
+  typescript:
+    binary: shatter-ts
+    version: "0.1.0"
+    command_capabilities:
+      - analyze
+      - execute
+      - instrument
+      - setup
+      - generate
+    complex_type_capabilities:
+      - date
+      - date_time
+      - duration
+      - reg_exp
+      - url
+      - big_int
+      - buffer
+      - error
+      - symbol
+    default_exec_timeout_s: 15
+
+  go:
+    binary: shatter-go
+    version: "0.1.0"
+    command_capabilities:
+      - analyze
+      - execute
+      - instrument
+      - setup
+      - teardown
+      - generate
+    complex_type_capabilities:
+      - date
+      - duration
+      - url
+      - reg_exp
+      - ip_address
+      - big_int
+      - rational
+      - big_decimal
+      - error
+    default_exec_timeout_s: 5
+
+  rust:
+    binary: shatter-rust
+    version: "0.1.0"
+    command_capabilities:
+      - analyze
+      - execute
+      - generate
+    complex_type_capabilities: []
+    default_exec_timeout_s: 5
