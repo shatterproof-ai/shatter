@@ -456,6 +456,8 @@ pub enum ErrorCode {
     CompilationError,
     /// Frontend internal error.
     InternalError,
+    /// Command or operation not supported by this frontend.
+    NotSupported,
 }
 
 // ---------------------------------------------------------------------------
@@ -866,21 +868,62 @@ mod tests {
         round_trip(&MockBehavior::Passthrough);
     }
 
+    /// Canonical error code list (11 codes) matching protocol/registry.yaml.
+    /// This match is exhaustive — adding a variant to ErrorCode without
+    /// updating this list causes a compiler error.
+    const ALL_ERROR_CODES: [(ErrorCode, &str); 11] = [
+        (ErrorCode::FileNotFound, "file_not_found"),
+        (ErrorCode::FunctionNotFound, "function_not_found"),
+        (ErrorCode::ParseError, "parse_error"),
+        (ErrorCode::InstrumentationFailed, "instrumentation_failed"),
+        (ErrorCode::ExecutionTimeout, "execution_timeout"),
+        (ErrorCode::ExecutionCrash, "execution_crash"),
+        (ErrorCode::VersionMismatch, "version_mismatch"),
+        (ErrorCode::InvalidRequest, "invalid_request"),
+        (ErrorCode::CompilationError, "compilation_error"),
+        (ErrorCode::InternalError, "internal_error"),
+        (ErrorCode::NotSupported, "not_supported"),
+    ];
+
     #[test]
     fn all_error_codes_round_trip() {
-        let codes = [
-            ErrorCode::FileNotFound,
-            ErrorCode::FunctionNotFound,
-            ErrorCode::ParseError,
-            ErrorCode::InstrumentationFailed,
-            ErrorCode::ExecutionTimeout,
-            ErrorCode::ExecutionCrash,
-            ErrorCode::VersionMismatch,
-            ErrorCode::InvalidRequest,
-            ErrorCode::InternalError,
-        ];
-        for code in codes {
+        for (code, _) in ALL_ERROR_CODES {
             round_trip(&code);
+        }
+    }
+
+    #[test]
+    fn error_code_serialized_form_matches_registry() {
+        for (code, expected_str) in ALL_ERROR_CODES {
+            let serialized = serde_json::to_string(&code).expect("serialize");
+            assert_eq!(
+                serialized,
+                format!("\"{expected_str}\""),
+                "ErrorCode::{code:?} should serialize to \"{expected_str}\""
+            );
+        }
+    }
+
+    /// Exhaustive match — compiler enforces that every ErrorCode variant is listed.
+    #[test]
+    fn error_code_enum_is_exhaustive() {
+        fn variant_name(code: &ErrorCode) -> &'static str {
+            match code {
+                ErrorCode::FileNotFound => "file_not_found",
+                ErrorCode::FunctionNotFound => "function_not_found",
+                ErrorCode::ParseError => "parse_error",
+                ErrorCode::InstrumentationFailed => "instrumentation_failed",
+                ErrorCode::ExecutionTimeout => "execution_timeout",
+                ErrorCode::ExecutionCrash => "execution_crash",
+                ErrorCode::VersionMismatch => "version_mismatch",
+                ErrorCode::InvalidRequest => "invalid_request",
+                ErrorCode::CompilationError => "compilation_error",
+                ErrorCode::InternalError => "internal_error",
+                ErrorCode::NotSupported => "not_supported",
+            }
+        }
+        for (code, expected) in ALL_ERROR_CODES {
+            assert_eq!(variant_name(&code), expected);
         }
     }
 

@@ -17,6 +17,9 @@ import type {
   BranchDecision,
   SymConstraint,
   ErrorCode,
+} from "./protocol.js";
+import {
+  ALL_ERROR_CODES,
   SideEffect,
   PerformanceMetrics,
   TraceEvent,
@@ -81,9 +84,7 @@ const arbBranchType: fc.Arbitrary<BranchType> = fc.constantFrom(
 );
 
 const arbErrorCode: fc.Arbitrary<ErrorCode> = fc.constantFrom(
-  "file_not_found", "function_not_found", "parse_error",
-  "instrumentation_failed", "execution_timeout", "execution_crash",
-  "version_mismatch", "invalid_request", "compilation_error", "internal_error",
+  ...ALL_ERROR_CODES,
 );
 
 // ---------------------------------------------------------------------------
@@ -315,6 +316,25 @@ const arbResponse: fc.Arbitrary<Response> = fc.oneof(
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+describe("error code parity", () => {
+  it("ALL_ERROR_CODES has exactly 11 entries matching registry.yaml", () => {
+    expect(ALL_ERROR_CODES.length).toBe(11);
+  });
+
+  it("arbErrorCode covers every code in ALL_ERROR_CODES", () => {
+    const seen = new Set<string>();
+    fc.assert(
+      fc.property(arbErrorCode, (code) => {
+        seen.add(code);
+      }),
+      { numRuns: 500 },
+    );
+    for (const code of ALL_ERROR_CODES) {
+      expect(seen.has(code)).toBe(true);
+    }
+  });
+});
 
 describe("property: protocol message round-trips", () => {
   it("Request survives JSON round-trip", () => {

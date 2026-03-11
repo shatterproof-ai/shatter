@@ -175,6 +175,7 @@ pub fn arb_error_code() -> impl Strategy<Value = ErrorCode> {
         Just(ErrorCode::InvalidRequest),
         Just(ErrorCode::CompilationError),
         Just(ErrorCode::InternalError),
+        Just(ErrorCode::NotSupported),
     ]
 }
 

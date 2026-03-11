@@ -132,17 +132,22 @@ export type ResponseStatus =
   | "shutdown_ack"
   | "error";
 
-export type ErrorCode =
-  | "file_not_found"
-  | "function_not_found"
-  | "parse_error"
-  | "instrumentation_failed"
-  | "execution_timeout"
-  | "execution_crash"
-  | "version_mismatch"
-  | "invalid_request"
-  | "compilation_error"
-  | "internal_error";
+/** Canonical error codes matching protocol/registry.yaml (11 codes). */
+export const ALL_ERROR_CODES = [
+  "file_not_found",
+  "function_not_found",
+  "parse_error",
+  "instrumentation_failed",
+  "execution_timeout",
+  "execution_crash",
+  "version_mismatch",
+  "invalid_request",
+  "compilation_error",
+  "internal_error",
+  "not_supported",
+] as const;
+
+export type ErrorCode = (typeof ALL_ERROR_CODES)[number];
 
 interface BaseResponse {
   protocol_version: string;

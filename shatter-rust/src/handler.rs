@@ -3,6 +3,8 @@ use std::io::{self, BufRead, BufReader};
 use crate::generators::NativeRegistry;
 use crate::protocol::{
     self, Request, Response, FRONTEND_LANGUAGE, FRONTEND_VERSION, PROTOCOL_VERSION,
+    ERR_COMPILATION_ERROR, ERR_FILE_NOT_FOUND, ERR_FUNCTION_NOT_FOUND, ERR_INTERNAL_ERROR,
+    ERR_INVALID_REQUEST, ERR_NOT_SUPPORTED, ERR_PARSE_ERROR, ERR_VERSION_MISMATCH,
 };
 use crate::wasm_generator::WasmCache;
 
@@ -150,7 +152,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
                     let err_resp = Response {
                         id: 0,
                         status: "error".to_string(),
-                        code: Some("invalid_request".to_string()),
+                        code: Some(ERR_INVALID_REQUEST.to_string()),
                         message: Some(format!("Invalid JSON: {e}")),
                         ..Response::base(0)
                     };
@@ -174,7 +176,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
 
         if req.protocol_version != protocol::PROTOCOL_VERSION {
             resp.status = "error".to_string();
-            resp.code = Some("version_mismatch".to_string());
+            resp.code = Some(ERR_VERSION_MISMATCH.to_string());
             resp.message = Some(format!(
                 "unsupported protocol version {:?}, expected {:?}",
                 req.protocol_version,
@@ -194,7 +196,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             "shutdown" => (self.handle_shutdown(resp), true),
             _ => {
                 resp.status = "error".to_string();
-                resp.code = Some("invalid_request".to_string());
+                resp.code = Some(ERR_INVALID_REQUEST.to_string());
                 resp.message = Some(format!("unknown command: {}", req.command));
                 (resp, false)
             }
@@ -221,7 +223,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             Some(f) => f,
             None => {
                 resp.status = "error".to_string();
-                resp.code = Some("invalid_request".to_string());
+                resp.code = Some(ERR_INVALID_REQUEST.to_string());
                 resp.message = Some("analyze command requires a file path".to_string());
                 return resp;
             }
@@ -232,7 +234,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
         let path = std::path::Path::new(file_path);
         if !path.exists() {
             resp.status = "error".to_string();
-            resp.code = Some("file_not_found".to_string());
+            resp.code = Some(ERR_FILE_NOT_FOUND.to_string());
             resp.message = Some(format!("file not found: {file_path}"));
             return resp;
         }
@@ -247,10 +249,10 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
                 resp.status = "error".to_string();
                 resp.code = Some(
                     match &e {
-                        crate::analyzer::AnalyzeError::FileNotFound(_) => "file_not_found",
-                        crate::analyzer::AnalyzeError::ReadError(_) => "internal_error",
-                        crate::analyzer::AnalyzeError::ParseError(_) => "parse_error",
-                        crate::analyzer::AnalyzeError::FunctionNotFound(_) => "function_not_found",
+                        crate::analyzer::AnalyzeError::FileNotFound(_) => ERR_FILE_NOT_FOUND,
+                        crate::analyzer::AnalyzeError::ReadError(_) => ERR_INTERNAL_ERROR,
+                        crate::analyzer::AnalyzeError::ParseError(_) => ERR_PARSE_ERROR,
+                        crate::analyzer::AnalyzeError::FunctionNotFound(_) => ERR_FUNCTION_NOT_FOUND,
                     }
                     .to_string(),
                 );
@@ -265,7 +267,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             Some(f) => f,
             None => {
                 resp.status = "error".to_string();
-                resp.code = Some("invalid_request".to_string());
+                resp.code = Some(ERR_INVALID_REQUEST.to_string());
                 resp.message = Some("instrument command requires a file path".to_string());
                 return resp;
             }
@@ -276,7 +278,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
         let path = std::path::Path::new(file_path);
         if !path.exists() {
             resp.status = "error".to_string();
-            resp.code = Some("file_not_found".to_string());
+            resp.code = Some(ERR_FILE_NOT_FOUND.to_string());
             resp.message = Some(format!("file not found: {file_path}"));
             return resp;
         }
@@ -301,7 +303,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
                     }
                     Err(e) => {
                         resp.status = "error".to_string();
-                        resp.code = Some("internal_error".to_string());
+                        resp.code = Some(ERR_INTERNAL_ERROR.to_string());
                         resp.message = Some(format!("failed to write instrumented output: {e}"));
                         resp
                     }
@@ -310,9 +312,9 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             Err(e) => {
                 resp.status = "error".to_string();
                 resp.code = Some(match &e {
-                    crate::instrument::InstrumentError::FileNotFound(_) => "file_not_found",
-                    crate::instrument::InstrumentError::ReadError(_) => "internal_error",
-                    crate::instrument::InstrumentError::ParseError(_) => "parse_error",
+                    crate::instrument::InstrumentError::FileNotFound(_) => ERR_FILE_NOT_FOUND,
+                    crate::instrument::InstrumentError::ReadError(_) => ERR_INTERNAL_ERROR,
+                    crate::instrument::InstrumentError::ParseError(_) => ERR_PARSE_ERROR,
                 }.to_string());
                 resp.message = Some(e.to_string());
                 resp
@@ -325,7 +327,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             Some(f) => f,
             None => {
                 resp.status = "error".to_string();
-                resp.code = Some("invalid_request".to_string());
+                resp.code = Some(ERR_INVALID_REQUEST.to_string());
                 resp.message = Some("execute command requires a file path (none provided and no prior analyze/instrument)".to_string());
                 return resp;
             }
@@ -334,7 +336,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             Some(f) => f,
             None => {
                 resp.status = "error".to_string();
-                resp.code = Some("invalid_request".to_string());
+                resp.code = Some(ERR_INVALID_REQUEST.to_string());
                 resp.message = Some("execute command requires a function name".to_string());
                 return resp;
             }
@@ -368,25 +370,25 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             }
             Err(crate::executor::ExecuteError::FileError(msg)) => {
                 resp.status = "error".to_string();
-                resp.code = Some("file_not_found".to_string());
+                resp.code = Some(ERR_FILE_NOT_FOUND.to_string());
                 resp.message = Some(msg);
                 resp
             }
             Err(crate::executor::ExecuteError::CompilationFailed(msg)) => {
                 resp.status = "error".to_string();
-                resp.code = Some("compilation_error".to_string());
+                resp.code = Some(ERR_COMPILATION_ERROR.to_string());
                 resp.message = Some(msg);
                 resp
             }
             Err(crate::executor::ExecuteError::NonExecutable(msg)) => {
                 resp.status = "error".to_string();
-                resp.code = Some("non_executable".to_string());
+                resp.code = Some(ERR_NOT_SUPPORTED.to_string());
                 resp.message = Some(msg);
                 resp
             }
             Err(e) => {
                 resp.status = "error".to_string();
-                resp.code = Some("internal_error".to_string());
+                resp.code = Some(ERR_INTERNAL_ERROR.to_string());
                 resp.message = Some(e.to_string());
                 resp
             }
@@ -398,7 +400,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             Some(f) => f,
             None => {
                 resp.status = "error".to_string();
-                resp.code = Some("invalid_request".to_string());
+                resp.code = Some(ERR_INVALID_REQUEST.to_string());
                 resp.message = Some("setup command requires a file path".to_string());
                 return resp;
             }
@@ -407,7 +409,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             Some(l) => *l,
             None => {
                 resp.status = "error".to_string();
-                resp.code = Some("invalid_request".to_string());
+                resp.code = Some(ERR_INVALID_REQUEST.to_string());
                 resp.message = Some("setup command requires a level".to_string());
                 return resp;
             }
@@ -416,7 +418,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             Some(s) => s.as_str(),
             None => {
                 resp.status = "error".to_string();
-                resp.code = Some("invalid_request".to_string());
+                resp.code = Some(ERR_INVALID_REQUEST.to_string());
                 resp.message = Some("setup command requires a scope".to_string());
                 return resp;
             }
@@ -431,19 +433,19 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             }
             Err(crate::setup::SetupError::FileNotFound(_)) => {
                 resp.status = "error".to_string();
-                resp.code = Some("file_not_found".to_string());
+                resp.code = Some(ERR_FILE_NOT_FOUND.to_string());
                 resp.message = Some(format!("setup file not found: {file_path}"));
                 resp
             }
             Err(crate::setup::SetupError::CompilationFailed(msg)) => {
                 resp.status = "error".to_string();
-                resp.code = Some("compilation_error".to_string());
+                resp.code = Some(ERR_COMPILATION_ERROR.to_string());
                 resp.message = Some(msg);
                 resp
             }
             Err(e) => {
                 resp.status = "error".to_string();
-                resp.code = Some("internal_error".to_string());
+                resp.code = Some(ERR_INTERNAL_ERROR.to_string());
                 resp.message = Some(e.to_string());
                 resp
             }
@@ -455,7 +457,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             Some(l) => *l,
             None => {
                 resp.status = "error".to_string();
-                resp.code = Some("invalid_request".to_string());
+                resp.code = Some(ERR_INVALID_REQUEST.to_string());
                 resp.message = Some("teardown command requires a level".to_string());
                 return resp;
             }
@@ -464,7 +466,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             Some(s) => s.as_str(),
             None => {
                 resp.status = "error".to_string();
-                resp.code = Some("invalid_request".to_string());
+                resp.code = Some(ERR_INVALID_REQUEST.to_string());
                 resp.message = Some("teardown command requires a scope".to_string());
                 return resp;
             }
@@ -477,7 +479,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             }
             Err(e) => {
                 resp.status = "error".to_string();
-                resp.code = Some("internal_error".to_string());
+                resp.code = Some(ERR_INTERNAL_ERROR.to_string());
                 resp.message = Some(e.to_string());
                 resp
             }
@@ -489,7 +491,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             Some(f) => f,
             None => {
                 resp.status = "error".to_string();
-                resp.code = Some("invalid_request".to_string());
+                resp.code = Some(ERR_INVALID_REQUEST.to_string());
                 resp.message = Some("generate command requires a file path".to_string());
                 return resp;
             }
@@ -498,7 +500,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             Some(n) => n.clone(),
             None => {
                 resp.status = "error".to_string();
-                resp.code = Some("invalid_request".to_string());
+                resp.code = Some(ERR_INVALID_REQUEST.to_string());
                 resp.message = Some("generate command requires a name".to_string());
                 return resp;
             }
@@ -519,7 +521,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
                     }
                     Err(e) => {
                         resp.status = "error".to_string();
-                        resp.code = Some("internal_error".to_string());
+                        resp.code = Some(ERR_INTERNAL_ERROR.to_string());
                         resp.message = Some(e);
                         resp
                     }
@@ -537,14 +539,14 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
                         }
                         Err(e) => {
                             resp.status = "error".to_string();
-                            resp.code = Some("internal_error".to_string());
+                            resp.code = Some(ERR_INTERNAL_ERROR.to_string());
                             resp.message = Some(e);
                             resp
                         }
                     }
                 } else {
                     resp.status = "error".to_string();
-                    resp.code = Some("internal_error".to_string());
+                    resp.code = Some(ERR_INTERNAL_ERROR.to_string());
                     resp.message = Some(format!(
                         "native generator {func_name:?} requires a custom build (run `shatter build-frontend rust`)"
                     ));
@@ -553,7 +555,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             }
             _ => {
                 resp.status = "error".to_string();
-                resp.code = Some("invalid_request".to_string());
+                resp.code = Some(ERR_INVALID_REQUEST.to_string());
                 resp.message = Some(format!(
                     "unsupported generator file type: {}",
                     file_path
@@ -681,7 +683,7 @@ mod tests {
             r#"{"protocol_version":"99.0.0","id":1,"command":"handshake","capabilities":[]}"#,
         );
         assert_eq!(resp.status, "error");
-        assert_eq!(resp.code.as_deref(), Some("version_mismatch"));
+        assert_eq!(resp.code.as_deref(), Some(ERR_VERSION_MISMATCH));
     }
 
     #[test]
@@ -690,14 +692,14 @@ mod tests {
             r#"{"protocol_version":"0.1.0","id":1,"command":"foobar"}"#,
         );
         assert_eq!(resp.status, "error");
-        assert_eq!(resp.code.as_deref(), Some("invalid_request"));
+        assert_eq!(resp.code.as_deref(), Some(ERR_INVALID_REQUEST));
     }
 
     #[test]
     fn malformed_json_returns_invalid_request() {
         let resp = send_recv("not valid json");
         assert_eq!(resp.status, "error");
-        assert_eq!(resp.code.as_deref(), Some("invalid_request"));
+        assert_eq!(resp.code.as_deref(), Some(ERR_INVALID_REQUEST));
         assert_eq!(resp.id, 0);
         assert!(resp.message.as_deref().unwrap_or("").contains("Invalid JSON"));
     }
@@ -710,7 +712,7 @@ mod tests {
         ]);
         assert_eq!(responses.len(), 2);
         assert_eq!(responses[0].status, "error");
-        assert_eq!(responses[0].code.as_deref(), Some("invalid_request"));
+        assert_eq!(responses[0].code.as_deref(), Some(ERR_INVALID_REQUEST));
         assert_eq!(responses[0].id, 0);
         assert_eq!(responses[1].status, "shutdown_ack");
         assert_eq!(responses[1].id, 99);
@@ -722,7 +724,7 @@ mod tests {
             r#"{"protocol_version":"0.1.0","id":2,"command":"analyze"}"#,
         );
         assert_eq!(resp.status, "error");
-        assert_eq!(resp.code.as_deref(), Some("invalid_request"));
+        assert_eq!(resp.code.as_deref(), Some(ERR_INVALID_REQUEST));
     }
 
     #[test]
@@ -731,7 +733,7 @@ mod tests {
             r#"{"protocol_version":"0.1.0","id":2,"command":"analyze","file":"nonexistent.rs"}"#,
         );
         assert_eq!(resp.status, "error");
-        assert_eq!(resp.code.as_deref(), Some("file_not_found"));
+        assert_eq!(resp.code.as_deref(), Some(ERR_FILE_NOT_FOUND));
     }
 
     #[test]
@@ -740,7 +742,7 @@ mod tests {
             r#"{"protocol_version":"0.1.0","id":3,"command":"instrument"}"#,
         );
         assert_eq!(resp.status, "error");
-        assert_eq!(resp.code.as_deref(), Some("invalid_request"));
+        assert_eq!(resp.code.as_deref(), Some(ERR_INVALID_REQUEST));
     }
 
     #[test]
@@ -749,7 +751,7 @@ mod tests {
             r#"{"protocol_version":"0.1.0","id":3,"command":"instrument","file":"nonexistent.rs"}"#,
         );
         assert_eq!(resp.status, "error");
-        assert_eq!(resp.code.as_deref(), Some("file_not_found"));
+        assert_eq!(resp.code.as_deref(), Some(ERR_FILE_NOT_FOUND));
     }
 
     #[test]
@@ -780,7 +782,7 @@ mod tests {
             r#"{"protocol_version":"0.1.0","id":4,"command":"execute","function":"F","inputs":[],"mocks":[]}"#,
         );
         assert_eq!(resp.status, "error");
-        assert_eq!(resp.code.as_deref(), Some("invalid_request"));
+        assert_eq!(resp.code.as_deref(), Some(ERR_INVALID_REQUEST));
         assert!(resp.message.as_deref().unwrap_or("").contains("file"));
     }
 
@@ -790,7 +792,7 @@ mod tests {
             r#"{"protocol_version":"0.1.0","id":4,"command":"execute","file":"test.rs","inputs":[],"mocks":[]}"#,
         );
         assert_eq!(resp.status, "error");
-        assert_eq!(resp.code.as_deref(), Some("invalid_request"));
+        assert_eq!(resp.code.as_deref(), Some(ERR_INVALID_REQUEST));
         assert!(resp.message.as_deref().unwrap_or("").contains("function"));
     }
 
@@ -800,7 +802,7 @@ mod tests {
             r#"{"protocol_version":"0.1.0","id":4,"command":"execute","file":"/nonexistent/file.rs","function":"f","inputs":[],"mocks":[]}"#,
         );
         assert_eq!(resp.status, "error");
-        assert_eq!(resp.code.as_deref(), Some("file_not_found"));
+        assert_eq!(resp.code.as_deref(), Some(ERR_FILE_NOT_FOUND));
     }
 
     #[test]
@@ -900,7 +902,7 @@ mod tests {
             r#"{"protocol_version":"0.1.0","id":10,"command":"setup","scope":"myFunc","level":"function"}"#,
         );
         assert_eq!(resp.status, "error");
-        assert_eq!(resp.code.as_deref(), Some("invalid_request"));
+        assert_eq!(resp.code.as_deref(), Some(ERR_INVALID_REQUEST));
         assert!(resp.message.as_deref().unwrap_or("").contains("file"));
     }
 
@@ -910,7 +912,7 @@ mod tests {
             r#"{"protocol_version":"0.1.0","id":10,"command":"setup","file":"./setup.rs","scope":"myFunc"}"#,
         );
         assert_eq!(resp.status, "error");
-        assert_eq!(resp.code.as_deref(), Some("invalid_request"));
+        assert_eq!(resp.code.as_deref(), Some(ERR_INVALID_REQUEST));
         assert!(resp.message.as_deref().unwrap_or("").contains("level"));
     }
 
@@ -920,7 +922,7 @@ mod tests {
             r#"{"protocol_version":"0.1.0","id":10,"command":"setup","file":"./setup.rs","level":"function"}"#,
         );
         assert_eq!(resp.status, "error");
-        assert_eq!(resp.code.as_deref(), Some("invalid_request"));
+        assert_eq!(resp.code.as_deref(), Some(ERR_INVALID_REQUEST));
         assert!(resp.message.as_deref().unwrap_or("").contains("scope"));
     }
 
@@ -930,7 +932,7 @@ mod tests {
             r#"{"protocol_version":"0.1.0","id":10,"command":"setup","file":"./nonexistent_setup.rs","scope":"myFunc","level":"function"}"#,
         );
         assert_eq!(resp.status, "error");
-        assert_eq!(resp.code.as_deref(), Some("file_not_found"));
+        assert_eq!(resp.code.as_deref(), Some(ERR_FILE_NOT_FOUND));
     }
 
     // -- Teardown command tests --
@@ -941,7 +943,7 @@ mod tests {
             r#"{"protocol_version":"0.1.0","id":11,"command":"teardown","scope":"myFunc"}"#,
         );
         assert_eq!(resp.status, "error");
-        assert_eq!(resp.code.as_deref(), Some("invalid_request"));
+        assert_eq!(resp.code.as_deref(), Some(ERR_INVALID_REQUEST));
         assert!(resp.message.as_deref().unwrap_or("").contains("level"));
     }
 
@@ -951,7 +953,7 @@ mod tests {
             r#"{"protocol_version":"0.1.0","id":11,"command":"teardown","level":"function"}"#,
         );
         assert_eq!(resp.status, "error");
-        assert_eq!(resp.code.as_deref(), Some("invalid_request"));
+        assert_eq!(resp.code.as_deref(), Some(ERR_INVALID_REQUEST));
         assert!(resp.message.as_deref().unwrap_or("").contains("scope"));
     }
 
@@ -980,7 +982,7 @@ mod tests {
             r#"{"protocol_version":"0.1.0","id":13,"command":"generate","name":"User","kind":"type_name"}"#,
         );
         assert_eq!(resp.status, "error");
-        assert_eq!(resp.code.as_deref(), Some("invalid_request"));
+        assert_eq!(resp.code.as_deref(), Some(ERR_INVALID_REQUEST));
         assert!(resp.message.as_deref().unwrap_or("").contains("file"));
     }
 
@@ -990,7 +992,7 @@ mod tests {
             r#"{"protocol_version":"0.1.0","id":13,"command":"generate","file":"./gen.ts","kind":"type_name"}"#,
         );
         assert_eq!(resp.status, "error");
-        assert_eq!(resp.code.as_deref(), Some("invalid_request"));
+        assert_eq!(resp.code.as_deref(), Some(ERR_INVALID_REQUEST));
         assert!(resp.message.as_deref().unwrap_or("").contains("name"));
     }
 
@@ -1000,7 +1002,7 @@ mod tests {
             r#"{"protocol_version":"0.1.0","id":14,"command":"generate","file":"./gen.ts","name":"User","kind":"type_name"}"#,
         );
         assert_eq!(resp.status, "error");
-        assert_eq!(resp.code.as_deref(), Some("invalid_request"));
+        assert_eq!(resp.code.as_deref(), Some(ERR_INVALID_REQUEST));
         assert!(resp.message.as_deref().unwrap_or("").contains("unsupported generator file type"));
     }
 
@@ -1010,7 +1012,7 @@ mod tests {
             r#"{"protocol_version":"0.1.0","id":15,"command":"generate","file":"/nonexistent/gen.wasm","name":"gen","kind":"type_name"}"#,
         );
         assert_eq!(resp.status, "error");
-        assert_eq!(resp.code.as_deref(), Some("internal_error"));
+        assert_eq!(resp.code.as_deref(), Some(ERR_INTERNAL_ERROR));
         assert!(resp.message.as_deref().unwrap_or("").contains("not found"));
     }
 
@@ -1030,13 +1032,13 @@ mod tests {
         assert_eq!(responses[0].id, 1);
         // setup with nonexistent file returns file_not_found error
         assert_eq!(responses[1].status, "error");
-        assert_eq!(responses[1].code.as_deref(), Some("file_not_found"));
+        assert_eq!(responses[1].code.as_deref(), Some(ERR_FILE_NOT_FOUND));
         // teardown succeeds (no-op for now)
         assert_eq!(responses[2].status, "teardown_ack");
         assert_eq!(responses[2].id, 3);
         // generate with non-wasm file returns "unsupported generator file type"
         assert_eq!(responses[3].status, "error");
-        assert_eq!(responses[3].code.as_deref(), Some("invalid_request"));
+        assert_eq!(responses[3].code.as_deref(), Some(ERR_INVALID_REQUEST));
         assert_eq!(responses[4].status, "shutdown_ack");
         assert_eq!(responses[4].id, 5);
     }
@@ -1078,7 +1080,7 @@ mod tests {
         // The execute should NOT fail with "requires a file path"
         assert_ne!(
             responses[1].code.as_deref(),
-            Some("invalid_request"),
+            Some(ERR_INVALID_REQUEST),
             "execute should fall back to last_file from analyze, got: {:?}",
             responses[1].message,
         );
@@ -1104,7 +1106,7 @@ mod tests {
         assert_eq!(responses[0].status, "instrument", "instrument failed: {:?}", responses[0].message);
         assert_ne!(
             responses[1].code.as_deref(),
-            Some("invalid_request"),
+            Some(ERR_INVALID_REQUEST),
             "execute should fall back to last_file from instrument, got: {:?}",
             responses[1].message,
         );
@@ -1119,7 +1121,7 @@ mod tests {
             r#"{"protocol_version":"0.1.0","id":1,"command":"execute","function":"f","inputs":[],"mocks":[]}"#,
         );
         assert_eq!(resp.status, "error");
-        assert_eq!(resp.code.as_deref(), Some("invalid_request"));
+        assert_eq!(resp.code.as_deref(), Some(ERR_INVALID_REQUEST));
         assert!(resp.message.as_deref().unwrap_or("").contains("file"));
     }
 
@@ -1163,6 +1165,20 @@ mod tests {
         let result = exec_timeout_from_env();
         unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
         assert_eq!(result, DEFAULT_EXEC_TIMEOUT_MS);
+    }
+
+    #[test]
+    fn error_code_parity_with_registry() {
+        use crate::protocol::ALL_ERROR_CODES;
+        assert_eq!(ALL_ERROR_CODES.len(), 11, "ALL_ERROR_CODES must have 11 entries matching registry.yaml");
+        // Each code must be a non-empty snake_case string.
+        for code in ALL_ERROR_CODES {
+            assert!(!code.is_empty(), "error code must not be empty");
+            assert!(
+                code.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
+                "error code {code:?} must be snake_case"
+            );
+        }
     }
 
 }

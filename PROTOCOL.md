@@ -329,7 +329,9 @@ Any command can produce an error response instead of its normal response. Error 
 | `execution_crash` | Execution crashed (segfault, OOM, etc.). |
 | `version_mismatch` | Protocol version is not compatible. |
 | `invalid_request` | The request is malformed or missing required fields. |
+| `compilation_error` | Compilation or transpilation failed. |
 | `internal_error` | An unexpected internal error occurred. |
+| `not_supported` | Command not supported by this frontend. |
 
 The `details` field is optional and can contain any JSON value with additional context (e.g., source location for parse errors, stack trace for crashes).
 

@@ -115,7 +115,7 @@ func genResponse() *rapid.Generator[Response] {
 				ProtocolVersion: ProtocolVersion,
 				ID:              rapid.IntRange(0, 1000).Draw(t, "id"),
 				Status:          "error",
-				Code:            rapid.SampledFrom([]string{"file_not_found", "internal_error", "parse_error", "compilation_error"}).Draw(t, "code"),
+				Code:            rapid.SampledFrom(AllErrorCodes).Draw(t, "code"),
 				Message:         rapid.StringMatching(`.{0,30}`).Draw(t, "msg"),
 			}
 		}),
@@ -479,4 +479,28 @@ func TestPropertyAnalyzeExtractsCorrectParams(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestErrorCodeParityWithRegistry(t *testing.T) {
+	// AllErrorCodes must have exactly 11 entries matching protocol/registry.yaml.
+	if len(AllErrorCodes) != 11 {
+		t.Fatalf("AllErrorCodes has %d entries, want 11", len(AllErrorCodes))
+	}
+
+	// Every constant must appear in the slice.
+	expected := []string{
+		ErrFileNotFound, ErrFunctionNotFound, ErrParseError,
+		ErrInstrumentationFailed, ErrExecutionTimeout, ErrExecutionCrash,
+		ErrVersionMismatch, ErrInvalidRequest, ErrCompilationError,
+		ErrInternalError, ErrNotSupported,
+	}
+	seen := make(map[string]bool)
+	for _, code := range AllErrorCodes {
+		seen[code] = true
+	}
+	for _, code := range expected {
+		if !seen[code] {
+			t.Errorf("expected error code %q missing from AllErrorCodes", code)
+		}
+	}
 }
