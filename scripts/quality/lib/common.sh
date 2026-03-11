@@ -2,7 +2,7 @@
 # Shared helpers for local quality scripts and future CI entrypoints.
 
 COMMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${COMMON_DIR}/../.." && pwd)"
+REPO_ROOT="$(cd "${COMMON_DIR}/../../.." && pwd)"
 
 if [[ -t 1 ]]; then
   BOLD="$(printf '\033[1m')"

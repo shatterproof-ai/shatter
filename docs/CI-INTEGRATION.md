@@ -248,9 +248,62 @@ The same scripts should back Claude/agent workflows:
 - completion workflow
   - `scripts/quality/pre-completion.sh`
 
+## Go Analysis Tools
+
+Three Go-specific analysis tools are available via `check-go.sh`. Each serves a
+different purpose and should be enabled at the appropriate CI stage.
+
+### golangci-lint
+
+**Config**: `shatter-go/.golangci.yml` (v2 format)
+
+**What it checks**: style, correctness, and performance issues via a curated set
+of linters (errcheck, govet, staticcheck, gocritic, misspell, and others).
+
+**When to enable**: always — every PR and main-branch build. This is the primary
+Go linting tool and catches the broadest class of issues.
+
+```bash
+./scripts/quality/check-go.sh --golangci-lint --strict-optional
+```
+
+### staticcheck
+
+**What it checks**: advanced static analysis (SA-class diagnostics). Many checks
+overlap with golangci-lint's built-in staticcheck linter, but running standalone
+ensures the full diagnostic set is applied.
+
+**When to enable**: every PR and main-branch build, same as golangci-lint. The
+marginal cost is low and it catches subtle bugs that other linters miss.
+
+```bash
+./scripts/quality/check-go.sh --staticcheck --strict-optional
+```
+
+### govulncheck
+
+**What it checks**: known vulnerabilities in Go dependencies by consulting the
+Go vulnerability database.
+
+**When to enable**: main-branch protection and nightly builds. Skip on PRs
+unless `go.mod` or `go.sum` changed — vulnerability checks are slow and only
+change when dependencies change.
+
+```bash
+./scripts/quality/check-go.sh --govulncheck --strict-optional
+```
+
+For PRs that modify dependency files, add govulncheck as a conditional step:
+
+```yaml
+# Pseudocode — adapt to your CI platform
+if changed("shatter-go/go.mod", "shatter-go/go.sum"):
+  run: ./scripts/quality/check-go.sh --govulncheck --strict-optional
+```
+
 ## Current Limitations
 
-These scripts intentionally do not yet configure or install the optional tools.
+These scripts intentionally do not yet configure or install all optional tools.
 They provide the stable contract that future hooks and CI jobs should call once
 the corresponding analyzer configs are added.
 
