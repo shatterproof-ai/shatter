@@ -6,6 +6,13 @@
 //! structured trace data (branch coverage, line coverage, side effects, discovery
 //! attribution). Callers are responsible for generating inputs (random, boundary,
 //! user-provided) before calling into this module.
+//!
+//! ## Canonical execution primitive
+//!
+//! [`observe_single`] is the single source of truth for the execute → classify →
+//! track cycle. Both [`observe_batch`] and [`explorer::explore_function`] route
+//! through it, eliminating duplication and drift risk between random and batch
+//! observation paths.
 
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
@@ -103,10 +110,139 @@ pub struct BatchObservation {
     pub new_path_executions: Vec<ExecutionSummary>,
 }
 
+/// Mutable tracking state shared across multiple `observe_single` calls.
+///
+/// The caller owns this state and passes it to each call. `observe_single`
+/// updates it in place, enabling incremental coverage accumulation across
+/// an exploration loop.
+pub struct ObserveState {
+    /// Hashes of unique execution paths seen so far.
+    pub seen_paths: HashSet<u64>,
+    /// Branch IDs already discovered (each appears at most once).
+    pub seen_branch_ids: HashSet<u32>,
+    /// Union of all source lines executed so far.
+    pub all_lines: HashSet<u32>,
+}
+
+impl ObserveState {
+    pub fn new() -> Self {
+        Self {
+            seen_paths: HashSet::new(),
+            seen_branch_ids: HashSet::new(),
+            all_lines: HashSet::new(),
+        }
+    }
+}
+
+impl Default for ObserveState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Result of observing a single input execution, classified against caller-owned
+/// tracking state.
+#[derive(Debug)]
+pub struct SingleObservation {
+    /// The raw execution result from the frontend.
+    pub exec_result: ExecuteResult,
+    /// Hash of this execution's path (scope-aware when available).
+    pub path_hash: u64,
+    /// Whether this path hash was new (not previously in `seen_paths`).
+    pub is_new_path: bool,
+    /// Branch IDs discovered for the first time in this execution.
+    pub new_branch_ids: Vec<u32>,
+    /// Execution summary, present only when `is_new_path` is true.
+    pub execution_summary: Option<ExecutionSummary>,
+}
+
+/// Execute a single input and classify the result against caller-owned tracking
+/// state.
+///
+/// This is the canonical execution primitive — the single source of truth for
+/// the execute → parse → hash → track cycle. Both [`observe_batch`] and
+/// [`explorer::explore_function`](crate::explorer::explore_function) route
+/// through this function.
+///
+/// The caller provides mutable references to its coverage sets; this function
+/// updates them in place and returns the classified observation.
+pub async fn observe_single(
+    frontend: &mut Frontend,
+    function_name: &str,
+    inputs: &[serde_json::Value],
+    mocks: &[MockConfig],
+    setup_context: Option<&SetupContextStack>,
+    loop_buckets: &LoopBuckets,
+    state: &mut ObserveState,
+) -> Result<SingleObservation, ObserveError> {
+    let response = frontend
+        .send(ProtoCommand::Execute {
+            function: function_name.to_string(),
+            inputs: inputs.to_vec(),
+            mocks: mocks.to_vec(),
+            setup_context: setup_context.cloned(),
+        })
+        .await?;
+
+    let exec_result = match response.result {
+        ResponseResult::Execute(result) => *result,
+        ResponseResult::Error { code, message, .. } => {
+            return Err(ObserveError::UnexpectedResponse(format!(
+                "execute error ({code:?}): {message}"
+            )));
+        }
+        other => {
+            return Err(ObserveError::UnexpectedResponse(format!(
+                "expected Execute response, got {other:?}"
+            )));
+        }
+    };
+
+    for &line in &exec_result.lines_executed {
+        state.all_lines.insert(line);
+    }
+
+    let hash = path_hash(&exec_result, loop_buckets);
+    let is_new_path = state.seen_paths.insert(hash);
+
+    let mut new_branch_ids = Vec::new();
+    for decision in &exec_result.branch_path {
+        if state.seen_branch_ids.insert(decision.branch_id) {
+            new_branch_ids.push(decision.branch_id);
+        }
+    }
+
+    let execution_summary = if is_new_path {
+        let error_intent = classify_error_intent(&exec_result);
+        Some(ExecutionSummary {
+            inputs: inputs.to_vec(),
+            return_value: exec_result.return_value.clone(),
+            thrown_error: exec_result
+                .thrown_error
+                .as_ref()
+                .map(|e| format!("{}: {}", e.error_type, e.message)),
+            lines_executed: exec_result.lines_executed.clone(),
+            is_new_path: true,
+            error_intent,
+        })
+    } else {
+        None
+    };
+
+    Ok(SingleObservation {
+        exec_result,
+        path_hash: hash,
+        is_new_path,
+        new_branch_ids,
+        execution_summary,
+    })
+}
+
 /// Execute a batch of inputs against an already-instrumented function.
 ///
-/// This is the lowest-level observation primitive: no instrumentation, no
-/// setup/teardown lifecycle. The caller manages those concerns.
+/// Routes each input through [`observe_single`], the canonical execution
+/// primitive. No instrumentation, no setup/teardown lifecycle — the caller
+/// manages those concerns.
 ///
 /// Each input vector is executed sequentially. Returns raw execution data,
 /// path hashes, line coverage, and discovery attribution.
@@ -119,9 +255,7 @@ pub async fn observe_batch(
     loop_buckets: &LoopBuckets,
     timeout: Option<Duration>,
 ) -> Result<BatchObservation, ObserveError> {
-    let mut seen_paths: HashSet<u64> = HashSet::new();
-    let mut all_lines: HashSet<u32> = HashSet::new();
-    let mut seen_branch_ids: HashSet<u32> = HashSet::new();
+    let mut state = ObserveState::new();
     let mut discoveries: Vec<(u32, DiscoveryMethod)> = Vec::new();
     let mut new_path_executions: Vec<ExecutionSummary> = Vec::new();
     let mut raw_results: Vec<(Vec<serde_json::Value>, Vec<MockConfig>, ExecuteResult)> = Vec::new();
@@ -133,64 +267,31 @@ pub async fn observe_batch(
             break;
         }
 
-        let response = frontend
-            .send(ProtoCommand::Execute {
-                function: function_name.to_string(),
-                inputs: input.clone(),
-                mocks: mocks.to_vec(),
-                setup_context: setup_context.cloned(),
-            })
-            .await?;
+        let obs = observe_single(
+            frontend,
+            function_name,
+            &input,
+            mocks,
+            setup_context,
+            loop_buckets,
+            &mut state,
+        )
+        .await?;
 
-        let exec_result = match response.result {
-            ResponseResult::Execute(result) => *result,
-            ResponseResult::Error { code, message, .. } => {
-                return Err(ObserveError::UnexpectedResponse(format!(
-                    "execute error ({code:?}): {message}"
-                )));
-            }
-            other => {
-                return Err(ObserveError::UnexpectedResponse(format!(
-                    "expected Execute response, got {other:?}"
-                )));
-            }
-        };
-
-        for &line in &exec_result.lines_executed {
-            all_lines.insert(line);
+        for branch_id in &obs.new_branch_ids {
+            discoveries.push((*branch_id, DiscoveryMethod::Random));
+        }
+        if let Some(summary) = obs.execution_summary {
+            new_path_executions.push(summary);
         }
 
-        let hash = path_hash(&exec_result, loop_buckets);
-        let is_new = seen_paths.insert(hash);
-
-        for decision in &exec_result.branch_path {
-            if seen_branch_ids.insert(decision.branch_id) {
-                discoveries.push((decision.branch_id, DiscoveryMethod::Random));
-            }
-        }
-
-        if is_new {
-            let error_intent = classify_error_intent(&exec_result);
-            new_path_executions.push(ExecutionSummary {
-                inputs: input.clone(),
-                return_value: exec_result.return_value.clone(),
-                thrown_error: exec_result
-                    .thrown_error
-                    .as_ref()
-                    .map(|e| format!("{}: {}", e.error_type, e.message)),
-                lines_executed: exec_result.lines_executed.clone(),
-                is_new_path: true,
-                error_intent,
-            });
-        }
-
-        raw_results.push((input, mocks.to_vec(), exec_result));
+        raw_results.push((input, mocks.to_vec(), obs.exec_result));
     }
 
     Ok(BatchObservation {
         raw_results,
-        unique_path_hashes: seen_paths,
-        lines_covered: all_lines,
+        unique_path_hashes: state.seen_paths,
+        lines_covered: state.all_lines,
         discoveries,
         new_path_executions,
     })
@@ -324,9 +425,7 @@ async fn observe_batch_with_per_execution_setup(
     inputs: Vec<Vec<serde_json::Value>>,
     config: &ObserveConfig,
 ) -> Result<BatchObservation, ObserveError> {
-    let mut seen_paths: HashSet<u64> = HashSet::new();
-    let mut all_lines: HashSet<u32> = HashSet::new();
-    let mut seen_branch_ids: HashSet<u32> = HashSet::new();
+    let mut state = ObserveState::new();
     let mut discoveries: Vec<(u32, DiscoveryMethod)> = Vec::new();
     let mut new_path_executions: Vec<ExecutionSummary> = Vec::new();
     let mut raw_results: Vec<(Vec<serde_json::Value>, Vec<MockConfig>, ExecuteResult)> = Vec::new();
@@ -352,69 +451,36 @@ async fn observe_batch_with_per_execution_setup(
             None
         };
 
-        let response = frontend
-            .send(ProtoCommand::Execute {
-                function: analysis.name.clone(),
-                inputs: input.clone(),
-                mocks: config.mocks.clone(),
-                setup_context,
-            })
-            .await?;
-
-        let exec_result = match response.result {
-            ResponseResult::Execute(result) => *result,
-            ResponseResult::Error { code, message, .. } => {
-                return Err(ObserveError::UnexpectedResponse(format!(
-                    "execute error ({code:?}): {message}"
-                )));
-            }
-            other => {
-                return Err(ObserveError::UnexpectedResponse(format!(
-                    "expected Execute response, got {other:?}"
-                )));
-            }
-        };
+        let obs = observe_single(
+            frontend,
+            &analysis.name,
+            &input,
+            &config.mocks,
+            setup_context.as_ref(),
+            &config.loop_buckets,
+            &mut state,
+        )
+        .await?;
 
         // Per-execution teardown
         if frontend_supports(&config.capabilities, "teardown") {
             send_teardown(frontend, &analysis.name, config.setup_level).await?;
         }
 
-        for &line in &exec_result.lines_executed {
-            all_lines.insert(line);
+        for branch_id in &obs.new_branch_ids {
+            discoveries.push((*branch_id, DiscoveryMethod::Random));
+        }
+        if let Some(summary) = obs.execution_summary {
+            new_path_executions.push(summary);
         }
 
-        let hash = path_hash(&exec_result, &config.loop_buckets);
-        let is_new = seen_paths.insert(hash);
-
-        for decision in &exec_result.branch_path {
-            if seen_branch_ids.insert(decision.branch_id) {
-                discoveries.push((decision.branch_id, DiscoveryMethod::Random));
-            }
-        }
-
-        if is_new {
-            let error_intent = classify_error_intent(&exec_result);
-            new_path_executions.push(ExecutionSummary {
-                inputs: input.clone(),
-                return_value: exec_result.return_value.clone(),
-                thrown_error: exec_result
-                    .thrown_error
-                    .as_ref()
-                    .map(|e| format!("{}: {}", e.error_type, e.message)),
-                lines_executed: exec_result.lines_executed.clone(),
-                is_new_path: true,
-                error_intent,
-            });
-        }
-
-        raw_results.push((input, config.mocks.clone(), exec_result));
+        raw_results.push((input, config.mocks.clone(), obs.exec_result));
     }
 
     Ok(BatchObservation {
         raw_results,
-        unique_path_hashes: seen_paths,
-        lines_covered: all_lines,
+        unique_path_hashes: state.seen_paths,
+        lines_covered: state.all_lines,
         discoveries,
         new_path_executions,
     })
@@ -573,6 +639,54 @@ mod tests {
         assert_eq!(batch.discoveries.len(), 0);
         assert_eq!(batch.new_path_executions.len(), 0);
     }
+
+    #[test]
+    fn observe_state_tracks_paths_and_branches() {
+        let buckets = LoopBuckets::none();
+        let mut state = ObserveState::new();
+
+        let r1 = make_exec_result(&[(1, true), (2, false)], &[10, 20]);
+        let r2 = make_exec_result(&[(1, true), (2, false)], &[10, 20]);
+        let r3 = make_exec_result(&[(1, true), (2, true)], &[10, 30]);
+
+        // First execution: new path, discovers branches 1 and 2
+        let h1 = path_hash(&r1, &buckets);
+        let is_new_1 = state.seen_paths.insert(h1);
+        assert!(is_new_1);
+
+        for decision in &r1.branch_path {
+            state.seen_branch_ids.insert(decision.branch_id);
+        }
+        for &line in &r1.lines_executed {
+            state.all_lines.insert(line);
+        }
+
+        // Second execution: same path, not new
+        let h2 = path_hash(&r2, &buckets);
+        let is_new_2 = state.seen_paths.insert(h2);
+        assert!(!is_new_2, "identical path should not be new");
+
+        // Third execution: different path, new
+        let h3 = path_hash(&r3, &buckets);
+        let is_new_3 = state.seen_paths.insert(h3);
+        assert!(is_new_3, "different path should be new");
+
+        for &line in &r3.lines_executed {
+            state.all_lines.insert(line);
+        }
+
+        assert_eq!(state.seen_paths.len(), 2);
+        assert_eq!(state.all_lines, HashSet::from([10, 20, 30]));
+        assert_eq!(state.seen_branch_ids, HashSet::from([1, 2]));
+    }
+
+    #[test]
+    fn observe_state_default_is_empty() {
+        let state = ObserveState::default();
+        assert!(state.seen_paths.is_empty());
+        assert!(state.seen_branch_ids.is_empty());
+        assert!(state.all_lines.is_empty());
+    }
 }
 
 #[cfg(test)]
@@ -700,6 +814,59 @@ mod proptests {
                 prop_assert!(all_lines.len() >= prev_count);
                 prev_count = all_lines.len();
             }
+        }
+
+        /// ObserveState accumulates correctly across multiple results:
+        /// seen_paths grows monotonically, new_branch_ids are always genuinely new,
+        /// and all_lines is the union of all lines_executed.
+        #[test]
+        fn observe_state_accumulates_correctly(
+            results in proptest::collection::vec(arb_exec_result(5), 1..20)
+        ) {
+            let buckets = LoopBuckets::none();
+            let mut state = ObserveState::new();
+            let mut expected_lines: HashSet<u32> = HashSet::new();
+            let mut all_new_branch_ids: Vec<u32> = Vec::new();
+            let mut prev_paths_count = 0;
+
+            for r in &results {
+                let prev_branch_count = state.seen_branch_ids.len();
+
+                // Simulate observe_single's tracking logic
+                for &line in &r.lines_executed {
+                    state.all_lines.insert(line);
+                    expected_lines.insert(line);
+                }
+
+                let hash = path_hash(r, &buckets);
+                let is_new = state.seen_paths.insert(hash);
+
+                let mut new_ids = Vec::new();
+                for decision in &r.branch_path {
+                    if state.seen_branch_ids.insert(decision.branch_id) {
+                        new_ids.push(decision.branch_id);
+                    }
+                }
+
+                // Path count never decreases
+                prop_assert!(state.seen_paths.len() >= prev_paths_count);
+                prev_paths_count = state.seen_paths.len();
+
+                // New branch IDs are genuinely new
+                for &id in &new_ids {
+                    prop_assert!(!all_new_branch_ids.contains(&id),
+                        "branch_id {} discovered twice", id);
+                }
+                all_new_branch_ids.extend(new_ids);
+
+                // is_new correctly reflects whether the path was already seen
+                if is_new {
+                    prop_assert!(state.seen_paths.contains(&hash));
+                }
+            }
+
+            // Lines covered is exact union
+            prop_assert_eq!(&state.all_lines, &expected_lines);
         }
     }
 }

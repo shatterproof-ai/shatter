@@ -6,7 +6,7 @@
 //! (no symbolic solving).
 
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::time::{Duration, Instant};
 
@@ -626,17 +626,14 @@ pub async fn explore_function(
         PrefetchedValues::new()
     };
 
-    let mut seen_paths: HashSet<u64> = HashSet::new();
-    let mut all_lines: HashSet<u32> = HashSet::new();
+    let mut obs_state = crate::observe::ObserveState::new();
     let mut new_path_executions: Vec<ExecutionSummary> = Vec::new();
     let mut raw_results: Vec<(Vec<serde_json::Value>, Vec<MockConfig>, ExecuteResult)> = Vec::new();
     let mut iterations: u32 = 0;
-    let mut path_counts: HashMap<u64, u32> = HashMap::new();
-    let mut seen_branch_ids: HashSet<u32> = HashSet::new();
     let mut discoveries: Vec<(u32, DiscoveryMethod)> = Vec::new();
 
     // --- Float probe phase ---
-    // Probes consume from the iteration budget, contributing to seen_paths and raw_results.
+    // Probes consume from the iteration budget, contributing to obs_state and raw_results.
     let float_indices = crate::float_probe::float_param_indices(&analysis.params);
     let mut float_probe_results: Vec<crate::float_probe::FloatProbeResult> = Vec::new();
     let probe_budget = float_indices.len() * crate::float_probe::PROBE_COUNT * 2;
@@ -679,13 +676,13 @@ pub async fn explore_function(
 
                     let fhash = path_hash(float_result, &config.loop_buckets);
                     let flhash = path_hash(floor_result, &config.loop_buckets);
-                    seen_paths.insert(fhash);
-                    seen_paths.insert(flhash);
+                    obs_state.seen_paths.insert(fhash);
+                    obs_state.seen_paths.insert(flhash);
                     for &line in &float_result.lines_executed {
-                        all_lines.insert(line);
+                        obs_state.all_lines.insert(line);
                     }
                     for &line in &floor_result.lines_executed {
-                        all_lines.insert(line);
+                        obs_state.all_lines.insert(line);
                     }
 
                     if crate::float_probe::executions_agree(float_result, floor_result) {
@@ -819,26 +816,24 @@ pub async fn explore_function(
             config.mocks.clone()
         };
 
-        let response = frontend
-            .send(ProtoCommand::Execute {
-                function: analysis.name.clone(),
-                inputs: inputs.clone(),
-                mocks: iteration_mocks.clone(),
-                setup_context: setup_context.clone(),
-            })
-            .await?;
-
-        let exec_result = match response.result {
-            ResponseResult::Execute(result) => *result,
-            ResponseResult::Error { code, message, .. } => {
-                return Err(ExploreError::UnexpectedResponse(format!(
-                    "execute error ({code:?}): {message}"
-                )));
+        // --- Execute + classify via canonical observe primitive ---
+        let obs = crate::observe::observe_single(
+            frontend,
+            &analysis.name,
+            &inputs,
+            &iteration_mocks,
+            setup_context.as_ref(),
+            &config.loop_buckets,
+            &mut obs_state,
+        )
+        .await
+        .map_err(|e| match e {
+            crate::observe::ObserveError::Frontend(fe) => ExploreError::Frontend(fe),
+            crate::observe::ObserveError::UnexpectedResponse(msg)
+            | crate::observe::ObserveError::InstrumentationFailed(msg) => {
+                ExploreError::UnexpectedResponse(msg)
             }
-            other => {
-                return Err(ExploreError::UnexpectedResponse(format!("{other:?}")));
-            }
-        };
+        })?;
 
         // --- Per-execution teardown ---
         if per_execution_setup && !skip_setup && frontend_supports(&config.capabilities, "teardown") {
@@ -848,37 +843,14 @@ pub async fn explore_function(
             }
         }
 
-        for &line in &exec_result.lines_executed {
-            all_lines.insert(line);
+        for branch_id in &obs.new_branch_ids {
+            discoveries.push((*branch_id, DiscoveryMethod::Random));
+        }
+        if let Some(summary) = obs.execution_summary {
+            new_path_executions.push(summary);
         }
 
-        let hash = path_hash(&exec_result, &config.loop_buckets);
-        *path_counts.entry(hash).or_insert(0) += 1;
-        let is_new = seen_paths.insert(hash);
-
-        // Track per-branch discovery attribution.
-        for decision in &exec_result.branch_path {
-            if seen_branch_ids.insert(decision.branch_id) {
-                discoveries.push((decision.branch_id, DiscoveryMethod::Random));
-            }
-        }
-
-        if is_new {
-            let error_intent = classify_error_intent(&exec_result);
-            new_path_executions.push(ExecutionSummary {
-                inputs: inputs.clone(),
-                return_value: exec_result.return_value.clone(),
-                thrown_error: exec_result
-                    .thrown_error
-                    .as_ref()
-                    .map(|e| format!("{}: {}", e.error_type, e.message)),
-                lines_executed: exec_result.lines_executed.clone(),
-                is_new_path: true,
-                error_intent,
-            });
-        }
-
-        raw_results.push((inputs, iteration_mocks, exec_result));
+        raw_results.push((inputs, iteration_mocks, obs.exec_result));
     }
 
     // --- Per-function teardown ---
@@ -895,8 +867,8 @@ pub async fn explore_function(
     Ok(ObservationOutput {
         function_name: analysis.name.clone(),
         iterations,
-        unique_paths: seen_paths.len(),
-        lines_covered: all_lines.len(),
+        unique_paths: obs_state.seen_paths.len(),
+        lines_covered: obs_state.all_lines.len(),
         total_lines,
         new_path_executions,
         raw_results,
