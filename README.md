@@ -44,10 +44,13 @@ This approach combines the precision of real execution with the systematic cover
 
 ## Supported Languages
 
-| Language   | Status |
-|------------|--------|
-| TypeScript | Supported (via Node.js frontend) |
-| Go         | Supported (via Go frontend) |
+| Language   | Frontend      | Status |
+|------------|---------------|--------|
+| TypeScript | `shatter-ts`  | Supported |
+| Go         | `shatter-go`  | Supported |
+| Rust       | `shatter-rust`| Stub (protocol handler only) |
+
+See [SPEC.md §1.3](SPEC.md#13-supported-languages) for the canonical language support matrix including file extensions and implementation details.
 
 ## CLI Reference
 
@@ -238,6 +241,7 @@ shatter-core/     Rust core engine (library crate)
 shatter-cli/      Rust CLI binary
 shatter-ts/       TypeScript frontend (Node.js subprocess)
 shatter-go/       Go frontend (Go binary subprocess)
+shatter-rust/     Rust frontend (stub — protocol handler only)
 examples/         Example target functions for testing
 demo/             Walkthrough scripts
 ```
