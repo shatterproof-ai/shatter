@@ -42,6 +42,10 @@ Shatter uses **concolic execution** — a hybrid of concrete and symbolic execut
 
 This approach combines the precision of real execution with the systematic coverage of symbolic analysis.
 
+## Documentation
+
+See [docs/INDEX.md](docs/INDEX.md) for a map of all project documentation — what each file covers, who it's for, and whether it describes current behavior or planned work.
+
 ## Supported Languages
 
 | Language   | Frontend      | Status |
