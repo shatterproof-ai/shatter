@@ -1408,6 +1408,7 @@ async fn run_explore(
                     mock_params: explore_config.mock_params.clone(),
                     solver_timeout_ms: solver_timeout.map(|s| s * 1000),
                     timeout_explore: timeout_explore.map(Duration::from_secs_f64),
+                    branch_profile: None, // standalone concolic has no prior random phase
                 };
 
                 match shatter_core::orchestrator::explore(

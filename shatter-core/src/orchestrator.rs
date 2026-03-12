@@ -107,6 +107,10 @@ pub struct ExploreConfig {
     /// Per-function exploration wall-clock timeout. Whichever of this or
     /// `max_iterations`/`max_executions` triggers first stops the loop.
     pub timeout_explore: Option<Duration>,
+    /// Branch frequency profile from a prior random exploration phase.
+    /// When present, biases fitness scoring and frontier prioritization
+    /// toward rarely-observed branches.
+    pub branch_profile: Option<crate::branch_profile::BranchProfile>,
 }
 
 /// Default maximum total executions before stopping exploration.
@@ -131,6 +135,7 @@ impl Default for ExploreConfig {
             mock_params: vec![],
             solver_timeout_ms: None,
             timeout_explore: None,
+            branch_profile: None,
         }
     }
 }
@@ -550,6 +555,7 @@ fn solve_and_generate(
     fitness_context: &mut FitnessContext,
     fitness_weights: &FitnessWeights,
     mock_params: &[MockParam],
+    branch_profile: Option<&crate::branch_profile::BranchProfile>,
 ) -> SolveOutput {
     let mut output = SolveOutput::default();
 
@@ -736,6 +742,7 @@ fn solve_and_generate(
                     target_branches,
                     fitness_context,
                     fitness_weights,
+                    branch_profile,
                 );
                 candidate.fitness = Some(breakdown.total);
             }
@@ -1000,12 +1007,17 @@ pub async fn explore(
                     drilling::identify_blocking_params(&decision.constraint, param_infos);
                 let depth =
                     drilling::branch_depth(&obs.result.branch_path, decision.branch_id);
+                let rarity_boost = config
+                    .branch_profile
+                    .as_ref()
+                    .map_or(0.0, |p| p.rarity(decision.branch_id));
                 frontier_set.insert(Frontier {
                     branch_id: decision.branch_id,
                     depth,
                     blocking_params: blocking,
                     best_prefix: obs.inputs.clone(),
                     stall_count: prev_stall,
+                    rarity_boost,
                 });
             }
         }
@@ -1030,6 +1042,7 @@ pub async fn explore(
             &mut fitness_context,
             &fitness_weights,
             &config.mock_params,
+            config.branch_profile.as_ref(),
         );
 
         z3_generated += solve_output.z3_count;
@@ -1734,6 +1747,7 @@ mod tests {
             &mut FitnessContext::new(),
             &FitnessWeights::default(),
             &[],
+            None,
         );
 
         assert!(output.candidates.is_empty());
@@ -1782,6 +1796,7 @@ mod tests {
             &mut FitnessContext::new(),
             &FitnessWeights::default(),
             &[],
+            None,
         );
 
         assert!(output.fuzz_count > 0, "should produce fuzz candidates for unknown constraints");
@@ -1841,6 +1856,7 @@ mod tests {
             &mut FitnessContext::new(),
             &FitnessWeights::default(),
             &[],
+            None,
         );
 
         assert!(output.z3_count > 0, "should produce Z3 candidates for solvable constraints");

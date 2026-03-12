@@ -1132,6 +1132,36 @@ fn format_value_short(v: &serde_json::Value) -> String {
     }
 }
 
+/// Build a [`BranchProfile`] from exploration results.
+///
+/// Counts how many executions each branch_id appeared in (regardless of
+/// taken/not-taken), divides by total execution count to produce frequencies
+/// in [0.0, 1.0]. Returns an empty profile when there are no raw results.
+pub fn collect_branch_profile(observation: &ObservationOutput) -> crate::branch_profile::BranchProfile {
+    use std::collections::HashSet;
+
+    let total = observation.raw_results.len();
+    if total == 0 {
+        return crate::branch_profile::BranchProfile::new(HashMap::new());
+    }
+
+    let mut counts: HashMap<u32, u32> = HashMap::new();
+    for (_inputs, _mocks, result) in &observation.raw_results {
+        // Deduplicate branch_ids within a single execution — count presence, not repeats.
+        let seen: HashSet<u32> = result.branch_path.iter().map(|bd| bd.branch_id).collect();
+        for branch_id in seen {
+            *counts.entry(branch_id).or_insert(0) += 1;
+        }
+    }
+
+    let frequencies: HashMap<u32, f64> = counts
+        .into_iter()
+        .map(|(id, count)| (id, count as f64 / total as f64))
+        .collect();
+
+    crate::branch_profile::BranchProfile::new(frequencies)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2245,5 +2275,129 @@ mod tests {
                 );
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // collect_branch_profile
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn collect_branch_profile_empty_results() {
+        let obs = ObservationOutput {
+            function_name: "test".into(),
+            iterations: 0,
+            unique_paths: 0,
+            lines_covered: 0,
+            total_lines: 0,
+            new_path_executions: vec![],
+            raw_results: vec![],
+            discoveries: vec![],
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+        };
+        let profile = collect_branch_profile(&obs);
+        assert!(profile.is_empty());
+    }
+
+    #[test]
+    fn collect_branch_profile_single_execution() {
+        let result = ExecuteResult {
+            return_value: None,
+            thrown_error: None,
+            branch_path: vec![
+                BranchDecision {
+                    branch_id: 1,
+                    line: 10,
+                    taken: true,
+                    constraint: SymConstraint::Unknown { hint: "".into() },
+                },
+                BranchDecision {
+                    branch_id: 2,
+                    line: 20,
+                    taken: false,
+                    constraint: SymConstraint::Unknown { hint: "".into() },
+                },
+            ],
+            lines_executed: vec![],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
+            scope_events: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            performance: empty_perf(),
+        };
+        let obs = ObservationOutput {
+            function_name: "test".into(),
+            iterations: 1,
+            unique_paths: 1,
+            lines_covered: 2,
+            total_lines: 10,
+            new_path_executions: vec![],
+            raw_results: vec![(vec![], vec![], result)],
+            discoveries: vec![],
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+        };
+        let profile = collect_branch_profile(&obs);
+        assert_eq!(profile.len(), 2);
+        // Both branches seen in 1/1 execution → frequency 1.0, rarity 0.0
+        assert_eq!(profile.rarity(1), 0.0);
+        assert_eq!(profile.rarity(2), 0.0);
+        // Unknown branch → rarity 1.0
+        assert_eq!(profile.rarity(99), 1.0);
+    }
+
+    #[test]
+    fn collect_branch_profile_partial_frequency() {
+        let make_result = |branch_ids: &[u32]| -> ExecuteResult {
+            ExecuteResult {
+                return_value: None,
+                thrown_error: None,
+                branch_path: branch_ids
+                    .iter()
+                    .map(|&id| BranchDecision {
+                        branch_id: id,
+                        line: id * 10,
+                        taken: true,
+                        constraint: SymConstraint::Unknown { hint: "".into() },
+                    })
+                    .collect(),
+                lines_executed: vec![],
+                calls_to_external: vec![],
+                path_constraints: vec![],
+                side_effects: vec![],
+                scope_events: vec![],
+                capture_truncation: None,
+                discovered_dependencies: vec![],
+                performance: empty_perf(),
+            }
+        };
+
+        let obs = ObservationOutput {
+            function_name: "test".into(),
+            iterations: 4,
+            unique_paths: 2,
+            lines_covered: 3,
+            total_lines: 10,
+            new_path_executions: vec![],
+            raw_results: vec![
+                (vec![], vec![], make_result(&[1, 2])),    // exec 1: branches 1,2
+                (vec![], vec![], make_result(&[1, 2])),    // exec 2: branches 1,2
+                (vec![], vec![], make_result(&[1, 3])),    // exec 3: branches 1,3
+                (vec![], vec![], make_result(&[1])),       // exec 4: branch 1 only
+            ],
+            discoveries: vec![],
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+        };
+        let profile = collect_branch_profile(&obs);
+
+        // Branch 1: in 4/4 → freq 1.0, rarity 0.0
+        assert_eq!(profile.rarity(1), 0.0);
+        // Branch 2: in 2/4 → freq 0.5, rarity 0.5
+        assert!((profile.rarity(2) - 0.5).abs() < f64::EPSILON);
+        // Branch 3: in 1/4 → freq 0.25, rarity 0.75
+        assert!((profile.rarity(3) - 0.75).abs() < f64::EPSILON);
     }
 }

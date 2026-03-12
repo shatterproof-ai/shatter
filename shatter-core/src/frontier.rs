@@ -31,6 +31,10 @@ pub struct Frontier {
     pub best_prefix: Vec<serde_json::Value>,
     /// Consecutive failed attempts to solve past this branch.
     pub stall_count: u32,
+    /// Profile-guided rarity boost (0.0 = no boost, 1.0 = maximum priority).
+    /// Set from [`BranchProfile::rarity()`] when a profile is available.
+    #[serde(default)]
+    pub rarity_boost: f64,
 }
 
 /// Priority-ordered collection of frontiers for a single function.
@@ -122,9 +126,14 @@ impl FrontierSet {
 }
 
 /// Compare two frontiers for priority ordering.
-/// Lower depth wins; ties broken by lower stall count.
+///
+/// Lower depth wins first. Then higher rarity_boost wins (rare branches
+/// get explored sooner). Finally lower stall count breaks ties.
 fn frontier_priority(a: &Frontier, b: &Frontier) -> std::cmp::Ordering {
-    a.depth.cmp(&b.depth).then(a.stall_count.cmp(&b.stall_count))
+    a.depth
+        .cmp(&b.depth)
+        .then(b.rarity_boost.partial_cmp(&a.rarity_boost).unwrap_or(std::cmp::Ordering::Equal))
+        .then(a.stall_count.cmp(&b.stall_count))
 }
 
 #[cfg(test)]
@@ -138,6 +147,18 @@ mod tests {
             blocking_params: vec![],
             best_prefix: vec![],
             stall_count,
+            rarity_boost: 0.0,
+        }
+    }
+
+    fn make_frontier_with_rarity(branch_id: u32, depth: u32, stall_count: u32, rarity_boost: f64) -> Frontier {
+        Frontier {
+            branch_id,
+            depth,
+            blocking_params: vec![],
+            best_prefix: vec![],
+            stall_count,
+            rarity_boost,
         }
     }
 
@@ -269,6 +290,7 @@ mod tests {
             blocking_params: vec![0, 2],
             best_prefix: vec![serde_json::json!(42), serde_json::json!("hello")],
             stall_count: 0,
+            rarity_boost: 0.0,
         });
 
         let f = set.peek().unwrap();
@@ -282,5 +304,39 @@ mod tests {
         set.insert(make_frontier(1, 0, u32::MAX));
         assert!(set.increment_stall(1));
         assert_eq!(set.peek().unwrap().stall_count, u32::MAX);
+    }
+
+    #[test]
+    fn rarity_boost_breaks_depth_ties() {
+        let mut set = FrontierSet::new();
+        set.insert(make_frontier_with_rarity(1, 3, 0, 0.2));
+        set.insert(make_frontier_with_rarity(2, 3, 0, 0.8));
+        set.insert(make_frontier_with_rarity(3, 3, 0, 0.5));
+
+        let f = set.pop_highest_priority().unwrap();
+        assert_eq!(f.branch_id, 2, "highest rarity_boost wins at equal depth");
+
+        let f = set.pop_highest_priority().unwrap();
+        assert_eq!(f.branch_id, 3);
+    }
+
+    #[test]
+    fn depth_still_wins_over_rarity_boost() {
+        let mut set = FrontierSet::new();
+        set.insert(make_frontier_with_rarity(1, 5, 0, 1.0)); // deep but very rare
+        set.insert(make_frontier_with_rarity(2, 1, 0, 0.1)); // shallow but common
+
+        let f = set.pop_highest_priority().unwrap();
+        assert_eq!(f.branch_id, 2, "shallower depth should win even with lower rarity");
+    }
+
+    #[test]
+    fn zero_rarity_boost_preserves_original_order() {
+        let mut set = FrontierSet::new();
+        set.insert(make_frontier_with_rarity(1, 3, 5, 0.0));
+        set.insert(make_frontier_with_rarity(2, 3, 1, 0.0));
+
+        let f = set.pop_highest_priority().unwrap();
+        assert_eq!(f.branch_id, 2, "lower stall count wins when rarity is equal");
     }
 }
