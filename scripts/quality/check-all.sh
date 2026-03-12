@@ -43,6 +43,7 @@ tooling_args=()
 rust_args=()
 go_args=()
 docs_args=()
+schema_args=()
 meta_args=()
 
 if [[ "${STRICT_OPTIONAL}" == "true" ]]; then
@@ -50,6 +51,7 @@ if [[ "${STRICT_OPTIONAL}" == "true" ]]; then
   rust_args+=(--strict-optional --deny)
   go_args+=(--strict-optional --golangci-lint --staticcheck --govulncheck)
   docs_args+=(--strict-optional)
+  schema_args+=(--strict-optional)
   meta_args+=(--strict-optional)
 fi
 
@@ -62,6 +64,7 @@ run_cmd "Rust quality gates" "${SCRIPT_DIR}/check-rust.sh" "${rust_args[@]}"
 run_cmd "TypeScript quality gates" "${SCRIPT_DIR}/check-ts.sh"
 run_cmd "Go quality gates" "${SCRIPT_DIR}/check-go.sh" "${go_args[@]}"
 run_cmd "Documentation quality gates" "${SCRIPT_DIR}/check-docs.sh" "${docs_args[@]}"
+run_cmd "Protocol schema validation" "${SCRIPT_DIR}/check-schemas.sh" "${schema_args[@]}"
 run_cmd "Repository meta checks" "${SCRIPT_DIR}/check-meta.sh" "${meta_args[@]}"
 
 info "All aggregate checks complete"
