@@ -24,6 +24,7 @@ import type {
   TruncationInfo,
   TraceEvent,
   ScopeEvent,
+  DiscoveredDependency,
 } from "./protocol.js";
 import { RECORD_FUNCTION, BRANCH_FUNCTION, SCOPE_EVENT_FUNCTION, MOCK_REGISTRY, MOCK_CALL_FUNCTION } from "./instrumentor.js";
 import type { MockConfig, ExternalCall } from "./protocol.js";
@@ -54,6 +55,17 @@ export function getExecTimeoutMs(): number {
   }
   return DEFAULT_EXEC_TIMEOUT_MS;
 }
+
+/** Module names that spawn subprocesses — require() calls to these are flagged. */
+const SUBPROCESS_MODULES = new Set([
+  "child_process", "node:child_process",
+]);
+
+/** Symbols within child_process that spawn subprocesses. */
+const SUBPROCESS_SYMBOLS = new Set([
+  "exec", "execSync", "execFile", "execFileSync",
+  "spawn", "spawnSync", "fork",
+]);
 
 const VALIDATION_ERROR_PATTERNS = /Validation|Invalid|BadRequest|Forbidden|Unauthorized|NotFound/i;
 const RUNTIME_ERROR_TYPES = new Set(["TypeError", "ReferenceError", "SyntaxError", "RangeError", "URIError"]);
@@ -310,6 +322,7 @@ interface RawExecuteResult {
   side_effects: SideEffect[];
   calls_to_external: ExternalCall[];
   scope_events: TraceEvent[];
+  discovered_dependencies: DiscoveredDependency[];
 }
 
 /**
@@ -553,6 +566,7 @@ export async function executeFunction(
     performance: metrics.performance,
     calls_to_external: [],
     scope_events: [],
+    discovered_dependencies: [],
   };
 }
 
@@ -587,6 +601,8 @@ export async function executeInstrumented(
   const sideEffects: SideEffect[] = [];
   const externalCalls: ExternalCall[] = [];
   const scopeEvents: TraceEvent[] = [];
+  const discoveredDeps: DiscoveredDependency[] = [];
+  const seenDiscoveredModules = new Set<string>();
 
   // Define the runtime callbacks
   const recordFn = (line: number): void => {
@@ -678,7 +694,47 @@ export async function executeInstrumented(
   const capturingConsole = createCapturingConsole(sideEffects);
   const capturingProc = createCapturingProcess(sideEffects);
   const rawRequire = sourceFilePath ? createRequire(path.resolve(sourceFilePath)) : require;
-  const sandboxRequire = wrapRequireWithReactShim(rawRequire, sourceFilePath);
+  const baseRequire = wrapRequireWithReactShim(rawRequire, sourceFilePath);
+
+  // Collect mocked module prefixes for gap detection
+  const mockedModulePrefixes = new Set<string>();
+  for (const key of Object.keys(mockRegistry)) {
+    const colonIdx = key.indexOf(":");
+    if (colonIdx > 0) {
+      mockedModulePrefixes.add(key.substring(0, colonIdx));
+    }
+  }
+
+  // Wrap require to detect unmocked external imports and subprocess APIs
+  const sandboxRequire = (id: string): unknown => {
+    const result = baseRequire(id);
+
+    // Skip relative/absolute paths (local modules) and already-seen modules
+    if (!id.startsWith(".") && !id.startsWith("/") && !seenDiscoveredModules.has(id)) {
+      seenDiscoveredModules.add(id);
+
+      const isSubprocessModule = SUBPROCESS_MODULES.has(id);
+      const isMocked = mockedModulePrefixes.has(id);
+
+      if (isSubprocessModule) {
+        discoveredDeps.push({
+          symbol: id,
+          source_module: id,
+          kind: "subprocess_spawn",
+          is_subprocess_spawn: true,
+        });
+      } else if (!isMocked) {
+        discoveredDeps.push({
+          symbol: id,
+          source_module: id,
+          kind: "unmocked_import",
+          is_subprocess_spawn: false,
+        });
+      }
+    }
+
+    return result;
+  };
   const moduleExports: Record<string, unknown> = {};
   const moduleObj = { exports: moduleExports };
 
@@ -765,6 +821,7 @@ export async function executeInstrumented(
     performance: metrics.performance,
     calls_to_external: externalCalls,
     scope_events: scopeEvents,
+    discovered_dependencies: discoveredDeps,
   };
 }
 
@@ -796,6 +853,10 @@ export function buildExecuteResponse(
 
   if (truncation) {
     response.capture_truncation = truncation;
+  }
+
+  if (rawResult.discovered_dependencies.length > 0) {
+    response.discovered_dependencies = rawResult.discovered_dependencies;
   }
 
   return response;

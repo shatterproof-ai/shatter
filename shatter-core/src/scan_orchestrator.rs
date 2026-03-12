@@ -1593,7 +1593,7 @@ mod tests {
             path_constraints: vec![],
             side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None,
+            capture_truncation: None, discovered_dependencies: vec![],
             performance: empty_perf(),
         };
 
@@ -1617,7 +1617,7 @@ mod tests {
             path_constraints: vec![],
             side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None,
+            capture_truncation: None, discovered_dependencies: vec![],
             performance: empty_perf(),
         };
 

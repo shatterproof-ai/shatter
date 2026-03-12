@@ -334,7 +334,7 @@ mod tests {
             scope_events: vec![],
             side_effects: vec![],
             performance: PerformanceMetrics::default(),
-            capture_truncation: None,
+            capture_truncation: None, discovered_dependencies: vec![],
         }
     }
 

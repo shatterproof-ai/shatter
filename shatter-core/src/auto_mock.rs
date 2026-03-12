@@ -14,7 +14,7 @@ use std::collections::HashMap;
 
 use serde_json::{json, Value};
 
-use crate::protocol::{ExternalDependency, MockBehavior, MockConfig};
+use crate::protocol::{DependencyKind, ExternalDependency, MockBehavior, MockConfig};
 use crate::scope::{DependencyAction, ScopeMatcher};
 use crate::types::TypeInfo;
 
@@ -438,6 +438,32 @@ pub fn build_mock_params(
     }
 
     result
+}
+
+/// Create [`MockConfig`]s for dependencies discovered at execution time
+/// that static analysis missed.
+///
+/// Converts each [`DiscoveredDependency`] into an [`ExternalDependency`]
+/// (with [`TypeInfo::Unknown`] since we have no static type info) and
+/// generates a default mock using the standard classification pipeline.
+pub fn create_mock_params_for_discovered(
+    discovered: &[crate::protocol::DiscoveredDependency],
+) -> Vec<MockConfig> {
+    discovered
+        .iter()
+        .map(|dd| {
+            let dep = ExternalDependency {
+                kind: DependencyKind::FunctionCall,
+                symbol: dd.symbol.clone(),
+                source_module: dd.source_module.clone(),
+                return_type: TypeInfo::Unknown,
+                param_types: vec![],
+                call_sites: vec![],
+            };
+            let category = classify_dependency(&dep);
+            generate_default_mock(&dep, category)
+        })
+        .collect()
 }
 
 #[cfg(test)]

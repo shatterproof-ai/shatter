@@ -723,6 +723,7 @@ describe("scope events in execution", () => {
         { type: "scope" as const, event: { kind: "call_enter" as const, call_site_id: 0 } },
         { type: "scope" as const, event: { kind: "call_exit" as const, call_site_id: 0 } },
       ],
+      discovered_dependencies: [],
     };
     const response = buildExecuteResponse(1, "0.6.0", raw);
     expect(response.scope_events).toHaveLength(2);
@@ -790,5 +791,64 @@ describe("throw_error mock behavior", () => {
 
     const result = await executeInstrumented(source, "callMock", [], mocks);
     expect(result.return_value).toBe(true);
+  });
+});
+
+describe("execution-time dep gap detection", () => {
+  it("detects unmocked require() calls to external modules", async () => {
+    const source = `
+      const path = require("path");
+      export function joinPaths(a: string, b: string): string {
+        return path.join(a, b);
+      }
+    `;
+    const result = await executeInstrumented(source, "joinPaths", ["foo", "bar"], []);
+    expect(result.discovered_dependencies.length).toBeGreaterThanOrEqual(1);
+    const pathDep = result.discovered_dependencies.find(d => d.source_module === "path");
+    expect(pathDep).toBeDefined();
+    expect(pathDep!.kind).toBe("unmocked_import");
+    expect(pathDep!.is_subprocess_spawn).toBe(false);
+  });
+
+  it("detects subprocess-spawning module imports", async () => {
+    const source = `
+      const cp = require("child_process");
+      export function getVersion(): string {
+        return typeof cp.execSync;
+      }
+    `;
+    const result = await executeInstrumented(source, "getVersion", [], []);
+    const cpDep = result.discovered_dependencies.find(d => d.source_module === "child_process");
+    expect(cpDep).toBeDefined();
+    expect(cpDep!.kind).toBe("subprocess_spawn");
+    expect(cpDep!.is_subprocess_spawn).toBe(true);
+  });
+
+  it("does not flag mocked modules as unmocked", async () => {
+    const source = `
+      const fs = require("fs");
+      export function readIt(): string {
+        return typeof fs.readFileSync;
+      }
+    `;
+    const mocks = [{
+      symbol: "fs:readFileSync",
+      return_values: ["fake"],
+      should_track_calls: false,
+      default_behavior: "repeat_last" as const,
+    }];
+    const result = await executeInstrumented(source, "readIt", [], mocks);
+    const fsDep = result.discovered_dependencies.find(d => d.source_module === "fs");
+    expect(fsDep).toBeUndefined();
+  });
+
+  it("does not flag relative imports", async () => {
+    const source = `
+      export function noop(): number {
+        return 42;
+      }
+    `;
+    const result = await executeInstrumented(source, "noop", [], []);
+    expect(result.discovered_dependencies.length).toBe(0);
   });
 });

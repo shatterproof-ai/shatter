@@ -752,7 +752,7 @@ mod tests {
             side_effects: vec![],
             scope_events: vec![],
             performance: PerformanceMetrics::default(),
-            capture_truncation: None,
+            capture_truncation: None, discovered_dependencies: vec![],
         }
     }
 
@@ -777,7 +777,7 @@ mod tests {
             side_effects: vec![],
             scope_events: vec![],
             performance: PerformanceMetrics::default(),
-            capture_truncation: None,
+            capture_truncation: None, discovered_dependencies: vec![],
         }
     }
 

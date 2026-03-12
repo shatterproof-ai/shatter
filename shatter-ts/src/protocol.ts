@@ -186,6 +186,7 @@ export interface ExecuteResponse extends BaseResponse {
   performance: PerformanceMetrics;
   capture_truncation?: TruncationInfo;
   scope_events?: TraceEvent[];
+  discovered_dependencies?: DiscoveredDependency[];
 }
 
 export interface SetupResponse extends BaseResponse {
@@ -363,6 +364,15 @@ export interface ExternalCall {
   symbol: string;
   args: unknown[];
   return_value: unknown;
+}
+
+export type DepDetectionKind = "unmocked_import" | "subprocess_spawn";
+
+export interface DiscoveredDependency {
+  symbol: string;
+  source_module: string;
+  kind: DepDetectionKind;
+  is_subprocess_spawn: boolean;
 }
 
 export interface ExternalDependency {
