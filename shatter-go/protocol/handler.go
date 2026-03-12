@@ -298,6 +298,7 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 	resp.BranchPath = convertBranchPath(result.BranchPath)
 	resp.PathConstraints = extractPathConstraints(result.BranchPath)
 	resp.CallsToExternal = convertExternalCalls(result.ExternalCalls)
+	resp.DiscoveredDependencies = convertDiscoveredDeps(result.DiscoveredDependencies)
 	resp.SideEffects = convertSideEffects(result.SideEffects)
 	resp.ScopeEvents = result.ScopeEvents
 	resp.Performance = &PerfMetrics{
@@ -388,6 +389,23 @@ func convertExternalCalls(calls []instrument.ExternalCall) []ExternalCall {
 			Symbol:      c.Symbol,
 			Args:        args,
 			ReturnValue: retVal,
+		}
+	}
+	return result
+}
+
+// convertDiscoveredDeps converts executor DiscoveredDependency to protocol format.
+func convertDiscoveredDeps(deps []instrument.DiscoveredDependency) []DiscoveredDependency {
+	if len(deps) == 0 {
+		return nil
+	}
+	result := make([]DiscoveredDependency, len(deps))
+	for i, d := range deps {
+		result[i] = DiscoveredDependency{
+			Symbol:            d.Symbol,
+			SourceModule:      d.SourceModule,
+			Kind:              d.Kind,
+			IsSubprocessSpawn: d.IsSubprocessSpawn,
 		}
 	}
 	return result

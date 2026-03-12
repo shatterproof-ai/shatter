@@ -53,3 +53,180 @@ rules:
       Timeout contract checkpoint: this file references SHATTER_EXEC_TIMEOUT.
       All three frontends (TS, Go, Rust) must implement this env var.
       See CLAUDE.md "Frontend timeout contract".
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Protocol drift detection — catch hardcoded protocol literals outside
+  # approved canonical modules.
+  # ═══════════════════════════════════════════════════════════════════════
+
+  # --- TypeScript: hardcoded error codes --------------------------------
+  - id: ts-hardcoded-error-code
+    patterns:
+      - pattern-either:
+          - pattern: '"file_not_found"'
+          - pattern: '"function_not_found"'
+          - pattern: '"parse_error"'
+          - pattern: '"instrumentation_failed"'
+          - pattern: '"execution_timeout"'
+          - pattern: '"execution_crash"'
+          - pattern: '"version_mismatch"'
+          - pattern: '"invalid_request"'
+          - pattern: '"compilation_error"'
+          - pattern: '"internal_error"'
+          - pattern: '"not_supported"'
+    paths:
+      exclude:
+        - shatter-ts/src/protocol.ts
+        - "protocol/**"
+        - "*.test.ts"
+        - "**/tests/**"
+        - "scripts/**"
+    languages: [typescript]
+    severity: WARNING
+    message: >-
+      Hardcoded error code string. Import from protocol.ts constants
+      instead of duplicating the literal.
+    metadata:
+      category: protocol-drift
+
+  # --- TypeScript: hardcoded response status ----------------------------
+  - id: ts-hardcoded-response-status
+    patterns:
+      - pattern-either:
+          - pattern: '"teardown_ack"'
+          - pattern: '"shutdown_ack"'
+    paths:
+      exclude:
+        - shatter-ts/src/protocol.ts
+        - "protocol/**"
+        - "*.test.ts"
+        - "**/tests/**"
+        - "scripts/**"
+    languages: [typescript]
+    severity: WARNING
+    message: >-
+      Hardcoded response status string. Use the ResponseStatus type
+      from protocol.ts instead of duplicating the literal.
+    metadata:
+      category: protocol-drift
+
+  # --- TypeScript: hardcoded protocol version ---------------------------
+  - id: ts-hardcoded-protocol-version
+    patterns:
+      - pattern: '"0.1.0"'
+    paths:
+      exclude:
+        - shatter-ts/src/protocol.ts
+        - "protocol/**"
+        - "*.test.ts"
+        - "**/tests/**"
+        - "scripts/**"
+        - "package.json"
+        - "package-lock.json"
+        - "**/Cargo.toml"
+        - "**/Cargo.lock"
+    languages: [typescript]
+    severity: WARNING
+    message: >-
+      Hardcoded protocol version. Use PROTOCOL_VERSION constant from
+      protocol.ts instead.
+    metadata:
+      category: protocol-drift
+
+  # --- Go: hardcoded error codes ----------------------------------------
+  - id: go-hardcoded-error-code
+    patterns:
+      - pattern-either:
+          - pattern: '"file_not_found"'
+          - pattern: '"function_not_found"'
+          - pattern: '"parse_error"'
+          - pattern: '"instrumentation_failed"'
+          - pattern: '"execution_timeout"'
+          - pattern: '"execution_crash"'
+          - pattern: '"version_mismatch"'
+          - pattern: '"invalid_request"'
+          - pattern: '"compilation_error"'
+          - pattern: '"internal_error"'
+          - pattern: '"not_supported"'
+    paths:
+      exclude:
+        - shatter-go/protocol/constants.go
+        - shatter-go/protocol/types.go
+        - "protocol/**"
+        - "*_test.go"
+        - "*_fuzz_test.go"
+        - "**/testdata/**"
+        - "scripts/**"
+    languages: [go]
+    severity: WARNING
+    message: >-
+      Hardcoded error code string. Use the Err* constants from
+      protocol/constants.go instead of duplicating the literal.
+    metadata:
+      category: protocol-drift
+
+  # --- Go: hardcoded response status ------------------------------------
+  - id: go-hardcoded-response-status
+    patterns:
+      - pattern-either:
+          - pattern: '"teardown_ack"'
+          - pattern: '"shutdown_ack"'
+    paths:
+      exclude:
+        - shatter-go/protocol/constants.go
+        - shatter-go/protocol/types.go
+        - "protocol/**"
+        - "*_test.go"
+        - "*_fuzz_test.go"
+        - "**/testdata/**"
+        - "scripts/**"
+    languages: [go]
+    severity: WARNING
+    message: >-
+      Hardcoded response status string. Use a typed constant from
+      protocol/constants.go instead.
+    metadata:
+      category: protocol-drift
+
+  # --- Go: hardcoded protocol version -----------------------------------
+  - id: go-hardcoded-protocol-version
+    patterns:
+      - pattern: '"0.1.0"'
+    paths:
+      exclude:
+        - shatter-go/protocol/types.go
+        - shatter-go/protocol/constants.go
+        - "protocol/**"
+        - "*_test.go"
+        - "*_fuzz_test.go"
+        - "**/testdata/**"
+        - "scripts/**"
+        - go.mod
+        - go.sum
+    languages: [go]
+    severity: WARNING
+    message: >-
+      Hardcoded protocol version. Use ProtocolVersion constant from
+      protocol/types.go instead.
+    metadata:
+      category: protocol-drift
+
+  # --- Go: hardcoded capability array -----------------------------------
+  - id: go-hardcoded-capability-array
+    patterns:
+      - pattern: '[]string{..., "analyze", ...}'
+    paths:
+      exclude:
+        - shatter-go/protocol/constants.go
+        - "protocol/**"
+        - "*_test.go"
+        - "*_fuzz_test.go"
+        - "**/testdata/**"
+        - "scripts/**"
+    languages: [go]
+    severity: WARNING
+    message: >-
+      Inline capability array. Use CommandCapabilities from
+      protocol/constants.go instead of building a new slice.
+    metadata:
+      category: protocol-drift

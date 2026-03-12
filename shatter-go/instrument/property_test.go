@@ -146,6 +146,67 @@ func TestPropertyExecTimeoutValidNumbersApplied(t *testing.T) {
 	})
 }
 
+// ---------------------------------------------------------------------------
+// Semantic properties — throw_error mock generation
+// ---------------------------------------------------------------------------
+
+func TestPropertyThrowErrorMockContainsPanic(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		symbol := rapid.StringMatching(`[a-zA-Z][a-zA-Z0-9_.:-]{0,30}`).Draw(t, "symbol")
+		mocks := []MockConfig{
+			{
+				Symbol:          symbol,
+				ReturnValues:    []any{map[string]any{"message": "err"}},
+				DefaultBehavior: "throw_error",
+			},
+		}
+		source := generateMockFile(mocks, "/tmp/calls.json")
+		if !contains(source, "panic(msg)") {
+			t.Fatalf("throw_error mock for %q missing panic(msg)", symbol)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Semantic properties — discoverDependencies
+// ---------------------------------------------------------------------------
+
+func TestPropertyDiscoverDepsNeverIncludesMockedModules(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		modCount := rapid.IntRange(1, 5).Draw(t, "modCount")
+		modules := make([]string, modCount)
+		for i := range modules {
+			modules[i] = fmt.Sprintf("github.com/org/mod%d", rapid.IntRange(0, 100).Draw(t, fmt.Sprintf("mod%d", i)))
+		}
+
+		// Build source with these imports
+		var imports string
+		for _, m := range modules {
+			imports += fmt.Sprintf("\t%q\n", m)
+		}
+		src := fmt.Sprintf("package example\n\nimport (\n%s)\n\nfunc F() {}\n", imports)
+
+		dir, err := os.MkdirTemp("", "shatter-prop-*")
+		if err != nil {
+			t.Fatalf("mkdirtemp: %v", err)
+		}
+		defer os.RemoveAll(dir)
+		path := dir + "/test.go"
+		os.WriteFile(path, []byte(src), 0644)
+
+		// Mock all modules
+		mocks := make([]MockConfig, len(modules))
+		for i, m := range modules {
+			mocks[i] = MockConfig{Symbol: m + ":Func"}
+		}
+
+		deps := discoverDependencies(path, mocks)
+		if len(deps) != 0 {
+			t.Fatalf("expected 0 deps when all modules mocked, got %d: %+v", len(deps), deps)
+		}
+	})
+}
+
 func TestPropertyExecTimeoutInvalidFallsBack(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		val := rapid.OneOf(

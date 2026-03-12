@@ -575,3 +575,159 @@ func SumPoint(p Point) int {
 		t.Errorf("expected 10, got %d", retVal)
 	}
 }
+
+func TestGenerateMockFileThrowError(t *testing.T) {
+	mocks := []MockConfig{
+		{
+			Symbol:           "db.query",
+			ReturnValues:     []any{map[string]any{"message": "connection refused"}},
+			ShouldTrackCalls: true,
+			DefaultBehavior:  "throw_error",
+		},
+	}
+
+	source := generateMockFile(mocks, "/tmp/calls.json")
+
+	if !contains(source, "ShatterMock_db_query") {
+		t.Error("expected ShatterMock_db_query in generated source")
+	}
+
+	if !contains(source, "panic(msg)") {
+		t.Error("expected panic(msg) in throw_error mock")
+	}
+
+	if !contains(source, `shatterRecordMockCall("db.query"`) {
+		t.Error("expected call tracking before panic")
+	}
+
+	// Should not contain "return retVal" for throw_error mocks
+	if contains(source, "return retVal") {
+		t.Error("throw_error mock should not return a value")
+	}
+}
+
+func TestGenerateMockFileThrowErrorNoTrackCalls(t *testing.T) {
+	mocks := []MockConfig{
+		{
+			Symbol:          "net.dial",
+			ReturnValues:    []any{map[string]any{"message": "timeout"}},
+			DefaultBehavior: "throw_error",
+		},
+	}
+
+	source := generateMockFile(mocks, "/tmp/calls.json")
+
+	if !contains(source, "panic(msg)") {
+		t.Error("expected panic in throw_error mock")
+	}
+
+	// Should NOT contain call tracking when ShouldTrackCalls is false
+	if contains(source, `shatterRecordMockCall("net.dial"`) {
+		t.Error("should not track calls when ShouldTrackCalls is false")
+	}
+}
+
+func TestDiscoverDependenciesFindsThirdParty(t *testing.T) {
+	srcDir := t.TempDir()
+	src := filepath.Join(srcDir, "target.go")
+	if err := os.WriteFile(src, []byte(`package example
+
+import (
+	"fmt"
+	"github.com/lib/pq"
+)
+
+func Foo() {
+	fmt.Println(pq.ErrSSLNotSupported)
+}
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	deps := discoverDependencies(src, nil)
+	if len(deps) != 1 {
+		t.Fatalf("expected 1 discovered dep, got %d", len(deps))
+	}
+	if deps[0].Symbol != "github.com/lib/pq" {
+		t.Errorf("expected github.com/lib/pq, got %s", deps[0].Symbol)
+	}
+	if deps[0].Kind != "unmocked_import" {
+		t.Errorf("expected unmocked_import, got %s", deps[0].Kind)
+	}
+}
+
+func TestDiscoverDependenciesDetectsSubprocessSpawn(t *testing.T) {
+	srcDir := t.TempDir()
+	src := filepath.Join(srcDir, "target.go")
+	if err := os.WriteFile(src, []byte(`package example
+
+import (
+	"fmt"
+	"os/exec"
+)
+
+func Run() {
+	cmd := exec.Command("ls")
+	fmt.Println(cmd)
+}
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	deps := discoverDependencies(src, nil)
+	if len(deps) != 1 {
+		t.Fatalf("expected 1 discovered dep, got %d", len(deps))
+	}
+	if deps[0].Kind != "subprocess_spawn" {
+		t.Errorf("expected subprocess_spawn, got %s", deps[0].Kind)
+	}
+	if !deps[0].IsSubprocessSpawn {
+		t.Error("expected IsSubprocessSpawn=true")
+	}
+}
+
+func TestDiscoverDependenciesExcludesMockedModules(t *testing.T) {
+	srcDir := t.TempDir()
+	src := filepath.Join(srcDir, "target.go")
+	if err := os.WriteFile(src, []byte(`package example
+
+import "github.com/lib/pq"
+
+func Foo() { _ = pq.ErrSSLNotSupported }
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mocks := []MockConfig{
+		{Symbol: "github.com/lib/pq:Open"},
+	}
+
+	deps := discoverDependencies(src, mocks)
+	if len(deps) != 0 {
+		t.Errorf("expected 0 deps when module is mocked, got %d: %+v", len(deps), deps)
+	}
+}
+
+func TestDiscoverDependenciesSkipsStdlib(t *testing.T) {
+	srcDir := t.TempDir()
+	src := filepath.Join(srcDir, "target.go")
+	if err := os.WriteFile(src, []byte(`package example
+
+import (
+	"fmt"
+	"strings"
+	"strconv"
+)
+
+func Foo() {
+	fmt.Println(strings.ToUpper(strconv.Itoa(1)))
+}
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	deps := discoverDependencies(src, nil)
+	if len(deps) != 0 {
+		t.Errorf("expected 0 deps for stdlib-only imports, got %d: %+v", len(deps), deps)
+	}
+}

@@ -72,16 +72,31 @@ type SideEffect struct {
 	Message string `json:"message,omitempty"`
 }
 
+// DiscoveredDependency represents a dependency found at execution time
+// that was not covered by the provided mocks.
+type DiscoveredDependency struct {
+	Symbol            string `json:"symbol"`
+	SourceModule      string `json:"source_module"`
+	Kind              string `json:"kind"` // "unmocked_import" or "subprocess_spawn"
+	IsSubprocessSpawn bool   `json:"is_subprocess_spawn"`
+}
+
+// subprocessPackages lists Go packages that spawn external processes.
+var subprocessPackages = map[string]bool{
+	"os/exec": true,
+}
+
 // ExecuteResult holds the output of running an instrumented function.
 type ExecuteResult struct {
-	ReturnValue   json.RawMessage   `json:"return_value,omitempty"`
-	ThrownError   *ErrorInfo        `json:"thrown_error,omitempty"`
-	BranchPath    []BranchDecision  `json:"branch_path"`
-	LinesExecuted []int             `json:"lines_executed"`
-	ExternalCalls []ExternalCall    `json:"external_calls,omitempty"`
-	SideEffects   []SideEffect      `json:"side_effects"`
-	ScopeEvents   []json.RawMessage `json:"scope_events"`
-	Performance   PerfMetrics       `json:"performance"`
+	ReturnValue            json.RawMessage        `json:"return_value,omitempty"`
+	ThrownError            *ErrorInfo             `json:"thrown_error,omitempty"`
+	BranchPath             []BranchDecision       `json:"branch_path"`
+	LinesExecuted          []int                  `json:"lines_executed"`
+	ExternalCalls          []ExternalCall         `json:"external_calls,omitempty"`
+	DiscoveredDependencies []DiscoveredDependency `json:"discovered_dependencies,omitempty"`
+	SideEffects            []SideEffect           `json:"side_effects"`
+	ScopeEvents            []json.RawMessage      `json:"scope_events"`
+	Performance            PerfMetrics            `json:"performance"`
 }
 
 // ExternalCall records one call to a mocked external dependency.
@@ -261,6 +276,11 @@ func ExecuteFunction(sourcePath, funcName string, inputs []json.RawMessage, mock
 				result.ExternalCalls = calls
 			}
 		}
+	}
+
+	// Discover unmocked dependencies from source imports.
+	if discovered := discoverDependencies(sourcePath, activeMocks); len(discovered) > 0 {
+		result.DiscoveredDependencies = discovered
 	}
 
 	// Try to parse performance metrics from the harness
@@ -634,6 +654,34 @@ func generateMockFile(mocks []MockConfig, externalCallsPath string) string {
 		b.WriteString("}()\n")
 		b.WriteString(fmt.Sprintf("var shatterMock%d_callIdx int\n\n", i))
 
+		if mock.DefaultBehavior == "throw_error" {
+			// Generate a mock that panics with error message from return_values.
+			b.WriteString(fmt.Sprintf("// ShatterMock_%s panics with error details for %s.\n", safeName, mock.Symbol))
+			b.WriteString(fmt.Sprintf("func ShatterMock_%s(args ...any) any {\n", safeName))
+			b.WriteString(fmt.Sprintf("\tretvals := shatterMock%d_retvals\n", i))
+			b.WriteString(fmt.Sprintf("\tidx := shatterMock%d_callIdx\n", i))
+			b.WriteString("\tif idx >= len(retvals) && len(retvals) > 0 {\n")
+			b.WriteString("\t\tidx = len(retvals) - 1\n")
+			b.WriteString("\t}\n")
+			b.WriteString(fmt.Sprintf("\tshatterMock%d_callIdx++\n", i))
+			b.WriteString("\n")
+			b.WriteString(fmt.Sprintf("\tmsg := %q\n", "Mock error: "+mock.Symbol))
+			b.WriteString("\tif idx < len(retvals) {\n")
+			b.WriteString("\t\tvar obj map[string]any\n")
+			b.WriteString("\t\tif json.Unmarshal(retvals[idx], &obj) == nil {\n")
+			b.WriteString("\t\t\tif s, ok := obj[\"message\"].(string); ok && s != \"\" {\n")
+			b.WriteString("\t\t\t\tmsg = s\n")
+			b.WriteString("\t\t\t}\n")
+			b.WriteString("\t\t}\n")
+			b.WriteString("\t}\n")
+			if mock.ShouldTrackCalls {
+				b.WriteString(fmt.Sprintf("\tshatterRecordMockCall(%q, args, msg)\n", mock.Symbol))
+			}
+			b.WriteString("\tpanic(msg)\n")
+			b.WriteString("}\n\n")
+			continue
+		}
+
 		// Generate the mock function
 		b.WriteString(fmt.Sprintf("// ShatterMock_%s returns pre-configured values for %s.\n", safeName, mock.Symbol))
 		b.WriteString(fmt.Sprintf("func ShatterMock_%s(args ...any) any {\n", safeName))
@@ -683,6 +731,58 @@ func sanitizeMockName(symbol string) string {
 		}
 	}
 	return string(result)
+}
+
+// discoverDependencies inspects the source file's imports and reports any that
+// are not covered by the provided mocks. Third-party packages (containing a dot
+// in the import path) and known subprocess-spawning packages are reported.
+func discoverDependencies(sourcePath string, mocks []MockConfig) []DiscoveredDependency {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, sourcePath, nil, parser.ImportsOnly)
+	if err != nil {
+		return nil
+	}
+
+	// Build set of mocked module prefixes from mock symbols ("module:export" → "module").
+	mockedModules := make(map[string]bool)
+	for _, m := range mocks {
+		if idx := strings.Index(m.Symbol, ":"); idx >= 0 {
+			mockedModules[m.Symbol[:idx]] = true
+		} else {
+			mockedModules[m.Symbol] = true
+		}
+	}
+
+	var deps []DiscoveredDependency
+	for _, imp := range f.Imports {
+		importPath := strings.Trim(imp.Path.Value, `"`)
+
+		if mockedModules[importPath] {
+			continue
+		}
+
+		if subprocessPackages[importPath] {
+			deps = append(deps, DiscoveredDependency{
+				Symbol:            importPath,
+				SourceModule:      importPath,
+				Kind:              "subprocess_spawn",
+				IsSubprocessSpawn: true,
+			})
+			continue
+		}
+
+		// Report third-party packages (import paths containing a dot indicate
+		// a domain-based module path, e.g. "github.com/...").
+		if strings.Contains(importPath, ".") {
+			deps = append(deps, DiscoveredDependency{
+				Symbol:            importPath,
+				SourceModule:      importPath,
+				Kind:              "unmocked_import",
+				IsSubprocessSpawn: false,
+			})
+		}
+	}
+	return deps
 }
 
 // rewritePackageToMain rewrites the package declaration in all Go files in dir

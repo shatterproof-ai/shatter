@@ -109,8 +109,9 @@ type Response struct {
 	ThrownError       *ErrorInfo        `json:"thrown_error,omitempty"`
 	BranchPath        []BranchDecision  `json:"branch_path,omitempty"`
 	LinesExecuted     []int             `json:"lines_executed,omitempty"`
-	CallsToExternal   []ExternalCall    `json:"calls_to_external,omitempty"`
-	PathConstraints   []SymConstraint   `json:"path_constraints,omitempty"`
+	CallsToExternal        []ExternalCall         `json:"calls_to_external,omitempty"`
+	DiscoveredDependencies []DiscoveredDependency `json:"discovered_dependencies,omitempty"`
+	PathConstraints        []SymConstraint        `json:"path_constraints,omitempty"`
 	SideEffects       []SideEffect      `json:"side_effects,omitempty"`
 	ScopeEvents       []json.RawMessage `json:"scope_events,omitempty"`
 	CaptureTruncation *TruncationInfo   `json:"capture_truncation,omitempty"`
@@ -262,6 +263,15 @@ type ExternalCall struct {
 	Symbol      string `json:"symbol"`
 	Args        []any  `json:"args"`
 	ReturnValue any    `json:"return_value"`
+}
+
+// DiscoveredDependency represents a dependency found at execution time
+// that was not covered by the provided mocks.
+type DiscoveredDependency struct {
+	Symbol            string `json:"symbol"`
+	SourceModule      string `json:"source_module"`
+	Kind              string `json:"kind"` // "unmocked_import" or "subprocess_spawn"
+	IsSubprocessSpawn bool   `json:"is_subprocess_spawn"`
 }
 
 // MockConfig specifies how to mock an external dependency.
