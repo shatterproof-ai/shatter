@@ -1,0 +1,168 @@
+# Protocol conformance test cases.
+#
+# Each case defines a request to send to every frontend and the expected
+# response shape. The harness validates:
+#   1. Individual shape: required fields present with correct types
+#   2. Cross-frontend: after normalizing dynamic_fields, response structures match
+
+# Known drifts that are reported as warnings rather than failures.
+# Remove entries as frontends are fixed to align.
+known_drifts:
+  # Go handler includes a "functions" field in responses where other
+  # frontends do not. Tracked for future alignment.
+  - pattern: ".functions: missing in"
+    reason: "Go handler includes extra 'functions' field in all responses"
+
+frontends:
+  noop:
+    command: ["bash", "protocol/noop-frontend.sh"]
+  typescript:
+    command: ["node", "--no-warnings", "shatter-ts/dist/main.js"]
+    build_check: "shatter-ts/dist/main.js"
+  go:
+    command: ["shatter-go/bin/shatter-go"]
+    build_check: "shatter-go/bin/shatter-go"
+  rust:
+    command: ["shatter-rust/target/debug/shatter-rust"]
+    build_check: "shatter-rust/target/debug/shatter-rust"
+
+cases:
+  - name: handshake
+    request:
+      protocol_version: "0.1.0"
+      id: 1
+      command: handshake
+      capabilities:
+        - analyze
+        - instrument
+        - execute
+        - setup
+        - teardown
+        - generate
+    expect:
+      status: handshake
+      required_fields:
+        frontend_version:
+          type: string
+        language:
+          type: string
+        capabilities:
+          type: array
+          min_length: 1
+      dynamic_fields:
+        - language
+        - frontend_version
+        - capabilities
+
+  - name: analyze_missing_file
+    # noop returns a stub analyze response regardless of file existence
+    skip_frontends: [noop]
+    request:
+      protocol_version: "0.1.0"
+      id: 2
+      command: analyze
+      file: "__nonexistent__/no_such_file.ts"
+      function: "noSuchFunction"
+      project_root: "."
+    expect:
+      status: error
+      required_fields:
+        code:
+          type: string
+        message:
+          type: string
+      dynamic_fields:
+        - code
+        - message
+        - details
+
+  - name: setup_session
+    request:
+      protocol_version: "0.1.0"
+      id: 3
+      command: setup
+      file: "test-session.ts"
+      scope: "test-session"
+      level: "session"
+      project_root: "."
+      parent_context: null
+    expect:
+      # Real frontends may return error for nonexistent file paths
+      status_oneof: [setup, error]
+      required_fields_by_status:
+        setup:
+          setup_context:
+            type: object
+        error:
+          code:
+            type: string
+          message:
+            type: string
+      dynamic_fields:
+        - setup_context
+        - code
+        - message
+        - details
+
+  - name: teardown_session
+    request:
+      protocol_version: "0.1.0"
+      id: 4
+      command: teardown
+      scope: "test-session"
+      level: "session"
+    expect:
+      status_oneof: [teardown_ack, error]
+      required_fields_by_status:
+        teardown_ack: {}
+        error:
+          code:
+            type: string
+          message:
+            type: string
+      dynamic_fields:
+        - code
+        - message
+        - details
+
+  - name: generate_value
+    request:
+      protocol_version: "0.1.0"
+      id: 5
+      command: generate
+      file: "src/example.ts"
+      name: "test-gen"
+      kind: "type_name"
+      recipe:
+        generator: "TestGen"
+        seed: 42
+        config: {}
+      project_root: "."
+    expect:
+      # Noop returns a value, real frontends may return error for nonexistent files
+      status_oneof: [generate, error]
+      required_fields_by_status:
+        generate:
+          value:
+            type: any
+        error:
+          code:
+            type: string
+          message:
+            type: string
+      dynamic_fields:
+        - value
+        - code
+        - message
+        - details
+
+  - name: shutdown
+    request:
+      protocol_version: "0.1.0"
+      id: 99
+      command: shutdown
+    expect:
+      status: shutdown_ack
+      required_fields: {}
+      dynamic_fields: []
+      expect_exit: true
