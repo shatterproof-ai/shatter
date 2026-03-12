@@ -1,9 +1,9 @@
 //! Branch-distance fitness function for genetic search.
 //!
-//! Scores an [`ExecuteResult`] on five axes — branch coverage, proximity
+//! Scores an [`ExecuteResult`] on six axes — branch coverage, proximity
 //! to uncovered target branches, unknown-branch exploration bonus, path
-//! novelty, and execution depth — and combines them into a single
-//! 0.0–1.0 fitness value.
+//! novelty, execution depth, and branch rarity — and combines them into
+//! a single 0.0–1.0 fitness value.
 
 use std::collections::HashSet;
 
@@ -16,9 +16,9 @@ use crate::sym_expr::{BinOpKind, ConstValue, SymExpr};
 /// At k=10, a path of length 10 scores 0.5; length 30 scores 0.75.
 const DEPTH_HALF_SATURATION: f64 = 10.0;
 
-/// Weights for combining the five fitness components.
+/// Weights for combining the six fitness components.
 ///
-/// Defaults: coverage 0.25, proximity 0.35, unknown_bonus 0.10, novelty 0.15, depth 0.15.
+/// Defaults: coverage 0.20, proximity 0.30, unknown_bonus 0.10, novelty 0.10, depth 0.15, rarity 0.15.
 #[derive(Debug, Clone)]
 pub struct FitnessWeights {
     pub coverage: f64,
@@ -26,21 +26,23 @@ pub struct FitnessWeights {
     pub unknown_bonus: f64,
     pub novelty: f64,
     pub depth: f64,
+    pub rarity: f64,
 }
 
 impl Default for FitnessWeights {
     fn default() -> Self {
         Self {
-            coverage: 0.25,
-            proximity: 0.35,
+            coverage: 0.20,
+            proximity: 0.30,
             unknown_bonus: 0.10,
-            novelty: 0.15,
+            novelty: 0.10,
             depth: 0.15,
+            rarity: 0.15,
         }
     }
 }
 
-/// Breakdown of the five fitness components before weighting.
+/// Breakdown of the six fitness components before weighting.
 #[derive(Debug, Clone)]
 pub struct FitnessBreakdown {
     /// Fraction of unique branches hit relative to target count (0.0–1.0).
@@ -53,7 +55,10 @@ pub struct FitnessBreakdown {
     pub novelty: f64,
     /// How deep into nested control flow the execution penetrated ([0.0, 1.0)).
     pub depth: f64,
-    /// Weighted combination of the five components (0.0–1.0).
+    /// Average rarity of branches in the execution path (0.0–1.0).
+    /// 0.0 when no profile is available.
+    pub rarity: f64,
+    /// Weighted combination of the six components (0.0–1.0).
     pub total: f64,
 }
 
@@ -85,28 +90,33 @@ impl FitnessContext {
 
 /// Score an execution result against a set of target (uncovered) branch IDs.
 ///
-/// Returns a [`FitnessBreakdown`] with individual component scores and the
-/// weighted total, all normalized to 0.0–1.0.
+/// When a [`BranchProfile`] is provided, the rarity component rewards
+/// executions that reach rarely-observed branches. Without a profile,
+/// the rarity component is 0.0 and its weight is excluded from normalization.
 pub fn score(
     result: &ExecuteResult,
     target_branches: &HashSet<u32>,
     context: &mut FitnessContext,
     weights: &FitnessWeights,
+    profile: Option<&crate::branch_profile::BranchProfile>,
 ) -> FitnessBreakdown {
     let coverage = coverage_score(&result.branch_path, target_branches.len());
     let proximity = proximity_score(&result.branch_path, target_branches);
     let unknown = unknown_bonus_score(&result.branch_path);
     let novelty = novelty_score(&result.branch_path, context);
     let depth = depth_score(&result.branch_path);
+    let rarity = rarity_score(&result.branch_path, profile);
 
+    let rarity_weight = if profile.is_some() { weights.rarity } else { 0.0 };
     let weight_sum =
-        weights.coverage + weights.proximity + weights.unknown_bonus + weights.novelty + weights.depth;
+        weights.coverage + weights.proximity + weights.unknown_bonus + weights.novelty + weights.depth + rarity_weight;
     let total = if weight_sum > 0.0 {
         (weights.coverage * coverage
             + weights.proximity * proximity
             + weights.unknown_bonus * unknown
             + weights.novelty * novelty
-            + weights.depth * depth)
+            + weights.depth * depth
+            + rarity_weight * rarity)
             / weight_sum
     } else {
         0.0
@@ -118,6 +128,7 @@ pub fn score(
         unknown_bonus: unknown,
         novelty,
         depth,
+        rarity,
         total,
     }
 }
@@ -283,9 +294,27 @@ fn novelty_score(branch_path: &[BranchDecision], context: &mut FitnessContext) -
     }
 }
 
+/// Average rarity of branches in the execution path.
+///
+/// Returns 0.0 when no profile is provided or the branch path is empty.
+fn rarity_score(
+    branch_path: &[BranchDecision],
+    profile: Option<&crate::branch_profile::BranchProfile>,
+) -> f64 {
+    let Some(profile) = profile else { return 0.0 };
+    if branch_path.is_empty() {
+        return 0.0;
+    }
+    // Deduplicate: each branch_id contributes once.
+    let unique: HashSet<u32> = branch_path.iter().map(|bd| bd.branch_id).collect();
+    let sum: f64 = unique.iter().map(|&id| profile.rarity(id)).sum();
+    sum / unique.len() as f64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use crate::protocol::{ExecuteResult, PerformanceMetrics};
 
     /// Helper to build an `ExecuteResult` with a given branch path.
@@ -384,7 +413,6 @@ mod tests {
 
     #[test]
     fn branch_distance_ne_equal_values() {
-        // Ne with equal values means we need them to differ → distance 1/(1+1) = 0.5
         let d = comparison_distance(BinOpKind::Ne, 7.0, 7.0);
         assert_eq!(d, 0.5);
     }
@@ -460,12 +488,11 @@ mod tests {
         let result = make_result(vec![]);
         let targets: HashSet<u32> = [1, 2, 3].into_iter().collect();
         let mut ctx = FitnessContext::new();
-        let breakdown = score(&result, &targets, &mut ctx, &FitnessWeights::default());
+        let breakdown = score(&result, &targets, &mut ctx, &FitnessWeights::default(), None);
 
         assert_eq!(breakdown.coverage, 0.0);
         assert_eq!(breakdown.proximity, 0.0);
         assert_eq!(breakdown.unknown_bonus, 0.0);
-        // novelty is 1.0 because even an empty path is "new" the first time
         assert!(breakdown.total < 0.3, "expected low total, got {}", breakdown.total);
     }
 
@@ -478,7 +505,7 @@ mod tests {
         let result = make_result(path);
         let targets: HashSet<u32> = [1, 2].into_iter().collect();
         let mut ctx = FitnessContext::new();
-        let breakdown = score(&result, &targets, &mut ctx, &FitnessWeights::default());
+        let breakdown = score(&result, &targets, &mut ctx, &FitnessWeights::default(), None);
 
         assert_eq!(breakdown.coverage, 1.0);
         assert_eq!(breakdown.proximity, 1.0);
@@ -499,15 +526,16 @@ mod tests {
             unknown_bonus: 0.0,
             novelty: 0.0,
             depth: 0.0,
+            rarity: 0.0,
         };
-        let breakdown = score(&result, &targets, &mut ctx, &weights);
+        let breakdown = score(&result, &targets, &mut ctx, &weights, None);
         assert_eq!(breakdown.total, breakdown.proximity);
     }
 
     #[test]
     fn default_weights_sum_to_one() {
         let w = FitnessWeights::default();
-        let sum = w.coverage + w.proximity + w.unknown_bonus + w.novelty + w.depth;
+        let sum = w.coverage + w.proximity + w.unknown_bonus + w.novelty + w.depth + w.rarity;
         assert!((sum - 1.0).abs() < f64::EPSILON, "weights sum to {sum}, expected 1.0");
     }
 
@@ -528,7 +556,7 @@ mod tests {
         for (i, path) in scenarios.into_iter().enumerate() {
             let mut ctx = FitnessContext::new();
             let result = make_result(path);
-            let b = score(&result, &targets, &mut ctx, &FitnessWeights::default());
+            let b = score(&result, &targets, &mut ctx, &FitnessWeights::default(), None);
             assert!(
                 b.total >= 0.0 && b.total <= 1.0,
                 "scenario {i}: total {:.4} out of range",
@@ -552,8 +580,9 @@ mod tests {
             unknown_bonus: 0.0,
             novelty: 0.0,
             depth: 0.0,
+            rarity: 0.0,
         };
-        let b = score(&result, &targets, &mut ctx, &weights);
+        let b = score(&result, &targets, &mut ctx, &weights, None);
         assert_eq!(b.total, 0.0);
     }
 
@@ -601,7 +630,7 @@ mod tests {
         for (i, path) in scenarios.into_iter().enumerate() {
             let mut ctx = FitnessContext::new();
             let result = make_result(path);
-            let b = score(&result, &targets, &mut ctx, &FitnessWeights::default());
+            let b = score(&result, &targets, &mut ctx, &FitnessWeights::default(), None);
             assert!(
                 b.depth >= 0.0 && b.depth < 1.0,
                 "scenario {i}: depth {:.4} out of range",
@@ -612,6 +641,109 @@ mod tests {
                 "scenario {i}: total {:.4} out of range",
                 b.total
             );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Rarity scoring
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn rarity_score_without_profile_is_zero() {
+        let path = vec![numeric_branch(1, true, BinOpKind::Gt, 10, 5)];
+        assert_eq!(rarity_score(&path, None), 0.0);
+    }
+
+    #[test]
+    fn rarity_score_empty_path_is_zero() {
+        let profile = crate::branch_profile::BranchProfile::new(HashMap::new());
+        assert_eq!(rarity_score(&[], Some(&profile)), 0.0);
+    }
+
+    #[test]
+    fn rarity_score_rare_branch_is_high() {
+        let mut freqs = HashMap::new();
+        freqs.insert(1, 0.1); // rarely seen → rarity 0.9
+        let profile = crate::branch_profile::BranchProfile::new(freqs);
+        let path = vec![numeric_branch(1, true, BinOpKind::Gt, 10, 5)];
+        let r = rarity_score(&path, Some(&profile));
+        assert!((r - 0.9).abs() < f64::EPSILON, "expected 0.9, got {r}");
+    }
+
+    #[test]
+    fn rarity_score_common_branch_is_low() {
+        let mut freqs = HashMap::new();
+        freqs.insert(1, 0.9); // commonly seen → rarity 0.1
+        let profile = crate::branch_profile::BranchProfile::new(freqs);
+        let path = vec![numeric_branch(1, true, BinOpKind::Gt, 10, 5)];
+        let r = rarity_score(&path, Some(&profile));
+        assert!((r - 0.1).abs() < f64::EPSILON, "expected 0.1, got {r}");
+    }
+
+    #[test]
+    fn rarity_score_unknown_branch_is_one() {
+        let profile = crate::branch_profile::BranchProfile::new(HashMap::new());
+        let path = vec![numeric_branch(99, true, BinOpKind::Gt, 10, 5)];
+        let r = rarity_score(&path, Some(&profile));
+        assert_eq!(r, 1.0);
+    }
+
+    #[test]
+    fn score_with_profile_boosts_rare_branches() {
+        let mut freqs = HashMap::new();
+        freqs.insert(1, 0.1); // rare
+        freqs.insert(2, 0.9); // common
+        let profile = crate::branch_profile::BranchProfile::new(freqs);
+
+        let rare_path = vec![numeric_branch(1, true, BinOpKind::Eq, 5, 5)];
+        let common_path = vec![numeric_branch(2, true, BinOpKind::Eq, 5, 5)];
+
+        let targets: HashSet<u32> = [1, 2].into_iter().collect();
+        let weights = FitnessWeights {
+            coverage: 0.0,
+            proximity: 0.0,
+            unknown_bonus: 0.0,
+            novelty: 0.0,
+            depth: 0.0,
+            rarity: 1.0,
+        };
+
+        let mut ctx = FitnessContext::new();
+        let rare_score = score(&make_result(rare_path), &targets, &mut ctx, &weights, Some(&profile));
+        let mut ctx2 = FitnessContext::new();
+        let common_score = score(&make_result(common_path), &targets, &mut ctx2, &weights, Some(&profile));
+
+        assert!(rare_score.total > common_score.total,
+            "rare branch score ({}) should exceed common ({})",
+            rare_score.total, common_score.total);
+    }
+
+    #[test]
+    fn fitness_with_rarity_in_zero_one_range() {
+        let mut freqs = HashMap::new();
+        freqs.insert(1, 0.3);
+        freqs.insert(2, 0.7);
+        freqs.insert(3, 0.0);
+        let profile = crate::branch_profile::BranchProfile::new(freqs);
+
+        let scenarios: Vec<Vec<BranchDecision>> = vec![
+            vec![],
+            vec![numeric_branch(1, true, BinOpKind::Gt, 100, 0)],
+            vec![unknown_branch(1), unknown_branch(2), unknown_branch(3)],
+        ];
+        let targets: HashSet<u32> = [1, 2, 3].into_iter().collect();
+
+        for (i, path) in scenarios.into_iter().enumerate() {
+            let mut ctx = FitnessContext::new();
+            let result = make_result(path);
+            let b = score(&result, &targets, &mut ctx, &FitnessWeights::default(), Some(&profile));
+            assert!(
+                b.total >= 0.0 && b.total <= 1.0,
+                "scenario {i}: total {:.4} out of range",
+                b.total
+            );
+            assert!(b.rarity >= 0.0 && b.rarity <= 1.0,
+                "scenario {i}: rarity {:.4} out of range", b.rarity);
         }
     }
 }
@@ -639,11 +771,10 @@ mod proptests {
 
         #[test]
         fn default_weights_sum_is_one(
-            // Verify the invariant holds — proptest guards against float drift in refactors.
             _dummy in 0u8..1
         ) {
             let w = FitnessWeights::default();
-            let sum = w.coverage + w.proximity + w.unknown_bonus + w.novelty + w.depth;
+            let sum = w.coverage + w.proximity + w.unknown_bonus + w.novelty + w.depth + w.rarity;
             prop_assert!((sum - 1.0).abs() < 1e-10, "weights sum to {sum}");
         }
 
@@ -688,10 +819,11 @@ mod proptests {
             let targets: std::collections::HashSet<u32> =
                 (0..n_targets as u32).collect();
             let mut ctx = FitnessContext::new();
-            let b = score(&result, &targets, &mut ctx, &FitnessWeights::default());
+            let b = score(&result, &targets, &mut ctx, &FitnessWeights::default(), None);
 
             prop_assert!(b.total >= 0.0 && b.total <= 1.0, "total={}", b.total);
             prop_assert!(b.depth >= 0.0 && b.depth < 1.0, "depth={}", b.depth);
+            prop_assert!(b.rarity >= 0.0 && b.rarity <= 1.0, "rarity={}", b.rarity);
             prop_assert!(b.coverage >= 0.0 && b.coverage <= 1.0);
             prop_assert!(b.proximity >= 0.0 && b.proximity <= 1.0);
             prop_assert!(b.unknown_bonus >= 0.0 && b.unknown_bonus <= 1.0);
