@@ -186,17 +186,22 @@ The workflow is:
 4. Verify the test now **passes**
 
 This ensures every bug fix is validated by a regression test and prevents
-"fixes" that don't actually address the root cause.
+"fixes" that don't actually address the root cause. Use **`/bugfix`** to be
+guided through this workflow step by step.
 
 ### Completing an Issue
 
-An issue is not complete until:
-1. All code changes pass quality gates (tests, clippy/lint, build)
-2. Changes are committed on a **dedicated branch for this issue only** (no other issues' changes)
-3. The branch is merged to `main` (one branch at a time — do not merge other branches simultaneously)
-4. The branch is deleted after merge
-5. The issue is closed with `bd close <id>`
-6. Changes are pushed to remote with `git push`
+Run **`/pre-completion`** before declaring any issue complete. The skill
+verifies quality gates, E2E tests, git status, scope, and acceptance criteria.
+See the [Mandatory Pre-Completion Check](#mandatory-pre-completion-check)
+section for the full policy.
+
+Beyond passing `/pre-completion`, an issue is not complete until:
+1. Changes are committed on a **dedicated branch for this issue only** (no other issues' changes)
+2. The branch is merged to `main` (one branch at a time — do not merge other branches simultaneously)
+3. The branch is deleted after merge
+4. The issue is closed with `bd close <id>`
+5. Changes are pushed to remote with `git push`
 
 Do not leave stale branches. Merge and delete promptly.
 
