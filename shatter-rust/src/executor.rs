@@ -439,7 +439,12 @@ pub fn execute_function(
     std::fs::write(temp_dir.join("src/main.rs"), &harness)?;
 
     // Compile
-    let build_timeout = Duration::from_secs(DEFAULT_BUILD_TIMEOUT_SECS);
+    let build_timeout_secs = std::env::var("SHATTER_BUILD_TIMEOUT")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(DEFAULT_BUILD_TIMEOUT_SECS);
+    let build_timeout = Duration::from_secs(build_timeout_secs);
     let build_start = Instant::now();
     let build_output = Command::new("cargo")
         .args(["build", "--release"])

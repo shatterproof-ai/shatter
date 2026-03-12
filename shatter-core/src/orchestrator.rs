@@ -111,6 +111,8 @@ pub struct ExploreConfig {
     /// When present, biases fitness scoring and frontier prioritization
     /// toward rarely-observed branches.
     pub branch_profile: Option<crate::branch_profile::BranchProfile>,
+    /// Strategy meta-configuration for adaptive selection.
+    pub meta_config: crate::strategy::MetaConfig,
 }
 
 /// Default maximum total executions before stopping exploration.
@@ -136,6 +138,7 @@ impl Default for ExploreConfig {
             solver_timeout_ms: None,
             timeout_explore: None,
             branch_profile: None,
+            meta_config: crate::strategy::MetaConfig::default(),
         }
     }
 }

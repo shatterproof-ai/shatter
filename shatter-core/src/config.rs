@@ -20,6 +20,15 @@ use crate::protocol::SetupLevel;
 /// Default setup timeout in seconds, applied when no explicit value is configured.
 pub const DEFAULT_SETUP_TIMEOUT_SECS: u64 = 30;
 
+/// Default: adaptive strategy scoring enabled.
+pub const DEFAULT_EXPLORATION_ADAPTIVE: bool = true;
+/// Default sliding window size for outcome-based strategy scoring.
+pub const DEFAULT_EXPLORATION_SCORE_WINDOW: usize = 100;
+/// Default minimum candidates before a strategy can be deprioritized.
+pub const DEFAULT_EXPLORATION_COLD_START: u64 = 20;
+/// Default minimum allocation fraction per strategy (2%).
+pub const DEFAULT_EXPLORATION_STRATEGY_FLOOR: f64 = 0.02;
+
 /// Session-level setup configuration: a setup file run once before any file
 /// in the test session.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
@@ -63,6 +72,9 @@ pub enum ConfigError {
         pattern: String,
         source: globset::Error,
     },
+
+    #[error("invalid strategy weights: {0}")]
+    InvalidStrategyWeights(String),
 }
 
 /// Top-level `.shatter/config.yaml` structure.
@@ -139,6 +151,102 @@ impl Default for GeneticConfig {
     }
 }
 
+/// Strategy meta-configuration for adaptive exploration.
+///
+/// Controls how the [`MetaStrategy`](crate::strategy::MetaStrategy) selects
+/// among registered input strategies during exploration.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct ExplorationConfig {
+    /// Enable adaptive strategy scoring. When false (and no strategy_weights),
+    /// strategies are selected round-robin.
+    #[serde(default = "ExplorationConfig::default_adaptive")]
+    pub adaptive: bool,
+
+    /// Sliding window size for outcome-based scoring.
+    #[serde(default = "ExplorationConfig::default_score_window")]
+    pub score_window: usize,
+
+    /// Minimum candidates a strategy must supply before it can be deprioritized.
+    #[serde(default = "ExplorationConfig::default_cold_start")]
+    pub cold_start: u64,
+
+    /// Minimum allocation fraction per strategy, 0.0–1.0.
+    #[serde(default = "ExplorationConfig::default_strategy_floor")]
+    pub strategy_floor: f64,
+
+    /// Optional static weight distribution: strategy name → relative weight.
+    /// When set, overrides adaptive scoring with fixed proportional selection.
+    #[serde(default)]
+    pub strategy_weights: Option<HashMap<String, f64>>,
+}
+
+impl ExplorationConfig {
+    fn default_adaptive() -> bool { DEFAULT_EXPLORATION_ADAPTIVE }
+    fn default_score_window() -> usize { DEFAULT_EXPLORATION_SCORE_WINDOW }
+    fn default_cold_start() -> u64 { DEFAULT_EXPLORATION_COLD_START }
+    fn default_strategy_floor() -> f64 { DEFAULT_EXPLORATION_STRATEGY_FLOOR }
+
+    /// Parse a `--strategy-weights` CLI string like `"literals=0.3,random=0.5"`.
+    pub fn parse_strategy_weights(s: &str) -> Result<HashMap<String, f64>, ConfigError> {
+        let mut map = HashMap::new();
+        for pair in s.split(',') {
+            let pair = pair.trim();
+            if pair.is_empty() {
+                continue;
+            }
+            let (name, weight_str) = pair
+                .split_once('=')
+                .ok_or_else(|| ConfigError::InvalidStrategyWeights(format!(
+                    "expected 'name=weight' but got '{pair}'"
+                )))?;
+            let name = name.trim();
+            let weight_str = weight_str.trim();
+            let weight: f64 = weight_str.parse().map_err(|_| {
+                ConfigError::InvalidStrategyWeights(format!(
+                    "invalid weight for '{name}': '{weight_str}' is not a number"
+                ))
+            })?;
+            if weight < 0.0 {
+                return Err(ConfigError::InvalidStrategyWeights(format!(
+                    "weight for '{name}' must be non-negative, got {weight}"
+                )));
+            }
+            map.insert(name.to_string(), weight);
+        }
+        if map.is_empty() {
+            return Err(ConfigError::InvalidStrategyWeights(
+                "no strategy weights specified".to_string(),
+            ));
+        }
+        Ok(map)
+    }
+
+    /// Convert to the runtime [`MetaConfig`](crate::strategy::MetaConfig).
+    pub fn to_meta_config(&self) -> crate::strategy::MetaConfig {
+        crate::strategy::MetaConfig {
+            window_size: self.score_window,
+            cold_start_threshold: self.cold_start,
+            floor: self.strategy_floor,
+            adaptive: self.adaptive,
+            static_weights: self.strategy_weights.as_ref().map(|m| {
+                m.iter().map(|(k, v)| (k.clone(), *v)).collect()
+            }),
+        }
+    }
+}
+
+impl Default for ExplorationConfig {
+    fn default() -> Self {
+        Self {
+            adaptive: Self::default_adaptive(),
+            score_window: Self::default_score_window(),
+            cold_start: Self::default_cold_start(),
+            strategy_floor: Self::default_strategy_floor(),
+            strategy_weights: None,
+        }
+    }
+}
+
 /// Default settings for all functions.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 pub struct DefaultsConfig {
@@ -186,6 +294,10 @@ pub struct DefaultsConfig {
     /// Genetic algorithm explorer settings.
     #[serde(default)]
     pub genetic: Option<GeneticConfig>,
+
+    /// Strategy meta-configuration for adaptive exploration.
+    #[serde(default)]
+    pub exploration: Option<ExplorationConfig>,
 }
 
 
@@ -235,6 +347,10 @@ pub struct FunctionConfig {
     /// Genetic algorithm explorer settings, overriding defaults.
     #[serde(default)]
     pub genetic: Option<GeneticConfig>,
+
+    /// Strategy meta-configuration, overriding defaults.
+    #[serde(default)]
+    pub exploration: Option<ExplorationConfig>,
 }
 
 /// A single candidate input for a function.
@@ -309,6 +425,9 @@ pub struct ResolvedFunctionConfig {
 
     /// Merged per-symbol mock overrides for auto-mocking.
     pub mock_overrides: HashMap<String, crate::auto_mock::MockOverride>,
+
+    /// Resolved strategy meta-configuration.
+    pub exploration: ExplorationConfig,
 }
 
 /// A config file found during hierarchical discovery, paired with its directory.
@@ -503,6 +622,7 @@ pub fn merge_configs(configs: &[ShatterConfig]) -> ShatterConfig {
             param_generators,
             mocks: None,
             genetic: None,
+            exploration: None,
         },
         functions,
         opaque_types,
@@ -583,6 +703,12 @@ fn resolve_from_merged(
         }
     }
 
+    // Resolve exploration config: function > defaults > built-in defaults.
+    let exploration = func_config
+        .and_then(|fc| fc.exploration.clone())
+        .or_else(|| config.defaults.exploration.clone())
+        .unwrap_or_default();
+
     Ok(ResolvedFunctionConfig {
         max_iterations,
         timeout,
@@ -598,6 +724,7 @@ fn resolve_from_merged(
         generators: HashMap::new(),
         param_generators: HashMap::new(),
         mock_overrides,
+        exploration,
     })
 }
 
@@ -923,6 +1050,7 @@ functions:
                 param_generators: None,
                 mocks: None,
                 genetic: None,
+                exploration: None,
             },
         );
 
@@ -941,6 +1069,7 @@ functions:
                 param_generators: None,
                 mocks: None,
                 genetic: None,
+                exploration: None,
             },
         );
 
@@ -983,6 +1112,7 @@ functions:
                 param_generators: None,
                 mocks: None,
                 genetic: None,
+                exploration: None,
             },
         );
 
@@ -1046,6 +1176,7 @@ functions:
                 param_generators: None,
                 mocks: None,
                 genetic: None,
+                exploration: None,
             },
         );
 
@@ -1972,6 +2103,7 @@ defaults:
                             param_generators: None,
                             mocks: None,
                             genetic: None,
+                            exploration: None,
                         }
                     },
                 )
@@ -2047,5 +2179,146 @@ defaults:
                 }
             }
         }
+    }
+
+    #[test]
+    fn exploration_config_yaml_roundtrip_all_fields() {
+        let yaml = r#"
+defaults:
+  exploration:
+    adaptive: false
+    score_window: 50
+    cold_start: 10
+    strategy_floor: 0.05
+    strategy_weights:
+      literals: 0.3
+      random: 0.5
+      boundary: 0.2
+"#;
+        let config: ShatterConfig = serde_yaml::from_str(yaml).unwrap();
+        let exp = config.defaults.exploration.unwrap();
+        assert!(!exp.adaptive);
+        assert_eq!(exp.score_window, 50);
+        assert_eq!(exp.cold_start, 10);
+        assert!((exp.strategy_floor - 0.05).abs() < f64::EPSILON);
+        let weights = exp.strategy_weights.unwrap();
+        assert_eq!(weights.len(), 3);
+        assert!((weights["literals"] - 0.3).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn exploration_config_yaml_defaults_fill_in() {
+        let yaml = r#"
+defaults:
+  exploration:
+    adaptive: false
+"#;
+        let config: ShatterConfig = serde_yaml::from_str(yaml).unwrap();
+        let exp = config.defaults.exploration.unwrap();
+        assert!(!exp.adaptive);
+        assert_eq!(exp.score_window, DEFAULT_EXPLORATION_SCORE_WINDOW);
+        assert_eq!(exp.cold_start, DEFAULT_EXPLORATION_COLD_START);
+        assert!((exp.strategy_floor - DEFAULT_EXPLORATION_STRATEGY_FLOOR).abs() < f64::EPSILON);
+        assert!(exp.strategy_weights.is_none());
+    }
+
+    #[test]
+    fn exploration_config_absent_means_none() {
+        let yaml = "defaults: {}\n";
+        let config: ShatterConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.defaults.exploration.is_none());
+    }
+
+    #[test]
+    fn exploration_config_to_meta_config_conversion() {
+        let mut weights = HashMap::new();
+        weights.insert("random".to_string(), 0.7);
+        weights.insert("literals".to_string(), 0.3);
+        let exp = ExplorationConfig {
+            adaptive: false,
+            score_window: 42,
+            cold_start: 5,
+            strategy_floor: 0.1,
+            strategy_weights: Some(weights),
+        };
+        let meta = exp.to_meta_config();
+        assert!(!meta.adaptive);
+        assert_eq!(meta.window_size, 42);
+        assert_eq!(meta.cold_start_threshold, 5);
+        assert!((meta.floor - 0.1).abs() < f64::EPSILON);
+        let sw = meta.static_weights.unwrap();
+        assert_eq!(sw.len(), 2);
+    }
+
+    #[test]
+    fn exploration_config_function_overrides_defaults() {
+        let yaml = r#"
+defaults:
+  exploration:
+    adaptive: true
+    score_window: 200
+functions:
+  "src/hot.ts:*":
+    exploration:
+      adaptive: false
+      score_window: 50
+"#;
+        let config: ShatterConfig = serde_yaml::from_str(yaml).unwrap();
+        let resolved = resolve_function_config("src/hot.ts:hotPath", &[config], 100, 60).unwrap();
+        assert!(!resolved.exploration.adaptive);
+        assert_eq!(resolved.exploration.score_window, 50);
+    }
+
+    #[test]
+    fn exploration_config_falls_through_to_defaults() {
+        let yaml = r#"
+defaults:
+  exploration:
+    adaptive: false
+    score_window: 200
+"#;
+        let config: ShatterConfig = serde_yaml::from_str(yaml).unwrap();
+        let resolved = resolve_function_config("any:func", &[config], 100, 60).unwrap();
+        assert!(!resolved.exploration.adaptive);
+        assert_eq!(resolved.exploration.score_window, 200);
+    }
+
+    #[test]
+    fn parse_strategy_weights_valid() {
+        let weights = ExplorationConfig::parse_strategy_weights("literals=0.3,random=0.5,boundary=0.2").unwrap();
+        assert_eq!(weights.len(), 3);
+        assert!((weights["literals"] - 0.3).abs() < f64::EPSILON);
+        assert!((weights["random"] - 0.5).abs() < f64::EPSILON);
+        assert!((weights["boundary"] - 0.2).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn parse_strategy_weights_trims_whitespace() {
+        let weights = ExplorationConfig::parse_strategy_weights("  random = 0.8 , literals = 0.2 ").unwrap();
+        assert_eq!(weights.len(), 2);
+    }
+
+    #[test]
+    fn parse_strategy_weights_rejects_missing_equals() {
+        let result = ExplorationConfig::parse_strategy_weights("random:0.5");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_strategy_weights_rejects_non_numeric() {
+        let result = ExplorationConfig::parse_strategy_weights("random=abc");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_strategy_weights_rejects_negative() {
+        let result = ExplorationConfig::parse_strategy_weights("random=-0.5");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_strategy_weights_rejects_empty() {
+        let result = ExplorationConfig::parse_strategy_weights("");
+        assert!(result.is_err());
     }
 }

@@ -450,6 +450,7 @@ pub async fn scan(
             project_root: config.project_root.clone(),
             loop_buckets: explorer::LoopBuckets::default(),
             timeout_explore: config.timeout_explore,
+            meta_config: crate::strategy::MetaConfig::default(),
         };
 
         let exploration = explorer::explore_function(frontend, analysis, &explore_config, None).await?;
@@ -845,6 +846,7 @@ pub async fn parallel_scan(
                 project_root: config.project_root.clone(),
                 loop_buckets: explorer::LoopBuckets::default(),
                 timeout_explore: config.timeout_explore,
+                meta_config: crate::strategy::MetaConfig::default(),
             };
 
             tasks.push((func_name.clone(), analysis.clone(), explore_config, mocks_used, callees, current_deep_fp));

@@ -114,6 +114,8 @@ pub struct ExploreConfig {
     /// Per-function exploration wall-clock timeout. Whichever of this or
     /// `max_iterations` triggers first stops the loop.
     pub timeout_explore: Option<Duration>,
+    /// Strategy meta-configuration for adaptive selection.
+    pub meta_config: crate::strategy::MetaConfig,
 }
 
 /// Summary of a single function execution during exploration.
@@ -1978,6 +1980,7 @@ mod tests {
             project_root: None,
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
+            meta_config: crate::strategy::MetaConfig::default(),
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("should succeed with noop frontend");
@@ -2003,6 +2006,7 @@ mod tests {
             project_root: None,
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
+            meta_config: crate::strategy::MetaConfig::default(),
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("per_function setup should succeed");
@@ -2028,6 +2032,7 @@ mod tests {
             project_root: None,
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
+            meta_config: crate::strategy::MetaConfig::default(),
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("per_execution setup should succeed");
@@ -2052,6 +2057,7 @@ mod tests {
             project_root: None,
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
+            meta_config: crate::strategy::MetaConfig::default(),
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("should succeed without setup capability");
@@ -2080,6 +2086,7 @@ mod tests {
             project_root: None,
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
+            meta_config: crate::strategy::MetaConfig::default(),
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("generators should succeed");
@@ -2104,6 +2111,7 @@ mod tests {
             project_root: None,
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
+            meta_config: crate::strategy::MetaConfig::default(),
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("no generators should succeed");
@@ -2127,6 +2135,7 @@ mod tests {
             project_root: None,
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
+            meta_config: crate::strategy::MetaConfig::default(),
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("user seeds should succeed");
@@ -2153,6 +2162,7 @@ mod tests {
             project_root: None,
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
+            meta_config: crate::strategy::MetaConfig::default(),
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("candidate inputs should succeed");
@@ -2191,6 +2201,7 @@ mod tests {
             project_root: None,
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
+            meta_config: crate::strategy::MetaConfig::default(),
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("should succeed with noop frontend");
