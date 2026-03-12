@@ -43,6 +43,7 @@ pub mod orchestrator;
 pub mod pipeline;
 pub mod project;
 pub mod protocol;
+pub mod recorded_mocks;
 pub mod recursive;
 pub mod report;
 pub mod report_style;

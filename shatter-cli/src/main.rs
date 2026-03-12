@@ -299,6 +299,11 @@ enum CliCommand {
         /// Treat setup failures as fatal errors (abort exploration immediately).
         #[arg(long)]
         fail_on_setup_error: bool,
+
+        /// Record external dependency I/O (passthrough mode). Saves observed
+        /// call data to .shatter/recorded-mocks/ as seed fixtures for future runs.
+        #[arg(long)]
+        record: bool,
     },
 
     /// Scan a directory for source files, analyze and explore all functions in
@@ -1034,6 +1039,7 @@ async fn run_explore(
     use_color: bool,
     seeds_dir: &Path,
     no_seeds: bool,
+    record: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let pool_path = if no_seeds { None } else { Some(seeds_dir.join("pool.json")) };
     let loop_buckets = parse_loop_buckets(loop_buckets_str)?;
@@ -1308,18 +1314,26 @@ async fn run_explore(
                 continue;
             }
 
-            // Generate auto-mocks for external dependencies.
-            let auto_mocks = shatter_core::auto_mock::generate_auto_mocks(
-                &func.dependencies,
-                None,
-                &resolved.mock_overrides,
-                &[],
-            );
+            // Generate mocks: passthrough in record mode, auto-mocks otherwise.
+            let (auto_mocks, mock_params) = if record {
+                let passthrough = shatter_core::recorded_mocks::build_passthrough_mocks(
+                    &func.dependencies,
+                );
+                (passthrough, vec![])
+            } else {
+                let mocks = shatter_core::auto_mock::generate_auto_mocks(
+                    &func.dependencies,
+                    None,
+                    &resolved.mock_overrides,
+                    &[],
+                );
+                let params = shatter_core::auto_mock::build_mock_params(
+                    &func.dependencies,
+                    &mocks,
+                );
+                (mocks, params)
+            };
             let mock_symbols: Vec<String> = auto_mocks.iter().map(|m| m.symbol.clone()).collect();
-            let mock_params = shatter_core::auto_mock::build_mock_params(
-                &func.dependencies,
-                &auto_mocks,
-            );
 
             let explore_config = ExploreConfig {
                 file: file_str.to_string(),
@@ -1444,6 +1458,37 @@ async fn run_explore(
                             && let Err(e) = shatter_core::interesting_pool::save_pool(&pool, pp)
                         {
                             log::warn!("failed to save interesting pool: {e}");
+                        }
+                    }
+
+                    // Record mode: persist external dependency observations.
+                    if record {
+                        let behaviors = shatter_core::recorded_mocks::aggregate_recordings(
+                            &result.raw_results,
+                            &func.dependencies,
+                        );
+                        if !behaviors.is_empty() {
+                            let mock_file = shatter_core::recorded_mocks::build_recorded_mock_file(
+                                &func.name,
+                                &file_str,
+                                behaviors,
+                            );
+                            let shatter_dir = std::path::Path::new(".shatter");
+                            match shatter_core::recorded_mocks::save_recorded_mocks(
+                                &mock_file,
+                                shatter_dir,
+                            ) {
+                                Ok(path) => log::info!(
+                                    "Recorded {} dep(s) for {} -> {}",
+                                    mock_file.dependencies.len(),
+                                    func.name,
+                                    path.display(),
+                                ),
+                                Err(e) => log::error!(
+                                    "Failed to save recorded mocks for {}: {e}",
+                                    func.name,
+                                ),
+                            }
                         }
                     }
 
@@ -3380,6 +3425,7 @@ async fn main() -> ExitCode {
             no_seeds,
             setup_timeout,
             fail_on_setup_error: _,
+            record,
         } => {
             // Set SHATTER_SETUP_TIMEOUT env var for frontends if --setup-timeout provided.
             if let Some(secs) = setup_timeout {
@@ -3423,6 +3469,7 @@ async fn main() -> ExitCode {
                 use_color,
                 &seeds_dir,
                 no_seeds,
+                record,
             )
             .await
         }
@@ -4766,6 +4813,37 @@ mod tests {
         match cli.command {
             CliCommand::Explore { concolic, .. } => {
                 assert!(!concolic);
+            }
+            _ => panic!("expected Explore command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_explore_with_record_flag() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "explore",
+            "--record",
+            "test.ts:myFunc",
+        ]);
+        match cli.command {
+            CliCommand::Explore { record, .. } => {
+                assert!(record);
+            }
+            _ => panic!("expected Explore command"),
+        }
+    }
+
+    #[test]
+    fn cli_record_defaults_to_false() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "explore",
+            "test.ts:myFunc",
+        ]);
+        match cli.command {
+            CliCommand::Explore { record, .. } => {
+                assert!(!record);
             }
             _ => panic!("expected Explore command"),
         }
