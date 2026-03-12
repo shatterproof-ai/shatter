@@ -115,6 +115,59 @@ func TestVersionMismatchReturnsError(t *testing.T) {
 	}
 }
 
+func TestVersionCompatibleWithPatchDifference(t *testing.T) {
+	// A request with a different patch version but same major.minor should succeed.
+	resp := sendRecv(t, `{"protocol_version":"0.1.999","id":1,"command":"handshake","capabilities":[]}`)
+	if resp.Status != "handshake" {
+		t.Errorf("status = %q, want handshake (patch difference should be compatible)", resp.Status)
+	}
+}
+
+func TestParseMajorMinor(t *testing.T) {
+	tests := []struct {
+		input     string
+		wantMajor int
+		wantMinor int
+		wantOK    bool
+	}{
+		{"0.1.0", 0, 1, true},
+		{"1.2.3", 1, 2, true},
+		{"0.1.999", 0, 1, true},
+		{"1.0", 1, 0, true},
+		{"bad", 0, 0, false},
+		{"", 0, 0, false},
+		{"a.b.c", 0, 0, false},
+	}
+	for _, tt := range tests {
+		major, minor, ok := parseMajorMinor(tt.input)
+		if ok != tt.wantOK || major != tt.wantMajor || minor != tt.wantMinor {
+			t.Errorf("parseMajorMinor(%q) = (%d, %d, %v), want (%d, %d, %v)",
+				tt.input, major, minor, ok, tt.wantMajor, tt.wantMinor, tt.wantOK)
+		}
+	}
+}
+
+func TestIsVersionCompatible(t *testing.T) {
+	tests := []struct {
+		version string
+		want    bool
+	}{
+		{ProtocolVersion, true},   // exact match
+		{"0.1.999", true},         // patch difference
+		{"0.1", true},             // no patch
+		{"0.2.0", false},          // minor mismatch
+		{"1.1.0", false},          // major mismatch
+		{"99.0.0", false},         // completely different
+		{"bad", false},            // malformed
+	}
+	for _, tt := range tests {
+		got := isVersionCompatible(tt.version)
+		if got != tt.want {
+			t.Errorf("isVersionCompatible(%q) = %v, want %v", tt.version, got, tt.want)
+		}
+	}
+}
+
 func TestMalformedJSONReturnsInvalidRequest(t *testing.T) {
 	resp := sendRecv(t, "this is not valid json{{{")
 	if resp.Status != "error" {

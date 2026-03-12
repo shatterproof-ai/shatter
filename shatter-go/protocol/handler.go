@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/shatter-dev/shatter/shatter-go/generators"
@@ -108,7 +109,7 @@ func (h *Handler) dispatch(req Request) (Response, bool) {
 		ID:              req.ID,
 	}
 
-	if req.ProtocolVersion != ProtocolVersion {
+	if !isVersionCompatible(req.ProtocolVersion) {
 		base.Status = "error"
 		base.Code = ErrVersionMismatch
 		base.Message = fmt.Sprintf(
@@ -544,6 +545,36 @@ func (h *Handler) handleShutdown(resp Response) Response {
 	h.setupLoader.Close()
 	resp.Status = "shutdown_ack"
 	return resp
+}
+
+// parseMajorMinor extracts the major and minor components from a semver string.
+// Returns (major, minor, ok). ok is false if the version string is malformed.
+func parseMajorMinor(version string) (int, int, bool) {
+	parts := strings.SplitN(version, ".", 3)
+	if len(parts) < 2 {
+		return 0, 0, false
+	}
+	major, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return 0, 0, false
+	}
+	minor, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return 0, 0, false
+	}
+	return major, minor, true
+}
+
+// isVersionCompatible checks whether a requested protocol version is compatible
+// with ProtocolVersion by comparing major and minor components (patch is ignored).
+// Matches the TypeScript frontend's semver-compatible behavior.
+func isVersionCompatible(version string) bool {
+	reqMajor, reqMinor, reqOK := parseMajorMinor(version)
+	ourMajor, ourMinor, ourOK := parseMajorMinor(ProtocolVersion)
+	if !reqOK || !ourOK {
+		return false
+	}
+	return reqMajor == ourMajor && reqMinor == ourMinor
 }
 
 func (h *Handler) send(resp Response) error {
