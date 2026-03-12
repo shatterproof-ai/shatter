@@ -258,6 +258,26 @@ enum CliCommand {
         #[arg(long)]
         genetic_timeout: Option<u32>,
 
+        /// Disable adaptive strategy scoring (use round-robin instead).
+        #[arg(long)]
+        no_adaptive: bool,
+
+        /// Sliding window size for strategy outcome scoring.
+        #[arg(long)]
+        score_window: Option<usize>,
+
+        /// Minimum candidates before a strategy can be deprioritized.
+        #[arg(long)]
+        cold_start: Option<u64>,
+
+        /// Minimum allocation fraction per strategy (0.0–1.0).
+        #[arg(long)]
+        strategy_floor: Option<f64>,
+
+        /// Static strategy weight distribution (e.g. "literals=0.3,random=0.5,boundary=0.2").
+        #[arg(long)]
+        strategy_weights: Option<String>,
+
         /// Z3 solver timeout in seconds per query. Default: no limit.
         #[arg(long)]
         solver_timeout: Option<u64>,
@@ -456,6 +476,26 @@ enum CliCommand {
         /// Timeout in seconds for the genetic algorithm (default: 300).
         #[arg(long)]
         genetic_timeout: Option<u32>,
+
+        /// Disable adaptive strategy scoring (use round-robin instead).
+        #[arg(long)]
+        no_adaptive: bool,
+
+        /// Sliding window size for strategy outcome scoring.
+        #[arg(long)]
+        score_window: Option<usize>,
+
+        /// Minimum candidates before a strategy can be deprioritized.
+        #[arg(long)]
+        cold_start: Option<u64>,
+
+        /// Minimum allocation fraction per strategy (0.0–1.0).
+        #[arg(long)]
+        strategy_floor: Option<f64>,
+
+        /// Static strategy weight distribution (e.g. "literals=0.3,random=0.5,boundary=0.2").
+        #[arg(long)]
+        strategy_weights: Option<String>,
 
         /// Z3 solver timeout in seconds per query. Default: no limit.
         #[arg(long)]
@@ -1003,6 +1043,34 @@ fn load_external_fingerprints(
     external_fps
 }
 
+/// Build a [`MetaConfig`] from CLI flags, applying overrides on top of defaults.
+fn build_meta_config(
+    no_adaptive: bool,
+    score_window: Option<usize>,
+    cold_start: Option<u64>,
+    strategy_floor: Option<f64>,
+    strategy_weights: Option<&str>,
+) -> Result<shatter_core::strategy::MetaConfig, Box<dyn std::error::Error>> {
+    let mut config = shatter_core::config::ExplorationConfig::default();
+    if no_adaptive {
+        config.adaptive = false;
+    }
+    if let Some(w) = score_window {
+        config.score_window = w;
+    }
+    if let Some(c) = cold_start {
+        config.cold_start = c;
+    }
+    if let Some(f) = strategy_floor {
+        config.strategy_floor = f;
+    }
+    if let Some(weights_str) = strategy_weights {
+        config.strategy_weights =
+            Some(shatter_core::config::ExplorationConfig::parse_strategy_weights(weights_str)?);
+    }
+    Ok(config.to_meta_config())
+}
+
 /// Run the explore command.
 // Each argument corresponds to a CLI flag; grouping into a struct would add indirection
 // without improving clarity since this is only called from one callsite.
@@ -1040,6 +1108,7 @@ async fn run_explore(
     seeds_dir: &Path,
     no_seeds: bool,
     record: bool,
+    meta_config: &shatter_core::strategy::MetaConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let pool_path = if no_seeds { None } else { Some(seeds_dir.join("pool.json")) };
     let loop_buckets = parse_loop_buckets(loop_buckets_str)?;
@@ -1364,6 +1433,7 @@ async fn run_explore(
                 project_root: project_root_str.clone(),
                 loop_buckets: loop_buckets.clone(),
                 timeout_explore: timeout_explore.map(Duration::from_secs_f64),
+                meta_config: meta_config.clone(),
             };
 
             if !resolved.candidate_inputs.is_empty() {
@@ -1408,6 +1478,7 @@ async fn run_explore(
                     mock_params: explore_config.mock_params.clone(),
                     solver_timeout_ms: solver_timeout.map(|s| s * 1000),
                     timeout_explore: timeout_explore.map(Duration::from_secs_f64),
+                    meta_config: meta_config.clone(),
                 };
 
                 match shatter_core::orchestrator::explore(
@@ -2438,6 +2509,7 @@ async fn run_export_tests(
             project_root: project_root_str.clone(),
             loop_buckets: explorer::LoopBuckets::default(),
             timeout_explore: None,
+            meta_config: shatter_core::strategy::MetaConfig::default(),
         };
 
         for func in &functions {
@@ -2785,6 +2857,7 @@ async fn run_run(
                 project_root: project_root_str.clone(),
                 loop_buckets: explorer::LoopBuckets::default(),
                 timeout_explore: None,
+                meta_config: shatter_core::strategy::MetaConfig::default(),
                 };
 
             match explorer::explore_function(frontend, &func_analysis, &explore_config, None).await {
@@ -3415,6 +3488,11 @@ async fn main() -> ExitCode {
             genetic_population: _,
             genetic_generations: _,
             genetic_timeout: _,
+            no_adaptive,
+            score_window,
+            cold_start,
+            strategy_floor,
+            strategy_weights,
             solver_timeout,
             memory_limit,
             clean,
@@ -3437,6 +3515,20 @@ async fn main() -> ExitCode {
                     );
                 }
             }
+            // Build MetaConfig from CLI flags, starting from defaults.
+            let meta_config = match build_meta_config(
+                no_adaptive,
+                score_window,
+                cold_start,
+                strategy_floor,
+                strategy_weights.as_deref(),
+            ) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
             run_explore(
                 &targets,
                 max_iterations,
@@ -3470,6 +3562,7 @@ async fn main() -> ExitCode {
                 &seeds_dir,
                 no_seeds,
                 record,
+                &meta_config,
             )
             .await
         }
@@ -3507,6 +3600,11 @@ async fn main() -> ExitCode {
             genetic_population: _,
             genetic_generations: _,
             genetic_timeout: _,
+            no_adaptive: _,
+            score_window: _,
+            cold_start: _,
+            strategy_floor: _,
+            strategy_weights: _,
             solver_timeout: _,
             memory_limit,
             loop_buckets: _,
@@ -5778,5 +5876,105 @@ mod tests {
             }
             _ => panic!("expected Test command"),
         }
+    }
+
+    #[test]
+    fn cli_parses_explore_with_no_adaptive() {
+        let cli = Cli::parse_from([
+            "shatter", "explore", "--no-adaptive", "src/app.ts:foo",
+        ]);
+        match cli.command {
+            CliCommand::Explore { no_adaptive, .. } => {
+                assert!(no_adaptive);
+            }
+            _ => panic!("expected Explore command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_explore_with_strategy_flags() {
+        let cli = Cli::parse_from([
+            "shatter", "explore",
+            "--score-window", "50",
+            "--cold-start", "10",
+            "--strategy-floor", "0.05",
+            "--strategy-weights", "literals=0.3,random=0.7",
+            "src/app.ts:foo",
+        ]);
+        match cli.command {
+            CliCommand::Explore {
+                score_window, cold_start, strategy_floor, strategy_weights, no_adaptive, ..
+            } => {
+                assert!(!no_adaptive);
+                assert_eq!(score_window, Some(50));
+                assert_eq!(cold_start, Some(10));
+                assert!((strategy_floor.unwrap() - 0.05).abs() < f64::EPSILON);
+                assert_eq!(strategy_weights, Some("literals=0.3,random=0.7".to_string()));
+            }
+            _ => panic!("expected Explore command"),
+        }
+    }
+
+    #[test]
+    fn cli_strategy_flags_default_to_none() {
+        let cli = Cli::parse_from(["shatter", "explore", "src/app.ts:foo"]);
+        match cli.command {
+            CliCommand::Explore {
+                no_adaptive, score_window, cold_start, strategy_floor, strategy_weights, ..
+            } => {
+                assert!(!no_adaptive);
+                assert!(score_window.is_none());
+                assert!(cold_start.is_none());
+                assert!(strategy_floor.is_none());
+                assert!(strategy_weights.is_none());
+            }
+            _ => panic!("expected Explore command"),
+        }
+    }
+
+    #[test]
+    fn cli_scan_parses_strategy_flags() {
+        let cli = Cli::parse_from([
+            "shatter", "scan",
+            "--no-adaptive",
+            "--score-window", "200",
+            "src/",
+        ]);
+        match cli.command {
+            CliCommand::Scan { no_adaptive, score_window, .. } => {
+                assert!(no_adaptive);
+                assert_eq!(score_window, Some(200));
+            }
+            _ => panic!("expected Scan command"),
+        }
+    }
+
+    #[test]
+    fn build_meta_config_defaults() {
+        let config = build_meta_config(false, None, None, None, None).unwrap();
+        assert!(config.adaptive);
+        assert_eq!(config.window_size, shatter_core::config::DEFAULT_EXPLORATION_SCORE_WINDOW);
+        assert_eq!(config.cold_start_threshold, shatter_core::config::DEFAULT_EXPLORATION_COLD_START);
+        assert!((config.floor - shatter_core::config::DEFAULT_EXPLORATION_STRATEGY_FLOOR).abs() < f64::EPSILON);
+        assert!(config.static_weights.is_none());
+    }
+
+    #[test]
+    fn build_meta_config_with_overrides() {
+        let config = build_meta_config(
+            true, Some(50), Some(10), Some(0.05), Some("random=0.8,literals=0.2"),
+        ).unwrap();
+        assert!(!config.adaptive);
+        assert_eq!(config.window_size, 50);
+        assert_eq!(config.cold_start_threshold, 10);
+        assert!((config.floor - 0.05).abs() < f64::EPSILON);
+        let weights = config.static_weights.unwrap();
+        assert_eq!(weights.len(), 2);
+    }
+
+    #[test]
+    fn build_meta_config_invalid_weights() {
+        let result = build_meta_config(false, None, None, None, Some("bad"));
+        assert!(result.is_err());
     }
 }

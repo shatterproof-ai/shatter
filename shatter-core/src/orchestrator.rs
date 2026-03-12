@@ -107,6 +107,8 @@ pub struct ExploreConfig {
     /// Per-function exploration wall-clock timeout. Whichever of this or
     /// `max_iterations`/`max_executions` triggers first stops the loop.
     pub timeout_explore: Option<Duration>,
+    /// Strategy meta-configuration for adaptive selection.
+    pub meta_config: crate::strategy::MetaConfig,
 }
 
 /// Default maximum total executions before stopping exploration.
@@ -131,6 +133,7 @@ impl Default for ExploreConfig {
             mock_params: vec![],
             solver_timeout_ms: None,
             timeout_explore: None,
+            meta_config: crate::strategy::MetaConfig::default(),
         }
     }
 }
