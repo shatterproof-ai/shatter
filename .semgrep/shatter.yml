@@ -1,0 +1,55 @@
+rules:
+  # --- Rust library code: no unwrap() ---
+  # CLAUDE.md: "No unwrap() in Rust library code — use Result and ?"
+  - id: no-unwrap-in-library
+    patterns:
+      - pattern-regex: \.unwrap\(\)
+    paths:
+      include:
+        - shatter-core/src/**/*.rs
+      exclude:
+        - shatter-core/src/test_arbitraries.rs
+        - "**/*test*"
+    languages: [rust]
+    severity: ERROR
+    message: >-
+      Avoid .unwrap() in library code — use Result and ? instead.
+      See CLAUDE.md "No unwrap() in Rust library code".
+
+  # --- No hardcoded absolute paths ---
+  # CLAUDE.md: "No hardcoded absolute paths — never write a literal absolute
+  # path (e.g. '/home/user/project/...') in code, tests, output artifacts,
+  # or documentation."
+  - id: no-hardcoded-absolute-paths
+    pattern-regex: '"/(?:home|tmp|usr|var|etc|opt)/[^"]*"'
+    paths:
+      exclude:
+        - .semgrep/**
+        - CLAUDE.md
+        - "**/CLAUDE.md"
+        - docs/**
+        - "**/*.md"
+    languages: [generic]
+    severity: WARNING
+    message: >-
+      Hardcoded absolute path detected. Use runtime path resolution instead
+      (path.resolve, filepath.Abs, canonicalize, env::current_dir).
+      See CLAUDE.md "No hardcoded absolute paths".
+
+  # --- Timeout contract parity ---
+  # All frontends must read SHATTER_EXEC_TIMEOUT. Flag raw numeric timeout
+  # defaults in executor files that don't reference the env var constant name.
+  - id: timeout-env-var-present
+    patterns:
+      - pattern-regex: SHATTER_EXEC_TIMEOUT
+    paths:
+      include:
+        - shatter-ts/src/executor.ts
+        - shatter-go/instrument/executor.go
+        - shatter-rust/src/handler.rs
+    languages: [generic]
+    severity: INFO
+    message: >-
+      Timeout contract checkpoint: this file references SHATTER_EXEC_TIMEOUT.
+      All three frontends (TS, Go, Rust) must implement this env var.
+      See CLAUDE.md "Frontend timeout contract".
