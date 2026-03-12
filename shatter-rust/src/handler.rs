@@ -174,7 +174,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
     fn dispatch(&mut self, req: &Request) -> (Response, bool) {
         let mut resp = Response::base(req.id);
 
-        if req.protocol_version != protocol::PROTOCOL_VERSION {
+        if !is_version_compatible(&req.protocol_version) {
             resp.status = "error".to_string();
             resp.code = Some(ERR_VERSION_MISMATCH.to_string());
             resp.message = Some(format!(
@@ -591,6 +591,25 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
     }
 }
 
+/// Parse major and minor components from a semver string.
+fn parse_major_minor(version: &str) -> Option<(u32, u32)> {
+    let mut parts = version.splitn(3, '.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    Some((major, minor))
+}
+
+/// Check major.minor compatibility, ignoring patch version.
+/// Matches the Go/TypeScript frontends' semver-compatible behavior.
+fn is_version_compatible(version: &str) -> bool {
+    let req = parse_major_minor(version);
+    let ours = parse_major_minor(protocol::PROTOCOL_VERSION);
+    match (req, ours) {
+        (Some((rmaj, rmin)), Some((omaj, omin))) => rmaj == omaj && rmin == omin,
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -681,6 +700,24 @@ mod tests {
     fn version_mismatch_returns_error() {
         let resp = send_recv(
             r#"{"protocol_version":"99.0.0","id":1,"command":"handshake","capabilities":[]}"#,
+        );
+        assert_eq!(resp.status, "error");
+        assert_eq!(resp.code.as_deref(), Some(ERR_VERSION_MISMATCH));
+    }
+
+    #[test]
+    fn compatible_patch_version_is_accepted() {
+        // major.minor match with different patch should succeed (parity with TS/Go)
+        let resp = send_recv(
+            r#"{"protocol_version":"0.1.99","id":1,"command":"handshake","capabilities":[]}"#,
+        );
+        assert_eq!(resp.status, "handshake");
+    }
+
+    #[test]
+    fn malformed_version_is_rejected() {
+        let resp = send_recv(
+            r#"{"protocol_version":"abc","id":1,"command":"handshake","capabilities":[]}"#,
         );
         assert_eq!(resp.status, "error");
         assert_eq!(resp.code.as_deref(), Some(ERR_VERSION_MISMATCH));
