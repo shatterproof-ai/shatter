@@ -235,6 +235,15 @@ if command -v bd &>/dev/null && [ -d "$REPO_ROOT/.beads" ]; then
     fi
 fi
 
+# Install Shatter quality hooks (appends to existing hooks, idempotent)
+if [ -f "$REPO_ROOT/scripts/setup-hooks.sh" ]; then
+    if $CHECK_ONLY; then
+        "$REPO_ROOT/scripts/setup-hooks.sh" --check || MISSING=$((MISSING + 1))
+    else
+        "$REPO_ROOT/scripts/setup-hooks.sh"
+    fi
+fi
+
 # --- Summary ------------------------------------------------------------------
 echo ""
 if $CHECK_ONLY; then
