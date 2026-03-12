@@ -17,10 +17,10 @@ use crate::execution_record::{
 };
 use crate::invariants::{ComparisonOp, Invariant, InvariantKind, InvariantTarget, ClassifiedInvariant};
 use crate::protocol::{
-    BranchInfo, BranchType, Command, CryptoBoundary, DependencyKind, ErrorCode,
-    ExecuteResult, ExternalDependency, FunctionAnalysis, GeneratorKind, LiteralValue,
-    MockBehavior, MockConfig, PerformanceMetrics, Request, Response, ResponseResult,
-    PROTOCOL_VERSION,
+    BranchInfo, BranchType, Command, CryptoBoundary, DepDetectionKind, DependencyKind,
+    DiscoveredDependency, ErrorCode, ExecuteResult, ExternalDependency, FunctionAnalysis,
+    GeneratorKind, LiteralValue, MockBehavior, MockConfig, PerformanceMetrics, Request,
+    Response, ResponseResult, PROTOCOL_VERSION,
 };
 use crate::spec::{ConcreteExample, FunctionSpec, Postcondition, Provenance, SpecClass};
 use crate::sym_expr::{BinOpKind, ConstValue, SymExpr, UnOpKind};
@@ -495,6 +495,24 @@ pub fn arb_performance_metrics() -> impl Strategy<Value = PerformanceMetrics> {
     )
 }
 
+pub fn arb_dep_detection_kind() -> impl Strategy<Value = DepDetectionKind> {
+    prop_oneof![
+        Just(DepDetectionKind::UnmockedImport),
+        Just(DepDetectionKind::SubprocessSpawn),
+    ]
+}
+
+pub fn arb_discovered_dependency() -> impl Strategy<Value = DiscoveredDependency> {
+    (arb_ident(), arb_ident(), arb_dep_detection_kind(), any::<bool>()).prop_map(
+        |(symbol, source_module, kind, is_subprocess_spawn)| DiscoveredDependency {
+            symbol,
+            source_module,
+            kind,
+            is_subprocess_spawn,
+        },
+    )
+}
+
 pub fn arb_execute_result() -> impl Strategy<Value = ExecuteResult> {
     (
         proptest::option::of(arb_json_value_non_null()),
@@ -506,7 +524,10 @@ pub fn arb_execute_result() -> impl Strategy<Value = ExecuteResult> {
         prop::collection::vec(arb_trace_event(), 0..=8),
         prop::collection::vec(arb_side_effect(), 0..=3),
         arb_performance_metrics(),
-        proptest::option::of(arb_truncation_info()),
+        (
+            proptest::option::of(arb_truncation_info()),
+            prop::collection::vec(arb_discovered_dependency(), 0..=3),
+        ),
     )
         .prop_map(
             |(
@@ -519,7 +540,7 @@ pub fn arb_execute_result() -> impl Strategy<Value = ExecuteResult> {
                 scope_events,
                 side_effects,
                 performance,
-                capture_truncation,
+                (capture_truncation, discovered_dependencies),
             )| {
                 ExecuteResult {
                     return_value,
@@ -532,6 +553,7 @@ pub fn arb_execute_result() -> impl Strategy<Value = ExecuteResult> {
                     side_effects,
                     performance,
                     capture_truncation,
+                    discovered_dependencies,
                 }
             },
         )

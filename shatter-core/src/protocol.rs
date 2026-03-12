@@ -386,6 +386,31 @@ pub enum DependencyKind {
     ModuleImport,
 }
 
+/// How a dependency was detected at execution time.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DepDetectionKind {
+    /// A `require()` or `import()` call resolved to a module not listed
+    /// in static analysis dependencies.
+    UnmockedImport,
+    /// A subprocess-spawning API (`child_process.exec`, `spawn`, etc.) was
+    /// invoked during execution.
+    SubprocessSpawn,
+}
+
+/// A dependency discovered at execution time that static analysis missed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DiscoveredDependency {
+    /// Fully qualified symbol or module name.
+    pub symbol: String,
+    /// Module the dependency was imported from.
+    pub source_module: String,
+    /// How the dependency was detected.
+    pub kind: DepDetectionKind,
+    /// Whether this dependency spawns a subprocess.
+    pub is_subprocess_spawn: bool,
+}
+
 /// Result of executing an instrumented function.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExecuteResult {
@@ -417,6 +442,9 @@ pub struct ExecuteResult {
     /// Truncation metadata for captured side effects.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capture_truncation: Option<TruncationInfo>,
+    /// Dependencies discovered at execution time that static analysis missed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub discovered_dependencies: Vec<DiscoveredDependency>,
 }
 
 /// Performance metrics from a single execution.
@@ -778,7 +806,7 @@ mod tests {
                     heap_used_bytes: 1024,
                     heap_allocated_bytes: 2048,
                 },
-                capture_truncation: None,
+                capture_truncation: None, discovered_dependencies: vec![],
             })),
         ));
     }
@@ -807,7 +835,7 @@ mod tests {
                     heap_used_bytes: 256,
                     heap_allocated_bytes: 256,
                 },
-                capture_truncation: None,
+                capture_truncation: None, discovered_dependencies: vec![],
             })),
         ));
     }
@@ -1748,7 +1776,7 @@ mod tests {
             side_effects: vec![],
             scope_events: vec![],
             performance: PerformanceMetrics::default(),
-            capture_truncation: None,
+            capture_truncation: None, discovered_dependencies: vec![],
         };
         assert!(validate_execute_result(&result));
     }
@@ -1774,7 +1802,7 @@ mod tests {
             side_effects: vec![],
             scope_events: vec![],
             performance: PerformanceMetrics::default(),
-            capture_truncation: None,
+            capture_truncation: None, discovered_dependencies: vec![],
         };
         assert!(!validate_execute_result(&result));
     }
