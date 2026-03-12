@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use globset::{Glob, GlobMatcher};
 use serde::{Deserialize, Serialize};
 
+use crate::mock_fixture::MockFixtureConfig;
 use crate::protocol::SetupLevel;
 
 /// Default setup timeout in seconds, applied when no explicit value is configured.
@@ -82,6 +83,10 @@ pub struct ShatterConfig {
     /// User-declared nondeterminism: confirmed and rejected field declarations.
     #[serde(default)]
     pub nondeterminism: Option<NondeterminismConfig>,
+
+    /// User-defined mock fixtures with three-level scoped resolution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mock_fixtures: Option<MockFixtureConfig>,
 }
 
 
@@ -482,6 +487,9 @@ pub fn merge_configs(configs: &[ShatterConfig]) -> ShatterConfig {
         None
     };
 
+    // Mock fixtures: nearest non-None wins (no deep merge for now).
+    let mock_fixtures = configs.iter().find_map(|c| c.mock_fixtures.clone());
+
     ShatterConfig {
         defaults: DefaultsConfig {
             max_iterations,
@@ -499,6 +507,7 @@ pub fn merge_configs(configs: &[ShatterConfig]) -> ShatterConfig {
         functions,
         opaque_types,
         nondeterminism,
+        mock_fixtures,
     }
 }
 
