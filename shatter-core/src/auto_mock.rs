@@ -3,6 +3,12 @@
 //! Classifies external dependencies into categories (I/O, library, utility)
 //! and generates sensible default [`MockConfig`]s without requiring user
 //! configuration. Users can override defaults via `.shatter/config.yaml`.
+//!
+//! Error variant generation produces [`MockConfig`]s with
+//! [`MockBehavior::ThrowError`] to exercise error-handling paths. The
+//! [`generate_error_variant`] function dispatches on the dependency's return
+//! type and I/O category to produce realistic error shapes (HTTP 4xx/5xx for
+//! network mocks, connection errors for DB mocks, ENOENT for FS mocks, etc.).
 
 use std::collections::HashMap;
 
@@ -11,6 +17,11 @@ use serde_json::{json, Value};
 use crate::protocol::{ExternalDependency, MockBehavior, MockConfig};
 use crate::scope::{DependencyAction, ScopeMatcher};
 use crate::types::TypeInfo;
+
+/// Probability that an auto-mock should use an error variant instead of a
+/// success variant. Applied per-dependency during exploration to exercise
+/// error-handling paths.
+pub const DEFAULT_ERROR_PROBABILITY: f64 = 0.15;
 
 /// Category of an external dependency, used to select default mock behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -230,6 +241,129 @@ pub fn generate_auto_mocks(
         }
 
         result.push(mock);
+    }
+
+    result
+}
+
+// ---------------------------------------------------------------------------
+// Error variant generation
+// ---------------------------------------------------------------------------
+
+/// Generate a [`MockConfig`] that throws an error, producing a realistic
+/// error shape based on the dependency's return type and I/O category.
+///
+/// Dispatch order:
+/// 1. Object with a `"status"` field → HTTP 400/500 error objects
+/// 2. Nullable → `null` (represents a "not found" / absent value)
+/// 3. Category-aware: Network → HTTP error, Database → connection error,
+///    FileSystem → ENOENT
+/// 4. Fallback → `ThrowError` behavior with an empty return_values vec
+pub fn generate_error_variant(dep: &ExternalDependency, category: IoCategory) -> MockConfig {
+    // Check for object with "status" field → HTTP error responses
+    if let TypeInfo::Object { fields } = &dep.return_type
+        && fields.iter().any(|(name, _)| name == "status")
+    {
+        return MockConfig {
+            symbol: dep.symbol.clone(),
+            return_values: vec![
+                json!({"status": 400, "error": "Bad Request"}),
+                json!({"status": 500, "error": "Internal Server Error"}),
+            ],
+            should_track_calls: true,
+            default_behavior: MockBehavior::RepeatLast,
+        };
+    }
+
+    // Nullable → null (represents absence / not-found)
+    if matches!(&dep.return_type, TypeInfo::Nullable { .. }) {
+        return MockConfig {
+            symbol: dep.symbol.clone(),
+            return_values: vec![Value::Null],
+            should_track_calls: true,
+            default_behavior: MockBehavior::RepeatLast,
+        };
+    }
+
+    // Category-aware error shapes
+    match category {
+        IoCategory::Network => MockConfig {
+            symbol: dep.symbol.clone(),
+            return_values: vec![
+                json!({"status": 500, "error": "Internal Server Error"}),
+                json!({"status": 503, "error": "Service Unavailable"}),
+            ],
+            should_track_calls: true,
+            default_behavior: MockBehavior::ThrowError,
+        },
+        IoCategory::Database => MockConfig {
+            symbol: dep.symbol.clone(),
+            return_values: vec![
+                json!({"code": "ECONNREFUSED", "message": "Connection refused"}),
+            ],
+            should_track_calls: true,
+            default_behavior: MockBehavior::ThrowError,
+        },
+        IoCategory::FileSystem => MockConfig {
+            symbol: dep.symbol.clone(),
+            return_values: vec![
+                json!({"code": "ENOENT", "message": "No such file or directory"}),
+            ],
+            should_track_calls: true,
+            default_behavior: MockBehavior::ThrowError,
+        },
+        // Fallback: bare ThrowError with no pre-configured return values
+        IoCategory::PureUtility | IoCategory::ExternalOther => MockConfig {
+            symbol: dep.symbol.clone(),
+            return_values: vec![],
+            should_track_calls: true,
+            default_behavior: MockBehavior::ThrowError,
+        },
+    }
+}
+
+/// Generate error-variant [`MockConfig`]s for dependencies that should
+/// exercise error-handling paths.
+///
+/// Uses `error_probability` to decide per-dependency whether to generate an
+/// error mock. Dependencies already covered by `existing_mocks` or marked
+/// as passthrough are skipped. Pure utilities are always skipped.
+pub fn generate_error_mocks(
+    deps: &[ExternalDependency],
+    scope: Option<&ScopeMatcher>,
+    existing_mocks: &[MockConfig],
+    error_probability: f64,
+    rng: &mut impl rand::Rng,
+) -> Vec<MockConfig> {
+    let already_mocked: std::collections::HashSet<&str> = existing_mocks
+        .iter()
+        .map(|m| m.symbol.as_str())
+        .collect();
+
+    let mut result = Vec::new();
+
+    for dep in deps {
+        if already_mocked.contains(dep.symbol.as_str()) {
+            continue;
+        }
+
+        if let Some(matcher) = scope
+            && matches!(
+                matcher.classify_dependency(&dep.symbol),
+                DependencyAction::Passthrough
+            )
+        {
+            continue;
+        }
+
+        let category = classify_dependency(dep);
+        if category == IoCategory::PureUtility {
+            continue;
+        }
+
+        if rng.random_bool(error_probability.clamp(0.0, 1.0)) {
+            result.push(generate_error_variant(dep, category));
+        }
     }
 
     result
@@ -758,5 +892,206 @@ mod tests {
 
         assert_eq!(by_symbol["compute"].category, IoCategory::ExternalOther);
         assert_eq!(by_symbol["compute"].value_source, ValueSource::AutoGenerated);
+    }
+
+    // --- Error variant generation tests ---
+
+    #[test]
+    fn error_variant_object_with_status_field() {
+        let dep = make_dep(
+            "fetchUser",
+            "axios",
+            TypeInfo::Object {
+                fields: vec![
+                    ("status".to_string(), TypeInfo::Int),
+                    ("data".to_string(), TypeInfo::Unknown),
+                ],
+            },
+        );
+        let mock = generate_error_variant(&dep, IoCategory::Network);
+
+        assert_eq!(mock.symbol, "fetchUser");
+        assert_eq!(mock.return_values.len(), 2);
+        assert_eq!(mock.return_values[0]["status"], 400);
+        assert_eq!(mock.return_values[1]["status"], 500);
+        // Object-with-status uses RepeatLast (returns error objects, doesn't throw)
+        assert_eq!(mock.default_behavior, MockBehavior::RepeatLast);
+    }
+
+    #[test]
+    fn error_variant_nullable_returns_null() {
+        let dep = make_dep(
+            "findUser",
+            "my-db",
+            TypeInfo::Nullable {
+                inner: Box::new(TypeInfo::Object {
+                    fields: vec![("id".to_string(), TypeInfo::Int)],
+                }),
+            },
+        );
+        let mock = generate_error_variant(&dep, IoCategory::Database);
+
+        assert_eq!(mock.return_values, vec![Value::Null]);
+        assert_eq!(mock.default_behavior, MockBehavior::RepeatLast);
+    }
+
+    #[test]
+    fn error_variant_network_category() {
+        let dep = make_dep("get", "axios", TypeInfo::Unknown);
+        let mock = generate_error_variant(&dep, IoCategory::Network);
+
+        assert_eq!(mock.default_behavior, MockBehavior::ThrowError);
+        assert!(mock.return_values.iter().any(|v| v["status"] == 500));
+        assert!(mock.return_values.iter().any(|v| v["status"] == 503));
+    }
+
+    #[test]
+    fn error_variant_database_category() {
+        let dep = make_dep("query", "pg", TypeInfo::Unknown);
+        let mock = generate_error_variant(&dep, IoCategory::Database);
+
+        assert_eq!(mock.default_behavior, MockBehavior::ThrowError);
+        assert_eq!(mock.return_values[0]["code"], "ECONNREFUSED");
+    }
+
+    #[test]
+    fn error_variant_filesystem_category() {
+        let dep = make_dep("readFile", "fs", TypeInfo::Str);
+        let mock = generate_error_variant(&dep, IoCategory::FileSystem);
+
+        assert_eq!(mock.default_behavior, MockBehavior::ThrowError);
+        assert_eq!(mock.return_values[0]["code"], "ENOENT");
+    }
+
+    #[test]
+    fn error_variant_fallback_throws() {
+        let dep = make_dep("compute", "my-lib", TypeInfo::Int);
+        let mock = generate_error_variant(&dep, IoCategory::ExternalOther);
+
+        assert_eq!(mock.default_behavior, MockBehavior::ThrowError);
+        assert!(mock.return_values.is_empty());
+    }
+
+    #[test]
+    fn generate_error_mocks_respects_probability() {
+        let deps = vec![
+            make_dep("readFile", "fs", TypeInfo::Str),
+            make_dep("get", "axios", TypeInfo::Unknown),
+            make_dep("query", "pg", TypeInfo::Unknown),
+        ];
+
+        // probability=0 → no error mocks
+        let mut rng = rand::rng();
+        let result = generate_error_mocks(&deps, None, &[], 0.0, &mut rng);
+        assert!(result.is_empty());
+
+        // probability=1 → all get error mocks
+        let result = generate_error_mocks(&deps, None, &[], 1.0, &mut rng);
+        assert_eq!(result.len(), 3);
+        for mock in &result {
+            assert_eq!(mock.default_behavior, MockBehavior::ThrowError);
+        }
+    }
+
+    #[test]
+    fn generate_error_mocks_skips_existing_and_pure_utility() {
+        let deps = vec![
+            make_dep("readFile", "fs", TypeInfo::Str),
+            make_dep("map", "lodash", TypeInfo::Unknown),
+        ];
+        let existing = vec![MockConfig {
+            symbol: "readFile".to_string(),
+            return_values: vec![json!("")],
+            should_track_calls: true,
+            default_behavior: MockBehavior::RepeatLast,
+        }];
+
+        // Even with probability=1, existing and pure utility are skipped
+        let mut rng = rand::rng();
+        let result = generate_error_mocks(&deps, None, &existing, 1.0, &mut rng);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn default_error_probability_value() {
+        assert!((DEFAULT_ERROR_PROBABILITY - 0.15).abs() < f64::EPSILON);
+    }
+
+    // --- Property-based tests ---
+
+    mod prop_tests {
+        use super::*;
+        use crate::test_arbitraries::arb_external_dependency;
+        use proptest::prelude::*;
+
+        fn arb_io_category() -> impl Strategy<Value = IoCategory> {
+            prop_oneof![
+                Just(IoCategory::FileSystem),
+                Just(IoCategory::Network),
+                Just(IoCategory::Database),
+                Just(IoCategory::PureUtility),
+                Just(IoCategory::ExternalOther),
+            ]
+        }
+
+        proptest! {
+            /// Error variant always preserves the dependency symbol.
+            #[test]
+            fn error_variant_preserves_symbol(
+                dep in arb_external_dependency(),
+                category in arb_io_category(),
+            ) {
+                let mock = generate_error_variant(&dep, category);
+                prop_assert_eq!(&mock.symbol, &dep.symbol);
+                prop_assert!(mock.should_track_calls);
+            }
+
+            /// Error variant behavior is either ThrowError or RepeatLast
+            /// (RepeatLast for object-with-status and nullable types).
+            #[test]
+            fn error_variant_behavior_is_valid(
+                dep in arb_external_dependency(),
+                category in arb_io_category(),
+            ) {
+                let mock = generate_error_variant(&dep, category);
+                prop_assert!(
+                    mock.default_behavior == MockBehavior::ThrowError
+                        || mock.default_behavior == MockBehavior::RepeatLast,
+                    "unexpected behavior: {:?}", mock.default_behavior,
+                );
+            }
+
+            /// Error variant serializes to valid JSON (required for protocol).
+            #[test]
+            fn error_variant_serializes(
+                dep in arb_external_dependency(),
+                category in arb_io_category(),
+            ) {
+                let mock = generate_error_variant(&dep, category);
+                let json = serde_json::to_value(&mock);
+                prop_assert!(json.is_ok(), "serialization failed: {:?}", json.err());
+            }
+
+            /// generate_error_mocks with probability 0 always returns empty.
+            #[test]
+            fn error_mocks_prob_zero_always_empty(
+                deps in prop::collection::vec(arb_external_dependency(), 0..=5),
+            ) {
+                let mut rng = rand::rng();
+                let result = generate_error_mocks(&deps, None, &[], 0.0, &mut rng);
+                prop_assert!(result.is_empty());
+            }
+
+            /// generate_error_mocks never exceeds dependency count.
+            #[test]
+            fn error_mocks_never_exceed_dep_count(
+                deps in prop::collection::vec(arb_external_dependency(), 0..=5),
+                prob in 0.0..=1.0_f64,
+            ) {
+                let mut rng = rand::rng();
+                let result = generate_error_mocks(&deps, None, &[], prob, &mut rng);
+                prop_assert!(result.len() <= deps.len());
+            }
+        }
     }
 }

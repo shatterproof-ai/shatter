@@ -729,3 +729,66 @@ describe("scope events in execution", () => {
     expect(response.scope_events![0]).toEqual({ type: "scope", event: { kind: "call_enter", call_site_id: 0 } });
   });
 });
+
+describe("throw_error mock behavior", () => {
+  it("throws when default_behavior is throw_error with error details", async () => {
+    // Source that calls the mock and catches the error
+    const source = `
+      export function callMock(): string {
+        const fn = __shatter_mocks["mymod:myFunc"];
+        if (fn) {
+          try { fn(); } catch (e: any) { return e.message; }
+        }
+        return "no mock";
+      }
+    `;
+    const mocks = [{
+      symbol: "mymod:myFunc",
+      return_values: [{ code: "ENOENT", message: "No such file or directory" }],
+      should_track_calls: false,
+      default_behavior: "throw_error" as const,
+    }];
+
+    const result = await executeInstrumented(source, "callMock", [], mocks);
+    expect(result.return_value).toBe("No such file or directory");
+  });
+
+  it("throws generic error when return_values is empty", async () => {
+    const source = `
+      export function callMock(): string {
+        const fn = __shatter_mocks["lib:doStuff"];
+        if (fn) {
+          try { fn(); } catch (e: any) { return e.message; }
+        }
+        return "no mock";
+      }
+    `;
+    const mocks = [{
+      symbol: "lib:doStuff",
+      return_values: [] as unknown[],
+      should_track_calls: false,
+      default_behavior: "throw_error" as const,
+    }];
+
+    const result = await executeInstrumented(source, "callMock", [], mocks);
+    expect(result.return_value).toBe("Mock error: lib:doStuff");
+  });
+
+  it("does not register throw_error mock as passthrough", async () => {
+    const source = `
+      export function callMock(): boolean {
+        const fn = __shatter_mocks["net:fetch"];
+        return typeof fn === "function";
+      }
+    `;
+    const mocks = [{
+      symbol: "net:fetch",
+      return_values: [{ status: 500, error: "Internal Server Error" }],
+      should_track_calls: true,
+      default_behavior: "throw_error" as const,
+    }];
+
+    const result = await executeInstrumented(source, "callMock", [], mocks);
+    expect(result.return_value).toBe(true);
+  });
+});
