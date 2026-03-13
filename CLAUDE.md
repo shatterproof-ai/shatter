@@ -89,7 +89,7 @@ pub fn boundaries_for(ty: &ParamType) -> Vec<BoundaryValue> {
 |---|---|---|
 | Quick | `cargo test` | During development |
 | Standard | `cargo test && cargo clippy -- -D warnings` | Before committing |
-| Full | Standard + `cd shatter-ts && npm test` + `cd shatter-go && go test ./...` + `cd shatter-rust && cargo test` | Before merge or when touching protocol definitions |
+| Full | Standard + `cd shatter-ts && npm test` + `cd shatter-go && go test ./...` + `cd shatter-rust && cargo test` + `cd shatter-rust-runtime && cargo test` | Before merge or when touching protocol definitions |
 | E2E | Full + `cargo test --test e2e_concolic` | After changing solver, instrumentor, explorer, orchestrator, or string ops |
 | Walkthrough | `bash demo/walkthrough.sh --auto --delay 0` | After changing CLI output, protocol, frontend execution, or example files |
 
