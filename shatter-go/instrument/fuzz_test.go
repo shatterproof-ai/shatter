@@ -1,6 +1,7 @@
 package instrument
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -96,4 +97,40 @@ func FuzzExecTimeoutDuration(f *testing.F) {
 			t.Errorf("execTimeout returned unreasonable duration %v for input %q", dur, val)
 		}
 	})
+}
+
+// FuzzGenerateMockFile verifies that generateMockFile never panics for
+// arbitrary MockConfig JSON and always produces valid Go source starting
+// with "package main".
+func FuzzGenerateMockFile(f *testing.F) {
+	seeds := []string{
+		mustJSON([]MockConfig{{Symbol: "fs.read", ReturnValues: []any{"ok"}, DefaultBehavior: BehaviorRepeatLast}}),
+		mustJSON([]MockConfig{{Symbol: "db.q", DefaultBehavior: BehaviorThrowError, ReturnValues: []any{map[string]any{"message": "err"}}}}),
+		mustJSON([]MockConfig{{Symbol: "x", DefaultBehavior: BehaviorPassthrough}}),
+		mustJSON([]MockConfig{{Symbol: "a", DefaultBehavior: BehaviorCycle, ReturnValues: []any{1, 2}}}),
+		"[]",
+		`[{"symbol":"","return_values":null,"should_track_calls":false,"default_behavior":""}]`,
+	}
+	for _, s := range seeds {
+		f.Add(s)
+	}
+
+	f.Fuzz(func(t *testing.T, data string) {
+		var mocks []MockConfig
+		if err := json.Unmarshal([]byte(data), &mocks); err != nil {
+			return // skip inputs that don't parse as MockConfig slice
+		}
+		source := generateMockFile(mocks, "/tmp/calls.json")
+		if !strings.HasPrefix(source, "package main") {
+			t.Errorf("generated source does not start with 'package main': %s", source[:min(80, len(source))])
+		}
+	})
+}
+
+func mustJSON(v any) string {
+	data, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return string(data)
 }
