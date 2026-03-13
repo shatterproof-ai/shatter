@@ -17,8 +17,23 @@ import (
 // Generators
 // ---------------------------------------------------------------------------
 
+var goKeywords = map[string]struct{}{
+	"break": {}, "default": {}, "func": {}, "interface": {}, "select": {},
+	"case": {}, "defer": {}, "go": {}, "map": {}, "struct": {},
+	"chan": {}, "else": {}, "goto": {}, "package": {}, "switch": {},
+	"const": {}, "fallthrough": {}, "if": {}, "range": {}, "type": {},
+	"continue": {}, "for": {}, "import": {}, "return": {}, "var": {},
+}
+
 func genIdent() *rapid.Generator[string] {
 	return rapid.StringMatching(`[a-zA-Z_][a-zA-Z0-9_]{0,12}`)
+}
+
+func sanitizeGoIdent(name string) string {
+	if _, isKeyword := goKeywords[name]; isKeyword {
+		return name + "_"
+	}
+	return name
 }
 
 func genTypeInfoLeaf() *rapid.Generator[TypeInfo] {
@@ -431,7 +446,9 @@ func TestPropertyAnalyzeExtractsCorrectParams(t *testing.T) {
 		}
 		var params []paramSpec
 		for i := 0; i < nParams; i++ {
-			name := rapid.StringMatching(`[a-z][a-z0-9]{0,5}`).Draw(t, fmt.Sprintf("name%d", i))
+			name := sanitizeGoIdent(
+				rapid.StringMatching(`[a-z][a-z0-9]{0,5}`).Draw(t, fmt.Sprintf("name%d", i)),
+			)
 			goType := rapid.SampledFrom(goTypes).Draw(t, fmt.Sprintf("type%d", i))
 			params = append(params, paramSpec{name: name, goType: goType})
 		}
