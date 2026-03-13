@@ -162,24 +162,29 @@ step() {
 
 # ─── Example targets ──────────────────────────────────────────────────
 # Standalone examples: self-contained files with no project dependencies.
+# Include one branch-dense "advanced" example in the guided demo. The other
+# new mirrored examples stay in scan coverage to keep the walkthrough readable.
 
 EXAMPLES=(
     "examples/standalone/ts/01-arithmetic.ts:classifyNumber"
     "examples/standalone/ts/02-strings.ts:classifyString"
     "examples/standalone/ts/03-objects.ts:categorizeUser"
     "examples/standalone/ts/04-errors.ts:safeDivide"
+    "examples/standalone/ts/18-accept-language.ts:negotiateLanguage"
 )
 
 GO_EXAMPLES=(
     "examples/standalone/go/01-arithmetic.go:ClassifyNumber"
     "examples/standalone/go/02-strings.go:ClassifyString"
     "examples/standalone/go/04-errors.go:SafeDivide"
+    "examples/standalone/go/18-accept-language.go:NegotiateLanguage"
 )
 
 RUST_EXAMPLES=(
     "examples/standalone/rust/01_arithmetic.rs:classify_number"
     "examples/standalone/rust/02_strings.rs:classify_string"
     "examples/standalone/rust/04_errors.rs:safe_divide"
+    "examples/standalone/rust/18_accept_language.rs:negotiate_language"
 )
 
 TOTAL=45
