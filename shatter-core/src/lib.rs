@@ -34,6 +34,7 @@ pub mod genetic_fitness;
 pub mod input_gen;
 pub mod interesting_pool;
 pub mod log_level;
+pub mod mock_analysis;
 pub mod mock_fixture;
 pub mod mock_gen;
 pub mod mock_value_space;

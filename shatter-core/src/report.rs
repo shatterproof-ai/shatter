@@ -80,6 +80,9 @@ pub struct FunctionReport {
     pub total_lines: u32,
     /// Functions mocked during exploration.
     pub mocks_used: Vec<String>,
+    /// Refactoring recommendations for hard-to-mock dependencies.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refactoring_recommendations: Vec<crate::mock_analysis::RefactoringRecommendation>,
 }
 
 // ---------------------------------------------------------------------------
@@ -215,6 +218,7 @@ fn build_function_report(result: &FunctionResult, file_path: &str) -> FunctionRe
         lines_covered: exploration.lines_covered,
         total_lines: exploration.total_lines,
         mocks_used: result.mocks_used.iter().map(|m| m.name.clone()).collect(),
+        refactoring_recommendations: result.refactoring_recommendations.clone(),
     }
 }
 
@@ -564,6 +568,24 @@ fn write_md_function_details(out: &mut String, functions: &[FunctionReport]) {
             }
         }
 
+        if !func.refactoring_recommendations.is_empty() {
+            let _ = writeln!(out, "\n**Refactoring Recommendations:**\n");
+            for rec in &func.refactoring_recommendations {
+                let location = rec
+                    .line
+                    .map(|l| format!(" (line {l})"))
+                    .unwrap_or_default();
+                let _ = writeln!(
+                    out,
+                    "- `{sym}`{loc}: {reason}. {suggestion}.",
+                    sym = rec.symbol,
+                    loc = location,
+                    reason = rec.reason,
+                    suggestion = rec.suggestion,
+                );
+            }
+        }
+
         out.push('\n');
     }
 }
@@ -838,6 +860,7 @@ mod tests {
             behavior_coverage: vec![],
             mocks_used: mocks,
             coverage_metrics: Default::default(),
+            refactoring_recommendations: vec![],
         }
     }
 

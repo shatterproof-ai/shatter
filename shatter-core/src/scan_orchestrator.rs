@@ -130,6 +130,8 @@ pub struct FunctionResult {
     pub mocks_used: Vec<MockUsage>,
     /// Branch coverage metrics from the analyze stage.
     pub coverage_metrics: crate::coverage_metrics::CoverageMetrics,
+    /// Refactoring recommendations for hard-to-mock dependencies.
+    pub refactoring_recommendations: Vec<crate::mock_analysis::RefactoringRecommendation>,
 }
 
 /// Result of a full scan across multiple functions.
@@ -499,6 +501,9 @@ pub async fn scan(
 
         behavior_maps.insert(func_name.clone(), analyze_out.behavior_map.clone());
 
+        let refactoring_recommendations =
+            crate::mock_analysis::generate_recommendations(&analysis.dependencies);
+
         function_results.push(FunctionResult {
             function_name: func_name.clone(),
             exploration,
@@ -506,6 +511,7 @@ pub async fn scan(
             behavior_coverage,
             mocks_used,
             coverage_metrics: analyze_out.coverage_metrics,
+            refactoring_recommendations,
         });
     }
 
@@ -1103,6 +1109,9 @@ async fn explore_single_function(
     }
     drop(maps);
 
+    let refactoring_recommendations =
+        crate::mock_analysis::generate_recommendations(&analysis.dependencies);
+
     Ok(FunctionResult {
         function_name: func_name.to_string(),
         exploration,
@@ -1110,6 +1119,7 @@ async fn explore_single_function(
         behavior_coverage,
         mocks_used: mocks_used.to_vec(),
         coverage_metrics: analyze_out.coverage_metrics,
+        refactoring_recommendations,
     })
 }
 
@@ -1200,6 +1210,12 @@ pub fn format_parallel_scan_report(result: &ParallelScanResult) -> String {
                 cov.callee, exercised, total
             ));
         }
+
+        let recs_text =
+            crate::mock_analysis::format_recommendations(&func_result.refactoring_recommendations);
+        if !recs_text.is_empty() {
+            out.push_str(&format!("\n{recs_text}"));
+        }
     }
 
     format_skip_sections(&expected, &errors, &mut out);
@@ -1258,6 +1274,12 @@ pub fn format_scan_report(result: &ScanResult) -> String {
                 "  Behavior coverage of {}: {}/{} ({pct:.0}%)\n",
                 cov.callee, exercised, total
             ));
+        }
+
+        let recs_text =
+            crate::mock_analysis::format_recommendations(&func_result.refactoring_recommendations);
+        if !recs_text.is_empty() {
+            out.push_str(&format!("\n{recs_text}"));
         }
     }
 
@@ -1658,6 +1680,7 @@ mod tests {
                     behavior_coverage: vec![],
                     mocks_used: vec![],
                     coverage_metrics: Default::default(),
+                    refactoring_recommendations: vec![],
                 },
                 FunctionResult {
                     function_name: "caller".into(),
@@ -1684,6 +1707,7 @@ mod tests {
                     }],
                     mocks_used: vec![MockUsage { name: "leaf".into(), source: MockSource::CachedBehaviorMap }],
                     coverage_metrics: Default::default(),
+                    refactoring_recommendations: vec![],
                 },
             ],
             skipped_functions: vec![],
@@ -1721,6 +1745,7 @@ mod tests {
                 behavior_coverage: vec![],
                 mocks_used: vec![],
                     coverage_metrics: Default::default(),
+                    refactoring_recommendations: vec![],
             }],
             skipped_functions: vec![],
             sampling: None,
@@ -1756,6 +1781,7 @@ mod tests {
                 behavior_coverage: vec![],
                 mocks_used: vec![],
                     coverage_metrics: Default::default(),
+                    refactoring_recommendations: vec![],
             }],
             skipped_functions: vec![
                 SkippedFunction {
@@ -1804,6 +1830,7 @@ mod tests {
                 behavior_coverage: vec![],
                 mocks_used: vec![],
                 coverage_metrics: Default::default(),
+                refactoring_recommendations: vec![],
             }],
             skipped_functions: vec![
                 SkippedFunction {
@@ -1851,6 +1878,7 @@ mod tests {
                 behavior_coverage: vec![],
                 mocks_used: vec![],
                     coverage_metrics: Default::default(),
+                    refactoring_recommendations: vec![],
             }],
             skipped_functions: vec![],
             sampling: None,
@@ -1887,6 +1915,7 @@ mod tests {
                 behavior_coverage: vec![],
                 mocks_used: vec![],
                     coverage_metrics: Default::default(),
+                    refactoring_recommendations: vec![],
             }],
             skipped_functions: vec![],
             sampling: Some(SamplingContext {
@@ -1930,6 +1959,7 @@ mod tests {
                 behavior_coverage: vec![],
                 mocks_used: vec![],
                     coverage_metrics: Default::default(),
+                    refactoring_recommendations: vec![],
             }],
             skipped_functions: vec![],
             sampling: None,
@@ -2035,6 +2065,7 @@ mod tests {
                 behavior_coverage: vec![],
                 mocks_used: vec![],
                     coverage_metrics: Default::default(),
+                    refactoring_recommendations: vec![],
             }],
             skipped: vec![SkippedFunction {
                 function_name: "f2".into(),
@@ -2080,6 +2111,7 @@ mod tests {
                 behavior_coverage: vec![],
                 mocks_used: vec![],
                     coverage_metrics: Default::default(),
+                    refactoring_recommendations: vec![],
             }],
             skipped: vec![],
             workers_used: 1,
