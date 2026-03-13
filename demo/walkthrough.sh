@@ -14,20 +14,21 @@ MODE="auto"
 DELAY=2
 DRY_RUN=false
 STEP_TIMEOUT=120  # seconds per step; 0 = no limit
-SHATTER="cargo run --quiet --bin shatter --"
 
-# Use a temporary directory so the walkthrough never pollutes .shatter/
-# in the repo (reserved for running shatter on shatter itself).
-export SHATTER_CACHE_DIR SHATTER_SEEDS_DIR RUST_BACKTRACE
+# Use temporary directories so the walkthrough never pollutes repo-local state.
+export SHATTER_CACHE_DIR SHATTER_SEEDS_DIR RUST_BACKTRACE XDG_CACHE_HOME GOCACHE CARGO_NET_OFFLINE
 SHATTER_CACHE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/shatter-demo-cache.XXXXXX")"
 SHATTER_SEEDS_DIR="${SHATTER_CACHE_DIR}/seeds"
 RUST_BACKTRACE="${RUST_BACKTRACE:-1}"
+XDG_CACHE_HOME="${XDG_CACHE_HOME:-$(mktemp -d "${TMPDIR:-/tmp}/shatter-demo-xdg.XXXXXX")}"
+GOCACHE="${GOCACHE:-$(mktemp -d "${TMPDIR:-/tmp}/shatter-demo-gocache.XXXXXX")}"
+CARGO_NET_OFFLINE="${CARGO_NET_OFFLINE:-true}"
 
 # Error tracking: collect failures for a summary at the end.
 ERROR_LOG="$(mktemp "${TMPDIR:-/tmp}/shatter-walkthrough-errors.XXXXXX")"
 STEP_ERRORS=0
 
-cleanup() { rm -rf "$SHATTER_CACHE_DIR" "$ERROR_LOG"; }
+cleanup() { rm -rf "$SHATTER_CACHE_DIR" "$ERROR_LOG" "$XDG_CACHE_HOME" "$GOCACHE" || true; }
 trap cleanup EXIT
 
 # Ensure bindgen can find stdbool.h via GCC's include path (avoids requiring libclang-dev)
@@ -46,6 +47,29 @@ if [[ -t 1 ]]; then
     RESET=$'\033[0m'
 else
     BOLD="" DIM="" GREEN="" CYAN="" YELLOW="" RED="" RESET=""
+fi
+
+if [[ -n "${SHATTER_BIN:-}" ]]; then
+    SHATTER="$SHATTER_BIN"
+elif [[ -x "target/debug/shatter" ]]; then
+    SHATTER="$(pwd)/target/debug/shatter"
+else
+    echo "${RED}shatter binary not found.${RESET}"
+    echo "Build it first with: cargo build --bin shatter"
+    echo "Or run with SHATTER_BIN=/path/to/shatter"
+    exit 1
+fi
+
+if command -v shatter-rust &>/dev/null; then
+    SHATTER_RUST_FRONTEND="$(command -v shatter-rust)"
+elif [[ -x "target/debug/shatter-rust" ]]; then
+    SHATTER_RUST_FRONTEND="$(pwd)/target/debug/shatter-rust"
+elif [[ -x "shatter-rust/target/debug/shatter-rust" ]]; then
+    SHATTER_RUST_FRONTEND="$(pwd)/shatter-rust/target/debug/shatter-rust"
+else
+    echo "${RED}shatter-rust frontend not found.${RESET}"
+    echo "Build it first with: cargo build --manifest-path shatter-rust/Cargo.toml"
+    exit 1
 fi
 
 usage() {
@@ -233,10 +257,12 @@ step 7 $TOTAL "Analyze Go Functions" \
 # Stage 8: Explore Go functions
 step 8 $TOTAL "Explore Go Functions" \
     "Concolic execution on Go: generate inputs to cover all branches" \
-    $SHATTER explore "${GO_EXAMPLES[@]}"
+    $SHATTER explore --max-iterations 3 --timeout-explore 25 "${GO_EXAMPLES[@]}"
 
-# Rust frontend is a separate binary — ensure it's up to date.
-cargo build --manifest-path shatter-rust/Cargo.toml --quiet
+# Rust frontend is a separate binary. The CLI auto-discovers it from PATH or
+# the standard target directories, so just surface which one the walkthrough
+# is using instead of invoking Cargo during the demo.
+echo "${DIM}Using Rust frontend: ${SHATTER_RUST_FRONTEND}${RESET}"
 
 # Stage 9: Analyze Rust functions
 step 9 $TOTAL "Analyze Rust Functions" \
@@ -250,8 +276,8 @@ step 10 $TOTAL "Explore Rust Functions" \
 
 # Stage 11: Scan Rust examples (project with deps)
 step 11 $TOTAL "Scan Rust Examples" \
-    "Scan Rust example directory in dependency order" \
-    $SHATTER scan examples/rust/src
+    "Preview a dependency-ordered Rust scan plan on a representative sample" \
+    $SHATTER scan --core-sample 3 --dry-run examples/rust/src
 
 # Stage 12: Export tests
 step 12 $TOTAL "Export Generated Tests" \
@@ -330,7 +356,7 @@ step 25 $TOTAL "Behavioral Specification (JSON)" \
 # v2 adds a "large" threshold, so the diff shows added/changed behaviors.
 step 26 $TOTAL "Specification Diff" \
     "Compare behavioral specs from two versions of classifyNumber to detect regressions" \
-    bash -c "$SHATTER explore --spec-json 'demo/fixtures/arithmetic-v1.ts:classifyNumber' > /tmp/shatter-spec-old.json 2>/dev/null && $SHATTER explore --spec-json 'demo/fixtures/arithmetic-v2.ts:classifyNumber' > /tmp/shatter-spec-new.json 2>/dev/null && { $SHATTER spec-diff /tmp/shatter-spec-old.json /tmp/shatter-spec-new.json; true; }"
+    bash -c "$SHATTER explore --quiet --spec-json 'demo/fixtures/arithmetic-v1.ts:classifyNumber' > /tmp/shatter-spec-old.json && $SHATTER explore --quiet --spec-json 'demo/fixtures/arithmetic-v2.ts:classifyNumber' > /tmp/shatter-spec-new.json && { $SHATTER spec-diff /tmp/shatter-spec-old.json /tmp/shatter-spec-new.json; true; }"
 
 # Stage 27: Explore without boundary values
 step 27 $TOTAL "Explore Without Boundary Values" \
@@ -376,13 +402,13 @@ step 34 $TOTAL "File-Level Explore" \
     $SHATTER explore examples/standalone/ts/01-arithmetic.ts
 
 # Stage 35: Concolic exploration (Z3-backed)
-step 35 $TOTAL "Concolic Exploration (Z3)" \
-    "Use the Z3-backed concolic explorer to solve branch constraints" \
+step 35 $TOTAL "Concolic CLI Preview (Z3)" \
+    "Preview the current Z3-backed CLI path on a numeric example" \
     $SHATTER explore --concolic "${EXAMPLES[0]}"
 
 # Stage 36: Concolic exploration of string functions (Z3 string ops)
-step 36 $TOTAL "Concolic String Exploration (Z3)" \
-    "Use the Z3-backed concolic explorer on string-method functions (startsWith, includes)" \
+step 36 $TOTAL "Concolic String CLI Preview (Z3)" \
+    "Preview the current Z3-backed CLI path on string-method guards" \
     $SHATTER explore --concolic "examples/standalone/ts/02-strings.ts:classifyString"
 
 # Stage 37: Custom build-frontend help
@@ -428,14 +454,14 @@ step 43 $TOTAL "Revalidate" \
 # Stage 44: Multi-level setup/teardown
 step 44 $TOTAL "Multi-Level Setup/Teardown" \
     "Explore with session + file level setup/teardown from .shatter/config.yaml" \
-    $SHATTER explore --config examples/standalone/ts/.shatter/config.yaml \
+    $SHATTER explore --config examples/typescript/.shatter/config.yaml \
     --setup-timeout 30 \
     "examples/standalone/ts/01-arithmetic.ts:classifyNumber"
 
 # Stage 45: Setup with --fail-on-setup-error
 step 45 $TOTAL "Setup Fail-on-Error" \
     "Use --fail-on-setup-error to abort immediately on setup failures" \
-    $SHATTER explore --config examples/standalone/ts/.shatter/config.yaml \
+    $SHATTER explore --config examples/typescript/.shatter/config.yaml \
     --setup-timeout 10 --fail-on-setup-error \
     "examples/standalone/ts/01-arithmetic.ts:classifyNumber"
 
