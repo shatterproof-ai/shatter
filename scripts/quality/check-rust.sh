@@ -78,6 +78,15 @@ if [[ "${RUN_CLIPPY}" == "true" ]]; then
   run_cmd "Rust lint (cargo clippy)" cargo clippy -- -D warnings
 fi
 
+# Standalone Rust frontend crates (excluded from workspace)
+run_in_dir shatter-rust "shatter-rust tests" cargo test
+run_in_dir shatter-rust-runtime "shatter-rust-runtime tests" cargo test
+
+if [[ "${RUN_CLIPPY}" == "true" ]]; then
+  run_in_dir shatter-rust "shatter-rust lint (cargo clippy)" cargo clippy -- -D warnings
+  run_in_dir shatter-rust-runtime "shatter-rust-runtime lint (cargo clippy)" cargo clippy -- -D warnings
+fi
+
 if [[ "${RUN_E2E}" == "true" ]]; then
   run_cmd "Rust E2E tests" cargo test --test e2e_concolic
 fi
