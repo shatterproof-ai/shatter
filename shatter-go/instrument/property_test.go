@@ -157,7 +157,7 @@ func TestPropertyThrowErrorMockContainsPanic(t *testing.T) {
 			{
 				Symbol:          symbol,
 				ReturnValues:    []any{map[string]any{"message": "err"}},
-				DefaultBehavior: "throw_error",
+				DefaultBehavior: BehaviorThrowError,
 			},
 		}
 		source := generateMockFile(mocks, "/tmp/calls.json")
@@ -203,6 +203,108 @@ func TestPropertyDiscoverDepsNeverIncludesMockedModules(t *testing.T) {
 		deps := discoverDependencies(path, mocks)
 		if len(deps) != 0 {
 			t.Fatalf("expected 0 deps when all modules mocked, got %d: %+v", len(deps), deps)
+		}
+	})
+}
+
+// genMockConfig generates a random MockConfig for property tests.
+func genMockConfig(t *rapid.T) MockConfig {
+	return MockConfig{
+		Symbol: rapid.StringMatching(`[a-zA-Z][a-zA-Z0-9_.:-]{0,20}`).Draw(t, "symbol"),
+		ReturnValues: func() []any {
+			n := rapid.IntRange(0, 3).Draw(t, "nRetVals")
+			vals := make([]any, n)
+			for i := range vals {
+				vals[i] = rapid.OneOf(
+					rapid.Map(rapid.Int(), func(v int) any { return v }),
+					rapid.Map(rapid.String(), func(v string) any { return v }),
+				).Draw(t, fmt.Sprintf("retval%d", i))
+			}
+			return vals
+		}(),
+		ShouldTrackCalls: rapid.Bool().Draw(t, "trackCalls"),
+		DefaultBehavior: rapid.SampledFrom([]string{
+			BehaviorRepeatLast, BehaviorCycle, BehaviorThrowError, BehaviorPassthrough,
+		}).Draw(t, "behavior"),
+	}
+}
+
+func TestPropertyMockFileAlwaysStartsWithPackageMain(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		n := rapid.IntRange(1, 5).Draw(t, "nMocks")
+		mocks := make([]MockConfig, n)
+		for i := range mocks {
+			mocks[i] = genMockConfig(t)
+		}
+		source := generateMockFile(mocks, "/tmp/calls.json")
+		if !contains(source, "package main") {
+			t.Fatal("generated mock file must start with package main")
+		}
+	})
+}
+
+func TestPropertyPassthroughProducesNoMockFunction(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		symbol := rapid.StringMatching(`[a-zA-Z][a-zA-Z0-9_.:-]{0,20}`).Draw(t, "symbol")
+		mocks := []MockConfig{
+			{
+				Symbol:          symbol,
+				DefaultBehavior: BehaviorPassthrough,
+			},
+		}
+		source := generateMockFile(mocks, "/tmp/calls.json")
+		safeName := sanitizeMockName(symbol)
+		if contains(source, "ShatterMock_"+safeName) {
+			t.Fatalf("passthrough mock for %q should not generate ShatterMock_ function", symbol)
+		}
+	})
+}
+
+func TestPropertyThrowErrorProducesBothVariants(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		symbol := rapid.StringMatching(`[a-zA-Z][a-zA-Z0-9_.:-]{0,20}`).Draw(t, "symbol")
+		mocks := []MockConfig{
+			{
+				Symbol:          symbol,
+				ReturnValues:    []any{map[string]any{"message": "err"}},
+				DefaultBehavior: BehaviorThrowError,
+			},
+		}
+		source := generateMockFile(mocks, "/tmp/calls.json")
+		safeName := sanitizeMockName(symbol)
+
+		if !contains(source, "func ShatterMock_"+safeName+"(args ...any) any") {
+			t.Fatalf("missing panic variant for %q", symbol)
+		}
+		if !contains(source, "func ShatterMockErr_"+safeName+"(args ...any) (any, error)") {
+			t.Fatalf("missing error-return variant for %q", symbol)
+		}
+	})
+}
+
+func TestPropertyCallTrackingConditional(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		symbol := rapid.StringMatching(`[a-zA-Z][a-zA-Z0-9_.]{0,15}`).Draw(t, "symbol")
+		track := rapid.Bool().Draw(t, "track")
+		behavior := rapid.SampledFrom([]string{
+			BehaviorRepeatLast, BehaviorCycle, BehaviorThrowError,
+		}).Draw(t, "behavior")
+		mocks := []MockConfig{
+			{
+				Symbol:           symbol,
+				ReturnValues:     []any{"val"},
+				ShouldTrackCalls: track,
+				DefaultBehavior:  behavior,
+			},
+		}
+		source := generateMockFile(mocks, "/tmp/calls.json")
+		hasTracking := contains(source, fmt.Sprintf(`shatterRecordMockCall(%q`, symbol))
+
+		if track && !hasTracking {
+			t.Fatalf("ShouldTrackCalls=true but no shatterRecordMockCall for %q (behavior=%s)", symbol, behavior)
+		}
+		if !track && hasTracking {
+			t.Fatalf("ShouldTrackCalls=false but shatterRecordMockCall present for %q (behavior=%s)", symbol, behavior)
 		}
 	})
 }

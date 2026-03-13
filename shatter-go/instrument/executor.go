@@ -28,6 +28,15 @@ const defaultBuildTimeout = 30 * time.Second
 // at 24 hours which is well beyond any realistic execution timeout.
 const maxTimeoutSecs = 86400
 
+// Mock behavior constants matching the protocol's DefaultBehavior field.
+const (
+	BehaviorRepeatLast  = "repeat_last"
+	BehaviorCycle       = "cycle"
+	BehaviorThrowError  = "throw_error"
+	BehaviorPassthrough = "passthrough"
+	MockErrorPrefix     = "Mock error: "
+)
+
 // execTimeout returns the execution timeout, reading from SHATTER_EXEC_TIMEOUT
 // env var (in seconds) with a fallback to defaultExecTimeout.
 func execTimeout() time.Duration {
@@ -584,11 +593,23 @@ func generateHarness(funcName string, params []paramInfo, retInfo returnTypeInfo
 // tracking. Each mock symbol gets a package-level function variable that returns
 // pre-configured values and records calls to a JSON file.
 func generateMockFile(mocks []MockConfig, externalCallsPath string) string {
+	// Check if any mock uses throw_error — the error-return variant needs "fmt".
+	hasThrowError := false
+	for _, m := range mocks {
+		if m.DefaultBehavior == BehaviorThrowError {
+			hasThrowError = true
+			break
+		}
+	}
+
 	var b strings.Builder
 
 	b.WriteString("package main\n\n")
 	b.WriteString("import (\n")
 	b.WriteString("\t\"encoding/json\"\n")
+	if hasThrowError {
+		b.WriteString("\t\"fmt\"\n")
+	}
 	b.WriteString("\t\"os\"\n")
 	b.WriteString("\t\"sync\"\n")
 	b.WriteString(")\n\n")
@@ -632,7 +653,7 @@ func generateMockFile(mocks []MockConfig, externalCallsPath string) string {
 	// The mock returns the pre-configured return values in order,
 	// repeating the last one when exhausted (repeat_last behavior).
 	for i, mock := range mocks {
-		if mock.DefaultBehavior == "passthrough" {
+		if mock.DefaultBehavior == BehaviorPassthrough {
 			continue
 		}
 
@@ -654,7 +675,7 @@ func generateMockFile(mocks []MockConfig, externalCallsPath string) string {
 		b.WriteString("}()\n")
 		b.WriteString(fmt.Sprintf("var shatterMock%d_callIdx int\n\n", i))
 
-		if mock.DefaultBehavior == "throw_error" {
+		if mock.DefaultBehavior == BehaviorThrowError {
 			// Generate a mock that panics with error message from return_values.
 			b.WriteString(fmt.Sprintf("// ShatterMock_%s panics with error details for %s.\n", safeName, mock.Symbol))
 			b.WriteString(fmt.Sprintf("func ShatterMock_%s(args ...any) any {\n", safeName))
@@ -665,7 +686,7 @@ func generateMockFile(mocks []MockConfig, externalCallsPath string) string {
 			b.WriteString("\t}\n")
 			b.WriteString(fmt.Sprintf("\tshatterMock%d_callIdx++\n", i))
 			b.WriteString("\n")
-			b.WriteString(fmt.Sprintf("\tmsg := %q\n", "Mock error: "+mock.Symbol))
+			b.WriteString(fmt.Sprintf("\tmsg := %q\n", MockErrorPrefix+mock.Symbol))
 			b.WriteString("\tif idx < len(retvals) {\n")
 			b.WriteString("\t\tvar obj map[string]any\n")
 			b.WriteString("\t\tif json.Unmarshal(retvals[idx], &obj) == nil {\n")
@@ -679,6 +700,31 @@ func generateMockFile(mocks []MockConfig, externalCallsPath string) string {
 			}
 			b.WriteString("\tpanic(msg)\n")
 			b.WriteString("}\n\n")
+
+			// Error-return variant for Go functions that return (value, error).
+			b.WriteString(fmt.Sprintf("// ShatterMockErr_%s returns an error for %s (idiomatic Go error path).\n", safeName, mock.Symbol))
+			b.WriteString(fmt.Sprintf("func ShatterMockErr_%s(args ...any) (any, error) {\n", safeName))
+			b.WriteString(fmt.Sprintf("\tretvals := shatterMock%d_retvals\n", i))
+			b.WriteString(fmt.Sprintf("\tidx := shatterMock%d_callIdx\n", i))
+			b.WriteString("\tif idx >= len(retvals) && len(retvals) > 0 {\n")
+			b.WriteString("\t\tidx = len(retvals) - 1\n")
+			b.WriteString("\t}\n")
+			b.WriteString(fmt.Sprintf("\tshatterMock%d_callIdx++\n", i))
+			b.WriteString("\n")
+			b.WriteString(fmt.Sprintf("\tmsg := %q\n", MockErrorPrefix+mock.Symbol))
+			b.WriteString("\tif idx < len(retvals) {\n")
+			b.WriteString("\t\tvar obj map[string]any\n")
+			b.WriteString("\t\tif json.Unmarshal(retvals[idx], &obj) == nil {\n")
+			b.WriteString("\t\t\tif s, ok := obj[\"message\"].(string); ok && s != \"\" {\n")
+			b.WriteString("\t\t\t\tmsg = s\n")
+			b.WriteString("\t\t\t}\n")
+			b.WriteString("\t\t}\n")
+			b.WriteString("\t}\n")
+			if mock.ShouldTrackCalls {
+				b.WriteString(fmt.Sprintf("\tshatterRecordMockCall(%q, args, msg)\n", mock.Symbol))
+			}
+			b.WriteString("\treturn nil, fmt.Errorf(\"%s\", msg)\n")
+			b.WriteString("}\n\n")
 			continue
 		}
 
@@ -688,7 +734,7 @@ func generateMockFile(mocks []MockConfig, externalCallsPath string) string {
 		b.WriteString(fmt.Sprintf("\tretvals := shatterMock%d_retvals\n", i))
 		b.WriteString(fmt.Sprintf("\tidx := shatterMock%d_callIdx\n", i))
 
-		if mock.DefaultBehavior == "repeat_last" || mock.DefaultBehavior == "" {
+		if mock.DefaultBehavior == BehaviorRepeatLast || mock.DefaultBehavior == "" {
 			b.WriteString("\tif idx >= len(retvals) && len(retvals) > 0 {\n")
 			b.WriteString("\t\tidx = len(retvals) - 1\n")
 			b.WriteString("\t}\n")

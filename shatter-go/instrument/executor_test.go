@@ -443,13 +443,13 @@ func TestGenerateMockFileContainsMockFunctions(t *testing.T) {
 			Symbol:           "fs.readFile",
 			ReturnValues:     []any{"file contents"},
 			ShouldTrackCalls: true,
-			DefaultBehavior:  "repeat_last",
+			DefaultBehavior:  BehaviorRepeatLast,
 		},
 		{
 			Symbol:           "lodash.map",
 			ReturnValues:     nil,
 			ShouldTrackCalls: false,
-			DefaultBehavior:  "passthrough",
+			DefaultBehavior:  BehaviorPassthrough,
 		},
 	}
 
@@ -582,7 +582,7 @@ func TestGenerateMockFileThrowError(t *testing.T) {
 			Symbol:           "db.query",
 			ReturnValues:     []any{map[string]any{"message": "connection refused"}},
 			ShouldTrackCalls: true,
-			DefaultBehavior:  "throw_error",
+			DefaultBehavior:  BehaviorThrowError,
 		},
 	}
 
@@ -611,7 +611,7 @@ func TestGenerateMockFileThrowErrorNoTrackCalls(t *testing.T) {
 		{
 			Symbol:          "net.dial",
 			ReturnValues:    []any{map[string]any{"message": "timeout"}},
-			DefaultBehavior: "throw_error",
+			DefaultBehavior: BehaviorThrowError,
 		},
 	}
 
@@ -729,5 +729,151 @@ func Foo() {
 	deps := discoverDependencies(src, nil)
 	if len(deps) != 0 {
 		t.Errorf("expected 0 deps for stdlib-only imports, got %d: %+v", len(deps), deps)
+	}
+}
+
+func TestGenerateMockFileThrowErrorGeneratesErrVariant(t *testing.T) {
+	mocks := []MockConfig{
+		{
+			Symbol:           "db.query",
+			ReturnValues:     []any{map[string]any{"message": "connection refused"}},
+			ShouldTrackCalls: true,
+			DefaultBehavior:  BehaviorThrowError,
+		},
+	}
+
+	source := generateMockFile(mocks, "/tmp/calls.json")
+
+	// Panic variant
+	if !contains(source, "func ShatterMock_db_query(args ...any) any") {
+		t.Error("expected panic-variant ShatterMock_db_query")
+	}
+	if !contains(source, "panic(msg)") {
+		t.Error("expected panic(msg) in panic variant")
+	}
+
+	// Error-return variant
+	if !contains(source, "func ShatterMockErr_db_query(args ...any) (any, error)") {
+		t.Error("expected error-return variant ShatterMockErr_db_query")
+	}
+	if !contains(source, `fmt.Errorf("%s", msg)`) {
+		t.Error("expected fmt.Errorf in error-return variant")
+	}
+}
+
+func TestGenerateMockFileErrVariantImportsFmt(t *testing.T) {
+	// With throw_error, "fmt" should be imported.
+	mocks := []MockConfig{
+		{
+			Symbol:          "net.dial",
+			DefaultBehavior: BehaviorThrowError,
+		},
+	}
+	source := generateMockFile(mocks, "/tmp/calls.json")
+	if !contains(source, `"fmt"`) {
+		t.Error("expected fmt import for throw_error mocks")
+	}
+
+	// Without throw_error, "fmt" should NOT be imported.
+	mocks2 := []MockConfig{
+		{
+			Symbol:          "fs.read",
+			DefaultBehavior: BehaviorRepeatLast,
+		},
+	}
+	source2 := generateMockFile(mocks2, "/tmp/calls.json")
+	if contains(source2, `"fmt"`) {
+		t.Error("fmt import should only appear for throw_error mocks")
+	}
+}
+
+func TestGenerateMockFileCycleBehavior(t *testing.T) {
+	mocks := []MockConfig{
+		{
+			Symbol:          "cache.get",
+			ReturnValues:    []any{"hit", "miss"},
+			DefaultBehavior: BehaviorCycle,
+		},
+	}
+	source := generateMockFile(mocks, "/tmp/calls.json")
+
+	// Cycle behavior uses modulo indexing
+	if !contains(source, "idx % len(retvals)") {
+		t.Error("expected modulo indexing for cycle behavior")
+	}
+	// Should NOT contain repeat_last clamping
+	if contains(source, "idx >= len(retvals) && len(retvals) > 0") {
+		t.Error("cycle behavior should not use repeat_last clamping")
+	}
+}
+
+func TestGenerateMockFileErrVariantTracksCalls(t *testing.T) {
+	// With ShouldTrackCalls=true, error-return variant should track calls.
+	mocks := []MockConfig{
+		{
+			Symbol:           "api.fetch",
+			ReturnValues:     []any{map[string]any{"message": "timeout"}},
+			ShouldTrackCalls: true,
+			DefaultBehavior:  BehaviorThrowError,
+		},
+	}
+	source := generateMockFile(mocks, "/tmp/calls.json")
+
+	// Count occurrences of shatterRecordMockCall — should appear in both variants.
+	count := 0
+	for i := 0; i <= len(source)-len(`shatterRecordMockCall("api.fetch"`); i++ {
+		if source[i:i+len(`shatterRecordMockCall("api.fetch"`)] == `shatterRecordMockCall("api.fetch"` {
+			count++
+		}
+	}
+	if count != 2 {
+		t.Errorf("expected shatterRecordMockCall in both panic and error-return variants (got %d occurrences)", count)
+	}
+}
+
+func TestGenerateMockFileErrVariantNoTrackCalls(t *testing.T) {
+	mocks := []MockConfig{
+		{
+			Symbol:          "api.fetch",
+			ReturnValues:    []any{map[string]any{"message": "timeout"}},
+			DefaultBehavior: BehaviorThrowError,
+		},
+	}
+	source := generateMockFile(mocks, "/tmp/calls.json")
+
+	if contains(source, `shatterRecordMockCall("api.fetch"`) {
+		t.Error("should not track calls when ShouldTrackCalls is false")
+	}
+}
+
+func TestGenerateMockFilePerExecutionVariation(t *testing.T) {
+	// Simulate two different Execute calls with different mock values.
+	mocks1 := []MockConfig{
+		{
+			Symbol:          "cache.get",
+			ReturnValues:    []any{42},
+			DefaultBehavior: BehaviorRepeatLast,
+		},
+	}
+	mocks2 := []MockConfig{
+		{
+			Symbol:          "cache.get",
+			ReturnValues:    []any{99},
+			DefaultBehavior: BehaviorRepeatLast,
+		},
+	}
+
+	source1 := generateMockFile(mocks1, "/tmp/calls.json")
+	source2 := generateMockFile(mocks2, "/tmp/calls.json")
+
+	// The generated sources should differ because return values differ.
+	if source1 == source2 {
+		t.Error("expected different generated mock files for different return values")
+	}
+	if !contains(source1, "42") {
+		t.Error("expected 42 in first mock file")
+	}
+	if !contains(source2, "99") {
+		t.Error("expected 99 in second mock file")
 	}
 }

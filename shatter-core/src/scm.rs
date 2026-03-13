@@ -82,9 +82,13 @@ impl ScmProvider for GitProvider {
 /// Detect the SCM provider for the given directory.
 /// Currently only supports Git.
 pub fn detect_provider(root: &Path) -> Result<GitProvider, ScmError> {
+    // Clear GIT_DIR / GIT_WORK_TREE so the child process discovers the repo
+    // from `root` rather than inheriting stale values (e.g. from git hooks).
     let status = Command::new("git")
         .args(["rev-parse", "--git-dir"])
         .current_dir(root)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status();
