@@ -349,6 +349,37 @@ async fn main() -> ExitCode {
             output,
         } => commands::build_frontend::run_build_frontend(&language, config.as_deref(), output.as_deref())
             .map_err(|e| e.into()),
+        CliCommand::DiscoverDeps {
+            command,
+            strace,
+            working_dir,
+            json,
+        } => {
+            if !strace {
+                eprintln!("Error: --strace flag is required. Currently strace is the only supported discovery method.");
+                return ExitCode::FAILURE;
+            }
+            match shatter_core::strace_discovery::discover_network_deps(
+                &command,
+                working_dir.as_deref(),
+            ) {
+                Ok(report) => {
+                    if json {
+                        match serde_json::to_string_pretty(&report) {
+                            Ok(s) => println!("{s}"),
+                            Err(e) => {
+                                eprintln!("Error serializing report: {e}");
+                                return ExitCode::FAILURE;
+                            }
+                        }
+                    } else {
+                        print!("{}", shatter_core::strace_discovery::format_report(&report));
+                    }
+                    Ok(())
+                }
+                Err(e) => Err(e.to_string().into()),
+            }
+        }
         CliCommand::Test {
             all,
             record,

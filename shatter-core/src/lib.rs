@@ -60,6 +60,7 @@ pub mod snapshot;
 pub mod spec;
 pub mod spec_diff;
 pub mod solver;
+pub mod strace_discovery;
 pub mod stratum;
 pub mod strategy;
 pub mod string_mutation;

@@ -641,6 +641,30 @@ pub(crate) enum CliCommand {
         output: Option<PathBuf>,
     },
 
+    /// Discover external network dependencies using strace (Linux-only diagnostic).
+    ///
+    /// Runs a command under strace, captures all network-related syscalls, and
+    /// produces a report of discovered endpoints. Useful for finding dependencies
+    /// that static analysis misses.
+    #[command(name = "discover-deps")]
+    DiscoverDeps {
+        /// Command and arguments to trace (e.g., "node src/app.js").
+        #[arg(required = true, trailing_var_arg = true)]
+        command: Vec<String>,
+
+        /// Use strace for syscall-level network discovery.
+        #[arg(long)]
+        strace: bool,
+
+        /// Working directory for the traced command.
+        #[arg(long)]
+        working_dir: Option<PathBuf>,
+
+        /// Output as JSON instead of human-readable text.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Check which functions in a source file are stale relative to a spec file.
     ///
     /// Analyzes the source file, computes fingerprints, and compares against the

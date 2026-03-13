@@ -211,7 +211,7 @@ RUST_EXAMPLES=(
     "examples/standalone/rust/18_accept_language.rs:negotiate_language"
 )
 
-TOTAL=47
+TOTAL=48
 
 # ─── Walkthrough ──────────────────────────────────────────────────────
 
@@ -479,6 +479,13 @@ step 47 $TOTAL "Setup Fail-on-Error" \
     $SHATTER explore --config examples/typescript/.shatter/config.yaml \
     --setup-timeout 10 --fail-on-setup-error \
     "examples/standalone/ts/01-arithmetic.ts:classifyNumber"
+
+# Stage 46: Discover deps (strace, Linux-only diagnostic)
+# On non-Linux or when strace is missing, this will print a clear error message.
+# We use `true` to swallow the expected non-zero exit on non-Linux/no-strace.
+step 48 $TOTAL "Discover Dependencies (strace)" \
+    "Run strace-based network dependency discovery (Linux-only diagnostic tool)" \
+    bash -c "$SHATTER discover-deps --strace -- echo hello; true"
 
 # ─── Error Summary ────────────────────────────────────────────────────
 if [[ -s "$ERROR_LOG" ]]; then
