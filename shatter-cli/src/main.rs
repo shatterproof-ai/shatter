@@ -324,6 +324,11 @@ enum CliCommand {
         /// call data to .shatter/recorded-mocks/ as seed fixtures for future runs.
         #[arg(long)]
         record: bool,
+
+        /// Write raw observation data (Stage 1 output) to a directory for offline
+        /// analysis with `shatter analyze`. One JSON file per function.
+        #[arg(long)]
+        observe_output: Option<PathBuf>,
     },
 
     /// Scan a directory for source files, analyze and explore all functions in
@@ -686,6 +691,31 @@ enum CliCommand {
         /// Output directory (default: `.shatter/bin/`).
         #[arg(long, short)]
         output: Option<PathBuf>,
+    },
+
+    /// Analyze Stage 1 (Observe) output: produce equivalence classes, behavior map,
+    /// coverage metrics, and optional behavioral specification. No frontend or solver
+    /// required — pure offline computation on serialized observation data.
+    Analyze {
+        /// Path to a Stage 1 observation JSON file (produced by `shatter explore --observe-output`).
+        #[arg(required = true)]
+        input: PathBuf,
+
+        /// Write Stage 2 analysis output to a JSON file (for downstream stages).
+        #[arg(long, short)]
+        output: Option<PathBuf>,
+
+        /// Output a behavioral specification in markdown.
+        #[arg(long)]
+        spec: bool,
+
+        /// Output the behavioral specification as JSON instead of markdown.
+        #[arg(long)]
+        spec_json: bool,
+
+        /// Enable Daikon-style invariant detection.
+        #[arg(long)]
+        invariants: bool,
     },
 
     /// Check which functions in a source file are stale relative to a spec file.
@@ -1109,6 +1139,7 @@ async fn run_explore(
     no_seeds: bool,
     record: bool,
     meta_config: &shatter_core::strategy::MetaConfig,
+    observe_output: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let pool_path = if no_seeds { None } else { Some(seeds_dir.join("pool.json")) };
     let loop_buckets = parse_loop_buckets(loop_buckets_str)?;
@@ -1572,6 +1603,31 @@ async fn run_explore(
                     // Run the Analyze stage to get coverage metrics and eq classes.
                     let analyze_output = shatter_core::pipeline::analyze(&result, func);
 
+                    // Save raw observation data for offline analysis if requested.
+                    if let Some(obs_dir) = observe_output {
+                        let safe_name = func.name.replace(|c: char| !c.is_alphanumeric() && c != '_', "_");
+                        let obs_path = obs_dir.join(format!("{safe_name}.observe.json"));
+                        // Serialize the observe stage output directly via a borrowing wrapper.
+                        let stage_json = serde_json::json!({
+                            "observation": &result,
+                            "analysis": func,
+                            "file": file_str,
+                        });
+                        if let Some(parent) = obs_path.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+                        match serde_json::to_string_pretty(&stage_json) {
+                            Ok(json) => {
+                                if let Err(e) = std::fs::write(&obs_path, json) {
+                                    log::error!("Failed to write observe output for {}: {e}", func.name);
+                                } else {
+                                    log::info!("Wrote observe output: {}", obs_path.display());
+                                }
+                            }
+                            Err(e) => log::error!("Failed to serialize observe output for {}: {e}", func.name),
+                        }
+                    }
+
                     if log::log_enabled!(log::Level::Info) {
                         if log::log_enabled!(log::Level::Trace) {
                             print!("{}", explorer::format_exploration_report_verbose(&result));
@@ -1705,6 +1761,87 @@ async fn run_explore(
             file_spec_bundles[0].functions.len(),
             out.display()
         );
+    }
+
+    Ok(())
+}
+
+/// Run the analyze command: read Stage 1 observation output and produce
+/// equivalence classes, behavior map, coverage metrics, and optional spec.
+/// No frontend or solver needed — pure offline computation.
+fn run_analyze(
+    input_path: &Path,
+    output_path: Option<&Path>,
+    show_spec: bool,
+    spec_as_json: bool,
+    detect_invariants: bool,
+    use_color: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let stage_input = shatter_core::pipeline::read_observe_stage(input_path)?;
+    let observation = &stage_input.observation;
+    let analysis = &stage_input.analysis;
+
+    let analyze_output = shatter_core::pipeline::analyze(observation, analysis);
+
+    // Print coverage metrics.
+    let report_style = if use_color {
+        shatter_core::report_style::ReportStyle::ansi()
+    } else {
+        shatter_core::report_style::ReportStyle::default()
+    };
+    let report_opts = ReportOptions {
+        location: Some(format!("{}:{}-{}", stage_input.file, analysis.start_line, analysis.end_line)),
+        show_perf: false,
+        wall_time: None,
+        coverage_metrics: Some(analyze_output.coverage_metrics.clone()),
+        style: report_style.clone(),
+    };
+    print!("{}", explorer::format_exploration_report(observation, &report_opts));
+    print!(
+        "{}",
+        shatter_core::coverage_metrics::format_coverage_metrics(
+            &analyze_output.coverage_metrics,
+            &report_style,
+        )
+    );
+    println!();
+
+    // Build and display spec if requested.
+    let spec = if show_spec || detect_invariants {
+        let eq_classes = &analyze_output.eq_classes;
+        let location = Some(format!("{}:{}-{}", stage_input.file, analysis.start_line, analysis.end_line));
+
+        let spec = if detect_invariants {
+            shatter_core::spec::build_spec_with_invariants(
+                observation, eq_classes, location, None,
+            )
+        } else {
+            shatter_core::spec::build_spec(observation, eq_classes, location, None)
+        };
+
+        if spec_as_json {
+            match shatter_core::spec::format_spec_json(&spec) {
+                Ok(json) => println!("{json}"),
+                Err(e) => log::error!("Error serializing spec: {e}"),
+            }
+        } else {
+            print_markdown(&shatter_core::spec::format_spec_markdown(&spec), use_color);
+        }
+        Some(spec)
+    } else {
+        None
+    };
+
+    // Write analyze stage output if requested.
+    if let Some(out_path) = output_path {
+        let stage_output = shatter_core::pipeline::AnalyzeStageOutput {
+            analyze: analyze_output,
+            spec,
+            function_name: observation.function_name.clone(),
+            file: stage_input.file,
+        };
+        shatter_core::pipeline::write_analyze_stage(&stage_output, out_path)?;
+        log::info!("Wrote analyze output: {}", out_path.display());
     }
 
     Ok(())
@@ -3505,6 +3642,7 @@ async fn main() -> ExitCode {
             setup_timeout,
             fail_on_setup_error: _,
             record,
+            observe_output,
         } => {
             // Set SHATTER_SETUP_TIMEOUT env var for frontends if --setup-timeout provided.
             if let Some(secs) = setup_timeout {
@@ -3564,8 +3702,25 @@ async fn main() -> ExitCode {
                 no_seeds,
                 record,
                 &meta_config,
+                observe_output.as_deref(),
             )
             .await
+        }
+        CliCommand::Analyze {
+            input,
+            output,
+            spec,
+            spec_json,
+            invariants,
+        } => {
+            run_analyze(
+                &input,
+                output.as_deref(),
+                spec || spec_json || invariants,
+                spec_json,
+                invariants,
+                use_color,
+            )
         }
         CliCommand::Scan {
             directory,

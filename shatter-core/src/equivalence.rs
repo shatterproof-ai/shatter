@@ -53,7 +53,7 @@ impl BranchPath {
 }
 
 /// A single execution's data within an equivalence class.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClassMember {
     /// The input arguments for this execution.
     pub inputs: Vec<serde_json::Value>,
@@ -66,7 +66,7 @@ pub struct ClassMember {
 }
 
 /// A group of executions that followed the same branch path.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EquivalenceClass {
     /// The branch path shared by all members.
     pub branch_path: BranchPath,
@@ -647,5 +647,39 @@ mod tests {
             let d: Precondition = serde_json::from_str(&json).expect("deserialize");
             assert_eq!(*p, d);
         }
+    }
+
+    #[test]
+    fn class_member_round_trips() {
+        let member = ClassMember {
+            inputs: vec![json!(42), json!("hello")],
+            return_value: Some(json!(true)),
+            thrown_error: None,
+            lines_executed: vec![1, 2, 3],
+        };
+        let json = serde_json::to_string(&member).expect("serialize");
+        let d: ClassMember = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(d.inputs, member.inputs);
+        assert_eq!(d.return_value, member.return_value);
+        assert_eq!(d.thrown_error, member.thrown_error);
+        assert_eq!(d.lines_executed, member.lines_executed);
+    }
+
+    #[test]
+    fn equivalence_class_round_trips() {
+        let path = vec![make_branch(0, true), make_branch(1, false)];
+        let executions = vec![
+            entry(vec![json!(5)], make_result(Some(json!("pos")), path.clone())),
+            entry(vec![json!(10)], make_result(Some(json!("big")), path)),
+        ];
+        let classes = group_into_classes(&executions);
+        assert_eq!(classes.len(), 1);
+
+        let json = serde_json::to_string(&classes[0]).expect("serialize");
+        let d: EquivalenceClass = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(d.branch_path, classes[0].branch_path);
+        assert_eq!(d.canonical_example, classes[0].canonical_example);
+        assert_eq!(d.all_inputs.len(), classes[0].all_inputs.len());
+        assert_eq!(d.canonical_return_value, classes[0].canonical_return_value);
     }
 }

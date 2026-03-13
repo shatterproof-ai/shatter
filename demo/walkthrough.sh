@@ -182,7 +182,7 @@ RUST_EXAMPLES=(
     "examples/standalone/rust/04_errors.rs:safe_divide"
 )
 
-TOTAL=45
+TOTAL=47
 
 # ─── Walkthrough ──────────────────────────────────────────────────────
 
@@ -410,30 +410,40 @@ step 41 $TOTAL "Clean Re-exploration" \
     "Use --clean to force full re-exploration, ignoring the existing spec" \
     $SHATTER explore --output /tmp/shatter-spec.json --clean "${EXAMPLES[0]}"
 
-# Stage 42: Stale command
+# Stage 42: Save Stage 1 (observe) output
+step 42 $TOTAL "Save Observation Output" \
+    "Use --observe-output to save Stage 1 data for offline analysis" \
+    $SHATTER explore --observe-output /tmp/shatter-observe "${EXAMPLES[0]}"
+
+# Stage 43: Offline analysis from Stage 1 output
+step 43 $TOTAL "Offline Analyze (Stage 2)" \
+    "Run shatter analyze on saved observation data — no frontend needed" \
+    $SHATTER analyze /tmp/shatter-observe/classifyNumber.observe.json --spec
+
+# Stage 44: Stale command
 # The spec from step 38 only explored classifyNumber. The file also exports
 # compareMagnitudes, so `stale` correctly reports it as stale. Exit code 1
 # means "some functions are stale or removed" — this is informational, not a failure.
-step 42 $TOTAL "Stale Check" \
+step 44 $TOTAL "Stale Check" \
     "Check staleness relative to spec from step 38 (exit 1 = stale found, expected here)" \
     bash -c "$SHATTER stale 'examples/standalone/ts/01-arithmetic.ts' /tmp/shatter-spec.json; echo '(exit code 1 is expected: compareMagnitudes was not in the spec from step 38)'"
 
-# Stage 43: Revalidate command
+# Stage 45: Revalidate command
 # Re-execute cached behaviors to check for drift/regressions. Uses cache
 # populated by earlier explore steps. Exit code 0 = no regressions found.
-step 43 $TOTAL "Revalidate" \
+step 45 $TOTAL "Revalidate" \
     "Revalidate cached behaviors for the arithmetic example" \
     $SHATTER revalidate 'examples/standalone/ts/01-arithmetic.ts'
 
-# Stage 44: Multi-level setup/teardown
-step 44 $TOTAL "Multi-Level Setup/Teardown" \
+# Stage 46: Multi-level setup/teardown
+step 46 $TOTAL "Multi-Level Setup/Teardown" \
     "Explore with session + file level setup/teardown from .shatter/config.yaml" \
     $SHATTER explore --config examples/standalone/ts/.shatter/config.yaml \
     --setup-timeout 30 \
     "examples/standalone/ts/01-arithmetic.ts:classifyNumber"
 
-# Stage 45: Setup with --fail-on-setup-error
-step 45 $TOTAL "Setup Fail-on-Error" \
+# Stage 47: Setup with --fail-on-setup-error
+step 47 $TOTAL "Setup Fail-on-Error" \
     "Use --fail-on-setup-error to abort immediately on setup failures" \
     $SHATTER explore --config examples/standalone/ts/.shatter/config.yaml \
     --setup-timeout 10 --fail-on-setup-error \
