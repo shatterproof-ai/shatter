@@ -12,15 +12,15 @@
 - **Frontends** — per-frontend metadata (supported capabilities, timeouts)
 - **Compatibility policy** — versioning and mismatch behavior
 
-## Keeping it in sync
+## Changing the protocol
 
-When adding a new command, status, error code, or capability:
+See [GOVERNANCE.md](GOVERNANCE.md) for the mandatory process when making any protocol change — including required updates to schemas, fixtures, conformance cases, and all frontend implementations.
 
-1. Update `registry.yaml` first
-2. Implement in the relevant codebase(s)
-3. Run `python3 scripts/validate-protocol-registry.py` to verify consistency
+Quick registry sync check:
 
-The validation script checks that every command, status, and error code in the source files has a corresponding entry in the registry (and vice versa).
+```bash
+python3 scripts/validate-protocol-registry.py
+```
 
 ## Validation
 

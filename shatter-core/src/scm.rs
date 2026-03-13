@@ -194,9 +194,28 @@ mod tests {
 
     #[test]
     fn test_detect_provider_not_a_repo() {
-        // /tmp is unlikely to be a git repo
-        let result = detect_provider(Path::new("/tmp"));
-        assert!(matches!(result, Err(ScmError::NotARepo { .. })));
+        // Verify that git rev-parse fails in a directory with no repo.
+        // We use GIT_CEILING_DIRECTORIES on the subprocess (not process-wide)
+        // to prevent git from ascending into a parent repo, which happens
+        // when tests run inside a git worktree.
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let dir_path = dir.path();
+        let parent = dir_path.parent().unwrap_or(dir_path);
+
+        // Clear GIT_DIR/GIT_WORK_TREE which git hooks inject into the env —
+        // without this, the subprocess inherits them and finds the repo anyway.
+        let status = std::process::Command::new("git")
+            .args(["rev-parse", "--git-dir"])
+            .current_dir(dir_path)
+            .env("GIT_CEILING_DIRECTORIES", parent)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("git command should run");
+
+        assert!(!status.success(), "git rev-parse should fail in a non-repo dir");
     }
 
     #[test]
