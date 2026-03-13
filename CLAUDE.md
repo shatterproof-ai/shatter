@@ -176,13 +176,20 @@ Before declaring any feature or bug fix **done**, verify:
 
 ### Add a new protocol message type
 
-1. Define the message in `shatter-core/src/protocol.rs` (Rust types + serde)
-2. Add round-trip serialization tests in the same module
-3. Implement the handler in each frontend:
+Follow the full checklist in [`protocol/GOVERNANCE.md`](protocol/GOVERNANCE.md). Summary:
+
+1. Update `protocol/registry.yaml`
+2. Add/update JSON schemas in `protocol/schemas/`
+3. Add valid + invalid fixtures in `protocol/fixtures/`
+4. Define the message in `shatter-core/src/protocol.rs` (Rust types + serde)
+5. Add round-trip serialization tests in the same module
+6. Implement the handler in each frontend:
    - TypeScript: `shatter-ts/src/protocol.ts`
    - Go: `shatter-go/protocol/`
    - Rust: `shatter-rust/src/protocol.rs`
-4. Add round-trip tests in each frontend (serialize → deserialize → verify)
+7. Add round-trip tests in each frontend (serialize → deserialize → verify)
+8. Update conformance cases if adding a new command
+9. Run all four validation checks (see governance doc)
 
 ### Add a new CLI command
 
