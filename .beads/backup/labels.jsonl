@@ -172,6 +172,15 @@
 {"issue_id":"str-e127","label":"rust-frontend"}
 {"issue_id":"str-ed38","label":"devx"}
 {"issue_id":"str-ed38","label":"quality"}
+{"issue_id":"str-ed38.1","label":"devx"}
+{"issue_id":"str-ed38.1","label":"quality"}
+{"issue_id":"str-ed38.2","label":"devx"}
+{"issue_id":"str-ed38.2","label":"quality"}
+{"issue_id":"str-ed38.3","label":"devx"}
+{"issue_id":"str-ed38.3","label":"quality"}
+{"issue_id":"str-ed38.3","label":"rust"}
+{"issue_id":"str-ed38.4","label":"devx"}
+{"issue_id":"str-ed38.4","label":"quality"}
 {"issue_id":"str-efdn","label":"cli"}
 {"issue_id":"str-efdn","label":"walkthrough"}
 {"issue_id":"str-fpgb","label":"protocol"}
