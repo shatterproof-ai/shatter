@@ -984,3 +984,4 @@
 {"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-13T14:02:55Z","event_type":"created","id":991,"issue_id":"str-3ky9.17.1","new_value":"","old_value":""}
 {"actor":"Ketan Gangatirkar","comment":"Added label: phase:in_progress","created_at":"2026-03-13T14:02:56Z","event_type":"label_added","id":992,"issue_id":"str-3ky9.17","new_value":null,"old_value":null}
 {"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-13T16:28:50Z","event_type":"closed","id":993,"issue_id":"str-bwx6","new_value":"Merged to main","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-13T17:06:24Z","event_type":"closed","id":994,"issue_id":"str-3ky9.15","new_value":"Merged to main. MockabilityAssessment + refactoring recs in scan reports.","old_value":""}
