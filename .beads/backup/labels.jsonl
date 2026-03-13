@@ -170,6 +170,8 @@
 {"issue_id":"str-bwx6","label":"examples"}
 {"issue_id":"str-bwx6","label":"testing"}
 {"issue_id":"str-e127","label":"rust-frontend"}
+{"issue_id":"str-ed38","label":"devx"}
+{"issue_id":"str-ed38","label":"quality"}
 {"issue_id":"str-efdn","label":"cli"}
 {"issue_id":"str-efdn","label":"walkthrough"}
 {"issue_id":"str-fpgb","label":"protocol"}
