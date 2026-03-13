@@ -103,8 +103,11 @@ Notes:
 
 - `scripts/quality/check-ts.sh` currently runs build plus tests. Dependency-cruiser and
   Knip should be added later once their configs are committed.
-- `scripts/quality/check-rust.sh` supports `cargo-nextest` and optional dependency
-  checks when those tools are present in CI.
+- `scripts/quality/check-rust.sh` covers both the workspace crates (`shatter-core`,
+  `shatter-cli`) and the standalone Rust frontend crates (`shatter-rust`,
+  `shatter-rust-runtime`) which are excluded from the Cargo workspace. Tests and
+  clippy run for all four crates. It also supports `cargo-nextest` and optional
+  dependency checks when those tools are present in CI.
 
 ### Stage 3: Deep or slow checks
 
