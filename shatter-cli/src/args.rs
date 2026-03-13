@@ -247,6 +247,36 @@ pub(crate) enum CliCommand {
         /// call data to .shatter/recorded-mocks/ as seed fixtures for future runs.
         #[arg(long)]
         record: bool,
+
+        /// Write raw observation data (Stage 1 output) to a directory for offline
+        /// analysis with `shatter analyze`. One JSON file per function.
+        #[arg(long)]
+        observe_output: Option<PathBuf>,
+    },
+
+    /// Analyze Stage 1 (Observe) output: produce equivalence classes, behavior map,
+    /// coverage metrics, and optional behavioral specification. No frontend or solver
+    /// required — pure offline computation on serialized observation data.
+    Analyze {
+        /// Path to a Stage 1 observation JSON file (produced by `shatter explore --observe-output`).
+        #[arg(required = true)]
+        input: PathBuf,
+
+        /// Write Stage 2 analysis output to a JSON file (for downstream stages).
+        #[arg(long, short)]
+        output: Option<PathBuf>,
+
+        /// Output a behavioral specification in markdown.
+        #[arg(long)]
+        spec: bool,
+
+        /// Output the behavioral specification as JSON instead of markdown.
+        #[arg(long)]
+        spec_json: bool,
+
+        /// Enable Daikon-style invariant detection.
+        #[arg(long)]
+        invariants: bool,
     },
 
     /// Scan a directory for source files, analyze and explore all functions in

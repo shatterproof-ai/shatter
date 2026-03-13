@@ -79,6 +79,7 @@ async fn main() -> ExitCode {
             setup_timeout,
             fail_on_setup_error: _,
             record,
+            observe_output,
         } => {
             // Set SHATTER_SETUP_TIMEOUT env var for frontends if --setup-timeout provided.
             if let Some(secs) = setup_timeout {
@@ -138,8 +139,25 @@ async fn main() -> ExitCode {
                 no_seeds,
                 record,
                 &meta_config,
+                observe_output.as_deref(),
             )
             .await
+        }
+        CliCommand::Analyze {
+            input,
+            output,
+            spec,
+            spec_json,
+            invariants,
+        } => {
+            commands::analyze::run_analyze(
+                &input,
+                output.as_deref(),
+                spec || spec_json || invariants,
+                spec_json,
+                invariants,
+                use_color,
+            )
         }
         CliCommand::Scan {
             directory,

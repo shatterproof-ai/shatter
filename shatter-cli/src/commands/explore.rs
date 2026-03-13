@@ -54,6 +54,7 @@ pub(crate) async fn run_explore(
     no_seeds: bool,
     record: bool,
     meta_config: &shatter_core::strategy::MetaConfig,
+    observe_output: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let pool_path = if no_seeds { None } else { Some(seeds_dir.join("pool.json")) };
     let loop_buckets = parse_loop_buckets(loop_buckets_str)?;
@@ -515,6 +516,30 @@ pub(crate) async fn run_explore(
 
                     // Run the Analyze stage to get coverage metrics and eq classes.
                     let analyze_output = shatter_core::pipeline::analyze(&result, func);
+
+                    // Save raw observation data for offline analysis if requested.
+                    if let Some(obs_dir) = observe_output {
+                        let safe_name = func.name.replace(|c: char| !c.is_alphanumeric() && c != '_', "_");
+                        let obs_path = obs_dir.join(format!("{safe_name}.observe.json"));
+                        let stage_json = serde_json::json!({
+                            "observation": &result,
+                            "analysis": func,
+                            "file": file_str,
+                        });
+                        if let Some(parent) = obs_path.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+                        match serde_json::to_string_pretty(&stage_json) {
+                            Ok(json) => {
+                                if let Err(e) = std::fs::write(&obs_path, json) {
+                                    log::error!("Failed to write observe output for {}: {e}", func.name);
+                                } else {
+                                    log::info!("Wrote observe output: {}", obs_path.display());
+                                }
+                            }
+                            Err(e) => log::error!("Failed to serialize observe output for {}: {e}", func.name),
+                        }
+                    }
 
                     if log::log_enabled!(log::Level::Info) {
                         if log::log_enabled!(log::Level::Trace) {

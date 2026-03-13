@@ -10,12 +10,15 @@ use crate::equivalence::{self, EquivalenceClass};
 use crate::execution_record::{ExecutionRecord, SymConstraint};
 use crate::explorer::ObservationOutput;
 use crate::protocol::{ExecuteResult, FunctionAnalysis};
+use crate::spec::FunctionSpec;
 
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::path::Path;
 
 /// Output of the Analyze stage.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct AnalyzeOutput {
     /// Equivalence classes grouping executions by branch path.
     pub eq_classes: Vec<EquivalenceClass>,
@@ -23,6 +26,91 @@ pub struct AnalyzeOutput {
     pub behavior_map: BehaviorMap,
     /// Branch coverage metrics with per-method attribution.
     pub coverage_metrics: CoverageMetrics,
+}
+
+/// Bundled output of the Observe stage, suitable for serialization to disk.
+/// Contains everything the Analyze stage needs as input.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ObserveStageOutput {
+    /// Raw observation data from executing the function.
+    pub observation: ObservationOutput,
+    /// Static analysis results (function signature, branches, etc.).
+    pub analysis: FunctionAnalysis,
+    /// Source file path, for display and downstream stages.
+    pub file: String,
+}
+
+/// Bundled output of the Analyze stage, suitable for serialization to disk.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AnalyzeStageOutput {
+    /// Analysis results (eq classes, behavior map, coverage).
+    pub analyze: AnalyzeOutput,
+    /// Optional behavioral specification.
+    pub spec: Option<FunctionSpec>,
+    /// Function name, carried forward for provenance.
+    pub function_name: String,
+    /// Source file path, carried forward for provenance.
+    pub file: String,
+}
+
+/// Error type for stage I/O operations.
+#[derive(Debug)]
+pub enum StageIoError {
+    /// Filesystem I/O error.
+    Io(std::io::Error),
+    /// JSON serialization or deserialization error.
+    Json(serde_json::Error),
+}
+
+impl std::fmt::Display for StageIoError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(e) => write!(f, "stage I/O error: {e}"),
+            Self::Json(e) => write!(f, "stage JSON error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for StageIoError {}
+
+impl From<std::io::Error> for StageIoError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
+}
+
+impl From<serde_json::Error> for StageIoError {
+    fn from(e: serde_json::Error) -> Self {
+        Self::Json(e)
+    }
+}
+
+/// Read an [`ObserveStageOutput`] from a JSON file on disk.
+pub fn read_observe_stage(path: &Path) -> Result<ObserveStageOutput, StageIoError> {
+    let data = std::fs::read_to_string(path)?;
+    let output = serde_json::from_str(&data)?;
+    Ok(output)
+}
+
+/// Write an [`ObserveStageOutput`] to a JSON file on disk.
+pub fn write_observe_stage(output: &ObserveStageOutput, path: &Path) -> Result<(), StageIoError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let json = serde_json::to_string_pretty(output)?;
+    std::fs::write(path, json)?;
+    Ok(())
+}
+
+/// Write an [`AnalyzeStageOutput`] to a JSON file on disk.
+pub fn write_analyze_stage(output: &AnalyzeStageOutput, path: &Path) -> Result<(), StageIoError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let json = serde_json::to_string_pretty(output)?;
+    std::fs::write(path, json)?;
+    Ok(()
+    )
 }
 
 /// Run the Analyze stage on an observation result.
@@ -354,6 +442,134 @@ mod tests {
         assert_eq!(
             output.behavior_map.nondeterministic_fields[0].field_path,
             "return.timestamp"
+        );
+    }
+
+    #[test]
+    fn observe_stage_output_round_trips() {
+        let observe = ObservationOutput {
+            function_name: "test_fn".into(),
+            iterations: 3,
+            unique_paths: 1,
+            lines_covered: 2,
+            total_lines: 5,
+            new_path_executions: vec![],
+            raw_results: vec![],
+            discoveries: vec![],
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+        };
+        let analysis = stub_analysis("test_fn", 1);
+        let stage = ObserveStageOutput {
+            observation: observe,
+            analysis,
+            file: "test.ts".into(),
+        };
+        let json = serde_json::to_string(&stage).expect("serialize");
+        let d: ObserveStageOutput = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(d.observation.function_name, "test_fn");
+        assert_eq!(d.file, "test.ts");
+        assert_eq!(d.analysis.branches.len(), 1);
+    }
+
+    #[test]
+    fn analyze_output_round_trips() {
+        let observe = ObservationOutput {
+            function_name: "roundtrip".into(),
+            iterations: 1,
+            unique_paths: 0,
+            lines_covered: 0,
+            total_lines: 5,
+            new_path_executions: vec![],
+            raw_results: vec![],
+            discoveries: vec![],
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+        };
+        let analysis = stub_analysis("roundtrip", 2);
+        let output = analyze(&observe, &analysis);
+
+        let json = serde_json::to_string(&output).expect("serialize");
+        let d: AnalyzeOutput = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(d.eq_classes.len(), output.eq_classes.len());
+        assert_eq!(d.coverage_metrics.total_branches, output.coverage_metrics.total_branches);
+        assert_eq!(d.behavior_map.function_id, output.behavior_map.function_id);
+    }
+
+    #[test]
+    fn analyze_stage_output_round_trips() {
+        let observe = ObservationOutput {
+            function_name: "stage_rt".into(),
+            iterations: 1,
+            unique_paths: 0,
+            lines_covered: 0,
+            total_lines: 5,
+            new_path_executions: vec![],
+            raw_results: vec![],
+            discoveries: vec![],
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+        };
+        let analysis = stub_analysis("stage_rt", 1);
+        let analyze_out = analyze(&observe, &analysis);
+        let stage = AnalyzeStageOutput {
+            analyze: analyze_out,
+            spec: None,
+            function_name: "stage_rt".into(),
+            file: "test.ts".into(),
+        };
+        let json = serde_json::to_string(&stage).expect("serialize");
+        let d: AnalyzeStageOutput = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(d.function_name, "stage_rt");
+        assert_eq!(d.file, "test.ts");
+        assert!(d.spec.is_none());
+    }
+
+    #[test]
+    fn eq_classes_bounded_by_raw_results() {
+        let branch_path_a = vec![BranchDecision {
+            branch_id: 0, line: 10, taken: true,
+            constraint: SymConstraint::Unknown { hint: "t".into() },
+        }];
+        let branch_path_b = vec![BranchDecision {
+            branch_id: 0, line: 10, taken: false,
+            constraint: SymConstraint::Unknown { hint: "t".into() },
+        }];
+        let make_result = |bp: Vec<BranchDecision>| ExecuteResult {
+            return_value: Some(json!(1)),
+            thrown_error: None,
+            branch_path: bp,
+            lines_executed: vec![1],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
+            scope_events: vec![],
+            capture_truncation: None, discovered_dependencies: vec![],
+            performance: empty_perf(),
+        };
+        let observe = ObservationOutput {
+            function_name: "bounded".into(),
+            iterations: 3,
+            unique_paths: 2,
+            lines_covered: 1,
+            total_lines: 5,
+            new_path_executions: vec![],
+            raw_results: vec![
+                (vec![json!(1)], vec![], make_result(branch_path_a.clone())),
+                (vec![json!(2)], vec![], make_result(branch_path_a)),
+                (vec![json!(-1)], vec![], make_result(branch_path_b)),
+            ],
+            discoveries: vec![],
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+        };
+        let analysis = stub_analysis("bounded", 1);
+        let output = analyze(&observe, &analysis);
+        assert!(
+            output.eq_classes.len() <= observe.raw_results.len(),
+            "eq classes ({}) must not exceed raw results ({})",
+            output.eq_classes.len(),
+            observe.raw_results.len()
         );
     }
 
