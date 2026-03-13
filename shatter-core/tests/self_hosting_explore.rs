@@ -60,6 +60,10 @@ async fn spawn_rust_frontend() -> Frontend {
         "SHATTER_EXEC_TIMEOUT".to_string(),
         "60".to_string(),
     ));
+    config.env_vars.push((
+        "SHATTER_BUILD_TIMEOUT".to_string(),
+        "120".to_string(),
+    ));
 
     Frontend::spawn(&config)
         .await
