@@ -1104,7 +1104,7 @@ mod tests {
             path_constraints: vec![],
             scope_events: vec![],
             side_effects: vec![],
-            capture_truncation: None, discovered_dependencies: vec![],
+            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![],
             performance: PerformanceMetrics {
                 wall_time_ms: 1.0,
                 cpu_time_us: 800,
@@ -1141,7 +1141,7 @@ mod tests {
                 message: "fetching data".to_string(),
             }],
             scope_events: vec![],
-            capture_truncation: None, discovered_dependencies: vec![],
+            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![],
             performance: PerformanceMetrics {
                 wall_time_ms: 5.0,
                 cpu_time_us: 3000,
@@ -1215,7 +1215,7 @@ mod tests {
             path_constraints: vec![],
             side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, discovered_dependencies: vec![],
+            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![],
             performance: PerformanceMetrics {
                 wall_time_ms: 0.1,
                 cpu_time_us: 50,
@@ -1285,7 +1285,7 @@ mod tests {
                     body: None,
                 },
             ],
-            capture_truncation: None, discovered_dependencies: vec![],
+            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![],
             performance: PerformanceMetrics {
                 wall_time_ms: 2.0,
                 cpu_time_us: 1500,
@@ -1319,7 +1319,7 @@ mod tests {
             path_constraints: vec![],
             side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, discovered_dependencies: vec![],
+            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![],
             performance: PerformanceMetrics {
                 wall_time_ms: 0.5,
                 cpu_time_us: 300,

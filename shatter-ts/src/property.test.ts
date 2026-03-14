@@ -19,6 +19,8 @@ import type {
   ErrorCode,
   DepDetectionKind,
   DiscoveredDependency,
+  ConnectionFailure,
+  ConnectionFailureKind,
 } from "./protocol.js";
 import {
   ALL_ERROR_CODES,
@@ -201,6 +203,16 @@ const arbDiscoveredDependency: fc.Arbitrary<DiscoveredDependency> = fc.record({
   source_module: arbIdent,
   kind: arbDepDetectionKind,
   is_subprocess_spawn: fc.boolean(),
+});
+
+const arbConnectionFailureKind: fc.Arbitrary<ConnectionFailureKind> = fc.constantFrom(
+  "connection_refused", "dns_failure", "auth_error", "timeout", "other",
+);
+
+const arbConnectionFailure: fc.Arbitrary<ConnectionFailure> = fc.record({
+  symbol: arbIdent,
+  error_kind: arbConnectionFailureKind,
+  message: arbShortString,
 });
 
 const arbSideEffect: fc.Arbitrary<SideEffect> = fc.oneof(
@@ -753,6 +765,38 @@ describe("property: DiscoveredDependency round-trips", () => {
         // valid wire-format test. The runtime detector enforces the
         // semantic constraint.
         expect(typeof dd.is_subprocess_spawn).toBe("boolean");
+      }),
+    );
+  });
+});
+
+describe("property: ConnectionFailure round-trips", () => {
+  it("ConnectionFailure survives JSON round-trip", () => {
+    fc.assert(
+      fc.property(arbConnectionFailure, (cf) => {
+        const json = JSON.stringify(cf);
+        const decoded = JSON.parse(json) as ConnectionFailure;
+        expect(decoded).toEqual(cf);
+      }),
+    );
+  });
+
+  it("error_kind is always a valid ConnectionFailureKind variant", () => {
+    const validKinds = new Set<string>([
+      "connection_refused", "dns_failure", "auth_error", "timeout", "other",
+    ]);
+    fc.assert(
+      fc.property(arbConnectionFailure, (cf) => {
+        expect(validKinds.has(cf.error_kind)).toBe(true);
+      }),
+    );
+  });
+
+  it("symbol and message are strings", () => {
+    fc.assert(
+      fc.property(arbConnectionFailure, (cf) => {
+        expect(typeof cf.symbol).toBe("string");
+        expect(typeof cf.message).toBe("string");
       }),
     );
   });

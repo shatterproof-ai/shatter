@@ -8,6 +8,11 @@ import {
   DEFAULT_EXEC_TIMEOUT_MS,
   truncateMessage,
   truncateSideEffects,
+  classifyConnectionFailure,
+  CONN_REFUSED_PATTERNS,
+  DNS_FAILURE_PATTERNS,
+  AUTH_ERROR_PATTERNS,
+  TIMEOUT_PATTERNS,
 } from "./executor.js";
 import { instrumentFunction } from "./instrumentor.js";
 import * as fs from "node:fs";
@@ -850,5 +855,141 @@ describe("execution-time dep gap detection", () => {
     `;
     const result = await executeInstrumented(source, "noop", [], []);
     expect(result.discovered_dependencies.length).toBe(0);
+  });
+});
+
+describe("classifyConnectionFailure", () => {
+  it("classifies ECONNREFUSED as connection_refused", () => {
+    expect(classifyConnectionFailure("connect ECONNREFUSED 127.0.0.1:5432")).toBe("connection_refused");
+  });
+
+  it("classifies 'connection refused' as connection_refused", () => {
+    expect(classifyConnectionFailure("Error: connection refused")).toBe("connection_refused");
+  });
+
+  it("classifies ENOTFOUND as dns_failure", () => {
+    expect(classifyConnectionFailure("getaddrinfo ENOTFOUND api.example.com")).toBe("dns_failure");
+  });
+
+  it("classifies EAI_AGAIN as dns_failure", () => {
+    expect(classifyConnectionFailure("EAI_AGAIN dns lookup failed")).toBe("dns_failure");
+  });
+
+  it("classifies getaddrinfo as dns_failure", () => {
+    expect(classifyConnectionFailure("getaddrinfo failed")).toBe("dns_failure");
+  });
+
+  it("classifies EAUTH as auth_error", () => {
+    expect(classifyConnectionFailure("EAUTH: authentication required")).toBe("auth_error");
+  });
+
+  it("classifies 401 Unauthorized as auth_error", () => {
+    expect(classifyConnectionFailure("HTTP 401 Unauthorized")).toBe("auth_error");
+  });
+
+  it("classifies 403 Forbidden as auth_error", () => {
+    expect(classifyConnectionFailure("HTTP 403 Forbidden")).toBe("auth_error");
+  });
+
+  it("classifies ETIMEDOUT as timeout", () => {
+    expect(classifyConnectionFailure("connect ETIMEDOUT")).toBe("timeout");
+  });
+
+  it("classifies ESOCKETTIMEDOUT as timeout", () => {
+    expect(classifyConnectionFailure("ESOCKETTIMEDOUT on request")).toBe("timeout");
+  });
+
+  it("classifies 'timed out' as timeout", () => {
+    expect(classifyConnectionFailure("request timed out")).toBe("timeout");
+  });
+
+  it("returns null for application errors", () => {
+    expect(classifyConnectionFailure("ValidationError: invalid input")).toBeNull();
+  });
+
+  it("returns null for generic errors", () => {
+    expect(classifyConnectionFailure("Something went wrong")).toBeNull();
+  });
+
+  it("returns null for empty string", () => {
+    expect(classifyConnectionFailure("")).toBeNull();
+  });
+
+  it("covers all CONN_REFUSED_PATTERNS", () => {
+    for (const pattern of CONN_REFUSED_PATTERNS) {
+      expect(classifyConnectionFailure(`error: ${pattern}`)).toBe("connection_refused");
+    }
+  });
+
+  it("covers all DNS_FAILURE_PATTERNS", () => {
+    for (const pattern of DNS_FAILURE_PATTERNS) {
+      expect(classifyConnectionFailure(`error: ${pattern}`)).toBe("dns_failure");
+    }
+  });
+
+  it("covers all AUTH_ERROR_PATTERNS", () => {
+    for (const pattern of AUTH_ERROR_PATTERNS) {
+      expect(classifyConnectionFailure(`error: ${pattern}`)).toBe("auth_error");
+    }
+  });
+
+  it("covers all TIMEOUT_PATTERNS", () => {
+    for (const pattern of TIMEOUT_PATTERNS) {
+      expect(classifyConnectionFailure(`error: ${pattern}`)).toBe("timeout");
+    }
+  });
+});
+
+describe("connection_failures in executeInstrumented", () => {
+  it("returns empty connection_failures for normal execution", async () => {
+    const source = `
+      export function add(a: number, b: number): number {
+        return a + b;
+      }
+    `;
+    const result = await executeInstrumented(source, "add", [1, 2], []);
+    expect(result.connection_failures).toEqual([]);
+  });
+});
+
+describe("buildExecuteResponse includes connection_failures", () => {
+  it("omits connection_failures when empty", () => {
+    const rawResult = {
+      return_value: 42,
+      thrown_error: null,
+      performance: { wall_time_ms: 1, cpu_time_us: 1000, heap_used_bytes: 0, heap_allocated_bytes: 0 },
+      branch_path: [],
+      path_constraints: [],
+      lines_executed: [],
+      side_effects: [],
+      calls_to_external: [],
+      scope_events: [],
+      discovered_dependencies: [],
+      connection_failures: [],
+    };
+    const resp = buildExecuteResponse(1, PROTOCOL_VERSION, rawResult);
+    expect(resp.connection_failures).toBeUndefined();
+  });
+
+  it("includes connection_failures when non-empty", () => {
+    const rawResult = {
+      return_value: null,
+      thrown_error: null,
+      performance: { wall_time_ms: 1, cpu_time_us: 1000, heap_used_bytes: 0, heap_allocated_bytes: 0 },
+      branch_path: [],
+      path_constraints: [],
+      lines_executed: [],
+      side_effects: [],
+      calls_to_external: [],
+      scope_events: [],
+      discovered_dependencies: [],
+      connection_failures: [
+        { symbol: "pg:query", error_kind: "connection_refused" as const, message: "ECONNREFUSED" },
+      ],
+    };
+    const resp = buildExecuteResponse(1, PROTOCOL_VERSION, rawResult);
+    expect(resp.connection_failures).toEqual([
+      { symbol: "pg:query", error_kind: "connection_refused", message: "ECONNREFUSED" },
+    ]);
   });
 });

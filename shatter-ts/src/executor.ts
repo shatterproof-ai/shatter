@@ -25,6 +25,8 @@ import type {
   TraceEvent,
   ScopeEvent,
   DiscoveredDependency,
+  ConnectionFailure,
+  ConnectionFailureKind,
 } from "./protocol.js";
 import { RECORD_FUNCTION, BRANCH_FUNCTION, SCOPE_EVENT_FUNCTION, MOCK_REGISTRY, MOCK_CALL_FUNCTION } from "./instrumentor.js";
 import type { MockConfig, ExternalCall } from "./protocol.js";
@@ -87,6 +89,49 @@ export function classifyError(errorType: string, message: string): ErrorCategory
     return "runtime";
   }
   return "unknown";
+}
+
+// ---------------------------------------------------------------------------
+// Connection failure detection — patterns mirror mock_value_space.rs constants
+// ---------------------------------------------------------------------------
+
+/** Patterns indicating a refused TCP connection. */
+export const CONN_REFUSED_PATTERNS = ["ECONNREFUSED", "connection refused", "Connection refused"];
+
+/** Patterns indicating a DNS resolution failure. */
+export const DNS_FAILURE_PATTERNS = [
+  "ENOTFOUND", "EAI_AGAIN", "dns resolution", "DNS resolution", "getaddrinfo", "no such host",
+];
+
+/** Patterns indicating an authentication/authorization failure. */
+export const AUTH_ERROR_PATTERNS = [
+  "EAUTH", "authentication failed", "unauthorized", "403 Forbidden", "401 Unauthorized",
+  "invalid credentials",
+];
+
+/** Patterns indicating a timeout. */
+export const TIMEOUT_PATTERNS = [
+  "ETIMEDOUT", "ESOCKETTIMEDOUT", "ETIME", "timed out", "timeout", "deadline exceeded",
+];
+
+/**
+ * Classify an error message as a connection failure kind, if it matches
+ * any known infrastructure failure pattern. Returns null for application errors.
+ */
+export function classifyConnectionFailure(message: string): ConnectionFailureKind | null {
+  for (const pattern of CONN_REFUSED_PATTERNS) {
+    if (message.includes(pattern)) return "connection_refused";
+  }
+  for (const pattern of DNS_FAILURE_PATTERNS) {
+    if (message.includes(pattern)) return "dns_failure";
+  }
+  for (const pattern of AUTH_ERROR_PATTERNS) {
+    if (message.includes(pattern)) return "auth_error";
+  }
+  for (const pattern of TIMEOUT_PATTERNS) {
+    if (message.includes(pattern)) return "timeout";
+  }
+  return null;
 }
 
 /** Cache of compiled modules to avoid re-transpiling on every execute call. */
@@ -323,6 +368,7 @@ interface RawExecuteResult {
   calls_to_external: ExternalCall[];
   scope_events: TraceEvent[];
   discovered_dependencies: DiscoveredDependency[];
+  connection_failures: ConnectionFailure[];
 }
 
 /**
@@ -567,6 +613,7 @@ export async function executeFunction(
     calls_to_external: [],
     scope_events: [],
     discovered_dependencies: [],
+    connection_failures: [],
   };
 }
 
@@ -600,6 +647,7 @@ export async function executeInstrumented(
   const branchDecisions: BranchDecision[] = [];
   const sideEffects: SideEffect[] = [];
   const externalCalls: ExternalCall[] = [];
+  const connectionFailures: ConnectionFailure[] = [];
   const scopeEvents: TraceEvent[] = [];
   const discoveredDeps: DiscoveredDependency[] = [];
   const seenDiscoveredModules = new Set<string>();
@@ -676,18 +724,30 @@ export async function executeInstrumented(
     };
   }
 
-  // Mock call recorder
+  // Mock call recorder — also classifies connection failures from thrown errors
   const mockCallFn = (
     moduleName: string,
     symbolName: string,
     args: unknown[],
     returnValue: unknown,
+    thrownError?: unknown,
   ): void => {
+    const symbol = `${moduleName}:${symbolName}`;
     externalCalls.push({
-      symbol: `${moduleName}:${symbolName}`,
+      symbol,
       args: Array.isArray(args) ? args : [],
       return_value: returnValue,
     });
+
+    if (thrownError !== undefined) {
+      const errMsg = thrownError instanceof Error
+        ? thrownError.message
+        : String(thrownError);
+      const kind = classifyConnectionFailure(errMsg);
+      if (kind !== null) {
+        connectionFailures.push({ symbol, error_kind: kind, message: errMsg });
+      }
+    }
   };
 
   // Build the execution context with capturing console and process
@@ -792,6 +852,16 @@ export async function executeInstrumented(
       message: metrics.thrownError.message,
       stack: metrics.thrownError.stack,
     });
+
+    // Classify the thrown error as a connection failure if it matches infra patterns
+    const connKind = classifyConnectionFailure(metrics.thrownError.message);
+    if (connKind !== null) {
+      connectionFailures.push({
+        symbol: "unknown",
+        error_kind: connKind,
+        message: metrics.thrownError.message,
+      });
+    }
   }
 
   // Detect module-level variable changes after execution
@@ -822,6 +892,7 @@ export async function executeInstrumented(
     calls_to_external: externalCalls,
     scope_events: scopeEvents,
     discovered_dependencies: discoveredDeps,
+    connection_failures: connectionFailures,
   };
 }
 
@@ -857,6 +928,10 @@ export function buildExecuteResponse(
 
   if (rawResult.discovered_dependencies.length > 0) {
     response.discovered_dependencies = rawResult.discovered_dependencies;
+  }
+
+  if (rawResult.connection_failures.length > 0) {
+    response.connection_failures = rawResult.connection_failures;
   }
 
   return response;
