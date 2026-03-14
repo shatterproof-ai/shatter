@@ -184,13 +184,17 @@
 {"issue_id":"str-ed38","label":"devx"}
 {"issue_id":"str-ed38","label":"quality"}
 {"issue_id":"str-ed38.1","label":"devx"}
+{"issue_id":"str-ed38.1","label":"phase:in_progress"}
 {"issue_id":"str-ed38.1","label":"quality"}
 {"issue_id":"str-ed38.2","label":"devx"}
+{"issue_id":"str-ed38.2","label":"phase:in_progress"}
 {"issue_id":"str-ed38.2","label":"quality"}
 {"issue_id":"str-ed38.3","label":"devx"}
+{"issue_id":"str-ed38.3","label":"phase:in_progress"}
 {"issue_id":"str-ed38.3","label":"quality"}
 {"issue_id":"str-ed38.3","label":"rust"}
 {"issue_id":"str-ed38.4","label":"devx"}
+{"issue_id":"str-ed38.4","label":"phase:in_progress"}
 {"issue_id":"str-ed38.4","label":"quality"}
 {"issue_id":"str-efdn","label":"cli"}
 {"issue_id":"str-efdn","label":"walkthrough"}
