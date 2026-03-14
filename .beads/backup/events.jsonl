@@ -1019,3 +1019,4 @@
 {"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-13T20:44:51Z","event_type":"created","id":1026,"issue_id":"str-3ky9.9.3.1","new_value":"","old_value":""}
 {"actor":"Ketan Gangatirkar","comment":"Added label: phase:in_progress","created_at":"2026-03-13T20:44:51Z","event_type":"label_added","id":1027,"issue_id":"str-3ky9.9.3","new_value":null,"old_value":null}
 {"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-13T20:56:02Z","event_type":"closed","id":1028,"issue_id":"str-ed38.1","new_value":"Merged","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-13T21:57:22Z","event_type":"closed","id":1029,"issue_id":"str-3ky9.9.3","new_value":"Merged. LiveFirstState wired into explorer+orchestrator.","old_value":""}
