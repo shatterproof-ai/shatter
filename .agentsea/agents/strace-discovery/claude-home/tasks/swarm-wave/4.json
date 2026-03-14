@@ -1,0 +1,10 @@
+{
+  "id": "4",
+  "subject": "[str-28vd.2] Semgrep CE starter rules",
+  "description": "Add initial Semgrep CE config for repo-specific architectural constraints. .semgrep config committed, scripts/quality/check-meta.sh runs Semgrep when installed, starter ruleset includes protocol/frontend parity + duplicated config boundaries rules. Branch: str-28vd.2. See `bd show str-28vd.2`.",
+  "activeForm": "Adding Semgrep CE starter rules",
+  "owner": "guardrails",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

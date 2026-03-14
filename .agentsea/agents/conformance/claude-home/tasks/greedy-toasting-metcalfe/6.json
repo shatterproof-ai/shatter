@@ -1,0 +1,10 @@
+{
+  "id": "6",
+  "subject": "kapow-3a4: GraphQL server guardrails",
+  "description": "Add request body size limits, query complexity/depth limits to GraphQL server. Quality gate: make api-test-unit && make api-lint",
+  "status": "pending",
+  "blocks": [
+    "12"
+  ],
+  "blockedBy": []
+}

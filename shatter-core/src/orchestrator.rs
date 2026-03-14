@@ -22,9 +22,13 @@ use std::time::{Duration, Instant};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 
+use std::collections::HashMap;
+
 use crate::auto_mock::MockParam;
 use crate::boundary_search;
 use crate::coverage_metrics::DiscoveryMethod;
+use crate::explorer::{apply_live_first_overrides, update_live_first_states};
+use crate::mock_value_space::LiveFirstState;
 use crate::drilling;
 use crate::execution_record::SymConstraint;
 use crate::frontier::{Frontier, FrontierSet};
@@ -794,6 +798,9 @@ pub async fn explore(
     let mut triage_skipped: usize = 0;
     let mut triage_mispredictions: usize = 0;
 
+    // Per-dependency LiveFirst state (mirrors explorer.rs parity).
+    let mut live_first_states: HashMap<String, LiveFirstState> = HashMap::new();
+
     // Fitness context shares novelty state with covered_paths — the
     // orchestrator marks paths as seen in both sets whenever a new path
     // is discovered, keeping FitnessContext's novelty scoring in sync.
@@ -914,7 +921,15 @@ pub async fn explore(
     // Solving after each observation (not batched) preserves the original
     // convergence behavior: Z3 candidates from observation N are available
     // for execution at iteration N+1.
-    while let Some(entry) = worklist.pop() {
+    while let Some(mut entry) = worklist.pop() {
+        // --- LiveFirst mock adjustment (parity with explorer.rs) ---
+        // When entry has no per-execution mocks, copy from config so overrides
+        // can be applied per-dep without mutating shared config.
+        if entry.mock_values.is_empty() && !live_first_states.is_empty() {
+            entry.mock_values = config.mocks.clone();
+        }
+        apply_live_first_overrides(&live_first_states, &mut entry.mock_values);
+
         // Phase 1: Observe — execute and classify one worklist entry.
         let budget = ExploreBudget {
             unique_paths: executions.len(),
@@ -950,6 +965,9 @@ pub async fn explore(
                 break;
             }
         };
+
+        // --- LiveFirst state transitions (parity with explorer.rs) ---
+        update_live_first_states(&obs.result, &mut live_first_states);
 
         total_executions += 1;
         if obs.is_sampled_skip && !obs.is_new_path {

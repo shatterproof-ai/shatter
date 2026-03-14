@@ -1,0 +1,38 @@
+[
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"task_assignment\",\"taskId\":\"2\",\"subject\":\"flt-it8.20: Dev token generator CLI\",\"description\":\"Add devtoken CLI tool (api/cmd/devtoken/) that mints a JWT for a seed user. Blocked by auth task. Beads ID: flt-it8.20. Go-only changes. Quality gate: make api-test-unit && make api-lint\",\"assignedBy\":\"team-lead\",\"timestamp\":\"2026-03-10T02:14:23.137Z\"}",
+    "timestamp": "2026-03-10T02:14:23.137Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "## Task: flt-it8.20 — Dev token generator CLI\n\nAdd a `devtoken` CLI tool at `api/cmd/devtoken/` that mints a JWT for a seed user, for local development use.\n\n### Requirements (from issue)\n\n- Create `api/cmd/devtoken/main.go`\n- Queries DB for user by email (or first user if not specified)\n- Signs JWT with `JWT_SECRET` using the existing `auth.Issuer`\n- **Gated by ENV=development** — refuses to run if ENV is not \"development\"\n- Outputs token to stdout, usage hint to stderr\n- Add make targets: `api/Makefile` → `dev-token`, root `Makefile` → `api-dev-token`\n- Flags: `--email` (default: first user), `--expiry` (default: 30 days)\n\n### What already exists (just merged on main)\n\n- `internal/auth/issuer.go` — `auth.NewIssuer(secret, duration)` + `issuer.Issue(userID, email, clientType)` mints HS256 JWTs\n- `internal/auth/auth.go` — `Claims` struct, `HMACValidator`\n- `internal/user/service.go` — `user.Service` with `GetByEmail(ctx, email)` and `GetByID(ctx, id)`\n- `internal/config/config.go` — has `JWTSecret`, `JWTExpiry`, `Env` fields\n- `internal/db/` — `db.Connect(ctx, databaseURL)` returns pgxpool\n- Users table exists in migration 00001\n\n### Implementation notes\n\n- Use `godotenv` to load `.env` (same as flotsamd does)\n- For \"first user\" default: a simple `SELECT id, email FROM users ORDER BY created_at LIMIT 1` query is sufficient — don't need full user service for this\n- The tool is standalone (not part of flotsamd) — it connects to DB directly, mints a token, prints it, and exits\n- Keep it simple — this is a dev utility, not production code\n- Still needs tests though: at minimum test the ENV gate logic and flag parsing\n\n### Quality gate\n\nGo-only changes:\n```bash\nmake api-test-unit && make api-lint\n```\n\n---\n\n## WORKTREE ISOLATION — CRITICAL\n\n### Create your worktree (MANDATORY FIRST STEP)\nBefore doing ANY other work, create and enter your worktree:\n\n```bash\nWORKTREE_NAME=\"devtoken-impl\"\nREPO_ROOT=$(git rev-parse --show-toplevel)\nWORKTREE_DIR=\"$REPO_ROOT/.claude/worktrees/$WORKTREE_NAME\"\nBRANCH_NAME=\"worktree/$WORKTREE_NAME\"\n\n# Create worktree (if it already exists, just cd into it)\nif [ -d \"$WORKTREE_DIR\" ]; then\n  echo \"Worktree already exists, reusing\"\nelse\n  git worktree add \"$WORKTREE_DIR\" -b \"$BRANCH_NAME\"\nfi\n\ncd \"$WORKTREE_DIR\"\n```\n\nThen verify you are in the right place:\n\n```bash\necho \"=== WORKTREE VERIFICATION ===\" && \\\necho \"CWD: $(pwd)\" && \\\necho \"Branch: $(git branch --show-current)\" && \\\nif echo \"$(pwd)\" | grep -q '\\.claude/worktrees/'; then \\\n  echo \"✓ WORKTREE VERIFIED\"; \\\nelse \\\n  echo \"✗ FATAL: NOT in a worktree! CWD=$(pwd)\"; \\\n  echo \"You MUST stop and report this error to the team lead.\"; \\\n  exit 1; \\\nfi\n```\n\nIf the verification FAILS, do NOT proceed. Report the error to the team lead immediately via SendMessage and stop all work.\n\n### Rules\n1. NEVER cd to the main repo — stay in your worktree directory\n2. NEVER run `git checkout` to switch branches — you are already on your branch\n3. ALWAYS use relative paths or `$(pwd)` for all operations\n4. Before EVERY `git commit` and `git push`, re-verify your CWD is in `.claude/worktrees/`\n5. Commit and push ONLY on your worktree branch — never touch main\n6. When running `make` targets, run them from your worktree root (your CWD)\n7. If ANY command output shows your CWD changed to the main repo, STOP immediately, cd back to your worktree, and re-verify\n\n### How to push your branch\n```bash\ngit add &lt;files&gt;\ngit commit -m \"your message\"\ngit push origin HEAD  # pushes your worktree branch, NOT main\n```\nNEVER run `git push origin main` or `git push origin HEAD:main`.\n\n---\n\nWhen done, push your branch and send a message to the team lead with a summary of what was implemented and the branch name.",
+    "timestamp": "2026-03-10T02:14:54.530Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773108902107-yrjzn6m\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"WORKTREE_NAME=\\\"devtoken-impl\\\" && REPO_ROOT=$(git rev-parse --show-toplevel) && WORKTREE_DIR=\\\"$REPO_ROOT/.claude/worktrees/$WORKTREE_NAME\\\" && BRANCH_NAME=\\\"worktree/$WORKTREE_NAME\\\" && if [ -d \\\"$WORKTREE_DIR\\\" ]; then echo \\\"Worktree already exists, reusing\\\"; else git worktree add \\\"$WORKTREE_DIR\\\" -b \\\"$BRANCH_NAME\\\"; fi && cd \\\"$WORKTREE_DIR\\\" && echo \\\"=== WORKTREE VERIFICATION ===\\\" && echo \\\"CWD: $(pwd)\\\" && echo \\\"Branch: $(git branch --show-current)\\\" && if echo \\\"$(pwd)\\\" | grep -q '\\\\.claude/worktrees/'; then echo \\\"✓ WORKTREE VERIFIED\\\"; else echo \\\"✗ FATAL: NOT in a worktree! CWD=$(pwd)\\\"; exit 1; fi\",\"description\":\"Create and verify worktree for devtoken implementation\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-10T02:16:58.174Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"plan_approval_response\",\"requestId\":\"plan_approval-1773109085879@devtoken-impl@swarm-2026-03-09\",\"approved\":true,\"timestamp\":\"2026-03-10T02:18:06.741Z\",\"permissionMode\":\"acceptEdits\"}",
+    "timestamp": "2026-03-10T02:18:06.741Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"plan_approval_response\",\"requestId\":\"plan_approval-1773109085879@devtoken-impl@swarm-2026-03-09\",\"approved\":true,\"timestamp\":\"2026-03-10T02:18:11.939Z\",\"permissionMode\":\"acceptEdits\"}",
+    "timestamp": "2026-03-10T02:18:11.939Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773109162801-qvlyveq\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"echo \\\"CWD: $(pwd)\\\" && echo \\\"Branch: $(git branch --show-current)\\\" && echo \\\"$(pwd)\\\" | grep -q '\\\\.claude/worktrees/' && echo \\\"✓ WORKTREE VERIFIED\\\"\",\"description\":\"Verify worktree before commit\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-10T02:36:31.411Z",
+    "read": true
+  }
+]

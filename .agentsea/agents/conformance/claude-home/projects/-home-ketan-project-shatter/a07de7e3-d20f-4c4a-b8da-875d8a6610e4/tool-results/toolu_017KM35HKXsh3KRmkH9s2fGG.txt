@@ -1,0 +1,1945 @@
+/home/ketan/project/shatter/shatter-core/src/spec.rs-19-use crate::explorer::ObservationOutput;
+/home/ketan/project/shatter/shatter-core/src/spec.rs-20-use crate::fingerprint::compute_deep_fingerprints;
+/home/ketan/project/shatter/shatter-core/src/spec.rs:21:use crate::invariants::{ClassifiedInvariant, InvariantKind};
+/home/ketan/project/shatter/shatter-core/src/spec.rs-22-use crate::protocol::FunctionAnalysis;
+/home/ketan/project/shatter/shatter-core/src/spec.rs-23-
+--
+/home/ketan/project/shatter/shatter-core/src/spec.rs-201-    /// Whether postconditions are proven or observed.
+/home/ketan/project/shatter/shatter-core/src/spec.rs-202-    pub postcondition_provenance: Provenance,
+/home/ketan/project/shatter/shatter-core/src/spec.rs:203:    /// Detected invariants for this equivalence class (empty if invariant detection is disabled).
+/home/ketan/project/shatter/shatter-core/src/spec.rs-204-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+/home/ketan/project/shatter/shatter-core/src/spec.rs:205:    pub invariants: Vec<ClassifiedInvariant>,
+/home/ketan/project/shatter/shatter-core/src/spec.rs-206-}
+/home/ketan/project/shatter/shatter-core/src/spec.rs-207-
+--
+/home/ketan/project/shatter/shatter-core/src/spec.rs-233-    /// Total lines in the function.
+/home/ketan/project/shatter/shatter-core/src/spec.rs-234-    pub total_lines: u32,
+/home/ketan/project/shatter/shatter-core/src/spec.rs:235:    /// Function-wide invariants (across all classes). Empty if invariant detection is disabled.
+/home/ketan/project/shatter/shatter-core/src/spec.rs-236-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+/home/ketan/project/shatter/shatter-core/src/spec.rs:237:    pub invariants: Vec<ClassifiedInvariant>,
+/home/ketan/project/shatter/shatter-core/src/spec.rs-238-    /// SHA-256 fingerprint of the function's source, params, and branches.
+/home/ketan/project/shatter/shatter-core/src/spec.rs-239-    /// Used for staleness detection across runs.
+--
+/home/ketan/project/shatter/shatter-core/src/spec.rs-270-        lines_covered: result.lines_covered,
+/home/ketan/project/shatter/shatter-core/src/spec.rs-271-        total_lines: result.total_lines,
+/home/ketan/project/shatter/shatter-core/src/spec.rs:272:        invariants: vec![],
+/home/ketan/project/shatter/shatter-core/src/spec.rs-273-        fingerprint,
+/home/ketan/project/shatter/shatter-core/src/spec.rs-274-        nondeterministic_fields: result.nondeterministic_fields.clone(),
+--
+/home/ketan/project/shatter/shatter-core/src/spec.rs-279-///
+/home/ketan/project/shatter/shatter-core/src/spec.rs-280-/// Convenience wrapper: builds the spec via [`build_spec`], then enriches it
+/home/ketan/project/shatter/shatter-core/src/spec.rs:281:/// with invariants via [`detect_spec_invariants`].
+/home/ketan/project/shatter/shatter-core/src/spec.rs:282:pub fn build_spec_with_invariants(
+/home/ketan/project/shatter/shatter-core/src/spec.rs-283-    result: &ObservationOutput,
+/home/ketan/project/shatter/shatter-core/src/spec.rs-284-    eq_classes: &[EquivalenceClass],
+--
+/home/ketan/project/shatter/shatter-core/src/spec.rs-287-) -> FunctionSpec {
+/home/ketan/project/shatter/shatter-core/src/spec.rs-288-    let mut spec = build_spec(result, eq_classes, location, fingerprint);
+/home/ketan/project/shatter/shatter-core/src/spec.rs:289:    detect_spec_invariants(&mut spec, result, eq_classes);
+/home/ketan/project/shatter/shatter-core/src/spec.rs-290-    spec
+/home/ketan/project/shatter/shatter-core/src/spec.rs-291-}
+--
+/home/ketan/project/shatter/shatter-core/src/spec.rs-293-/// Enrich a [`FunctionSpec`] with Daikon-style invariant detection.
+/home/ketan/project/shatter/shatter-core/src/spec.rs-294-///
+/home/ketan/project/shatter/shatter-core/src/spec.rs:295:/// Detects invariants at both the function-wide level (across all executions)
+/home/ketan/project/shatter/shatter-core/src/spec.rs-296-/// and the per-class level (for classes with at least 2 samples). Mutates
+/home/ketan/project/shatter/shatter-core/src/spec.rs-297-/// `spec` in place so callers can compose observation, spec construction,
+/home/ketan/project/shatter/shatter-core/src/spec.rs-298-/// and invariant detection as separate pipeline stages.
+/home/ketan/project/shatter/shatter-core/src/spec.rs:299:pub fn detect_spec_invariants(
+/home/ketan/project/shatter/shatter-core/src/spec.rs-300-    spec: &mut FunctionSpec,
+/home/ketan/project/shatter/shatter-core/src/spec.rs-301-    result: &ObservationOutput,
+/home/ketan/project/shatter/shatter-core/src/spec.rs-302-    eq_classes: &[EquivalenceClass],
+/home/ketan/project/shatter/shatter-core/src/spec.rs-303-) {
+/home/ketan/project/shatter/shatter-core/src/spec.rs:304:    use crate::invariants::{
+/home/ketan/project/shatter/shatter-core/src/spec.rs:305:        detect_classified_invariants, records_from_raw_results, InvariantTarget,
+/home/ketan/project/shatter/shatter-core/src/spec.rs-306-    };
+/home/ketan/project/shatter/shatter-core/src/spec.rs-307-
+/home/ketan/project/shatter/shatter-core/src/spec.rs-308-    let all_records = records_from_raw_results(&result.function_name, &result.raw_results);
+/home/ketan/project/shatter/shatter-core/src/spec.rs-309-
+/home/ketan/project/shatter/shatter-core/src/spec.rs:310:    // Function-wide invariants (across all executions)
+/home/ketan/project/shatter/shatter-core/src/spec.rs:311:    let mut function_invariants =
+/home/ketan/project/shatter/shatter-core/src/spec.rs:312:        detect_classified_invariants(&all_records, InvariantTarget::Input);
+/home/ketan/project/shatter/shatter-core/src/spec.rs:313:    function_invariants.extend(detect_classified_invariants(
+/home/ketan/project/shatter/shatter-core/src/spec.rs-314-        &all_records,
+/home/ketan/project/shatter/shatter-core/src/spec.rs-315-        InvariantTarget::Output,
+/home/ketan/project/shatter/shatter-core/src/spec.rs-316-    ));
+/home/ketan/project/shatter/shatter-core/src/spec.rs:317:    spec.invariants = function_invariants;
+/home/ketan/project/shatter/shatter-core/src/spec.rs-318-
+/home/ketan/project/shatter/shatter-core/src/spec.rs:319:    // Per-class invariants: match spec classes to equivalence classes by branch path
+/home/ketan/project/shatter/shatter-core/src/spec.rs-320-    for (spec_class, ec) in spec.classes.iter_mut().zip(eq_classes.iter()) {
+/home/ketan/project/shatter/shatter-core/src/spec.rs-321-        let class_records: Vec<_> = all_records
+--
+/home/ketan/project/shatter/shatter-core/src/spec.rs-327-        if class_records.len() >= 2 {
+/home/ketan/project/shatter/shatter-core/src/spec.rs-328-            let mut class_invs =
+/home/ketan/project/shatter/shatter-core/src/spec.rs:329:                detect_classified_invariants(&class_records, InvariantTarget::Input);
+/home/ketan/project/shatter/shatter-core/src/spec.rs:330:            class_invs.extend(detect_classified_invariants(
+/home/ketan/project/shatter/shatter-core/src/spec.rs-331-                &class_records,
+/home/ketan/project/shatter/shatter-core/src/spec.rs-332-                InvariantTarget::Output,
+/home/ketan/project/shatter/shatter-core/src/spec.rs-333-            ));
+/home/ketan/project/shatter/shatter-core/src/spec.rs:334:            spec_class.invariants = class_invs;
+/home/ketan/project/shatter/shatter-core/src/spec.rs-335-        }
+/home/ketan/project/shatter/shatter-core/src/spec.rs-336-    }
+--
+/home/ketan/project/shatter/shatter-core/src/spec.rs-409-        precondition_provenance: provenance,
+/home/ketan/project/shatter/shatter-core/src/spec.rs-410-        postcondition_provenance: provenance,
+/home/ketan/project/shatter/shatter-core/src/spec.rs:411:        invariants: vec![],
+/home/ketan/project/shatter/shatter-core/src/spec.rs-412-    }
+/home/ketan/project/shatter/shatter-core/src/spec.rs-413-}
+--
+/home/ketan/project/shatter/shatter-core/src/spec.rs-451-    out.push_str("\n\n");
+/home/ketan/project/shatter/shatter-core/src/spec.rs-452-
+/home/ketan/project/shatter/shatter-core/src/spec.rs:453:    // Function-wide invariants
+/home/ketan/project/shatter/shatter-core/src/spec.rs:454:    if !spec.invariants.is_empty() {
+/home/ketan/project/shatter/shatter-core/src/spec.rs:455:        out.push_str("**Function invariants:**\n");
+/home/ketan/project/shatter/shatter-core/src/spec.rs:456:        for ci in &spec.invariants {
+/home/ketan/project/shatter/shatter-core/src/spec.rs-457-            out.push_str(&format!(
+/home/ketan/project/shatter/shatter-core/src/spec.rs-458-                "- {} [{}] ({}/{})\n",
+--
+/home/ketan/project/shatter/shatter-core/src/spec.rs-501-        }
+/home/ketan/project/shatter/shatter-core/src/spec.rs-502-
+/home/ketan/project/shatter/shatter-core/src/spec.rs:503:        // Invariants (per-class)
+/home/ketan/project/shatter/shatter-core/src/spec.rs:504:        if !class.invariants.is_empty() {
+/home/ketan/project/shatter/shatter-core/src/spec.rs:505:            out.push_str("**Invariants:**\n");
+/home/ketan/project/shatter/shatter-core/src/spec.rs:506:            for ci in &class.invariants {
+/home/ketan/project/shatter/shatter-core/src/spec.rs-507-                out.push_str(&format!(
+/home/ketan/project/shatter/shatter-core/src/spec.rs-508-                    "- {} [{}] ({}/{})\n",
+--
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1202-
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1203-    #[test]
+/home/ketan/project/shatter/shatter-core/src/spec.rs:1204:    fn format_precondition_all_variants() {
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1205-        assert_eq!(
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1206-            format_precondition(&Precondition::AllPositive { param_index: 0 }),
+--
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1232-
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1233-    #[test]
+/home/ketan/project/shatter/shatter-core/src/spec.rs:1234:    fn format_side_effect_all_variants() {
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1235-        assert_eq!(
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1236-            format_side_effect(&SideEffect::ConsoleOutput {
+--
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1316-                    precondition_provenance: Provenance::Proven,
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1317-                    postcondition_provenance: Provenance::Observed,
+/home/ketan/project/shatter/shatter-core/src/spec.rs:1318:                    invariants: vec![],
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1319-                },
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1320-                SpecClass {
+--
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1343-                    precondition_provenance: Provenance::Observed,
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1344-                    postcondition_provenance: Provenance::Observed,
+/home/ketan/project/shatter/shatter-core/src/spec.rs:1345:                    invariants: vec![],
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1346-                },
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1347-            ],
+--
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1349-            lines_covered: 15,
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1350-            total_lines: 20,
+/home/ketan/project/shatter/shatter-core/src/spec.rs:1351:            invariants: vec![],
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1352-            fingerprint: None,
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1353-            nondeterministic_fields: vec![],
+--
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1362-
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1363-    #[test]
+/home/ketan/project/shatter/shatter-core/src/spec.rs:1364:    fn format_spec_markdown_includes_function_invariants() {
+/home/ketan/project/shatter/shatter-core/src/spec.rs:1365:        use crate::invariants::{
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1366-            ClassifiedInvariant, Invariant, InvariantKind, InvariantTarget, ComparisonOp,
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1367-        };
+--
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1373-            None,
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1374-        );
+/home/ketan/project/shatter/shatter-core/src/spec.rs:1375:        spec.invariants = vec![ClassifiedInvariant {
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1376-            invariant: Invariant {
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1377-                description: "x > 0".to_string(),
+--
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1391-
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1392-        let md = format_spec_markdown(&spec);
+/home/ketan/project/shatter/shatter-core/src/spec.rs:1393:        assert!(md.contains("Function invariants:"), "should have function invariants section");
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1394-        assert!(md.contains("x > 0"), "should contain invariant description");
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1395-    }
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1396-
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1397-    #[test]
+/home/ketan/project/shatter/shatter-core/src/spec.rs:1398:    fn format_spec_markdown_includes_class_invariants() {
+/home/ketan/project/shatter/shatter-core/src/spec.rs:1399:        use crate::invariants::{
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1400-            ClassifiedInvariant, Invariant, InvariantKind, InvariantTarget, ComparisonOp,
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1401-        };
+--
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1407-            None,
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1408-        );
+/home/ketan/project/shatter/shatter-core/src/spec.rs:1409:        spec.classes[0].invariants = vec![ClassifiedInvariant {
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1410-            invariant: Invariant {
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1411-                description: "y >= 0".to_string(),
+--
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1425-
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1426-        let md = format_spec_markdown(&spec);
+/home/ketan/project/shatter/shatter-core/src/spec.rs:1427:        assert!(md.contains("**Invariants:**"), "should have per-class invariants section");
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1428-        assert!(md.contains("y >= 0"), "should contain invariant description");
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1429-    }
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1430-
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1431-    #[test]
+/home/ketan/project/shatter/shatter-core/src/spec.rs:1432:    fn invariants_skipped_in_json_when_empty() {
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1433-        let spec = build_spec(
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1434-            &make_exploration_result("fn1", 10, 1),
+--
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1441-        let parsed: serde_json::Value = serde_json::from_str(&json_str).expect("parse");
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1442-
+/home/ketan/project/shatter/shatter-core/src/spec.rs:1443:        assert!(parsed.get("invariants").is_none(), "empty invariants should be skipped");
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1444-        assert!(
+/home/ketan/project/shatter/shatter-core/src/spec.rs:1445:            parsed["classes"][0].get("invariants").is_none(),
+/home/ketan/project/shatter/shatter-core/src/spec.rs:1446:            "empty class invariants should be skipped"
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1447-        );
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1448-    }
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1449-
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1450-    #[test]
+/home/ketan/project/shatter/shatter-core/src/spec.rs:1451:    fn invariants_present_in_json_when_populated() {
+/home/ketan/project/shatter/shatter-core/src/spec.rs:1452:        use crate::invariants::{
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1453-            ClassifiedInvariant, Invariant, InvariantKind, InvariantTarget, ComparisonOp,
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1454-        };
+--
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1460-            None,
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1461-        );
+/home/ketan/project/shatter/shatter-core/src/spec.rs:1462:        spec.invariants = vec![ClassifiedInvariant {
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1463-            invariant: Invariant {
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1464-                description: "x > 0".to_string(),
+--
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1480-        let parsed: serde_json::Value = serde_json::from_str(&json_str).expect("parse");
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1481-
+/home/ketan/project/shatter/shatter-core/src/spec.rs:1482:        assert!(parsed["invariants"].is_array(), "invariants should be present when populated");
+/home/ketan/project/shatter/shatter-core/src/spec.rs:1483:        assert_eq!(parsed["invariants"][0]["label"], "input.x > 0");
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1484-    }
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1485-
+--
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1627-            lines_covered: 5,
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1628-            total_lines: 10,
+/home/ketan/project/shatter/shatter-core/src/spec.rs:1629:            invariants: vec![],
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1630-            fingerprint: fingerprint.map(|s| s.to_string()),
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1631-            nondeterministic_fields: vec![],
+--
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1878-    #[test]
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1879-    fn categorize_invariant_kinds() {
+/home/ketan/project/shatter/shatter-core/src/spec.rs:1880:        use crate::invariants::{ComparisonOp, InvariantKind};
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1881-
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1882-        assert_eq!(
+--
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1935-    #[test]
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1936-    fn spec_invariant_from_classified() {
+/home/ketan/project/shatter/shatter-core/src/spec.rs:1937:        use crate::invariants::{
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1938-            ClassifiedInvariant, ComparisonOp, Invariant, InvariantKind, InvariantTarget,
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1939-        };
+--
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1964-    #[test]
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1965-    fn spec_invariant_medium_confidence() {
+/home/ketan/project/shatter/shatter-core/src/spec.rs:1966:        use crate::invariants::{
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1967-            ClassifiedInvariant, Invariant, InvariantKind, InvariantTarget,
+/home/ketan/project/shatter/shatter-core/src/spec.rs-1968-        };
+--
+/home/ketan/project/shatter/shatter-core/src/spec.rs-2077-                // Verify the category is a valid InvariantCategory matching the kind
+/home/ketan/project/shatter/shatter-core/src/spec.rs-2078-                let expected = match &ci.invariant.kind {
+/home/ketan/project/shatter/shatter-core/src/spec.rs:2079:                    crate::invariants::InvariantKind::NumericComparison { .. } => InvariantCategory::NumericBound,
+/home/ketan/project/shatter/shatter-core/src/spec.rs:2080:                    crate::invariants::InvariantKind::NumericConstant { .. } => InvariantCategory::ConstantValue,
+/home/ketan/project/shatter/shatter-core/src/spec.rs:2081:                    crate::invariants::InvariantKind::NotNull { .. } | crate::invariants::InvariantKind::IsNull { .. } => InvariantCategory::Nullability,
+/home/ketan/project/shatter/shatter-core/src/spec.rs:2082:                    crate::invariants::InvariantKind::StringNonEmpty { .. } | crate::invariants::InvariantKind::StringLength { .. } => InvariantCategory::StringConstraint,
+/home/ketan/project/shatter/shatter-core/src/spec.rs:2083:                    crate::invariants::InvariantKind::OutputEqualsInput { .. } => InvariantCategory::InputOutputRelation,
+/home/ketan/project/shatter/shatter-core/src/spec.rs:2084:                    crate::invariants::InvariantKind::AlwaysTrue { .. } | crate::invariants::InvariantKind::AlwaysFalse { .. } => InvariantCategory::BooleanConstant,
+/home/ketan/project/shatter/shatter-core/src/spec.rs-2085-                };
+/home/ketan/project/shatter/shatter-core/src/spec.rs-2086-                prop_assert_eq!(si.kind, expected);
+--
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-1-//! End-to-end exploration tests using the real Rust frontend (shatter-rust).
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-2-//!
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs:3://! These tests validate the full analyze -> instrument -> execute pipeline
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-4-//! against Rust example functions. Each test documents expected branches and
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-5-//! verifies that executing with targeted inputs produces the expected return
+--
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-98-}
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-99-
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs:100:/// Instrument a function and assert success.
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs:101:async fn instrument_function(frontend: &mut Frontend, file: &str, function_name: &str) {
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-102-    let response = frontend
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs:103:        .send(ProtoCommand::Instrument {
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-104-            file: file.to_string(),
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-105-            function: function_name.to_string(),
+--
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-108-        })
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-109-        .await
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs:110:        .expect("instrument command failed");
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-111-
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-112-    match response.result {
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs:113:        ResponseResult::Instrument { instrumented, .. } => {
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs:114:            assert!(instrumented, "instrumentation returned false");
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-115-        }
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-116-        ResponseResult::Error { code, message, .. } => {
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs:117:            panic!("instrument error ({code:?}): {message}");
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-118-        }
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs:119:        other => panic!("expected Instrument response, got: {other:?}"),
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-120-    }
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-121-}
+--
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-124-///
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-125-/// The Rust frontend's Execute command requires a `file` field (unlike TS/Go
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs:126:/// frontends that hold instrumented code in memory). We send a raw JSON request
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-127-/// to include the file path.
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-128-async fn execute_function_raw(
+--
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-200-    );
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-201-
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs:202:    // Instrument the function.
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs:203:    instrument_function(&mut frontend, &file_str, "classify_number").await;
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-204-
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-205-    // Execute with inputs targeting each branch.
+--
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-239-    );
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-240-
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs:241:    // Verify branch paths are populated (instrumentation working).
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-242-    for result in &results {
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-243-        assert!(
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-244-            !result.branch_path.is_empty(),
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs:245:            "branch_path should be non-empty for instrumented execution"
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-246-        );
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-247-    }
+--
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-262-    assert_eq!(analysis.params.len(), 1, "classify_temperature takes 1 param");
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-263-
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs:264:    instrument_function(&mut frontend, &file_str, "classify_temperature").await;
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-265-
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-266-    let test_inputs: Vec<(serde_json::Value, &str)> = vec![
+--
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-309-/// default -> "unknown".
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-310-///
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs:311:/// Tests analyze + instrument only. Execute is not tested because the function
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-312-/// takes `&str` which the harness cannot deserialize from JSON (serde requires
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-313-/// owned types for deserialization). The harness generates
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-314-/// `let s: &str = serde_json::from_value(...)` which fails at compile time.
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-315-#[tokio::test]
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs:316:async fn rust_explore_classify_greeting_analyze_instrument() {
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-317-    let file = rust_examples_dir().join("strings.rs");
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-318-    let file_str = file.to_string_lossy().to_string();
+--
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-329-    );
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-330-
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs:331:    // Instrument the function.
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs:332:    instrument_function(&mut frontend, &file_str, "classify_greeting").await;
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-333-
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-334-    // Verify literals were extracted from the match arms.
+--
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-363-    assert_eq!(analysis.params.len(), 1, "classify_option takes 1 param");
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-364-
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs:365:    instrument_function(&mut frontend, &file_str, "classify_option").await;
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-366-
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-367-    // Option<i32> serializes as either null (None) or a number (Some).
+--
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-409-/// empty value -> Err, valid key=value -> Ok.
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-410-///
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs:411:/// Tests analyze + instrument only. Execute is not tested because the function
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-412-/// takes `&str` which the harness cannot deserialize from JSON (see
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs:413:/// rust_explore_classify_greeting_analyze_instrument for details).
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-414-#[tokio::test]
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs:415:async fn rust_explore_parse_config_line_analyze_instrument() {
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-416-    let file = rust_examples_dir().join("error_propagation.rs");
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-417-    let file_str = file.to_string_lossy().to_string();
+--
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-428-    );
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-429-
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs:430:    // Instrument the function.
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs:431:    instrument_function(&mut frontend, &file_str, "parse_config_line").await;
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-432-
+/home/ketan/project/shatter/shatter-core/tests/rust_explore_integration.rs-433-    frontend.shutdown().await.expect("frontend shutdown failed");
+--
+/home/ketan/project/shatter/shatter-core/src/frontend.rs-98-                "analyze".into(),
+/home/ketan/project/shatter/shatter-core/src/frontend.rs-99-                "execute".into(),
+/home/ketan/project/shatter/shatter-core/src/frontend.rs:100:                "instrument".into(),
+/home/ketan/project/shatter/shatter-core/src/frontend.rs-101-            ],
+/home/ketan/project/shatter/shatter-core/src/frontend.rs-102-            env_vars: Vec::new(),
+--
+/home/ketan/project/shatter/shatter-core/src/frontend.rs-402-
+/home/ketan/project/shatter/shatter-core/src/frontend.rs-403-    #[tokio::test]
+/home/ketan/project/shatter/shatter-core/src/frontend.rs:404:    async fn instrument_returns_success() {
+/home/ketan/project/shatter/shatter-core/src/frontend.rs-405-        let config = noop_config();
+/home/ketan/project/shatter/shatter-core/src/frontend.rs-406-        let mut frontend = Frontend::spawn(&config).await.expect("spawn failed");
+/home/ketan/project/shatter/shatter-core/src/frontend.rs-407-
+/home/ketan/project/shatter/shatter-core/src/frontend.rs-408-        let response = frontend
+/home/ketan/project/shatter/shatter-core/src/frontend.rs:409:            .send(ProtoCommand::Instrument {
+/home/ketan/project/shatter/shatter-core/src/frontend.rs-410-                file: "test.ts".into(),
+/home/ketan/project/shatter/shatter-core/src/frontend.rs-411-                function: "myFunc".into(),
+--
+/home/ketan/project/shatter/shatter-core/src/frontend.rs-414-            })
+/home/ketan/project/shatter/shatter-core/src/frontend.rs-415-            .await
+/home/ketan/project/shatter/shatter-core/src/frontend.rs:416:            .expect("instrument failed");
+/home/ketan/project/shatter/shatter-core/src/frontend.rs-417-
+/home/ketan/project/shatter/shatter-core/src/frontend.rs-418-        match response.result {
+/home/ketan/project/shatter/shatter-core/src/frontend.rs:419:            ResponseResult::Instrument {
+/home/ketan/project/shatter/shatter-core/src/frontend.rs:420:                instrumented,
+/home/ketan/project/shatter/shatter-core/src/frontend.rs-421-                output_file,
+/home/ketan/project/shatter/shatter-core/src/frontend.rs-422-                ..
+/home/ketan/project/shatter/shatter-core/src/frontend.rs-423-            } => {
+/home/ketan/project/shatter/shatter-core/src/frontend.rs:424:                assert!(instrumented);
+/home/ketan/project/shatter/shatter-core/src/frontend.rs-425-                assert!(output_file.is_none());
+/home/ketan/project/shatter/shatter-core/src/frontend.rs-426-            }
+/home/ketan/project/shatter/shatter-core/src/frontend.rs:427:            other => panic!("expected Instrument response, got: {other:?}"),
+/home/ketan/project/shatter/shatter-core/src/frontend.rs-428-        }
+/home/ketan/project/shatter/shatter-core/src/frontend.rs-429-
+--
+/home/ketan/project/shatter/shatter-core/src/frontend.rs-508-            .expect("analyze failed");
+/home/ketan/project/shatter/shatter-core/src/frontend.rs-509-
+/home/ketan/project/shatter/shatter-core/src/frontend.rs:510:        // Instrument
+/home/ketan/project/shatter/shatter-core/src/frontend.rs-511-        let _ = frontend
+/home/ketan/project/shatter/shatter-core/src/frontend.rs:512:            .send(ProtoCommand::Instrument {
+/home/ketan/project/shatter/shatter-core/src/frontend.rs-513-                file: "test.ts".into(),
+/home/ketan/project/shatter/shatter-core/src/frontend.rs-514-                function: "fn1".into(),
+--
+/home/ketan/project/shatter/shatter-core/src/frontend.rs-517-            })
+/home/ketan/project/shatter/shatter-core/src/frontend.rs-518-            .await
+/home/ketan/project/shatter/shatter-core/src/frontend.rs:519:            .expect("instrument failed");
+/home/ketan/project/shatter/shatter-core/src/frontend.rs-520-
+/home/ketan/project/shatter/shatter-core/src/frontend.rs-521-        // Execute
+--
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-1-//! Self-hosting exploration tests: shatter explores its own algorithms.
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-2-//!
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs:3://! These tests run the full Rust frontend pipeline (analyze → instrument →
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-4-//! execute) against functions extracted from shatter-core. This validates that
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-5-//! shatter can meaningfully explore the kind of code it is built from —
+--
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-92-}
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-93-
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs:94:async fn instrument_function(frontend: &mut Frontend, file: &str, function_name: &str) {
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-95-    let response = frontend
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs:96:        .send(ProtoCommand::Instrument {
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-97-            file: file.to_string(),
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-98-            function: function_name.to_string(),
+--
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-101-        })
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-102-        .await
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs:103:        .expect("instrument command failed");
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-104-
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-105-    match response.result {
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs:106:        ResponseResult::Instrument { instrumented, .. } => {
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs:107:            assert!(instrumented, "instrumentation returned false");
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-108-        }
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-109-        ResponseResult::Error { code, message, .. } => {
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs:110:            panic!("instrument error ({code:?}): {message}");
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-111-        }
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs:112:        other => panic!("expected Instrument response, got: {other:?}"),
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-113-    }
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-114-}
+--
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-181-    assert!(!analysis.branches.is_empty(), "should detect branches");
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-182-
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs:183:    // Instrument
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs:184:    instrument_function(&mut frontend, &file_str, "classify_float").await;
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-185-
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-186-    // Execute with inputs targeting each branch:
+--
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-220-    );
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-221-
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs:222:    // Verify instrumentation produced branch paths
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-223-    for result in &results {
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-224-        assert!(
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-225-            !result.branch_path.is_empty(),
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs:226:            "branch_path should be non-empty for instrumented execution"
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-227-        );
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-228-    }
+--
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-245-    assert!(!analysis.branches.is_empty(), "should detect branches");
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-246-
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs:247:    instrument_function(&mut frontend, &file_str, "coverage_percentages").await;
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-248-
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-249-    // Branch 1: total_branches==0 → all zeros
+--
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-313-    assert_eq!(analysis.params.len(), 2, "symexpr_ratio takes 2 params");
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-314-
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs:315:    instrument_function(&mut frontend, &file_str, "symexpr_ratio").await;
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-316-
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-317-    // Branch 1: both zero → 0.0
+--
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-367-    assert!(!analysis.branches.is_empty(), "should detect branches");
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-368-
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs:369:    instrument_function(&mut frontend, &file_str, "executions_agree").await;
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-370-
+/home/ketan/project/shatter/shatter-core/tests/self_hosting_explore.rs-371-    // path_a, path_b, a_has_error, b_has_error, a_value, b_value
+--
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-1-//! End-to-end concolic exploration tests using the real TypeScript frontend.
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-2-//!
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs:3://! These tests validate the full pipeline: analyze -> instrument -> concolic explore
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-4-//! with Z3 solving -> verify that the solver discovers branches that random alone
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-5-//! cannot reliably find.
+--
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-73-}
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-74-
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs:75:/// Instrument a function and assert success.
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs:76:async fn instrument_function(frontend: &mut Frontend, file: &str, function_name: &str) {
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs:77:    instrument_function_with_mocks(frontend, file, function_name, vec![]).await;
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-78-}
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-79-
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs:80:/// Instrument a function with mock configurations and assert success.
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs:81:async fn instrument_function_with_mocks(
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-82-    frontend: &mut Frontend,
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-83-    file: &str,
+--
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-86-) {
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-87-    let response = frontend
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs:88:        .send(ProtoCommand::Instrument {
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-89-            file: file.to_string(),
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-90-            function: function_name.to_string(),
+--
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-93-        })
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-94-        .await
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs:95:        .expect("instrument command failed");
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-96-
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-97-    match response.result {
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs:98:        ResponseResult::Instrument { instrumented, .. } => {
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs:99:            assert!(instrumented, "instrumentation returned false");
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-100-        }
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-101-        ResponseResult::Error { code, message, .. } => {
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs:102:            panic!("instrument error ({code:?}): {message}");
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-103-        }
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs:104:        other => panic!("expected Instrument response, got: {other:?}"),
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-105-    }
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-106-}
+--
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-146-    assert_eq!(analysis.params.len(), 1, "classifyNumber takes 1 param");
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-147-
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs:148:    // Step 2: Instrument the function for branch tracking.
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs:149:    instrument_function(&mut frontend, &file_str, "classifyNumber").await;
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-150-
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-151-    // Step 3: Run concolic exploration with the orchestrator.
+--
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-233-    assert_eq!(analysis.params.len(), 2, "compareMagnitudes takes 2 params");
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-234-
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs:235:    instrument_function(&mut frontend, &file_str, "compareMagnitudes").await;
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-236-
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-237-    let config = ExploreConfig {
+--
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-307-    assert_eq!(analysis.params.len(), 2, "safeDivide takes 2 params");
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-308-
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs:309:    instrument_function(&mut frontend, &file_str, "safeDivide").await;
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-310-
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-311-    let config = ExploreConfig {
+--
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-383-    assert_eq!(analysis.params.len(), 1, "validateEmail takes 1 param");
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-384-
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs:385:    // Step 2: Instrument the function for branch tracking.
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs:386:    instrument_function(&mut frontend, &file_str, "validateEmail").await;
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-387-
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-388-    // Step 3: Run concolic exploration with generous limits for string-heavy function.
+--
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-472-    assert_eq!(analysis.params.len(), 1, "validateEmail takes 1 param");
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-473-
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs:474:    instrument_function(&mut frontend, &file_str, "validateEmail").await;
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-475-
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-476-    let config = ExploreConfig {
+--
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-548-        "analyze".into(),
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-549-        "execute".into(),
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs:550:        "instrument".into(),
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-551-        "setup".into(),
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-552-        "teardown".into(),
+--
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-602-
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-603-    let _analysis = analyze_function(&mut frontend, &file_str, "classifyNumber").await;
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs:604:    instrument_function(&mut frontend, &file_str, "classifyNumber").await;
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-605-
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-606-    let exec_response = frontend
+--
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-1013-    };
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-1014-
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs:1015:    // Analyze and instrument.
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-1016-    let analysis = analyze_function(&mut frontend, &file_str, "classifyNumber").await;
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs:1017:    instrument_function(&mut frontend, &file_str, "classifyNumber").await;
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-1018-
+/home/ketan/project/shatter/shatter-core/tests/e2e_concolic.rs-1019-    // Run orchestrator with the setup context.
+--
+/home/ketan/project/shatter/shatter-core/src/types.rs-87-    },
+/home/ketan/project/shatter/shatter-core/src/types.rs-88-    Union {
+/home/ketan/project/shatter/shatter-core/src/types.rs:89:        variants: Vec<TypeInfo>,
+/home/ketan/project/shatter/shatter-core/src/types.rs-90-    },
+/home/ketan/project/shatter/shatter-core/src/types.rs-91-    Nullable {
+--
+/home/ketan/project/shatter/shatter-core/src/types.rs-117-impl TypeInfo {
+/home/ketan/project/shatter/shatter-core/src/types.rs-118-    /// Returns `true` if this type tree contains an `Opaque` variant anywhere
+/home/ketan/project/shatter/shatter-core/src/types.rs:119:    /// (directly or nested inside Array elements, Object fields, Union variants,
+/home/ketan/project/shatter/shatter-core/src/types.rs-120-    /// Nullable inner, or Complex inner).
+/home/ketan/project/shatter/shatter-core/src/types.rs-121-    pub fn has_opaque(&self) -> bool {
+--
+/home/ketan/project/shatter/shatter-core/src/types.rs-124-            TypeInfo::Array { element } => element.has_opaque(),
+/home/ketan/project/shatter/shatter-core/src/types.rs-125-            TypeInfo::Object { fields } => fields.iter().any(|(_, t)| t.has_opaque()),
+/home/ketan/project/shatter/shatter-core/src/types.rs:126:            TypeInfo::Union { variants } => variants.iter().any(|t| t.has_opaque()),
+/home/ketan/project/shatter/shatter-core/src/types.rs-127-            TypeInfo::Nullable { inner } => inner.has_opaque(),
+/home/ketan/project/shatter/shatter-core/src/types.rs-128-            TypeInfo::Complex { inner, .. } => {
+--
+/home/ketan/project/shatter/shatter-core/src/types.rs-146-                fields.iter().find_map(|(_, t)| t.find_opaque_label())
+/home/ketan/project/shatter/shatter-core/src/types.rs-147-            }
+/home/ketan/project/shatter/shatter-core/src/types.rs:148:            TypeInfo::Union { variants } => {
+/home/ketan/project/shatter/shatter-core/src/types.rs:149:                variants.iter().find_map(|t| t.find_opaque_label())
+/home/ketan/project/shatter/shatter-core/src/types.rs-150-            }
+/home/ketan/project/shatter/shatter-core/src/types.rs-151-            TypeInfo::Nullable { inner } => inner.find_opaque_label(),
+--
+/home/ketan/project/shatter/shatter-core/src/types.rs-215-    fn union_type_round_trips() {
+/home/ketan/project/shatter/shatter-core/src/types.rs-216-        round_trip(&TypeInfo::Union {
+/home/ketan/project/shatter/shatter-core/src/types.rs:217:            variants: vec![TypeInfo::Str, TypeInfo::Int],
+/home/ketan/project/shatter/shatter-core/src/types.rs-218-        });
+/home/ketan/project/shatter/shatter-core/src/types.rs-219-    }
+--
+/home/ketan/project/shatter/shatter-core/src/types.rs-272-
+/home/ketan/project/shatter/shatter-core/src/types.rs-273-    #[test]
+/home/ketan/project/shatter/shatter-core/src/types.rs:274:    fn complex_kind_all_variants_round_trip() {
+/home/ketan/project/shatter/shatter-core/src/types.rs:275:        let variants = [
+/home/ketan/project/shatter/shatter-core/src/types.rs-276-            ComplexKind::Date,
+/home/ketan/project/shatter/shatter-core/src/types.rs-277-            ComplexKind::DateTime,
+--
+/home/ketan/project/shatter/shatter-core/src/types.rs-307-            ComplexKind::GoByte,
+/home/ketan/project/shatter/shatter-core/src/types.rs-308-        ];
+/home/ketan/project/shatter/shatter-core/src/types.rs:309:        for kind in &variants {
+/home/ketan/project/shatter/shatter-core/src/types.rs-310-            round_trip(kind);
+/home/ketan/project/shatter/shatter-core/src/types.rs-311-        }
+--
+/home/ketan/project/shatter/shatter-core/src/types.rs-452-    fn find_opaque_label_returns_first() {
+/home/ketan/project/shatter/shatter-core/src/types.rs-453-        let typ = TypeInfo::Union {
+/home/ketan/project/shatter/shatter-core/src/types.rs:454:            variants: vec![
+/home/ketan/project/shatter/shatter-core/src/types.rs-455-                TypeInfo::Opaque { label: "first".into() },
+/home/ketan/project/shatter/shatter-core/src/types.rs-456-                TypeInfo::Opaque { label: "second".into() },
+--
+/home/ketan/project/shatter/shatter-core/tests/e2e_float_probe.rs-82-}
+/home/ketan/project/shatter/shatter-core/tests/e2e_float_probe.rs-83-
+/home/ketan/project/shatter/shatter-core/tests/e2e_float_probe.rs:84:async fn instrument_function(frontend: &mut Frontend, file: &str, function_name: &str) {
+/home/ketan/project/shatter/shatter-core/tests/e2e_float_probe.rs-85-    let response = frontend
+/home/ketan/project/shatter/shatter-core/tests/e2e_float_probe.rs:86:        .send(ProtoCommand::Instrument {
+/home/ketan/project/shatter/shatter-core/tests/e2e_float_probe.rs-87-            file: file.to_string(),
+/home/ketan/project/shatter/shatter-core/tests/e2e_float_probe.rs-88-            function: function_name.to_string(),
+--
+/home/ketan/project/shatter/shatter-core/tests/e2e_float_probe.rs-91-        })
+/home/ketan/project/shatter/shatter-core/tests/e2e_float_probe.rs-92-        .await
+/home/ketan/project/shatter/shatter-core/tests/e2e_float_probe.rs:93:        .expect("instrument command failed");
+/home/ketan/project/shatter/shatter-core/tests/e2e_float_probe.rs-94-
+/home/ketan/project/shatter/shatter-core/tests/e2e_float_probe.rs-95-    match response.result {
+/home/ketan/project/shatter/shatter-core/tests/e2e_float_probe.rs:96:        ResponseResult::Instrument { instrumented, .. } => {
+/home/ketan/project/shatter/shatter-core/tests/e2e_float_probe.rs:97:            assert!(instrumented, "instrumentation returned false");
+/home/ketan/project/shatter/shatter-core/tests/e2e_float_probe.rs-98-        }
+/home/ketan/project/shatter/shatter-core/tests/e2e_float_probe.rs-99-        ResponseResult::Error { code, message, .. } => {
+/home/ketan/project/shatter/shatter-core/tests/e2e_float_probe.rs:100:            panic!("instrument error ({code:?}): {message}");
+/home/ketan/project/shatter/shatter-core/tests/e2e_float_probe.rs-101-        }
+/home/ketan/project/shatter/shatter-core/tests/e2e_float_probe.rs:102:        other => panic!("expected Instrument response, got: {other:?}"),
+/home/ketan/project/shatter/shatter-core/tests/e2e_float_probe.rs-103-    }
+/home/ketan/project/shatter/shatter-core/tests/e2e_float_probe.rs-104-}
+--
+/home/ketan/project/shatter/shatter-core/tests/e2e_float_probe.rs-119-
+/home/ketan/project/shatter/shatter-core/tests/e2e_float_probe.rs-120-    let analysis = analyze_function(&mut frontend, &file_str, "integerBucket").await;
+/home/ketan/project/shatter/shatter-core/tests/e2e_float_probe.rs:121:    instrument_function(&mut frontend, &file_str, "integerBucket").await;
+/home/ketan/project/shatter/shatter-core/tests/e2e_float_probe.rs-122-
+/home/ketan/project/shatter/shatter-core/tests/e2e_float_probe.rs-123-    let config = ExploreConfig {
+--
+/home/ketan/project/shatter/shatter-core/tests/e2e_float_probe.rs-166-
+/home/ketan/project/shatter/shatter-core/tests/e2e_float_probe.rs-167-    let analysis = analyze_function(&mut frontend, &file_str, "precisionCheck").await;
+/home/ketan/project/shatter/shatter-core/tests/e2e_float_probe.rs:168:    instrument_function(&mut frontend, &file_str, "precisionCheck").await;
+/home/ketan/project/shatter/shatter-core/tests/e2e_float_probe.rs-169-
+/home/ketan/project/shatter/shatter-core/tests/e2e_float_probe.rs-170-    let config = ExploreConfig {
+--
+/home/ketan/project/shatter/shatter-core/tests/e2e_float_probe.rs-209-
+/home/ketan/project/shatter/shatter-core/tests/e2e_float_probe.rs-210-    let analysis = analyze_function(&mut frontend, &file_str, "greet").await;
+/home/ketan/project/shatter/shatter-core/tests/e2e_float_probe.rs:211:    instrument_function(&mut frontend, &file_str, "greet").await;
+/home/ketan/project/shatter/shatter-core/tests/e2e_float_probe.rs-212-
+/home/ketan/project/shatter/shatter-core/tests/e2e_float_probe.rs-213-    let config = ExploreConfig {
+--
+/home/ketan/project/shatter/shatter-core/src/sym_expr.rs-346-
+/home/ketan/project/shatter/shatter-core/src/sym_expr.rs-347-    /// Reproduction test for str-a4c: Go frontend sends "bit_clear", "shl", "shr"
+/home/ketan/project/shatter/shatter-core/src/sym_expr.rs:348:    /// which must deserialize into BinOpKind variants.
+/home/ketan/project/shatter/shatter-core/src/sym_expr.rs-349-    #[test]
+/home/ketan/project/shatter/shatter-core/src/sym_expr.rs-350-    fn go_bitwise_ops_deserialize() {
+--
+/home/ketan/project/shatter/shatter-core/src/cache.rs-345-            lines_covered: 5,
+/home/ketan/project/shatter/shatter-core/src/cache.rs-346-            total_lines: 10,
+/home/ketan/project/shatter/shatter-core/src/cache.rs:347:            invariants: vec![],
+/home/ketan/project/shatter/shatter-core/src/cache.rs-348-            fingerprint: None,
+/home/ketan/project/shatter/shatter-core/src/cache.rs-349-            nondeterministic_fields: vec![],
+--
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-155-        }
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-156-        TypeInfo::Nullable { .. } => Value::Null,
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs:157:        TypeInfo::Union { variants } => {
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs:158:            if let Some(first) = variants.first() {
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-159-                default_for_type(first)
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-160-            } else {
+--
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-550-    }
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-551-
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs:552:    /// Integration test: auto-mocks are compatible with the Instrument command format.
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-553-    /// Verifies that generated MockConfig values serialize correctly for the protocol.
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-554-    #[test]
+--
+/home/ketan/project/shatter/shatter-core/src/nondeterminism.rs-716-
+/home/ketan/project/shatter/shatter-core/src/nondeterminism.rs-717-    #[test]
+/home/ketan/project/shatter/shatter-core/src/nondeterminism.rs:718:    fn evidence_variants_round_trip() {
+/home/ketan/project/shatter/shatter-core/src/nondeterminism.rs:719:        let variants = vec![
+/home/ketan/project/shatter/shatter-core/src/nondeterminism.rs-720-            NondeterminismEvidence::UserDeclared,
+/home/ketan/project/shatter/shatter-core/src/nondeterminism.rs-721-            NondeterminismEvidence::ObservedWithinRun,
+--
+/home/ketan/project/shatter/shatter-core/src/nondeterminism.rs-732-        ];
+/home/ketan/project/shatter/shatter-core/src/nondeterminism.rs-733-
+/home/ketan/project/shatter/shatter-core/src/nondeterminism.rs:734:        for variant in &variants {
+/home/ketan/project/shatter/shatter-core/src/nondeterminism.rs-735-            let json = serde_json::to_string(variant).expect("serialize");
+/home/ketan/project/shatter/shatter-core/src/nondeterminism.rs-736-            let restored: NondeterminismEvidence =
+--
+/home/ketan/project/shatter/shatter-core/src/shrink.rs-1-//! Value shrinking for minimal witness discovery and boundary refinement.
+/home/ketan/project/shatter/shatter-core/src/shrink.rs-2-//!
+/home/ketan/project/shatter/shatter-core/src/shrink.rs:3://! Given a value and its `TypeInfo`, produces progressively simpler variants.
+/home/ketan/project/shatter/shatter-core/src/shrink.rs-4-//! Conceptual inverse of `mutate_value` in `input_gen.rs`: mutation goes toward
+/home/ketan/project/shatter/shatter-core/src/shrink.rs-5-//! novelty, shrinking goes toward simplicity.
+--
+/home/ketan/project/shatter/shatter-core/src/shrink.rs-18-const SHRINK_FLOAT_NEG_ONE: f64 = -1.0;
+/home/ketan/project/shatter/shatter-core/src/shrink.rs-19-
+/home/ketan/project/shatter/shatter-core/src/shrink.rs:20:/// Produce simpler variants of `value` that still conform to `type_info`.
+/home/ketan/project/shatter/shatter-core/src/shrink.rs-21-///
+/home/ketan/project/shatter/shatter-core/src/shrink.rs-22-/// Never includes the original value. Returns an empty vec for types that
+--
+/home/ketan/project/shatter/shatter-core/src/shrink.rs-32-        TypeInfo::Object { fields } => shrink_object(value, fields),
+/home/ketan/project/shatter/shatter-core/src/shrink.rs-33-        TypeInfo::Nullable { inner } => shrink_nullable(value, inner),
+/home/ketan/project/shatter/shatter-core/src/shrink.rs:34:        TypeInfo::Union { variants } => shrink_union(value, variants),
+/home/ketan/project/shatter/shatter-core/src/shrink.rs-35-        TypeInfo::Complex { .. } | TypeInfo::Opaque { .. } | TypeInfo::Unknown => Vec::new(),
+/home/ketan/project/shatter/shatter-core/src/shrink.rs-36-    };
+--
+/home/ketan/project/shatter/shatter-core/src/shrink.rs-217-}
+/home/ketan/project/shatter/shatter-core/src/shrink.rs-218-
+/home/ketan/project/shatter/shatter-core/src/shrink.rs:219:fn shrink_union(value: &Value, variants: &[TypeInfo]) -> Vec<Value> {
+/home/ketan/project/shatter/shatter-core/src/shrink.rs-220-    let mut out = Vec::new();
+/home/ketan/project/shatter/shatter-core/src/shrink.rs-221-
+/home/ketan/project/shatter/shatter-core/src/shrink.rs-222-    // Try shrinking against each variant — collect all candidates.
+/home/ketan/project/shatter/shatter-core/src/shrink.rs:223:    for variant in variants {
+/home/ketan/project/shatter/shatter-core/src/shrink.rs-224-        out.extend(shrink_candidates(value, variant));
+/home/ketan/project/shatter/shatter-core/src/shrink.rs-225-    }
+--
+/home/ketan/project/shatter/shatter-core/src/shrink.rs-356-        let candidates = shrink_candidates(&json!([5]), &typ);
+/home/ketan/project/shatter/shatter-core/src/shrink.rs-357-        assert!(candidates.contains(&json!([]))); // empty
+/home/ketan/project/shatter/shatter-core/src/shrink.rs:358:        // Also contains element-shrunk variants like [0], [1], [-1].
+/home/ketan/project/shatter/shatter-core/src/shrink.rs-359-        assert!(candidates.contains(&json!([0])));
+/home/ketan/project/shatter/shatter-core/src/shrink.rs-360-    }
+--
+/home/ketan/project/shatter/shatter-core/src/shrink.rs-432-
+/home/ketan/project/shatter/shatter-core/src/shrink.rs-433-    #[test]
+/home/ketan/project/shatter/shatter-core/src/shrink.rs:434:    fn shrink_union_collects_from_variants() {
+/home/ketan/project/shatter/shatter-core/src/shrink.rs-435-        let typ = TypeInfo::Union {
+/home/ketan/project/shatter/shatter-core/src/shrink.rs:436:            variants: vec![TypeInfo::Int, TypeInfo::Str],
+/home/ketan/project/shatter/shatter-core/src/shrink.rs-437-        };
+/home/ketan/project/shatter/shatter-core/src/shrink.rs-438-        let candidates = shrink_candidates(&json!(10), &typ);
+--
+/home/ketan/project/shatter/shatter-core/src/shrink.rs-474-
+/home/ketan/project/shatter/shatter-core/src/shrink.rs-475-    // -----------------------------------------------------------------------
+/home/ketan/project/shatter/shatter-core/src/shrink.rs:476:    // Invariants
+/home/ketan/project/shatter/shatter-core/src/shrink.rs-477-    // -----------------------------------------------------------------------
+/home/ketan/project/shatter/shatter-core/src/shrink.rs-478-
+--
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-2090-            "analyze".into(),
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-2091-            "execute".into(),
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs:2092:            "instrument".into(),
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-2093-            "complex_type:date".into(),
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-2094-            "complex_type:url".into(),
+--
+/home/ketan/project/shatter/shatter-core/proptest-regressions/input_gen.txt-5-# It is recommended to check this file in to source control so that
+/home/ketan/project/shatter/shatter-core/proptest-regressions/input_gen.txt-6-# everyone who runs the test benefits from these saved cases.
+/home/ketan/project/shatter/shatter-core/proptest-regressions/input_gen.txt:7:cc eeb12a70d433821b3493d92b17259442af3932649ad229a409ba060dd2db2ea1 # shrinks to params = [MockParam { symbol: "a", return_type: Bool, category: FileSystem, call_count_estimate: 3, value_source: AutoGenerated }, MockParam { symbol: "A", return_type: Bool, category: FileSystem, call_count_estimate: 5, value_source: AutoGenerated }, MockParam { symbol: "A", return_type: Union { variants: [Int, Str] }, category: FileSystem, call_count_estimate: 1, value_source: AutoGenerated }], seed = 9560
+/home/ketan/project/shatter/shatter-core/proptest-regressions/input_gen.txt-8-cc 7a35eaa8252281ab340f636a3aa407f88f05f80b7ffa759009674d5f89c82928 # shrinks to seed = 1450, typs = [Bool, Str]
+--
+/home/ketan/project/shatter/shatter-core/src/execution_record.rs-328-
+/home/ketan/project/shatter/shatter-core/src/execution_record.rs-329-    #[test]
+/home/ketan/project/shatter/shatter-core/src/execution_record.rs:330:    fn side_effect_variants_round_trip() {
+/home/ketan/project/shatter/shatter-core/src/execution_record.rs-331-        round_trip(&SideEffect::ConsoleOutput {
+/home/ketan/project/shatter/shatter-core/src/execution_record.rs-332-            level: "warn".into(),
+--
+/home/ketan/project/shatter/shatter-core/src/recursive.rs-85-            vec![Value::Object(obj)]
+/home/ketan/project/shatter/shatter-core/src/recursive.rs-86-        }
+/home/ketan/project/shatter/shatter-core/src/recursive.rs:87:        TypeInfo::Union { variants } => {
+/home/ketan/project/shatter/shatter-core/src/recursive.rs-88-            // Probe values from each variant
+/home/ketan/project/shatter/shatter-core/src/recursive.rs:89:            variants.iter().flat_map(probe_values).collect()
+/home/ketan/project/shatter/shatter-core/src/recursive.rs-90-        }
+/home/ketan/project/shatter/shatter-core/src/recursive.rs-91-        TypeInfo::Nullable { inner } => {
+--
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-79-#[derive(Debug, Clone)]
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-80-pub struct ExploreConfig {
+/home/ketan/project/shatter/shatter-core/src/explorer.rs:81:    /// Path to the source file being explored (needed for instrumentation).
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-82-    pub file: String,
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-83-    /// Maximum number of iterations (execute calls) per function.
+--
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-540-    mut setup_mgr: Option<&mut SetupManager>,
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-541-) -> Result<ObservationOutput, ExploreError> {
+/home/ketan/project/shatter/shatter-core/src/explorer.rs:542:    let instrument_response = frontend
+/home/ketan/project/shatter/shatter-core/src/explorer.rs:543:        .send(ProtoCommand::Instrument {
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-544-            file: config.file.clone(),
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-545-            function: analysis.name.clone(),
+--
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-549-        .await?;
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-550-
+/home/ketan/project/shatter/shatter-core/src/explorer.rs:551:    let instrumentable_line_count = match instrument_response.result {
+/home/ketan/project/shatter/shatter-core/src/explorer.rs:552:        ResponseResult::Instrument { instrumented, instrumentable_line_count, .. } => {
+/home/ketan/project/shatter/shatter-core/src/explorer.rs:553:            if !instrumented {
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-554-                return Err(ExploreError::UnexpectedResponse(
+/home/ketan/project/shatter/shatter-core/src/explorer.rs:555:                    "instrumentation returned instrumented=false".to_string(),
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-556-                ));
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-557-            }
+/home/ketan/project/shatter/shatter-core/src/explorer.rs:558:            instrumentable_line_count
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-559-        }
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-560-        ResponseResult::Error { code, message, .. } => {
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-561-            return Err(ExploreError::UnexpectedResponse(format!(
+/home/ketan/project/shatter/shatter-core/src/explorer.rs:562:                "instrument error ({code:?}): {message}"
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-563-            )));
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-564-        }
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-565-        other => {
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-566-            return Err(ExploreError::UnexpectedResponse(format!(
+/home/ketan/project/shatter/shatter-core/src/explorer.rs:567:                "expected Instrument response, got {other:?}"
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-568-            )));
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-569-        }
+--
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-831-            crate::observe::ObserveError::Frontend(fe) => ExploreError::Frontend(fe),
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-832-            crate::observe::ObserveError::UnexpectedResponse(msg)
+/home/ketan/project/shatter/shatter-core/src/explorer.rs:833:            | crate::observe::ObserveError::InstrumentationFailed(msg) => {
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-834-                ExploreError::UnexpectedResponse(msg)
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-835-            }
+--
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-862-    }
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-863-
+/home/ketan/project/shatter/shatter-core/src/explorer.rs:864:    let total_lines = instrumentable_line_count
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-865-        .unwrap_or_else(|| analysis.end_line.saturating_sub(analysis.start_line) + 1);
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-866-
+--
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1144-
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1145-    /// Base command capabilities for test frontends.
+/home/ketan/project/shatter/shatter-core/src/explorer.rs:1146:    const BASE_CAPABILITIES: &[&str] = &["analyze", "execute", "instrument"];
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1147-
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1148-    /// Build a capability string list from base + additional capabilities.
+--
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1935-
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1936-    #[tokio::test]
+/home/ketan/project/shatter/shatter-core/src/explorer.rs:1937:    async fn explore_function_instruments_before_executing() {
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1938-        let mut frontend = spawn_noop_frontend().await;
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1939-        let analysis = stub_analysis();
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-4-//! cluster), checks invariant templates against all specimens and returns those
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-5-//! that hold universally. Uses `rayon` for parallel checking across both clusters
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:6://! and candidate invariants.
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-7-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-8-use rayon::prelude::*;
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-79-}
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-80-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:81:/// Comparison operators for numeric invariants.
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-82-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-83-#[serde(rename_all = "snake_case")]
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-211-}
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-212-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:213:/// Generate candidate invariants from the first specimen.
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-214-fn generate_candidates(
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-215-    specimens: &[ExecutionRecord],
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-229-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-230-    for (path, sample_value) in &paths_and_values {
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:231:        // Numeric invariants
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-232-        if let Some(num) = sample_value.as_f64() {
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-233-            generate_numeric_candidates(&mut candidates, path.clone(), num, target);
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-234-        }
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-235-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:236:        // String invariants
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-237-        if let Some(s) = sample_value.as_str() {
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-238-            generate_string_candidates(&mut candidates, path.clone(), s, target);
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-239-        }
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-240-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:241:        // Boolean invariants
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-242-        if let Some(b) = sample_value.as_bool() {
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-243-            generate_bool_candidates(&mut candidates, path.clone(), b, target);
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-244-        }
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-245-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:246:        // Null check invariants
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-247-        if sample_value.is_null() {
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-248-            generate_null_candidates(&mut candidates, path.clone(), true, target);
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-343-            },
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-344-            check: Box::new(move |_record| {
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:345:                // This is handled specially in detect_invariants
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-346-                true
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-347-            }),
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-507-// ---------------------------------------------------------------------------
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-508-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:509:/// Detect invariants that hold across all specimens for the given target.
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:510:pub fn detect_invariants(
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-511-    specimens: &[ExecutionRecord],
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-512-    target: InvariantTarget,
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-518-    let candidates = generate_candidates(specimens, target);
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-519-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:520:    let mut invariants: Vec<Invariant> = candidates
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-521-        .into_par_iter()
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-522-        .filter(|candidate| {
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-531-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-532-    // Numeric constant detection: for each numeric path, check if all values are identical
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:533:    detect_numeric_constants(specimens, target, &mut invariants);
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-534-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:535:    // Filter out trivially true invariants
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:536:    filter_trivial(&mut invariants);
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-537-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-538-    // Sort for deterministic output
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:539:    invariants.sort_by(|a, b| a.description.cmp(&b.description));
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:540:    invariants
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-541-}
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-542-
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-545-    specimens: &[ExecutionRecord],
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-546-    target: InvariantTarget,
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:547:    invariants: &mut Vec<Invariant>,
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-548-) {
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-549-    if specimens.is_empty() {
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-563-            });
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-564-            if all_same {
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:565:                invariants.push(Invariant {
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-566-                    description: format!("{} == {first_num}", format_path(path)),
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-567-                    target,
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-576-}
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-577-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:578:/// Remove trivially true invariants.
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-579-///
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-580-/// An invariant is trivially true if it conveys no useful information. For example:
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-582-/// - A constant invariant `x == C` when a comparison `x > 0` also holds and C > 0
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-583-///   (we keep both since constant equality is strictly more informative)
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:584:fn filter_trivial(invariants: &mut Vec<Invariant>) {
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-585-    // Remove `x >= 0` when `x > 0` is also present (for the same path)
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:586:    let gt_zero_paths: Vec<JsonPath> = invariants
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-587-        .iter()
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-588-        .filter_map(|inv| match &inv.kind {
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-596-        .collect();
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-597-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:598:    invariants.retain(|inv| {
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-599-        match &inv.kind {
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-600-            InvariantKind::NumericComparison {
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-615-}
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-616-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:617:/// Detect invariants across multiple behavior clusters in parallel.
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-618-///
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:619:/// For each cluster's set of specimens, detects both input and output invariants.
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:620:/// Returns a vec of `(input_invariants, output_invariants)` tuples, one per cluster.
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:621:pub fn detect_invariants_all_clusters(
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-622-    clusters: &[Vec<ExecutionRecord>],
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-623-) -> Vec<(Vec<Invariant>, Vec<Invariant>)> {
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-625-        .par_iter()
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-626-        .map(|specimens| {
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:627:            let input_invs = detect_invariants(specimens, InvariantTarget::Input);
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:628:            let output_invs = detect_invariants(specimens, InvariantTarget::Output);
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-629-            (input_invs, output_invs)
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-630-        })
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-633-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-634-// ---------------------------------------------------------------------------
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:635:// Classified invariants: invariants annotated with target and human-readable label.
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-636-// ---------------------------------------------------------------------------
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-637-
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-653-}
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-654-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:655:/// Detect invariants and return them with target classification and labels.
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:656:pub fn detect_classified_invariants(
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-657-    specimens: &[ExecutionRecord],
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-658-    target: InvariantTarget,
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-659-) -> Vec<ClassifiedInvariant> {
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-660-    let total = specimens.len();
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:661:    detect_invariants(specimens, target)
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-662-        .into_iter()
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-663-        .map(|inv| {
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-667-                target,
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-668-                label,
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:669:                confidence: 1.0, // detect_invariants only returns invariants that hold for all specimens
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-670-                satisfied_count: total,
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-671-                total_count: total,
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-825-        ];
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-826-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:827:        let invariants = detect_invariants(&specimens, InvariantTarget::Input);
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-828-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:829:        let has_x_gt_0 = invariants.iter().any(|inv| {
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-830-            matches!(
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-831-                &inv.kind,
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-837-            )
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-838-        });
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:839:        assert!(has_x_gt_0, "should detect x > 0, got: {invariants:?}");
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-840-    }
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-841-
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-847-        ];
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-848-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:849:        let invariants = detect_invariants(&specimens, InvariantTarget::Input);
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-850-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:851:        let has_x_gt_0 = invariants.iter().any(|inv| {
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-852-            matches!(
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-853-                &inv.kind,
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-869-        ];
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-870-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:871:        let invariants = detect_invariants(&specimens, InvariantTarget::Input);
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-872-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:873:        let has_not_null = invariants.iter().any(|inv| {
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-874-            matches!(&inv.kind, InvariantKind::NotNull { path } if path == &vec!["name".to_string()])
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-875-        });
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:876:        assert!(has_not_null, "should detect name != null, got: {invariants:?}");
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-877-    }
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-878-
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-884-        ];
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-885-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:886:        let invariants = detect_invariants(&specimens, InvariantTarget::Input);
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-887-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:888:        let has_non_empty = invariants.iter().any(|inv| {
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-889-            matches!(&inv.kind, InvariantKind::StringNonEmpty { path } if path == &vec!["s".to_string()])
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-890-        });
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:891:        assert!(has_non_empty, "should detect s is non-empty, got: {invariants:?}");
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-892-    }
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-893-
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-899-        ];
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-900-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:901:        let invariants = detect_invariants(&specimens, InvariantTarget::Input);
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-902-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:903:        let has_non_empty = invariants.iter().any(|inv| {
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-904-            matches!(&inv.kind, InvariantKind::StringNonEmpty { path } if path == &vec!["s".to_string()])
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-905-        });
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-915-        ];
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-916-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:917:        let invariants = detect_invariants(&specimens, InvariantTarget::Output);
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-918-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:919:        let has_relation = invariants.iter().any(|inv| {
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-920-            matches!(
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-921-                &inv.kind,
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-927-            )
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-928-        });
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:929:        assert!(has_relation, "should detect output.len == input.len, got: {invariants:?}");
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-930-    }
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-931-
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-937-        ];
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-938-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:939:        let invariants = detect_invariants(&specimens, InvariantTarget::Output);
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-940-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:941:        let has_relation = invariants.iter().any(|inv| {
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-942-            matches!(&inv.kind, InvariantKind::OutputEqualsInput { .. })
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-943-        });
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-953-        ];
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-954-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:955:        let invariants = detect_invariants(&specimens, InvariantTarget::Output);
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-956-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:957:        let has_constant = invariants.iter().any(|inv| {
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-958-            matches!(
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-959-                &inv.kind,
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-962-            )
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-963-        });
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:964:        assert!(has_constant, "should detect output == 42, got: {invariants:?}");
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-965-    }
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-966-
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-974-        ];
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-975-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:976:        let invariants = detect_invariants(&specimens, InvariantTarget::Input);
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-977-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:978:        let has_gt_0 = invariants.iter().any(|inv| {
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-979-            matches!(
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-980-                &inv.kind,
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-983-            )
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-984-        });
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:985:        let has_ge_0 = invariants.iter().any(|inv| {
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-986-            matches!(
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-987-                &inv.kind,
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-996-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-997-    #[test]
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:998:    fn empty_specimens_returns_no_invariants() {
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:999:        let invariants = detect_invariants(&[], InvariantTarget::Input);
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:1000:        assert!(invariants.is_empty());
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1001-    }
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1002-
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1008-        ];
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1009-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:1010:        let invariants = detect_invariants(&specimens, InvariantTarget::Input);
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1011-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:1012:        let has_always_true = invariants.iter().any(|inv| {
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1013-            matches!(&inv.kind, InvariantKind::AlwaysTrue { path } if path == &vec!["active".to_string()])
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1014-        });
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:1015:        assert!(has_always_true, "should detect active is always true, got: {invariants:?}");
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1016-    }
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1017-
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1023-        ];
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1024-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:1025:        let invariants = detect_invariants(&specimens, InvariantTarget::Input);
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1026-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:1027:        let has_is_null = invariants.iter().any(|inv| {
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1028-            matches!(&inv.kind, InvariantKind::IsNull { path } if path == &vec!["opt".to_string()])
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1029-        });
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:1030:        assert!(has_is_null, "should detect opt is always null, got: {invariants:?}");
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1031-    }
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1032-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1033-    #[test]
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:1034:    fn combined_invariants_x_positive_and_output_len_equals_input_len() {
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1035-        // The acceptance criteria scenario: all inputs have x > 0 and output.len == input.len
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1036-        let specimens = vec![
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1049-        ];
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1050-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:1051:        let input_invs = detect_invariants(&specimens, InvariantTarget::Input);
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:1052:        let output_invs = detect_invariants(&specimens, InvariantTarget::Output);
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1053-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1054-        // Should detect x > 0
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1093-        ];
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1094-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:1095:        let results = detect_invariants_all_clusters(&[cluster1, cluster2]);
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1096-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1097-        assert_eq!(results.len(), 2);
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1125-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1126-    #[test]
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:1127:    fn does_not_report_trivially_true_type_invariants() {
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1128-        // All x values are numbers — "x is a number" should NOT be reported
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:1129:        // (there's no such template, but ensure we don't have spurious invariants)
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1130-        let specimens = vec![
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1131-            make_record(vec![json!({"x": -3})], None),
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1134-        ];
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1135-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:1136:        let invariants = detect_invariants(&specimens, InvariantTarget::Input);
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1137-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1138-        // x spans negative, zero, and positive — no numeric comparison should hold
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:1139:        let has_numeric_comparison = invariants.iter().any(|inv| {
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1140-            matches!(&inv.kind, InvariantKind::NumericComparison { path, .. } if path == &vec!["x".to_string()])
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1141-        });
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1142-        assert!(
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1143-            !has_numeric_comparison,
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:1144:            "should not report numeric comparisons when values span negative/zero/positive, got: {invariants:?}"
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1145-        );
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1146-    }
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1170-        ];
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1171-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:1172:        let invariants = detect_invariants(&specimens, InvariantTarget::Input);
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1173-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:1174:        let has_nested = invariants.iter().any(|inv| {
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1175-            matches!(
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1176-                &inv.kind,
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1179-            )
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1180-        });
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:1181:        assert!(has_nested, "should detect order.total > 0, got: {invariants:?}");
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1182-    }
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1183-
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1190-        ];
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1191-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:1192:        let invariants = detect_invariants(&specimens, InvariantTarget::Input);
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1193-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1194-        // The root value is numeric and > 0
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:1195:        let has_gt_0 = invariants.iter().any(|inv| {
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1196-            matches!(
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1197-                &inv.kind,
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1203-            )
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1204-        });
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:1205:        assert!(has_gt_0, "should detect param > 0 for scalar input, got: {invariants:?}");
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1206-    }
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1207-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1208-    // -----------------------------------------------------------------------
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:1209:    // Tests for ClassifiedInvariant, detect_classified_invariants, format_invariant_label
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1210-    // -----------------------------------------------------------------------
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1211-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1212-    #[test]
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:1213:    fn classified_invariants_all_observed() {
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1214-        let specimens = vec![
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1215-            make_record(vec![json!({"x": 5})], Some(json!(10))),
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1217-        ];
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1218-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:1219:        let classified = detect_classified_invariants(&specimens, InvariantTarget::Input);
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1220-        assert!(!classified.is_empty());
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1221-
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1230-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1231-    #[test]
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:1232:    fn classified_invariants_empty_returns_empty() {
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:1233:        let classified = detect_classified_invariants(&[], InvariantTarget::Input);
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1234-        assert!(classified.is_empty());
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1235-    }
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1236-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1237-    #[test]
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:1238:    fn classified_invariants_include_output() {
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1239-        let specimens = vec![
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1240-            make_record(vec![json!(1)], Some(json!(42))),
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1242-        ];
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1243-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:1244:        let classified = detect_classified_invariants(&specimens, InvariantTarget::Output);
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1245-        assert!(!classified.is_empty());
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1246-        for ci in &classified {
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1256-        ];
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1257-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs:1258:        let classified = detect_classified_invariants(&specimens, InvariantTarget::Input);
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1259-        let x_inv = classified.iter().find(|ci| ci.label.contains("input.x"));
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1260-        assert!(x_inv.is_some(), "should have label containing 'input.x', got: {:?}",
+--
+/home/ketan/project/shatter/shatter-core/src/lib.rs-36-pub mod mock_gen;
+/home/ketan/project/shatter/shatter-core/src/lib.rs-37-pub mod nondeterminism;
+/home/ketan/project/shatter/shatter-core/src/lib.rs:38:pub mod invariants;
+/home/ketan/project/shatter/shatter-core/src/lib.rs-39-pub mod observe;
+/home/ketan/project/shatter/shatter-core/src/lib.rs-40-pub mod orchestrator;
+--
+/home/ketan/project/shatter/shatter-core/CLAUDE.md-10-- `call_graph.rs` — Function dependency graph
+/home/ketan/project/shatter/shatter-core/CLAUDE.md-11-- `export.rs` — Test generation from behavior maps
+/home/ketan/project/shatter/shatter-core/CLAUDE.md:12:- `invariants.rs` — Invariant inference from execution traces
+/home/ketan/project/shatter/shatter-core/CLAUDE.md-13-- `spec.rs` — Behavioral specification output format
+/home/ketan/project/shatter/shatter-core/CLAUDE.md-14-- `input_gen.rs` — Generator-aware input generation and mutation
+--
+/home/ketan/project/shatter/shatter-core/CLAUDE.md-24-
+/home/ketan/project/shatter/shatter-core/CLAUDE.md-25-1. **Trust boundaries first**: serialization roundtrips, FFI bridges (Z3 solver), protocol parsing. These have the highest bug density.
+/home/ketan/project/shatter/shatter-core/CLAUDE.md:26:2. **Semantic invariants over structural checks**: "solved values match ParamInfo types" is valuable; "Request serializes to JSON" is table stakes. Both are needed, but semantic properties catch real bugs.
+/home/ketan/project/shatter/shatter-core/CLAUDE.md-27-3. **Full pipeline properties**: test compose functions, not just units. `arbitrary constraints → solve → overlay → type-check output` catches integration bugs that per-function tests miss.
+/home/ketan/project/shatter/shatter-core/CLAUDE.md-28-4. **State machine properties**: for stateful components (orchestrator worklist, coverage tracking), test ordering, deduplication, convergence, and budget exhaustion.
+--
+/home/ketan/project/shatter/shatter-core/CLAUDE.md-33-**When NOT to use proptest**: simple getters/setters, thin wrappers, tests where specific examples are clearer.
+/home/ketan/project/shatter/shatter-core/CLAUDE.md-34-
+/home/ketan/project/shatter/shatter-core/CLAUDE.md:35:**Target**: every module with a `proptest!` block should have properties covering its core invariants, not just serialization.
+/home/ketan/project/shatter/shatter-core/CLAUDE.md-36-
+/home/ketan/project/shatter/shatter-core/CLAUDE.md-37-## Contracts Policy (`contracts` crate)
+/home/ketan/project/shatter/shatter-core/CLAUDE.md-38-
+/home/ketan/project/shatter/shatter-core/CLAUDE.md:39:Contracts (`#[requires]`, `#[ensures]`) are active only in debug/test builds. They are for invariants where **all three** of the following hold:
+/home/ketan/project/shatter/shatter-core/CLAUDE.md-40-
+/home/ketan/project/shatter/shatter-core/CLAUDE.md-41-1. **Trust boundary**: the function receives data from outside Rust's type system — Z3 FFI, deserialized JSON from a frontend subprocess, or index/length relationships between two independently-constructed collections.
+--
+/home/ketan/project/shatter/shatter-core/src/discovery.rs-647-
+/home/ketan/project/shatter/shatter-core/src/discovery.rs-648-    #[test]
+/home/ketan/project/shatter/shatter-core/src/discovery.rs:649:    fn language_from_extension_all_variants() {
+/home/ketan/project/shatter/shatter-core/src/discovery.rs-650-        assert_eq!(Language::from_extension("ts"), Some(Language::TypeScript));
+/home/ketan/project/shatter/shatter-core/src/discovery.rs-651-        assert_eq!(Language::from_extension("tsx"), Some(Language::TypeScript));
+--
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-16-    TruncationInfo,
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-17-};
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs:18:use crate::invariants::{ComparisonOp, Invariant, InvariantKind, InvariantTarget, ClassifiedInvariant};
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-19-use crate::protocol::{
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-20-    BranchInfo, BranchType, Command, CryptoBoundary, DependencyKind, ErrorCode,
+--
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-169-        Just(ErrorCode::FunctionNotFound),
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-170-        Just(ErrorCode::ParseError),
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs:171:        Just(ErrorCode::InstrumentationFailed),
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-172-        Just(ErrorCode::ExecutionTimeout),
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-173-        Just(ErrorCode::ExecutionCrash),
+--
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-345-                .prop_map(|fields| TypeInfo::Object { fields }),
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-346-            1 => prop::collection::vec(arb_type_info(depth - 1), 2..=4)
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs:347:                .prop_map(|variants| TypeInfo::Union { variants }),
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-348-            1 => arb_type_info(depth - 1)
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-349-                .prop_map(|inner| TypeInfo::Nullable { inner: Box::new(inner) }),
+--
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-681-            prop::collection::vec(arb_mock_config(), 0..=2),
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-682-        )
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs:683:            .prop_map(|(file, function, mocks)| Command::Instrument {
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-684-                file,
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-685-                function,
+--
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-735-            .prop_map(|functions| ResponseResult::Analyze { functions }),
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-736-        (any::<bool>(), proptest::option::of(arb_ident()), proptest::option::of(1..500u32))
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs:737:            .prop_map(|(instrumented, output_file, instrumentable_line_count)| {
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs:738:                ResponseResult::Instrument {
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs:739:                    instrumented,
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-740-                    output_file,
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs:741:                    instrumentable_line_count,
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-742-                }
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-743-            }),
+--
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-936-                pre_prov,
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-937-                post_prov,
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs:938:                invariants,
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-939-            )| SpecClass {
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-940-                label,
+--
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-947-                precondition_provenance: pre_prov,
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-948-                postcondition_provenance: post_prov,
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs:949:                invariants,
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-950-            },
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-951-        )
+--
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-971-                lines_covered,
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-972-                total_lines,
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs:973:                invariants,
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-974-                fingerprint,
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-975-            )| FunctionSpec {
+--
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-980-                lines_covered,
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-981-                total_lines,
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs:982:                invariants,
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-983-                fingerprint,
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-984-                nondeterministic_fields: vec![],
+--
+/home/ketan/project/shatter/shatter-core/src/array_mutation.rs-153-}
+/home/ketan/project/shatter/shatter-core/src/array_mutation.rs-154-
+/home/ketan/project/shatter/shatter-core/src/array_mutation.rs:155:/// Generate a batch of mutated variants from a single array input.
+/home/ketan/project/shatter/shatter-core/src/array_mutation.rs-156-///
+/home/ketan/project/shatter/shatter-core/src/array_mutation.rs-157-/// Produces `count` mutations, useful for generating a diverse set of nearby
+--
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-40-    /// Random seed for reproducibility. If None, uses entropy.
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-41-    pub seed: Option<u64>,
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs:42:    /// Map from function name to source file path (needed for instrumentation).
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-43-    pub file_map: HashMap<String, String>,
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-44-    /// Number of parallel frontend subprocesses (default: 1).
+--
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-1302-            }
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-1303-        }
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs:1304:        TypeInfo::Union { variants } => {
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs:1305:            variants
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-1306-                .iter()
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-1307-                .map(format_type)
+--
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-2423-        let mut fe_config = FrontendConfig::new(PathBuf::from("bash"));
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-2424-        fe_config.args = vec![slow_path.to_string_lossy().into_owned()];
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs:2425:        // Request timeout must be long enough for handshake/instrument
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-2426-        // but the per-function timeout triggers during execute.
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-2427-        fe_config.request_timeout = Duration::from_secs(10);
+--
+/home/ketan/project/shatter/shatter-core/src/boundary_search.rs-135-        TypeInfo::Object { fields } => interpolate_object(a, b, fields, max_steps),
+/home/ketan/project/shatter/shatter-core/src/boundary_search.rs-136-        TypeInfo::Nullable { inner } => interpolate_nullable(a, b, inner, max_steps),
+/home/ketan/project/shatter/shatter-core/src/boundary_search.rs:137:        TypeInfo::Union { variants } => interpolate_union(a, b, variants, max_steps),
+/home/ketan/project/shatter/shatter-core/src/boundary_search.rs-138-        TypeInfo::Bool
+/home/ketan/project/shatter/shatter-core/src/boundary_search.rs-139-        | TypeInfo::Str
+--
+/home/ketan/project/shatter/shatter-core/src/boundary_search.rs-298-    a: &Value,
+/home/ketan/project/shatter/shatter-core/src/boundary_search.rs-299-    b: &Value,
+/home/ketan/project/shatter/shatter-core/src/boundary_search.rs:300:    variants: &[TypeInfo],
+/home/ketan/project/shatter/shatter-core/src/boundary_search.rs-301-    max_steps: usize,
+/home/ketan/project/shatter/shatter-core/src/boundary_search.rs-302-) -> Vec<Value> {
+/home/ketan/project/shatter/shatter-core/src/boundary_search.rs:303:    for variant in variants {
+/home/ketan/project/shatter/shatter-core/src/boundary_search.rs-304-        let midpoints = interpolate_value(a, b, variant, max_steps);
+/home/ketan/project/shatter/shatter-core/src/boundary_search.rs-305-        if !midpoints.is_empty() {
+--
+/home/ketan/project/shatter/shatter-core/src/boundary_search.rs-570-    #[test]
+/home/ketan/project/shatter/shatter-core/src/boundary_search.rs-571-    fn interpolate_union_matching_variant() {
+/home/ketan/project/shatter/shatter-core/src/boundary_search.rs:572:        let variants = vec![TypeInfo::Int, TypeInfo::Str];
+/home/ketan/project/shatter/shatter-core/src/boundary_search.rs:573:        let results = interpolate_union(&json!(0), &json!(100), &variants, 4);
+/home/ketan/project/shatter/shatter-core/src/boundary_search.rs-574-        assert!(!results.is_empty());
+/home/ketan/project/shatter/shatter-core/src/boundary_search.rs-575-    }
+--
+/home/ketan/project/shatter/shatter-core/src/boundary_search.rs-577-    #[test]
+/home/ketan/project/shatter/shatter-core/src/boundary_search.rs-578-    fn interpolate_union_no_match() {
+/home/ketan/project/shatter/shatter-core/src/boundary_search.rs:579:        let variants = vec![TypeInfo::Str];
+/home/ketan/project/shatter/shatter-core/src/boundary_search.rs:580:        let results = interpolate_union(&json!(0), &json!(100), &variants, 4);
+/home/ketan/project/shatter/shatter-core/src/boundary_search.rs-581-        assert!(results.is_empty());
+/home/ketan/project/shatter/shatter-core/src/boundary_search.rs-582-    }
+--
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-87-        TypeInfo::Array { element } => generate_array(element, rng, caps),
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-88-        TypeInfo::Object { fields } => generate_object(fields, rng, caps),
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:89:        TypeInfo::Union { variants } => generate_union(variants, rng, caps),
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-90-        TypeInfo::Nullable { inner } => generate_nullable(inner, rng, caps),
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-91-        TypeInfo::Complex { kind, metadata, inner } => {
+--
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-206-/// Pick a random variant from a union type.
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-207-fn generate_union(
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:208:    variants: &[TypeInfo],
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-209-    rng: &mut impl Rng,
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-210-    caps: Option<&FrontendCapabilities>,
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-211-) -> Value {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:212:    if variants.is_empty() {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-213-        return Value::Null;
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-214-    }
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:215:    let idx = rng.random_range(0..variants.len());
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:216:    generate_random_value(&variants[idx], rng, caps)
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-217-}
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-218-
+--
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-685-/// Generate a Closure value (canned variant).
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-686-fn generate_closure(rng: &mut impl Rng) -> Value {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:687:    let variants = ["identity", "constant", "thrower"];
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:688:    let idx = rng.random_range(0..variants.len());
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:689:    json!({"__complex_type": "closure", "variant": variants[idx]})
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-690-}
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-691-
+--
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1061-        TypeInfo::Array { element } => mutate_array(value, element, dictionary, rng),
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1062-        TypeInfo::Object { fields } => mutate_object(value, fields, dictionary, rng),
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:1063:        TypeInfo::Union { variants } => mutate_union(value, variants, dictionary, rng),
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1064-        TypeInfo::Nullable { inner } => mutate_nullable(value, inner, dictionary, rng),
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1065-        TypeInfo::Complex { .. } | TypeInfo::Opaque { .. } | TypeInfo::Unknown => value.clone(),
+--
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1361-
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1362-/// Mutate a union value by applying mutation with a random variant's type.
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:1363:fn mutate_union(value: &Value, variants: &[TypeInfo], dictionary: &[&str], rng: &mut impl Rng) -> Value {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:1364:    if variants.is_empty() {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1365-        return value.clone();
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1366-    }
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:1367:    let idx = rng.random_range(0..variants.len());
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:1368:    mutate_value(value, &variants[idx], dictionary, rng)
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1369-}
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1370-
+--
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1601-// ---------------------------------------------------------------------------
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1602-
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:1603:/// Produce progressively simpler variants of `value` consistent with `type_info`.
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1604-///
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1605-/// Returns candidates ordered roughly from "most simplified" to "least simplified".
+--
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1615-        TypeInfo::Object { fields } => shrink_object(value, fields),
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1616-        TypeInfo::Nullable { inner } => shrink_nullable(value, inner),
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:1617:        TypeInfo::Union { variants } => shrink_union(value, variants),
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1618-        TypeInfo::Complex { .. } | TypeInfo::Opaque { .. } | TypeInfo::Unknown => Vec::new(),
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1619-    };
+--
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1779-}
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1780-
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:1781:fn shrink_union(value: &Value, variants: &[TypeInfo]) -> Vec<Value> {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1782-    let mut out = Vec::new();
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:1783:    for variant in variants {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1784-        out.extend(shrink_candidates(value, variant));
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1785-    }
+--
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1907-        (LiteralValue::Bool { value }, TypeInfo::Bool) => Some(json!(value)),
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1908-        // For union types, try each variant
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:1909:        (_, TypeInfo::Union { variants }) => {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:1910:            variants.iter().find_map(|v| literal_matches_type(lit, v))
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1911-        }
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1912-        // For nullable, try the inner type
+--
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1930-/// - Generates `max(call_count_estimate, 1)` return values (for loop support)
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1931-/// - Uses category-aware shaping when `return_type` is `Unknown`
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:1932:/// - Produces both success and error variants for declared error types
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1933-///   (`Complex { kind: Result, .. }` or unions containing `Complex { kind: Error, .. }`)
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1934-pub fn generate_mock_values(
+--
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1963-    caps: Option<&FrontendCapabilities>,
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1964-) -> (Vec<Value>, MockBehavior) {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:1965:    // Result complex type: alternates ok/err variants using the tagged wire format.
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1966-    if matches!(return_type, TypeInfo::Complex { kind: ComplexKind::Result, .. }) {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1967-        let values = (0..count)
+--
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1978-    }
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1979-
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:1980:    // Union-with-Error: alternate success and error variants.
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:1981:    // Error variants use generate_error() directly for the tagged format.
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:1982:    if let TypeInfo::Union { variants } = return_type {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:1983:        let (error_indices, success_indices) = partition_error_variants(variants);
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1984-        if !error_indices.is_empty() && !success_indices.is_empty() {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1985-            let mut values = Vec::with_capacity(count);
+--
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1987-                if i % 2 == 0 {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1988-                    let idx = success_indices[rng.random_range(0..success_indices.len())];
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:1989:                    values.push(generate_random_value(&variants[idx], rng, caps));
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1990-                } else {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1991-                    let idx = error_indices[rng.random_range(0..error_indices.len())];
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:1992:                    let metadata = match &variants[idx] {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1993-                        TypeInfo::Complex { metadata, .. } => metadata.clone(),
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1994-                        _ => serde_json::Map::new(),
+--
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2016-}
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2017-
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:2018:/// Partition union variants into error and non-error index lists.
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:2019:fn partition_error_variants(variants: &[TypeInfo]) -> (Vec<usize>, Vec<usize>) {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2020-    let mut error_indices = Vec::new();
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2021-    let mut success_indices = Vec::new();
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:2022:    for (i, v) in variants.iter().enumerate() {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2023-        if matches!(v, TypeInfo::Complex { kind: ComplexKind::Error, .. }) {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2024-            error_indices.push(i);
+--
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2248-        let mut rng = seeded_rng();
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2249-        let typ = TypeInfo::Union {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:2250:            variants: vec![TypeInfo::Int, TypeInfo::Str],
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2251-        };
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2252-        let mut saw_int = false;
+--
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2260-            }
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2261-        }
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:2262:        assert!(saw_int && saw_str, "expected both int and string variants");
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2263-    }
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2264-
+--
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2286-        let mut rng = seeded_rng();
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2287-        let val = generate_random_value(
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:2288:            &TypeInfo::Union { variants: vec![] },
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2289-            &mut rng,
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2290-            None,
+--
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-3020-        let mut rng = seeded_rng();
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-3021-        let typ = TypeInfo::Union {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:3022:            variants: vec![TypeInfo::Int, TypeInfo::Str],
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-3023-        };
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-3024-        for _ in 0..50 {
+--
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-3654-                TypeInfo::Object { .. } => value.is_object(),
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-3655-                TypeInfo::Nullable { inner } => value.is_null() || value_matches_type(value, inner),
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:3656:                TypeInfo::Union { variants } => {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:3657:                    variants.is_empty() || variants.iter().any(|v| value_matches_type(value, v))
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-3658-                }
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-3659-                TypeInfo::Complex { .. } | TypeInfo::Opaque { .. } | TypeInfo::Unknown => true,
+--
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4192-            symbol: "fetchData".to_string(),
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4193-            return_type: TypeInfo::Union {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:4194:                variants: vec![
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4195-                    TypeInfo::Str,
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4196-                    TypeInfo::Complex {
+--
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4209-        assert_eq!(configs[0].return_values.len(), 4);
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4210-
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:4211:        // Even indices (0, 2) use success variants (Str), odd indices (1, 3) use error variants.
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4212-        // Without frontend capabilities, Error complex types fall back to unknown generation,
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4213-        // so we verify the alternating pattern by checking that success slots are strings.
+--
+/home/ketan/project/shatter/shatter-core/src/observe.rs-40-    #[error("unexpected response from frontend: {0}")]
+/home/ketan/project/shatter/shatter-core/src/observe.rs-41-    UnexpectedResponse(String),
+/home/ketan/project/shatter/shatter-core/src/observe.rs:42:    #[error("instrumentation failed: {0}")]
+/home/ketan/project/shatter/shatter-core/src/observe.rs:43:    InstrumentationFailed(String),
+/home/ketan/project/shatter/shatter-core/src/observe.rs-44-}
+/home/ketan/project/shatter/shatter-core/src/observe.rs-45-
+--
+/home/ketan/project/shatter/shatter-core/src/observe.rs-57-#[derive(Debug, Clone)]
+/home/ketan/project/shatter/shatter-core/src/observe.rs-58-pub struct ObserveConfig {
+/home/ketan/project/shatter/shatter-core/src/observe.rs:59:    /// Path to the source file (needed for instrumentation).
+/home/ketan/project/shatter/shatter-core/src/observe.rs-60-    pub file: String,
+/home/ketan/project/shatter/shatter-core/src/observe.rs-61-    /// Mock configurations to pass to Execute commands.
+--
+/home/ketan/project/shatter/shatter-core/src/observe.rs-73-    /// Wall-clock timeout for the entire observation phase.
+/home/ketan/project/shatter/shatter-core/src/observe.rs-74-    pub timeout: Option<Duration>,
+/home/ketan/project/shatter/shatter-core/src/observe.rs:75:    /// Skip the Instrument command (caller already instrumented).
+/home/ketan/project/shatter/shatter-core/src/observe.rs:76:    pub skip_instrument: bool,
+/home/ketan/project/shatter/shatter-core/src/observe.rs-77-}
+/home/ketan/project/shatter/shatter-core/src/observe.rs-78-
+--
+/home/ketan/project/shatter/shatter-core/src/observe.rs-88-            loop_buckets: ec.loop_buckets.clone(),
+/home/ketan/project/shatter/shatter-core/src/observe.rs-89-            timeout: ec.timeout_explore,
+/home/ketan/project/shatter/shatter-core/src/observe.rs:90:            skip_instrument: false,
+/home/ketan/project/shatter/shatter-core/src/observe.rs-91-        }
+/home/ketan/project/shatter/shatter-core/src/observe.rs-92-    }
+--
+/home/ketan/project/shatter/shatter-core/src/observe.rs-239-}
+/home/ketan/project/shatter/shatter-core/src/observe.rs-240-
+/home/ketan/project/shatter/shatter-core/src/observe.rs:241:/// Execute a batch of inputs against an already-instrumented function.
+/home/ketan/project/shatter/shatter-core/src/observe.rs-242-///
+/home/ketan/project/shatter/shatter-core/src/observe.rs-243-/// Routes each input through [`observe_single`], the canonical execution
+/home/ketan/project/shatter/shatter-core/src/observe.rs:244:/// primitive. No instrumentation, no setup/teardown lifecycle — the caller
+/home/ketan/project/shatter/shatter-core/src/observe.rs-245-/// manages those concerns.
+/home/ketan/project/shatter/shatter-core/src/observe.rs-246-///
+--
+/home/ketan/project/shatter/shatter-core/src/observe.rs-300-/// Execute a function with pre-generated inputs and collect execution traces.
+/home/ketan/project/shatter/shatter-core/src/observe.rs-301-///
+/home/ketan/project/shatter/shatter-core/src/observe.rs:302:/// Handles the full observation lifecycle: instrument → setup → execute batch →
+/home/ketan/project/shatter/shatter-core/src/observe.rs-303-/// teardown. Returns `ObservationOutput` compatible with the rest of the pipeline.
+/home/ketan/project/shatter/shatter-core/src/observe.rs-304-///
+--
+/home/ketan/project/shatter/shatter-core/src/observe.rs-314-    let total_input_count = inputs.len() as u32;
+/home/ketan/project/shatter/shatter-core/src/observe.rs-315-
+/home/ketan/project/shatter/shatter-core/src/observe.rs:316:    // --- Instrumentation ---
+/home/ketan/project/shatter/shatter-core/src/observe.rs:317:    let instrumentable_line_count = if config.skip_instrument {
+/home/ketan/project/shatter/shatter-core/src/observe.rs-318-        None
+/home/ketan/project/shatter/shatter-core/src/observe.rs-319-    } else {
+/home/ketan/project/shatter/shatter-core/src/observe.rs:320:        let instrument_response = frontend
+/home/ketan/project/shatter/shatter-core/src/observe.rs:321:            .send(ProtoCommand::Instrument {
+/home/ketan/project/shatter/shatter-core/src/observe.rs-322-                file: config.file.clone(),
+/home/ketan/project/shatter/shatter-core/src/observe.rs-323-                function: analysis.name.clone(),
+--
+/home/ketan/project/shatter/shatter-core/src/observe.rs-327-            .await?;
+/home/ketan/project/shatter/shatter-core/src/observe.rs-328-
+/home/ketan/project/shatter/shatter-core/src/observe.rs:329:        match instrument_response.result {
+/home/ketan/project/shatter/shatter-core/src/observe.rs:330:            ResponseResult::Instrument {
+/home/ketan/project/shatter/shatter-core/src/observe.rs:331:                instrumented,
+/home/ketan/project/shatter/shatter-core/src/observe.rs:332:                instrumentable_line_count,
+/home/ketan/project/shatter/shatter-core/src/observe.rs-333-                ..
+/home/ketan/project/shatter/shatter-core/src/observe.rs-334-            } => {
+/home/ketan/project/shatter/shatter-core/src/observe.rs:335:                if !instrumented {
+/home/ketan/project/shatter/shatter-core/src/observe.rs:336:                    return Err(ObserveError::InstrumentationFailed(
+/home/ketan/project/shatter/shatter-core/src/observe.rs:337:                        "instrumentation returned instrumented=false".to_string(),
+/home/ketan/project/shatter/shatter-core/src/observe.rs-338-                    ));
+/home/ketan/project/shatter/shatter-core/src/observe.rs-339-                }
+/home/ketan/project/shatter/shatter-core/src/observe.rs:340:                instrumentable_line_count
+/home/ketan/project/shatter/shatter-core/src/observe.rs-341-            }
+/home/ketan/project/shatter/shatter-core/src/observe.rs-342-            ResponseResult::Error { code, message, .. } => {
+/home/ketan/project/shatter/shatter-core/src/observe.rs:343:                return Err(ObserveError::InstrumentationFailed(format!(
+/home/ketan/project/shatter/shatter-core/src/observe.rs:344:                    "instrument error ({code:?}): {message}"
+/home/ketan/project/shatter/shatter-core/src/observe.rs-345-                )));
+/home/ketan/project/shatter/shatter-core/src/observe.rs-346-            }
+/home/ketan/project/shatter/shatter-core/src/observe.rs-347-            other => {
+/home/ketan/project/shatter/shatter-core/src/observe.rs-348-                return Err(ObserveError::UnexpectedResponse(format!(
+/home/ketan/project/shatter/shatter-core/src/observe.rs:349:                    "expected Instrument response, got {other:?}"
+/home/ketan/project/shatter/shatter-core/src/observe.rs-350-                )));
+/home/ketan/project/shatter/shatter-core/src/observe.rs-351-            }
+--
+/home/ketan/project/shatter/shatter-core/src/observe.rs-402-    }
+/home/ketan/project/shatter/shatter-core/src/observe.rs-403-
+/home/ketan/project/shatter/shatter-core/src/observe.rs:404:    let total_lines = instrumentable_line_count
+/home/ketan/project/shatter/shatter-core/src/observe.rs-405-        .unwrap_or_else(|| analysis.end_line.saturating_sub(analysis.start_line) + 1);
+/home/ketan/project/shatter/shatter-core/src/observe.rs-406-
+--
+/home/ketan/project/shatter/shatter-core/src/observe.rs-620-        assert_eq!(observe_config.timeout, Some(Duration::from_secs(30)));
+/home/ketan/project/shatter/shatter-core/src/observe.rs-621-        assert_eq!(observe_config.project_root.as_deref(), Some("/project"));
+/home/ketan/project/shatter/shatter-core/src/observe.rs:622:        assert!(!observe_config.skip_instrument);
+/home/ketan/project/shatter/shatter-core/src/observe.rs-623-    }
+/home/ketan/project/shatter/shatter-core/src/observe.rs-624-
+--
+/home/ketan/project/shatter/shatter-core/src/executability.rs-167-            "input",
+/home/ketan/project/shatter/shatter-core/src/executability.rs-168-            TypeInfo::Union {
+/home/ketan/project/shatter/shatter-core/src/executability.rs:169:                variants: vec![
+/home/ketan/project/shatter/shatter-core/src/executability.rs-170-                    TypeInfo::Str,
+/home/ketan/project/shatter/shatter-core/src/executability.rs-171-                    TypeInfo::Opaque {
+--
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-85-        project_root: Option<String>,
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-86-    },
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:87:    /// Instrument a function for symbolic constraint tracking.
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:88:    Instrument {
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-89-        /// Path to the source file.
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-90-        file: String,
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:91:        /// Name of the function to instrument.
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-92-        function: String,
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-93-        /// Mock configurations for external dependencies.
+--
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-97-        project_root: Option<String>,
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-98-    },
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:99:    /// Execute an instrumented function with specific inputs and mocks.
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-100-    Execute {
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-101-        /// Fully qualified function identifier.
+--
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-222-        functions: Vec<FunctionAnalysis>,
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-223-    },
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:224:    /// Successful instrumentation result.
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:225:    Instrument {
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:226:        /// Whether instrumentation succeeded.
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:227:        instrumented: bool,
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:228:        /// Path to the instrumented output file, if applicable.
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-229-        output_file: Option<String>,
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:230:        /// Number of executable statement lines the instrumentor inserted record calls for.
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-231-        /// Used as the denominator for line coverage instead of raw source span.
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-232-        #[serde(default, skip_serializing_if = "Option::is_none")]
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:233:        instrumentable_line_count: Option<u32>,
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-234-    },
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-235-    /// Successful execution result (boxed to reduce enum size).
+--
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-387-}
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-388-
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:389:/// Result of executing an instrumented function.
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-390-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-391-pub struct ExecuteResult {
+--
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-443-    /// Syntax or parse error in source file.
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-444-    ParseError,
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:445:    /// Instrumentation failed.
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:446:    InstrumentationFailed,
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-447-    /// Execution timed out.
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-448-    ExecutionTimeout,
+--
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-491-/// Validate an `ExecuteResult` deserialized from a frontend subprocess.
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-492-///
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:493:/// Checks semantic invariants that serde can't enforce:
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-494-/// - `branch_path` entries have non-default constraints (when non-empty, an all-unknown
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-495-///   branch_path produces identical hashes for different paths → silent hash collision)
+--
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-519-/// Validate a `FunctionAnalysis` list deserialized from a frontend subprocess.
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-520-///
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:521:/// Checks semantic invariants that serde can't enforce:
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-522-/// - Function names are non-empty (empty name → silent lookup failures)
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-523-/// - `start_line <= end_line` (inverted range → wrong source slicing)
+--
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-598-
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-599-    #[test]
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:600:    fn instrument_request_round_trips() {
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-601-        round_trip(&Request::new(
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-602-            4,
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:603:            Command::Instrument {
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-604-                file: "src/main.ts".into(),
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-605-                function: "calculateShipping".into(),
+--
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-642-                frontend_version: PROTOCOL_VERSION.into(),
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-643-                language: "typescript".into(),
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:644:                capabilities: vec!["analyze".into(), "execute".into(), "instrument".into()],
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-645-            },
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-646-        ));
+--
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-705-
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-706-    #[test]
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:707:    fn instrument_response_round_trips() {
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-708-        round_trip(&Response::new(
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-709-            3,
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:710:            ResponseResult::Instrument {
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:711:                instrumented: true,
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:712:                output_file: Some("/tmp/instrumented_main.ts".into()),
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:713:                instrumentable_line_count: Some(12),
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-714-            },
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-715-        ));
+--
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-717-
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-718-    #[test]
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:719:    fn instrument_response_without_line_count_round_trips() {
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-720-        round_trip(&Response::new(
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-721-            3,
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:722:            ResponseResult::Instrument {
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:723:                instrumented: true,
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-724-                output_file: None,
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:725:                instrumentable_line_count: None,
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-726-            },
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-727-        ));
+--
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-873-            ErrorCode::FunctionNotFound,
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-874-            ErrorCode::ParseError,
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:875:            ErrorCode::InstrumentationFailed,
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-876-            ErrorCode::ExecutionTimeout,
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-877-            ErrorCode::ExecutionCrash,
+--
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1041-
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1042-    #[test]
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:1043:    fn instrument_request_empty_mocks_round_trips() {
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1044-        round_trip(&Request::new(
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1045-            11,
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:1046:            Command::Instrument {
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1047-                file: "src/utils.ts".into(),
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1048-                function: "formatDate".into(),
+--
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1055-    #[test]
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1056-    fn noop_frontend_handshake_response_deserializes() {
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:1057:        let json = r#"{"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"noop","capabilities":["analyze","execute","instrument"]}"#;
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1058-        let resp: Response = serde_json::from_str(json).expect("deserialize noop handshake");
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1059-        assert_eq!(resp.id, 1);
+--
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1063-                frontend_version: PROTOCOL_VERSION.into(),
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1064-                language: "noop".into(),
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:1065:                capabilities: vec!["analyze".into(), "execute".into(), "instrument".into()],
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1066-            }
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1067-        );
+--
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1110-
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1111-    #[test]
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:1112:    fn noop_frontend_instrument_response_deserializes() {
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:1113:        let json = r#"{"protocol_version":"0.1.0","id":4,"status":"instrument","instrumented":true,"output_file":null}"#;
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:1114:        let resp: Response = serde_json::from_str(json).expect("deserialize noop instrument");
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1115-        assert_eq!(resp.id, 4);
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1116-        assert_eq!(
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1117-            resp.result,
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:1118:            ResponseResult::Instrument {
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:1119:                instrumented: true,
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1120-                output_file: None,
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:1121:                instrumentable_line_count: None,
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1122-            }
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1123-        );
+--
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1125-
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1126-    #[test]
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:1127:    fn instrument_response_with_line_count_deserializes() {
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:1128:        let json = r#"{"protocol_version":"0.1.0","id":4,"status":"instrument","instrumented":true,"output_file":null,"instrumentable_line_count":9}"#;
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:1129:        let resp: Response = serde_json::from_str(json).expect("deserialize instrument with line count");
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1130-        assert_eq!(
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1131-            resp.result,
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:1132:            ResponseResult::Instrument {
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:1133:                instrumented: true,
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1134-                output_file: None,
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:1135:                instrumentable_line_count: Some(9),
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1136-            }
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1137-        );
+--
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1476-
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1477-    #[test]
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:1478:    fn literal_value_round_trips_all_variants() {
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1479-        round_trip(&LiteralValue::Int { value: 42 });
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1480-        round_trip(&LiteralValue::Int { value: -1 });
+--
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1563-
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1564-    #[test]
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:1565:    fn instrument_with_project_root_round_trips() {
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1566-        round_trip(&Request::new(
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1567-            12,
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:1568:            Command::Instrument {
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1569-                file: "src/utils.ts".into(),
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1570-                function: "processData".into(),
+--
+/home/ketan/project/shatter/shatter-core/src/spec_diff.rs-316-/// Compare two postconditions, treating fields listed as nondeterministic as equal.
+/home/ketan/project/shatter/shatter-core/src/spec_diff.rs-317-///
+/home/ketan/project/shatter/shatter-core/src/spec_diff.rs:318:/// For `Returns` variants, if the entire return value is nondeterministic (field path
+/home/ketan/project/shatter/shatter-core/src/spec_diff.rs-319-/// "return"), they're always equal. Otherwise, JSON values are compared structurally
+/home/ketan/project/shatter/shatter-core/src/spec_diff.rs-320-/// with nondeterministic sub-paths ignored. `Throws` and `ReturnsVoid` use normal equality.
+--
+/home/ketan/project/shatter/shatter-core/src/spec_diff.rs-456-            lines_covered: 8,
+/home/ketan/project/shatter/shatter-core/src/spec_diff.rs-457-            total_lines: 10,
+/home/ketan/project/shatter/shatter-core/src/spec_diff.rs:458:            invariants: vec![],
+/home/ketan/project/shatter/shatter-core/src/spec_diff.rs-459-            fingerprint: None,
+/home/ketan/project/shatter/shatter-core/src/spec_diff.rs-460-            nondeterministic_fields: vec![],
+--
+/home/ketan/project/shatter/shatter-core/src/spec_diff.rs-491-            precondition_provenance: Provenance::Observed,
+/home/ketan/project/shatter/shatter-core/src/spec_diff.rs-492-            postcondition_provenance: Provenance::Observed,
+/home/ketan/project/shatter/shatter-core/src/spec_diff.rs:493:            invariants: vec![],
+/home/ketan/project/shatter/shatter-core/src/spec_diff.rs-494-        }
+/home/ketan/project/shatter/shatter-core/src/spec_diff.rs-495-    }
+--
+/home/ketan/project/shatter/shatter-core/src/test_runner.rs-2-//!
+/home/ketan/project/shatter/shatter-core/src/test_runner.rs-3-//! Provides a unified interface for running tests across Rust (cargo test),
+/home/ketan/project/shatter/shatter-core/src/test_runner.rs:4://! TypeScript (vitest), and Go (go test), with optional coverage instrumentation.
+/home/ketan/project/shatter/shatter-core/src/test_runner.rs-5-
+/home/ketan/project/shatter/shatter-core/src/test_runner.rs-6-use std::collections::BTreeMap;
+--
+/home/ketan/project/shatter/shatter-core/src/test_runner.rs-94-}
+/home/ketan/project/shatter/shatter-core/src/test_runner.rs-95-
+/home/ketan/project/shatter/shatter-core/src/test_runner.rs:96:/// Coverage data from a test run with instrumentation.
+/home/ketan/project/shatter/shatter-core/src/test_runner.rs-97-#[derive(Debug)]
+/home/ketan/project/shatter/shatter-core/src/test_runner.rs-98-pub struct CoverageOutput {
+--
+/home/ketan/project/shatter/shatter-core/src/test_runner.rs-239-}
+/home/ketan/project/shatter/shatter-core/src/test_runner.rs-240-
+/home/ketan/project/shatter/shatter-core/src/test_runner.rs:241:/// Run tests with coverage instrumentation, parsing coverage output into
+/home/ketan/project/shatter/shatter-core/src/test_runner.rs-242-/// a test→files mapping.
+/home/ketan/project/shatter/shatter-core/src/test_runner.rs-243-pub fn run_with_coverage(
+--
+/home/ketan/project/shatter/shatter-core/src/test_runner.rs-265-    let output = Command::new("cargo")
+/home/ketan/project/shatter/shatter-core/src/test_runner.rs-266-        .args(["test"])
+/home/ketan/project/shatter/shatter-core/src/test_runner.rs:267:        .env("RUSTFLAGS", "-C instrument-coverage")
+/home/ketan/project/shatter/shatter-core/src/test_runner.rs-268-        .env("LLVM_PROFILE_FILE", crate_root.join("target/coverage/%p-%m.profraw").to_string_lossy().as_ref())
+/home/ketan/project/shatter/shatter-core/src/test_runner.rs-269-        .current_dir(crate_root)
+--
+/home/ketan/project/shatter/shatter-core/src/boundary_dict.rs-69-            entries
+/home/ketan/project/shatter/shatter-core/src/boundary_dict.rs-70-        }
+/home/ketan/project/shatter/shatter-core/src/boundary_dict.rs:71:        TypeInfo::Union { variants } => {
+/home/ketan/project/shatter/shatter-core/src/boundary_dict.rs-72-            let mut entries = Vec::new();
+/home/ketan/project/shatter/shatter-core/src/boundary_dict.rs:73:            for variant in variants {
+/home/ketan/project/shatter/shatter-core/src/boundary_dict.rs-74-                entries.extend(get_boundary_values(variant));
+/home/ketan/project/shatter/shatter-core/src/boundary_dict.rs-75-            }
+--
+/home/ketan/project/shatter/shatter-core/src/boundary_dict.rs-186-            "long string (300 chars)",
+/home/ketan/project/shatter/shatter-core/src/boundary_dict.rs-187-        ),
+/home/ketan/project/shatter/shatter-core/src/boundary_dict.rs:188:        // Whitespace variants
+/home/ketan/project/shatter/shatter-core/src/boundary_dict.rs-189-        BoundaryEntry::new(json!("\t"), BoundaryCategory::Boundary, "tab character"),
+/home/ketan/project/shatter/shatter-core/src/boundary_dict.rs-190-        BoundaryEntry::new(json!("\n"), BoundaryCategory::Boundary, "newline"),
+--
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-1-//! Markdown specification report generation.
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-2-//!
+/home/ketan/project/shatter/shatter-core/src/reporter.rs:3://! Given a function's analysis results and observed behaviors (with invariants),
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-4-//! generates a human- and agent-readable markdown specification in the format
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-5-//! described in PLAN.md section 4.3.
+--
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-11-use crate::behavior::BehaviorMap;
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-12-use crate::execution_record::{ErrorInfo, ExecutionRecord};
+/home/ketan/project/shatter/shatter-core/src/reporter.rs:13:use crate::invariants::Invariant;
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-14-use crate::protocol::{ExternalDependency, FunctionAnalysis};
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-15-use crate::types::TypeInfo;
+--
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-19-// ---------------------------------------------------------------------------
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-20-
+/home/ketan/project/shatter/shatter-core/src/reporter.rs:21:/// A behavior cluster enriched with invariants for report generation.
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-22-///
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-23-/// Built from a [`clustering::BehaviorCluster`](crate::clustering::BehaviorCluster)
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-24-/// after invariant detection has been run. Contains the actual execution records
+/home/ketan/project/shatter/shatter-core/src/reporter.rs:25:/// (not just indices) and detected invariants.
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-26-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-27-pub struct AnnotatedCluster {
+--
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-32-    /// Execution records in this cluster.
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-33-    pub specimens: Vec<ExecutionRecord>,
+/home/ketan/project/shatter/shatter-core/src/reporter.rs:34:    /// Invariants detected over input values.
+/home/ketan/project/shatter/shatter-core/src/reporter.rs:35:    pub input_invariants: Vec<Invariant>,
+/home/ketan/project/shatter/shatter-core/src/reporter.rs:36:    /// Invariants detected over output values.
+/home/ketan/project/shatter/shatter-core/src/reporter.rs:37:    pub output_invariants: Vec<Invariant>,
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-38-    /// Summary of side effects observed in this cluster.
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-39-    pub side_effect_summary: Vec<String>,
+--
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-48-    /// Static analysis results (name, params, return type, dependencies).
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-49-    pub analysis: &'a FunctionAnalysis,
+/home/ketan/project/shatter/shatter-core/src/reporter.rs:50:    /// Behavior clusters with invariants.
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-51-    pub clusters: &'a [AnnotatedCluster],
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-52-    /// Edge case clusters (behaviors with unusual or boundary inputs).
+--
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-105-                signature,
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-106-                specimens: vec![record],
+/home/ketan/project/shatter/shatter-core/src/reporter.rs:107:                input_invariants: vec![],
+/home/ketan/project/shatter/shatter-core/src/reporter.rs:108:                output_invariants: vec![],
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-109-                side_effect_summary: b
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-110-                    .side_effects
+--
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-179-        write_outcome(out, cluster);
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-180-
+/home/ketan/project/shatter/shatter-core/src/reporter.rs:181:        // Invariants
+/home/ketan/project/shatter/shatter-core/src/reporter.rs:182:        let all_invariants: Vec<&Invariant> = cluster
+/home/ketan/project/shatter/shatter-core/src/reporter.rs:183:            .input_invariants
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-184-            .iter()
+/home/ketan/project/shatter/shatter-core/src/reporter.rs:185:            .chain(&cluster.output_invariants)
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-186-            .collect();
+/home/ketan/project/shatter/shatter-core/src/reporter.rs:187:        if !all_invariants.is_empty() {
+/home/ketan/project/shatter/shatter-core/src/reporter.rs:188:            let descs: Vec<&str> = all_invariants.iter().map(|inv| inv.description.as_str()).collect();
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-189-            let _ = writeln!(out, "**Invariant:** {}", descs.join("; "));
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-190-        }
+--
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-320-            }
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-321-        }
+/home/ketan/project/shatter/shatter-core/src/reporter.rs:322:        TypeInfo::Union { variants } => {
+/home/ketan/project/shatter/shatter-core/src/reporter.rs:323:            let parts: Vec<String> = variants.iter().map(format_type).collect();
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-324-            parts.join(" | ")
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-325-        }
+--
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-432-    use super::*;
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-433-    use crate::execution_record::{ErrorInfo, ExternalCall};
+/home/ketan/project/shatter/shatter-core/src/reporter.rs:434:    use crate::invariants::{ComparisonOp, InvariantKind, InvariantTarget};
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-435-    use crate::protocol::{DependencyKind, ExternalDependency};
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-436-    use crate::types::{ParamInfo, TypeInfo};
+--
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-560-            signature: "input is positive".to_string(),
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-561-            specimens: vec![make_record("classify", vec![json!(5)], Some(json!("positive")), None)],
+/home/ketan/project/shatter/shatter-core/src/reporter.rs:562:            input_invariants: vec![make_invariant("x > 0", InvariantTarget::Input)],
+/home/ketan/project/shatter/shatter-core/src/reporter.rs:563:            output_invariants: vec![],
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-564-            side_effect_summary: vec![],
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-565-        };
+--
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-593-                    stack: None, error_category: None }),
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-594-            )],
+/home/ketan/project/shatter/shatter-core/src/reporter.rs:595:            input_invariants: vec![],
+/home/ketan/project/shatter/shatter-core/src/reporter.rs:596:            output_invariants: vec![make_invariant("always throws, never returns", InvariantTarget::Output)],
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-597-            side_effect_summary: vec![],
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-598-        };
+--
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-630-            signature: "express shipping".to_string(),
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-631-            specimens: vec![record],
+/home/ketan/project/shatter/shatter-core/src/reporter.rs:632:            input_invariants: vec![],
+/home/ketan/project/shatter/shatter-core/src/reporter.rs:633:            output_invariants: vec![],
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-634-            side_effect_summary: vec![],
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-635-        };
+--
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-762-                    None,
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-763-                )],
+/home/ketan/project/shatter/shatter-core/src/reporter.rs:764:                input_invariants: vec![],
+/home/ketan/project/shatter/shatter-core/src/reporter.rs:765:                output_invariants: vec![make_invariant("cost is always 0", InvariantTarget::Output)],
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-766-                side_effect_summary: vec![],
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-767-            },
+--
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-785-                    r
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-786-                }],
+/home/ketan/project/shatter/shatter-core/src/reporter.rs:787:                input_invariants: vec![],
+/home/ketan/project/shatter/shatter-core/src/reporter.rs:788:                output_invariants: vec![],
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-789-                side_effect_summary: vec![],
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-790-            },
+--
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-860-
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-861-    #[test]
+/home/ketan/project/shatter/shatter-core/src/reporter.rs:862:    fn format_type_handles_all_variants() {
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-863-        assert_eq!(format_type(&TypeInfo::Int), "number");
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-864-        assert_eq!(format_type(&TypeInfo::Float), "number");
+--
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-875-        );
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-876-        assert_eq!(
+/home/ketan/project/shatter/shatter-core/src/reporter.rs:877:            format_type(&TypeInfo::Union { variants: vec![TypeInfo::Str, TypeInfo::Int] }),
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-878-            "string | number"
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-879-        );
+--
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-923-
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-924-    #[test]
+/home/ketan/project/shatter/shatter-core/src/reporter.rs:925:    fn multiple_invariants_joined_with_semicolon() {
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-926-        let analysis = make_analysis("f", vec![], TypeInfo::Unknown, vec![]);
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-927-        let cluster = AnnotatedCluster {
+--
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-929-            signature: "normal case".to_string(),
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-930-            specimens: vec![make_record("f", vec![], Some(json!(1)), None)],
+/home/ketan/project/shatter/shatter-core/src/reporter.rs:931:            input_invariants: vec![
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-932-                make_invariant("x > 0", InvariantTarget::Input),
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-933-                make_invariant("x < 100", InvariantTarget::Input),
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-934-            ],
+/home/ketan/project/shatter/shatter-core/src/reporter.rs:935:            output_invariants: vec![
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-936-                make_invariant("result >= x", InvariantTarget::Output),
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-937-            ],
+--
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-961-            signature: "returns positive".to_string(),
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-962-            specimens: vec![],
+/home/ketan/project/shatter/shatter-core/src/reporter.rs:963:            input_invariants: vec![make_invariant("x > 0", InvariantTarget::Input)],
+/home/ketan/project/shatter/shatter-core/src/reporter.rs:964:            output_invariants: vec![],
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-965-            side_effect_summary: vec!["console.log".to_string()],
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-966-        };

@@ -1,0 +1,86 @@
+[
+  {
+    "from": "posthog-wiring",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1773290415542-l9g5w82\",\"agent_id\":\"posthog-wiring\",\"tool_name\":\"Bash\",\"tool_use_id\":\"toolu_011hA3oisCVuKrEn9NGLqU2Z\",\"description\":\"Create and verify worktree\",\"input\":{\"command\":\"REPO_ROOT=\\\"$(git rev-parse --show-toplevel)\\\" && BRANCH_NAME=\\\"worktree/posthog-wiring\\\" && WORKTREE_DIR=\\\"$REPO_ROOT/.claude/worktrees/$BRANCH_NAME\\\" && if [ -d \\\"$WORKTREE_DIR\\\" ]; then echo \\\"Worktree already exists, reusing\\\"; else git worktree add \\\"$WORKTREE_DIR\\\" -b \\\"$BRANCH_NAME\\\"; fi && cd \\\"$WORKTREE_DIR\\\" && echo \\\"CWD: $(pwd)\\\" && echo \\\"Branch: $(git branch --show-current)\\\" && echo \\\"$(pwd)\\\" | grep -q '\\\\.claude/worktrees/' && echo \\\"WORKTREE VERIFIED\\\" || echo \\\"FATAL: NOT in a worktree\\\"\",\"description\":\"Create and verify worktree\"},\"permission_suggestions\":[]}",
+    "timestamp": "2026-03-12T04:40:15.542Z",
+    "color": "blue",
+    "read": true
+  },
+  {
+    "from": "deadline-search-fields",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1773290418943-mqc0khg\",\"agent_id\":\"deadline-search-fields\",\"tool_name\":\"Bash\",\"tool_use_id\":\"toolu_014u6Ku9JBnS3eQGM43xyMiS\",\"description\":\"Create and verify worktree for deadline search fields\",\"input\":{\"command\":\"REPO_ROOT=\\\"$(git rev-parse --show-toplevel)\\\" && BRANCH_NAME=\\\"worktree/deadline-search-fields\\\" && WORKTREE_DIR=\\\"$REPO_ROOT/.claude/worktrees/$BRANCH_NAME\\\" && if [ -d \\\"$WORKTREE_DIR\\\" ]; then echo \\\"Worktree already exists, reusing\\\"; else git worktree add \\\"$WORKTREE_DIR\\\" -b \\\"$BRANCH_NAME\\\"; fi && cd \\\"$WORKTREE_DIR\\\" && echo \\\"CWD: $(pwd)\\\" && echo \\\"Branch: $(git branch --show-current)\\\" && echo \\\"$(pwd)\\\" | grep -q '\\\\.claude/worktrees/' && echo \\\"WORKTREE VERIFIED\\\" || echo \\\"FATAL: NOT in a worktree\\\"\",\"description\":\"Create and verify worktree for deadline search fields\"},\"permission_suggestions\":[]}",
+    "timestamp": "2026-03-12T04:40:18.947Z",
+    "color": "green",
+    "read": true
+  },
+  {
+    "from": "deadline-overrides",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1773290428132-5e7kmp0\",\"agent_id\":\"deadline-overrides\",\"tool_name\":\"Bash\",\"tool_use_id\":\"toolu_016LGeBNqHJCrT9tXVXx3znM\",\"description\":\"Create and verify worktree\",\"input\":{\"command\":\"REPO_ROOT=\\\"$(git rev-parse --show-toplevel)\\\" && BRANCH_NAME=\\\"worktree/deadline-overrides\\\" && WORKTREE_DIR=\\\"$REPO_ROOT/.claude/worktrees/$BRANCH_NAME\\\" && if [ -d \\\"$WORKTREE_DIR\\\" ]; then echo \\\"Worktree already exists, reusing\\\"; else git worktree add \\\"$WORKTREE_DIR\\\" -b \\\"$BRANCH_NAME\\\"; fi && cd \\\"$WORKTREE_DIR\\\" && echo \\\"CWD: $(pwd)\\\" && echo \\\"Branch: $(git branch --show-current)\\\" && echo \\\"$(pwd)\\\" | grep -q '\\\\.claude/worktrees/' && echo \\\"WORKTREE VERIFIED\\\" || echo \\\"FATAL: NOT in a worktree\\\"\",\"description\":\"Create and verify worktree\"},\"permission_suggestions\":[]}",
+    "timestamp": "2026-03-12T04:40:28.136Z",
+    "color": "yellow",
+    "read": true
+  },
+  {
+    "from": "playwright-scraper",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1773290440817-cz47lj8\",\"agent_id\":\"playwright-scraper\",\"tool_name\":\"Bash\",\"tool_use_id\":\"toolu_01RSofh1PZiHkb7kADH7nbZT\",\"description\":\"Create and enter worktree for playwright-scraper branch\",\"input\":{\"command\":\"REPO_ROOT=\\\"$(git rev-parse --show-toplevel)\\\" && BRANCH_NAME=\\\"worktree/playwright-scraper\\\" && WORKTREE_DIR=\\\"$REPO_ROOT/.claude/worktrees/$BRANCH_NAME\\\" && if [ -d \\\"$WORKTREE_DIR\\\" ]; then echo \\\"Worktree already exists, reusing\\\"; else git worktree add \\\"$WORKTREE_DIR\\\" -b \\\"$BRANCH_NAME\\\"; fi && cd \\\"$WORKTREE_DIR\\\" && echo \\\"CWD: $(pwd)\\\" && echo \\\"Branch: $(git branch --show-current)\\\" && echo \\\"$(pwd)\\\" | grep -q '\\\\.claude/worktrees/' && echo \\\"WORKTREE VERIFIED\\\" || echo \\\"FATAL: NOT in a worktree\\\"\",\"description\":\"Create and enter worktree for playwright-scraper branch\"},\"permission_suggestions\":[]}",
+    "timestamp": "2026-03-12T04:40:40.822Z",
+    "color": "purple",
+    "read": true
+  },
+  {
+    "from": "loading-states",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1773290446126-czkolzn\",\"agent_id\":\"loading-states\",\"tool_name\":\"Bash\",\"tool_use_id\":\"toolu_01JUzeFgNsReXUHs75RSvMnw\",\"description\":\"Set up and verify worktree\",\"input\":{\"command\":\"REPO_ROOT=\\\"$(git rev-parse --show-toplevel)\\\" && BRANCH_NAME=\\\"worktree/loading-states\\\" && WORKTREE_DIR=\\\"$REPO_ROOT/.claude/worktrees/$BRANCH_NAME\\\" && if [ -d \\\"$WORKTREE_DIR\\\" ]; then echo \\\"Worktree already exists, reusing\\\"; else git worktree add \\\"$WORKTREE_DIR\\\" -b \\\"$BRANCH_NAME\\\"; fi && cd \\\"$WORKTREE_DIR\\\" && echo \\\"CWD: $(pwd)\\\" && echo \\\"Branch: $(git branch --show-current)\\\" && echo \\\"$(pwd)\\\" | grep -q '\\\\.claude/worktrees/' && echo \\\"WORKTREE VERIFIED\\\" || echo \\\"FATAL: NOT in a worktree\\\"\",\"description\":\"Set up and verify worktree\"},\"permission_suggestions\":[]}",
+    "timestamp": "2026-03-12T04:40:46.129Z",
+    "color": "orange",
+    "read": true
+  },
+  {
+    "from": "graphql-guardrails",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1773290455121-vqjl9o7\",\"agent_id\":\"graphql-guardrails\",\"tool_name\":\"Bash\",\"tool_use_id\":\"toolu_01Xw495ESbtSufAV7rqxcJd2\",\"description\":\"Create and verify worktree for graphql-guardrails\",\"input\":{\"command\":\"REPO_ROOT=\\\"$(git rev-parse --show-toplevel)\\\" && BRANCH_NAME=\\\"worktree/graphql-guardrails\\\" && WORKTREE_DIR=\\\"$REPO_ROOT/.claude/worktrees/$BRANCH_NAME\\\" && if [ -d \\\"$WORKTREE_DIR\\\" ]; then echo \\\"Worktree already exists, reusing\\\"; else git worktree add \\\"$WORKTREE_DIR\\\" -b \\\"$BRANCH_NAME\\\"; fi && cd \\\"$WORKTREE_DIR\\\" && echo \\\"CWD: $(pwd)\\\" && echo \\\"Branch: $(git branch --show-current)\\\" && echo \\\"$(pwd)\\\" | grep -q '\\\\.claude/worktrees/' && echo \\\"WORKTREE VERIFIED\\\" || echo \\\"FATAL: NOT in a worktree\\\"\",\"description\":\"Create and verify worktree for graphql-guardrails\"},\"permission_suggestions\":[]}",
+    "timestamp": "2026-03-12T04:40:55.124Z",
+    "color": "pink",
+    "read": true
+  },
+  {
+    "from": "match-reporting",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1773290464810-t2vbe1y\",\"agent_id\":\"match-reporting\",\"tool_name\":\"Bash\",\"tool_use_id\":\"toolu_0151iztZJa3kML3GczBfQUWs\",\"description\":\"Set up and verify worktree\",\"input\":{\"command\":\"REPO_ROOT=\\\"$(git rev-parse --show-toplevel)\\\" && BRANCH_NAME=\\\"worktree/match-reporting\\\" && WORKTREE_DIR=\\\"$REPO_ROOT/.claude/worktrees/$BRANCH_NAME\\\" && if [ -d \\\"$WORKTREE_DIR\\\" ]; then echo \\\"Worktree already exists, reusing\\\"; else git worktree add \\\"$WORKTREE_DIR\\\" -b \\\"$BRANCH_NAME\\\"; fi && cd \\\"$WORKTREE_DIR\\\" && echo \\\"CWD: $(pwd)\\\" && echo \\\"Branch: $(git branch --show-current)\\\" && echo \\\"$(pwd)\\\" | grep -q '\\\\.claude/worktrees/' && echo \\\"WORKTREE VERIFIED\\\" || echo \\\"FATAL: NOT in a worktree\\\"\",\"description\":\"Set up and verify worktree\"},\"permission_suggestions\":[]}",
+    "timestamp": "2026-03-12T04:41:04.814Z",
+    "color": "cyan",
+    "read": true
+  },
+  {
+    "from": "zip-lookup-fix",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1773290470995-ota4xsl\",\"agent_id\":\"zip-lookup-fix\",\"tool_name\":\"Bash\",\"tool_use_id\":\"toolu_01QcvjCBACDaZoHRFyTR7FVq\",\"description\":\"Create and verify worktree\",\"input\":{\"command\":\"REPO_ROOT=\\\"$(git rev-parse --show-toplevel)\\\" && BRANCH_NAME=\\\"worktree/zip-lookup-fix\\\" && WORKTREE_DIR=\\\"$REPO_ROOT/.claude/worktrees/$BRANCH_NAME\\\" && if [ -d \\\"$WORKTREE_DIR\\\" ]; then echo \\\"Worktree already exists, reusing\\\"; else git worktree add \\\"$WORKTREE_DIR\\\" -b \\\"$BRANCH_NAME\\\"; fi && cd \\\"$WORKTREE_DIR\\\" && echo \\\"CWD: $(pwd)\\\" && echo \\\"Branch: $(git branch --show-current)\\\" && echo \\\"$(pwd)\\\" | grep -q '\\\\.claude/worktrees/' && echo \\\"WORKTREE VERIFIED\\\" || echo \\\"FATAL: NOT in a worktree\\\"\",\"description\":\"Create and verify worktree\"},\"permission_suggestions\":[]}",
+    "timestamp": "2026-03-12T04:41:10.999Z",
+    "color": "red",
+    "read": true
+  },
+  {
+    "from": "playwright-scraper",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1773290480304-pq1ivhq\",\"agent_id\":\"playwright-scraper\",\"tool_name\":\"WebSearch\",\"tool_use_id\":\"toolu_01UEzNYHGVpsrkNCFcNmR1jd\",\"description\":\"Claude wants to search the web for: playwright-go library Go bindings\",\"input\":{\"query\":\"playwright-go library Go bindings\"},\"permission_suggestions\":[{\"type\":\"addRules\",\"rules\":[{\"toolName\":\"WebSearch\"}],\"behavior\":\"allow\",\"destination\":\"localSettings\"}]}",
+    "timestamp": "2026-03-12T04:41:20.305Z",
+    "color": "purple",
+    "read": true
+  },
+  {
+    "from": "playwright-scraper",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1773290480547-eronmo5\",\"agent_id\":\"playwright-scraper\",\"tool_name\":\"WebSearch\",\"tool_use_id\":\"toolu_01Te7r882wByTSA58vefptRZ\",\"description\":\"Claude wants to search the web for: playwright-go pkg.go.dev module import path\",\"input\":{\"query\":\"playwright-go pkg.go.dev module import path\"},\"permission_suggestions\":[{\"type\":\"addRules\",\"rules\":[{\"toolName\":\"WebSearch\"}],\"behavior\":\"allow\",\"destination\":\"localSettings\"}]}",
+    "timestamp": "2026-03-12T04:41:20.548Z",
+    "color": "purple",
+    "read": true
+  },
+  {
+    "from": "playwright-scraper",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1773290480573-gohroco\",\"agent_id\":\"playwright-scraper\",\"tool_name\":\"WebSearch\",\"tool_use_id\":\"toolu_01BJY5XXXq6MYhoTgb9if2rg\",\"description\":\"Claude wants to search the web for: playwright-go browser installation playwright install\",\"input\":{\"query\":\"playwright-go browser installation playwright install\"},\"permission_suggestions\":[{\"type\":\"addRules\",\"rules\":[{\"toolName\":\"WebSearch\"}],\"behavior\":\"allow\",\"destination\":\"localSettings\"}]}",
+    "timestamp": "2026-03-12T04:41:20.603Z",
+    "color": "purple",
+    "read": true
+  },
+  {
+    "from": "playwright-scraper",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1773290480844-s9vqfx2\",\"agent_id\":\"playwright-scraper\",\"tool_name\":\"WebSearch\",\"tool_use_id\":\"toolu_01N2ikXnvdPdXwZXx8SaKN8V\",\"description\":\"Claude wants to search the web for: playwright-go concurrency considerations goroutine safety\",\"input\":{\"query\":\"playwright-go concurrency considerations goroutine safety\"},\"permission_suggestions\":[{\"type\":\"addRules\",\"rules\":[{\"toolName\":\"WebSearch\"}],\"behavior\":\"allow\",\"destination\":\"localSettings\"}]}",
+    "timestamp": "2026-03-12T04:41:20.863Z",
+    "color": "purple",
+    "read": true
+  }
+]

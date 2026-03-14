@@ -1,0 +1,28 @@
+# Lychee link checker configuration for Shatter documentation.
+# Docs: https://lychee.cli.rs/usage/config
+
+# Exclude localhost and loopback URLs (used in examples, not real endpoints)
+exclude = [
+  "^https?://localhost",
+  "^https?://127\\.0\\.0\\.1",
+  "^https?://\\[::1\\]",
+]
+
+# Directories to skip
+exclude_path = [
+  "node_modules",
+  "target",
+  ".claude",
+  "shatter-ts/node_modules",
+]
+
+# Network settings
+timeout = 30
+max_retries = 2
+accept = [200, 204]
+
+# Don't check email addresses (mailto: links)
+include_mail = false
+
+# Don't require HTTPS (some links in docs may be HTTP)
+require_https = false

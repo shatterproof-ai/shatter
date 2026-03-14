@@ -1,0 +1,18 @@
+[package]
+name = "shatter-cli"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "shatter"
+path = "src/main.rs"
+
+[dependencies]
+shatter-core = { path = "../shatter-core" }
+clap = { version = "4", features = ["derive", "env"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tempfile = "3"
+log = "0.4"
+env_logger = "0.11"
+termimad = "0.34"

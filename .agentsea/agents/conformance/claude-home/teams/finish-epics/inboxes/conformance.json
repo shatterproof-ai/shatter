@@ -1,0 +1,8 @@
+[
+  {
+    "from": "team-lead",
+    "text": "You are working on issue str-fpgb.6: Frontend conformance harness.\n\n**Goal**: Build a black-box protocol conformance harness that runs the same NDJSON request/response cases against each frontend subprocess (TS, Go, Rust, noop) and reports behavioral drift.\n\n**Acceptance criteria**:\n- Shared conformance cases run against TS, Go, Rust, and the noop frontend\n- Protocol field mismatches fail the harness\n- Expected dynamic fields are normalized explicitly\n\n**Context**: This is P1 and blocks str-fpgb.7 (Rust frontend quality gate) and str-fpgb.9 (Protocol governance docs). The project already has:\n- Protocol fixture corpus (str-fpgb.4, done)\n- Schema fixture validator (str-fpgb.5, done)\n- Error code contract parity (str-fpgb.2, done)\n- Lifecycle schema coverage (str-fpgb.3, done)\n\nRun `bd show str-fpgb.6` for full issue details. Study the existing protocol test infrastructure before planning.\n\n**Your task**: Task #1 in the team task list. Claim it, plan your approach, implement, test, commit, and mark done. Follow all project conventions in CLAUDE.md. Run the relevant test tier before committing.",
+    "timestamp": "2026-03-12T04:41:37.647Z",
+    "read": false
+  }
+]

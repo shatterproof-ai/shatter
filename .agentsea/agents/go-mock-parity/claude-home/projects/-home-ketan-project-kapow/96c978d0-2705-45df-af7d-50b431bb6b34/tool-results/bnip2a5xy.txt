@@ -1,0 +1,1512 @@
+commit af51f8b0d76a9642501f497b6abbc448873767f2
+Author: Ketan Gangatirkar <33678+ketang@users.noreply.github.com>
+Date:   Tue Mar 3 19:14:13 2026 -0600
+
+    feat: JSON fixture data format with importer pipeline
+    
+    Add JSON as the single source of truth for fixture data, replacing
+    the PostgreSQL COPY text format. SQL scripts are now derived artifacts.
+    
+    - Extend tools/samplesql with --format json and --output-dir flags
+      for per-table JSON export with GeoJSON geometry support
+    - Create api/internal/fixture package: Load() reads JSON fixtures
+      from fs.FS, inserts via pgx CopyFrom in FK-safe order, handles
+      geometry columns via staging tables with ST_GeomFromGeoJSON
+    - Add api/cmd/fixtureutil CLI wrapping fixture.Load() for scripts
+    - Update api/internal/testdb with TEST_FIXTURE_DIR env var support
+      for JSON fixture loading alongside existing SQL fixture mode
+    - Add scripts/gen-fixture-sql.sh to generate complete.sql.xz from
+      JSON via temp PostGIS container + pg_dump
+    - Add fixture-sql and fixture-json Makefile targets
+    - Add generated SQL files to .gitignore
+    
+    Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/.gitignore b/.gitignore
+index 51a23bd..9b9b1ea 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -66,6 +66,10 @@ tmp/
+ *.p12
+ 
+ 
++# ─── Generated fixture SQL (derived from JSON source of truth) ───────────────
++common/src/main/resources/data/complete*.sql
++common/src/main/resources/data/complete*.sql.xz
++
+ # ─── Worktree meta ───────────────────────────────────────────────────────────
+ worktrees/
+ .base_project_port
+diff --git a/Makefile b/Makefile
+index f2914ce..ad88c07 100644
+--- a/Makefile
++++ b/Makefile
+@@ -11,6 +11,7 @@
+         tools-build tools-test \
+         dev dev-clean dev-prune \
+         test-quick test-standard test-full test-fixture \
++        fixture-sql fixture-json \
+         help
+ 
+ ## api-build: Build the API server binary
+@@ -200,6 +201,14 @@ test-fixture:
+ test-full:
+ 	$(MAKE) test-standard && MAKE=$(MAKE) bash scripts/parallel-run.sh api-test test-fixture tools-test && $(MAKE) web-e2e && $(MAKE) smoke-test
+ 
++## fixture-sql: Generate complete.sql.xz from JSON fixture data (requires Docker)
++fixture-sql:
++	bash scripts/gen-fixture-sql.sh
++
++## fixture-json: Re-extract JSON fixture data from a live database (requires DATABASE_URL)
++fixture-json:
++	cd tools/samplesql && go run . --format json --output-dir ../../common/src/main/resources/data/tables
++
+ ## help: List all available targets
+ help:
+ 	@grep -E '^## ' Makefile | sed 's/## //' | column -t -s ':'
+diff --git a/api/cmd/fixtureutil/main.go b/api/cmd/fixtureutil/main.go
+new file mode 100644
+index 0000000..00c452d
+--- /dev/null
++++ b/api/cmd/fixtureutil/main.go
+@@ -0,0 +1,71 @@
++// Command fixtureutil loads JSON fixture data into a PostgreSQL database.
++//
++// Usage:
++//
++//	go run ./cmd/fixtureutil --database-url <url> --fixture-dir <dir>
++//
++// The fixture-dir should contain JSON files named "<schema>.<table>.json" or
++// "<schema>.<table>.json.xz". The tool applies migrations first, then loads
++// fixture data in FK-safe order.
++package main
++
++import (
++	"context"
++	"flag"
++	"fmt"
++	"os"
++
++	"github.com/jackc/pgx/v5/pgxpool"
++
++	"github.com/ketang/kapow/api/internal/db"
++	"github.com/ketang/kapow/api/internal/fixture"
++)
++
++func main() {
++	databaseURL := flag.String("database-url", "", "PostgreSQL connection string (falls back to DATABASE_URL env var)")
++	fixtureDir := flag.String("fixture-dir", "", "directory containing JSON fixture files")
++	skipMigrate := flag.Bool("skip-migrate", false, "skip running database migrations")
++	flag.Parse()
++
++	if err := run(*databaseURL, *fixtureDir, *skipMigrate); err != nil {
++		fmt.Fprintf(os.Stderr, "error: %v\n", err)
++		os.Exit(1)
++	}
++}
++
++func run(databaseURL, fixtureDir string, skipMigrate bool) error {
++	dsn := databaseURL
++	if dsn == "" {
++		dsn = os.Getenv("DATABASE_URL")
++	}
++	if dsn == "" {
++		return fmt.Errorf("--database-url flag or DATABASE_URL env var is required")
++	}
++	if fixtureDir == "" {
++		return fmt.Errorf("--fixture-dir is required")
++	}
++
++	ctx := context.Background()
++
++	if !skipMigrate {
++		fmt.Fprintln(os.Stderr, "running migrations...")
++		if err := db.MigrateUp(ctx, dsn); err != nil {
++			return fmt.Errorf("migrate: %w", err)
++		}
++	}
++
++	fmt.Fprintln(os.Stderr, "connecting to database...")
++	pool, err := pgxpool.New(ctx, dsn)
++	if err != nil {
++		return fmt.Errorf("connect: %w", err)
++	}
++	defer pool.Close()
++
++	fmt.Fprintf(os.Stderr, "loading fixtures from %s...\n", fixtureDir)
++	if err := fixture.Load(ctx, pool, os.DirFS(fixtureDir)); err != nil {
++		return fmt.Errorf("load fixtures: %w", err)
++	}
++
++	fmt.Fprintln(os.Stderr, "fixtures loaded successfully")
++	return nil
++}
+diff --git a/api/internal/fixture/fixture.go b/api/internal/fixture/fixture.go
+new file mode 100644
+index 0000000..29db295
+--- /dev/null
++++ b/api/internal/fixture/fixture.go
+@@ -0,0 +1,421 @@
++// Package fixture loads JSON fixture data into a PostgreSQL database.
++//
++// Fixture files are JSON arrays of objects (one file per table), optionally
++// xz-compressed. Files are named "<schema>.<table>.json" or
++// "<schema>.<table>.json.xz" and stored in a directory that is passed to
++// [Load] as an [io/fs.FS].
++//
++// Tables are loaded in FK-safe order. After all tables are populated, the
++// materialized views dataset_merged and dataset_latest are refreshed.
++package fixture
++
++import (
++	"bytes"
++	"context"
++	"encoding/json"
++	"fmt"
++	"io"
++	"io/fs"
++	"os/exec"
++	"strings"
++
++	"github.com/jackc/pgx/v5"
++	"github.com/jackc/pgx/v5/pgxpool"
++)
++
++// tableSpec defines a fixture table and how to load it.
++type tableSpec struct {
++	Schema string
++	Table  string
++}
++
++// loadOrder is the FK-safe order for loading fixture data. This must match
++// the extraction order in tools/samplesql/extractor.go.
++var loadOrder = []tableSpec{
++	{"location", "state"},
++	{"search_base", "ranking"},
++	{"search_base", "conference"},
++	{"search_base", "cip_data"},
++	{"search_base", "institution"},
++	{"search_base", "dataset"},
++	{"search_base", "annual_dataset"},
++	{"search_base", "institution_alias"},
++	{"location", "institution_normalized_alias"},
++	{"location", "zip_coordinates"},
++}
++
++// materializedViews are refreshed after all data is loaded.
++var materializedViews = []string{
++	"search_base.dataset_merged",
++	"search_base.dataset_latest",
++}
++
++// Load reads JSON fixture files from dataFS and inserts them into the database
++// in FK-safe order. The dataFS should contain files named
++// "<schema>.<table>.json" or "<schema>.<table>.json.xz".
++//
++// The database schema must already exist (migrations applied) before calling
++// Load.
++func Load(ctx context.Context, pool *pgxpool.Pool, dataFS fs.FS) error {
++	// Discover column types for geometry and JSONB detection.
++	colTypes, err := discoverColumnTypes(ctx, pool)
++	if err != nil {
++		return err
++	}
++
++	for _, spec := range loadOrder {
++		data, err := readFixtureFile(dataFS, spec)
++		if err != nil {
++			return err
++		}
++		if data == nil {
++			continue // file not found — skip
++		}
++
++		if err := loadTable(ctx, pool, spec, data, colTypes); err != nil {
++			return err
++		}
++	}
++
++	// Refresh materialized views.
++	for _, view := range materializedViews {
++		if _, err := pool.Exec(ctx, "REFRESH MATERIALIZED VIEW "+view); err != nil {
++			return fmt.Errorf("fixture: refresh %s: %w", view, err)
++		}
++	}
++
++	return nil
++}
++
++// LoadOrder returns the FK-safe table loading order. Useful for tests.
++func LoadOrder() []string {
++	names := make([]string, len(loadOrder))
++	for i, spec := range loadOrder {
++		names[i] = spec.Schema + "." + spec.Table
++	}
++	return names
++}
++
++// readFixtureFile reads and decompresses a fixture file from the FS.
++// Returns nil if the file does not exist.
++func readFixtureFile(dataFS fs.FS, spec tableSpec) ([]byte, error) {
++	filename := fmt.Sprintf("%s.%s.json", spec.Schema, spec.Table)
++	xzFilename := filename + ".xz"
++
++	// Try xz-compressed first.
++	if data, err := fs.ReadFile(dataFS, xzFilename); err == nil {
++		decompressed, err := xzDecompress(data)
++		if err != nil {
++			return nil, fmt.Errorf("fixture: decompress %s: %w", xzFilename, err)
++		}
++		return decompressed, nil
++	}
++
++	// Try uncompressed.
++	data, err := fs.ReadFile(dataFS, filename)
++	if err != nil {
++		return nil, nil //nolint:nilerr // file not found is not an error
++	}
++	return data, nil
++}
++
++// xzDecompress decompresses xz data using the xz command-line tool.
++func xzDecompress(data []byte) ([]byte, error) {
++	cmd := exec.Command("xz", "-dc") //nolint:gosec // G204: xz is a trusted system tool
++	cmd.Stdin = bytes.NewReader(data)
++	out, err := cmd.Output()
++	if err != nil {
++		return nil, fmt.Errorf("xz: %w", err)
++	}
++	return out, nil
++}
++
++// columnInfo holds type metadata for a single column.
++type columnInfo struct {
++	UDTName  string // e.g. "geometry", "geography", "jsonb", "text"
++	DataType string // e.g. "USER-DEFINED", "jsonb", "text"
++}
++
++// discoverColumnTypes queries information_schema to build a map of
++// schema.table.column → columnInfo for all fixture tables.
++func discoverColumnTypes(ctx context.Context, pool *pgxpool.Pool) (map[string]columnInfo, error) {
++	result := make(map[string]columnInfo)
++
++	// Build list of schemas and tables to query.
++	schemas := make(map[string]bool)
++	for _, spec := range loadOrder {
++		schemas[spec.Schema] = true
++	}
++
++	for schema := range schemas {
++		rows, err := pool.Query(ctx,
++			`SELECT table_name, column_name, data_type, udt_name
++			 FROM information_schema.columns
++			 WHERE table_schema = $1
++			 ORDER BY table_name, ordinal_position`, schema)
++		if err != nil {
++			return nil, fmt.Errorf("fixture: discover columns for %s: %w", schema, err)
++		}
++
++		for rows.Next() {
++			var tableName, colName, dataType, udtName string
++			if err := rows.Scan(&tableName, &colName, &dataType, &udtName); err != nil {
++				rows.Close()
++				return nil, fmt.Errorf("fixture: scan column info: %w", err)
++			}
++			key := fmt.Sprintf("%s.%s.%s", schema, tableName, colName)
++			result[key] = columnInfo{UDTName: udtName, DataType: dataType}
++		}
++		rows.Close()
++		if err := rows.Err(); err != nil {
++			return nil, fmt.Errorf("fixture: iterate columns for %s: %w", schema, err)
++		}
++	}
++
++	return result, nil
++}
++
++// loadTable parses JSON data and inserts rows into the target table.
++func loadTable(ctx context.Context, pool *pgxpool.Pool, spec tableSpec, data []byte, colTypes map[string]columnInfo) error {
++	var rows []map[string]any
++	if err := json.Unmarshal(data, &rows); err != nil {
++		return fmt.Errorf("fixture: parse %s.%s: %w", spec.Schema, spec.Table, err)
++	}
++	if len(rows) == 0 {
++		return nil
++	}
++
++	qualifiedName := fmt.Sprintf("%s.%s", spec.Schema, spec.Table)
++
++	// Extract column order from the first row.
++	columns := orderedKeys(rows[0])
++
++	// Check if any columns need special handling (geometry).
++	hasGeo := false
++	geoColumns := make(map[string]bool)
++	for _, col := range columns {
++		key := fmt.Sprintf("%s.%s.%s", spec.Schema, spec.Table, col)
++		info, ok := colTypes[key]
++		if ok && (info.UDTName == "geometry" || info.UDTName == "geography") {
++			geoColumns[col] = true
++			hasGeo = true
++		}
++	}
++
++	if hasGeo {
++		return loadTableWithGeo(ctx, pool, qualifiedName, columns, rows, geoColumns)
++	}
++	return loadTableDirect(ctx, pool, qualifiedName, columns, rows, colTypes, spec)
++}
++
++// loadTableDirect loads data using pgx CopyFrom for tables without geometry.
++func loadTableDirect(ctx context.Context, pool *pgxpool.Pool, qualifiedName string, columns []string, rows []map[string]any, colTypes map[string]columnInfo, spec tableSpec) error {
++	// Build JSONB column set for proper marshaling.
++	jsonbCols := make(map[string]bool)
++	for _, col := range columns {
++		key := fmt.Sprintf("%s.%s.%s", spec.Schema, spec.Table, col)
++		info, ok := colTypes[key]
++		if ok && info.UDTName == "jsonb" {
++			jsonbCols[col] = true
++		}
++	}
++
++	copyRows := make([][]any, len(rows))
++	for i, row := range rows {
++		vals := make([]any, len(columns))
++		for j, col := range columns {
++			vals[j] = convertValue(row[col], jsonbCols[col])
++		}
++		copyRows[i] = vals
++	}
++
++	parts := strings.SplitN(qualifiedName, ".", 2)
++	copyCount, err := pool.CopyFrom(ctx,
++		pgx.Identifier{parts[0], parts[1]},
++		columns,
++		pgx.CopyFromRows(copyRows),
++	)
++	if err != nil {
++		return fmt.Errorf("fixture: copy %s: %w", qualifiedName, err)
++	}
++	if int(copyCount) != len(rows) {
++		return fmt.Errorf("fixture: copy %s: expected %d rows, got %d", qualifiedName, len(rows), copyCount)
++	}
++
++	return nil
++}
++
++// loadTableWithGeo loads data using a staging table for geometry columns.
++// Geometry values are stored as GeoJSON text in the JSON fixture, so we
++// load into a temp table with text columns, then INSERT with ST_GeomFromGeoJSON.
++func loadTableWithGeo(ctx context.Context, pool *pgxpool.Pool, qualifiedName string, columns []string, rows []map[string]any, geoColumns map[string]bool) error {
++	tx, err := pool.Begin(ctx)
++	if err != nil {
++		return fmt.Errorf("fixture: begin tx for %s: %w", qualifiedName, err)
++	}
++	defer tx.Rollback(ctx) //nolint:errcheck
++
++	// Create temp table mimicking the target but with text for geo columns.
++	tempName := "fixture_staging"
++	createCols := make([]string, len(columns))
++	for i, col := range columns {
++		// All columns are text in the staging table — geo columns get
++		// converted to geometry via ST_GeomFromGeoJSON in the final INSERT.
++		createCols[i] = fmt.Sprintf("%s text", col)
++	}
++
++	dropSQL := fmt.Sprintf("DROP TABLE IF EXISTS %s", tempName)
++	if _, err := tx.Exec(ctx, dropSQL); err != nil {
++		return fmt.Errorf("fixture: drop staging: %w", err)
++	}
++
++	createSQL := fmt.Sprintf("CREATE TEMP TABLE %s (%s)", tempName, strings.Join(createCols, ", "))
++	if _, err := tx.Exec(ctx, createSQL); err != nil {
++		return fmt.Errorf("fixture: create staging for %s: %w", qualifiedName, err)
++	}
++
++	// COPY into staging table with all values as text.
++	copyRows := make([][]any, len(rows))
++	for i, row := range rows {
++		vals := make([]any, len(columns))
++		for j, col := range columns {
++			v := row[col]
++			switch {
++			case v == nil:
++				vals[j] = nil
++			case geoColumns[col]:
++				// GeoJSON object → JSON string
++				b, err := json.Marshal(v)
++				if err != nil {
++					return fmt.Errorf("fixture: marshal geo %s row %d: %w", col, i, err)
++				}
++				vals[j] = string(b)
++			default:
++				vals[j] = toText(v)
++			}
++		}
++		copyRows[i] = vals
++	}
++
++	_, err = tx.CopyFrom(ctx,
++		pgx.Identifier{tempName},
++		columns,
++		pgx.CopyFromRows(copyRows),
++	)
++	if err != nil {
++		return fmt.Errorf("fixture: copy staging %s: %w", qualifiedName, err)
++	}
++
++	// Build INSERT from staging with ST_GeomFromGeoJSON for geo columns.
++	selectCols := make([]string, len(columns))
++	for i, col := range columns {
++		if geoColumns[col] {
++			selectCols[i] = fmt.Sprintf("ST_GeomFromGeoJSON(%s) AS %s", col, col)
++		} else {
++			// Cast text back to original column types.
++			selectCols[i] = col
++		}
++	}
++
++	insertSQL := fmt.Sprintf(
++		"INSERT INTO %s (%s) SELECT %s FROM %s",
++		qualifiedName,
++		strings.Join(columns, ", "),
++		strings.Join(selectCols, ", "),
++		tempName,
++	)
++	if _, err := tx.Exec(ctx, insertSQL); err != nil {
++		return fmt.Errorf("fixture: insert %s from staging: %w", qualifiedName, err)
++	}
++
++	if _, err := tx.Exec(ctx, dropSQL); err != nil {
++		return fmt.Errorf("fixture: cleanup staging: %w", err)
++	}
++
++	if err := tx.Commit(ctx); err != nil {
++		return fmt.Errorf("fixture: commit %s: %w", qualifiedName, err)
++	}
++
++	return nil
++}
++
++// toText converts a JSON-decoded value to its text representation for the
++// staging table. All staging columns are text, so every value must be a string.
++func toText(v any) string {
++	switch vt := v.(type) {
++	case string:
++		return vt
++	case float64:
++		return fmt.Sprintf("%v", vt)
++	case bool:
++		if vt {
++			return "true"
++		}
++		return "false"
++	default:
++		b, err := json.Marshal(v)
++		if err != nil {
++			return fmt.Sprintf("%v", v)
++		}
++		return string(b)
++	}
++}
++
++// convertValue converts a JSON-decoded value to a pgx-compatible type.
++func convertValue(v any, isJSONB bool) any {
++	if v == nil {
++		return nil
++	}
++	if isJSONB {
++		// JSONB columns: marshal the value back to a JSON byte slice
++		// which pgx will send as JSONB.
++		switch vt := v.(type) {
++		case map[string]any, []any:
++			b, err := json.Marshal(vt)
++			if err != nil {
++				return nil
++			}
++			return b
++		case string:
++			return []byte(vt)
++		default:
++			b, err := json.Marshal(v)
++			if err != nil {
++				return nil
++			}
++			return b
++		}
++	}
++	return v
++}
++
++// orderedKeys returns the keys of a map in a stable order.
++// JSON object key order is not guaranteed, so we sort alphabetically.
++// However, for fixture loading the order doesn't matter as long as it's
++// consistent between the column list and the data rows.
++func orderedKeys(m map[string]any) []string {
++	keys := make([]string, 0, len(m))
++	for k := range m {
++		keys = append(keys, k)
++	}
++	// Sort for determinism.
++	sortStrings(keys)
++	return keys
++}
++
++// sortStrings sorts a string slice in place (insertion sort — fine for small slices).
++func sortStrings(s []string) {
++	for i := 1; i < len(s); i++ {
++		for j := i; j > 0 && s[j] < s[j-1]; j-- {
++			s[j], s[j-1] = s[j-1], s[j]
++		}
++	}
++}
++
++// WriteJSON writes table data as JSON files to the given writer function.
++// This is used by the fixtureutil CLI to generate JSON from database queries.
++func WriteJSON(w io.Writer, rows []map[string]any) error {
++	enc := json.NewEncoder(w)
++	enc.SetIndent("", "  ")
++	return enc.Encode(rows)
++}
+diff --git a/api/internal/fixture/fixture_test.go b/api/internal/fixture/fixture_test.go
+new file mode 100644
+index 0000000..31366fb
+--- /dev/null
++++ b/api/internal/fixture/fixture_test.go
+@@ -0,0 +1,118 @@
++package fixture
++
++import (
++	"testing"
++	"testing/fstest"
++)
++
++func TestLoadOrder(t *testing.T) {
++	order := LoadOrder()
++
++	// Verify FK-safe ordering: parent tables must come before children.
++	indexOf := make(map[string]int, len(order))
++	for i, name := range order {
++		indexOf[name] = i
++	}
++
++	// location.state must be before search_base.institution (FK on state)
++	if indexOf["location.state"] >= indexOf["search_base.institution"] {
++		t.Error("location.state must come before search_base.institution")
++	}
++
++	// search_base.institution must be before dataset, annual_dataset, institution_alias
++	for _, child := range []string{
++		"search_base.dataset",
++		"search_base.annual_dataset",
++		"search_base.institution_alias",
++		"location.institution_normalized_alias",
++	} {
++		if indexOf["search_base.institution"] >= indexOf[child] {
++			t.Errorf("search_base.institution must come before %s", child)
++		}
++	}
++
++	// Verify expected count
++	if len(order) != 10 {
++		t.Errorf("expected 10 tables in load order, got %d", len(order))
++	}
++}
++
++func TestOrderedKeys(t *testing.T) {
++	m := map[string]any{
++		"charlie": 3,
++		"alpha":   1,
++		"bravo":   2,
++	}
++
++	keys := orderedKeys(m)
++	if len(keys) != 3 {
++		t.Fatalf("expected 3 keys, got %d", len(keys))
++	}
++	if keys[0] != "alpha" || keys[1] != "bravo" || keys[2] != "charlie" {
++		t.Errorf("keys not sorted: %v", keys)
++	}
++}
++
++func TestConvertValue(t *testing.T) {
++	tests := []struct {
++		name    string
++		val     any
++		isJSONB bool
++		isNil   bool
++	}{
++		{"nil", nil, false, true},
++		{"nil jsonb", nil, true, true},
++		{"string", "hello", false, false},
++		{"number", float64(42), false, false},
++		{"bool", true, false, false},
++		{"jsonb map", map[string]any{"k": "v"}, true, false},
++		{"jsonb array", []any{1.0, 2.0}, true, false},
++		{"jsonb string", "raw", true, false},
++	}
++
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			got := convertValue(tt.val, tt.isJSONB)
++			if tt.isNil && got != nil {
++				t.Errorf("expected nil, got %v", got)
++			}
++			if !tt.isNil && got == nil {
++				t.Error("expected non-nil value")
++			}
++		})
++	}
++}
++
++func TestReadFixtureFile(t *testing.T) {
++	// Test with uncompressed JSON file.
++	spec := tableSpec{Schema: "test", Table: "data"}
++	testFS := fstest.MapFS{
++		"test.data.json": {Data: []byte(`[{"id": 1}]`)},
++	}
++
++	data, err := readFixtureFile(testFS, spec)
++	if err != nil {
++		t.Fatalf("readFixtureFile: %v", err)
++	}
++	if string(data) != `[{"id": 1}]` {
++		t.Errorf("unexpected data: %s", data)
++	}
++
++	// Test with missing file.
++	missingSpec := tableSpec{Schema: "test", Table: "missing"}
++	data, err = readFixtureFile(testFS, missingSpec)
++	if err != nil {
++		t.Fatalf("readFixtureFile missing: %v", err)
++	}
++	if data != nil {
++		t.Error("expected nil for missing file")
++	}
++}
++
++func TestSortStrings(t *testing.T) {
++	s := []string{"cherry", "apple", "banana"}
++	sortStrings(s)
++	if s[0] != "apple" || s[1] != "banana" || s[2] != "cherry" {
++		t.Errorf("not sorted: %v", s)
++	}
++}
+diff --git a/api/internal/testdb/testdb.go b/api/internal/testdb/testdb.go
+index c13df9b..9972426 100644
+--- a/api/internal/testdb/testdb.go
++++ b/api/internal/testdb/testdb.go
+@@ -15,11 +15,15 @@
+ // deterministic fake data (institution + dataset + annual_dataset), then
+ // refreshes all materialized views.
+ //
+-// Fixture — when TEST_FIXTURE_SQL is set to the path of a .sql or .sql.xz
+-// file (e.g. common/src/main/resources/data/complete.sql.xz), that file is
+-// decompressed (if needed) and piped through psql. The fixture must be a
+-// complete pg_dump that manages its own schema, extensions, and data; schema
+-// migrations are skipped. Use this mode to test against production-shaped data.
++// JSON Fixture — when TEST_FIXTURE_DIR is set to a directory containing
++// JSON fixture files (<schema>.<table>.json or .json.xz), migrations are
++// applied first, then the JSON data is loaded in FK-safe order via the
++// fixture package. This is the preferred fixture mode.
++//
++// SQL Fixture (legacy) — when TEST_FIXTURE_SQL is set to the path of a .sql
++// or .sql.xz file, that file is decompressed (if needed) and piped through
++// psql. The fixture must be a complete pg_dump that manages its own schema,
++// extensions, and data; schema migrations are skipped.
+ package testdb
+ 
+ import (
+@@ -42,16 +46,18 @@ import (
+ 	"github.com/testcontainers/testcontainers-go/wait"
+ 
+ 	"github.com/ketang/kapow/api/internal/db"
++	"github.com/ketang/kapow/api/internal/fixture"
+ )
+ 
+ const (
+-	postgresImage  = "postgis/postgis:15-3.4-alpine"
+-	testDBName     = "kapow_test"
+-	testDBUser     = "kapow"
+-	testDBPass     = "kapow"
+-	startupTO      = 90 * time.Second
+-	fixtureEnvVar  = "TEST_FIXTURE_SQL"
+-	seedCount      = 100
++	postgresImage     = "postgis/postgis:15-3.4-alpine"
++	testDBName        = "kapow_test"
++	testDBUser        = "kapow"
++	testDBPass        = "kapow"
++	startupTO         = 90 * time.Second
++	fixtureEnvVar     = "TEST_FIXTURE_SQL"
++	fixtureDirEnvVar  = "TEST_FIXTURE_DIR"
++	seedCount         = 100
+ )
+ 
+ // seedStates is the fixed set of states used when generating fake data.
+@@ -88,15 +94,16 @@ func New(t *testing.T) *pgxpool.Pool {
+ 	}
+ 
+ 	fixturePath := os.Getenv(fixtureEnvVar)
++	fixtureDir := os.Getenv(fixtureDirEnvVar)
+ 
+ 	if fixturePath != "" {
+-		// Fixture mode: the SQL dump manages its own schema, extensions, and data.
+-		// Migrations are skipped because the dump recreates everything from scratch.
++		// Legacy SQL fixture mode: the SQL dump manages its own schema, extensions,
++		// and data. Migrations are skipped because the dump recreates everything.
+ 		if err := loadFixtureSQL(ctx, t, dsn, fixturePath); err != nil {
+ 			t.Fatalf("testdb: load fixture %q: %v", fixturePath, err)
+ 		}
+ 	} else {
+-		// Default mode: apply schema migrations then seed deterministic data.
++		// Both default and JSON fixture modes need migrations.
+ 		if err := enablePostGIS(ctx, dsn); err != nil {
+ 			t.Fatalf("testdb: enable postgis: %v", err)
+ 		}
+@@ -111,7 +118,14 @@ func New(t *testing.T) *pgxpool.Pool {
+ 	}
+ 	t.Cleanup(pool.Close)
+ 
+-	if fixturePath == "" {
++	switch {
++	case fixtureDir != "":
++		// JSON fixture mode: load from directory of JSON files.
++		if err := fixture.Load(ctx, pool, os.DirFS(fixtureDir)); err != nil {
++			t.Fatalf("testdb: load JSON fixtures from %q: %v", fixtureDir, err)
++		}
++	case fixturePath == "":
++		// Default mode: seed fake data.
+ 		if err := seedFakeData(ctx, pool); err != nil {
+ 			t.Fatalf("testdb: seed fake data: %v", err)
+ 		}
+diff --git a/common/src/main/resources/data/tables/.gitkeep b/common/src/main/resources/data/tables/.gitkeep
+new file mode 100644
+index 0000000..e69de29
+diff --git a/docs/plans/kapow-tqt-json-fixtures.md b/docs/plans/kapow-tqt-json-fixtures.md
+new file mode 100644
+index 0000000..8da1667
+--- /dev/null
++++ b/docs/plans/kapow-tqt-json-fixtures.md
+@@ -0,0 +1,118 @@
++# Plan: JSON Fixture Data Format (kapow-tqt)
++
++## Context
++
++Kapow's fixture data lives in `common/src/main/resources/data/sample-100.sql` as PostgreSQL COPY text format (19MB, 9 tables). This format is brittle — column order changes break it, it's not human-inspectable, and PostGIS geometry is opaque WKB hex. The Dockerfile references a `complete.sql.xz` that doesn't exist in the repo.
++
++**Goal**: Make JSON the single source of truth for fixture data. SQL scripts become derived artifacts that are generated on demand.
++
++---
++
++## Step 1: Extend `tools/samplesql` with JSON output
++
++**Files**: `tools/samplesql/main.go`, `tools/samplesql/json_writer.go` (new), `tools/samplesql/extractor.go`
++
++- Add `--format` flag (`copy` default, `json`) and `--output-dir` flag for JSON mode
++- In `extractor.go`, add custom queries for tables with geometry columns (`search_base.institution`, `location.zip_coordinates`) to use `ST_AsGeoJSON(coordinates)` instead of raw WKB — produces portable `{"type":"Point","coordinates":[-86.29,32.36]}` objects
++- New `json_writer.go`:
++  - Writes one `.json.xz` file per table to `--output-dir`
++  - JSON format: array of objects, keys = column names
++  - Type mapping: `nil`→`null`, `time.Time`→ISO 8601, `bool`→`true/false`, `map[string]any`/`[]any`→nested JSON, geometry→GeoJSON object
++  - Compress each file via `exec.Command("xz", "-9e", path)`
++- Add `json_writer_test.go` with table-driven tests for type conversions
++
++## Step 2: Generate JSON fixture files
++
++Run `tools/samplesql --format json --output-dir common/src/main/resources/data/tables/` against a database loaded with current `sample-100.sql`. This produces:
++
++```
++common/src/main/resources/data/tables/
++  location.state.json.xz
++  search_base.ranking.json.xz
++  search_base.conference.json.xz
++  search_base.cip_data.json.xz
++  search_base.institution.json.xz
++  search_base.dataset.json.xz
++  search_base.annual_dataset.json.xz
++  search_base.institution_alias.json.xz
++  location.institution_normalized_alias.json.xz
++  location.zip_coordinates.json.xz
++```
++
++Commit these; they replace `sample-100.sql` as the source of truth.
++
++## Step 3: Create `api/internal/fixture` importer package
++
++**Files**: `api/internal/fixture/fixture.go`, `api/internal/fixture/fixture_test.go`
++
++- `func Load(ctx context.Context, pool *pgxpool.Pool, dataFS fs.FS) error`
++  - Accepts `fs.FS` so callers can pass `os.DirFS(path)` or an embedded FS
++  - Hardcoded FK-safe table ordering (same as `extractAll`)
++  - For each table: decompress `.json.xz` → parse JSON array → use `pool.CopyFrom` for bulk insert
++  - Geometry columns: use a staging approach — COPY into a temp table with `text` for geometry, then `INSERT INTO ... SELECT ..., ST_GeomFromGeoJSON(col)::geometry FROM temp`
++  - Detect JSONB columns by querying `information_schema.columns` once at start
++  - After all tables loaded, refresh materialized views (`dataset_merged`, `dataset_latest`)
++- Tests:
++  - Unit: verify FK ordering, JSON parsing
++  - Integration: load fixtures into testcontainer, verify row counts
++
++## Step 4: Update `api/internal/testdb/testdb.go`
++
++- Add `TEST_FIXTURE_DIR` env var support alongside existing `TEST_FIXTURE_SQL`
++- When `TEST_FIXTURE_DIR` is set: run migrations, then call `fixture.Load(ctx, pool, os.DirFS(dir))`
++- Keep existing `TEST_FIXTURE_SQL` path for backward compatibility
++- Keep `seedFakeData` default mode unchanged (fast, no file deps)
++
++## Step 5: Create `scripts/gen-fixture-sql.sh` and Makefile targets
++
++**Files**: `scripts/gen-fixture-sql.sh` (new), `Makefile`
++
++Script:
++1. Start temp PostGIS container
++2. Run migrations via `make -C api migrate-up`
++3. Load JSON fixtures via a small Go helper CLI (`go run tools/fixtureutil/main.go load --dir ...`)
++4. `pg_dump` → `complete.sql`, `complete-schema.sql`, `complete-data.sql`
++5. `xz -9e complete.sql` → `complete.sql.xz`
++6. Tear down container
++
++Actually, simpler: create `tools/fixtureutil/` as a thin CLI wrapping `fixture.Load()` that can be called from scripts. Or use a Go test with `TestMain` that serves as the CLI. The simplest approach: a `cmd` in `tools/fixtureutil/main.go` with subcommands `load` (JSON→DB) and `gen-sql` (JSON→DB→pg_dump).
++
++Makefile targets:
++```makefile
++fixture-sql:     # Generate complete.sql.xz from JSON fixtures
++fixture-json:    # Re-extract JSON fixtures from live DB (requires DATABASE_URL)
++```
++
++## Step 6: Update `.gitignore`, `init-db.sh`, Dockerfile
++
++- `.gitignore`: add `common/src/main/resources/data/complete*.sql*`
++- `scripts/init-db.sh`: change `FIXTURE=` to point at generated `complete.sql.xz` (or generate it on the fly from JSON)
++- `Dockerfile`: add a build stage or Make prerequisite that generates `complete.sql.xz` before `COPY`
++- Delete `common/src/main/resources/data/sample-100.sql` once JSON pipeline is verified
++
++## Step 7: Update documentation
++
++- `tools/CLAUDE.md`: add `fixtureutil` section
++- Root `CLAUDE.md`: update fixture references
++
++---
++
++## Verification
++
++1. `cd tools/samplesql && go test ./...` — JSON writer tests pass
++2. `cd api && go test ./internal/fixture/... -v` — importer unit tests pass
++3. `make test-fixture` — validates JSON fixtures load into temp container with correct row counts
++4. `make api-test-unit && make api-lint` — quality gates pass
++5. End-to-end: `make fixture-sql` generates `complete.sql.xz`, `make test-image-build` succeeds
++
++---
++
++## Key Design Decisions
++
++| Decision | Choice | Rationale |
++|---|---|---|
++| Geometry format | GeoJSON | Portable, lossless double precision, human-readable |
++| Compression | xz -9e (shell out) | Already a dependency; max compression for committed files |
++| Importer bulk insert | pgx CopyFrom + staging table for geometry | Fastest bulk insert; avoids per-row INSERT overhead |
++| JSONB detection | Query information_schema at import time | No hardcoded metadata; auto-adapts to schema changes |
++| File interface | `fs.FS` parameter | Testable, works with both os.DirFS and embed.FS |
+diff --git a/scripts/gen-fixture-sql.sh b/scripts/gen-fixture-sql.sh
+new file mode 100755
+index 0000000..56e022d
+--- /dev/null
++++ b/scripts/gen-fixture-sql.sh
+@@ -0,0 +1,114 @@
++#!/usr/bin/env bash
++# scripts/gen-fixture-sql.sh — Generate complete.sql.xz from JSON fixture data
++#
++# Starts a temporary PostGIS container, applies migrations, loads JSON fixtures,
++# then runs pg_dump to produce SQL output files.
++#
++# Output files (in common/src/main/resources/data/):
++#   complete.sql.xz       — full pg_dump (schema + data), xz compressed
++#   complete-schema.sql   — schema only
++#   complete-data.sql     — data only
++#
++# These files are in .gitignore — only the JSON sources are committed.
++set -euo pipefail
++
++SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
++DATA_DIR="$PROJECT_ROOT/common/src/main/resources/data"
++FIXTURE_DIR="$DATA_DIR/tables"
++OUTPUT_DIR="$DATA_DIR"
++
++# Colors
++BLUE=$'\033[0;34m'
++YELLOW=$'\033[1;33m'
++RED=$'\033[0;31m'
++GREEN=$'\033[0;32m'
++NC=$'\033[0m'
++
++log() { printf '%s\n' "${YELLOW}[gen-fixture-sql]${NC} $*"; }
++
++# ── Verify fixture directory exists ──────────────────────────────────────────
++if [ ! -d "$FIXTURE_DIR" ]; then
++    echo "${RED}error:${NC} fixture directory not found: $FIXTURE_DIR" >&2
++    echo "Run 'make fixture-json' first to generate JSON fixture files." >&2
++    exit 1
++fi
++
++# ── Start temporary PostGIS container ────────────────────────────────────────
++CONTAINER_NAME="kapow-fixture-gen-$$"
++DB_NAME="kapow_fixture"
++DB_USER="kapow"
++DB_PASS="kapow"
++
++# Find an available port
++DB_PORT=$((30000 + RANDOM % 30000))
++
++log "Starting PostGIS container on port $DB_PORT..."
++docker run -d --rm \
++    --name "$CONTAINER_NAME" \
++    -e POSTGRES_DB="$DB_NAME" \
++    -e POSTGRES_USER="$DB_USER" \
++    -e POSTGRES_PASSWORD="$DB_PASS" \
++    -p "$DB_PORT:5432" \
++    postgis/postgis:15-3.4 >/dev/null
++
++# Cleanup on exit
++cleanup() {
++    log "Cleaning up container..."
++    docker stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
++}
++trap cleanup EXIT
++
++DATABASE_URL="postgres://${DB_USER}:${DB_PASS}@localhost:${DB_PORT}/${DB_NAME}?sslmode=disable"
++export DATABASE_URL
++
++# ── Wait for PostgreSQL ──────────────────────────────────────────────────────
++log "Waiting for PostgreSQL..."
++for i in $(seq 1 60); do
++    if pg_isready -h localhost -p "$DB_PORT" -U "$DB_USER" &>/dev/null; then
++        break
++    fi
++    if [ "$i" -eq 60 ]; then
++        echo "${RED}error:${NC} PostgreSQL did not become ready in 60s" >&2
++        exit 1
++    fi
++    sleep 1
++done
++
++# ── Enable PostGIS extension ─────────────────────────────────────────────────
++log "Enabling PostGIS..."
++PGPASSWORD="$DB_PASS" psql --no-psqlrc -h localhost -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" \
++    -c "CREATE EXTENSION IF NOT EXISTS postgis" >/dev/null
++
++# ── Run migrations ───────────────────────────────────────────────────────────
++log "Running migrations..."
++make -C "$PROJECT_ROOT/api" migrate-up
++
++# ── Load JSON fixtures ───────────────────────────────────────────────────────
++log "Loading JSON fixtures..."
++cd "$PROJECT_ROOT/api" && go run ./cmd/fixtureutil \
++    --database-url "$DATABASE_URL" \
++    --fixture-dir "$FIXTURE_DIR" \
++    --skip-migrate
++
++# ── Generate SQL dumps ───────────────────────────────────────────────────────
++log "Generating SQL dumps..."
++
++PGPASSWORD="$DB_PASS" pg_dump -h localhost -p "$DB_PORT" -U "$DB_USER" \
++    -d "$DB_NAME" --no-owner --no-privileges \
++    > "$OUTPUT_DIR/complete.sql"
++
++PGPASSWORD="$DB_PASS" pg_dump -h localhost -p "$DB_PORT" -U "$DB_USER" \
++    -d "$DB_NAME" --no-owner --no-privileges --schema-only \
++    > "$OUTPUT_DIR/complete-schema.sql"
++
++PGPASSWORD="$DB_PASS" pg_dump -h localhost -p "$DB_PORT" -U "$DB_USER" \
++    -d "$DB_NAME" --no-owner --no-privileges --data-only \
++    > "$OUTPUT_DIR/complete-data.sql"
++
++# ── Compress full dump ───────────────────────────────────────────────────────
++log "Compressing complete.sql..."
++xz -9e -f "$OUTPUT_DIR/complete.sql"
++
++log "${GREEN}Done!${NC} Generated files in $OUTPUT_DIR:"
++ls -lh "$OUTPUT_DIR"/complete*.{sql,xz} 2>/dev/null || true
+diff --git a/tools/samplesql/extractor.go b/tools/samplesql/extractor.go
+index 6653e57..b2ef678 100644
+--- a/tools/samplesql/extractor.go
++++ b/tools/samplesql/extractor.go
+@@ -15,10 +15,19 @@ type tableData struct {
+ 	Rows    [][]any
+ }
+ 
++// geoTables lists tables that have a PostGIS geometry/geography "coordinates"
++// column. When geoJSON is true, these tables use ST_AsGeoJSON to export
++// coordinates as portable GeoJSON instead of raw WKB hex.
++var geoTables = map[string]bool{
++	"search_base.institution":  true,
++	"location.zip_coordinates": true,
++}
++
+ // extractAll extracts rows from all relevant tables in FK-safe order.
+ // Lookup tables are dumped in full; institution-dependent tables are filtered
+-// by the sampled unit_ids.
+-func extractAll(ctx context.Context, conn *pgx.Conn, unitIDs []string) ([]tableData, error) {
++// by the sampled unit_ids. When geoJSON is true, geometry columns are exported
++// as GeoJSON text instead of binary WKB.
++func extractAll(ctx context.Context, conn *pgx.Conn, unitIDs []string, geoJSON bool) ([]tableData, error) {
+ 	// Extract location.state: all rows from the state table PLUS any state codes
+ 	// referenced by sampled institutions that are missing from the lookup table
+ 	// (e.g. territories like PR, GU).
+@@ -54,7 +63,9 @@ func extractAll(ctx context.Context, conn *pgx.Conn, unitIDs []string) ([]tableD
+ 	}
+ 
+ 	for _, t := range tables {
+-		td, err := extractTable(ctx, conn, t.schema, t.table, t.filtered, unitIDs)
++		qualifiedName := fmt.Sprintf("%s.%s", t.schema, t.table)
++		useGeoJSON := geoJSON && geoTables[qualifiedName]
++		td, err := extractTable(ctx, conn, t.schema, t.table, t.filtered, unitIDs, useGeoJSON)
+ 		if err != nil {
+ 			return nil, err
+ 		}
+@@ -99,18 +110,33 @@ func extractCustomQuery(ctx context.Context, conn *pgx.Conn, schema, table, quer
+ }
+ 
+ // extractTable queries a single table and returns its column names and rows.
+-func extractTable(ctx context.Context, conn *pgx.Conn, schema, table string, filtered bool, unitIDs []string) (tableData, error) {
++// When geoJSON is true, geometry columns are wrapped with ST_AsGeoJSON to
++// produce portable GeoJSON text instead of binary WKB.
++func extractTable(ctx context.Context, conn *pgx.Conn, schema, table string, filtered bool, unitIDs []string, geoJSON bool) (tableData, error) {
+ 	qualifiedName := fmt.Sprintf("%s.%s", schema, table)
+ 
++	// When geoJSON mode is requested, we need to discover geometry columns
++	// and replace them with ST_AsGeoJSON() calls in the SELECT list.
++	selectExpr := "*"
++	if geoJSON {
++		cols, err := buildGeoJSONSelect(ctx, conn, schema, table)
++		if err != nil {
++			return tableData{}, err
++		}
++		if cols != "" {
++			selectExpr = cols
++		}
++	}
++
+ 	var query string
+ 	var rows pgx.Rows
+ 	var err error
+ 
+ 	if filtered {
+-		query = fmt.Sprintf("SELECT * FROM %s WHERE unit_id = ANY($1) ORDER BY 1", qualifiedName)
++		query = fmt.Sprintf("SELECT %s FROM %s WHERE unit_id = ANY($1) ORDER BY 1", selectExpr, qualifiedName)
+ 		rows, err = conn.Query(ctx, query, unitIDs)
+ 	} else {
+-		query = fmt.Sprintf("SELECT * FROM %s ORDER BY 1", qualifiedName)
++		query = fmt.Sprintf("SELECT %s FROM %s ORDER BY 1", selectExpr, qualifiedName)
+ 		rows, err = conn.Query(ctx, query)
+ 	}
+ 	if err != nil {
+@@ -143,3 +169,49 @@ func extractTable(ctx context.Context, conn *pgx.Conn, schema, table string, fil
+ 		Rows:    dataRows,
+ 	}, nil
+ }
++
++// buildGeoJSONSelect queries information_schema to find geometry/geography
++// columns and builds a SELECT list that wraps them with ST_AsGeoJSON().
++// Returns "" if no geometry columns are found (caller should use SELECT *).
++func buildGeoJSONSelect(ctx context.Context, conn *pgx.Conn, schema, table string) (string, error) {
++	rows, err := conn.Query(ctx,
++		`SELECT column_name, udt_name
++		 FROM information_schema.columns
++		 WHERE table_schema = $1 AND table_name = $2
++		 ORDER BY ordinal_position`, schema, table)
++	if err != nil {
++		return "", fmt.Errorf("samplesql: schema query %s.%s: %w", schema, table, err)
++	}
++	defer rows.Close()
++
++	var parts []string
++	hasGeo := false
++	for rows.Next() {
++		var colName, udtName string
++		if err := rows.Scan(&colName, &udtName); err != nil {
++			return "", fmt.Errorf("samplesql: schema scan: %w", err)
++		}
++		if udtName == "geometry" || udtName == "geography" {
++			parts = append(parts, fmt.Sprintf("ST_AsGeoJSON(%s)::jsonb AS %s", colName, colName))
++			hasGeo = true
++		} else {
++			parts = append(parts, colName)
++		}
++	}
++	if err := rows.Err(); err != nil {
++		return "", fmt.Errorf("samplesql: schema iterate: %w", err)
++	}
++
++	if !hasGeo {
++		return "", nil
++	}
++
++	result := ""
++	for i, p := range parts {
++		if i > 0 {
++			result += ", "
++		}
++		result += p
++	}
++	return result, nil
++}
+diff --git a/tools/samplesql/json_writer.go b/tools/samplesql/json_writer.go
+new file mode 100644
+index 0000000..d5dba41
+--- /dev/null
++++ b/tools/samplesql/json_writer.go
+@@ -0,0 +1,91 @@
++package main
++
++import (
++	"encoding/json"
++	"fmt"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"time"
++)
++
++// writeJSON writes each table's data as a JSON file in outputDir, one file per
++// table. Each file is a JSON array of objects where keys are column names.
++// After writing, each file is compressed with xz -9e.
++func writeJSON(outputDir string, tables []tableData, compress bool) error {
++	if err := os.MkdirAll(outputDir, 0o755); err != nil {
++		return fmt.Errorf("samplesql: create output dir: %w", err)
++	}
++
++	for _, td := range tables {
++		if len(td.Rows) == 0 {
++			continue
++		}
++
++		rows := make([]map[string]any, 0, len(td.Rows))
++		for _, row := range td.Rows {
++			obj := make(map[string]any, len(td.Columns))
++			for i, col := range td.Columns {
++				obj[col] = formatJSONValue(row[i])
++			}
++			rows = append(rows, obj)
++		}
++
++		filename := fmt.Sprintf("%s.%s.json", td.Schema, td.Table)
++		path := filepath.Join(outputDir, filename)
++
++		data, err := json.MarshalIndent(rows, "", "  ")
++		if err != nil {
++			return fmt.Errorf("samplesql: marshal %s: %w", filename, err)
++		}
++
++		if err := os.WriteFile(path, data, 0o644); err != nil {
++			return fmt.Errorf("samplesql: write %s: %w", filename, err)
++		}
++		fmt.Fprintf(os.Stderr, "  wrote %s (%d rows)\n", filename, len(td.Rows))
++
++		if compress {
++			if err := xzCompress(path); err != nil {
++				return fmt.Errorf("samplesql: compress %s: %w", filename, err)
++			}
++		}
++	}
++
++	return nil
++}
++
++// formatJSONValue converts a pgx row value into a JSON-safe representation.
++func formatJSONValue(v any) any {
++	if v == nil {
++		return nil
++	}
++
++	switch val := v.(type) {
++	case []byte:
++		// Binary data (e.g. PostGIS geometry WKB) — hex string.
++		// Prefer using ST_AsGeoJSON in the query instead of hitting this path.
++		return fmt.Sprintf("%x", val)
++	case time.Time:
++		return val.Format(time.RFC3339Nano)
++	case map[string]any:
++		// JSONB — keep as nested object (not escaped string)
++		return val
++	case []any:
++		// JSONB array — keep as nested array
++		return val
++	default:
++		// string, bool, int, float — already JSON-compatible
++		return val
++	}
++}
++
++// xzCompress compresses a file in-place using xz -9e (maximum compression).
++// The original file is replaced by the .xz version.
++func xzCompress(path string) error {
++	cmd := exec.Command("xz", "-9e", path) //nolint:gosec // G204: path is from trusted output dir
++	cmd.Stderr = os.Stderr
++	if err := cmd.Run(); err != nil {
++		return fmt.Errorf("xz: %w", err)
++	}
++	return nil
++}
+diff --git a/tools/samplesql/json_writer_test.go b/tools/samplesql/json_writer_test.go
+new file mode 100644
+index 0000000..6c59d5e
+--- /dev/null
++++ b/tools/samplesql/json_writer_test.go
+@@ -0,0 +1,175 @@
++package main
++
++import (
++	"encoding/json"
++	"os"
++	"path/filepath"
++	"testing"
++	"time"
++)
++
++func TestFormatJSONValue(t *testing.T) {
++	tests := []struct {
++		name string
++		val  any
++		want any
++	}{
++		{"nil", nil, nil},
++		{"string", "hello", "hello"},
++		{"bool true", true, true},
++		{"bool false", false, false},
++		{"int", 42, 42},
++		{"float", 3.14, 3.14},
++		{"time", time.Date(2023, 7, 30, 21, 5, 19, 0, time.UTC), "2023-07-30T21:05:19Z"},
++		{"bytes", []byte{0x01, 0x02, 0xAB}, "0102ab"},
++		{"map", map[string]any{"key": "val"}, map[string]any{"key": "val"}},
++		{"slice", []any{1.0, 2.0}, []any{1.0, 2.0}},
++	}
++
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			got := formatJSONValue(tt.val)
++			// Compare via JSON marshaling for complex types
++			gotJSON, _ := json.Marshal(got)
++			wantJSON, _ := json.Marshal(tt.want)
++			if string(gotJSON) != string(wantJSON) {
++				t.Errorf("formatJSONValue(%v) = %s, want %s", tt.val, gotJSON, wantJSON)
++			}
++		})
++	}
++}
++
++func TestWriteJSON(t *testing.T) {
++	dir := t.TempDir()
++
++	tables := []tableData{
++		{
++			Schema:  "location",
++			Table:   "state",
++			Columns: []string{"code", "name"},
++			Rows: [][]any{
++				{"VT", "Vermont"},
++				{"MA", "Massachusetts"},
++			},
++		},
++		{
++			Schema:  "search_base",
++			Table:   "empty_table",
++			Columns: []string{"id"},
++			Rows:    nil, // empty — should be skipped
++		},
++		{
++			Schema:  "test",
++			Table:   "types",
++			Columns: []string{"str", "num", "flag", "ts", "data", "nothing"},
++			Rows: [][]any{
++				{"hello", 42, true, time.Date(2023, 1, 15, 10, 30, 0, 0, time.UTC), map[string]any{"k": "v"}, nil},
++			},
++		},
++	}
++
++	// Write without compression so we can read the files directly.
++	err := writeJSON(dir, tables, false)
++	if err != nil {
++		t.Fatalf("writeJSON: %v", err)
++	}
++
++	// Check location.state.json
++	stateFile := filepath.Join(dir, "location.state.json")
++	data, err := os.ReadFile(stateFile)
++	if err != nil {
++		t.Fatalf("read state file: %v", err)
++	}
++
++	var states []map[string]any
++	if err := json.Unmarshal(data, &states); err != nil {
++		t.Fatalf("unmarshal state file: %v", err)
++	}
++	if len(states) != 2 {
++		t.Fatalf("expected 2 states, got %d", len(states))
++	}
++	if states[0]["code"] != "VT" || states[0]["name"] != "Vermont" {
++		t.Errorf("unexpected first state: %v", states[0])
++	}
++
++	// Check empty table was skipped
++	emptyFile := filepath.Join(dir, "search_base.empty_table.json")
++	if _, err := os.Stat(emptyFile); !os.IsNotExist(err) {
++		t.Error("empty table should not produce a file")
++	}
++
++	// Check test.types.json with various types
++	typesFile := filepath.Join(dir, "test.types.json")
++	data, err = os.ReadFile(typesFile)
++	if err != nil {
++		t.Fatalf("read types file: %v", err)
++	}
++
++	var rows []map[string]any
++	if err := json.Unmarshal(data, &rows); err != nil {
++		t.Fatalf("unmarshal types file: %v", err)
++	}
++	if len(rows) != 1 {
++		t.Fatalf("expected 1 row, got %d", len(rows))
++	}
++
++	row := rows[0]
++	if row["str"] != "hello" {
++		t.Errorf("str = %v, want hello", row["str"])
++	}
++	// JSON numbers are float64
++	if row["num"] != float64(42) {
++		t.Errorf("num = %v, want 42", row["num"])
++	}
++	if row["flag"] != true {
++		t.Errorf("flag = %v, want true", row["flag"])
++	}
++	if row["ts"] != "2023-01-15T10:30:00Z" {
++		t.Errorf("ts = %v, want 2023-01-15T10:30:00Z", row["ts"])
++	}
++	if row["nothing"] != nil {
++		t.Errorf("nothing = %v, want nil", row["nothing"])
++	}
++	dataMap, ok := row["data"].(map[string]any)
++	if !ok {
++		t.Fatalf("data is not a map: %T", row["data"])
++	}
++	if dataMap["k"] != "v" {
++		t.Errorf("data.k = %v, want v", dataMap["k"])
++	}
++}
++
++func TestWriteJSONWithCompression(t *testing.T) {
++	// Check if xz is available
++	if _, err := os.Stat("/usr/bin/xz"); os.IsNotExist(err) {
++		t.Skip("xz not available")
++	}
++
++	dir := t.TempDir()
++
++	tables := []tableData{
++		{
++			Schema:  "test",
++			Table:   "compress",
++			Columns: []string{"id"},
++			Rows:    [][]any{{1}},
++		},
++	}
++
++	err := writeJSON(dir, tables, true)
++	if err != nil {
++		t.Fatalf("writeJSON with compression: %v", err)
++	}
++
++	// The .json file should not exist (replaced by .json.xz)
++	jsonFile := filepath.Join(dir, "test.compress.json")
++	if _, err := os.Stat(jsonFile); !os.IsNotExist(err) {
++		t.Error("uncompressed file should not exist after compression")
++	}
++
++	// The .json.xz file should exist
++	xzFile := filepath.Join(dir, "test.compress.json.xz")
++	if _, err := os.Stat(xzFile); err != nil {
++		t.Errorf("compressed file should exist: %v", err)
++	}
++}
+diff --git a/tools/samplesql/main.go b/tools/samplesql/main.go
+index de9489a..39f976d 100644
+--- a/tools/samplesql/main.go
++++ b/tools/samplesql/main.go
+@@ -13,10 +13,22 @@ import (
+ func main() {
+ 	databaseURL := flag.String("database-url", "", "PostgreSQL connection string (falls back to DATABASE_URL env var)")
+ 	limit := flag.Int("limit", 100, "number of institutions to sample")
+-	output := flag.String("output", "", "output file path (default: stdout)")
++	output := flag.String("output", "", "output file path (default: stdout, copy format only)")
++	outputDir := flag.String("output-dir", "", "output directory for JSON format (one file per table)")
++	format := flag.String("format", "copy", "output format: copy or json")
+ 	seed := flag.Int("seed", 42, "random seed for deterministic sampling")
++	noCompress := flag.Bool("no-compress", false, "skip xz compression for JSON output")
+ 	flag.Parse()
+ 
++	if *format != "copy" && *format != "json" {
++		fmt.Fprintln(os.Stderr, "error: --format must be 'copy' or 'json'")
++		os.Exit(1)
++	}
++	if *format == "json" && *outputDir == "" {
++		fmt.Fprintln(os.Stderr, "error: --output-dir is required for JSON format")
++		os.Exit(1)
++	}
++
+ 	dsn := *databaseURL
+ 	if dsn == "" {
+ 		dsn = os.Getenv("DATABASE_URL")
+@@ -47,29 +59,39 @@ func main() {
+ 	}
+ 	fmt.Fprintf(os.Stderr, "sampled %d institutions\n", len(unitIDs))
+ 
++	useGeoJSON := *format == "json"
+ 	fmt.Fprintln(os.Stderr, "extracting dependent tables...")
+-	tables, err := extractAll(ctx, conn, unitIDs)
++	tables, err := extractAll(ctx, conn, unitIDs, useGeoJSON)
+ 	if err != nil {
+ 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+ 		os.Exit(1)
+ 	}
+ 
+-	var w *os.File
+-	if *output != "" {
+-		w, err = os.Create(*output)
+-		if err != nil {
+-			fmt.Fprintf(os.Stderr, "error: create output file: %v\n", err)
++	switch *format {
++	case "json":
++		fmt.Fprintln(os.Stderr, "writing JSON...")
++		if err := writeJSON(*outputDir, tables, !*noCompress); err != nil {
++			fmt.Fprintf(os.Stderr, "error: write output: %v\n", err)
+ 			os.Exit(1)
+ 		}
+-		defer w.Close()
+-	} else {
+-		w = os.Stdout
+-	}
++	case "copy":
++		var w *os.File
++		if *output != "" {
++			w, err = os.Create(*output)
++			if err != nil {
++				fmt.Fprintf(os.Stderr, "error: create output file: %v\n", err)
++				os.Exit(1)
++			}
++			defer w.Close()
++		} else {
++			w = os.Stdout
++		}
+ 
+-	fmt.Fprintln(os.Stderr, "writing COPY SQL...")
+-	if err := writeCopySQL(w, tables, *seed, *limit); err != nil {
+-		fmt.Fprintf(os.Stderr, "error: write output: %v\n", err)
+-		os.Exit(1)
++		fmt.Fprintln(os.Stderr, "writing COPY SQL...")
++		if err := writeCopySQL(w, tables, *seed, *limit); err != nil {
++			fmt.Fprintf(os.Stderr, "error: write output: %v\n", err)
++			os.Exit(1)
++		}
+ 	}
+ 
+ 	for _, t := range tables {

@@ -1,0 +1,10 @@
+{
+  "id": "14",
+  "subject": "kapow-69q: Export icon-only buttons",
+  "description": "Replace export text buttons with icon-only + tooltips, move to far right. Quality gate: cd web && pnpm build && pnpm lint && pnpm test. WAIT: after e5n merges.",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": [
+    "8"
+  ]
+}

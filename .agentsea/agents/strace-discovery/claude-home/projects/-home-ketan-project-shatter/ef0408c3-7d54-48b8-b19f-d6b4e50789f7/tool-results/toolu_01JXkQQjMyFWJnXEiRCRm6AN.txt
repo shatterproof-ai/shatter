@@ -1,0 +1,1855 @@
+     1→//! Input triage: predict whether a candidate input will produce a novel path
+     2→//! without executing it.
+     3→//!
+     4→//! Contains a concrete evaluator for symbolic expressions ([`evaluate_constraint`])
+     5→//! and the [`TriageState`] that accumulates observed branch traces and predicts
+     6→//! verdicts for candidate inputs.
+     7→
+     8→use std::collections::HashSet;
+     9→
+    10→use serde_json::Value;
+    11→
+    12→use crate::execution_record::{BranchDecision, SymConstraint};
+    13→use crate::orchestrator::hash_branch_path;
+    14→use crate::sym_expr::{BinOpKind, ConstValue, SymExpr, UnOpKind};
+    15→
+    16→/// Maximum number of traces stored in [`TriageState`].
+    17→pub const MAX_TRACES: usize = 64;
+    18→
+    19→/// Fraction of indeterminate branches above which a trace is too uncertain.
+    20→const INDETERMINATE_THRESHOLD: f64 = 0.5;
+    21→
+    22→/// Every Nth skip verdict, execute anyway to validate the prediction.
+    23→pub const TRIAGE_SAMPLE_INTERVAL: usize = 20;
+    24→
+    25→/// Minimum verdicts before evaluating whether triage is useful.
+    26→pub const MIN_VERDICTS_FOR_EVAL: usize = 20;
+    27→
+    28→/// Minimum fraction of Skip verdicts for triage to remain active.
+    29→pub const MIN_SKIP_RATE: f64 = 0.10;
+    30→
+    31→/// Maximum fraction of sampled skips that turned out wrong before disabling.
+    32→pub const MAX_MISPREDICTION_RATE: f64 = 0.25;
+    33→
+    34→/// Predicted direction for a single branch.
+    35→#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    36→pub enum BranchPrediction {
+    37→    Taken,
+    38→    NotTaken,
+    39→    Indeterminate,
+    40→}
+    41→
+    42→/// Verdict from triaging a candidate input against observed traces.
+    43→#[derive(Debug, Clone, PartialEq, Eq)]
+    44→pub enum TriageVerdict {
+    45→    /// Predicted path already covered — skip execution.
+    46→    Skip,
+    47→    /// At least one branch predicted to take a novel direction.
+    48→    Execute {
+    49→        novel_count: usize,
+    50→        first_novel_depth: usize,
+    51→    },
+    52→    /// Too many unknowns or no matching traces to predict.
+    53→    Indeterminate,
+    54→}
+    55→
+    56→/// Why triage was disabled.
+    57→#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    58→pub enum TriageDisableReason {
+    59→    /// Fewer than [`MIN_SKIP_RATE`] of verdicts were Skip.
+    60→    LowSkipRate,
+    61→    /// More than [`MAX_MISPREDICTION_RATE`] of sampled skips were wrong.
+    62→    HighMisprediction,
+    63→}
+    64→
+    65→/// Accumulates branch traces from observed executions and predicts whether
+    66→/// candidate inputs will produce novel paths.
+    67→pub struct TriageState {
+    68→    /// Observed branch traces, deduped by branch-ID sequence.
+    69→    traces: Vec<Vec<BranchDecision>>,
+    70→    /// Dedup keys: branch-ID sequences already stored.
+    71→    trace_keys: HashSet<Vec<u32>>,
+    72→    /// Per-branch observed (branch_id, taken) pairs.
+    73→    observed_directions: HashSet<(u32, bool)>,
+    74→    /// Parameter names for constraint evaluation.
+    75→    param_names: Vec<String>,
+    76→    /// Total verdicts issued.
+    77→    total_verdicts: usize,
+    78→    /// Number of Skip verdicts issued.
+    79→    skip_verdicts: usize,
+    80→    /// Number of sampled skip verdicts validated by actual execution.
+    81→    samples_taken: usize,
+    82→    /// Number of samples where predicted path hash differed from actual.
+    83→    mispredictions: usize,
+    84→    /// Set when triage disables itself.
+    85→    disable_reason: Option<TriageDisableReason>,
+    86→}
+    87→
+    88→impl TriageState {
+    89→    pub fn new(param_names: Vec<String>) -> Self {
+    90→        Self {
+    91→            traces: Vec::new(),
+    92→            trace_keys: HashSet::new(),
+    93→            observed_directions: HashSet::new(),
+    94→            param_names,
+    95→            total_verdicts: 0,
+    96→            skip_verdicts: 0,
+    97→            samples_taken: 0,
+    98→            mispredictions: 0,
+    99→            disable_reason: None,
+   100→        }
+   101→    }
+   102→
+   103→    /// Record a new execution trace. Deduplicates by branch-ID sequence and
+   104→    /// caps storage at [`MAX_TRACES`] (drops oldest on overflow).
+   105→    pub fn update(&mut self, branch_path: &[BranchDecision]) {
+   106→        // Record all observed directions.
+   107→        for d in branch_path {
+   108→            self.observed_directions.insert((d.branch_id, d.taken));
+   109→        }
+   110→
+   111→        // Dedup by branch-ID sequence.
+   112→        let key: Vec<u32> = branch_path.iter().map(|d| d.branch_id).collect();
+   113→        if !self.trace_keys.insert(key) {
+   114→            return;
+   115→        }
+   116→
+   117→        // Cap at MAX_TRACES — drop oldest.
+   118→        if self.traces.len() >= MAX_TRACES {
+   119→            let removed = self.traces.remove(0);
+   120→            let removed_key: Vec<u32> = removed.iter().map(|d| d.branch_id).collect();
+   121→            self.trace_keys.remove(&removed_key);
+   122→        }
+   123→
+   124→        self.traces.push(branch_path.to_vec());
+   125→    }
+   126→
+   127→    /// Number of stored traces.
+   128→    pub fn trace_count(&self) -> usize {
+   129→        self.traces.len()
+   130→    }
+   131→
+   132→    /// Number of observed (branch_id, taken) pairs.
+   133→    pub fn observed_direction_count(&self) -> usize {
+   134→        self.observed_directions.len()
+   135→    }
+   136→
+   137→    /// Whether triage has been disabled.
+   138→    pub fn is_disabled(&self) -> bool {
+   139→        self.disable_reason.is_some()
+   140→    }
+   141→
+   142→    /// Why triage was disabled, if at all.
+   143→    pub fn disable_reason(&self) -> Option<TriageDisableReason> {
+   144→        self.disable_reason
+   145→    }
+   146→
+   147→    /// Record a verdict and check whether triage should disable itself
+   148→    /// due to low skip rate. Call this after every `triage_candidate` call.
+   149→    pub fn record_verdict(&mut self, verdict: &TriageVerdict) {
+   150→        if self.is_disabled() {
+   151→            return;
+   152→        }
+   153→        self.total_verdicts += 1;
+   154→        if *verdict == TriageVerdict::Skip {
+   155→            self.skip_verdicts += 1;
+   156→        }
+   157→        if self.total_verdicts >= MIN_VERDICTS_FOR_EVAL {
+   158→            let skip_rate = self.skip_verdicts as f64 / self.total_verdicts as f64;
+   159→            if skip_rate < MIN_SKIP_RATE {
+   160→                self.disable_reason = Some(TriageDisableReason::LowSkipRate);
+   161→            }
+   162→        }
+   163→    }
+   164→
+   165→    /// Whether the current skip verdict should be sampled (executed anyway)
+   166→    /// to validate prediction accuracy. Returns true every
+   167→    /// [`TRIAGE_SAMPLE_INTERVAL`]th skip verdict.
+   168→    pub fn should_sample(&self) -> bool {
+   169→        self.skip_verdicts > 0 && self.skip_verdicts.is_multiple_of(TRIAGE_SAMPLE_INTERVAL)
+   170→    }
+   171→
+   172→    /// Record the result of a sampled skip execution. If the actual path hash
+   173→    /// differs from the predicted one, it counts as a misprediction.
+   174→    /// Disables triage when the misprediction rate exceeds
+   175→    /// [`MAX_MISPREDICTION_RATE`].
+   176→    pub fn record_sample(&mut self, predicted_path_hash: u64, actual_path_hash: u64) {
+   177→        if self.is_disabled() {
+   178→            return;
+   179→        }
+   180→        self.samples_taken += 1;
+   181→        if predicted_path_hash != actual_path_hash {
+   182→            self.mispredictions += 1;
+   183→        }
+   184→        let misprediction_rate = self.mispredictions as f64 / self.samples_taken as f64;
+   185→        if misprediction_rate > MAX_MISPREDICTION_RATE {
+   186→            self.disable_reason = Some(TriageDisableReason::HighMisprediction);
+   187→        }
+   188→    }
+   189→
+   190→    /// Predict whether executing `inputs` would produce a novel path.
+   191→    /// Returns `Indeterminate` immediately if triage has been disabled.
+   192→    pub fn triage_candidate(
+   193→        &self,
+   194→        inputs: &[Value],
+   195→        covered_paths: &HashSet<u64>,
+   196→    ) -> TriageVerdict {
+   197→        if self.is_disabled() {
+   198→            return TriageVerdict::Indeterminate;
+   199→        }
+   200→        if self.traces.is_empty() {
+   201→            return TriageVerdict::Indeterminate;
+   202→        }
+   203→
+   204→        let mut any_skip = false;
+   205→
+   206→        for trace in &self.traces {
+   207→            if trace.is_empty() {
+   208→                continue;
+   209→            }
+   210→
+   211→            let mut predicted_decisions = Vec::with_capacity(trace.len());
+   212→            let mut indeterminate_count = 0usize;
+   213→            let mut novel_count = 0usize;
+   214→            let mut first_novel_depth = None;
+   215→
+   216→            for (depth, decision) in trace.iter().enumerate() {
+   217→                let prediction = predict_branch(decision, inputs, &self.param_names);
+   218→
+   219→                let predicted_taken = match prediction {
+   220→                    BranchPrediction::Taken => true,
+   221→                    BranchPrediction::NotTaken => false,
+   222→                    BranchPrediction::Indeterminate => {
+   223→                        indeterminate_count += 1;
+   224→                        // Use original direction as fallback for path hash.
+   225→                        decision.taken
+   226→                    }
+   227→                };
+   228→
+   229→                // Check if this predicted direction is novel.
+   230→                if prediction != BranchPrediction::Indeterminate
+   231→                    && !self
+   232→                        .observed_directions
+   233→                        .contains(&(decision.branch_id, predicted_taken))
+   234→                {
+   235→                    novel_count += 1;
+   236→                    if first_novel_depth.is_none() {
+   237→                        first_novel_depth = Some(depth);
+   238→                    }
+   239→                }
+   240→
+   241→                predicted_decisions.push(BranchDecision {
+   242→                    branch_id: decision.branch_id,
+   243→                    line: decision.line,
+   244→                    taken: predicted_taken,
+   245→                    constraint: decision.constraint.clone(),
+   246→                });
+   247→            }
+   248→
+   249→            // Too many unknowns — skip this trace.
+   250→            let total = trace.len();
+   251→            if total > 0
+   252→                && (indeterminate_count as f64 / total as f64) > INDETERMINATE_THRESHOLD
+   253→            {
+   254→                continue;
+   255→            }
+   256→
+   257→            // Novel direction detected.
+   258→            if novel_count > 0 {
+   259→                return TriageVerdict::Execute {
+   260→                    novel_count,
+   261→                    first_novel_depth: first_novel_depth.unwrap_or(0),
+   262→                };
+   263→            }
+   264→
+   265→            // Check if predicted path is already covered.
+   266→            let path_hash = hash_branch_path(&predicted_decisions);
+   267→            if covered_paths.contains(&path_hash) {
+   268→                any_skip = true;
+   269→            } else {
+   270→                // Predicted path is not covered and no novel directions detected
+   271→                // from observed_directions perspective — but it's a new path hash,
+   272→                // so it's worth executing.
+   273→                return TriageVerdict::Execute {
+   274→                    novel_count: 0,
+   275→                    first_novel_depth: 0,
+   276→                };
+   277→            }
+   278→        }
+   279→
+   280→        if any_skip {
+   281→            TriageVerdict::Skip
+   282→        } else {
+   283→            TriageVerdict::Indeterminate
+   284→        }
+   285→    }
+   286→}
+   287→
+   288→/// Predict which direction a branch will take for the given inputs.
+   289→pub fn predict_branch(
+   290→    decision: &BranchDecision,
+   291→    inputs: &[Value],
+   292→    param_names: &[String],
+   293→) -> BranchPrediction {
+   294→    let expr = match &decision.constraint {
+   295→        SymConstraint::Expr { expr } => expr,
+   296→        SymConstraint::Unknown { .. } => return BranchPrediction::Indeterminate,
+   297→    };
+   298→
+   299→    match evaluate_constraint(expr, inputs, param_names) {
+   300→        Some(val) => {
+   301→            if is_truthy(&val) {
+   302→                BranchPrediction::Taken
+   303→            } else {
+   304→                BranchPrediction::NotTaken
+   305→            }
+   306→        }
+   307→        None => BranchPrediction::Indeterminate,
+   308→    }
+   309→}
+   310→
+   311→/// Evaluate a symbolic expression against concrete parameter values.
+   312→///
+   313→/// `params` are positional JSON values for each parameter.
+   314→/// `param_names` maps parameter names to their index in `params`.
+   315→/// Returns `None` when the expression contains `Unknown` nodes, references
+   316→/// unresolvable parameters, or uses unsupported operations.
+   317→pub fn evaluate_constraint(
+   318→    expr: &SymExpr,
+   319→    params: &[Value],
+   320→    param_names: &[String],
+   321→) -> Option<Value> {
+   322→    match expr {
+   323→        SymExpr::Param { name, path } => resolve_param(name, path, params, param_names),
+   324→        SymExpr::Const(c) => Some(const_to_json(c)),
+   325→        SymExpr::BinOp { op, left, right } => eval_binop(*op, left, right, params, param_names),
+   326→        SymExpr::UnOp { op, operand } => eval_unop(*op, operand, params, param_names),
+   327→        SymExpr::Call {
+   328→            name,
+   329→            receiver,
+   330→            args,
+   331→        } => eval_call(name, receiver.as_deref(), args, params, param_names),
+   332→        SymExpr::Unknown => None,
+   333→    }
+   334→}
+   335→
+   336→/// Resolve a parameter reference to a concrete JSON value.
+   337→fn resolve_param(
+   338→    name: &str,
+   339→    path: &[String],
+   340→    params: &[Value],
+   341→    param_names: &[String],
+   342→) -> Option<Value> {
+   343→    let idx = param_names.iter().position(|n| n == name)?;
+   344→    let mut val = params.get(idx)?;
+   345→    for segment in path {
+   346→        val = val.get(segment.as_str())?;
+   347→    }
+   348→    Some(val.clone())
+   349→}
+   350→
+   351→/// Convert a `ConstValue` to a `serde_json::Value`.
+   352→fn const_to_json(c: &ConstValue) -> Value {
+   353→    match c {
+   354→        ConstValue::Int(i) => Value::from(*i),
+   355→        ConstValue::Float(f) => Value::from(*f),
+   356→        ConstValue::Str(s) => Value::from(s.as_str()),
+   357→        ConstValue::Bool(b) => Value::from(*b),
+   358→        ConstValue::Null | ConstValue::Undefined => Value::Null,
+   359→        ConstValue::Complex { repr, .. } => const_to_json(repr),
+   360→    }
+   361→}
+   362→
+   363→/// JS-like truthiness: null, false, 0, 0.0, "" are falsy; everything else truthy.
+   364→fn is_truthy(v: &Value) -> bool {
+   365→    match v {
+   366→        Value::Null => false,
+   367→        Value::Bool(b) => *b,
+   368→        Value::Number(n) => {
+   369→            if let Some(i) = n.as_i64() {
+   370→                i != 0
+   371→            } else if let Some(f) = n.as_f64() {
+   372→                f != 0.0
+   373→            } else {
+   374→                true
+   375→            }
+   376→        }
+   377→        Value::String(s) => !s.is_empty(),
+   378→        // Arrays and objects are always truthy in JS
+   379→        _ => true,
+   380→    }
+   381→}
+   382→
+   383→/// Extract an f64 from a JSON number value.
+   384→fn as_f64(v: &Value) -> Option<f64> {
+   385→    v.as_f64()
+   386→}
+   387→
+   388→/// Evaluate a binary operation.
+   389→fn eval_binop(
+   390→    op: BinOpKind,
+   391→    left: &SymExpr,
+   392→    right: &SymExpr,
+   393→    params: &[Value],
+   394→    param_names: &[String],
+   395→) -> Option<Value> {
+   396→    // Short-circuit logical ops
+   397→    match op {
+   398→        BinOpKind::And => {
+   399→            let lv = evaluate_constraint(left, params, param_names)?;
+   400→            if !is_truthy(&lv) {
+   401→                return Some(lv);
+   402→            }
+   403→            return evaluate_constraint(right, params, param_names);
+   404→        }
+   405→        BinOpKind::Or => {
+   406→            let lv = evaluate_constraint(left, params, param_names)?;
+   407→            if is_truthy(&lv) {
+   408→                return Some(lv);
+   409→            }
+   410→            return evaluate_constraint(right, params, param_names);
+   411→        }
+   412→        _ => {}
+   413→    }
+   414→
+   415→    let lv = evaluate_constraint(left, params, param_names)?;
+   416→    let rv = evaluate_constraint(right, params, param_names)?;
+   417→
+   418→    match op {
+   419→        // Comparisons
+   420→        BinOpKind::Eq => eval_eq(&lv, &rv).map(Value::from),
+   421→        BinOpKind::Ne => eval_eq(&lv, &rv).map(|eq| Value::from(!eq)),
+   422→        BinOpKind::Lt => eval_order(&lv, &rv).map(|ord| Value::from(ord.is_lt())),
+   423→        BinOpKind::Le => eval_order(&lv, &rv).map(|ord| Value::from(ord.is_le())),
+   424→        BinOpKind::Gt => eval_order(&lv, &rv).map(|ord| Value::from(ord.is_gt())),
+   425→        BinOpKind::Ge => eval_order(&lv, &rv).map(|ord| Value::from(ord.is_ge())),
+   426→
+   427→        // Arithmetic
+   428→        BinOpKind::Add => eval_add(&lv, &rv),
+   429→        BinOpKind::Sub => eval_arith(&lv, &rv, |a, b| a - b),
+   430→        BinOpKind::Mul => eval_arith(&lv, &rv, |a, b| a * b),
+   431→        BinOpKind::Div => {
+   432→            let b = as_f64(&rv)?;
+   433→            if b == 0.0 {
+   434→                return None;
+   435→            }
+   436→            eval_arith(&lv, &rv, |a, b| a / b)
+   437→        }
+   438→        BinOpKind::Mod => {
+   439→            let b = as_f64(&rv)?;
+   440→            if b == 0.0 {
+   441→                return None;
+   442→            }
+   443→            eval_arith(&lv, &rv, |a, b| a % b)
+   444→        }
+   445→
+   446→        // Unsupported for triage
+   447→        BinOpKind::And | BinOpKind::Or => unreachable!(),
+   448→        BinOpKind::BitwiseAnd
+   449→        | BinOpKind::BitwiseOr
+   450→        | BinOpKind::BitwiseXor
+   451→        | BinOpKind::Shl
+   452→        | BinOpKind::Shr
+   453→        | BinOpKind::BitClear
+   454→        | BinOpKind::In
+   455→        | BinOpKind::InstanceOf => None,
+   456→    }
+   457→}
+   458→
+   459→/// Equality comparison with JS-like semantics.
+   460→fn eval_eq(a: &Value, b: &Value) -> Option<bool> {
+   461→    match (a, b) {
+   462→        (Value::Null, Value::Null) => Some(true),
+   463→        (Value::Bool(x), Value::Bool(y)) => Some(x == y),
+   464→        (Value::Number(_), Value::Number(_)) => {
+   465→            let fa = as_f64(a)?;
+   466→            let fb = as_f64(b)?;
+   467→            Some(fa == fb)
+   468→        }
+   469→        (Value::String(x), Value::String(y)) => Some(x == y),
+   470→        _ => None,
+   471→    }
+   472→}
+   473→
+   474→/// Ordering comparison for numbers and strings.
+   475→fn eval_order(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
+   476→    match (a, b) {
+   477→        (Value::Number(_), Value::Number(_)) => {
+   478→            let fa = as_f64(a)?;
+   479→            let fb = as_f64(b)?;
+   480→            fa.partial_cmp(&fb)
+   481→        }
+   482→        (Value::String(x), Value::String(y)) => Some(x.cmp(y)),
+   483→        _ => None,
+   484→    }
+   485→}
+   486→
+   487→/// Add: numeric addition or string concatenation.
+   488→fn eval_add(a: &Value, b: &Value) -> Option<Value> {
+   489→    match (a, b) {
+   490→        (Value::String(x), Value::String(y)) => {
+   491→            let mut result = x.clone();
+   492→            result.push_str(y);
+   493→            Some(Value::from(result))
+   494→        }
+   495→        _ => eval_arith(a, b, |x, y| x + y),
+   496→    }
+   497→}
+   498→
+   499→/// Arithmetic on numeric JSON values.
+   500→fn eval_arith(a: &Value, b: &Value, f: fn(f64, f64) -> f64) -> Option<Value> {
+   501→    let fa = as_f64(a)?;
+   502→    let fb = as_f64(b)?;
+   503→    let result = f(fa, fb);
+   504→    // Preserve integer results when both inputs are integers and the result is exact
+   505→    if a.is_i64() && b.is_i64() && let Some(i) = i64_from_f64(result) {
+   506→        return Some(Value::from(i));
+   507→    }
+   508→    Some(Value::from(result))
+   509→}
+   510→
+   511→/// Safely convert f64 to i64 when the value is an exact integer.
+   512→fn i64_from_f64(f: f64) -> Option<i64> {
+   513→    if f.fract() == 0.0 && f >= i64::MIN as f64 && f <= i64::MAX as f64 {
+   514→        Some(f as i64)
+   515→    } else {
+   516→        None
+   517→    }
+   518→}
+   519→
+   520→/// Evaluate a unary operation.
+   521→fn eval_unop(
+   522→    op: UnOpKind,
+   523→    operand: &SymExpr,
+   524→    params: &[Value],
+   525→    param_names: &[String],
+   526→) -> Option<Value> {
+   527→    let val = evaluate_constraint(operand, params, param_names)?;
+   528→    match op {
+   529→        UnOpKind::Not => Some(Value::from(!is_truthy(&val))),
+   530→        UnOpKind::Neg => {
+   531→            let f = as_f64(&val)?;
+   532→            if val.is_i64() && let Some(i) = i64_from_f64(-f) {
+   533→                return Some(Value::from(i));
+   534→            }
+   535→            Some(Value::from(-f))
+   536→        }
+   537→        UnOpKind::BitwiseNot | UnOpKind::TypeOf => None,
+   538→    }
+   539→}
+   540→
+   541→/// Evaluate a string method/function call against concrete values.
+   542→///
+   543→/// Supports the 8 canonical string operations defined in `data/string-ops.yaml`,
+   544→/// matching all cross-language aliases.
+   545→fn eval_call(
+   546→    name: &str,
+   547→    receiver: Option<&SymExpr>,
+   548→    args: &[SymExpr],
+   549→    params: &[Value],
+   550→    param_names: &[String],
+   551→) -> Option<Value> {
+   552→    match classify_string_op(name) {
+   553→        Some(StringOp::Contains) => {
+   554→            let (haystack, needle) = eval_string_pair(name, receiver, args, params, param_names)?;
+   555→            Some(Value::from(haystack.contains(needle.as_str())))
+   556→        }
+   557→        Some(StringOp::Prefix) => {
+   558→            let (haystack, needle) = eval_string_pair(name, receiver, args, params, param_names)?;
+   559→            Some(Value::from(haystack.starts_with(needle.as_str())))
+   560→        }
+   561→        Some(StringOp::Suffix) => {
+   562→            let (haystack, needle) = eval_string_pair(name, receiver, args, params, param_names)?;
+   563→            Some(Value::from(haystack.ends_with(needle.as_str())))
+   564→        }
+   565→        Some(StringOp::IndexOf) => {
+   566→            let (haystack, needle) = eval_string_pair(name, receiver, args, params, param_names)?;
+   567→            let idx = haystack
+   568→                .find(needle.as_str())
+   569→                .map_or(-1i64, |i| i as i64);
+   570→            Some(Value::from(idx))
+   571→        }
+   572→        Some(StringOp::Length) => {
+   573→            // receiver-style: "str".length  OR  free-style: len("str")
+   574→            let s = if let Some(recv) = receiver {
+   575→                eval_receiver_str(recv, params, param_names)?
+   576→            } else {
+   577→                eval_arg_str(args.first()?, params, param_names)?
+   578→            };
+   579→            Some(Value::from(s.len() as i64))
+   580→        }
+   581→        Some(StringOp::CharAt) => {
+   582→            let recv = eval_receiver_str(receiver?, params, param_names)?;
+   583→            let idx_val = evaluate_constraint(args.first()?, params, param_names)?;
+   584→            let idx = idx_val.as_i64()? as usize;
+   585→            let ch = recv.chars().nth(idx)?;
+   586→            Some(Value::from(ch.to_string()))
+   587→        }
+   588→        Some(StringOp::Substr) => {
+   589→            let recv = eval_receiver_str(receiver?, params, param_names)?;
+   590→            let start_val = evaluate_constraint(args.first()?, params, param_names)?;
+   591→            let start = start_val.as_i64()?.max(0) as usize;
+   592→            if start >= recv.len() {
+   593→                return Some(Value::from(""));
+   594→            }
+   595→            if let Some(end_expr) = args.get(1) {
+   596→                let end_val = evaluate_constraint(end_expr, params, param_names)?;
+   597→                let end = (end_val.as_i64()?.max(0) as usize).min(recv.len());
+   598→                if end <= start {
+   599→                    return Some(Value::from(""));
+   600→                }
+   601→                Some(Value::from(&recv[start..end]))
+   602→            } else {
+   603→                Some(Value::from(&recv[start..]))
+   604→            }
+   605→        }
+   606→        Some(StringOp::Concat) => {
+   607→            let recv = eval_receiver_str(receiver?, params, param_names)?;
+   608→            let arg = eval_arg_str(args.first()?, params, param_names)?;
+   609→            let mut result = recv;
+   610→            result.push_str(&arg);
+   611→            Some(Value::from(result))
+   612→        }
+   613→        None => None,
+   614→    }
+   615→}
+   616→
+   617→/// Canonical string operations matching `data/string-ops.yaml`.
+   618→enum StringOp {
+   619→    Contains,
+   620→    Prefix,
+   621→    Suffix,
+   622→    IndexOf,
+   623→    Length,
+   624→    CharAt,
+   625→    Substr,
+   626→    Concat,
+   627→}
+   628→
+   629→/// Map a call name to its canonical string operation.
+   630→fn classify_string_op(name: &str) -> Option<StringOp> {
+   631→    match name {
+   632→        "includes" | "Contains" | "strings.Contains" | "contains" => Some(StringOp::Contains),
+   633→        "startsWith" | "HasPrefix" | "strings.HasPrefix" | "starts_with" => Some(StringOp::Prefix),
+   634→        "endsWith" | "HasSuffix" | "strings.HasSuffix" | "ends_with" => Some(StringOp::Suffix),
+   635→        "indexOf" | "Index" | "strings.Index" | "find" | "index_of" => Some(StringOp::IndexOf),
+   636→        "length" | "len" => Some(StringOp::Length),
+   637→        "charAt" | "char_at" => Some(StringOp::CharAt),
+   638→        "slice" | "substring" | "substr" => Some(StringOp::Substr),
+   639→        "concat" => Some(StringOp::Concat),
+   640→        _ => None,
+   641→    }
+   642→}
+   643→
+   644→/// Evaluate a receiver expression as a string.
+   645→fn eval_receiver_str(
+   646→    receiver: &SymExpr,
+   647→    params: &[Value],
+   648→    param_names: &[String],
+   649→) -> Option<String> {
+   650→    let val = evaluate_constraint(receiver, params, param_names)?;
+   651→    val.as_str().map(String::from)
+   652→}
+   653→
+   654→/// Evaluate an argument expression as a string.
+   655→fn eval_arg_str(arg: &SymExpr, params: &[Value], param_names: &[String]) -> Option<String> {
+   656→    let val = evaluate_constraint(arg, params, param_names)?;
+   657→    val.as_str().map(String::from)
+   658→}
+   659→
+   660→/// For operations that take receiver + first arg as strings (or first two args for free-style).
+   661→fn eval_string_pair(
+   662→    _name: &str,
+   663→    receiver: Option<&SymExpr>,
+   664→    args: &[SymExpr],
+   665→    params: &[Value],
+   666→    param_names: &[String],
+   667→) -> Option<(String, String)> {
+   668→    if let Some(recv) = receiver {
+   669→        // receiver-style: recv.method(arg)
+   670→        let haystack = eval_receiver_str(recv, params, param_names)?;
+   671→        let needle = eval_arg_str(args.first()?, params, param_names)?;
+   672→        Some((haystack, needle))
+   673→    } else {
+   674→        // free-style: method(haystack, needle)
+   675→        let haystack = eval_arg_str(args.first()?, params, param_names)?;
+   676→        let needle = eval_arg_str(args.get(1)?, params, param_names)?;
+   677→        Some((haystack, needle))
+   678→    }
+   679→}
+   680→
+   681→#[cfg(test)]
+   682→mod tests {
+   683→    use super::*;
+   684→    use crate::execution_record::{BranchDecision, SymConstraint};
+   685→    use crate::sym_expr::ConstValue;
+   686→    use serde_json::json;
+   687→
+   688→    fn names(ns: &[&str]) -> Vec<String> {
+   689→        ns.iter().map(|s| s.to_string()).collect()
+   690→    }
+   691→
+   692→    fn param(name: &str) -> SymExpr {
+   693→        SymExpr::Param {
+   694→            name: name.into(),
+   695→            path: vec![],
+   696→        }
+   697→    }
+   698→
+   699→    fn param_path(name: &str, path: &[&str]) -> SymExpr {
+   700→        SymExpr::Param {
+   701→            name: name.into(),
+   702→            path: path.iter().map(|s| s.to_string()).collect(),
+   703→        }
+   704→    }
+   705→
+   706→    fn int_const(i: i64) -> SymExpr {
+   707→        SymExpr::Const(ConstValue::Int(i))
+   708→    }
+   709→
+   710→    fn str_const(s: &str) -> SymExpr {
+   711→        SymExpr::Const(ConstValue::Str(s.into()))
+   712→    }
+   713→
+   714→    fn bool_const(b: bool) -> SymExpr {
+   715→        SymExpr::Const(ConstValue::Bool(b))
+   716→    }
+   717→
+   718→    // --- Param resolution ---
+   719→
+   720→    #[test]
+   721→    fn param_lookup_by_name() {
+   722→        let result = evaluate_constraint(&param("x"), &[json!(42)], &names(&["x"]));
+   723→        assert_eq!(result, Some(json!(42)));
+   724→    }
+   725→
+   726→    #[test]
+   727→    fn param_lookup_second_param() {
+   728→        let result = evaluate_constraint(
+   729→            &param("y"),
+   730→            &[json!(1), json!("hello")],
+   731→            &names(&["x", "y"]),
+   732→        );
+   733→        assert_eq!(result, Some(json!("hello")));
+   734→    }
+   735→
+   736→    #[test]
+   737→    fn param_with_field_path() {
+   738→        let obj = json!({"timeout": 30, "host": "localhost"});
+   739→        let result = evaluate_constraint(
+   740→            &param_path("config", &["timeout"]),
+   741→            &[obj],
+   742→            &names(&["config"]),
+   743→        );
+   744→        assert_eq!(result, Some(json!(30)));
+   745→    }
+   746→
+   747→    #[test]
+   748→    fn param_nested_field_path() {
+   749→        let obj = json!({"a": {"b": {"c": true}}});
+   750→        let result = evaluate_constraint(
+   751→            &param_path("x", &["a", "b", "c"]),
+   752→            &[obj],
+   753→            &names(&["x"]),
+   754→        );
+   755→        assert_eq!(result, Some(json!(true)));
+   756→    }
+   757→
+   758→    #[test]
+   759→    fn param_missing_name_returns_none() {
+   760→        let result = evaluate_constraint(&param("missing"), &[json!(1)], &names(&["x"]));
+   761→        assert_eq!(result, None);
+   762→    }
+   763→
+   764→    #[test]
+   765→    fn param_missing_field_returns_none() {
+   766→        let obj = json!({"a": 1});
+   767→        let result = evaluate_constraint(
+   768→            &param_path("x", &["nonexistent"]),
+   769→            &[obj],
+   770→            &names(&["x"]),
+   771→        );
+   772→        assert_eq!(result, None);
+   773→    }
+   774→
+   775→    // --- ConstValue ---
+   776→
+   777→    #[test]
+   778→    fn const_int() {
+   779→        let result = evaluate_constraint(&int_const(42), &[], &[]);
+   780→        assert_eq!(result, Some(json!(42)));
+   781→    }
+   782→
+   783→    #[test]
+   784→    fn const_float() {
+   785→        let result = evaluate_constraint(
+   786→            &SymExpr::Const(ConstValue::Float(3.14)),
+   787→            &[],
+   788→            &[],
+   789→        );
+   790→        assert_eq!(result, Some(json!(3.14)));
+   791→    }
+   792→
+   793→    #[test]
+   794→    fn const_string() {
+   795→        let result = evaluate_constraint(&str_const("hello"), &[], &[]);
+   796→        assert_eq!(result, Some(json!("hello")));
+   797→    }
+   798→
+   799→    #[test]
+   800→    fn const_bool() {
+   801→        assert_eq!(evaluate_constraint(&bool_const(true), &[], &[]), Some(json!(true)));
+   802→        assert_eq!(evaluate_constraint(&bool_const(false), &[], &[]), Some(json!(false)));
+   803→    }
+   804→
+   805→    #[test]
+   806→    fn const_null_and_undefined() {
+   807→        assert_eq!(
+   808→            evaluate_constraint(&SymExpr::Const(ConstValue::Null), &[], &[]),
+   809→            Some(Value::Null)
+   810→        );
+   811→        assert_eq!(
+   812→            evaluate_constraint(&SymExpr::Const(ConstValue::Undefined), &[], &[]),
+   813→            Some(Value::Null)
+   814→        );
+   815→    }
+   816→
+   817→    #[test]
+   818→    fn const_complex_uses_repr() {
+   819→        use crate::types::ComplexKind;
+   820→        let expr = SymExpr::Const(ConstValue::Complex {
+   821→            kind: ComplexKind::Date,
+   822→            repr: Box::new(ConstValue::Int(1704067200000)),
+   823→        });
+   824→        assert_eq!(evaluate_constraint(&expr, &[], &[]), Some(json!(1704067200000i64)));
+   825→    }
+   826→
+   827→    // --- Unknown ---
+   828→
+   829→    #[test]
+   830→    fn unknown_returns_none() {
+   831→        assert_eq!(evaluate_constraint(&SymExpr::Unknown, &[], &[]), None);
+   832→    }
+   833→
+   834→    // --- Comparisons ---
+   835→
+   836→    #[test]
+   837→    fn binop_eq_integers() {
+   838→        let expr = SymExpr::BinOp {
+   839→            op: BinOpKind::Eq,
+   840→            left: Box::new(param("x")),
+   841→            right: Box::new(int_const(10)),
+   842→        };
+   843→        assert_eq!(
+   844→            evaluate_constraint(&expr, &[json!(10)], &names(&["x"])),
+   845→            Some(json!(true))
+   846→        );
+   847→        assert_eq!(
+   848→            evaluate_constraint(&expr, &[json!(5)], &names(&["x"])),
+   849→            Some(json!(false))
+   850→        );
+   851→    }
+   852→
+   853→    #[test]
+   854→    fn binop_ne_strings() {
+   855→        let expr = SymExpr::BinOp {
+   856→            op: BinOpKind::Ne,
+   857→            left: Box::new(param("s")),
+   858→            right: Box::new(str_const("hello")),
+   859→        };
+   860→        assert_eq!(
+   861→            evaluate_constraint(&expr, &[json!("world")], &names(&["s"])),
+   862→            Some(json!(true))
+   863→        );
+   864→        assert_eq!(
+   865→            evaluate_constraint(&expr, &[json!("hello")], &names(&["s"])),
+   866→            Some(json!(false))
+   867→        );
+   868→    }
+   869→
+   870→    #[test]
+   871→    fn binop_lt_gt_le_ge() {
+   872→        let params = &[json!(5)];
+   873→        let pn = &names(&["x"]);
+   874→
+   875→        let lt = SymExpr::BinOp {
+   876→            op: BinOpKind::Lt,
+   877→            left: Box::new(param("x")),
+   878→            right: Box::new(int_const(10)),
+   879→        };
+   880→        assert_eq!(evaluate_constraint(&lt, params, pn), Some(json!(true)));
+   881→
+   882→        let gt = SymExpr::BinOp {
+   883→            op: BinOpKind::Gt,
+   884→            left: Box::new(param("x")),
+   885→            right: Box::new(int_const(10)),
+   886→        };
+   887→        assert_eq!(evaluate_constraint(&gt, params, pn), Some(json!(false)));
+   888→
+   889→        let le = SymExpr::BinOp {
+   890→            op: BinOpKind::Le,
+   891→            left: Box::new(param("x")),
+   892→            right: Box::new(int_const(5)),
+   893→        };
+   894→        assert_eq!(evaluate_constraint(&le, params, pn), Some(json!(true)));
+   895→
+   896→        let ge = SymExpr::BinOp {
+   897→            op: BinOpKind::Ge,
+   898→            left: Box::new(param("x")),
+   899→            right: Box::new(int_const(5)),
+   900→        };
+   901→        assert_eq!(evaluate_constraint(&ge, params, pn), Some(json!(true)));
+   902→    }
+   903→
+   904→    #[test]
+   905→    fn binop_eq_null() {
+   906→        let expr = SymExpr::BinOp {
+   907→            op: BinOpKind::Eq,
+   908→            left: Box::new(param("x")),
+   909→            right: Box::new(SymExpr::Const(ConstValue::Null)),
+   910→        };
+   911→        assert_eq!(
+   912→            evaluate_constraint(&expr, &[Value::Null], &names(&["x"])),
+   913→            Some(json!(true))
+   914→        );
+   915→        assert_eq!(
+   916→            evaluate_constraint(&expr, &[json!(0)], &names(&["x"])),
+   917→            None
+   918→        );
+   919→    }
+   920→
+   921→    #[test]
+   922→    fn binop_mixed_types_returns_none() {
+   923→        let expr = SymExpr::BinOp {
+   924→            op: BinOpKind::Lt,
+   925→            left: Box::new(param("x")),
+   926→            right: Box::new(str_const("hello")),
+   927→        };
+   928→        assert_eq!(
+   929→            evaluate_constraint(&expr, &[json!(5)], &names(&["x"])),
+   930→            None
+   931→        );
+   932→    }
+   933→
+   934→    // --- Arithmetic ---
+   935→
+   936→    #[test]
+   937→    fn binop_add_integers() {
+   938→        let expr = SymExpr::BinOp {
+   939→            op: BinOpKind::Add,
+   940→            left: Box::new(param("x")),
+   941→            right: Box::new(int_const(3)),
+   942→        };
+   943→        assert_eq!(
+   944→            evaluate_constraint(&expr, &[json!(7)], &names(&["x"])),
+   945→            Some(json!(10))
+   946→        );
+   947→    }
+   948→
+   949→    #[test]
+   950→    fn binop_add_strings() {
+   951→        let expr = SymExpr::BinOp {
+   952→            op: BinOpKind::Add,
+   953→            left: Box::new(str_const("hello ")),
+   954→            right: Box::new(str_const("world")),
+   955→        };
+   956→        assert_eq!(evaluate_constraint(&expr, &[], &[]), Some(json!("hello world")));
+   957→    }
+   958→
+   959→    #[test]
+   960→    fn binop_sub_mul() {
+   961→        let sub = SymExpr::BinOp {
+   962→            op: BinOpKind::Sub,
+   963→            left: Box::new(int_const(10)),
+   964→            right: Box::new(int_const(3)),
+   965→        };
+   966→        assert_eq!(evaluate_constraint(&sub, &[], &[]), Some(json!(7)));
+   967→
+   968→        let mul = SymExpr::BinOp {
+   969→            op: BinOpKind::Mul,
+   970→            left: Box::new(int_const(4)),
+   971→            right: Box::new(int_const(5)),
+   972→        };
+   973→        assert_eq!(evaluate_constraint(&mul, &[], &[]), Some(json!(20)));
+   974→    }
+   975→
+   976→    #[test]
+   977→    fn binop_div_and_mod() {
+   978→        let div = SymExpr::BinOp {
+   979→            op: BinOpKind::Div,
+   980→            left: Box::new(int_const(10)),
+   981→            right: Box::new(int_const(3)),
+   982→        };
+   983→        // 10 / 3 = 3.333... → f64
+   984→        let result = evaluate_constraint(&div, &[], &[]);
+   985→        assert!(result.is_some());
+   986→        let f = result.unwrap().as_f64().unwrap();
+   987→        assert!((f - 10.0 / 3.0).abs() < f64::EPSILON);
+   988→
+   989→        let modop = SymExpr::BinOp {
+   990→            op: BinOpKind::Mod,
+   991→            left: Box::new(int_const(10)),
+   992→            right: Box::new(int_const(3)),
+   993→        };
+   994→        assert_eq!(evaluate_constraint(&modop, &[], &[]), Some(json!(1)));
+   995→    }
+   996→
+   997→    #[test]
+   998→    fn binop_div_by_zero_returns_none() {
+   999→        let expr = SymExpr::BinOp {
+  1000→            op: BinOpKind::Div,
+  1001→            left: Box::new(int_const(10)),
+  1002→            right: Box::new(int_const(0)),
+  1003→        };
+  1004→        assert_eq!(evaluate_constraint(&expr, &[], &[]), None);
+  1005→    }
+  1006→
+  1007→    #[test]
+  1008→    fn binop_mod_by_zero_returns_none() {
+  1009→        let expr = SymExpr::BinOp {
+  1010→            op: BinOpKind::Mod,
+  1011→            left: Box::new(int_const(10)),
+  1012→            right: Box::new(int_const(0)),
+  1013→        };
+  1014→        assert_eq!(evaluate_constraint(&expr, &[], &[]), None);
+  1015→    }
+  1016→
+  1017→    // --- Logical ---
+  1018→
+  1019→    #[test]
+  1020→    fn binop_and_short_circuit() {
+  1021→        // false && Unknown → false (short-circuit, doesn't evaluate right)
+  1022→        let expr = SymExpr::BinOp {
+  1023→            op: BinOpKind::And,
+  1024→            left: Box::new(bool_const(false)),
+  1025→            right: Box::new(SymExpr::Unknown),
+  1026→        };
+  1027→        assert_eq!(evaluate_constraint(&expr, &[], &[]), Some(json!(false)));
+  1028→    }
+  1029→
+  1030→    #[test]
+  1031→    fn binop_and_evaluates_right_when_truthy() {
+  1032→        let expr = SymExpr::BinOp {
+  1033→            op: BinOpKind::And,
+  1034→            left: Box::new(bool_const(true)),
+  1035→            right: Box::new(int_const(42)),
+  1036→        };
+  1037→        assert_eq!(evaluate_constraint(&expr, &[], &[]), Some(json!(42)));
+  1038→    }
+  1039→
+  1040→    #[test]
+  1041→    fn binop_or_short_circuit() {
+  1042→        // true || Unknown → true
+  1043→        let expr = SymExpr::BinOp {
+  1044→            op: BinOpKind::Or,
+  1045→            left: Box::new(bool_const(true)),
+  1046→            right: Box::new(SymExpr::Unknown),
+  1047→        };
+  1048→        assert_eq!(evaluate_constraint(&expr, &[], &[]), Some(json!(true)));
+  1049→    }
+  1050→
+  1051→    #[test]
+  1052→    fn binop_or_evaluates_right_when_falsy() {
+  1053→        let expr = SymExpr::BinOp {
+  1054→            op: BinOpKind::Or,
+  1055→            left: Box::new(bool_const(false)),
+  1056→            right: Box::new(int_const(99)),
+  1057→        };
+  1058→        assert_eq!(evaluate_constraint(&expr, &[], &[]), Some(json!(99)));
+  1059→    }
+  1060→
+  1061→    // --- UnOp ---
+  1062→
+  1063→    #[test]
+  1064→    fn unop_not() {
+  1065→        let expr = SymExpr::UnOp {
+  1066→            op: UnOpKind::Not,
+  1067→            operand: Box::new(bool_const(true)),
+  1068→        };
+  1069→        assert_eq!(evaluate_constraint(&expr, &[], &[]), Some(json!(false)));
+  1070→
+  1071→        let expr2 = SymExpr::UnOp {
+  1072→            op: UnOpKind::Not,
+  1073→            operand: Box::new(int_const(0)),
+  1074→        };
+  1075→        assert_eq!(evaluate_constraint(&expr2, &[], &[]), Some(json!(true)));
+  1076→    }
+  1077→
+  1078→    #[test]
+  1079→    fn unop_neg() {
+  1080→        let expr = SymExpr::UnOp {
+  1081→            op: UnOpKind::Neg,
+  1082→            operand: Box::new(int_const(5)),
+  1083→        };
+  1084→        assert_eq!(evaluate_constraint(&expr, &[], &[]), Some(json!(-5)));
+  1085→    }
+  1086→
+  1087→    #[test]
+  1088→    fn unop_bitwise_not_returns_none() {
+  1089→        let expr = SymExpr::UnOp {
+  1090→            op: UnOpKind::BitwiseNot,
+  1091→            operand: Box::new(int_const(5)),
+  1092→        };
+  1093→        assert_eq!(evaluate_constraint(&expr, &[], &[]), None);
+  1094→    }
+  1095→
+  1096→    #[test]
+  1097→    fn unop_typeof_returns_none() {
+  1098→        let expr = SymExpr::UnOp {
+  1099→            op: UnOpKind::TypeOf,
+  1100→            operand: Box::new(param("x")),
+  1101→        };
+  1102→        assert_eq!(
+  1103→            evaluate_constraint(&expr, &[json!("hello")], &names(&["x"])),
+  1104→            None
+  1105→        );
+  1106→    }
+  1107→
+  1108→    // --- String calls ---
+  1109→
+  1110→    #[test]
+  1111→    fn call_contains_receiver_style() {
+  1112→        let expr = SymExpr::Call {
+  1113→            name: "includes".into(),
+  1114→            receiver: Some(Box::new(param("s"))),
+  1115→            args: vec![str_const("world")],
+  1116→        };
+  1117→        assert_eq!(
+  1118→            evaluate_constraint(&expr, &[json!("hello world")], &names(&["s"])),
+  1119→            Some(json!(true))
+  1120→        );
+  1121→        assert_eq!(
+  1122→            evaluate_constraint(&expr, &[json!("hello")], &names(&["s"])),
+  1123→            Some(json!(false))
+  1124→        );
+  1125→    }
+  1126→
+  1127→    #[test]
+  1128→    fn call_contains_free_style() {
+  1129→        // Go-style: strings.Contains(haystack, needle)
+  1130→        let expr = SymExpr::Call {
+  1131→            name: "strings.Contains".into(),
+  1132→            receiver: None,
+  1133→            args: vec![param("s"), str_const("x")],
+  1134→        };
+  1135→        assert_eq!(
+  1136→            evaluate_constraint(&expr, &[json!("axb")], &names(&["s"])),
+  1137→            Some(json!(true))
+  1138→        );
+  1139→    }
+  1140→
+  1141→    #[test]
+  1142→    fn call_starts_with() {
+  1143→        let expr = SymExpr::Call {
+  1144→            name: "startsWith".into(),
+  1145→            receiver: Some(Box::new(param("s"))),
+  1146→            args: vec![str_const("he")],
+  1147→        };
+  1148→        assert_eq!(
+  1149→            evaluate_constraint(&expr, &[json!("hello")], &names(&["s"])),
+  1150→            Some(json!(true))
+  1151→        );
+  1152→        assert_eq!(
+  1153→            evaluate_constraint(&expr, &[json!("world")], &names(&["s"])),
+  1154→            Some(json!(false))
+  1155→        );
+  1156→    }
+  1157→
+  1158→    #[test]
+  1159→    fn call_ends_with() {
+  1160→        let expr = SymExpr::Call {
+  1161→            name: "endsWith".into(),
+  1162→            receiver: Some(Box::new(param("s"))),
+  1163→            args: vec![str_const("ld")],
+  1164→        };
+  1165→        assert_eq!(
+  1166→            evaluate_constraint(&expr, &[json!("world")], &names(&["s"])),
+  1167→            Some(json!(true))
+  1168→        );
+  1169→    }
+  1170→
+  1171→    #[test]
+  1172→    fn call_index_of() {
+  1173→        let expr = SymExpr::Call {
+  1174→            name: "indexOf".into(),
+  1175→            receiver: Some(Box::new(param("s"))),
+  1176→            args: vec![str_const("ll")],
+  1177→        };
+  1178→        assert_eq!(
+  1179→            evaluate_constraint(&expr, &[json!("hello")], &names(&["s"])),
+  1180→            Some(json!(2))
+  1181→        );
+  1182→        // Not found → -1
+  1183→        assert_eq!(
+  1184→            evaluate_constraint(&expr, &[json!("world")], &names(&["s"])),
+  1185→            Some(json!(-1))
+  1186→        );
+  1187→    }
+  1188→
+  1189→    #[test]
+  1190→    fn call_length_receiver_style() {
+  1191→        let expr = SymExpr::Call {
+  1192→            name: "length".into(),
+  1193→            receiver: Some(Box::new(param("s"))),
+  1194→            args: vec![],
+  1195→        };
+  1196→        assert_eq!(
+  1197→            evaluate_constraint(&expr, &[json!("hello")], &names(&["s"])),
+  1198→            Some(json!(5))
+  1199→        );
+  1200→    }
+  1201→
+  1202→    #[test]
+  1203→    fn call_length_free_style() {
+  1204→        // Go-style: len("hello")
+  1205→        let expr = SymExpr::Call {
+  1206→            name: "len".into(),
+  1207→            receiver: None,
+  1208→            args: vec![param("s")],
+  1209→        };
+  1210→        assert_eq!(
+  1211→            evaluate_constraint(&expr, &[json!("abc")], &names(&["s"])),
+  1212→            Some(json!(3))
+  1213→        );
+  1214→    }
+  1215→
+  1216→    #[test]
+  1217→    fn call_char_at() {
+  1218→        let expr = SymExpr::Call {
+  1219→            name: "charAt".into(),
+  1220→            receiver: Some(Box::new(str_const("hello"))),
+  1221→            args: vec![int_const(1)],
+  1222→        };
+  1223→        assert_eq!(evaluate_constraint(&expr, &[], &[]), Some(json!("e")));
+  1224→    }
+  1225→
+  1226→    #[test]
+  1227→    fn call_substr() {
+  1228→        let expr = SymExpr::Call {
+  1229→            name: "substring".into(),
+  1230→            receiver: Some(Box::new(str_const("hello world"))),
+  1231→            args: vec![int_const(6), int_const(11)],
+  1232→        };
+  1233→        assert_eq!(evaluate_constraint(&expr, &[], &[]), Some(json!("world")));
+  1234→    }
+  1235→
+  1236→    #[test]
+  1237→    fn call_substr_no_end() {
+  1238→        let expr = SymExpr::Call {
+  1239→            name: "slice".into(),
+  1240→            receiver: Some(Box::new(str_const("hello"))),
+  1241→            args: vec![int_const(2)],
+  1242→        };
+  1243→        assert_eq!(evaluate_constraint(&expr, &[], &[]), Some(json!("llo")));
+  1244→    }
+  1245→
+  1246→    #[test]
+  1247→    fn call_concat() {
+  1248→        let expr = SymExpr::Call {
+  1249→            name: "concat".into(),
+  1250→            receiver: Some(Box::new(str_const("hello "))),
+  1251→            args: vec![str_const("world")],
+  1252→        };
+  1253→        assert_eq!(evaluate_constraint(&expr, &[], &[]), Some(json!("hello world")));
+  1254→    }
+  1255→
+  1256→    #[test]
+  1257→    fn call_unknown_name_returns_none() {
+  1258→        let expr = SymExpr::Call {
+  1259→            name: "unknownMethod".into(),
+  1260→            receiver: Some(Box::new(param("x"))),
+  1261→            args: vec![],
+  1262→        };
+  1263→        assert_eq!(
+  1264→            evaluate_constraint(&expr, &[json!("test")], &names(&["x"])),
+  1265→            None
+  1266→        );
+  1267→    }
+  1268→
+  1269→    // --- Nested expressions ---
+  1270→
+  1271→    #[test]
+  1272→    fn nested_and_with_comparisons() {
+  1273→        // x > 0 && x < 100
+  1274→        let expr = SymExpr::BinOp {
+  1275→            op: BinOpKind::And,
+  1276→            left: Box::new(SymExpr::BinOp {
+  1277→                op: BinOpKind::Gt,
+  1278→                left: Box::new(param("x")),
+  1279→                right: Box::new(int_const(0)),
+  1280→            }),
+  1281→            right: Box::new(SymExpr::BinOp {
+  1282→                op: BinOpKind::Lt,
+  1283→                left: Box::new(param("x")),
+  1284→                right: Box::new(int_const(100)),
+  1285→            }),
+  1286→        };
+  1287→        let pn = &names(&["x"]);
+  1288→        // x=50 → true && true → true
+  1289→        assert_eq!(
+  1290→            evaluate_constraint(&expr, &[json!(50)], pn),
+  1291→            Some(json!(true))
+  1292→        );
+  1293→        // x=0 → false (short-circuit)
+  1294→        assert_eq!(
+  1295→            evaluate_constraint(&expr, &[json!(0)], pn),
+  1296→            Some(json!(false))
+  1297→        );
+  1298→        // x=200 → true && false → false
+  1299→        assert_eq!(
+  1300→            evaluate_constraint(&expr, &[json!(200)], pn),
+  1301→            Some(json!(false))
+  1302→        );
+  1303→    }
+  1304→
+  1305→    #[test]
+  1306→    fn nested_string_length_comparison() {
+  1307→        // s.length > 5
+  1308→        let expr = SymExpr::BinOp {
+  1309→            op: BinOpKind::Gt,
+  1310→            left: Box::new(SymExpr::Call {
+  1311→                name: "length".into(),
+  1312→                receiver: Some(Box::new(param("s"))),
+  1313→                args: vec![],
+  1314→            }),
+  1315→            right: Box::new(int_const(5)),
+  1316→        };
+  1317→        let pn = &names(&["s"]);
+  1318→        assert_eq!(
+  1319→            evaluate_constraint(&expr, &[json!("hello world")], pn),
+  1320→            Some(json!(true))
+  1321→        );
+  1322→        assert_eq!(
+  1323→            evaluate_constraint(&expr, &[json!("hi")], pn),
+  1324→            Some(json!(false))
+  1325→        );
+  1326→    }
+  1327→
+  1328→    // --- Bitwise ops return None ---
+  1329→
+  1330→    #[test]
+  1331→    fn bitwise_ops_return_none() {
+  1332→        for op in [
+  1333→            BinOpKind::BitwiseAnd,
+  1334→            BinOpKind::BitwiseOr,
+  1335→            BinOpKind::BitwiseXor,
+  1336→            BinOpKind::Shl,
+  1337→            BinOpKind::Shr,
+  1338→            BinOpKind::BitClear,
+  1339→        ] {
+  1340→            let expr = SymExpr::BinOp {
+  1341→                op,
+  1342→                left: Box::new(int_const(5)),
+  1343→                right: Box::new(int_const(3)),
+  1344→            };
+  1345→            assert_eq!(evaluate_constraint(&expr, &[], &[]), None, "op {op:?} should return None");
+  1346→        }
+  1347→    }
+  1348→
+  1349→    #[test]
+  1350→    fn in_and_instanceof_return_none() {
+  1351→        for op in [BinOpKind::In, BinOpKind::InstanceOf] {
+  1352→            let expr = SymExpr::BinOp {
+  1353→                op,
+  1354→                left: Box::new(str_const("key")),
+  1355→                right: Box::new(param("obj")),
+  1356→            };
+  1357→            assert_eq!(
+  1358→                evaluate_constraint(&expr, &[json!({})], &names(&["obj"])),
+  1359→                None,
+  1360→            );
+  1361→        }
+  1362→    }
+  1363→
+  1364→    // --- Truthiness ---
+  1365→
+  1366→    #[test]
+  1367→    fn truthiness_edge_cases() {
+  1368→        // Empty string is falsy
+  1369→        let not_empty = SymExpr::UnOp {
+  1370→            op: UnOpKind::Not,
+  1371→            operand: Box::new(str_const("")),
+  1372→        };
+  1373→        assert_eq!(evaluate_constraint(&not_empty, &[], &[]), Some(json!(true)));
+  1374→
+  1375→        // Zero is falsy
+  1376→        let not_zero = SymExpr::UnOp {
+  1377→            op: UnOpKind::Not,
+  1378→            operand: Box::new(int_const(0)),
+  1379→        };
+  1380→        assert_eq!(evaluate_constraint(&not_zero, &[], &[]), Some(json!(true)));
+  1381→
+  1382→        // Non-empty string is truthy
+  1383→        let not_str = SymExpr::UnOp {
+  1384→            op: UnOpKind::Not,
+  1385→            operand: Box::new(str_const("a")),
+  1386→        };
+  1387→        assert_eq!(evaluate_constraint(&not_str, &[], &[]), Some(json!(false)));
+  1388→    }
+  1389→
+  1390→    // --- Propagation of None ---
+  1391→
+  1392→    #[test]
+  1393→    fn unknown_in_binop_propagates_none() {
+  1394→        let expr = SymExpr::BinOp {
+  1395→            op: BinOpKind::Add,
+  1396→            left: Box::new(SymExpr::Unknown),
+  1397→            right: Box::new(int_const(5)),
+  1398→        };
+  1399→        assert_eq!(evaluate_constraint(&expr, &[], &[]), None);
+  1400→    }
+  1401→
+  1402→    #[test]
+  1403→    fn unknown_in_unop_propagates_none() {
+  1404→        let expr = SymExpr::UnOp {
+  1405→            op: UnOpKind::Not,
+  1406→            operand: Box::new(SymExpr::Unknown),
+  1407→        };
+  1408→        assert_eq!(evaluate_constraint(&expr, &[], &[]), None);
+  1409→    }
+  1410→
+  1411→    #[test]
+  1412→    fn string_op_with_non_string_returns_none() {
+  1413→        let expr = SymExpr::Call {
+  1414→            name: "includes".into(),
+  1415→            receiver: Some(Box::new(int_const(42))),
+  1416→            args: vec![str_const("x")],
+  1417→        };
+  1418→        assert_eq!(evaluate_constraint(&expr, &[], &[]), None);
+  1419→    }
+  1420→
+  1421→    // ========================================================================
+  1422→    // TriageState and triage_candidate tests
+  1423→    // ========================================================================
+  1424→
+  1425→    fn make_decision(branch_id: u32, taken: bool, expr: SymExpr) -> BranchDecision {
+  1426→        BranchDecision {
+  1427→            branch_id,
+  1428→            line: branch_id * 10,
+  1429→            taken,
+  1430→            constraint: SymConstraint::Expr { expr },
+  1431→        }
+  1432→    }
+  1433→
+  1434→    fn make_unknown_decision(branch_id: u32, taken: bool) -> BranchDecision {
+  1435→        BranchDecision {
+  1436→            branch_id,
+  1437→            line: branch_id * 10,
+  1438→            taken,
+  1439→            constraint: SymConstraint::Unknown {
+  1440→                hint: "opaque".into(),
+  1441→            },
+  1442→        }
+  1443→    }
+  1444→
+  1445→    // x > 0
+  1446→    fn x_gt_0() -> SymExpr {
+  1447→        SymExpr::BinOp {
+  1448→            op: BinOpKind::Gt,
+  1449→            left: Box::new(param("x")),
+  1450→            right: Box::new(int_const(0)),
+  1451→        }
+  1452→    }
+  1453→
+  1454→    // x == 10
+  1455→    fn x_eq_10() -> SymExpr {
+  1456→        SymExpr::BinOp {
+  1457→            op: BinOpKind::Eq,
+  1458→            left: Box::new(param("x")),
+  1459→            right: Box::new(int_const(10)),
+  1460→        }
+  1461→    }
+  1462→
+  1463→    #[test]
+  1464→    fn triage_state_trace_accumulation() {
+  1465→        let mut state = TriageState::new(names(&["x"]));
+  1466→        assert_eq!(state.trace_count(), 0);
+  1467→
+  1468→        let trace = vec![make_decision(1, true, x_gt_0())];
+  1469→        state.update(&trace);
+  1470→        assert_eq!(state.trace_count(), 1);
+  1471→
+  1472→        let trace2 = vec![
+  1473→            make_decision(1, true, x_gt_0()),
+  1474→            make_decision(2, false, x_eq_10()),
+  1475→        ];
+  1476→        state.update(&trace2);
+  1477→        assert_eq!(state.trace_count(), 2);
+  1478→    }
+  1479→
+  1480→    #[test]
+  1481→    fn triage_state_dedup_same_branch_id_sequence() {
+  1482→        let mut state = TriageState::new(names(&["x"]));
+  1483→
+  1484→        // Same branch IDs [1, 2] but different taken values.
+  1485→        let trace_a = vec![
+  1486→            make_decision(1, true, x_gt_0()),
+  1487→            make_decision(2, true, x_eq_10()),
+  1488→        ];
+  1489→        let trace_b = vec![
+  1490→            make_decision(1, false, x_gt_0()),
+  1491→            make_decision(2, false, x_eq_10()),
+  1492→        ];
+  1493→        state.update(&trace_a);
+  1494→        state.update(&trace_b);
+  1495→        assert_eq!(state.trace_count(), 1);
+  1496→    }
+  1497→
+  1498→    #[test]
+  1499→    fn triage_state_cap_at_64() {
+  1500→        let mut state = TriageState::new(names(&["x"]));
+  1501→
+  1502→        for i in 0..65u32 {
+  1503→            let trace = vec![make_decision(i, true, x_gt_0())];
+  1504→            state.update(&trace);
+  1505→        }
+  1506→        assert_eq!(state.trace_count(), MAX_TRACES);
+  1507→    }
+  1508→
+  1509→    #[test]
+  1510→    fn triage_state_observed_directions_updated() {
+  1511→        let mut state = TriageState::new(names(&["x"]));
+  1512→
+  1513→        let trace = vec![
+  1514→            make_decision(1, true, x_gt_0()),
+  1515→            make_decision(2, false, x_eq_10()),
+  1516→        ];
+  1517→        state.update(&trace);
+  1518→
+  1519→        assert_eq!(state.observed_direction_count(), 2);
+  1520→        // The observed directions should include (1, true) and (2, false).
+  1521→    }
+  1522→
+  1523→    #[test]
+  1524→    fn triage_verdict_indeterminate_no_traces() {
+  1525→        let state = TriageState::new(names(&["x"]));
+  1526→        let covered = HashSet::new();
+  1527→        assert_eq!(
+  1528→            state.triage_candidate(&[json!(5)], &covered),
+  1529→            TriageVerdict::Indeterminate
+  1530→        );
+  1531→    }
+  1532→
+  1533→    #[test]
+  1534→    fn triage_verdict_skip_when_path_covered() {
+  1535→        let mut state = TriageState::new(names(&["x"]));
+  1536→
+  1537→        // Observe trace: branch 1 taken (x > 0)
+  1538→        let trace = vec![make_decision(1, true, x_gt_0())];
+  1539→        state.update(&trace);
+  1540→
+  1541→        // Mark the predicted path as covered.
+  1542→        // For x=5, branch 1 will predict Taken → hash matches the observed trace.
+  1543→        let predicted = vec![BranchDecision {
+  1544→            branch_id: 1,
+  1545→            line: 10,
+  1546→            taken: true,
+  1547→            constraint: SymConstraint::Expr { expr: x_gt_0() },
+  1548→        }];
+  1549→        let path_hash = hash_branch_path(&predicted);
+  1550→        let mut covered = HashSet::new();
+  1551→        covered.insert(path_hash);
+  1552→
+  1553→        assert_eq!(
+  1554→            state.triage_candidate(&[json!(5)], &covered),
+  1555→            TriageVerdict::Skip
+  1556→        );
+  1557→    }
+  1558→
+  1559→    #[test]
+  1560→    fn triage_verdict_execute_novel_direction() {
+  1561→        let mut state = TriageState::new(names(&["x"]));
+  1562→
+  1563→        // Observe only the taken=true direction for branch 1 (x > 0).
+  1564→        let trace = vec![make_decision(1, true, x_gt_0())];
+  1565→        state.update(&trace);
+  1566→
+  1567→        // Candidate x=-1 predicts branch 1 NotTaken — novel direction.
+  1568→        let covered = HashSet::new();
+  1569→        let verdict = state.triage_candidate(&[json!(-1)], &covered);
+  1570→        assert_eq!(
+  1571→            verdict,
+  1572→            TriageVerdict::Execute {
+  1573→                novel_count: 1,
+  1574→                first_novel_depth: 0,
+  1575→            }
+  1576→        );
+  1577→    }
+  1578→
+  1579→    #[test]
+  1580→    fn triage_verdict_execute_novel_path_hash() {
+  1581→        let mut state = TriageState::new(names(&["x"]));
+  1582→
+  1583→        // Observe trace: branch 1 taken, branch 2 taken.
+  1584→        let trace = vec![
+  1585→            make_decision(1, true, x_gt_0()),
+  1586→            make_decision(2, true, x_eq_10()),
+  1587→        ];
+  1588→        state.update(&trace);
+  1589→        // Also observe the not-taken directions so they aren't "novel".
+  1590→        state.observed_directions.insert((1, false));
+  1591→        state.observed_directions.insert((2, false));
+  1592→
+  1593→        // For x=-1: branch 1 NotTaken, branch 2 NotTaken.
+  1594→        // Both directions are already observed, but the combination might be a new path hash.
+  1595→        // With empty covered_paths, this should be Execute (new path hash).
+  1596→        let covered = HashSet::new();
+  1597→        let verdict = state.triage_candidate(&[json!(-1)], &covered);
+  1598→        match verdict {
+  1599→            TriageVerdict::Execute { .. } => {} // expected
+  1600→            other => panic!("expected Execute, got {other:?}"),
+  1601→        }
+  1602→    }
+  1603→
+  1604→    #[test]
+  1605→    fn triage_verdict_indeterminate_too_many_unknowns() {
+  1606→        let mut state = TriageState::new(names(&["x"]));
+  1607→
+  1608→        // All branches have Unknown constraints → all indeterminate.
+  1609→        let trace = vec![
+  1610→            make_unknown_decision(1, true),
+  1611→            make_unknown_decision(2, false),
+  1612→            make_unknown_decision(3, true),
+  1613→        ];
+  1614→        state.update(&trace);
+  1615→
+  1616→        let covered = HashSet::new();
+  1617→        assert_eq!(
+  1618→            state.triage_candidate(&[json!(5)], &covered),
+  1619→            TriageVerdict::Indeterminate
+  1620→        );
+  1621→    }
+  1622→
+  1623→    #[test]
+  1624→    fn predict_branch_taken() {
+  1625→        let decision = make_decision(1, true, x_gt_0());
+  1626→        assert_eq!(
+  1627→            predict_branch(&decision, &[json!(5)], &names(&["x"])),
+  1628→            BranchPrediction::Taken
+  1629→        );
+  1630→    }
+  1631→
+  1632→    #[test]
+  1633→    fn predict_branch_not_taken() {
+  1634→        let decision = make_decision(1, true, x_gt_0());
+  1635→        assert_eq!(
+  1636→            predict_branch(&decision, &[json!(-1)], &names(&["x"])),
+  1637→            BranchPrediction::NotTaken
+  1638→        );
+  1639→    }
+  1640→
+  1641→    #[test]
+  1642→    fn predict_branch_indeterminate_unknown_constraint() {
+  1643→        let decision = make_unknown_decision(1, true);
+  1644→        assert_eq!(
+  1645→            predict_branch(&decision, &[json!(5)], &names(&["x"])),
+  1646→            BranchPrediction::Indeterminate
+  1647→        );
+  1648→    }
+  1649→
+  1650→    #[test]
+  1651→    fn predict_branch_indeterminate_unresolvable_expr() {
+  1652→        // Constraint references param "y" but only "x" is provided.
+  1653→        let expr = SymExpr::BinOp {
+  1654→            op: BinOpKind::Gt,
+  1655→            left: Box::new(SymExpr::Param {
+  1656→                name: "y".into(),
+  1657→                path: vec![],
+  1658→            }),
+  1659→            right: Box::new(int_const(0)),
+  1660→        };
+  1661→        let decision = make_decision(1, true, expr);
+  1662→        assert_eq!(
+  1663→            predict_branch(&decision, &[json!(5)], &names(&["x"])),
+  1664→            BranchPrediction::Indeterminate
+  1665→        );
+  1666→    }
+  1667→
+  1668→    #[test]
+  1669→    fn triage_dedup_preserves_observed_directions_from_both() {
+  1670→        let mut state = TriageState::new(names(&["x"]));
+  1671→
+  1672→        let trace_a = vec![make_decision(1, true, x_gt_0())];
+  1673→        let trace_b = vec![make_decision(1, false, x_gt_0())];
+  1674→
+  1675→        state.update(&trace_a);
+  1676→        state.update(&trace_b); // deduped — but directions still recorded
+  1677→
+  1678→        assert_eq!(state.trace_count(), 1);
+  1679→        assert_eq!(state.observed_direction_count(), 2);
+  1680→    }
+  1681→
+  1682→    #[test]
+  1683→    fn triage_multi_trace_first_novel_wins() {
+  1684→        let mut state = TriageState::new(names(&["x"]));
+  1685→
+  1686→        // Trace 1: branch 1 taken (x > 0)
+  1687→        let trace1 = vec![make_decision(1, true, x_gt_0())];
+  1688→        state.update(&trace1);
+  1689→
+  1690→        // Trace 2: branch 1 taken, branch 2 taken (x > 0 && x == 10)
+  1691→        let trace2 = vec![
+  1692→            make_decision(1, true, x_gt_0()),
+  1693→            make_decision(2, true, x_eq_10()),
+  1694→        ];
+  1695→        state.update(&trace2);
+  1696→
+  1697→        // x=-1: trace1 predicts branch 1 NotTaken → novel.
+  1698→        // Should return Execute from the first matching trace.
+  1699→        let covered = HashSet::new();
+  1700→        let verdict = state.triage_candidate(&[json!(-1)], &covered);
+  1701→        assert_eq!(
+  1702→            verdict,
+  1703→            TriageVerdict::Execute {
+  1704→                novel_count: 1,
+  1705→                first_novel_depth: 0,
+  1706→            }
+  1707→        );
+  1708→    }
+  1709→
+  1710→    // --- Adaptive self-disabling ---
+  1711→
+  1712→    #[test]
+  1713→    fn no_disable_before_min_verdicts() {
+  1714→        let mut state = TriageState::new(names(&["x"]));
+  1715→        // Issue 19 Execute verdicts (all non-skip) — still below threshold.
+  1716→        for _ in 0..MIN_VERDICTS_FOR_EVAL - 1 {
+  1717→            state.record_verdict(&TriageVerdict::Execute {
+  1718→                novel_count: 1,
+  1719→                first_novel_depth: 0,
+  1720→            });
+  1721→        }
+  1722→        assert!(!state.is_disabled());
+  1723→    }
+  1724→
+  1725→    #[test]
+  1726→    fn low_skip_rate_disables_triage() {
+  1727→        let mut state = TriageState::new(names(&["x"]));
+  1728→        // 1 skip + 19 executes = 5% skip rate < MIN_SKIP_RATE (10%).
+  1729→        state.record_verdict(&TriageVerdict::Skip);
+  1730→        for _ in 0..MIN_VERDICTS_FOR_EVAL - 1 {
+  1731→            state.record_verdict(&TriageVerdict::Execute {
+  1732→                novel_count: 1,
+  1733→                first_novel_depth: 0,
+  1734→            });
+  1735→        }
+  1736→        assert!(state.is_disabled());
+  1737→        assert_eq!(
+  1738→            state.disable_reason(),
+  1739→            Some(TriageDisableReason::LowSkipRate)
+  1740→        );
+  1741→    }
+  1742→
+  1743→    #[test]
+  1744→    fn sufficient_skip_rate_stays_enabled() {
+  1745→        let mut state = TriageState::new(names(&["x"]));
+  1746→        // 4 skips + 16 executes = 20% skip rate > MIN_SKIP_RATE (10%).
+  1747→        for _ in 0..4 {
+  1748→            state.record_verdict(&TriageVerdict::Skip);
+  1749→        }
+  1750→        for _ in 0..16 {
+  1751→            state.record_verdict(&TriageVerdict::Execute {
+  1752→                novel_count: 1,
+  1753→                first_novel_depth: 0,
+  1754→            });
+  1755→        }
+  1756→        assert!(!state.is_disabled());
+  1757→    }
+  1758→
+  1759→    #[test]
+  1760→    fn should_sample_at_interval() {
+  1761→        let mut state = TriageState::new(names(&["x"]));
+  1762→        assert!(!state.should_sample()); // 0 skips
+  1763→
+  1764→        for i in 1..=TRIAGE_SAMPLE_INTERVAL * 2 {
+  1765→            state.record_verdict(&TriageVerdict::Skip);
+  1766→            if i % TRIAGE_SAMPLE_INTERVAL == 0 {
+  1767→                assert!(state.should_sample(), "should sample at skip #{i}");
+  1768→            } else {
+  1769→                assert!(!state.should_sample(), "should not sample at skip #{i}");
+  1770→            }
+  1771→        }
+  1772→    }
+  1773→
+  1774→    #[test]
+  1775→    fn misprediction_disables_triage() {
+  1776→        let mut state = TriageState::new(names(&["x"]));
+  1777→        // 3 correct + 2 wrong = 40% misprediction > MAX_MISPREDICTION_RATE (25%).
+  1778→        state.record_sample(100, 100);
+  1779→        state.record_sample(100, 100);
+  1780→        state.record_sample(100, 100);
+  1781→        assert!(!state.is_disabled());
+  1782→
+  1783→        state.record_sample(100, 200); // 1/4 = 25%, not > 25%
+  1784→        assert!(!state.is_disabled());
+  1785→
+  1786→        state.record_sample(100, 200); // 2/5 = 40% > 25%
+  1787→        assert!(state.is_disabled());
+  1788→        assert_eq!(
+  1789→            state.disable_reason(),
+  1790→            Some(TriageDisableReason::HighMisprediction)
+  1791→        );
+  1792→    }
+  1793→
+  1794→    #[test]
+  1795→    fn misprediction_within_tolerance_stays_enabled() {
+  1796→        let mut state = TriageState::new(names(&["x"]));
+  1797→        // 4 correct, 1 wrong → 20% misprediction < MAX_MISPREDICTION_RATE (25%).
+  1798→        for _ in 0..4 {
+  1799→            state.record_sample(100, 100);
+  1800→        }
+  1801→        state.record_sample(100, 200);
+  1802→        assert!(!state.is_disabled());
+  1803→    }
+  1804→
+  1805→    #[test]
+  1806→    fn disabled_triage_returns_indeterminate() {
+  1807→        let mut state = TriageState::new(names(&["x"]));
+  1808→        let trace = vec![make_decision(1, true, x_gt_0())];
+  1809→        state.update(&trace);
+  1810→
+  1811→        // Force disable via misprediction.
+  1812→        state.record_sample(1, 2);
+  1813→        assert!(state.is_disabled());
+  1814→
+  1815→        let covered = HashSet::new();
+  1816→        let verdict = state.triage_candidate(&[json!(5)], &covered);
+  1817→        assert_eq!(verdict, TriageVerdict::Indeterminate);
+  1818→    }
+  1819→
+  1820→    #[test]
+  1821→    fn record_verdict_noop_when_disabled() {
+  1822→        let mut state = TriageState::new(names(&["x"]));
+  1823→        state.record_sample(1, 2); // disables
+  1824→        assert!(state.is_disabled());
+  1825→
+  1826→        let before_total = state.total_verdicts;
+  1827→        state.record_verdict(&TriageVerdict::Skip);
+  1828→        assert_eq!(state.total_verdicts, before_total);
+  1829→    }
+  1830→
+  1831→    #[test]
+  1832→    fn record_sample_noop_when_disabled() {
+  1833→        let mut state = TriageState::new(names(&["x"]));
+  1834→        state.record_sample(1, 2); // disables
+  1835→        let before_samples = state.samples_taken;
+  1836→
+  1837→        state.record_sample(3, 4);
+  1838→        assert_eq!(state.samples_taken, before_samples);
+  1839→    }
+  1840→
+  1841→    #[test]
+  1842→    fn indeterminate_verdicts_count_toward_total() {
+  1843→        let mut state = TriageState::new(names(&["x"]));
+  1844→        // All indeterminate = 0% skip rate.
+  1845→        for _ in 0..MIN_VERDICTS_FOR_EVAL {
+  1846→            state.record_verdict(&TriageVerdict::Indeterminate);
+  1847→        }
+  1848→        assert!(state.is_disabled());
+  1849→        assert_eq!(
+  1850→            state.disable_reason(),
+  1851→            Some(TriageDisableReason::LowSkipRate)
+  1852→        );
+  1853→    }
+  1854→}
+  1855→

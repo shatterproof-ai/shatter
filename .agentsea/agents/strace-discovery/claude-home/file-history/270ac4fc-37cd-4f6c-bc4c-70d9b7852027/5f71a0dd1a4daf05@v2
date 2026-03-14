@@ -1,0 +1,77 @@
+# ─── Go ───────────────────────────────────────────────────────────────────────
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+/vendor/
+/api/bin/
+/bin/
+
+# ─── Node / Frontend ──────────────────────────────────────────────────────────
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnp/
+.pnp.js
+.next/
+out/
+dist/
+build/
+storybook-static/
+.turbo/
+
+# ─── Playwright ───────────────────────────────────────────────────────────────
+playwright-report/
+test-results/
+blob-report/
+
+# ─── Environment ──────────────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ─── OS ───────────────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ─── IDEs ─────────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# ─── Go tooling ───────────────────────────────────────────────────────────────
+# air hot-reload temp dir
+tmp/
+
+# ─── Secrets / Certs ──────────────────────────────────────────────────────────
+*.pem
+*.key
+*.crt
+*.p12
+
+# ─── Worktree meta ───────────────────────────────────────────────────────────
+worktrees/
+.base_project_port
+.worktrees_dir
+
+# Dolt database files (added by bd init)
+.dolt/
+*.db
+
+# Beads lock files
+*.pid.lock

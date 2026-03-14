@@ -1,0 +1,11 @@
+{
+  "id": "2",
+  "subject": "str-fpgb.10: Rust teardown_ack parity",
+  "description": "Fix Rust frontend returning \"teardown\" instead of \"teardown_ack\". Add failing test first, then fix. Beads ID: str-fpgb.10",
+  "owner": "rust-teardown",
+  "status": "completed",
+  "blocks": [
+    "6"
+  ],
+  "blockedBy": []
+}

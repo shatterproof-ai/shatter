@@ -1,0 +1,14 @@
+[
+  {
+    "from": "team-lead",
+    "text": "## Task\nYou are working on beads issue **kapow-d1i.6: PostHog provider wiring** (Task #1).\n\nWire PostHogProvider from posthog-js/react into main.tsx provider hierarchy: StrictMode > UrqlProvider > AppProviders > PostHogProvider > ErrorBoundary > BrowserRouter > App. This is the final assembly step that activates the PostHog integration.\n\n**Acceptance criteria**: PostHogProvider wraps the app; provider hierarchy correct; pnpm build && pnpm lint pass with zero errors.\n\n## WORKTREE SETUP — RUN FIRST\nBefore doing anything else, create and enter an isolated worktree:\n```bash\nREPO_ROOT=\"$(git rev-parse --show-toplevel)\"\nBRANCH_NAME=\"worktree/posthog-wiring\"\nWORKTREE_DIR=\"$REPO_ROOT/.claude/worktrees/$BRANCH_NAME\"\n\nif [ -d \"$WORKTREE_DIR\" ]; then\n  echo \"Worktree already exists, reusing\"\nelse\n  git worktree add \"$WORKTREE_DIR\" -b \"$BRANCH_NAME\"\nfi\n\ncd \"$WORKTREE_DIR\"\n```\nVerify you are in the right place:\n```bash\necho \"CWD: $(pwd)\"\necho \"Branch: $(git branch --show-current)\"\necho \"$(pwd)\" | grep -q '\\.claude/worktrees/' && echo \"WORKTREE VERIFIED\" || echo \"FATAL: NOT in a worktree\"\n```\nIf verification fails, STOP and report the error to the team lead.\n\nALL subsequent commands must run from this worktree directory.\nNEVER cd back to the main repo directory. Commit and push ONLY on your worktree branch — never touch main.\n\n## Quality Gate (must pass before reporting done)\n```bash\ncd web && pnpm install && pnpm build && pnpm lint && pnpm test\n```\n\n## When Done\n1. Commit your changes with a descriptive message\n2. Push your branch: `git push -u origin HEAD`\n3. Report completion to team lead with quality gate output\n4. Mark Task #1 as completed via TaskUpdate\n\nFollow all conventions in CLAUDE.md and AGENTS.md.",
+    "timestamp": "2026-03-12T04:40:00.323Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773290415542-l9g5w82\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"REPO_ROOT=\\\"$(git rev-parse --show-toplevel)\\\" && BRANCH_NAME=\\\"worktree/posthog-wiring\\\" && WORKTREE_DIR=\\\"$REPO_ROOT/.claude/worktrees/$BRANCH_NAME\\\" && if [ -d \\\"$WORKTREE_DIR\\\" ]; then echo \\\"Worktree already exists, reusing\\\"; else git worktree add \\\"$WORKTREE_DIR\\\" -b \\\"$BRANCH_NAME\\\"; fi && cd \\\"$WORKTREE_DIR\\\" && echo \\\"CWD: $(pwd)\\\" && echo \\\"Branch: $(git branch --show-current)\\\" && echo \\\"$(pwd)\\\" | grep -q '\\\\.claude/worktrees/' && echo \\\"WORKTREE VERIFIED\\\" || echo \\\"FATAL: NOT in a worktree\\\"\",\"description\":\"Create and verify worktree\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-12T04:41:05.780Z",
+    "read": true
+  }
+]

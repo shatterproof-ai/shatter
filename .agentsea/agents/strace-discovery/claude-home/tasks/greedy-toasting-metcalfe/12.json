@@ -1,0 +1,10 @@
+{
+  "id": "12",
+  "subject": "kapow-34p: API log redaction for query data",
+  "description": "Redact sensitive query/location data from default request logs. Quality gate: make api-test-unit && make api-lint. WAIT: after 3a4 merges.",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": [
+    "6"
+  ]
+}

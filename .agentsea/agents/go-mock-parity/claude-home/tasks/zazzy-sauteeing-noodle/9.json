@@ -1,0 +1,9 @@
+{
+  "id": "9",
+  "subject": "str-99w9: README CLI reference parity",
+  "description": "Align README command docs with current CLI surface from shatter --help. Beads ID: str-99w9",
+  "owner": "t8-99w9",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

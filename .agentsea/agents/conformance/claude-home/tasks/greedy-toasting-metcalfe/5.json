@@ -1,0 +1,8 @@
+{
+  "id": "5",
+  "subject": "kapow-5ln: Data source loading states",
+  "description": "Expose loading/error state from data-source hook, update About page consumers. Quality gate: cd web && pnpm build && pnpm lint && pnpm test",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

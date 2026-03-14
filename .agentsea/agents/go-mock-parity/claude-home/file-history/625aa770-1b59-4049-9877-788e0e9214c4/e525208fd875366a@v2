@@ -1,0 +1,177 @@
+package config
+
+import (
+	"fmt"
+	"log/slog"
+	"strings"
+	"time"
+
+	"github.com/caarlos0/env/v11"
+)
+
+// Config holds all application configuration loaded from environment variables.
+type Config struct {
+	Host string `env:"HOST" envDefault:"0.0.0.0"`
+	Port int    `env:"PORT" envDefault:"8081"`
+
+	DatabaseURL string `env:"DATABASE_URL,required"`
+
+	JWTSecret    string `env:"JWT_SECRET"` //nolint:gosec // G117: config field name, not a hardcoded secret
+	JWTPublicKey string `env:"JWT_PUBLIC_KEY"`
+	JWTIssuer    string `env:"JWT_ISSUER"`
+	JWTAudience  string `env:"JWT_AUDIENCE"`
+
+	OIDCDiscoveryURL string `env:"OIDC_DISCOVERY_URL"`
+
+	LogLevel  string `env:"LOG_LEVEL" envDefault:"info"`
+	LogFormat string `env:"LOG_FORMAT" envDefault:"json"`
+
+	Env string `env:"ENV" envDefault:"development"`
+
+	CORSOrigins string `env:"CORS_ORIGINS"`
+
+	GraphQLPlayground    bool `env:"GRAPHQL_PLAYGROUND" envDefault:"false"`
+	GraphQLIntrospection bool `env:"GRAPHQL_INTROSPECTION" envDefault:"true"`
+
+	MCPEnabled  bool `env:"MCP_ENABLED" envDefault:"true"`
+	OTelEnabled bool `env:"OTEL_ENABLED" envDefault:"false"`
+
+	PostHogAPIKey string `env:"POSTHOG_API_KEY"`
+	PostHogHost   string `env:"POSTHOG_HOST"`
+
+	ShutdownTimeout time.Duration `env:"SHUTDOWN_TIMEOUT" envDefault:"15s"`
+
+	MaxExportRows int `env:"MAX_EXPORT_ROWS" envDefault:"500"`
+
+	// Rate limiting
+	RateLimitEnabled     bool   `env:"RATE_LIMIT_ENABLED" envDefault:"true"`
+	RateLimitGraphQL     int    `env:"RATE_LIMIT_GRAPHQL" envDefault:"60"`
+	RateLimitGraphQLAuth int    `env:"RATE_LIMIT_GRAPHQL_AUTH" envDefault:"120"`
+	RateLimitExport      int    `env:"RATE_LIMIT_EXPORT" envDefault:"10"`
+	RateLimitMCP         int    `env:"RATE_LIMIT_MCP" envDefault:"120"`
+	PrivateAllowlistCIDRs string `env:"PRIVATE_ALLOWLIST_CIDRS" envDefault:"127.0.0.0/8,::1/128"`
+
+	// Feedback
+	FeedbackAnonymousEnabled bool `env:"FEEDBACK_ANONYMOUS_ENABLED" envDefault:"true"`
+
+	// HTTP debug logging
+	HTTPDebugRequestHeaders  string `env:"HTTP_DEBUG_REQUEST_HEADERS" envDefault:"none"`
+	HTTPDebugSelectedHeaders string `env:"HTTP_DEBUG_SELECTED_HEADERS" envDefault:"Content-Type,Accept,User-Agent"`
+	HTTPDebugRedactSensitive bool   `env:"HTTP_DEBUG_REDACT_SENSITIVE" envDefault:"true"`
+	HTTPDebugResponseMode    string `env:"HTTP_DEBUG_RESPONSE_MODE" envDefault:"none"`
+	HTTPDebugBodyMaxBytes    int    `env:"HTTP_DEBUG_BODY_MAX_BYTES" envDefault:"4096"`
+
+	// logLevelVar holds the dynamic log level. It is initialized by LogHandler
+	// and can be updated at runtime to change the global log level without a restart.
+	logLevelVar slog.LevelVar
+
+	// swappableWriter is the log output target, swappable at runtime.
+	swappableWriter *SwappableWriter
+
+	// categoryHandler wraps the slog handler with per-category level overrides.
+	categoryHandler *CategoryHandler
+}
+
+// Load parses and validates configuration from environment variables.
+func Load() (*Config, error) {
+	cfg := &Config{}
+	if err := env.Parse(cfg); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	return cfg, nil
+}
+
+// Addr returns the host:port bind address.
+func (c *Config) Addr() string {
+	return fmt.Sprintf("%s:%d", c.Host, c.Port)
+}
+
+// LevelTrace is a custom log level below DEBUG for very detailed diagnostic
+// output. Usage: logger.Log(ctx, config.LevelTrace, "msg", "key", val)
+const LevelTrace = slog.Level(-8)
+
+// ParseLogLevel converts a log level string to the corresponding slog.Level.
+func ParseLogLevel(s string) slog.Level {
+	switch s {
+	case "trace":
+		return LevelTrace
+	case "debug":
+		return slog.LevelDebug
+	case "warn":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
+}
+
+// LogHandler returns an slog.Handler configured per LOG_LEVEL and LOG_FORMAT.
+// The handler uses a dynamic LevelVar so the log level can be changed at
+// runtime via LogLevelVar().Set() without recreating the handler. Output is
+// routed through a SwappableWriter and wrapped with a CategoryHandler for
+// per-category level overrides.
+func (c *Config) LogHandler() slog.Handler {
+	c.logLevelVar.Set(ParseLogLevel(c.LogLevel))
+	c.swappableWriter = NewSwappableWriter()
+
+	opts := &slog.HandlerOptions{
+		Level:     &c.logLevelVar,
+		AddSource: c.Env == "development",
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			if a.Key == slog.LevelKey {
+				if level, ok := a.Value.Any().(slog.Level); ok && level == LevelTrace {
+					a.Value = slog.StringValue("TRACE")
+				}
+			}
+			return a
+		},
+	}
+
+	var inner slog.Handler
+	if c.LogFormat == "text" {
+		inner = slog.NewTextHandler(c.swappableWriter, opts)
+	} else {
+		inner = slog.NewJSONHandler(c.swappableWriter, opts)
+	}
+
+	c.categoryHandler = NewCategoryHandler(inner, &c.logLevelVar)
+	return c.categoryHandler
+}
+
+// LogLevelVar returns the dynamic log level variable. Callers can change
+// the active log level at runtime by calling Set() on the returned LevelVar.
+func (c *Config) LogLevelVar() *slog.LevelVar {
+	return &c.logLevelVar
+}
+
+// LogWriter returns the swappable writer used for log output.
+// Returns nil if LogHandler has not been called yet.
+func (c *Config) LogWriter() *SwappableWriter {
+	return c.swappableWriter
+}
+
+// LogCategoryHandler returns the category handler for per-category level overrides.
+// Returns nil if LogHandler has not been called yet.
+func (c *Config) LogCategoryHandler() *CategoryHandler {
+	return c.categoryHandler
+}
+
+// HTTPDebugEnabled reports whether any HTTP debug logging is configured.
+func (c *Config) HTTPDebugEnabled() bool {
+	return c.HTTPDebugRequestHeaders != "none" || c.HTTPDebugResponseMode != "none"
+}
+
+// ParsedSelectedHeaders splits the comma-separated HTTPDebugSelectedHeaders
+// into a trimmed slice of header names.
+func (c *Config) ParsedSelectedHeaders() []string {
+	raw := strings.Split(c.HTTPDebugSelectedHeaders, ",")
+	out := make([]string, 0, len(raw))
+	for _, h := range raw {
+		h = strings.TrimSpace(h)
+		if h != "" {
+			out = append(out, h)
+		}
+	}
+	return out
+}

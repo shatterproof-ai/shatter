@@ -1,0 +1,1644 @@
+   150→    fn name(&self) -> &str {
+   151→        "literals"
+   152→    }
+   153→
+   154→    fn estimated_size(&self) -> Option<u64> {
+   155→        Some(self.candidates.len() as u64)
+   156→    }
+   157→}
+   158→
+   159→// ---------------------------------------------------------------------------
+   160→// RandomStrategy — infinite strategy yielding random type-aware inputs
+   161→// ---------------------------------------------------------------------------
+   162→
+   163→/// Infinite strategy that generates random inputs matching parameter types.
+   164→///
+   165→/// Wraps [`generate_random_inputs`] with an owned RNG. Seeded for
+   166→/// reproducibility or from system entropy.
+   167→pub struct RandomStrategy {
+   168→    rng: StdRng,
+   169→}
+   170→
+   171→impl RandomStrategy {
+   172→    /// Create a new random strategy. If `seed` is `Some`, the RNG is
+   173→    /// deterministic (useful for reproducible tests). If `None`, seeds
+   174→    /// from system entropy.
+   175→    pub fn new(seed: Option<u64>) -> Self {
+   176→        let rng = match seed {
+   177→            Some(s) => StdRng::seed_from_u64(s),
+   178→            None => StdRng::from_os_rng(),
+   179→        };
+   180→        Self { rng }
+   181→    }
+   182→}
+   183→
+   184→impl InputStrategy for RandomStrategy {
+   185→    fn next(&mut self, ctx: &StrategyContext) -> Option<Vec<Value>> {
+   186→        Some(generate_random_inputs(
+   187→            &ctx.params,
+   188→            &mut self.rng,
+   189→            Some(&ctx.capabilities),
+   190→        ))
+   191→    }
+   192→
+   193→    fn name(&self) -> &str {
+   194→        "random"
+   195→    }
+   196→}
+   197→
+   198→// ---------------------------------------------------------------------------
+   199→// BoundarySeeds — exhaustible strategy yielding type-aware boundary values
+   200→// ---------------------------------------------------------------------------
+   201→
+   202→/// Yields pre-computed boundary-value input vectors using pairwise coverage.
+   203→///
+   204→/// For each parameter position, every boundary value for that parameter's type
+   205→/// is paired with neutral defaults for all other parameters. This caps the
+   206→/// candidate count at `sum(boundaries_per_type_i)` instead of the cartesian
+   207→/// product. Delegates to [`generate_boundary_inputs`] for the actual generation.
+   208→pub struct BoundarySeeds {
+   209→    candidates: Vec<Vec<Value>>,
+   210→    cursor: usize,
+   211→}
+   212→
+   213→impl BoundarySeeds {
+   214→    pub fn new(params: &[ParamInfo]) -> Self {
+   215→        Self {
+   216→            candidates: generate_boundary_inputs(params),
+   217→            cursor: 0,
+   218→        }
+   219→    }
+   220→}
+   221→
+   222→impl InputStrategy for BoundarySeeds {
+   223→    fn next(&mut self, _ctx: &StrategyContext) -> Option<Vec<Value>> {
+   224→        if self.cursor < self.candidates.len() {
+   225→            let v = self.candidates[self.cursor].clone();
+   226→            self.cursor += 1;
+   227→            Some(v)
+   228→        } else {
+   229→            None
+   230→        }
+   231→    }
+   232→
+   233→    fn name(&self) -> &str {
+   234→        "boundary"
+   235→    }
+   236→
+   237→    fn estimated_size(&self) -> Option<u64> {
+   238→        Some(self.candidates.len() as u64)
+   239→    }
+   240→}
+   241→
+   242→// ---------------------------------------------------------------------------
+   243→// MetaConfig — controls the adaptive selection algorithm
+   244→// ---------------------------------------------------------------------------
+   245→
+   246→/// Configuration for the adaptive meta-strategy.
+   247→#[derive(Debug, Clone)]
+   248→pub struct MetaConfig {
+   249→    /// Sliding window size for outcome-based scoring.
+   250→    pub window_size: usize,
+   251→    /// Minimum candidates a strategy must supply before deprioritization.
+   252→    /// Clamped to `min(cold_start_threshold, estimated_size)` per strategy.
+   253→    pub cold_start_threshold: u64,
+   254→    /// Minimum allocation fraction for any non-exhausted strategy (range 0.01–0.05).
+   255→    pub floor: f64,
+   256→    /// When true, use adaptive scoring. When false (and no static_weights),
+   257→    /// use pure round-robin.
+   258→    pub adaptive: bool,
+   259→    /// Optional static weight distribution. Keys are strategy names, values
+   260→    /// are relative weights (normalized internally). Overrides adaptive scoring.
+   261→    pub static_weights: Option<Vec<(String, f64)>>,
+   262→}
+   263→
+   264→/// Sensible defaults: adaptive scoring, 100-element window, cold start of 20,
+   265→/// 2% floor, no static weights.
+   266→impl Default for MetaConfig {
+   267→    fn default() -> Self {
+   268→        Self {
+   269→            window_size: 100,
+   270→            cold_start_threshold: 20,
+   271→            floor: 0.02,
+   272→            adaptive: true,
+   273→            static_weights: None,
+   274→        }
+   275→    }
+   276→}
+   277→
+   278→// ---------------------------------------------------------------------------
+   279→// MetaStrategy — adaptive selection over registered strategies
+   280→// ---------------------------------------------------------------------------
+   281→
+   282→use rand::rngs::StdRng;
+   283→use rand::{Rng, SeedableRng};
+   284→use std::collections::VecDeque;
+   285→
+   286→/// Per-strategy scoring state.
+   287→struct StrategyState {
+   288→    /// The strategy implementation.
+   289→    strategy: Box<dyn InputStrategy>,
+   290→    /// Sliding window of recent outcomes (true = new path discovered).
+   291→    window: VecDeque<bool>,
+   292→    /// Total candidates supplied so far.
+   293→    total_supplied: u64,
+   294→    /// Whether the strategy has been exhausted (returned None from next()).
+   295→    exhausted: bool,
+   296→}
+   297→
+   298→/// Adaptive meta-strategy that selects among registered [`InputStrategy`]
+   299→/// implementations using outcome-based scoring.
+   300→///
+   301→/// Selection algorithm:
+   302→/// 1. **Static weights**: if configured, use weighted random sampling among
+   303→///    non-exhausted strategies. On exhaustion, redistribute uniformly.
+   304→/// 2. **Adaptive**: score = hit rate over sliding window. Cold-start strategies
+   305→///    (fewer than threshold candidates) get the average score of graduated
+   306→///    strategies. Floor prevents any strategy from dropping below a minimum
+   307→///    allocation.
+   308→/// 3. **Round-robin**: if adaptive is disabled and no static weights.
+   309→pub struct MetaStrategy {
+   310→    states: Vec<StrategyState>,
+   311→    config: MetaConfig,
+   312→    /// Round-robin index (used when adaptive=false and no static_weights).
+   313→    rr_index: usize,
+   314→}
+   315→
+   316→impl MetaStrategy {
+   317→    pub fn new(strategies: Vec<Box<dyn InputStrategy>>, config: MetaConfig) -> Self {
+   318→        let states = strategies
+   319→            .into_iter()
+   320→            .map(|s| StrategyState {
+   321→                strategy: s,
+   322→                window: VecDeque::with_capacity(config.window_size),
+   323→                total_supplied: 0,
+   324→                exhausted: false,
+   325→            })
+   326→            .collect();
+   327→        Self {
+   328→            states,
+   329→            config,
+   330→            rr_index: 0,
+   331→        }
+   332→    }
+   333→
+   334→    /// Select and invoke the next strategy, returning the candidate inputs
+   335→    /// and the index of the strategy that produced them.
+   336→    ///
+   337→    /// Returns `None` when all strategies are exhausted.
+   338→    pub fn next(&mut self, ctx: &StrategyContext, rng: &mut impl Rng) -> Option<(Vec<Value>, usize)> {
+   339→        if self.all_exhausted() {
+   340→            return None;
+   341→        }
+   342→
+   343→        if self.config.static_weights.is_some() {
+   344→            self.next_static(ctx, rng)
+   345→        } else if self.config.adaptive {
+   346→            self.next_adaptive(ctx, rng)
+   347→        } else {
+   348→            self.next_round_robin(ctx)
+   349→        }
+   350→    }
+   351→
+   352→    /// Fan out execution feedback to all registered strategies.
+   353→    pub fn feedback(&mut self, inputs: &[Value], result: &ExecuteResult, was_new_path: bool) {
+   354→        for state in &mut self.states {
+   355→            if !state.exhausted {
+   356→                state.strategy.feedback(inputs, result, was_new_path);
+   357→            }
+   358→        }
+   359→    }
+   360→
+   361→    /// Record an outcome for a specific strategy (called after execution).
+   362→    pub fn record_outcome(&mut self, strategy_idx: usize, was_new_path: bool) {
+   363→        if let Some(state) = self.states.get_mut(strategy_idx) {
+   364→            if state.window.len() >= self.config.window_size {
+   365→                state.window.pop_front();
+   366→            }
+   367→            state.window.push_back(was_new_path);
+   368→        }
+   369→    }
+   370→
+   371→    /// The name of the strategy at the given index.
+   372→    pub fn strategy_name(&self, idx: usize) -> &str {
+   373→        self.states[idx].strategy.name()
+   374→    }
+   375→
+   376→    /// Number of registered strategies.
+   377→    pub fn len(&self) -> usize {
+   378→        self.states.len()
+   379→    }
+   380→
+   381→    /// Whether no strategies are registered.
+   382→    pub fn is_empty(&self) -> bool {
+   383→        self.states.is_empty()
+   384→    }
+   385→
+   386→    fn all_exhausted(&self) -> bool {
+   387→        self.states.iter().all(|s| s.exhausted)
+   388→    }
+   389→
+   390→    /// Try to get the next candidate from a specific strategy, marking it
+   391→    /// exhausted if it returns None.
+   392→    fn try_next(&mut self, idx: usize, ctx: &StrategyContext) -> Option<Vec<Value>> {
+   393→        let state = &mut self.states[idx];
+   394→        if state.exhausted {
+   395→            return None;
+   396→        }
+   397→        match state.strategy.next(ctx) {
+   398→            Some(inputs) => {
+   399→                state.total_supplied += 1;
+   400→                Some(inputs)
+   401→            }
+   402→            None => {
+   403→                state.exhausted = true;
+   404→                None
+   405→            }
+   406→        }
+   407→    }
+   408→
+   409→    // --- Selection modes ---
+   410→
+   411→    fn next_static(&mut self, ctx: &StrategyContext, rng: &mut impl Rng) -> Option<(Vec<Value>, usize)> {
+   412→        let weights = self.config.static_weights.clone()?;
+   413→
+   414→        // Build weight vector for non-exhausted strategies.
+   415→        loop {
+   416→            let mut candidates: Vec<(usize, f64)> = Vec::new();
+   417→            for (idx, state) in self.states.iter().enumerate() {
+   418→                if state.exhausted {
+   419→                    continue;
+   420→                }
+   421→                let weight = weights
+   422→                    .iter()
+   423→                    .find(|(name, _)| name == state.strategy.name())
+   424→                    .map(|(_, w)| *w)
+   425→                    .unwrap_or(1.0);
+   426→                candidates.push((idx, weight));
+   427→            }
+   428→
+   429→            if candidates.is_empty() {
+   430→                return None;
+   431→            }
+   432→
+   433→            let idx = weighted_select(&candidates, rng);
+   434→            if let Some(inputs) = self.try_next(idx, ctx) {
+   435→                return Some((inputs, idx));
+   436→            }
+   437→            // Strategy exhausted on this call; loop to rebuild candidates.
+   438→        }
+   439→    }
+   440→
+   441→    fn next_adaptive(&mut self, ctx: &StrategyContext, rng: &mut impl Rng) -> Option<(Vec<Value>, usize)> {
+   442→        loop {
+   443→            let scores = self.compute_scores();
+   444→            let candidates: Vec<(usize, f64)> = scores
+   445→                .into_iter()
+   446→                .filter(|(idx, _)| !self.states[*idx].exhausted)
+   447→                .collect();
+   448→
+   449→            if candidates.is_empty() {
+   450→                return None;
+   451→            }
+   452→
+   453→            let idx = weighted_select(&candidates, rng);
+   454→            if let Some(inputs) = self.try_next(idx, ctx) {
+   455→                return Some((inputs, idx));
+   456→            }
+   457→            // Strategy exhausted; loop to recompute.
+   458→        }
+   459→    }
+   460→
+   461→    fn next_round_robin(&mut self, ctx: &StrategyContext) -> Option<(Vec<Value>, usize)> {
+   462→        let n = self.states.len();
+   463→        for _ in 0..n {
+   464→            let idx = self.rr_index % n;
+   465→            self.rr_index = self.rr_index.wrapping_add(1);
+   466→            if let Some(inputs) = self.try_next(idx, ctx) {
+   467→                return Some((inputs, idx));
+   468→            }
+   469→        }
+   470→        None
+   471→    }
+   472→
+   473→    /// Compute adaptive scores for all non-exhausted strategies.
+   474→    fn compute_scores(&self) -> Vec<(usize, f64)> {
+   475→        // First pass: compute hit rates for graduated strategies to derive average.
+   476→        let mut graduated_scores: Vec<f64> = Vec::new();
+   477→        for (idx, state) in self.states.iter().enumerate() {
+   478→            if state.exhausted {
+   479→                continue;
+   480→            }
+   481→            let threshold = self.effective_cold_start(idx);
+   482→            if state.total_supplied >= threshold {
+   483→                graduated_scores.push(hit_rate(&state.window));
+   484→            }
+   485→        }
+   486→        let avg_score = if graduated_scores.is_empty() {
+   487→            1.0
+   488→        } else {
+   489→            graduated_scores.iter().sum::<f64>() / graduated_scores.len() as f64
+   490→        };
+   491→
+   492→        // Second pass: assign scores.
+   493→        let mut result = Vec::new();
+   494→        for (idx, state) in self.states.iter().enumerate() {
+   495→            if state.exhausted {
+   496→                continue;
+   497→            }
+   498→            let threshold = self.effective_cold_start(idx);
+   499→            let score = if state.total_supplied < threshold {
+   500→                avg_score
+   501→            } else {
+   502→                hit_rate(&state.window)
+   503→            };
+   504→            result.push((idx, score.max(self.config.floor)));
+   505→        }
+   506→        result
+   507→    }
+   508→
+   509→    /// Effective cold-start threshold for a strategy: min(configured, estimated_size).
+   510→    fn effective_cold_start(&self, idx: usize) -> u64 {
+   511→        let base = self.config.cold_start_threshold;
+   512→        match self.states[idx].strategy.estimated_size() {
+   513→            Some(size) => base.min(size),
+   514→            None => base,
+   515→        }
+   516→    }
+   517→}
+   518→
+   519→// ---------------------------------------------------------------------------
+   520→// Helpers
+   521→// ---------------------------------------------------------------------------
+   522→
+   523→/// Hit rate: fraction of `true` values in the window. Returns 0.0 for empty windows.
+   524→fn hit_rate(window: &VecDeque<bool>) -> f64 {
+   525→    if window.is_empty() {
+   526→        return 0.0;
+   527→    }
+   528→    let hits = window.iter().filter(|&&b| b).count();
+   529→    hits as f64 / window.len() as f64
+   530→}
+   531→
+   532→/// Weighted random selection. Returns the index from `candidates`.
+   533→/// Panics if `candidates` is empty.
+   534→fn weighted_select(candidates: &[(usize, f64)], rng: &mut impl Rng) -> usize {
+   535→    let total: f64 = candidates.iter().map(|(_, w)| w).sum();
+   536→    if total <= 0.0 {
+   537→        // All weights zero — fall back to uniform.
+   538→        let pick = rng.random_range(0..candidates.len());
+   539→        return candidates[pick].0;
+   540→    }
+   541→    let mut roll: f64 = rng.random_range(0.0..total);
+   542→    for &(idx, weight) in candidates {
+   543→        roll -= weight;
+   544→        if roll <= 0.0 {
+   545→            return idx;
+   546→        }
+   547→    }
+   548→    // Floating-point rounding: return last candidate.
+   549→    candidates.last().unwrap().0
+   550→}
+   551→
+   552→// ---------------------------------------------------------------------------
+   553→// PoolSeedsStrategy — yields cross-function pool seeds in order
+   554→// ---------------------------------------------------------------------------
+   555→
+   556→/// Exhaustible strategy that yields pre-collected pool seed inputs from
+   557→/// cross-function seed sharing (`.shatter/seeds/pool.json`).
+   558→pub struct PoolSeedsStrategy {
+   559→    seeds: Vec<Vec<Value>>,
+   560→    index: usize,
+   561→}
+   562→
+   563→impl PoolSeedsStrategy {
+   564→    pub fn new(seeds: Vec<Vec<Value>>) -> Self {
+   565→        Self { seeds, index: 0 }
+   566→    }
+   567→}
+   568→
+   569→impl InputStrategy for PoolSeedsStrategy {
+   570→    fn next(&mut self, _ctx: &StrategyContext) -> Option<Vec<Value>> {
+   571→        if self.index < self.seeds.len() {
+   572→            let v = self.seeds[self.index].clone();
+   573→            self.index += 1;
+   574→            Some(v)
+   575→        } else {
+   576→            None
+   577→        }
+   578→    }
+   579→
+   580→    fn name(&self) -> &str {
+   581→        "pool"
+   582→    }
+   583→
+   584→    fn estimated_size(&self) -> Option<u64> {
+   585→        Some(self.seeds.len() as u64)
+   586→    }
+   587→}
+   588→
+   589→// ---------------------------------------------------------------------------
+   590→// FuzzerStrategy — infinite, feedback-driven mutation and crossover
+   591→// ---------------------------------------------------------------------------
+   592→
+   593→/// Default per-parameter mutation probability for the fuzzer strategy.
+   594→const FUZZER_MUTATION_RATE: f64 = 0.3;
+   595→
+   596→/// Default crossover probability when two parents are available.
+   597→const FUZZER_CROSSOVER_RATE: f64 = 0.7;
+   598→
+   599→/// Infinite strategy that mutates and crosses over inputs which hit Unknown
+   600→/// constraints or discovered new paths.
+   601→///
+   602→/// Feedback records interesting inputs (those reaching branches with no
+   603→/// symbolic constraint, or discovering new coverage). `next()` draws from
+   604→/// the interesting pool, generating mutations via `fuzz_inputs()`,
+   605→/// `mutate_inputs()`, and `crossover_inputs()`.
+   606→pub struct FuzzerStrategy {
+   607→    rng: StdRng,
+   608→    /// Inputs that hit Unknown constraints or new paths — seeds for mutation.
+   609→    interesting: Vec<Vec<Value>>,
+   610→    /// Pending mutations generated from a feedback round, drained by `next()`.
+   611→    pending: VecDeque<Vec<Value>>,
+   612→}
+   613→
+   614→impl FuzzerStrategy {
+   615→    pub fn new(seed: Option<u64>) -> Self {
+   616→        let rng = match seed {
+   617→            Some(s) => StdRng::seed_from_u64(s),
+   618→            None => StdRng::from_os_rng(),
+   619→        };
+   620→        Self {
+   621→            rng,
+   622→            interesting: Vec::new(),
+   623→            pending: VecDeque::new(),
+   624→        }
+   625→    }
+   626→
+   627→    /// Refill `self.pending` by mutating a random interesting input.
+   628→    fn refill(&mut self, ctx: &StrategyContext) {
+   629→        if self.interesting.is_empty() {
+   630→            return;
+   631→        }
+   632→
+   633→        let idx = self.rng.random_range(0..self.interesting.len());
+   634→        let base = self.interesting[idx].clone();
+   635→
+   636→        // 1. Simple value-level mutations (from orchestrator's fuzz_inputs).
+   637→        for mutated in fuzz_inputs(&base) {
+   638→            self.pending.push_back(mutated);
+   639→        }
+   640→
+   641→        // 2. Type-aware mutation via input_gen.
+   642→        let params: Vec<ParamInfo> = ctx.params.clone();
+   643→        let mutated = mutate_inputs(&base, &params, FUZZER_MUTATION_RATE, &[], &mut self.rng);
+   644→        self.pending.push_back(mutated);
+   645→
+   646→        // 3. Crossover when at least two interesting inputs exist.
+   647→        if self.interesting.len() >= 2 {
+   648→            let other_idx = loop {
+   649→                let candidate = self.rng.random_range(0..self.interesting.len());
+   650→                if candidate != idx || self.interesting.len() == 1 {
+   651→                    break candidate;
+   652→                }
+   653→            };
+   654→            let (child_a, _child_b) = crossover_inputs(
+   655→                &base,
+   656→                &self.interesting[other_idx],
+   657→                &params,
+   658→                FUZZER_CROSSOVER_RATE,
+   659→                &mut self.rng,
+   660→            );
+   661→            self.pending.push_back(child_a);
+   662→        }
+   663→    }
+   664→}
+   665→
+   666→impl InputStrategy for FuzzerStrategy {
+   667→    fn next(&mut self, ctx: &StrategyContext) -> Option<Vec<Value>> {
+   668→        if let Some(candidate) = self.pending.pop_front() {
+   669→            return Some(candidate);
+   670→        }
+   671→
+   672→        // Try to refill from interesting pool.
+   673→        self.refill(ctx);
+   674→        self.pending.pop_front()
+   675→    }
+   676→
+   677→    fn feedback(&mut self, inputs: &[Value], result: &ExecuteResult, was_new_path: bool) {
+   678→        // Record inputs that discovered new coverage.
+   679→        if was_new_path {
+   680→            self.interesting.push(inputs.to_vec());
+   681→            return;
+   682→        }
+   683→
+   684→        // Record inputs that hit Unknown constraints (branches the solver
+   685→        // cannot handle, so fuzzing is the only way to explore them).
+   686→        let has_unknown = result.branch_path.iter().any(|decision| {
+   687→            matches!(decision.constraint, SymConstraint::Unknown { .. })
+   688→        });
+   689→        if has_unknown {
+   690→            self.interesting.push(inputs.to_vec());
+   691→        }
+   692→    }
+   693→
+   694→    fn name(&self) -> &str {
+   695→        "fuzzer"
+   696→    }
+   697→}
+   698→
+   699→// ---------------------------------------------------------------------------
+   700→// Z3SolverStrategy — infinite, feedback-driven constraint solving
+   701→// ---------------------------------------------------------------------------
+   702→
+   703→/// Strategy name constant for Z3 solver, used for discovery attribution.
+   704→const Z3_SOLVER_STRATEGY_NAME: &str = "z3_solver";
+   705→
+   706→/// Reactive strategy that uses Z3 constraint solving to generate inputs
+   707→/// targeting unexplored branches.
+   708→///
+   709→/// `feedback()` extracts symbolic constraints from execution results, negates
+   710→/// each solvable constraint, solves with Z3, and overlays solutions onto the
+   711→/// base inputs. Solved inputs queue in `pending` and drain via `next()`.
+   712→///
+   713→/// Infinite: produces work while unsolved constraints exist, but the queue
+   714→/// may be empty between feedback cycles.
+   715→pub struct Z3SolverStrategy {
+   716→    solver_timeout_ms: Option<u64>,
+   717→    param_infos: Vec<ParamInfo>,
+   718→    pending: VecDeque<Vec<Value>>,
+   719→}
+   720→
+   721→impl Z3SolverStrategy {
+   722→    pub fn new(solver_timeout_ms: Option<u64>, param_infos: Vec<ParamInfo>) -> Self {
+   723→        Self {
+   724→            solver_timeout_ms,
+   725→            param_infos,
+   726→            pending: VecDeque::new(),
+   727→        }
+   728→    }
+   729→}
+   730→
+   731→impl InputStrategy for Z3SolverStrategy {
+   732→    fn next(&mut self, _ctx: &StrategyContext) -> Option<Vec<Value>> {
+   733→        self.pending.pop_front()
+   734→    }
+   735→
+   736→    fn feedback(&mut self, inputs: &[Value], result: &ExecuteResult, _was_new_path: bool) {
+   737→        let sym_constraints = crate::orchestrator::extract_sym_constraints(result);
+   738→
+   739→        let solvable: Vec<SymExpr> = sym_constraints
+   740→            .iter()
+   741→            .filter_map(|c| c.clone())
+   742→            .collect();
+   743→
+   744→        if solvable.is_empty() {
+   745→            return;
+   746→        }
+   747→
+   748→        let param_names: Vec<String> = self.param_infos.iter().map(|p| p.name.clone()).collect();
+   749→
+   750→        for solve_idx in 0..solvable.len() {
+   751→            // solve_for_new_path may fail (unsupported expressions, type mismatches,
+   752→            // or constraint/param misalignment). Treat all failures as "no solution".
+   753→            let solve_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+   754→                solver::solve_for_new_path(
+   755→                    &solvable,
+   756→                    solve_idx,
+   757→                    self.solver_timeout_ms,
+   758→                    &self.param_infos,
+   759→                )
+   760→            }));
+   761→
+   762→            match solve_result {
+   763→                Ok(Ok(SolveResult::Sat(values))) => {
+   764→                    let new_inputs = crate::orchestrator::overlay_solved_values(
+   765→                        inputs,
+   766→                        &values,
+   767→                        &param_names,
+   768→                    );
+   769→                    self.pending.push_back(new_inputs);
+   770→                }
+   771→                _ => {
+   772→                    // Unsat, solver error, or panic (debug_assert on param mismatch).
+   773→                    // Stall tracking is the orchestrator's responsibility.
+   774→                }
+   775→            }
+   776→        }
+   777→    }
+   778→
+   779→    fn name(&self) -> &str {
+   780→        Z3_SOLVER_STRATEGY_NAME
+   781→    }
+   782→}
+   783→
+   784→// ---------------------------------------------------------------------------
+   785→// Tests
+   786→// ---------------------------------------------------------------------------
+   787→
+   788→#[cfg(test)]
+   789→mod tests {
+   790→    use super::*;
+   791→    use crate::types::TypeInfo;
+   792→    use rand::rngs::StdRng;
+   793→    use rand::SeedableRng;
+   794→
+   795→    /// Minimal strategy that yields a fixed sequence of inputs.
+   796→    struct FixedStrategy {
+   797→        name: &'static str,
+   798→        items: Vec<Vec<Value>>,
+   799→        idx: usize,
+   800→    }
+   801→
+   802→    impl FixedStrategy {
+   803→        fn new(name: &'static str, items: Vec<Vec<Value>>) -> Self {
+   804→            Self { name, items, idx: 0 }
+   805→        }
+   806→    }
+   807→
+   808→    impl InputStrategy for FixedStrategy {
+   809→        fn next(&mut self, _ctx: &StrategyContext) -> Option<Vec<Value>> {
+   810→            if self.idx < self.items.len() {
+   811→                let v = self.items[self.idx].clone();
+   812→                self.idx += 1;
+   813→                Some(v)
+   814→            } else {
+   815→                None
+   816→            }
+   817→        }
+   818→
+   819→        fn name(&self) -> &str {
+   820→            self.name
+   821→        }
+   822→
+   823→        fn estimated_size(&self) -> Option<u64> {
+   824→            Some(self.items.len() as u64)
+   825→        }
+   826→    }
+   827→
+   828→    /// Infinite strategy that always yields the same input.
+   829→    struct InfiniteStrategy {
+   830→        value: Vec<Value>,
+   831→    }
+   832→
+   833→    impl InputStrategy for InfiniteStrategy {
+   834→        fn next(&mut self, _ctx: &StrategyContext) -> Option<Vec<Value>> {
+   835→            Some(self.value.clone())
+   836→        }
+   837→
+   838→        fn name(&self) -> &str {
+   839→            "infinite"
+   840→        }
+   841→    }
+   842→
+   843→    fn empty_ctx() -> StrategyContext {
+   844→        StrategyContext {
+   845→            params: vec![ParamInfo {
+   846→                name: "x".into(),
+   847→                typ: TypeInfo::Int,
+   848→                type_name: None,
+   849→            }],
+   850→            literals: vec![],
+   851→            capabilities: FrontendCapabilities::from_raw(&[]),
+   852→        }
+   853→    }
+   854→
+   855→    fn make_exec_result() -> ExecuteResult {
+   856→        serde_json::from_str(
+   857→            r#"{"return_value": 0, "branch_path": [], "lines_executed": [], "path_constraints": [], "performance": {"wall_time_ms": 1.0, "cpu_time_us": 0, "heap_used_bytes": 0, "heap_allocated_bytes": 0}}"#,
+   858→        )
+   859→        .unwrap()
+   860→    }
+   861→
+   862→    #[test]
+   863→    fn exhaustible_strategy_returns_none_when_done() {
+   864→        let mut s = FixedStrategy::new("test", vec![vec![Value::from(1)]]);
+   865→        let ctx = empty_ctx();
+   866→        assert!(s.next(&ctx).is_some());
+   867→        assert!(s.next(&ctx).is_none());
+   868→    }
+   869→
+   870→    #[test]
+   871→    fn meta_round_robin_interleaves_strategies() {
+   872→        let a = FixedStrategy::new("a", vec![vec![Value::from(1)], vec![Value::from(2)]]);
+   873→        let b = FixedStrategy::new("b", vec![vec![Value::from(10)], vec![Value::from(20)]]);
+   874→        let config = MetaConfig {
+   875→            adaptive: false,
+   876→            static_weights: None,
+   877→            ..MetaConfig::default()
+   878→        };
+   879→        let mut meta = MetaStrategy::new(
+   880→            vec![Box::new(a), Box::new(b)],
+   881→            config,
+   882→        );
+   883→        let ctx = empty_ctx();
+   884→        let mut rng = StdRng::seed_from_u64(42);
+   885→
+   886→        let (v1, idx1) = meta.next(&ctx, &mut rng).unwrap();
+   887→        let (v2, idx2) = meta.next(&ctx, &mut rng).unwrap();
+   888→        // Round-robin: alternates between strategies.
+   889→        assert_ne!(idx1, idx2);
+   890→        assert_ne!(v1, v2);
+   891→    }
+   892→
+   893→    #[test]
+   894→    fn meta_skips_exhausted_strategies() {
+   895→        let short = FixedStrategy::new("short", vec![vec![Value::from(1)]]);
+   896→        let long = FixedStrategy::new("long", vec![
+   897→            vec![Value::from(10)],
+   898→            vec![Value::from(20)],
+   899→            vec![Value::from(30)],
+   900→        ]);
+   901→        let config = MetaConfig {
+   902→            adaptive: false,
+   903→            static_weights: None,
+   904→            ..MetaConfig::default()
+   905→        };
+   906→        let mut meta = MetaStrategy::new(
+   907→            vec![Box::new(short), Box::new(long)],
+   908→            config,
+   909→        );
+   910→        let ctx = empty_ctx();
+   911→        let mut rng = StdRng::seed_from_u64(42);
+   912→
+   913→        let mut results = Vec::new();
+   914→        while let Some((v, idx)) = meta.next(&ctx, &mut rng) {
+   915→            results.push((v, idx));
+   916→        }
+   917→        // 1 from short + 3 from long = 4 total.
+   918→        assert_eq!(results.len(), 4);
+   919→    }
+   920→
+   921→    #[test]
+   922→    fn meta_returns_none_when_all_exhausted() {
+   923→        let s = FixedStrategy::new("only", vec![vec![Value::from(1)]]);
+   924→        let config = MetaConfig {
+   925→            adaptive: false,
+   926→            static_weights: None,
+   927→            ..MetaConfig::default()
+   928→        };
+   929→        let mut meta = MetaStrategy::new(vec![Box::new(s)], config);
+   930→        let ctx = empty_ctx();
+   931→        let mut rng = StdRng::seed_from_u64(42);
+   932→
+   933→        assert!(meta.next(&ctx, &mut rng).is_some());
+   934→        assert!(meta.next(&ctx, &mut rng).is_none());
+   935→    }
+   936→
+   937→    #[test]
+   938→    fn adaptive_cold_start_gives_fair_share() {
+   939→        // Two strategies: one graduated (10 hits out of 20), one in cold start.
+   940→        let infinite = InfiniteStrategy {
+   941→            value: vec![Value::from(0)],
+   942→        };
+   943→        let fresh = InfiniteStrategy {
+   944→            value: vec![Value::from(1)],
+   945→        };
+   946→        let config = MetaConfig::default();
+   947→        let mut meta = MetaStrategy::new(
+   948→            vec![Box::new(infinite), Box::new(fresh)],
+   949→            config,
+   950→        );
+   951→
+   952→        // Simulate graduated state for strategy 0.
+   953→        for i in 0..20 {
+   954→            meta.states[0].total_supplied += 1;
+   955→            meta.record_outcome(0, i < 10); // 50% hit rate
+   956→        }
+   957→
+   958→        let scores = meta.compute_scores();
+   959→        // Strategy 0 graduated with 50% hit rate.
+   960→        assert!((scores[0].1 - 0.5).abs() < 0.01);
+   961→        // Strategy 1 in cold start gets average of graduated = 0.5.
+   962→        assert!((scores[1].1 - 0.5).abs() < 0.01);
+   963→    }
+   964→
+   965→    #[test]
+   966→    fn floor_prevents_zero_allocation() {
+   967→        let config = MetaConfig {
+   968→            floor: 0.05,
+   969→            ..MetaConfig::default()
+   970→        };
+   971→        let a = InfiniteStrategy {
+   972→            value: vec![Value::from(0)],
+   973→        };
+   974→        let mut meta = MetaStrategy::new(vec![Box::new(a)], config);
+   975→
+   976→        // Graduate with 0% hit rate.
+   977→        for _ in 0..25 {
+   978→            meta.states[0].total_supplied += 1;
+   979→            meta.record_outcome(0, false);
+   980→        }
+   981→
+   982→        let scores = meta.compute_scores();
+   983→        // Score should be clamped to floor (0.05), not 0.0.
+   984→        assert!((scores[0].1 - 0.05).abs() < 0.001);
+   985→    }
+   986→
+   987→    #[test]
+   988→    fn effective_cold_start_clamped_to_estimated_size() {
+   989→        let small = FixedStrategy::new("small", vec![vec![Value::from(1)], vec![Value::from(2)]]);
+   990→        let config = MetaConfig {
+   991→            cold_start_threshold: 20,
+   992→            ..MetaConfig::default()
+   993→        };
+   994→        let meta = MetaStrategy::new(vec![Box::new(small)], config);
+   995→        // estimated_size = 2, threshold = 20, effective = min(20, 2) = 2.
+   996→        assert_eq!(meta.effective_cold_start(0), 2);
+   997→    }
+   998→
+   999→    #[test]
+  1000→    fn feedback_fans_out_to_all_strategies() {
+  1001→        use std::sync::atomic::{AtomicU32, Ordering};
+  1002→        use std::sync::Arc;
+  1003→
+  1004→        struct CountingStrategy {
+  1005→            count: Arc<AtomicU32>,
+  1006→        }
+  1007→
+  1008→        impl InputStrategy for CountingStrategy {
+  1009→            fn next(&mut self, _ctx: &StrategyContext) -> Option<Vec<Value>> {
+  1010→                Some(vec![Value::from(0)])
+  1011→            }
+  1012→
+  1013→            fn feedback(&mut self, _inputs: &[Value], _result: &ExecuteResult, _was_new_path: bool) {
+  1014→                self.count.fetch_add(1, Ordering::Relaxed);
+  1015→            }
+  1016→
+  1017→            fn name(&self) -> &str {
+  1018→                "counting"
+  1019→            }
+  1020→        }
+  1021→
+  1022→        let c1 = Arc::new(AtomicU32::new(0));
+  1023→        let c2 = Arc::new(AtomicU32::new(0));
+  1024→
+  1025→        let s1 = CountingStrategy { count: c1.clone() };
+  1026→        let s2 = CountingStrategy { count: c2.clone() };
+  1027→
+  1028→        let mut meta = MetaStrategy::new(
+  1029→            vec![Box::new(s1), Box::new(s2)],
+  1030→            MetaConfig::default(),
+  1031→        );
+  1032→
+  1033→        let result = make_exec_result();
+  1034→        meta.feedback(&[Value::from(0)], &result, true);
+  1035→
+  1036→        assert_eq!(c1.load(Ordering::Relaxed), 1);
+  1037→        assert_eq!(c2.load(Ordering::Relaxed), 1);
+  1038→    }
+  1039→
+  1040→    #[test]
+  1041→    fn static_weights_selection() {
+  1042→        let a = FixedStrategy::new("a", vec![
+  1043→            vec![Value::from(1)], vec![Value::from(2)], vec![Value::from(3)],
+  1044→            vec![Value::from(4)], vec![Value::from(5)], vec![Value::from(6)],
+  1045→        ]);
+  1046→        let b = FixedStrategy::new("b", vec![
+  1047→            vec![Value::from(10)], vec![Value::from(20)], vec![Value::from(30)],
+  1048→            vec![Value::from(40)], vec![Value::from(50)], vec![Value::from(60)],
+  1049→        ]);
+  1050→        let config = MetaConfig {
+  1051→            static_weights: Some(vec![("a".into(), 1.0), ("b".into(), 1.0)]),
+  1052→            ..MetaConfig::default()
+  1053→        };
+  1054→        let mut meta = MetaStrategy::new(
+  1055→            vec![Box::new(a), Box::new(b)],
+  1056→            config,
+  1057→        );
+  1058→        let ctx = empty_ctx();
+  1059→        let mut rng = StdRng::seed_from_u64(42);
+  1060→
+  1061→        // With equal weights and enough samples, both strategies should be used.
+  1062→        let mut a_count = 0;
+  1063→        let mut b_count = 0;
+  1064→        while let Some((_, idx)) = meta.next(&ctx, &mut rng) {
+  1065→            if idx == 0 {
+  1066→                a_count += 1;
+  1067→            } else {
+  1068→                b_count += 1;
+  1069→            }
+  1070→        }
+  1071→        assert!(a_count > 0, "strategy a should have been selected");
+  1072→        assert!(b_count > 0, "strategy b should have been selected");
+  1073→        assert_eq!(a_count + b_count, 12);
+  1074→    }
+  1075→
+  1076→    #[test]
+  1077→    fn weighted_select_handles_zero_weights() {
+  1078→        let mut rng = StdRng::seed_from_u64(1);
+  1079→        let candidates = vec![(0, 0.0), (1, 0.0)];
+  1080→        // Should not panic — falls back to uniform.
+  1081→        let _ = weighted_select(&candidates, &mut rng);
+  1082→    }
+  1083→
+  1084→    #[test]
+  1085→    fn hit_rate_empty_window() {
+  1086→        let window = VecDeque::new();
+  1087→        assert_eq!(hit_rate(&window), 0.0);
+  1088→    }
+  1089→
+  1090→    #[test]
+  1091→    fn hit_rate_all_hits() {
+  1092→        let window: VecDeque<bool> = vec![true, true, true].into();
+  1093→        assert!((hit_rate(&window) - 1.0).abs() < f64::EPSILON);
+  1094→    }
+  1095→
+  1096→    #[test]
+  1097→    fn hit_rate_mixed() {
+  1098→        let window: VecDeque<bool> = vec![true, false, true, false].into();
+  1099→        assert!((hit_rate(&window) - 0.5).abs() < f64::EPSILON);
+  1100→    }
+  1101→
+  1102→    // --- BoundarySeeds tests ---
+  1103→
+  1104→    use crate::boundary_dict::get_boundary_values;
+  1105→
+  1106→    fn make_params(types: &[TypeInfo]) -> Vec<ParamInfo> {
+  1107→        types
+  1108→            .iter()
+  1109→            .enumerate()
+  1110→            .map(|(i, t)| ParamInfo {
+  1111→                name: format!("p{i}"),
+  1112→                typ: t.clone(),
+  1113→                type_name: None,
+  1114→            })
+  1115→            .collect()
+  1116→    }
+  1117→
+  1118→    #[test]
+  1119→    fn boundary_seeds_single_int_param() {
+  1120→        let params = make_params(&[TypeInfo::Int]);
+  1121→        let mut bs = BoundarySeeds::new(&params);
+  1122→        let ctx = empty_ctx();
+  1123→        let expected = get_boundary_values(&TypeInfo::Int).len();
+  1124→        assert_eq!(bs.estimated_size(), Some(expected as u64));
+  1125→
+  1126→        let mut count = 0;
+  1127→        while bs.next(&ctx).is_some() {
+  1128→            count += 1;
+  1129→        }
+  1130→        assert_eq!(count, expected);
+  1131→        // Exhausted — next returns None.
+  1132→        assert!(bs.next(&ctx).is_none());
+  1133→    }
+  1134→
+  1135→    #[test]
+  1136→    fn boundary_seeds_single_string_param() {
+  1137→        let params = make_params(&[TypeInfo::Str]);
+  1138→        let mut bs = BoundarySeeds::new(&params);
+  1139→        let ctx = empty_ctx();
+  1140→        let expected = get_boundary_values(&TypeInfo::Str).len();
+  1141→        assert_eq!(bs.estimated_size(), Some(expected as u64));
+  1142→
+  1143→        let mut count = 0;
+  1144→        while bs.next(&ctx).is_some() {
+  1145→            count += 1;
+  1146→        }
+  1147→        assert_eq!(count, expected);
+  1148→    }
+  1149→
+  1150→    #[test]
+  1151→    fn boundary_seeds_multi_param_pairwise() {
+  1152→        let params = make_params(&[TypeInfo::Int, TypeInfo::Str]);
+  1153→        let mut bs = BoundarySeeds::new(&params);
+  1154→        let ctx = empty_ctx();
+  1155→        let expected =
+  1156→            get_boundary_values(&TypeInfo::Int).len() + get_boundary_values(&TypeInfo::Str).len();
+  1157→        assert_eq!(bs.estimated_size(), Some(expected as u64));
+  1158→
+  1159→        let mut count = 0;
+  1160→        while let Some(v) = bs.next(&ctx) {
+  1161→            assert_eq!(v.len(), 2, "each candidate should have 2 elements");
+  1162→            count += 1;
+  1163→        }
+  1164→        assert_eq!(count, expected);
+  1165→    }
+  1166→
+  1167→    #[test]
+  1168→    fn boundary_seeds_bool_exhausts_after_two() {
+  1169→        let params = make_params(&[TypeInfo::Bool]);
+  1170→        let mut bs = BoundarySeeds::new(&params);
+  1171→        let ctx = empty_ctx();
+  1172→        assert_eq!(bs.estimated_size(), Some(2));
+  1173→        assert!(bs.next(&ctx).is_some());
+  1174→        assert!(bs.next(&ctx).is_some());
+  1175→        assert!(bs.next(&ctx).is_none());
+  1176→    }
+  1177→
+  1178→    #[test]
+  1179→    fn boundary_seeds_empty_params() {
+  1180→        let params: Vec<ParamInfo> = vec![];
+  1181→        let mut bs = BoundarySeeds::new(&params);
+  1182→        let ctx = empty_ctx();
+  1183→        assert_eq!(bs.estimated_size(), Some(0));
+  1184→        assert!(bs.next(&ctx).is_none());
+  1185→    }
+  1186→
+  1187→    #[test]
+  1188→    fn boundary_seeds_unknown_type_yields_nothing() {
+  1189→        let params = make_params(&[TypeInfo::Unknown]);
+  1190→        let mut bs = BoundarySeeds::new(&params);
+  1191→        let ctx = empty_ctx();
+  1192→        assert_eq!(bs.estimated_size(), Some(0));
+  1193→        assert!(bs.next(&ctx).is_none());
+  1194→    }
+  1195→
+  1196→    #[test]
+  1197→    fn boundary_seeds_name() {
+  1198→        let bs = BoundarySeeds::new(&[]);
+  1199→        assert_eq!(bs.name(), "boundary");
+  1200→    }
+  1201→
+  1202→    #[test]
+  1203→    fn boundary_seeds_estimated_size_matches_drain_count() {
+  1204→        let params = make_params(&[TypeInfo::Float, TypeInfo::Bool]);
+  1205→        let mut bs = BoundarySeeds::new(&params);
+  1206→        let ctx = empty_ctx();
+  1207→        let est = bs.estimated_size().unwrap();
+  1208→        let mut count = 0u64;
+  1209→        while bs.next(&ctx).is_some() {
+  1210→            count += 1;
+  1211→        }
+  1212→        assert_eq!(count, est);
+  1213→    }
+  1214→
+  1215→    // --- UserProvidedStrategy tests ---
+  1216→
+  1217→    #[test]
+  1218→    fn user_provided_preserves_ordering() {
+  1219→        let inputs = vec![
+  1220→            vec![Value::from(1)],
+  1221→            vec![Value::from(2)],
+  1222→            vec![Value::from(3)],
+  1223→        ];
+  1224→        let mut s = UserProvidedStrategy::new(inputs.clone());
+  1225→        let ctx = empty_ctx();
+  1226→
+  1227→        for expected in &inputs {
+  1228→            assert_eq!(s.next(&ctx).as_ref(), Some(expected));
+  1229→        }
+  1230→    }
+  1231→
+  1232→    #[test]
+  1233→    fn user_provided_exhausts_then_stays_none() {
+  1234→        let mut s = UserProvidedStrategy::new(vec![vec![Value::from(42)]]);
+  1235→        let ctx = empty_ctx();
+  1236→
+  1237→        assert!(s.next(&ctx).is_some());
+  1238→        assert!(s.next(&ctx).is_none());
+  1239→        assert!(s.next(&ctx).is_none()); // stays None
+  1240→    }
+  1241→
+  1242→    #[test]
+  1243→    fn user_provided_empty_returns_none_immediately() {
+  1244→        let mut s = UserProvidedStrategy::new(vec![]);
+  1245→        let ctx = empty_ctx();
+  1246→        assert!(s.next(&ctx).is_none());
+  1247→    }
+  1248→
+  1249→    #[test]
+  1250→    fn user_provided_estimated_size() {
+  1251→        let s = UserProvidedStrategy::new(vec![vec![Value::from(1)], vec![Value::from(2)]]);
+  1252→        assert_eq!(s.estimated_size(), Some(2));
+  1253→        assert_eq!(s.name(), "user_provided");
+  1254→    }
+  1255→
+  1256→    // --- PoolSeedsStrategy tests ---
+  1257→
+  1258→    #[test]
+  1259→    fn pool_seeds_yields_in_order() {
+  1260→        let seeds = vec![
+  1261→            vec![Value::from(10), Value::from("a")],
+  1262→            vec![Value::from(20), Value::from("b")],
+  1263→            vec![Value::from(30), Value::from("c")],
+  1264→        ];
+  1265→        let mut strategy = PoolSeedsStrategy::new(seeds.clone());
+  1266→        let ctx = empty_ctx();
+  1267→
+  1268→        for expected in &seeds {
+  1269→            let got = strategy.next(&ctx).expect("should yield a value");
+  1270→            assert_eq!(&got, expected);
+  1271→        }
+  1272→    }
+  1273→
+  1274→    #[test]
+  1275→    fn pool_seeds_exhausts() {
+  1276→        let seeds = vec![vec![Value::from(1)], vec![Value::from(2)]];
+  1277→        let mut strategy = PoolSeedsStrategy::new(seeds);
+  1278→        let ctx = empty_ctx();
+  1279→
+  1280→        assert_eq!(strategy.estimated_size(), Some(2));
+  1281→        assert_eq!(strategy.name(), "pool");
+  1282→
+  1283→        assert!(strategy.next(&ctx).is_some());
+  1284→        assert!(strategy.next(&ctx).is_some());
+  1285→        assert!(strategy.next(&ctx).is_none());
+  1286→        // Stays exhausted on subsequent calls.
+  1287→        assert!(strategy.next(&ctx).is_none());
+  1288→    }
+  1289→
+  1290→    #[test]
+  1291→    fn pool_seeds_empty() {
+  1292→        let mut strategy = PoolSeedsStrategy::new(vec![]);
+  1293→        let ctx = empty_ctx();
+  1294→
+  1295→        assert_eq!(strategy.estimated_size(), Some(0));
+  1296→        assert!(strategy.next(&ctx).is_none());
+  1297→    }
+  1298→
+  1299→    // --- LiteralsStrategy tests ---
+  1300→
+  1301→    use crate::input_gen::literals_to_candidate_inputs;
+  1302→    use crate::protocol::LiteralValue;
+  1303→
+  1304→    #[test]
+  1305→    fn literals_strategy_yields_expected_candidates() {
+  1306→        let params = make_params(&[TypeInfo::Str]);
+  1307→        let literals = vec![
+  1308→            LiteralValue::Str { value: "hello".into() },
+  1309→            LiteralValue::Str { value: "world".into() },
+  1310→        ];
+  1311→        let expected = literals_to_candidate_inputs(&params, &literals);
+  1312→        let mut strat = LiteralsStrategy::new(&params, &literals);
+  1313→        let ctx = empty_ctx();
+  1314→
+  1315→        let mut got = Vec::new();
+  1316→        while let Some(v) = strat.next(&ctx) {
+  1317→            got.push(v);
+  1318→        }
+  1319→        assert_eq!(got, expected);
+  1320→    }
+  1321→
+  1322→    #[test]
+  1323→    fn literals_strategy_exhausts_then_none() {
+  1324→        let params = make_params(&[TypeInfo::Int]);
+  1325→        let literals = vec![LiteralValue::Int { value: 42 }];
+  1326→        let mut strat = LiteralsStrategy::new(&params, &literals);
+  1327→        let ctx = empty_ctx();
+  1328→
+  1329→        assert!(strat.next(&ctx).is_some());
+  1330→        assert!(strat.next(&ctx).is_none());
+  1331→        assert!(strat.next(&ctx).is_none());
+  1332→    }
+  1333→
+  1334→    #[test]
+  1335→    fn literals_strategy_empty_literals() {
+  1336→        let params = make_params(&[TypeInfo::Int]);
+  1337→        let mut strat = LiteralsStrategy::new(&params, &[]);
+  1338→        let ctx = empty_ctx();
+  1339→        assert_eq!(strat.estimated_size(), Some(0));
+  1340→        assert!(strat.next(&ctx).is_none());
+  1341→    }
+  1342→
+  1343→    #[test]
+  1344→    fn literals_strategy_empty_params() {
+  1345→        let literals = vec![LiteralValue::Str { value: "test".into() }];
+  1346→        let mut strat = LiteralsStrategy::new(&[], &literals);
+  1347→        let ctx = empty_ctx();
+  1348→        assert_eq!(strat.estimated_size(), Some(0));
+  1349→        assert!(strat.next(&ctx).is_none());
+  1350→    }
+  1351→
+  1352→    #[test]
+  1353→    fn literals_strategy_name() {
+  1354→        let strat = LiteralsStrategy::new(&[], &[]);
+  1355→        assert_eq!(strat.name(), "literals");
+  1356→    }
+  1357→
+  1358→    #[test]
+  1359→    fn literals_strategy_estimated_size_matches_drain() {
+  1360→        let params = make_params(&[TypeInfo::Int, TypeInfo::Str]);
+  1361→        let literals = vec![
+  1362→            LiteralValue::Int { value: 1 },
+  1363→            LiteralValue::Int { value: 2 },
+  1364→            LiteralValue::Str { value: "abc".into() },
+  1365→        ];
+  1366→        let mut strat = LiteralsStrategy::new(&params, &literals);
+  1367→        let ctx = empty_ctx();
+  1368→        let est = strat.estimated_size().unwrap();
+  1369→        let mut count = 0u64;
+  1370→        while strat.next(&ctx).is_some() {
+  1371→            count += 1;
+  1372→        }
+  1373→        assert_eq!(count, est);
+  1374→    }
+  1375→
+  1376→    // --- RandomStrategy tests ---
+  1377→
+  1378→    #[test]
+  1379→    fn random_strategy_never_exhausts() {
+  1380→        let mut s = RandomStrategy::new(Some(42));
+  1381→        let ctx = empty_ctx();
+  1382→        for _ in 0..100 {
+  1383→            assert!(s.next(&ctx).is_some(), "random strategy should never return None");
+  1384→        }
+  1385→    }
+  1386→
+  1387→    #[test]
+  1388→    fn random_strategy_produces_type_appropriate_values() {
+  1389→        let mut s = RandomStrategy::new(Some(99));
+  1390→
+  1391→        let int_ctx = StrategyContext {
+  1392→            params: vec![ParamInfo {
+  1393→                name: "n".into(),
+  1394→                typ: TypeInfo::Int,
+  1395→                type_name: None,
+  1396→            }],
+  1397→            literals: vec![],
+  1398→            capabilities: FrontendCapabilities::from_raw(&[]),
+  1399→        };
+  1400→        for _ in 0..20 {
+  1401→            let vals = s.next(&int_ctx).unwrap();
+  1402→            assert_eq!(vals.len(), 1);
+  1403→            assert!(vals[0].is_number(), "Int param should produce a number, got {:?}", vals[0]);
+  1404→        }
+  1405→
+  1406→        let str_ctx = StrategyContext {
+  1407→            params: vec![ParamInfo {
+  1408→                name: "s".into(),
+  1409→                typ: TypeInfo::Str,
+  1410→                type_name: None,
+  1411→            }],
+  1412→            literals: vec![],
+  1413→            capabilities: FrontendCapabilities::from_raw(&[]),
+  1414→        };
+  1415→        for _ in 0..20 {
+  1416→            let vals = s.next(&str_ctx).unwrap();
+  1417→            assert_eq!(vals.len(), 1);
+  1418→            assert!(vals[0].is_string(), "Str param should produce a string, got {:?}", vals[0]);
+  1419→        }
+  1420→
+  1421→        let bool_ctx = StrategyContext {
+  1422→            params: vec![ParamInfo {
+  1423→                name: "b".into(),
+  1424→                typ: TypeInfo::Bool,
+  1425→                type_name: None,
+  1426→            }],
+  1427→            literals: vec![],
+  1428→            capabilities: FrontendCapabilities::from_raw(&[]),
+  1429→        };
+  1430→        for _ in 0..20 {
+  1431→            let vals = s.next(&bool_ctx).unwrap();
+  1432→            assert_eq!(vals.len(), 1);
+  1433→            assert!(vals[0].is_boolean(), "Bool param should produce a boolean, got {:?}", vals[0]);
+  1434→        }
+  1435→    }
+  1436→
+  1437→    #[test]
+  1438→    fn random_strategy_name() {
+  1439→        let s = RandomStrategy::new(Some(0));
+  1440→        assert_eq!(s.name(), "random");
+  1441→    }
+  1442→
+  1443→    #[test]
+  1444→    fn random_strategy_estimated_size_is_none() {
+  1445→        let s = RandomStrategy::new(Some(0));
+  1446→        assert_eq!(s.estimated_size(), None);
+  1447→    }
+  1448→
+  1449→    #[test]
+  1450→    fn random_strategy_deterministic_with_seed() {
+  1451→        let ctx = empty_ctx();
+  1452→        let mut s1 = RandomStrategy::new(Some(123));
+  1453→        let mut s2 = RandomStrategy::new(Some(123));
+  1454→        for _ in 0..50 {
+  1455→            assert_eq!(s1.next(&ctx), s2.next(&ctx));
+  1456→        }
+  1457→    }
+  1458→
+  1459→    // -----------------------------------------------------------------------
+  1460→    // FuzzerStrategy tests
+  1461→    // -----------------------------------------------------------------------
+  1462→
+  1463→    fn make_exec_result_with_unknown() -> ExecuteResult {
+  1464→        serde_json::from_value(serde_json::json!({
+  1465→            "return_value": 0,
+  1466→            "branch_path": [{
+  1467→                "branch_id": 1,
+  1468→                "line": 10,
+  1469→                "taken": true,
+  1470→                "constraint": { "kind": "unknown", "hint": "opaque call" }
+  1471→            }],
+  1472→            "lines_executed": [10],
+  1473→            "path_constraints": [],
+  1474→            "performance": {
+  1475→                "wall_time_ms": 1.0,
+  1476→                "cpu_time_us": 0,
+  1477→                "heap_used_bytes": 0,
+  1478→                "heap_allocated_bytes": 0
+  1479→            }
+  1480→        }))
+  1481→        .expect("valid ExecuteResult JSON")
+  1482→    }
+  1483→
+  1484→    #[test]
+  1485→    fn fuzzer_returns_none_without_feedback() {
+  1486→        let mut fuzzer = FuzzerStrategy::new(Some(42));
+  1487→        let ctx = empty_ctx();
+  1488→        assert!(fuzzer.next(&ctx).is_none());
+  1489→        assert!(fuzzer.interesting.is_empty());
+  1490→    }
+  1491→
+  1492→    #[test]
+  1493→    fn fuzzer_produces_mutations_after_unknown_feedback() {
+  1494→        let mut fuzzer = FuzzerStrategy::new(Some(42));
+  1495→        let ctx = empty_ctx();
+  1496→        let inputs = vec![Value::from(5)];
+  1497→        let result = make_exec_result_with_unknown();
+  1498→
+  1499→        fuzzer.feedback(&inputs, &result, false);
+  1500→        assert_eq!(fuzzer.interesting.len(), 1);
+  1501→
+  1502→        // Should now produce mutations from the interesting input.
+  1503→        let first = fuzzer.next(&ctx);
+  1504→        assert!(first.is_some());
+  1505→        // Should keep producing (infinite strategy).
+  1506→        let second = fuzzer.next(&ctx);
+  1507→        assert!(second.is_some());
+  1508→    }
+  1509→
+  1510→    #[test]
+  1511→    fn fuzzer_records_new_path_inputs() {
+  1512→        let mut fuzzer = FuzzerStrategy::new(Some(42));
+  1513→        let inputs = vec![Value::from(10)];
+  1514→        let result = make_exec_result();
+  1515→
+  1516→        // was_new_path = true should record even without Unknown constraints.
+  1517→        fuzzer.feedback(&inputs, &result, true);
+  1518→        assert_eq!(fuzzer.interesting.len(), 1);
+  1519→        assert_eq!(fuzzer.interesting[0], inputs);
+  1520→    }
+  1521→
+  1522→    #[test]
+  1523→    fn fuzzer_estimated_size_is_none() {
+  1524→        let fuzzer = FuzzerStrategy::new(Some(42));
+  1525→        assert!(fuzzer.estimated_size().is_none());
+  1526→    }
+  1527→
+  1528→    #[test]
+  1529→    fn fuzzer_name_is_fuzzer() {
+  1530→        let fuzzer = FuzzerStrategy::new(Some(42));
+  1531→        assert_eq!(fuzzer.name(), "fuzzer");
+  1532→    }
+  1533→
+  1534→    #[test]
+  1535→    fn fuzzer_crossover_with_two_seeds() {
+  1536→        let mut fuzzer = FuzzerStrategy::new(Some(42));
+  1537→        let ctx = empty_ctx();
+  1538→        let result_unknown = make_exec_result_with_unknown();
+  1539→
+  1540→        // Feed two different inputs.
+  1541→        fuzzer.feedback(&[Value::from(1)], &result_unknown, false);
+  1542→        fuzzer.feedback(&[Value::from(100)], &result_unknown, false);
+  1543→        assert_eq!(fuzzer.interesting.len(), 2);
+  1544→
+  1545→        // Drain enough to verify crossover candidates are generated.
+  1546→        let mut seen = Vec::new();
+  1547→        for _ in 0..20 {
+  1548→            if let Some(v) = fuzzer.next(&ctx) {
+  1549→                seen.push(v);
+  1550→            }
+  1551→        }
+  1552→        // Should have generated multiple distinct candidates.
+  1553→        assert!(seen.len() >= 2);
+  1554→    }
+  1555→
+  1556→    // -----------------------------------------------------------------------
+  1557→    // Z3SolverStrategy tests
+  1558→    // -----------------------------------------------------------------------
+  1559→
+  1560→    fn make_z3_solver(params: Vec<ParamInfo>) -> Z3SolverStrategy {
+  1561→        Z3SolverStrategy::new(Some(1000), params)
+  1562→    }
+  1563→
+  1564→    fn int_param(name: &str) -> ParamInfo {
+  1565→        ParamInfo {
+  1566→            name: name.into(),
+  1567→            typ: TypeInfo::Int,
+  1568→            type_name: None,
+  1569→        }
+  1570→    }
+  1571→
+  1572→    #[test]
+  1573→    fn z3_solver_next_returns_none_without_feedback() {
+  1574→        let mut s = make_z3_solver(vec![int_param("x")]);
+  1575→        assert!(s.next(&empty_ctx()).is_none());
+  1576→    }
+  1577→
+  1578→    #[test]
+  1579→    fn z3_solver_name() {
+  1580→        let s = make_z3_solver(vec![]);
+  1581→        assert_eq!(s.name(), Z3_SOLVER_STRATEGY_NAME);
+  1582→    }
+  1583→
+  1584→    #[test]
+  1585→    fn z3_solver_is_infinite() {
+  1586→        let s = make_z3_solver(vec![]);
+  1587→        assert!(s.estimated_size().is_none());
+  1588→    }
+  1589→
+  1590→    #[test]
+  1591→    fn z3_solver_empty_branch_path_yields_nothing() {
+  1592→        let mut s = make_z3_solver(vec![int_param("x")]);
+  1593→        let result = make_exec_result(); // empty branch_path
+  1594→        s.feedback(&[Value::from(0)], &result, false);
+  1595→        assert!(s.next(&empty_ctx()).is_none());
+  1596→    }
+  1597→
+  1598→    #[test]
+  1599→    fn z3_solver_unknown_constraints_yield_nothing() {
+  1600→        let mut s = make_z3_solver(vec![int_param("x")]);
+  1601→        let result = make_exec_result_with_unknown();
+  1602→        s.feedback(&[Value::from(0)], &result, false);
+  1603→        assert!(s.next(&empty_ctx()).is_none());
+  1604→    }
+  1605→
+  1606→    #[test]
+  1607→    fn z3_solver_solvable_constraint_queues_input() {
+  1608→        use crate::execution_record::BranchDecision;
+  1609→        use crate::sym_expr::{BinOpKind, ConstValue, SymExpr};
+  1610→
+  1611→        let mut s = make_z3_solver(vec![int_param("x")]);
+  1612→
+  1613→        // Constraint: x == 5 (taken=true). Solver negates to x != 5 → SAT.
+  1614→        let constraint = SymExpr::BinOp {
+  1615→            op: BinOpKind::Eq,
+  1616→            left: Box::new(SymExpr::Param {
+  1617→                name: "x".into(),
+  1618→                path: vec![],
+  1619→            }),
+  1620→            right: Box::new(SymExpr::Const(ConstValue::Int(5))),
+  1621→        };
+  1622→        let result: ExecuteResult = serde_json::from_value(serde_json::json!({
+  1623→            "return_value": 0,
+  1624→            "branch_path": [{
+  1625→                "branch_id": 1,
+  1626→                "line": 10,
+  1627→                "taken": true,
+  1628→                "constraint": { "kind": "expr", "expr": constraint }
+  1629→            }],
+  1630→            "lines_executed": [10],
+  1631→            "path_constraints": [],
+  1632→            "performance": {
+  1633→                "wall_time_ms": 1.0,
+  1634→                "cpu_time_us": 0,
+  1635→                "heap_used_bytes": 0,
+  1636→                "heap_allocated_bytes": 0
+  1637→            }
+  1638→        }))
+  1639→        .expect("valid ExecuteResult JSON");
+  1640→
+  1641→        s.feedback(&[Value::from(5)], &result, false);
+  1642→
+  1643→        let solved = s.next(&empty_ctx());
+  1644→        assert!(solved.is_some(), "Z3 should produce a solved input for x != 5");
+  1645→        let solved = solved.unwrap();
+  1646→        assert_eq!(solved.len(), 1, "output must preserve input vector length");
+  1647→        // The solved value should differ from 5.
+  1648→        assert_ne!(solved[0], Value::from(5));
+  1649→    }
+  1650→
+  1651→    #[test]
+  1652→    fn z3_solver_output_preserves_input_length() {
+  1653→        use crate::sym_expr::{BinOpKind, ConstValue, SymExpr};
+  1654→
+  1655→        let params = vec![int_param("a"), int_param("b")];
+  1656→        let mut s = make_z3_solver(params);
+  1657→
+  1658→        let constraint = SymExpr::BinOp {
+  1659→            op: BinOpKind::Eq,
+  1660→            left: Box::new(SymExpr::Param {
+  1661→                name: "a".into(),
+  1662→                path: vec![],
+  1663→            }),
+  1664→            right: Box::new(SymExpr::Const(ConstValue::Int(10))),
+  1665→        };
+  1666→        let result: ExecuteResult = serde_json::from_value(serde_json::json!({
+  1667→            "return_value": 0,
+  1668→            "branch_path": [{
+  1669→                "branch_id": 1,
+  1670→                "line": 5,
+  1671→                "taken": true,
+  1672→                "constraint": { "kind": "expr", "expr": constraint }
+  1673→            }],
+  1674→            "lines_executed": [5],
+  1675→            "path_constraints": [],
+  1676→            "performance": {
+  1677→                "wall_time_ms": 1.0,
+  1678→                "cpu_time_us": 0,
+  1679→                "heap_used_bytes": 0,
+  1680→                "heap_allocated_bytes": 0
+  1681→            }
+  1682→        }))
+  1683→        .expect("valid ExecuteResult JSON");
+  1684→
+  1685→        s.feedback(&[Value::from(10), Value::from(20)], &result, false);
+  1686→
+  1687→        while let Some(output) = s.next(&empty_ctx()) {
+  1688→            assert_eq!(output.len(), 2, "output must preserve input vector length");
+  1689→        }
+  1690→    }
+  1691→
+  1692→    #[test]
+  1693→    fn z3_solver_multiple_feedbacks_accumulate() {
+  1694→        use crate::sym_expr::{BinOpKind, ConstValue, SymExpr};
+  1695→
+  1696→        let mut s = make_z3_solver(vec![int_param("x")]);
+  1697→
+  1698→        let make_result = |val: i64| -> ExecuteResult {
+  1699→            let constraint = SymExpr::BinOp {
+  1700→                op: BinOpKind::Eq,
+  1701→                left: Box::new(SymExpr::Param {
+  1702→                    name: "x".into(),
+  1703→                    path: vec![],
+  1704→                }),
+  1705→                right: Box::new(SymExpr::Const(ConstValue::Int(val))),
+  1706→            };
+  1707→            serde_json::from_value(serde_json::json!({
+  1708→                "return_value": 0,
+  1709→                "branch_path": [{
+  1710→                    "branch_id": 1,
+  1711→                    "line": 10,
+  1712→                    "taken": true,
+  1713→                    "constraint": { "kind": "expr", "expr": constraint }
+  1714→                }],
+  1715→                "lines_executed": [10],
+  1716→                "path_constraints": [],
+  1717→                "performance": {
+  1718→                    "wall_time_ms": 1.0,
+  1719→                    "cpu_time_us": 0,
+  1720→                    "heap_used_bytes": 0,
+  1721→                    "heap_allocated_bytes": 0
+  1722→                }
+  1723→            }))
+  1724→            .expect("valid ExecuteResult JSON")
+  1725→        };
+  1726→
+  1727→        s.feedback(&[Value::from(5)], &make_result(5), false);
+  1728→        s.feedback(&[Value::from(10)], &make_result(10), true);
+  1729→
+  1730→        // Should have accumulated solved inputs from both feedback calls.
+  1731→        let mut count = 0;
+  1732→        while s.next(&empty_ctx()).is_some() {
+  1733→            count += 1;
+  1734→        }
+  1735→        assert!(count >= 2, "expected at least 2 solved inputs, got {count}");
+  1736→    }
+  1737→
+  1738→    mod z3_solver_proptests {
+  1739→        use super::*;
+  1740→        use crate::test_arbitraries::{arb_execute_result, arb_param_info};
+  1741→        use proptest::prelude::*;
+  1742→
+  1743→        proptest! {
+  1744→            #![proptest_config(ProptestConfig::with_cases(30))]
+  1745→
+  1746→            /// Feeding arbitrary ExecuteResults to Z3SolverStrategy must never panic.
+  1747→            #[test]
+  1748→            fn feedback_never_panics(
+  1749→                er in arb_execute_result(),
+  1750→                len in 1..4usize,
+  1751→            ) {
+  1752→                let params: Vec<ParamInfo> = (0..len)
+  1753→                    .map(|i| ParamInfo {
+  1754→                        name: format!("p{i}"),
+  1755→                        typ: TypeInfo::Int,
+  1756→                        type_name: None,
+  1757→                    })
+  1758→                    .collect();
+  1759→                let inputs: Vec<Value> = (0..len).map(|i| Value::from(i as i64)).collect();
+  1760→                let mut s = Z3SolverStrategy::new(Some(500), params);
+  1761→                // Must not panic.
+  1762→                s.feedback(&inputs, &er, false);
+  1763→            }
+  1764→
+  1765→            /// Any solved inputs produced must have the same length as the input vector.
+  1766→            #[test]
+  1767→            fn output_preserves_length(
+  1768→                er in arb_execute_result(),
+  1769→                len in 1..4usize,
+  1770→            ) {
+  1771→                let params: Vec<ParamInfo> = (0..len)
+  1772→                    .map(|i| ParamInfo {
+  1773→                        name: format!("p{i}"),
+  1774→                        typ: TypeInfo::Int,
+  1775→                        type_name: None,
+  1776→                    })
+  1777→                    .collect();
+  1778→                let inputs: Vec<Value> = (0..len).map(|i| Value::from(i as i64)).collect();
+  1779→                let ctx = StrategyContext {
+  1780→                    params: params.clone(),
+  1781→                    literals: vec![],
+  1782→                    capabilities: FrontendCapabilities::from_raw(&[]),
+  1783→                };
+  1784→                let mut s = Z3SolverStrategy::new(Some(500), params);
+  1785→                s.feedback(&inputs, &er, false);
+  1786→                while let Some(output) = s.next(&ctx) {
+  1787→                    prop_assert_eq!(output.len(), len);
+  1788→                }
+  1789→            }
+  1790→        }
+  1791→    }
+  1792→}
+  1793→

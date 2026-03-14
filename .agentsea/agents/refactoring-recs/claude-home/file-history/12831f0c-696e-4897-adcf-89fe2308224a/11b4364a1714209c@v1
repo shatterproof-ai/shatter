@@ -1,0 +1,124 @@
+package cli
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// createFakeBinary creates an executable shell script at dir/name.
+func createFakeBinary(t *testing.T, dir, name string) string {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// setPathWithBinaries creates fake claude and bwrap binaries in a temp dir
+// and sets PATH to that directory. Returns the directory path.
+func setPathWithBinaries(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	createFakeBinary(t, dir, "claude")
+	createFakeBinary(t, dir, "bwrap")
+	t.Setenv("PATH", dir)
+	return dir
+}
+
+func TestClaudePreflight_AlreadySet(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_TEAMMATE_COMMAND", "some-other-wrapper")
+
+	_, err := claudePreflight(nil)
+	if err == nil {
+		t.Fatal("expected error when CLAUDE_CODE_TEAMMATE_COMMAND is already set")
+	}
+	if !strings.Contains(err.Error(), "already set") {
+		t.Errorf("error should mention 'already set', got: %v", err)
+	}
+}
+
+func TestClaudePreflight_ClaudeNotFound(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_TEAMMATE_COMMAND", "")
+	t.Setenv("PATH", t.TempDir())
+
+	_, err := claudePreflight(nil)
+	if err == nil {
+		t.Fatal("expected error when claude not on PATH")
+	}
+	if !strings.Contains(err.Error(), "claude binary") {
+		t.Errorf("error should mention claude binary, got: %v", err)
+	}
+}
+
+func TestClaudePreflight_BwrapNotFound(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_TEAMMATE_COMMAND", "")
+	dir := t.TempDir()
+	createFakeBinary(t, dir, "claude")
+	t.Setenv("PATH", dir)
+
+	_, err := claudePreflight(nil)
+	if err == nil {
+		t.Fatal("expected error when bwrap not on PATH")
+	}
+	if !strings.Contains(err.Error(), "bwrap not found") {
+		t.Errorf("error should mention bwrap, got: %v", err)
+	}
+}
+
+func TestClaudePreflight_Success(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_TEAMMATE_COMMAND", "")
+	setPathWithBinaries(t)
+
+	cfg, err := claudePreflight([]string{"--resume", "--verbose"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.ClaudeBin == "" {
+		t.Error("ClaudeBin should not be empty")
+	}
+	if cfg.SeaBin == "" {
+		t.Error("SeaBin should not be empty")
+	}
+	if len(cfg.Args) != 2 || cfg.Args[0] != "--resume" || cfg.Args[1] != "--verbose" {
+		t.Errorf("Args = %v, want [--resume --verbose]", cfg.Args)
+	}
+}
+
+func TestClaudePreflight_StripsDashDash(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_TEAMMATE_COMMAND", "")
+	setPathWithBinaries(t)
+
+	cfg, err := claudePreflight([]string{"--", "--resume"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.Args) != 1 || cfg.Args[0] != "--resume" {
+		t.Errorf("Args = %v, want [--resume]", cfg.Args)
+	}
+}
+
+func TestClaudePreflight_NoArgs(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_TEAMMATE_COMMAND", "")
+	setPathWithBinaries(t)
+
+	cfg, err := claudePreflight(nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.Args) != 0 {
+		t.Errorf("Args = %v, want empty", cfg.Args)
+	}
+}
+
+func TestClaudePreflight_UnsetEnvVar(t *testing.T) {
+	os.Unsetenv("CLAUDE_CODE_TEAMMATE_COMMAND")
+	setPathWithBinaries(t)
+
+	_, err := claudePreflight(nil)
+	if err != nil {
+		t.Fatalf("unexpected error with unset env var: %v", err)
+	}
+}

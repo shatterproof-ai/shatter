@@ -1,0 +1,13 @@
+{
+  "id": "8",
+  "subject": "kapow-e5n: ZIP lookup single-submit bug fix",
+  "description": "Fix ZIP location flow so one submit resolves location. Quality gate: cd web && pnpm build && pnpm lint && pnpm test",
+  "status": "pending",
+  "blocks": [
+    "11",
+    "13",
+    "14",
+    "15"
+  ],
+  "blockedBy": []
+}

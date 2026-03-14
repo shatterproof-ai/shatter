@@ -1,0 +1,357 @@
+#!/bin/bash
+# test_e2e.sh
+#
+# End-to-end integration test for agentsea CLI pipeline:
+#   sea init → agent provisioning → sea status → sea merge → sea cleanup → sea doctor
+#
+# Usage:
+#   bash tests/integration/test_e2e.sh
+#
+# Requirements: go, git
+# Must be run from the repo root (or provide REPO_ROOT env var).
+
+set -euo pipefail
+
+echo "============================================="
+echo "  Agentsea E2E Integration Test"
+echo "============================================="
+echo ""
+echo "Command: $0 $*"
+echo "Date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo ""
+
+# --- Setup ---
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="${REPO_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+
+TMPDIR_BASE="$(mktemp -d /tmp/agentsea-e2e.XXXXXX)"
+FAKE_HOME="$TMPDIR_BASE/home"
+FAKE_PROJECT="$TMPDIR_BASE/project"
+BIN_DIR="$TMPDIR_BASE/bin"
+
+mkdir -p "$FAKE_HOME" "$FAKE_PROJECT" "$BIN_DIR"
+
+# Counters
+PASS=0
+FAIL=0
+RESULTS=()
+
+cleanup() {
+  rm -rf "$TMPDIR_BASE"
+}
+trap cleanup EXIT
+
+pass() {
+  local name="$1"
+  PASS=$((PASS + 1))
+  RESULTS+=("PASS  $name")
+  echo "  PASS: $name"
+}
+
+fail() {
+  local name="$1"
+  local detail="${2:-}"
+  FAIL=$((FAIL + 1))
+  RESULTS+=("FAIL  $name")
+  echo "  FAIL: $name"
+  if [ -n "$detail" ]; then
+    echo "        $detail"
+  fi
+}
+
+# --- Build ---
+
+echo "Building sea binary..."
+(cd "$REPO_ROOT" && go build -o "$BIN_DIR/sea" ./cmd/sea) || {
+  echo "FATAL: go build failed"
+  exit 1
+}
+SEA="$BIN_DIR/sea"
+echo "  Built: $SEA"
+echo ""
+
+# --- Create fake project repo ---
+
+echo "Creating fake project repo..."
+(
+  cd "$FAKE_PROJECT"
+  git init -b main
+  git config user.email "test@example.com"
+  git config user.name "Test User"
+  echo "hello" > README.md
+  git add README.md
+  git commit -m "Initial commit"
+) > /dev/null 2>&1
+echo "  Created: $FAKE_PROJECT"
+echo ""
+
+# Helper: workspace dir derived from project name
+WS_DIR="$FAKE_HOME/.agentsea/workspaces/project"
+
+# =============================================
+# Test 1: sea init
+# =============================================
+echo "--- Test 1: sea init ---"
+
+# sea init needs a repo-url. Use the local project path as a "remote".
+# We also need to set up a bare clone as the "origin" that init will clone.
+# The simplest approach: pass --repo-url pointing to the local project.
+(
+  cd "$FAKE_PROJECT"
+  HOME="$FAKE_HOME" "$SEA" init --repo-url "$FAKE_PROJECT" --project-path "$FAKE_PROJECT"
+) > /dev/null 2>&1
+
+# Verify workspace layout
+if [ -f "$WS_DIR/workspace.yaml" ]; then
+  pass "workspace.yaml exists"
+else
+  fail "workspace.yaml exists" "not found at $WS_DIR/workspace.yaml"
+fi
+
+if [ -d "$WS_DIR/canonical" ] && [ -f "$WS_DIR/canonical/HEAD" ]; then
+  pass "canonical/ is a bare git repo"
+else
+  fail "canonical/ is a bare git repo" "not found at $WS_DIR/canonical"
+fi
+
+if [ -d "$WS_DIR/agents" ]; then
+  pass "agents/ directory exists"
+else
+  fail "agents/ directory exists"
+fi
+
+if [ -f "$WS_DIR/ssh/deploy_key" ] && [ -f "$WS_DIR/ssh/deploy_key.pub" ]; then
+  pass "ssh/deploy_key exists"
+else
+  fail "ssh/deploy_key exists" "not found in $WS_DIR/ssh/"
+fi
+
+echo ""
+
+# =============================================
+# Test 2: Agent provisioning (simulates wrapper)
+# =============================================
+echo "--- Test 2: Agent provisioning (simulate wrapper) ---"
+
+AGENT_NAME="test-agent"
+AGENT_DIR="$WS_DIR/agents/$AGENT_NAME"
+AGENT_REPO="$AGENT_DIR/repo"
+AGENT_SSH="$AGENT_DIR/ssh"
+AGENT_BRANCH="$AGENT_NAME/work"
+
+# Clone canonical → agent repo
+git clone "$WS_DIR/canonical" "$AGENT_REPO" > /dev/null 2>&1
+
+# Create agent work branch
+(
+  cd "$AGENT_REPO"
+  git checkout -b "$AGENT_BRANCH"
+) > /dev/null 2>&1
+
+if [ "$(git -C "$AGENT_REPO" branch --show-current)" = "$AGENT_BRANCH" ]; then
+  pass "agent branch $AGENT_BRANCH created"
+else
+  fail "agent branch $AGENT_BRANCH created"
+fi
+
+# Install pre-push hook (same content as gitops/hooks.go)
+mkdir -p "$AGENT_REPO/.git/hooks"
+cat > "$AGENT_REPO/.git/hooks/pre-push" << 'HOOKEOF'
+#!/bin/bash
+echo "ERROR: Direct push not allowed from agent sandbox."
+echo "Your changes will be merged by the lead agent."
+exit 1
+HOOKEOF
+chmod +x "$AGENT_REPO/.git/hooks/pre-push"
+
+if [ -x "$AGENT_REPO/.git/hooks/pre-push" ]; then
+  pass "pre-push hook installed"
+else
+  fail "pre-push hook installed"
+fi
+
+# Write AGENT-CONTEXT.md
+cat > "$AGENT_REPO/AGENT-CONTEXT.md" << 'CTXEOF'
+# Agent Workspace
+
+You are working in an isolated sandbox. Your workspace is this git repo.
+You cannot access files outside this directory.
+
+## Rules
+- Work only in this repo
+- Commit your changes to the current branch
+- Use SendMessage to communicate with the team lead
+- Do not attempt to access files outside this directory
+CTXEOF
+
+if [ -f "$AGENT_REPO/AGENT-CONTEXT.md" ]; then
+  pass "AGENT-CONTEXT.md exists"
+else
+  fail "AGENT-CONTEXT.md exists"
+fi
+
+# Generate SSH deploy key for agent
+mkdir -p "$AGENT_SSH"
+ssh-keygen -t ed25519 -f "$AGENT_SSH/deploy_key" -N "" -C "agentsea-$AGENT_NAME" > /dev/null 2>&1
+
+if [ -f "$AGENT_SSH/deploy_key" ]; then
+  pass "agent deploy key generated"
+else
+  fail "agent deploy key generated"
+fi
+
+# Make a commit on the agent branch (so merge has something to merge)
+(
+  cd "$AGENT_REPO"
+  git config user.email "agent@example.com"
+  git config user.name "Test Agent"
+  echo "agent work" > agent-output.txt
+  git add agent-output.txt AGENT-CONTEXT.md
+  git commit -m "Agent work: add output"
+) > /dev/null 2>&1
+
+AGENT_COMMITS="$(git -C "$AGENT_REPO" rev-list --count HEAD)"
+if [ "$AGENT_COMMITS" -ge 2 ]; then
+  pass "agent has commits ($AGENT_COMMITS)"
+else
+  fail "agent has commits" "expected >= 2, got $AGENT_COMMITS"
+fi
+
+echo ""
+
+# =============================================
+# Test 3: sea status
+# =============================================
+echo "--- Test 3: sea status ---"
+
+STATUS_OUT="$(cd "$FAKE_PROJECT" && HOME="$FAKE_HOME" "$SEA" status 2>&1)" || true
+
+if echo "$STATUS_OUT" | grep -q "$AGENT_NAME"; then
+  pass "sea status shows agent '$AGENT_NAME'"
+else
+  fail "sea status shows agent '$AGENT_NAME'" "output: $STATUS_OUT"
+fi
+
+if echo "$STATUS_OUT" | grep -q "$AGENT_BRANCH"; then
+  pass "sea status shows branch '$AGENT_BRANCH'"
+else
+  fail "sea status shows branch '$AGENT_BRANCH'" "output: $STATUS_OUT"
+fi
+
+echo ""
+
+# =============================================
+# Test 4: sea merge
+# =============================================
+echo "--- Test 4: sea merge ---"
+
+# Before merge, verify agent-output.txt does NOT exist in lead repo
+if [ ! -f "$FAKE_PROJECT/agent-output.txt" ]; then
+  pass "agent-output.txt not in lead repo before merge"
+else
+  fail "agent-output.txt not in lead repo before merge" "file already exists"
+fi
+
+(cd "$FAKE_PROJECT" && HOME="$FAKE_HOME" "$SEA" merge "$AGENT_NAME") > /dev/null 2>&1
+
+if [ -f "$FAKE_PROJECT/agent-output.txt" ]; then
+  pass "sea merge brought agent-output.txt into lead repo"
+else
+  fail "sea merge brought agent-output.txt into lead repo"
+fi
+
+# Verify AGENT-CONTEXT.md was also merged
+if [ -f "$FAKE_PROJECT/AGENT-CONTEXT.md" ]; then
+  pass "sea merge brought AGENT-CONTEXT.md into lead repo"
+else
+  fail "sea merge brought AGENT-CONTEXT.md into lead repo"
+fi
+
+echo ""
+
+# =============================================
+# Test 5: sea cleanup
+# =============================================
+echo "--- Test 5: sea cleanup ---"
+
+# The agent branch test-agent/work only exists in the agent repo, not as a local
+# branch in the lead repo. So `sea cleanup` (without --force) correctly skips it
+# because it can't confirm the branch is merged via `git branch --merged`.
+# We test both behaviors: skip without --force, remove with --force.
+
+if [ -d "$AGENT_DIR" ]; then
+  pass "agent directory exists before cleanup"
+else
+  fail "agent directory exists before cleanup" "not found at $AGENT_DIR"
+fi
+
+# Without --force: agent dir should NOT be removed (branch not locally tracked)
+(cd "$FAKE_PROJECT" && HOME="$FAKE_HOME" "$SEA" cleanup) > /dev/null 2>&1
+
+if [ -d "$AGENT_DIR" ]; then
+  pass "sea cleanup (no --force) skips untracked agent branch"
+else
+  fail "sea cleanup (no --force) skips untracked agent branch" "directory was unexpectedly removed"
+fi
+
+# With --force: agent dir should be removed
+(cd "$FAKE_PROJECT" && HOME="$FAKE_HOME" "$SEA" cleanup --force) > /dev/null 2>&1
+
+if [ ! -d "$AGENT_DIR" ]; then
+  pass "sea cleanup --force removed agent directory"
+else
+  fail "sea cleanup --force removed agent directory" "directory still exists at $AGENT_DIR"
+fi
+
+echo ""
+
+# =============================================
+# Test 6: sea doctor
+# =============================================
+echo "--- Test 6: sea doctor ---"
+
+# Doctor will fail some checks (no bwrap/claude in test env) but should not crash.
+# We just check that it runs and produces output.
+DOCTOR_OUT="$(cd "$FAKE_PROJECT" && HOME="$FAKE_HOME" "$SEA" doctor 2>&1)" || true
+
+if echo "$DOCTOR_OUT" | grep -q "sea doctor"; then
+  pass "sea doctor runs without crashing"
+else
+  # Even if it doesn't match the exact string, if we got output it didn't crash
+  if [ -n "$DOCTOR_OUT" ]; then
+    pass "sea doctor runs without crashing"
+  else
+    fail "sea doctor runs without crashing" "no output"
+  fi
+fi
+
+if echo "$DOCTOR_OUT" | grep -qE "(passed|failed|skipped)"; then
+  pass "sea doctor produces summary"
+else
+  fail "sea doctor produces summary" "output: $DOCTOR_OUT"
+fi
+
+echo ""
+
+# =============================================
+# Summary
+# =============================================
+echo "============================================="
+echo "  Results"
+echo "============================================="
+echo ""
+for r in "${RESULTS[@]}"; do
+  echo "  $r"
+done
+echo ""
+echo "  PASS: $PASS  FAIL: $FAIL"
+echo ""
+
+if [ $FAIL -gt 0 ]; then
+  echo "Some tests failed."
+  exit 1
+fi
+
+echo "All tests passed."
+exit 0

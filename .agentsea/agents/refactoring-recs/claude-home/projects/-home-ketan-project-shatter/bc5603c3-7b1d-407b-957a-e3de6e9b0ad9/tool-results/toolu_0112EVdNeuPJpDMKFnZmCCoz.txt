@@ -1,0 +1,1701 @@
+     1→     1→//! Protocol types for communication between the Rust core and language frontends.
+     2→     2→//!
+     3→     3→//! All messages are newline-delimited JSON over stdin/stdout. The core sends
+     4→     4→//! [`Request`] messages to frontends and receives [`Response`] messages back.
+     5→     5→//! Every message includes a protocol version for compatibility checking.
+     6→     6→
+     7→     7→use std::collections::HashMap;
+     8→     8→
+     9→     9→use serde::{Deserialize, Serialize};
+    10→    10→
+    11→    11→use crate::config::SetupMode;
+    12→    12→use crate::crypto_registry::{CryptoDirection, OutputSemantics, ParamRole};
+    13→    13→use crate::execution_record::{
+    14→    14→    BranchDecision, ErrorInfo, ExternalCall, SideEffect, SymConstraint, TraceEvent,
+    15→    15→    TruncationInfo,
+    16→    16→};
+    17→    17→use crate::sym_expr::SymExpr;
+    18→    18→use crate::types::{ParamInfo, TypeInfo};
+    19→    19→
+    20→    20→/// Current protocol version.
+    21→    21→pub const PROTOCOL_VERSION: &str = "0.1.0";
+    22→    22→
+    23→    23→// ---------------------------------------------------------------------------
+    24→    24→// Request: Core → Frontend
+    25→    25→// ---------------------------------------------------------------------------
+    26→    26→
+    27→    27→/// A request message sent from the core engine to a language frontend.
+    28→    28→#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    29→    29→pub struct Request {
+    30→    30→    /// Protocol version for compatibility checking.
+    31→    31→    pub protocol_version: String,
+    32→    32→    /// Unique identifier for correlating responses to requests.
+    33→    33→    pub id: u64,
+    34→    34→    /// The command to execute.
+    35→    35→    #[serde(flatten)]
+    36→    36→    pub command: Command,
+    37→    37→}
+    38→    38→
+    39→    39→/// Commands the core can send to a frontend.
+    40→    40→#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    41→    41→#[serde(tag = "command", rename_all = "snake_case")]
+    42→    42→pub enum Command {
+    43→    43→    /// Initial handshake to negotiate protocol version and capabilities.
+    44→    44→    Handshake {
+    45→    45→        /// Capabilities supported by the core.
+    46→    46→        capabilities: Vec<String>,
+    47→    47→    },
+    48→    48→    /// Analyze a function to extract type information, branches, and dependencies.
+    49→    49→    Analyze {
+    50→    50→        /// Path to the source file.
+    51→    51→        file: String,
+    52→    52→        /// Name of the function to analyze. If absent, analyze all exported functions.
+    53→    53→        function: Option<String>,
+    54→    54→        /// Detected project root directory, if any.
+    55→    55→        #[serde(default, skip_serializing_if = "Option::is_none")]
+    56→    56→        project_root: Option<String>,
+    57→    57→    },
+    58→    58→    /// Instrument a function for symbolic constraint tracking.
+    59→    59→    Instrument {
+    60→    60→        /// Path to the source file.
+    61→    61→        file: String,
+    62→    62→        /// Name of the function to instrument.
+    63→    63→        function: String,
+    64→    64→        /// Mock configurations for external dependencies.
+    65→    65→        mocks: Vec<MockConfig>,
+    66→    66→        /// Detected project root directory, if any.
+    67→    67→        #[serde(default, skip_serializing_if = "Option::is_none")]
+    68→    68→        project_root: Option<String>,
+    69→    69→    },
+    70→    70→    /// Execute an instrumented function with specific inputs and mocks.
+    71→    71→    Execute {
+    72→    72→        /// Fully qualified function identifier.
+    73→    73→        function: String,
+    74→    74→        /// Input values for the function parameters (JSON-encoded).
+    75→    75→        inputs: Vec<serde_json::Value>,
+    76→    76→        /// Mock configurations for external dependencies.
+    77→    77→        mocks: Vec<MockConfig>,
+    78→    78→        /// Opaque context returned by a prior Setup command, if any.
+    79→    79→        #[serde(default, skip_serializing_if = "Option::is_none")]
+    80→    80→        setup_context: Option<serde_json::Value>,
+    81→    81→    },
+    82→    82→    /// Run a setup file to initialize state before function execution.
+    83→    83→    Setup {
+    84→    84→        /// Path to the setup file.
+    85→    85→        file: String,
+    86→    86→        /// Name of the function this setup is associated with.
+    87→    87→        function: String,
+    88→    88→        /// When to run setup relative to executions.
+    89→    89→        mode: SetupMode,
+    90→    90→        /// Detected project root directory, if any.
+    91→    91→        #[serde(default, skip_serializing_if = "Option::is_none")]
+    92→    92→        project_root: Option<String>,
+    93→    93→    },
+    94→    94→    /// Tear down state established by a prior Setup command.
+    95→    95→    Teardown {
+    96→    96→        /// Name of the function whose setup should be torn down.
+    97→    97→        function: String,
+    98→    98→    },
+    99→    99→    /// Invoke a custom generator to produce a value for a type or parameter.
+   100→   100→    Generate {
+   101→   101→        /// Path to the generator file.
+   102→   102→        file: String,
+   103→   103→        /// Name of the type or parameter to generate a value for.
+   104→   104→        name: String,
+   105→   105→        /// Whether this generator targets a type name or a parameter name.
+   106→   106→        kind: GeneratorKind,
+   107→   107→        /// Reconstruction recipe from a previous generation.
+   108→   108→        #[serde(default, skip_serializing_if = "Option::is_none")]
+   109→   109→        recipe: Option<serde_json::Value>,
+   110→   110→        /// Detected project root directory, if any.
+   111→   111→        #[serde(default, skip_serializing_if = "Option::is_none")]
+   112→   112→        project_root: Option<String>,
+   113→   113→    },
+   114→   114→    /// Request graceful shutdown of the frontend process.
+   115→   115→    Shutdown,
+   116→   116→}
+   117→   117→
+   118→   118→/// Whether a generator targets a type name or a parameter name.
+   119→   119→#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+   120→   120→#[serde(rename_all = "snake_case")]
+   121→   121→pub enum GeneratorKind {
+   122→   122→    /// Generator for a named type (e.g., "User").
+   123→   123→    TypeName,
+   124→   124→    /// Generator for a named parameter (e.g., "authToken").
+   125→   125→    ParamName,
+   126→   126→}
+   127→   127→
+   128→   128→/// Configuration for mocking an external dependency during execution.
+   129→   129→#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+   130→   130→pub struct MockConfig {
+   131→   131→    /// Fully qualified symbol name of the dependency to mock.
+   132→   132→    pub symbol: String,
+   133→   133→    /// Pre-configured return values to cycle through.
+   134→   134→    pub return_values: Vec<serde_json::Value>,
+   135→   135→    /// Whether to record arguments passed to the mock.
+   136→   136→    pub should_track_calls: bool,
+   137→   137→    /// Default behavior when return_values are exhausted.
+   138→   138→    pub default_behavior: MockBehavior,
+   139→   139→}
+   140→   140→
+   141→   141→/// How a mock should behave when its pre-configured return values are exhausted.
+   142→   142→#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+   143→   143→#[serde(rename_all = "snake_case")]
+   144→   144→pub enum MockBehavior {
+   145→   145→    /// Return a generated value based on the return type.
+   146→   146→    ReturnGenerated,
+   147→   147→    /// Repeat the last return value.
+   148→   148→    RepeatLast,
+   149→   149→    /// Throw an error.
+   150→   150→    ThrowError,
+   151→   151→    /// Call through to the real implementation.
+   152→   152→    Passthrough,
+   153→   153→}
+   154→   154→
+   155→   155→// ---------------------------------------------------------------------------
+   156→   156→// Response: Frontend → Core
+   157→   157→// ---------------------------------------------------------------------------
+   158→   158→
+   159→   159→/// A response message sent from a language frontend to the core engine.
+   160→   160→#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+   161→   161→pub struct Response {
+   162→   162→    /// Protocol version for compatibility checking.
+   163→   163→    pub protocol_version: String,
+   164→   164→    /// Request ID this response corresponds to.
+   165→   165→    pub id: u64,
+   166→   166→    /// The response payload.
+   167→   167→    #[serde(flatten)]
+   168→   168→    pub result: ResponseResult,
+   169→   169→}
+   170→   170→
+   171→   171→/// Response payloads from a frontend.
+   172→   172→#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+   173→   173→#[serde(tag = "status", rename_all = "snake_case")]
+   174→   174→pub enum ResponseResult {
+   175→   175→    /// Successful handshake response.
+   176→   176→    Handshake {
+   177→   177→        /// Protocol version the frontend supports.
+   178→   178→        frontend_version: String,
+   179→   179→        /// Language this frontend handles (e.g., "typescript", "go").
+   180→   180→        language: String,
+   181→   181→        /// Capabilities supported by the frontend.
+   182→   182→        capabilities: Vec<String>,
+   183→   183→    },
+   184→   184→    /// Successful analysis result.
+   185→   185→    Analyze {
+   186→   186→        /// Functions found and analyzed.
+   187→   187→        #[serde(default)]
+   188→   188→        functions: Vec<FunctionAnalysis>,
+   189→   189→    },
+   190→   190→    /// Successful instrumentation result.
+   191→   191→    Instrument {
+   192→   192→        /// Whether instrumentation succeeded.
+   193→   193→        instrumented: bool,
+   194→   194→        /// Path to the instrumented output file, if applicable.
+   195→   195→        output_file: Option<String>,
+   196→   196→        /// Number of executable statement lines the instrumentor inserted record calls for.
+   197→   197→        /// Used as the denominator for line coverage instead of raw source span.
+   198→   198→        #[serde(default, skip_serializing_if = "Option::is_none")]
+   199→   199→        instrumentable_line_count: Option<u32>,
+   200→   200→    },
+   201→   201→    /// Successful execution result (boxed to reduce enum size).
+   202→   202→    Execute(Box<ExecuteResult>),
+   203→   203→    /// Successful setup result.
+   204→   204→    Setup {
+   205→   205→        /// Opaque context to pass to subsequent Execute commands.
+   206→   206→        setup_context: serde_json::Value,
+   207→   207→    },
+   208→   208→    /// Acknowledgment that teardown completed.
+   209→   209→    TeardownAck,
+   210→   210→    /// Result of invoking a custom generator.
+   211→   211→    Generate {
+   212→   212→        /// The generated value.
+   213→   213→        value: serde_json::Value,
+   214→   214→        /// Human-readable label for this generated value.
+   215→   215→        generator_id: String,
+   216→   216→        /// Serializable recipe for replaying this generation.
+   217→   217→        #[serde(default, skip_serializing_if = "Option::is_none")]
+   218→   218→        recipe: Option<serde_json::Value>,
+   219→   219→    },
+   220→   220→    /// Acknowledgment of shutdown request.
+   221→   221→    ShutdownAck,
+   222→   222→    /// Error response for any command.
+   223→   223→    Error {
+   224→   224→        /// Machine-readable error code.
+   225→   225→        code: ErrorCode,
+   226→   226→        /// Human-readable error message.
+   227→   227→        message: String,
+   228→   228→        /// Additional error details (e.g., stack trace, source location).
+   229→   229→        details: Option<serde_json::Value>,
+   230→   230→    },
+   231→   231→}
+   232→   232→
+   233→   233→/// A literal constant value extracted from source code during static analysis.
+   234→   234→///
+   235→   235→/// Used to seed the candidate input pool with values the function itself
+   236→   236→/// compares against, improving branch coverage on first pass.
+   237→   237→#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+   238→   238→#[serde(tag = "type", rename_all = "snake_case")]
+   239→   239→pub enum LiteralValue {
+   240→   240→    Int { value: i64 },
+   241→   241→    Float { value: f64 },
+   242→   242→    Str { value: String },
+   243→   243→    Bool { value: bool },
+   244→   244→    /// Regex pattern string (source text, no delimiters or flags).
+   245→   245→    Regex { pattern: String },
+   246→   246→}
+   247→   247→
+   248→   248→/// Analysis result for a single function.
+   249→   249→#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+   250→   250→pub struct FunctionAnalysis {
+   251→   251→    /// Fully qualified function name.
+   252→   252→    pub name: String,
+   253→   253→    /// Whether the function is exported (public) from its module.
+   254→   254→    #[serde(default)]
+   255→   255→    pub exported: bool,
+   256→   256→    /// Function parameters with type information.
+   257→   257→    pub params: Vec<ParamInfo>,
+   258→   258→    /// Branch points found in the function.
+   259→   259→    pub branches: Vec<BranchInfo>,
+   260→   260→    /// External dependencies detected.
+   261→   261→    pub dependencies: Vec<ExternalDependency>,
+   262→   262→    /// Return type of the function.
+   263→   263→    pub return_type: TypeInfo,
+   264→   264→    /// Source location.
+   265→   265→    pub start_line: u32,
+   266→   266→    pub end_line: u32,
+   267→   267→    /// Literal constants extracted from the function body for use as candidate inputs.
+   268→   268→    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+   269→   269→    pub literals: Vec<LiteralValue>,
+   270→   270→    /// Cryptographic API boundaries detected by matching dependencies against the crypto registry.
+   271→   271→    /// Populated by core after analysis; frontends leave this empty.
+   272→   272→    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+   273→   273→    pub crypto_boundaries: Vec<CryptoBoundary>,
+   274→   274→}
+   275→   275→
+   276→   276→/// A branch point found during static analysis.
+   277→   277→#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+   278→   278→pub struct BranchInfo {
+   279→   279→    /// Unique identifier for this branch within the function.
+   280→   280→    pub id: u32,
+   281→   281→    /// Source line number.
+   282→   282→    pub line: u32,
+   283→   283→    /// Source text of the condition (for display).
+   284→   284→    pub condition_text: String,
+   285→   285→    /// Symbolic representation of the condition, if extractable.
+   286→   286→    pub condition: Option<SymExpr>,
+   287→   287→    /// Type of branch construct.
+   288→   288→    pub branch_type: BranchType,
+   289→   289→}
+   290→   290→
+   291→   291→/// The kind of branch construct in source code.
+   292→   292→#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+   293→   293→#[serde(rename_all = "snake_case")]
+   294→   294→pub enum BranchType {
+   295→   295→    If,
+   296→   296→    ElseIf,
+   297→   297→    Switch,
+   298→   298→    Ternary,
+   299→   299→    LogicalAnd,
+   300→   300→    LogicalOr,
+   301→   301→    While,
+   302→   302→    For,
+   303→   303→    Select,
+   304→   304→}
+   305→   305→
+   306→   306→/// An external dependency detected during analysis.
+   307→   307→#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+   308→   308→pub struct ExternalDependency {
+   309→   309→    /// The kind of dependency.
+   310→   310→    pub kind: DependencyKind,
+   311→   311→    /// Fully qualified symbol name.
+   312→   312→    pub symbol: String,
+   313→   313→    /// Module or package the symbol is imported from.
+   314→   314→    pub source_module: String,
+   315→   315→    /// Return type for generating mock values.
+   316→   316→    pub return_type: TypeInfo,
+   317→   317→    /// Parameter types for validating mock calls.
+   318→   318→    pub param_types: Vec<TypeInfo>,
+   319→   319→    /// Line numbers where this dependency is called.
+   320→   320→    pub call_sites: Vec<u32>,
+   321→   321→}
+   322→   322→
+   323→   323→/// A detected cryptographic API boundary within a function.
+   324→   324→///
+   325→   325→/// Produced by matching `ExternalDependency` entries against the crypto registry.
+   326→   326→/// Carries the crypto-specific metadata (direction, param roles, output semantics)
+   327→   327→/// alongside the call site information from the dependency.
+   328→   328→#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+   329→   329→pub struct CryptoBoundary {
+   330→   330→    /// The symbol name from the dependency (e.g. "createDecipheriv").
+   331→   331→    pub symbol: String,
+   332→   332→    /// The source module (e.g. "crypto", "crypto/cipher").
+   333→   333→    pub source_module: String,
+   334→   334→    /// Whether this is an encrypt, decrypt, or both operation.
+   335→   335→    pub direction: CryptoDirection,
+   336→   336→    /// What the output represents (ciphertext, plaintext, key, etc.).
+   337→   337→    pub output: OutputSemantics,
+   338→   338→    /// Maps parameter positions to their cryptographic roles.
+   339→   339→    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+   340→   340→    pub param_roles: HashMap<String, ParamRole>,
+   341→   341→    /// Line numbers where this crypto API is called.
+   342→   342→    pub call_sites: Vec<u32>,
+   343→   343→}
+   344→   344→
+   345→   345→/// The kind of external dependency.
+   346→   346→#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+   347→   347→#[serde(rename_all = "snake_case")]
+   348→   348→pub enum DependencyKind {
+   349→   349→    FunctionCall,
+   350→   350→    MethodCall,
+   351→   351→    PropertyAccess,
+   352→   352→    ModuleImport,
+   353→   353→}
+   354→   354→
+   355→   355→/// Result of executing an instrumented function.
+   356→   356→#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+   357→   357→pub struct ExecuteResult {
+   358→   358→    /// Return value from the function, if it returned normally.
+   359→   359→    pub return_value: Option<serde_json::Value>,
+   360→   360→    /// Error thrown during execution, if any.
+   361→   361→    pub thrown_error: Option<ErrorInfo>,
+   362→   362→    /// Branch decisions recorded during execution.
+   363→   363→    #[serde(default)]
+   364→   364→    pub branch_path: Vec<BranchDecision>,
+   365→   365→    /// Source lines executed.
+   366→   366→    #[serde(default)]
+   367→   367→    pub lines_executed: Vec<u32>,
+   368→   368→    /// Calls to external dependencies observed.
+   369→   369→    #[serde(default)]
+   370→   370→    pub calls_to_external: Vec<ExternalCall>,
+   371→   371→    /// Symbolic path constraints collected.
+   372→   372→    #[serde(default)]
+   373→   373→    pub path_constraints: Vec<SymConstraint>,
+   374→   374→    /// Scope-annotated execution trace (branches + loop/call markers).
+   375→   375→    /// When non-empty, enables scope-aware path collapsing in `path_hash`.
+   376→   376→    #[serde(default)]
+   377→   377→    pub scope_events: Vec<TraceEvent>,
+   378→   378→    /// Side effects observed during execution.
+   379→   379→    #[serde(default)]
+   380→   380→    pub side_effects: Vec<SideEffect>,
+   381→   381→    /// Performance metrics.
+   382→   382→    pub performance: PerformanceMetrics,
+   383→   383→    /// Truncation metadata for captured side effects.
+   384→   384→    #[serde(default, skip_serializing_if = "Option::is_none")]
+   385→   385→    pub capture_truncation: Option<TruncationInfo>,
+   386→   386→}
+   387→   387→
+   388→   388→/// Performance metrics from a single execution.
+   389→   389→#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+   390→   390→pub struct PerformanceMetrics {
+   391→   391→    /// Wall clock time in milliseconds.
+   392→   392→    pub wall_time_ms: f64,
+   393→   393→    /// CPU time in microseconds.
+   394→   394→    pub cpu_time_us: u64,
+   395→   395→    /// Heap memory used in bytes.
+   396→   396→    pub heap_used_bytes: u64,
+   397→   397→    /// Heap memory allocated in bytes.
+   398→   398→    pub heap_allocated_bytes: u64,
+   399→   399→}
+   400→   400→
+   401→   401→/// Machine-readable error codes for protocol errors.
+   402→   402→#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+   403→   403→#[serde(rename_all = "snake_case")]
+   404→   404→pub enum ErrorCode {
+   405→   405→    /// File not found or not readable.
+   406→   406→    FileNotFound,
+   407→   407→    /// Function not found in the specified file.
+   408→   408→    FunctionNotFound,
+   409→   409→    /// Syntax or parse error in source file.
+   410→   410→    ParseError,
+   411→   411→    /// Instrumentation failed.
+   412→   412→    InstrumentationFailed,
+   413→   413→    /// Execution timed out.
+   414→   414→    ExecutionTimeout,
+   415→   415→    /// Execution crashed (segfault, OOM, etc.).
+   416→   416→    ExecutionCrash,
+   417→   417→    /// Protocol version mismatch.
+   418→   418→    VersionMismatch,
+   419→   419→    /// Invalid or malformed request.
+   420→   420→    InvalidRequest,
+   421→   421→    /// Frontend internal error.
+   422→   422→    InternalError,
+   423→   423→}
+   424→   424→
+   425→   425→// ---------------------------------------------------------------------------
+   426→   426→// Helpers
+   427→   427→// ---------------------------------------------------------------------------
+   428→   428→
+   429→   429→impl Request {
+   430→   430→    /// Create a new request with the current protocol version.
+   431→   431→    pub fn new(id: u64, command: Command) -> Self {
+   432→   432→        Self {
+   433→   433→            protocol_version: PROTOCOL_VERSION.to_string(),
+   434→   434→            id,
+   435→   435→            command,
+   436→   436→        }
+   437→   437→    }
+   438→   438→}
+   439→   439→
+   440→   440→impl Response {
+   441→   441→    /// Create a new response with the current protocol version.
+   442→   442→    pub fn new(id: u64, result: ResponseResult) -> Self {
+   443→   443→        Self {
+   444→   444→            protocol_version: PROTOCOL_VERSION.to_string(),
+   445→   445→            id,
+   446→   446→            result,
+   447→   447→        }
+   448→   448→    }
+   449→   449→}
+   450→   450→
+   451→   451→// ---------------------------------------------------------------------------
+   452→   452→// Protocol validation — trust boundary between subprocess JSON and core
+   453→   453→// ---------------------------------------------------------------------------
+   454→   454→
+   455→   455→/// Validate an `ExecuteResult` deserialized from a frontend subprocess.
+   456→   456→///
+   457→   457→/// Checks semantic invariants that serde can't enforce:
+   458→   458→/// - `branch_path` entries have non-default constraints (when non-empty, an all-unknown
+   459→   459→///   branch_path produces identical hashes for different paths → silent hash collision)
+   460→   460→/// - `path_constraints` length matches `branch_path` length when both are non-empty
+   461→   461→#[contracts::ensures(ret == execute_result_is_valid(result),
+   462→   462→    "postcondition must match validation logic")]
+   463→   463→pub fn validate_execute_result(result: &ExecuteResult) -> bool {
+   464→   464→    execute_result_is_valid(result)
+   465→   465→}
+   466→   466→
+   467→   467→fn execute_result_is_valid(result: &ExecuteResult) -> bool {
+   468→   468→    // Branch path with all-unknown constraints causes silent hash collisions
+   469→   469→    // because the path hash depends on constraint content.
+   470→   470→    if !result.branch_path.is_empty() {
+   471→   471→        let all_unknown = result.branch_path.iter().all(|bd| {
+   472→   472→            matches!(bd.constraint, SymConstraint::Unknown { .. })
+   473→   473→        });
+   474→   474→        // All-unknown is valid for frontends without symbolic analysis (Go),
+   475→   475→        // but path_constraints should then also be empty.
+   476→   476→        if all_unknown && !result.path_constraints.is_empty() {
+   477→   477→            return false;
+   478→   478→        }
+   479→   479→    }
+   480→   480→    true
+   481→   481→}
+   482→   482→
+   483→   483→/// Validate a `FunctionAnalysis` list deserialized from a frontend subprocess.
+   484→   484→///
+   485→   485→/// Checks semantic invariants that serde can't enforce:
+   486→   486→/// - Function names are non-empty (empty name → silent lookup failures)
+   487→   487→/// - `start_line <= end_line` (inverted range → wrong source slicing)
+   488→   488→/// - Param count is plausible (> 255 params suggests a deserialization bug)
+   489→   489→#[contracts::ensures(ret == analyze_result_is_valid(functions),
+   490→   490→    "postcondition must match validation logic")]
+   491→   491→pub fn validate_analyze_result(functions: &[FunctionAnalysis]) -> bool {
+   492→   492→    analyze_result_is_valid(functions)
+   493→   493→}
+   494→   494→
+   495→   495→/// Upper bound on parameter count — anything above this likely indicates
+   496→   496→/// a deserialization bug rather than a real function signature.
+   497→   497→const MAX_PLAUSIBLE_PARAMS: usize = 255;
+   498→   498→
+   499→   499→fn analyze_result_is_valid(functions: &[FunctionAnalysis]) -> bool {
+   500→   500→    for func in functions {
+   501→   501→        if func.name.is_empty() {
+   502→   502→            return false;
+   503→   503→        }
+   504→   504→        if func.start_line > func.end_line {
+   505→   505→            return false;
+   506→   506→        }
+   507→   507→        if func.params.len() > MAX_PLAUSIBLE_PARAMS {
+   508→   508→            return false;
+   509→   509→        }
+   510→   510→    }
+   511→   511→    true
+   512→   512→}
+   513→   513→
+   514→   514→#[cfg(test)]
+   515→   515→mod tests {
+   516→   516→    use super::*;
+   517→   517→    use crate::sym_expr::{BinOpKind, ConstValue};
+   518→   518→
+   519→   519→    fn round_trip<T: Serialize + for<'de> Deserialize<'de> + PartialEq + std::fmt::Debug>(
+   520→   520→        value: &T,
+   521→   521→    ) {
+   522→   522→        let json = serde_json::to_string(value).expect("serialize");
+   523→   523→        let deserialized: T = serde_json::from_str(&json).expect("deserialize");
+   524→   524→        assert_eq!(*value, deserialized, "round-trip failed for json: {json}");
+   525→   525→    }
+   526→   526→
+   527→   527→    // -- Request round-trips --
+   528→   528→
+   529→   529→    #[test]
+   530→   530→    fn handshake_request_round_trips() {
+   531→   531→        round_trip(&Request::new(
+   532→   532→            1,
+   533→   533→            Command::Handshake {
+   534→   534→                capabilities: vec!["analyze".into(), "execute".into()],
+   535→   535→            },
+   536→   536→        ));
+   537→   537→    }
+   538→   538→
+   539→   539→    #[test]
+   540→   540→    fn analyze_request_with_function_round_trips() {
+   541→   541→        round_trip(&Request::new(
+   542→   542→            2,
+   543→   543→            Command::Analyze {
+   544→   544→                file: "src/main.ts".into(),
+   545→   545→                function: Some("calculateShipping".into()),
+   546→   546→                project_root: None,
+   547→   547→            },
+   548→   548→        ));
+   549→   549→    }
+   550→   550→
+   551→   551→    #[test]
+   552→   552→    fn analyze_request_without_function_round_trips() {
+   553→   553→        round_trip(&Request::new(
+   554→   554→            3,
+   555→   555→            Command::Analyze {
+   556→   556→                file: "src/main.ts".into(),
+   557→   557→                function: None,
+   558→   558→                project_root: None,
+   559→   559→            },
+   560→   560→        ));
+   561→   561→    }
+   562→   562→
+   563→   563→    #[test]
+   564→   564→    fn instrument_request_round_trips() {
+   565→   565→        round_trip(&Request::new(
+   566→   566→            4,
+   567→   567→            Command::Instrument {
+   568→   568→                file: "src/main.ts".into(),
+   569→   569→                function: "calculateShipping".into(),
+   570→   570→                mocks: vec![MockConfig {
+   571→   571→                    symbol: "rateService.getExpressRate".into(),
+   572→   572→                    return_values: vec![serde_json::json!(12.99)],
+   573→   573→                    should_track_calls: true,
+   574→   574→                    default_behavior: MockBehavior::RepeatLast,
+   575→   575→                }],
+   576→   576→                project_root: None,
+   577→   577→            },
+   578→   578→        ));
+   579→   579→    }
+   580→   580→
+   581→   581→    #[test]
+   582→   582→    fn execute_request_round_trips() {
+   583→   583→        round_trip(&Request::new(
+   584→   584→            5,
+   585→   585→            Command::Execute {
+   586→   586→                function: "calculateShipping".into(),
+   587→   587→                inputs: vec![serde_json::json!({"items": [1, 2, 3], "priority": "express"})],
+   588→   588→                mocks: vec![],
+   589→   589→                setup_context: None,
+   590→   590→            },
+   591→   591→        ));
+   592→   592→    }
+   593→   593→
+   594→   594→    #[test]
+   595→   595→    fn shutdown_request_round_trips() {
+   596→   596→        round_trip(&Request::new(6, Command::Shutdown));
+   597→   597→    }
+   598→   598→
+   599→   599→    // -- Response round-trips --
+   600→   600→
+   601→   601→    #[test]
+   602→   602→    fn handshake_response_round_trips() {
+   603→   603→        round_trip(&Response::new(
+   604→   604→            1,
+   605→   605→            ResponseResult::Handshake {
+   606→   606→                frontend_version: PROTOCOL_VERSION.into(),
+   607→   607→                language: "typescript".into(),
+   608→   608→                capabilities: vec!["analyze".into(), "execute".into(), "instrument".into()],
+   609→   609→            },
+   610→   610→        ));
+   611→   611→    }
+   612→   612→
+   613→   613→    #[test]
+   614→   614→    fn analyze_response_round_trips() {
+   615→   615→        round_trip(&Response::new(
+   616→   616→            2,
+   617→   617→            ResponseResult::Analyze {
+   618→   618→                functions: vec![FunctionAnalysis {
+   619→   619→                    name: "calculateShipping".into(),
+   620→   620→                    exported: true,
+   621→   621→                    params: vec![ParamInfo {
+   622→   622→                        name: "order".into(),
+   623→   623→                        typ: TypeInfo::Object {
+   624→   624→                            fields: vec![
+   625→   625→                                ("items".into(), TypeInfo::Array {
+   626→   626→                                    element: Box::new(TypeInfo::Int),
+   627→   627→                                }),
+   628→   628→                                ("priority".into(), TypeInfo::Str),
+   629→   629→                            ],
+   630→   630→                        },
+   631→   631→                        type_name: None,
+   632→   632→                    }],
+   633→   633→                    branches: vec![BranchInfo {
+   634→   634→                        id: 1,
+   635→   635→                        line: 23,
+   636→   636→                        condition_text: "order.priority === \"express\"".into(),
+   637→   637→                        condition: Some(SymExpr::BinOp {
+   638→   638→                            op: BinOpKind::Eq,
+   639→   639→                            left: Box::new(SymExpr::Param {
+   640→   640→                                name: "order".into(),
+   641→   641→                                path: vec!["priority".into()],
+   642→   642→                            }),
+   643→   643→                            right: Box::new(SymExpr::Const(ConstValue::Str("express".into()))),
+   644→   644→                        }),
+   645→   645→                        branch_type: BranchType::If,
+   646→   646→                    }],
+   647→   647→                    dependencies: vec![ExternalDependency {
+   648→   648→                        kind: DependencyKind::FunctionCall,
+   649→   649→                        symbol: "rateService.getExpressRate".into(),
+   650→   650→                        source_module: "./rateService".into(),
+   651→   651→                        return_type: TypeInfo::Float,
+   652→   652→                        param_types: vec![TypeInfo::Str],
+   653→   653→                        call_sites: vec![25],
+   654→   654→                    }],
+   655→   655→                    return_type: TypeInfo::Object {
+   656→   656→                        fields: vec![
+   657→   657→                            ("cost".into(), TypeInfo::Float),
+   658→   658→                            ("method".into(), TypeInfo::Str),
+   659→   659→                        ],
+   660→   660→                    },
+   661→   661→                    start_line: 10,
+   662→   662→                    end_line: 45,
+   663→   663→                    literals: vec![],
+   664→   664→                    crypto_boundaries: vec![],
+   665→   665→                }],
+   666→   666→            },
+   667→   667→        ));
+   668→   668→    }
+   669→   669→
+   670→   670→    #[test]
+   671→   671→    fn instrument_response_round_trips() {
+   672→   672→        round_trip(&Response::new(
+   673→   673→            3,
+   674→   674→            ResponseResult::Instrument {
+   675→   675→                instrumented: true,
+   676→   676→                output_file: Some("/tmp/instrumented_main.ts".into()),
+   677→   677→                instrumentable_line_count: Some(12),
+   678→   678→            },
+   679→   679→        ));
+   680→   680→    }
+   681→   681→
+   682→   682→    #[test]
+   683→   683→    fn instrument_response_without_line_count_round_trips() {
+   684→   684→        round_trip(&Response::new(
+   685→   685→            3,
+   686→   686→            ResponseResult::Instrument {
+   687→   687→                instrumented: true,
+   688→   688→                output_file: None,
+   689→   689→                instrumentable_line_count: None,
+   690→   690→            },
+   691→   691→        ));
+   692→   692→    }
+   693→   693→
+   694→   694→    #[test]
+   695→   695→    fn execute_response_round_trips() {
+   696→   696→        round_trip(&Response::new(
+   697→   697→            4,
+   698→   698→            ResponseResult::Execute(Box::new(ExecuteResult {
+   699→   699→                return_value: Some(serde_json::json!({"cost": 12.99, "method": "express"})),
+   700→   700→                thrown_error: None,
+   701→   701→                branch_path: vec![BranchDecision {
+   702→   702→                    branch_id: 1,
+   703→   703→                    line: 23,
+   704→   704→                    taken: true,
+   705→   705→                    constraint: SymConstraint::Expr {
+   706→   706→                        expr: SymExpr::BinOp {
+   707→   707→                            op: BinOpKind::Eq,
+   708→   708→                            left: Box::new(SymExpr::Param {
+   709→   709→                                name: "order".into(),
+   710→   710→                                path: vec!["priority".into()],
+   711→   711→                            }),
+   712→   712→                            right: Box::new(SymExpr::Const(ConstValue::Str("express".into()))),
+   713→   713→                        },
+   714→   714→                    },
+   715→   715→                }],
+   716→   716→                lines_executed: vec![10, 11, 23, 24, 30],
+   717→   717→                calls_to_external: vec![ExternalCall {
+   718→   718→                    symbol: "rateService.getExpressRate".into(),
+   719→   719→                    args: vec![serde_json::json!("90210")],
+   720→   720→                    return_value: serde_json::json!(12.99),
+   721→   721→                }],
+   722→   722→                path_constraints: vec![SymConstraint::Expr {
+   723→   723→                    expr: SymExpr::BinOp {
+   724→   724→                        op: BinOpKind::Eq,
+   725→   725→                        left: Box::new(SymExpr::Param {
+   726→   726→                            name: "order".into(),
+   727→   727→                            path: vec!["priority".into()],
+   728→   728→                        }),
+   729→   729→                        right: Box::new(SymExpr::Const(ConstValue::Str("express".into()))),
+   730→   730→                    },
+   731→   731→                }],
+   732→   732→                scope_events: vec![],
+   733→   733→                side_effects: vec![SideEffect::ConsoleOutput {
+   734→   734→                    level: "info".into(),
+   735→   735→                    message: "Processing express order".into(),
+   736→   736→                }],
+   737→   737→                performance: PerformanceMetrics {
+   738→   738→                    wall_time_ms: 0.3,
+   739→   739→                    cpu_time_us: 250,
+   740→   740→                    heap_used_bytes: 1024,
+   741→   741→                    heap_allocated_bytes: 2048,
+   742→   742→                },
+   743→   743→                capture_truncation: None,
+   744→   744→            })),
+   745→   745→        ));
+   746→   746→    }
+   747→   747→
+   748→   748→    #[test]
+   749→   749→    fn execute_response_with_error_round_trips() {
+   750→   750→        round_trip(&Response::new(
+   751→   751→            5,
+   752→   752→            ResponseResult::Execute(Box::new(ExecuteResult {
+   753→   753→                return_value: None,
+   754→   754→                thrown_error: Some(ErrorInfo {
+   755→   755→                    error_type: "ValidationError".into(),
+   756→   756→                    message: "Invalid zip code".into(),
+   757→   757→                    stack: Some("at validateZip (shipping.ts:15)".into()),
+   758→   758→                    error_category: None,
+   759→   759→                }),
+   760→   760→                branch_path: vec![],
+   761→   761→                lines_executed: vec![10, 15],
+   762→   762→                calls_to_external: vec![],
+   763→   763→                path_constraints: vec![],
+   764→   764→                side_effects: vec![],
+   765→   765→                scope_events: vec![],
+   766→   766→                performance: PerformanceMetrics {
+   767→   767→                    wall_time_ms: 0.1,
+   768→   768→                    cpu_time_us: 80,
+   769→   769→                    heap_used_bytes: 256,
+   770→   770→                    heap_allocated_bytes: 256,
+   771→   771→                },
+   772→   772→                capture_truncation: None,
+   773→   773→            })),
+   774→   774→        ));
+   775→   775→    }
+   776→   776→
+   777→   777→    #[test]
+   778→   778→    fn shutdown_ack_response_round_trips() {
+   779→   779→        round_trip(&Response::new(6, ResponseResult::ShutdownAck));
+   780→   780→    }
+   781→   781→
+   782→   782→    #[test]
+   783→   783→    fn error_response_round_trips() {
+   784→   784→        round_trip(&Response::new(
+   785→   785→            7,
+   786→   786→            ResponseResult::Error {
+   787→   787→                code: ErrorCode::FileNotFound,
+   788→   788→                message: "File not found: src/missing.ts".into(),
+   789→   789→                details: None,
+   790→   790→            },
+   791→   791→        ));
+   792→   792→    }
+   793→   793→
+   794→   794→    #[test]
+   795→   795→    fn error_response_with_details_round_trips() {
+   796→   796→        round_trip(&Response::new(
+   797→   797→            8,
+   798→   798→            ResponseResult::Error {
+   799→   799→                code: ErrorCode::ParseError,
+   800→   800→                message: "Syntax error at line 42".into(),
+   801→   801→                details: Some(serde_json::json!({
+   802→   802→                    "line": 42,
+   803→   803→                    "column": 10,
+   804→   804→                    "source": "if (x > {"
+   805→   805→                })),
+   806→   806→            },
+   807→   807→        ));
+   808→   808→    }
+   809→   809→
+   810→   810→    // -- Component type round-trips --
+   811→   811→
+   812→   812→    #[test]
+   813→   813→    fn mock_config_round_trips() {
+   814→   814→        round_trip(&MockConfig {
+   815→   815→            symbol: "db.query".into(),
+   816→   816→            return_values: vec![
+   817→   817→                serde_json::json!({"id": 1, "name": "Alice"}),
+   818→   818→                serde_json::json!({"id": 2, "name": "Bob"}),
+   819→   819→            ],
+   820→   820→            should_track_calls: true,
+   821→   821→            default_behavior: MockBehavior::ReturnGenerated,
+   822→   822→        });
+   823→   823→    }
+   824→   824→
+   825→   825→    #[test]
+   826→   826→    fn all_mock_behaviors_round_trip() {
+   827→   827→        round_trip(&MockBehavior::ReturnGenerated);
+   828→   828→        round_trip(&MockBehavior::RepeatLast);
+   829→   829→        round_trip(&MockBehavior::ThrowError);
+   830→   830→        round_trip(&MockBehavior::Passthrough);
+   831→   831→    }
+   832→   832→
+   833→   833→    #[test]
+   834→   834→    fn all_error_codes_round_trip() {
+   835→   835→        let codes = [
+   836→   836→            ErrorCode::FileNotFound,
+   837→   837→            ErrorCode::FunctionNotFound,
+   838→   838→            ErrorCode::ParseError,
+   839→   839→            ErrorCode::InstrumentationFailed,
+   840→   840→            ErrorCode::ExecutionTimeout,
+   841→   841→            ErrorCode::ExecutionCrash,
+   842→   842→            ErrorCode::VersionMismatch,
+   843→   843→            ErrorCode::InvalidRequest,
+   844→   844→            ErrorCode::InternalError,
+   845→   845→        ];
+   846→   846→        for code in codes {
+   847→   847→            round_trip(&code);
+   848→   848→        }
+   849→   849→    }
+   850→   850→
+   851→   851→    #[test]
+   852→   852→    fn select_branch_type_deserializes() {
+   853→   853→        let json = r#""select""#;
+   854→   854→        let bt: BranchType = serde_json::from_str(json).expect("select should deserialize");
+   855→   855→        assert_eq!(bt, BranchType::Select);
+   856→   856→    }
+   857→   857→
+   858→   858→    #[test]
+   859→   859→    fn all_branch_types_round_trip() {
+   860→   860→        let types = [
+   861→   861→            BranchType::If,
+   862→   862→            BranchType::ElseIf,
+   863→   863→            BranchType::Switch,
+   864→   864→            BranchType::Ternary,
+   865→   865→            BranchType::LogicalAnd,
+   866→   866→            BranchType::LogicalOr,
+   867→   867→            BranchType::While,
+   868→   868→            BranchType::For,
+   869→   869→            BranchType::Select,
+   870→   870→        ];
+   871→   871→        for bt in types {
+   872→   872→            round_trip(&bt);
+   873→   873→        }
+   874→   874→    }
+   875→   875→
+   876→   876→    #[test]
+   877→   877→    fn all_dependency_kinds_round_trip() {
+   878→   878→        let kinds = [
+   879→   879→            DependencyKind::FunctionCall,
+   880→   880→            DependencyKind::MethodCall,
+   881→   881→            DependencyKind::PropertyAccess,
+   882→   882→            DependencyKind::ModuleImport,
+   883→   883→        ];
+   884→   884→        for kind in kinds {
+   885→   885→            round_trip(&kind);
+   886→   886→        }
+   887→   887→    }
+   888→   888→
+   889→   889→    #[test]
+   890→   890→    fn branch_info_without_condition_round_trips() {
+   891→   891→        round_trip(&BranchInfo {
+   892→   892→            id: 5,
+   893→   893→            line: 100,
+   894→   894→            condition_text: "complexRegex.test(input)".into(),
+   895→   895→            condition: None,
+   896→   896→            branch_type: BranchType::If,
+   897→   897→        });
+   898→   898→    }
+   899→   899→
+   900→   900→    #[test]
+   901→   901→    fn external_dependency_round_trips() {
+   902→   902→        round_trip(&ExternalDependency {
+   903→   903→            kind: DependencyKind::MethodCall,
+   904→   904→            symbol: "logger.warn".into(),
+   905→   905→            source_module: "winston".into(),
+   906→   906→            return_type: TypeInfo::Unknown,
+   907→   907→            param_types: vec![TypeInfo::Str],
+   908→   908→            call_sites: vec![15, 30, 45],
+   909→   909→        });
+   910→   910→    }
+   911→   911→
+   912→   912→    #[test]
+   913→   913→    fn performance_metrics_round_trips() {
+   914→   914→        round_trip(&PerformanceMetrics {
+   915→   915→            wall_time_ms: 1.5,
+   916→   916→            cpu_time_us: 1200,
+   917→   917→            heap_used_bytes: 4096,
+   918→   918→            heap_allocated_bytes: 8192,
+   919→   919→        });
+   920→   920→    }
+   921→   921→
+   922→   922→    #[test]
+   923→   923→    fn function_analysis_minimal_round_trips() {
+   924→   924→        round_trip(&FunctionAnalysis {
+   925→   925→            name: "identity".into(),
+   926→   926→            exported: false,
+   927→   927→            params: vec![ParamInfo {
+   928→   928→                name: "x".into(),
+   929→   929→                typ: TypeInfo::Unknown,
+   930→   930→                type_name: None,
+   931→   931→            }],
+   932→   932→            branches: vec![],
+   933→   933→            dependencies: vec![],
+   934→   934→            return_type: TypeInfo::Unknown,
+   935→   935→            start_line: 1,
+   936→   936→            end_line: 3,
+   937→   937→            literals: vec![],
+   938→   938→            crypto_boundaries: vec![],
+   939→   939→        });
+   940→   940→    }
+   941→   941→
+   942→   942→    // -- JSON format verification --
+   943→   943→
+   944→   944→    #[test]
+   945→   945→    fn analyze_request_serializes_with_command_tag() {
+   946→   946→        let req = Request::new(
+   947→   947→            1,
+   948→   948→            Command::Analyze {
+   949→   949→                file: "main.ts".into(),
+   950→   950→                function: Some("foo".into()),
+   951→   951→                project_root: None,
+   952→   952→            },
+   953→   953→        );
+   954→   954→        let json: serde_json::Value = serde_json::to_value(&req).expect("serialize");
+   955→   955→        assert_eq!(json["command"], "analyze");
+   956→   956→        assert_eq!(json["protocol_version"], PROTOCOL_VERSION);
+   957→   957→        assert_eq!(json["id"], 1);
+   958→   958→        assert_eq!(json["file"], "main.ts");
+   959→   959→        assert_eq!(json["function"], "foo");
+   960→   960→    }
+   961→   961→
+   962→   962→    #[test]
+   963→   963→    fn error_response_serializes_with_status_tag() {
+   964→   964→        let resp = Response::new(
+   965→   965→            1,
+   966→   966→            ResponseResult::Error {
+   967→   967→                code: ErrorCode::FileNotFound,
+   968→   968→                message: "not found".into(),
+   969→   969→                details: None,
+   970→   970→            },
+   971→   971→        );
+   972→   972→        let json: serde_json::Value = serde_json::to_value(&resp).expect("serialize");
+   973→   973→        assert_eq!(json["status"], "error");
+   974→   974→        assert_eq!(json["code"], "file_not_found");
+   975→   975→    }
+   976→   976→
+   977→   977→    #[test]
+   978→   978→    fn execute_request_with_mocks_round_trips() {
+   979→   979→        round_trip(&Request::new(
+   980→   980→            10,
+   981→   981→            Command::Execute {
+   982→   982→                function: "processOrder".into(),
+   983→   983→                inputs: vec![
+   984→   984→                    serde_json::json!({"id": 1}),
+   985→   985→                    serde_json::json!("express"),
+   986→   986→                ],
+   987→   987→                mocks: vec![
+   988→   988→                    MockConfig {
+   989→   989→                        symbol: "db.save".into(),
+   990→   990→                        return_values: vec![serde_json::json!(true)],
+   991→   991→                        should_track_calls: true,
+   992→   992→                        default_behavior: MockBehavior::RepeatLast,
+   993→   993→                    },
+   994→   994→                    MockConfig {
+   995→   995→                        symbol: "emailService.send".into(),
+   996→   996→                        return_values: vec![],
+   997→   997→                        should_track_calls: false,
+   998→   998→                        default_behavior: MockBehavior::Passthrough,
+   999→   999→                    },
+  1000→  1000→                ],
+  1001→  1001→                setup_context: None,
+  1002→  1002→            },
+  1003→  1003→        ));
+  1004→  1004→    }
+  1005→  1005→
+  1006→  1006→    #[test]
+  1007→  1007→    fn instrument_request_empty_mocks_round_trips() {
+  1008→  1008→        round_trip(&Request::new(
+  1009→  1009→            11,
+  1010→  1010→            Command::Instrument {
+  1011→  1011→                file: "src/utils.ts".into(),
+  1012→  1012→                function: "formatDate".into(),
+  1013→  1013→                mocks: vec![],
+  1014→  1014→                project_root: None,
+  1015→  1015→            },
+  1016→  1016→        ));
+  1017→  1017→    }
+  1018→  1018→
+  1019→  1019→    #[test]
+  1020→  1020→    fn noop_frontend_handshake_response_deserializes() {
+  1021→  1021→        let json = r#"{"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"noop","capabilities":["analyze","execute","instrument"]}"#;
+  1022→  1022→        let resp: Response = serde_json::from_str(json).expect("deserialize noop handshake");
+  1023→  1023→        assert_eq!(resp.id, 1);
+  1024→  1024→        assert_eq!(
+  1025→  1025→            resp.result,
+  1026→  1026→            ResponseResult::Handshake {
+  1027→  1027→                frontend_version: PROTOCOL_VERSION.into(),
+  1028→  1028→                language: "noop".into(),
+  1029→  1029→                capabilities: vec!["analyze".into(), "execute".into(), "instrument".into()],
+  1030→  1030→            }
+  1031→  1031→        );
+  1032→  1032→    }
+  1033→  1033→
+  1034→  1034→    #[test]
+  1035→  1035→    fn noop_frontend_analyze_response_deserializes() {
+  1036→  1036→        let json = r#"{"protocol_version":"0.1.0","id":2,"status":"analyze","functions":[{"name":"stub","params":[],"branches":[],"dependencies":[],"return_type":{"kind":"unknown"},"start_line":1,"end_line":1}]}"#;
+  1037→  1037→        let resp: Response = serde_json::from_str(json).expect("deserialize noop analyze");
+  1038→  1038→        assert_eq!(resp.id, 2);
+  1039→  1039→        if let ResponseResult::Analyze { functions } = &resp.result {
+  1040→  1040→            assert_eq!(functions.len(), 1);
+  1041→  1041→            assert_eq!(functions[0].name, "stub");
+  1042→  1042→        } else {
+  1043→  1043→            panic!("expected Analyze response");
+  1044→  1044→        }
+  1045→  1045→    }
+  1046→  1046→
+  1047→  1047→    #[test]
+  1048→  1048→    fn analyze_response_missing_functions_field_defaults_to_empty() {
+  1049→  1049→        // Regression test for str-xkb: Go frontend omitted "functions" field
+  1050→  1050→        // for files with no function definitions (e.g., doc.go).
+  1051→  1051→        let json = r#"{"protocol_version":"0.1.0","id":2,"status":"analyze"}"#;
+  1052→  1052→        let resp: Response = serde_json::from_str(json)
+  1053→  1053→            .expect("should deserialize analyze response without functions field");
+  1054→  1054→        assert_eq!(resp.id, 2);
+  1055→  1055→        if let ResponseResult::Analyze { functions } = &resp.result {
+  1056→  1056→            assert!(functions.is_empty(), "expected empty functions vec");
+  1057→  1057→        } else {
+  1058→  1058→            panic!("expected Analyze response");
+  1059→  1059→        }
+  1060→  1060→    }
+  1061→  1061→
+  1062→  1062→    #[test]
+  1063→  1063→    fn noop_frontend_execute_response_deserializes() {
+  1064→  1064→        let json = r#"{"protocol_version":"0.1.0","id":3,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}"#;
+  1065→  1065→        let resp: Response = serde_json::from_str(json).expect("deserialize noop execute");
+  1066→  1066→        assert_eq!(resp.id, 3);
+  1067→  1067→        if let ResponseResult::Execute(result) = &resp.result {
+  1068→  1068→            assert!(result.return_value.is_none() || result.return_value == Some(serde_json::Value::Null));
+  1069→  1069→            assert!(result.branch_path.is_empty());
+  1070→  1070→        } else {
+  1071→  1071→            panic!("expected Execute response");
+  1072→  1072→        }
+  1073→  1073→    }
+  1074→  1074→
+  1075→  1075→    #[test]
+  1076→  1076→    fn noop_frontend_instrument_response_deserializes() {
+  1077→  1077→        let json = r#"{"protocol_version":"0.1.0","id":4,"status":"instrument","instrumented":true,"output_file":null}"#;
+  1078→  1078→        let resp: Response = serde_json::from_str(json).expect("deserialize noop instrument");
+  1079→  1079→        assert_eq!(resp.id, 4);
+  1080→  1080→        assert_eq!(
+  1081→  1081→            resp.result,
+  1082→  1082→            ResponseResult::Instrument {
+  1083→  1083→                instrumented: true,
+  1084→  1084→                output_file: None,
+  1085→  1085→                instrumentable_line_count: None,
+  1086→  1086→            }
+  1087→  1087→        );
+  1088→  1088→    }
+  1089→  1089→
+  1090→  1090→    #[test]
+  1091→  1091→    fn instrument_response_with_line_count_deserializes() {
+  1092→  1092→        let json = r#"{"protocol_version":"0.1.0","id":4,"status":"instrument","instrumented":true,"output_file":null,"instrumentable_line_count":9}"#;
+  1093→  1093→        let resp: Response = serde_json::from_str(json).expect("deserialize instrument with line count");
+  1094→  1094→        assert_eq!(
+  1095→  1095→            resp.result,
+  1096→  1096→            ResponseResult::Instrument {
+  1097→  1097→                instrumented: true,
+  1098→  1098→                output_file: None,
+  1099→  1099→                instrumentable_line_count: Some(9),
+  1100→  1100→            }
+  1101→  1101→        );
+  1102→  1102→    }
+  1103→  1103→
+  1104→  1104→    #[test]
+  1105→  1105→    fn noop_frontend_shutdown_response_deserializes() {
+  1106→  1106→        let json = r#"{"protocol_version":"0.1.0","id":5,"status":"shutdown_ack"}"#;
+  1107→  1107→        let resp: Response = serde_json::from_str(json).expect("deserialize noop shutdown");
+  1108→  1108→        assert_eq!(resp.id, 5);
+  1109→  1109→        assert_eq!(resp.result, ResponseResult::ShutdownAck);
+  1110→  1110→    }
+  1111→  1111→
+  1112→  1112→    #[test]
+  1113→  1113→    fn noop_frontend_error_response_deserializes() {
+  1114→  1114→        let json = r#"{"protocol_version":"0.1.0","id":6,"status":"error","code":"invalid_request","message":"Unknown command: bogus","details":null}"#;
+  1115→  1115→        let resp: Response = serde_json::from_str(json).expect("deserialize noop error");
+  1116→  1116→        assert_eq!(resp.id, 6);
+  1117→  1117→        if let ResponseResult::Error { code, message, .. } = &resp.result {
+  1118→  1118→            assert_eq!(*code, ErrorCode::InvalidRequest);
+  1119→  1119→            assert!(message.contains("bogus"));
+  1120→  1120→        } else {
+  1121→  1121→            panic!("expected Error response");
+  1122→  1122→        }
+  1123→  1123→    }
+  1124→  1124→
+  1125→  1125→    #[test]
+  1126→  1126→    fn analyze_response_multiple_functions_round_trips() {
+  1127→  1127→        round_trip(&Response::new(
+  1128→  1128→            12,
+  1129→  1129→            ResponseResult::Analyze {
+  1130→  1130→                functions: vec![
+  1131→  1131→                    FunctionAnalysis {
+  1132→  1132→                        name: "add".into(),
+  1133→  1133→                        exported: true,
+  1134→  1134→                        params: vec![
+  1135→  1135→                            ParamInfo { name: "a".into(), typ: TypeInfo::Int, type_name: None },
+  1136→  1136→                            ParamInfo { name: "b".into(), typ: TypeInfo::Int, type_name: None },
+  1137→  1137→                        ],
+  1138→  1138→                        branches: vec![],
+  1139→  1139→                        dependencies: vec![],
+  1140→  1140→                        return_type: TypeInfo::Int,
+  1141→  1141→                        start_line: 1,
+  1142→  1142→                        end_line: 3,
+  1143→  1143→                        literals: vec![],
+  1144→  1144→                        crypto_boundaries: vec![],
+  1145→  1145→                    },
+  1146→  1146→                    FunctionAnalysis {
+  1147→  1147→                        name: "divide".into(),
+  1148→  1148→                        exported: true,
+  1149→  1149→                        params: vec![
+  1150→  1150→                            ParamInfo { name: "a".into(), typ: TypeInfo::Float, type_name: None },
+  1151→  1151→                            ParamInfo { name: "b".into(), typ: TypeInfo::Float, type_name: None },
+  1152→  1152→                        ],
+  1153→  1153→                        branches: vec![BranchInfo {
+  1154→  1154→                            id: 0,
+  1155→  1155→                            line: 6,
+  1156→  1156→                            condition_text: "b === 0".into(),
+  1157→  1157→                            condition: Some(SymExpr::BinOp {
+  1158→  1158→                                op: BinOpKind::Eq,
+  1159→  1159→                                left: Box::new(SymExpr::Param {
+  1160→  1160→                                    name: "b".into(),
+  1161→  1161→                                    path: vec![],
+  1162→  1162→                                }),
+  1163→  1163→                                right: Box::new(SymExpr::Const(ConstValue::Int(0))),
+  1164→  1164→                            }),
+  1165→  1165→                            branch_type: BranchType::If,
+  1166→  1166→                        }],
+  1167→  1167→                        dependencies: vec![],
+  1168→  1168→                        return_type: TypeInfo::Float,
+  1169→  1169→                        start_line: 5,
+  1170→  1170→                        end_line: 10,
+  1171→  1171→                        literals: vec![],
+  1172→  1172→                        crypto_boundaries: vec![],
+  1173→  1173→                    },
+  1174→  1174→                ],
+  1175→  1175→            },
+  1176→  1176→        ));
+  1177→  1177→    }
+  1178→  1178→
+  1179→  1179→    // -- Setup / Teardown / Generate round-trips --
+  1180→  1180→
+  1181→  1181→    #[test]
+  1182→  1182→    fn setup_request_round_trips() {
+  1183→  1183→        round_trip(&Request::new(
+  1184→  1184→            20,
+  1185→  1185→            Command::Setup {
+  1186→  1186→                file: "./setup/global.ts".into(),
+  1187→  1187→                function: "processOrder".into(),
+  1188→  1188→                mode: crate::config::SetupMode::PerFunction,
+  1189→  1189→                project_root: None,
+  1190→  1190→            },
+  1191→  1191→        ));
+  1192→  1192→    }
+  1193→  1193→
+  1194→  1194→    #[test]
+  1195→  1195→    fn setup_request_per_execution_round_trips() {
+  1196→  1196→        round_trip(&Request::new(
+  1197→  1197→            21,
+  1198→  1198→            Command::Setup {
+  1199→  1199→                file: "./setup/auth.ts".into(),
+  1200→  1200→                function: "authenticate".into(),
+  1201→  1201→                mode: crate::config::SetupMode::PerExecution,
+  1202→  1202→                project_root: None,
+  1203→  1203→            },
+  1204→  1204→        ));
+  1205→  1205→    }
+  1206→  1206→
+  1207→  1207→    #[test]
+  1208→  1208→    fn teardown_request_round_trips() {
+  1209→  1209→        round_trip(&Request::new(
+  1210→  1210→            22,
+  1211→  1211→            Command::Teardown {
+  1212→  1212→                function: "processOrder".into(),
+  1213→  1213→            },
+  1214→  1214→        ));
+  1215→  1215→    }
+  1216→  1216→
+  1217→  1217→    #[test]
+  1218→  1218→    fn generate_request_type_name_round_trips() {
+  1219→  1219→        round_trip(&Request::new(
+  1220→  1220→            23,
+  1221→  1221→            Command::Generate {
+  1222→  1222→                file: "./generators/user.ts".into(),
+  1223→  1223→                name: "User".into(),
+  1224→  1224→                kind: GeneratorKind::TypeName,
+  1225→  1225→                recipe: None,
+  1226→  1226→                project_root: None,
+  1227→  1227→            },
+  1228→  1228→        ));
+  1229→  1229→    }
+  1230→  1230→
+  1231→  1231→    #[test]
+  1232→  1232→    fn generate_request_param_name_round_trips() {
+  1233→  1233→        round_trip(&Request::new(
+  1234→  1234→            24,
+  1235→  1235→            Command::Generate {
+  1236→  1236→                file: "./generators/token.ts".into(),
+  1237→  1237→                name: "authToken".into(),
+  1238→  1238→                kind: GeneratorKind::ParamName,
+  1239→  1239→                recipe: None,
+  1240→  1240→                project_root: None,
+  1241→  1241→            },
+  1242→  1242→        ));
+  1243→  1243→    }
+  1244→  1244→
+  1245→  1245→    #[test]
+  1246→  1246→    fn setup_response_round_trips() {
+  1247→  1247→        round_trip(&Response::new(
+  1248→  1248→            20,
+  1249→  1249→            ResponseResult::Setup {
+  1250→  1250→                setup_context: serde_json::json!({"db_handle": "conn_42", "temp_dir": "/tmp/test"}),
+  1251→  1251→            },
+  1252→  1252→        ));
+  1253→  1253→    }
+  1254→  1254→
+  1255→  1255→    #[test]
+  1256→  1256→    fn teardown_ack_response_round_trips() {
+  1257→  1257→        round_trip(&Response::new(21, ResponseResult::TeardownAck));
+  1258→  1258→    }
+  1259→  1259→
+  1260→  1260→    #[test]
+  1261→  1261→    fn generate_response_round_trips() {
+  1262→  1262→        round_trip(&Response::new(
+  1263→  1263→            22,
+  1264→  1264→            ResponseResult::Generate {
+  1265→  1265→                value: serde_json::json!({"id": 1, "name": "Alice", "email": "alice@example.com"}),
+  1266→  1266→                generator_id: "generated".into(),
+  1267→  1267→                recipe: None,
+  1268→  1268→            },
+  1269→  1269→        ));
+  1270→  1270→    }
+  1271→  1271→
+  1272→  1272→    #[test]
+  1273→  1273→    fn generate_response_primitive_value_round_trips() {
+  1274→  1274→        round_trip(&Response::new(
+  1275→  1275→            23,
+  1276→  1276→            ResponseResult::Generate {
+  1277→  1277→                value: serde_json::json!("tok_abc123"),
+  1278→  1278→                generator_id: "generated".into(),
+  1279→  1279→                recipe: None,
+  1280→  1280→            },
+  1281→  1281→        ));
+  1282→  1282→    }
+  1283→  1283→
+  1284→  1284→    #[test]
+  1285→  1285→    fn execute_request_with_setup_context_round_trips() {
+  1286→  1286→        round_trip(&Request::new(
+  1287→  1287→            25,
+  1288→  1288→            Command::Execute {
+  1289→  1289→                function: "processOrder".into(),
+  1290→  1290→                inputs: vec![serde_json::json!({"id": 1})],
+  1291→  1291→                mocks: vec![],
+  1292→  1292→                setup_context: Some(serde_json::json!({"db_handle": "conn_42"})),
+  1293→  1293→            },
+  1294→  1294→        ));
+  1295→  1295→    }
+  1296→  1296→
+  1297→  1297→    #[test]
+  1298→  1298→    fn execute_request_without_setup_context_backward_compatible() {
+  1299→  1299→        // Verify that JSON without setup_context still deserializes correctly.
+  1300→  1300→        let json = r#"{"protocol_version":"0.1.0","id":26,"command":"execute","function":"myFunc","inputs":[1],"mocks":[]}"#;
+  1301→  1301→        let req: Request = serde_json::from_str(json).expect("deserialize");
+  1302→  1302→        assert_eq!(req.id, 26);
+  1303→  1303→        if let Command::Execute { setup_context, .. } = &req.command {
+  1304→  1304→            assert_eq!(*setup_context, None);
+  1305→  1305→        } else {
+  1306→  1306→            panic!("expected Execute command");
+  1307→  1307→        }
+  1308→  1308→    }
+  1309→  1309→
+  1310→  1310→    #[test]
+  1311→  1311→    fn execute_request_without_setup_context_omits_field_in_json() {
+  1312→  1312→        let req = Request::new(
+  1313→  1313→            27,
+  1314→  1314→            Command::Execute {
+  1315→  1315→                function: "myFunc".into(),
+  1316→  1316→                inputs: vec![serde_json::json!(1)],
+  1317→  1317→                mocks: vec![],
+  1318→  1318→                setup_context: None,
+  1319→  1319→            },
+  1320→  1320→        );
+  1321→  1321→        let json = serde_json::to_value(&req).expect("serialize");
+  1322→  1322→        assert!(!json.as_object().expect("object").contains_key("setup_context"));
+  1323→  1323→    }
+  1324→  1324→
+  1325→  1325→    #[test]
+  1326→  1326→    fn setup_request_serializes_with_command_tag() {
+  1327→  1327→        let req = Request::new(
+  1328→  1328→            30,
+  1329→  1329→            Command::Setup {
+  1330→  1330→                file: "./setup.ts".into(),
+  1331→  1331→                function: "fn1".into(),
+  1332→  1332→                mode: crate::config::SetupMode::PerFunction,
+  1333→  1333→                project_root: None,
+  1334→  1334→            },
+  1335→  1335→        );
+  1336→  1336→        let json = serde_json::to_value(&req).expect("serialize");
+  1337→  1337→        assert_eq!(json["command"], "setup");
+  1338→  1338→        assert_eq!(json["file"], "./setup.ts");
+  1339→  1339→        assert_eq!(json["function"], "fn1");
+  1340→  1340→        assert_eq!(json["mode"], "per_function");
+  1341→  1341→    }
+  1342→  1342→
+  1343→  1343→    #[test]
+  1344→  1344→    fn teardown_request_serializes_with_command_tag() {
+  1345→  1345→        let req = Request::new(
+  1346→  1346→            31,
+  1347→  1347→            Command::Teardown {
+  1348→  1348→                function: "fn1".into(),
+  1349→  1349→            },
+  1350→  1350→        );
+  1351→  1351→        let json = serde_json::to_value(&req).expect("serialize");
+  1352→  1352→        assert_eq!(json["command"], "teardown");
+  1353→  1353→        assert_eq!(json["function"], "fn1");
+  1354→  1354→    }
+  1355→  1355→
+  1356→  1356→    #[test]
+  1357→  1357→    fn generate_request_serializes_with_command_tag() {
+  1358→  1358→        let req = Request::new(
+  1359→  1359→            32,
+  1360→  1360→            Command::Generate {
+  1361→  1361→                file: "./gen.ts".into(),
+  1362→  1362→                name: "User".into(),
+  1363→  1363→                kind: GeneratorKind::TypeName,
+  1364→  1364→                recipe: None,
+  1365→  1365→                project_root: None,
+  1366→  1366→            },
+  1367→  1367→        );
+  1368→  1368→        let json = serde_json::to_value(&req).expect("serialize");
+  1369→  1369→        assert_eq!(json["command"], "generate");
+  1370→  1370→        assert_eq!(json["file"], "./gen.ts");
+  1371→  1371→        assert_eq!(json["name"], "User");
+  1372→  1372→        assert_eq!(json["kind"], "type_name");
+  1373→  1373→    }
+  1374→  1374→
+  1375→  1375→    #[test]
+  1376→  1376→    fn all_generator_kinds_round_trip() {
+  1377→  1377→        round_trip(&GeneratorKind::TypeName);
+  1378→  1378→        round_trip(&GeneratorKind::ParamName);
+  1379→  1379→    }
+  1380→  1380→
+  1381→  1381→    // -- LiteralValue tests --
+  1382→  1382→
+  1383→  1383→    #[test]
+  1384→  1384→    fn literal_value_round_trips_all_variants() {
+  1385→  1385→        round_trip(&LiteralValue::Int { value: 42 });
+  1386→  1386→        round_trip(&LiteralValue::Int { value: -1 });
+  1387→  1387→        round_trip(&LiteralValue::Float { value: 3.14 });
+  1388→  1388→        round_trip(&LiteralValue::Str { value: "express".into() });
+  1389→  1389→        round_trip(&LiteralValue::Bool { value: true });
+  1390→  1390→        round_trip(&LiteralValue::Regex { pattern: "\\d+".into() });
+  1391→  1391→    }
+  1392→  1392→
+  1393→  1393→    #[test]
+  1394→  1394→    fn function_analysis_with_literals_round_trips() {
+  1395→  1395→        round_trip(&FunctionAnalysis {
+  1396→  1396→            name: "classify".into(),
+  1397→  1397→            exported: true,
+  1398→  1398→            params: vec![ParamInfo { name: "s".into(), typ: TypeInfo::Str, type_name: None }],
+  1399→  1399→            branches: vec![],
+  1400→  1400→            dependencies: vec![],
+  1401→  1401→            return_type: TypeInfo::Str,
+  1402→  1402→            start_line: 1,
+  1403→  1403→            end_line: 10,
+  1404→  1404→            literals: vec![
+  1405→  1405→                LiteralValue::Str { value: "express".into() },
+  1406→  1406→                LiteralValue::Int { value: 100 },
+  1407→  1407→                LiteralValue::Regex { pattern: "\\d{5}".into() },
+  1408→  1408→            ],
+  1409→  1409→            crypto_boundaries: vec![],
+  1410→  1410→        });
+  1411→  1411→    }
+  1412→  1412→
+  1413→  1413→    #[test]
+  1414→  1414→    fn function_analysis_without_literals_field_deserializes_as_empty() {
+  1415→  1415→        let json = r#"{"name":"stub","params":[],"branches":[],"dependencies":[],"return_type":{"kind":"unknown"},"start_line":1,"end_line":1}"#;
+  1416→  1416→        let fa: FunctionAnalysis = serde_json::from_str(json).expect("deserialize");
+  1417→  1417→        assert!(fa.literals.is_empty(), "missing field should default to empty");
+  1418→  1418→    }
+  1419→  1419→
+  1420→  1420→    #[test]
+  1421→  1421→    fn function_analysis_empty_literals_omits_field_in_json() {
+  1422→  1422→        let fa = FunctionAnalysis {
+  1423→  1423→            name: "stub".into(),
+  1424→  1424→            exported: false,
+  1425→  1425→            params: vec![],
+  1426→  1426→            branches: vec![],
+  1427→  1427→            dependencies: vec![],
+  1428→  1428→            return_type: TypeInfo::Unknown,
+  1429→  1429→            start_line: 1,
+  1430→  1430→            end_line: 1,
+  1431→  1431→            literals: vec![],
+  1432→  1432→            crypto_boundaries: vec![],
+  1433→  1433→        };
+  1434→  1434→        let json = serde_json::to_value(&fa).expect("serialize");
+  1435→  1435→        assert!(
+  1436→  1436→            !json.as_object().unwrap().contains_key("literals"),
+  1437→  1437→            "empty literals should not appear in JSON"
+  1438→  1438→        );
+  1439→  1439→    }
+  1440→  1440→
+  1441→  1441→    #[test]
+  1442→  1442→    fn analyze_with_project_root_round_trips() {
+  1443→  1443→        round_trip(&Request::new(
+  1444→  1444→            10,
+  1445→  1445→            Command::Analyze {
+  1446→  1446→                file: "src/main.ts".into(),
+  1447→  1447→                function: Some("handler".into()),
+  1448→  1448→                project_root: Some("/home/user/project".into()),
+  1449→  1449→            },
+  1450→  1450→        ));
+  1451→  1451→    }
+  1452→  1452→
+  1453→  1453→    #[test]
+  1454→  1454→    fn analyze_without_project_root_omits_field() {
+  1455→  1455→        let req = Request::new(
+  1456→  1456→            11,
+  1457→  1457→            Command::Analyze {
+  1458→  1458→                file: "main.ts".into(),
+  1459→  1459→                function: None,
+  1460→  1460→                project_root: None,
+  1461→  1461→            },
+  1462→  1462→        );
+  1463→  1463→        let json = serde_json::to_value(&req).expect("serialize");
+  1464→  1464→        assert!(
+  1465→  1465→            !json.as_object().unwrap().contains_key("project_root"),
+  1466→  1466→            "None project_root should be omitted from JSON"
+  1467→  1467→        );
+  1468→  1468→    }
+  1469→  1469→
+  1470→  1470→    #[test]
+  1471→  1471→    fn instrument_with_project_root_round_trips() {
+  1472→  1472→        round_trip(&Request::new(
+  1473→  1473→            12,
+  1474→  1474→            Command::Instrument {
+  1475→  1475→                file: "src/utils.ts".into(),
+  1476→  1476→                function: "processData".into(),
+  1477→  1477→                mocks: vec![],
+  1478→  1478→                project_root: Some("/home/user/project".into()),
+  1479→  1479→            },
+  1480→  1480→        ));
+  1481→  1481→    }
+  1482→  1482→
+  1483→  1483→    // -- CryptoBoundary tests --
+  1484→  1484→
+  1485→  1485→    #[test]
+  1486→  1486→    fn crypto_boundary_round_trips() {
+  1487→  1487→        use crate::crypto_registry::{CryptoDirection, OutputSemantics, ParamRole};
+  1488→  1488→        use std::collections::HashMap;
+  1489→  1489→
+  1490→  1490→        let mut roles = HashMap::new();
+  1491→  1491→        roles.insert("0".to_string(), ParamRole::Algorithm);
+  1492→  1492→        roles.insert("1".to_string(), ParamRole::Key);
+  1493→  1493→        roles.insert("2".to_string(), ParamRole::Iv);
+  1494→  1494→
+  1495→  1495→        round_trip(&CryptoBoundary {
+  1496→  1496→            symbol: "createDecipheriv".into(),
+  1497→  1497→            source_module: "crypto".into(),
+  1498→  1498→            direction: CryptoDirection::Decrypt,
+  1499→  1499→            output: OutputSemantics::Plaintext,
+  1500→  1500→            param_roles: roles,
+  1501→  1501→            call_sites: vec![5, 12],
+  1502→  1502→        });
+  1503→  1503→    }
+  1504→  1504→
+  1505→  1505→    #[test]
+  1506→  1506→    fn function_analysis_with_crypto_boundaries_round_trips() {
+  1507→  1507→        use crate::crypto_registry::{CryptoDirection, OutputSemantics};
+  1508→  1508→
+  1509→  1509→        round_trip(&FunctionAnalysis {
+  1510→  1510→            name: "decrypt".into(),
+  1511→  1511→            exported: true,
+  1512→  1512→            params: vec![ParamInfo {
+  1513→  1513→                name: "data".into(),
+  1514→  1514→                typ: TypeInfo::Str,
+  1515→  1515→                type_name: None,
+  1516→  1516→            }],
+  1517→  1517→            branches: vec![],
+  1518→  1518→            dependencies: vec![],
+  1519→  1519→            return_type: TypeInfo::Str,
+  1520→  1520→            start_line: 1,
+  1521→  1521→            end_line: 10,
+  1522→  1522→            literals: vec![],
+  1523→  1523→            crypto_boundaries: vec![CryptoBoundary {
+  1524→  1524→                symbol: "createDecipheriv".into(),
+  1525→  1525→                source_module: "crypto".into(),
+  1526→  1526→                direction: CryptoDirection::Decrypt,
+  1527→  1527→                output: OutputSemantics::Plaintext,
+  1528→  1528→                param_roles: HashMap::new(),
+  1529→  1529→                call_sites: vec![3],
+  1530→  1530→            }],
+  1531→  1531→        });
+  1532→  1532→    }
+  1533→  1533→
+  1534→  1534→    #[test]
+  1535→  1535→    fn empty_crypto_boundaries_omitted_from_json() {
+  1536→  1536→        let fa = FunctionAnalysis {
+  1537→  1537→            name: "stub".into(),
+  1538→  1538→            exported: false,
+  1539→  1539→            params: vec![],
+  1540→  1540→            branches: vec![],
+  1541→  1541→            dependencies: vec![],
+  1542→  1542→            return_type: TypeInfo::Unknown,
+  1543→  1543→            start_line: 1,
+  1544→  1544→            end_line: 1,
+  1545→  1545→            literals: vec![],
+  1546→  1546→            crypto_boundaries: vec![],
+  1547→  1547→        };
+  1548→  1548→        let json = serde_json::to_value(&fa).expect("serialize");
+  1549→  1549→        assert!(
+  1550→  1550→            !json.as_object().unwrap().contains_key("crypto_boundaries"),
+  1551→  1551→            "empty crypto_boundaries should not appear in JSON"
+  1552→  1552→        );
+  1553→  1553→    }
+  1554→  1554→
+  1555→  1555→    #[test]
+  1556→  1556→    fn missing_crypto_boundaries_defaults_to_empty() {
+  1557→  1557→        let json = r#"{"name":"stub","params":[],"branches":[],"dependencies":[],"return_type":{"kind":"unknown"},"start_line":1,"end_line":1}"#;
+  1558→  1558→        let fa: FunctionAnalysis = serde_json::from_str(json).expect("deserialize");
+  1559→  1559→        assert!(fa.crypto_boundaries.is_empty());
+  1560→  1560→    }
+  1561→  1561→
+  1562→  1562→    // -----------------------------------------------------------------------
+  1563→  1563→    // Property-based tests
+  1564→  1564→    // -----------------------------------------------------------------------
+  1565→  1565→
+  1566→  1566→    mod prop_tests {
+  1567→  1567→        use super::*;
+  1568→  1568→        use crate::test_arbitraries::*;
+  1569→  1569→        use proptest::prelude::*;
+  1570→  1570→
+  1571→  1571→        proptest! {
+  1572→  1572→            #[test]
+  1573→  1573→            fn request_round_trips(req in arb_request()) {
+  1574→  1574→                let json = serde_json::to_string(&req).unwrap();
+  1575→  1575→                let decoded: Request = serde_json::from_str(&json).unwrap();
+  1576→  1576→                prop_assert_eq!(req, decoded);
+  1577→  1577→            }
+  1578→  1578→
+  1579→  1579→            #[test]
+  1580→  1580→            fn response_round_trips(resp in arb_response()) {
+  1581→  1581→                let json = serde_json::to_string(&resp).unwrap();
+  1582→  1582→                let decoded: Response = serde_json::from_str(&json).unwrap();
+  1583→  1583→                prop_assert_eq!(resp, decoded);
+  1584→  1584→            }
+  1585→  1585→
+  1586→  1586→            #[test]
+  1587→  1587→            fn execute_result_round_trips(er in arb_execute_result()) {
+  1588→  1588→                let json = serde_json::to_string(&er).unwrap();
+  1589→  1589→                let decoded: ExecuteResult = serde_json::from_str(&json).unwrap();
+  1590→  1590→                prop_assert_eq!(er, decoded);
+  1591→  1591→            }
+  1592→  1592→
+  1593→  1593→            #[test]
+  1594→  1594→            fn function_analysis_round_trips(fa in arb_function_analysis()) {
+  1595→  1595→                let json = serde_json::to_string(&fa).unwrap();
+  1596→  1596→                let decoded: FunctionAnalysis = serde_json::from_str(&json).unwrap();
+  1597→  1597→                prop_assert_eq!(fa, decoded);
+  1598→  1598→            }
+  1599→  1599→        }
+  1600→  1600→    }
+  1601→  1601→
+  1602→  1602→    #[test]
+  1603→  1603→    fn validate_execute_result_accepts_empty_branch_path() {
+  1604→  1604→        let result = ExecuteResult {
+  1605→  1605→            return_value: None,
+  1606→  1606→            thrown_error: None,
+  1607→  1607→            branch_path: vec![],
+  1608→  1608→            lines_executed: vec![],
+  1609→  1609→            calls_to_external: vec![],
+  1610→  1610→            path_constraints: vec![],
+  1611→  1611→            side_effects: vec![],
+  1612→  1612→            scope_events: vec![],
+  1613→  1613→            performance: PerformanceMetrics::default(),
+  1614→  1614→            capture_truncation: None,
+  1615→  1615→        };
+  1616→  1616→        assert!(validate_execute_result(&result));
+  1617→  1617→    }
+  1618→  1618→
+  1619→  1619→    #[test]
+  1620→  1620→    fn validate_execute_result_rejects_unknown_branches_with_constraints() {
+  1621→  1621→        let result = ExecuteResult {
+  1622→  1622→            return_value: None,
+  1623→  1623→            thrown_error: None,
+  1624→  1624→            branch_path: vec![BranchDecision {
+  1625→  1625→                branch_id: 1,
+  1626→  1626→                line: 10,
+  1627→  1627→                taken: true,
+  1628→  1628→                constraint: SymConstraint::Unknown {
+  1629→  1629→                    hint: "opaque".into(),
+  1630→  1630→                },
+  1631→  1631→            }],
+  1632→  1632→            lines_executed: vec![10],
+  1633→  1633→            calls_to_external: vec![],
+  1634→  1634→            path_constraints: vec![SymConstraint::Expr {
+  1635→  1635→                expr: SymExpr::Const(ConstValue::Bool(true)),
+  1636→  1636→            }],
+  1637→  1637→            side_effects: vec![],
+  1638→  1638→            scope_events: vec![],
+  1639→  1639→            performance: PerformanceMetrics::default(),
+  1640→  1640→            capture_truncation: None,
+  1641→  1641→        };
+  1642→  1642→        assert!(!validate_execute_result(&result));
+  1643→  1643→    }
+  1644→  1644→
+  1645→  1645→    #[test]
+  1646→  1646→    fn validate_analyze_result_accepts_valid_function() {
+  1647→  1647→        let functions = vec![FunctionAnalysis {
+  1648→  1648→            name: "foo".into(),
+  1649→  1649→            exported: true,
+  1650→  1650→            params: vec![],
+  1651→  1651→            branches: vec![],
+  1652→  1652→            dependencies: vec![],
+  1653→  1653→            return_type: TypeInfo::Int,
+  1654→  1654→            start_line: 1,
+  1655→  1655→            end_line: 10,
+  1656→  1656→            literals: vec![],
+  1657→  1657→            crypto_boundaries: vec![],
+  1658→  1658→        }];
+  1659→  1659→        assert!(validate_analyze_result(&functions));
+  1660→  1660→    }
+  1661→  1661→
+  1662→  1662→    #[test]
+  1663→  1663→    fn validate_analyze_result_rejects_empty_name() {
+  1664→  1664→        let functions = vec![FunctionAnalysis {
+  1665→  1665→            name: String::new(),
+  1666→  1666→            exported: true,
+  1667→  1667→            params: vec![],
+  1668→  1668→            branches: vec![],
+  1669→  1669→            dependencies: vec![],
+  1670→  1670→            return_type: TypeInfo::Int,
+  1671→  1671→            start_line: 1,
+  1672→  1672→            end_line: 10,
+  1673→  1673→            literals: vec![],
+  1674→  1674→            crypto_boundaries: vec![],
+  1675→  1675→        }];
+  1676→  1676→        assert!(!validate_analyze_result(&functions));
+  1677→  1677→    }
+  1678→  1678→
+  1679→  1679→    #[test]
+  1680→  1680→    fn validate_analyze_result_rejects_inverted_lines() {
+  1681→  1681→        let functions = vec![FunctionAnalysis {
+  1682→  1682→            name: "bar".into(),
+  1683→  1683→            exported: false,
+  1684→  1684→            params: vec![],
+  1685→  1685→            branches: vec![],
+  1686→  1686→            dependencies: vec![],
+  1687→  1687→            return_type: TypeInfo::Int,
+  1688→  1688→            start_line: 20,
+  1689→  1689→            end_line: 5,
+  1690→  1690→            literals: vec![],
+  1691→  1691→            crypto_boundaries: vec![],
+  1692→  1692→        }];
+  1693→  1693→        assert!(!validate_analyze_result(&functions));
+  1694→  1694→    }
+  1695→  1695→
+  1696→  1696→    #[test]
+  1697→  1697→    fn validate_analyze_result_accepts_empty_list() {
+  1698→  1698→        assert!(validate_analyze_result(&[]));
+  1699→  1699→    }
+  1700→  1700→}
+  1701→  1701→

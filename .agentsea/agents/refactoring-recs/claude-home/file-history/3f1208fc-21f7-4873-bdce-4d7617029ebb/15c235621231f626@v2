@@ -1,0 +1,12 @@
+#!/bin/bash
+set -euo pipefail
+
+if [ "$RESULT" != "success" ]; then
+    NOTIFY_EMAIL="{{ item.notify_email | default(notify_email_to) }}"
+    /usr/local/bin/dropkick-notify \
+        --job "$JOB" \
+        --run "$RUN" \
+        --result "$RESULT" \
+        --to "$NOTIFY_EMAIL" \
+        --from "{{ notify_email_from }}"
+fi

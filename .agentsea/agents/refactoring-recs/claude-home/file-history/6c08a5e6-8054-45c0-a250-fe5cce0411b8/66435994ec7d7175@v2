@@ -1,0 +1,33 @@
+package cli
+
+import (
+	"github.com/spf13/cobra"
+)
+
+var rootCmd = &cobra.Command{
+	Use:   "sea",
+	Short: "Filesystem isolation for Claude Code agent teams",
+	Long:  "sea provides kernel-enforced filesystem isolation for Claude Code agent teams using bwrap sandboxing.",
+}
+
+func init() {
+	rootCmd.AddCommand(initCmd())
+	rootCmd.AddCommand(teammateWrapperCmd())
+	rootCmd.AddCommand(statusCmd())
+	rootCmd.AddCommand(mergeCmd())
+	rootCmd.AddCommand(cleanupCmd())
+	rootCmd.AddCommand(doctorCmd())
+	rootCmd.AddCommand(syncCmd())
+	rootCmd.AddCommand(adoptCmd())
+	rootCmd.AddCommand(quickstartCmd())
+	rootCmd.AddCommand(claudeCmd())
+	rootCmd.AddCommand(smokeCmd())
+}
+
+func RootCmd() *cobra.Command {
+	return rootCmd
+}
+
+func Execute() error {
+	return rootCmd.Execute()
+}

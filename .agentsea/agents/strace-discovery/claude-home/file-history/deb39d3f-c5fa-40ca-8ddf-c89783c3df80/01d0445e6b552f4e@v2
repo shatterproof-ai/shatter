@@ -1,0 +1,13 @@
+import { test } from '@playwright/test'
+import { steps } from '../demo/steps'
+
+test.use({ viewport: { width: 1280, height: 800 } })
+
+test('demo walkthrough', async ({ page }) => {
+  test.setTimeout(120_000)
+  for (const [i, step] of steps.entries()) {
+    await test.step(`${i + 1}. ${step.title}`, async () => {
+      await step.action(page)
+    })
+  }
+})

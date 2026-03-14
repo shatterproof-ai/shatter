@@ -1,0 +1,32 @@
+{
+  "name": "dreamy-waddling-rabbit",
+  "description": "Smoke test for sandbox isolation verification",
+  "createdAt": 1773022058396,
+  "leadAgentId": "team-lead@dreamy-waddling-rabbit",
+  "leadSessionId": "5870d2d7-a1e5-4548-ae79-758593b5a168",
+  "members": [
+    {
+      "agentId": "team-lead@dreamy-waddling-rabbit",
+      "name": "team-lead",
+      "agentType": "team-lead",
+      "model": "claude-opus-4-6",
+      "joinedAt": 1773022058396,
+      "tmuxPaneId": "",
+      "cwd": "/tmp/sea-smoke-2526565979",
+      "subscriptions": []
+    },
+    {
+      "agentId": "smoke-agent@dreamy-waddling-rabbit",
+      "name": "smoke-agent",
+      "model": "claude-opus-4-6",
+      "prompt": "You are a smoke test agent. Run ALL of these checks using the Bash tool and report results:\n\nCHECK 1 - BWRAP: Run: cat /proc/1/cmdline | tr '\\0' ' '\nReport PASS if \"bwrap\" appears in the output, FAIL if not.\n\nCHECK 2 - WRITE ISOLATION: Run: touch /tmp/sea-smoke-escape-test 2>&1 && echo LEAKED || echo BLOCKED\nReport PASS if BLOCKED or permission denied, FAIL if LEAKED.\n\nCHECK 3 - HOME ISOLATION: Run: ls $HOME\nReport what you see. PASS if you see a restricted set of files (not the user's full home).\n\nCHECK 4 - WORKTREE: Run: git branch --show-current && pwd\nReport the branch and working directory. PASS if you are on a branch like smoke-agent/work.\n\nCHECK 5 - READ-ONLY ROOT: Run: touch /usr/local/sea-smoke-test 2>&1 || echo READONLY\nReport PASS if READONLY or \"Read-only file system\".\n\nAfter running all checks, write your results to smoke-results.txt in the current directory, one check per line:\nCHECK 1: PASS/FAIL - details\nCHECK 2: PASS/FAIL - details\nCHECK 3: PASS/FAIL - details\nCHECK 4: PASS/FAIL - details\nCHECK 5: PASS/FAIL - details",
+      "color": "blue",
+      "planModeRequired": false,
+      "joinedAt": 1773022066237,
+      "tmuxPaneId": "%52",
+      "cwd": "/tmp/sea-smoke-2526565979",
+      "subscriptions": [],
+      "backendType": "tmux"
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+import { useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { Center, Loader, Text, Stack } from '@mantine/core'
+import { supabase } from '@/lib/supabase'
+import { useAuthStore } from '@/stores/authStore'
+
+export function AuthCallback() {
+  const navigate = useNavigate()
+  const setSession = useAuthStore((s) => s.setSession)
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session)
+      navigate('/', { replace: true })
+    })
+  }, [navigate, setSession])
+
+  return (
+    <Center style={{ flex: 1 }}>
+      <Stack align="center" gap="sm">
+        <Loader color="brand" />
+        <Text c="dimmed" size="sm">
+          Completing sign in...
+        </Text>
+      </Stack>
+    </Center>
+  )
+}

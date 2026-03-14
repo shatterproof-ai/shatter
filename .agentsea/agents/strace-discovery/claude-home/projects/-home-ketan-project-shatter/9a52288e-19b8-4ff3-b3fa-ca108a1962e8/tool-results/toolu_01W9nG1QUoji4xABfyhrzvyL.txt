@@ -1,0 +1,782 @@
+1052-/// Applies a random type-appropriate mutation operator. The output is always
+1053-/// type-valid for the given `TypeInfo`. Types that cannot be meaningfully
+1054:/// mutated (Complex, Opaque, Unknown) are returned unchanged.
+1055:pub fn mutate_value(value: &Value, typ: &TypeInfo, dictionary: &[&str], rng: &mut impl Rng) -> Value {
+1056-    match typ {
+1057:        TypeInfo::Int => mutate_int(value, rng),
+1058:        TypeInfo::Float => mutate_float(value, rng),
+1059:        TypeInfo::Bool => mutate_bool(value),
+1060:        TypeInfo::Str => mutate_string(value, dictionary, rng),
+1061:        TypeInfo::Array { element } => mutate_array(value, element, dictionary, rng),
+1062:        TypeInfo::Object { fields } => mutate_object(value, fields, dictionary, rng),
+1063:        TypeInfo::Union { variants } => mutate_union(value, variants, dictionary, rng),
+1064:        TypeInfo::Nullable { inner } => mutate_nullable(value, inner, dictionary, rng),
+1065-        TypeInfo::Complex { .. } | TypeInfo::Opaque { .. } | TypeInfo::Unknown => value.clone(),
+1066-    }
+--
+1070-///
+1071-/// For each parameter, with probability `mutation_rate` (0.0–1.0), applies
+1072:/// `mutate_value`; otherwise keeps the original value unchanged.
+1073:pub fn mutate_inputs(
+1074-    inputs: &[Value],
+1075-    params: &[crate::types::ParamInfo],
+--
+1083-        .map(|(val, param)| {
+1084-            if rng.random_range(0.0..1.0_f64) < mutation_rate {
+1085:                mutate_value(val, &param.typ, dictionary, rng)
+1086-            } else {
+1087-                val.clone()
+--
+1092-
+1093-/// Mutate an integer value.
+1094:fn mutate_int(value: &Value, rng: &mut impl Rng) -> Value {
+1095-    let n = match value.as_i64() {
+1096-        Some(n) => n,
+--
+1123-
+1124-/// Mutate a float value.
+1125:fn mutate_float(value: &Value, rng: &mut impl Rng) -> Value {
+1126-    let n = match value.as_f64() {
+1127-        Some(n) => n,
+--
+1154-
+1155-/// Mutate a boolean value (always flip).
+1156:fn mutate_bool(value: &Value) -> Value {
+1157-    match value.as_bool() {
+1158-        Some(b) => json!(!b),
+--
+1166-/// injection) becomes available — it splices a random dictionary entry into
+1167-/// the string at a random position.
+1168:fn mutate_string(value: &Value, dictionary: &[&str], rng: &mut impl Rng) -> Value {
+1169-    let s = match value.as_str() {
+1170-        Some(s) => s.to_string(),
+--
+1173-    // 20% chance of structure-aware mutation (pattern insertion, unicode, segment ops)
+1174-    if rng.random_range(0..5_u8) == 0 {
+1175:        return json!(string_mutation::mutate_structure_aware(&s, rng));
+1176-    }
+1177-    let num_ops: u8 = if dictionary.is_empty() { 6 } else { 7 };
+--
+1272-
+1273-/// Mutate an array value.
+1274:fn mutate_array(value: &Value, element: &TypeInfo, dictionary: &[&str], rng: &mut impl Rng) -> Value {
+1275-    let arr = match value.as_array() {
+1276-        Some(a) => a.clone(),
+--
+1280-        1 // Can only add
+1281-    } else if arr.len() < 2 {
+1282:        rng.random_range(0..3) // Remove, add, or mutate (no shuffle)
+1283-    } else {
+1284-        rng.random_range(0..4)
+--
+1303-            let mut result = arr;
+1304-            let idx = rng.random_range(0..result.len());
+1305:            result[idx] = mutate_value(&result[idx], element, dictionary, rng);
+1306-            json!(result)
+1307-        }
+--
+1318-
+1319-/// Mutate an object value.
+1320:fn mutate_object(
+1321-    value: &Value,
+1322-    fields: &[(String, TypeInfo)],
+--
+1339-            let (name, typ) = &fields[idx];
+1340-            if let Some(current) = result.get(name) {
+1341:                let mutated = mutate_value(current, typ, dictionary, rng);
+1342:                result.insert(name.clone(), mutated);
+1343-            }
+1344-            Value::Object(result)
+--
+1361-
+1362-/// Mutate a union value by applying mutation with a random variant's type.
+1363:fn mutate_union(value: &Value, variants: &[TypeInfo], dictionary: &[&str], rng: &mut impl Rng) -> Value {
+1364-    if variants.is_empty() {
+1365-        return value.clone();
+1366-    }
+1367-    let idx = rng.random_range(0..variants.len());
+1368:    mutate_value(value, &variants[idx], dictionary, rng)
+1369-}
+1370-
+1371:/// Mutate a nullable value: 20% chance to flip null/non-null, otherwise mutate inner.
+1372:fn mutate_nullable(value: &Value, inner: &TypeInfo, dictionary: &[&str], rng: &mut impl Rng) -> Value {
+1373-    if rng.random_range(0..5) == 0 {
+1374-        // Flip null / non-null
+--
+1382-        Value::Null
+1383-    } else {
+1384:        mutate_value(value, inner, dictionary, rng)
+1385-    }
+1386-}
+--
+1919-
+1920-// ---------------------------------------------------------------------------
+1921:// Mock value generation, mutation, and crossover
+1922-// ---------------------------------------------------------------------------
+1923-
+1924:use crate::auto_mock::{IoCategory, MockParam};
+1925:use crate::protocol::{MockBehavior, MockConfig};
+1926-
+1927:/// Generate type-correct [`MockConfig`] for each [`MockParam`].
+1928-///
+1929:/// For each mock parameter:
+1930-/// - Generates `max(call_count_estimate, 1)` return values (for loop support)
+1931-/// - Uses category-aware shaping when `return_type` is `Unknown`
+1932-/// - Produces both success and error variants for declared error types
+1933-/   (`Complex { kind: Result, .. }` or unions containing `Complex { kind: Error, .. }`)
+1934:pub fn generate_mock_values(
+1935:    mock_params: &[MockParam],
+1936-    rng: &mut impl Rng,
+1937-    caps: Option<&FrontendCapabilities>,
+1938:) -> Vec<MockConfig> {
+1939:    mock_params
+1940-        .iter()
+1941-        .map(|mp| {
+1942-            let count = (mp.call_count_estimate as usize).max(1);
+1943-            let (return_values, behavior) =
+1944:                generate_mock_return_values(&mp.return_type, mp.category, count, rng, caps);
+1945-
+1946:            MockConfig {
+1947-                symbol: mp.symbol.clone(),
+1948-                return_values,
+--
+1954-}
+1955-
+1956:/// Generate return values for a single mock, dispatching to error-aware or
+1957-/// category-shaped generators as needed.
+1958:fn generate_mock_return_values(
+1959-    return_type: &TypeInfo,
+1960-    category: IoCategory,
+--
+1962-    rng: &mut impl Rng,
+1963-    caps: Option<&FrontendCapabilities>,
+1964:) -> (Vec<Value>, MockBehavior) {
+1965-    / Result complex type: alternates ok/err variants using the tagged wire format.
+1966-    if matches!(return_type, TypeInfo::Complex { kind: ComplexKind::Result, .. }) {
+--
+1971-                    json!({"__complex_type": "result", "ok": true, "value": inner})
+1972-                } else {
+1973:                    json!({"__complex_type": "result", "ok": false, "value": "mock error"})
+1974-                }
+1975-            })
+1976-            .collect();
+1977:        return (values, MockBehavior::ReturnGenerated);
+1978-    }
+1979-
+--
+1997-                }
+1998-            }
+1999:            return (values, MockBehavior::ReturnGenerated);
+2000-        }
+2001-    }
+--
+2006-            .map(|_| category_shaped_value(category, rng))
+2007-            .collect();
+2008:        return (values, MockBehavior::RepeatLast);
+2009-    }
+2010-
+--
+2013-        .map(|_| generate_random_value(return_type, rng, caps))
+2014-        .collect();
+2015:    (values, MockBehavior::RepeatLast)
+2016-}
+2017-
+--
+2053-}
+2054-
+2055:/// Mutate mock return values while preserving type contracts.
+2056-///
+2057:/// For each MockConfig/MockParam pair, applies [`mutate_value`] to each
+2058-/// return value with probability `mutation_rate`. Output always has the
+2059-/// same number of configs with the same symbols and vector lengths.
+2060:pub fn mutate_mock_values(
+2061:    configs: &[MockConfig],
+2062:    mock_params: &[MockParam],
+2063-    mutation_rate: f64,
+2064-    dictionary: &[&str],
+2065-    rng: &mut impl Rng,
+2066:) -> Vec<MockConfig> {
+2067-    configs
+2068-        .iter()
+2069:        .zip(mock_params.iter())
+2070-        .map(|(config, mp)| {
+2071-            let return_values = config
+--
+2074-                .map(|val| {
+2075-                    if rng.random_range(0.0..1.0_f64) < mutation_rate {
+2076:                        mutate_value(val, &mp.return_type, dictionary, rng)
+2077-                    } else {
+2078-                        val.clone()
+--
+2081-                .collect();
+2082-
+2083:            MockConfig {
+2084-                symbol: config.symbol.clone(),
+2085-                return_values,
+--
+2091-}
+2092-
+2093:/// Cross over two parent mock config vectors, preserving vector structure.
+2094-///
+2095-/// With probability `crossover_rate`, performs per-value crossover between
+2096-/// matching return values. Both children have the same number of configs
+2097-/// with the same symbols as the parents.
+2098:pub fn crossover_mock_values(
+2099:    parent_a: &[MockConfig],
+2100:    parent_b: &[MockConfig],
+2101:    mock_params: &[MockParam],
+2102-    crossover_rate: f64,
+2103-    rng: &mut impl Rng,
+2104:) -> (Vec<MockConfig>, Vec<MockConfig>) {
+2105:    let len = parent_a.len().min(parent_b.len()).min(mock_params.len());
+2106-
+2107-    if rng.random_range(0.0..1.0_f64) >= crossover_rate {
+--
+2116-            &parent_a[i].return_values,
+2117-            &parent_b[i].return_values,
+2118:            &mock_params[i].return_type,
+2119-            rng,
+2120-        );
+2121-
+2122:        child1.push(MockConfig {
+2123-            symbol: parent_a[i].symbol.clone(),
+2124-            return_values: rv1,
+--
+2126-            default_behavior: parent_a[i].default_behavior.clone(),
+2127-        });
+2128:        child2.push(MockConfig {
+2129-            symbol: parent_b[i].symbol.clone(),
+2130-            return_values: rv2,
+--
+2794-
+2795-    #[test]
+2796:    fn mutate_int_boundary_values() {
+2797-        let mut rng = StdRng::seed_from_u64(0);
+2798-        let mut saw_zero = false;
+--
+2800-        let mut saw_max = false;
+2801-        for _ in 0..500 {
+2802:            let mutated = mutate_value(&json!(42), &TypeInfo::Int, &[], &mut rng);
+2803:            let n = mutated.as_i64().or_else(|| mutated.as_u64().map(|u| u as i64));
+2804-            if let Some(n) = n {
+2805-                if n == 0 { saw_zero = true; }
+--
+2814-
+2815-    #[test]
+2816:    fn mutate_int_invalid_input_regenerates() {
+2817-        let mut rng = seeded_rng();
+2818:        let mutated = mutate_value(&json!("not_an_int"), &TypeInfo::Int, &[], &mut rng);
+2819-        assert!(
+2820:            mutated.is_i64() || mutated.is_u64(),
+2821:            "should regenerate valid int, got {mutated}"
+2822-        );
+2823-    }
+2824-
+2825-    #[test]
+2826:    fn mutate_float_special_values() {
+2827-        let mut rng = StdRng::seed_from_u64(0);
+2828-        let mut saw_null = false; // NaN or Inf → null
+2829-        let mut saw_zero = false;
+2830-        for _ in 0..500 {
+2831:            let mutated = mutate_value(&json!(1.0), &TypeInfo::Float, &[], &mut rng);
+2832:            if mutated.is_null() {
+2833-                saw_null = true;
+2834-            }
+2835:            if mutated.as_f64() == Some(0.0) {
+2836-                saw_zero = true;
+2837-            }
+--
+2842-
+2843-    #[test]
+2844:    fn mutate_bool_flips() {
+2845-        let mut rng = seeded_rng();
+2846:        assert_eq!(mutate_value(&json!(true), &TypeInfo::Bool, &[], &mut rng), json!(false));
+2847:        assert_eq!(mutate_value(&json!(false), &TypeInfo::Bool, &[], &mut rng), json!(true));
+2848-    }
+2849-
+2850-    #[test]
+2851:    fn mutate_string_operators_change_length() {
+2852-        let mut rng = StdRng::seed_from_u64(0);
+2853-        let mut saw_shorter = false;
+--
+2857-        let original = "hello";
+2858-        for _ in 0..500 {
+2859:            let mutated = mutate_value(&json!(original), &TypeInfo::Str, &[], &mut rng);
+2860:            let s = mutated.as_str().unwrap_or("");
+2861-            if s.is_empty() { saw_empty = true; }
+2862-            if s.len() >= 1000 { saw_long = true; }
+--
+2871-
+2872-    #[test]
+2873:    fn mutate_string_empty_input_is_safe() {
+2874-        let mut rng = seeded_rng();
+2875-        for _ in 0..50 {
+2876:            let mutated = mutate_value(&json!(""), &TypeInfo::Str, &[], &mut rng);
+2877:            assert!(mutated.is_string(), "expected string, got {mutated}");
+2878-        }
+2879-    }
+2880-
+2881-    #[test]
+2882:    fn mutate_string_dictionary_injection() {
+2883-        let mut rng = StdRng::seed_from_u64(0);
+2884-        let dictionary: &[&str] = &["@", "://", ".com"];
+--
+2887-        let mut saw_dotcom = false;
+2888-        for _ in 0..500 {
+2889:            let mutated = mutate_value(&json!("hello"), &TypeInfo::Str, dictionary, &mut rng);
+2890:            let s = mutated.as_str().unwrap_or("");
+2891-            if s.contains('@') { saw_at = true; }
+2892-            if s.contains("://") { saw_scheme = true; }
+--
+2899-
+2900-    #[test]
+2901:    fn mutate_string_empty_dictionary_no_injection() {
+2902-        let mut rng = StdRng::seed_from_u64(42);
+2903-        // With empty dictionary, op range is 0..6, same as before
+2904-        for _ in 0..100 {
+2905:            let mutated = mutate_value(&json!("test"), &TypeInfo::Str, &[], &mut rng);
+2906:            assert!(mutated.is_string(), "expected string, got {mutated}");
+2907-        }
+2908-    }
+2909-
+2910-    #[test]
+2911:    fn mutate_array_type_valid() {
+2912-        let mut rng = seeded_rng();
+2913-        let typ = TypeInfo::Array { element: Box::new(TypeInfo::Int) };
+2914-        for _ in 0..100 {
+2915:            let mutated = mutate_value(&json!([1, 2, 3]), &typ, &[], &mut rng);
+2916:            assert!(mutated.is_array(), "expected array, got {mutated}");
+2917-        }
+2918-    }
+2919-
+2920-    #[test]
+2921:    fn mutate_array_empty_can_grow() {
+2922-        let mut rng = seeded_rng();
+2923-        let typ = TypeInfo::Array { element: Box::new(TypeInfo::Int) };
+2924:        let mutated = mutate_value(&json!([]), &typ, &[], &mut rng);
+2925:        let arr = mutated.as_array().expect("expected array");
+2926-        assert_eq!(arr.len(), 1, "empty array mutation should add an element");
+2927-    }
+2928-
+2929-    #[test]
+2930:    fn mutate_object_type_valid() {
+2931-        let mut rng = seeded_rng();
+2932-        let typ = TypeInfo::Object {
+--
+2938-        let original = json!({"name": "Alice", "age": 30});
+2939-        for _ in 0..100 {
+2940:            let mutated = mutate_value(&original, &typ, &[], &mut rng);
+2941:            assert!(mutated.is_object(), "expected object, got {mutated}");
+2942-        }
+2943-    }
+2944-
+2945-    #[test]
+2946:    fn mutate_inputs_rate_zero_returns_identical() {
+2947-        let mut rng = seeded_rng();
+2948-        let params = vec![
+--
+2951-        ];
+2952-        let inputs = vec![json!(42), json!("hello")];
+2953:        let mutated = mutate_inputs(&inputs, &params, 0.0, &[], &mut rng);
+2954:        assert_eq!(mutated, inputs);
+2955-    }
+2956-
+2957-    #[test]
+2958:    fn mutate_inputs_rate_one_mutates_all() {
+2959-        let mut rng = seeded_rng();
+2960-        let params = vec![
+--
+2963-        ];
+2964-        let inputs = vec![json!(true), json!(false)];
+2965:        let mutated = mutate_inputs(&inputs, &params, 1.0, &[], &mut rng);
+2966-        // Bools always flip, so both should change
+2967:        assert_eq!(mutated[0], json!(false));
+2968:        assert_eq!(mutated[1], json!(true));
+2969-    }
+2970-
+2971-    #[test]
+2972:    fn mutate_value_unknown_returns_unchanged() {
+2973-        let mut rng = seeded_rng();
+2974-        let val = json!(42);
+2975:        assert_eq!(mutate_value(&val, &TypeInfo::Unknown, &[], &mut rng), val);
+2976-    }
+2977-
+2978-    #[test]
+2979:    fn mutate_value_opaque_returns_unchanged() {
+2980-        let mut rng = seeded_rng();
+2981-        let val = json!(null);
+2982-        let typ = TypeInfo::Opaque { label: "net.Socket".into() };
+2983:        assert_eq!(mutate_value(&val, &typ, &[], &mut rng), val);
+2984-    }
+2985-
+2986-    #[test]
+2987:    fn mutate_nullable_can_flip_to_null() {
+2988-        let mut rng = StdRng::seed_from_u64(0);
+2989-        let typ = TypeInfo::Nullable { inner: Box::new(TypeInfo::Int) };
+--
+2991-        let mut saw_value = false;
+2992-        for _ in 0..100 {
+2993:            let mutated = mutate_value(&json!(42), &typ, &[], &mut rng);
+2994:            if mutated.is_null() {
+2995-                saw_null = true;
+2996-            } else {
+--
+2999-        }
+3000-        assert!(saw_null, "should sometimes flip to null");
+3001:        assert!(saw_value, "should sometimes keep/mutate value");
+3002-    }
+3003-
+3004-    #[test]
+3005:    fn mutate_nullable_can_flip_from_null() {
+3006-        let mut rng = StdRng::seed_from_u64(0);
+3007-        let typ = TypeInfo::Nullable { inner: Box::new(TypeInfo::Int) };
+3008-        let mut saw_non_null = false;
+3009-        for _ in 0..100 {
+3010:            let mutated = mutate_value(&Value::Null, &typ, &[], &mut rng);
+3011:            if !mutated.is_null() {
+3012-                saw_non_null = true;
+3013-            }
+--
+3017-
+3018-    #[test]
+3019:    fn mutate_union_delegates_to_variant() {
+3020-        let mut rng = seeded_rng();
+3021-        let typ = TypeInfo::Union {
+--
+3023-        };
+3024-        for _ in 0..50 {
+3025:            let mutated = mutate_value(&json!(42), &typ, &[], &mut rng);
+3026-            assert!(
+3027:                mutated.is_i64() || mutated.is_u64() || mutated.is_string(),
+3028:                "expected int or string, got {mutated}"
+3029-            );
+3030-        }
+--
+3663-        proptest! {
+3664-            #[test]
+3665:            fn mutate_int_preserves_number(val in -1_000_000i64..1_000_000i64) {
+3666-                let input = serde_json::json!(val);
+3667-                let mut rng = StdRng::seed_from_u64(42);
+3668:                let result = mutate_value(&input, &TypeInfo::Int, &[], &mut rng);
+3669-                prop_assert!(
+3670-                    result.is_number(),
+--
+3674-
+3675-            #[test]
+3676:            fn mutate_str_preserves_string(val in ".{0,30}") {
+3677-                let input = serde_json::json!(val);
+3678-                let mut rng = StdRng::seed_from_u64(42);
+3679:                let result = mutate_value(&input, &TypeInfo::Str, &[], &mut rng);
+3680-                prop_assert!(
+3681-                    result.is_string(),
+--
+3685-
+3686-            #[test]
+3687:            fn mutate_bool_preserves_bool(val in any::<bool>()) {
+3688-                let input = serde_json::json!(val);
+3689:                let result = mutate_value(&input, &TypeInfo::Bool, &[], &mut StdRng::seed_from_u64(42));
+3690-                prop_assert!(
+3691-                    result.is_boolean(),
+--
+3695-
+3696-            #[test]
+3697:            fn mutate_inputs_preserves_length(
+3698-                seed in 0..10000u64,
+3699-                len in 1..6usize,
+--
+3709-                let inputs: Vec<serde_json::Value> =
+3710-                    (0..len).map(|i| serde_json::json!(i as i64)).collect();
+3711:                let mutated = mutate_inputs(&inputs, &params, 1.0, &[], &mut rng);
+3712-                prop_assert_eq!(
+3713-                    inputs.len(),
+3714:                    mutated.len(),
+3715:                    "mutate_inputs changed vector length"
+3716-                );
+3717-            }
+3718-
+3719-            // -----------------------------------------------------------------
+3720:            // mutate_inputs: vector-level type preservation with arbitrary types
+3721-            // -----------------------------------------------------------------
+3722-
+3723-            #[test]
+3724:            fn mutate_inputs_preserves_types_arbitrary(
+3725-                seed in 0..10000u64,
+3726-                typs in prop::collection::vec(
+--
+3748-                    .collect();
+3749-                let mut rng2 = StdRng::seed_from_u64(seed.wrapping_add(1));
+3750:                let mutated = mutate_inputs(&inputs, &params, 1.0, &[], &mut rng2);
+3751-
+3752:                prop_assert_eq!(mutated.len(), params.len(),
+3753:                    "mutate_inputs changed vector length");
+3754-
+3755:                for (i, (val, param)) in mutated.iter().zip(params.iter()).enumerate() {
+3756-                    prop_assert!(
+3757-                        value_matches_type(val, &param.typ),
+3758:                        "mutated[{i}] = {val:?} doesn't match type {:?}",
+3759-                        param.typ
+3760-                    );
+--
+3763-
+3764-            // -----------------------------------------------------------------
+3765:            // mutate_inputs: mutation with rate=1.0 actually changes something
+3766-            // -----------------------------------------------------------------
+3767-
+3768-            #[test]
+3769:            fn mutate_inputs_actually_mutates(seed in 0..10000u64) {
+3770-                let params = vec![
+3771-                    ParamInfo { name: "a".into(), typ: TypeInfo::Int, type_name: None },
+--
+3779-                for offset in 0..20u64 {
+3780-                    let mut rng = StdRng::seed_from_u64(seed.wrapping_add(offset));
+3781:                    let mutated = mutate_inputs(&inputs, &params, 1.0, &[], &mut rng);
+3782:                    if mutated != inputs {
+3783-                        any_diff = true;
+3784-                        break;
+--
+3786-                }
+3787-                prop_assert!(any_diff,
+3788:                    "mutate_inputs with rate=1.0 never changed anything over 20 tries");
+3789-            }
+3790-
+--
+3979-
+3980-            // -----------------------------------------------------------------
+3981:            // generate_mock_values: output count matches input count
+3982-            // -----------------------------------------------------------------
+3983-
+3984-            #[test]
+3985:            fn generate_mock_values_count_matches_params(
+3986:                params in prop::collection::vec(crate::test_arbitraries::arb_mock_param(), 1..=4),
+3987-                seed in 0..10000u64,
+3988-            ) {
+3989-                let mut rng = StdRng::seed_from_u64(seed);
+3990:                let configs = generate_mock_values(&params, &mut rng, None);
+3991-                prop_assert_eq!(configs.len(), params.len(),
+3992-                    "config count should match param count");
+--
+4001-
+4002-            // -----------------------------------------------------------------
+4003:            // generate_mock_values: values match type for typed params
+4004-            // -----------------------------------------------------------------
+4005-
+4006-            #[test]
+4007:            fn generate_mock_values_type_valid(
+4008-                seed in 0..10000u64,
+4009-                typ in prop_oneof![
+--
+4015-                call_count in 1..5u32,
+4016-            ) {
+4017:                use crate::auto_mock::{IoCategory, ValueSource};
+4018:                let mp = MockParam {
+4019-                    symbol: "test_fn".to_string(),
+4020-                    return_type: typ.clone(),
+--
+4024-                };
+4025-                let mut rng = StdRng::seed_from_u64(seed);
+4026:                let configs = generate_mock_values(&[mp], &mut rng, None);
+4027-                prop_assert_eq!(configs.len(), 1);
+4028-                for val in &configs[0].return_values {
+--
+4035-
+4036-            // -----------------------------------------------------------------
+4037:            // mutate_mock_values: preserves vector structure
+4038-            // -----------------------------------------------------------------
+4039-
+4040-            #[test]
+4041-            // Uses non-recursive leaf types to avoid a pre-existing panic
+4042:            // in string_mutation::mutate_structure_aware (unrelated to mock values).
+4043:            fn mutate_mock_values_preserves_structure(
+4044-                seed in 0..10000u64,
+4045-                typs in prop::collection::vec(
+--
+4053-                ),
+4054-            ) {
+4055:                use crate::auto_mock::{IoCategory, ValueSource};
+4056:                let params: Vec<MockParam> = typs.iter().enumerate().map(|(i, t)| MockParam {
+4057:                    symbol: format!("mock_{}", i),
+4058-                    return_type: t.clone(),
+4059-                    category: IoCategory::ExternalOther,
+--
+4063-
+4064-                let mut rng = StdRng::seed_from_u64(seed);
+4065:                let configs = generate_mock_values(&params, &mut rng, None);
+4066-                let mut rng2 = StdRng::seed_from_u64(seed.wrapping_add(1));
+4067:                let mutated = mutate_mock_values(&configs, &params, 1.0, &[], &mut rng2);
+4068-
+4069:                prop_assert_eq!(mutated.len(), configs.len(),
+4070:                    "mutated config count mismatch");
+4071:                for (mc, orig) in mutated.iter().zip(configs.iter()) {
+4072-                    prop_assert_eq!(mc.return_values.len(), orig.return_values.len(),
+4073-                        "return value count changed after mutation");
+--
+4078-
+4079-            // -----------------------------------------------------------------
+4080:            // crossover_mock_values: preserves vector structure
+4081-            // -----------------------------------------------------------------
+4082-
+4083-            #[test]
+4084:            fn crossover_mock_values_preserves_structure(
+4085:                params in prop::collection::vec(crate::test_arbitraries::arb_mock_param(), 1..=4),
+4086-                seed in 0..10000u64,
+4087-            ) {
+4088-                let mut rng = StdRng::seed_from_u64(seed);
+4089:                let parent_a = generate_mock_values(&params, &mut rng, None);
+4090-                let mut rng2 = StdRng::seed_from_u64(seed.wrapping_add(1));
+4091:                let parent_b = generate_mock_values(&params, &mut rng2, None);
+4092-
+4093-                let mut rng3 = StdRng::seed_from_u64(seed.wrapping_add(2));
+4094:                let (child1, child2) = crossover_mock_values(
+4095-                    &parent_a, &parent_b, &params, 1.0, &mut rng3,
+4096-                );
+--
+4113-
+4114-    // -----------------------------------------------------------------------
+4115:    // Mock value generation unit tests
+4116-    // -----------------------------------------------------------------------
+4117-
+4118-    #[test]
+4119:    fn generate_mock_values_typed_param() {
+4120-        let mut rng = seeded_rng();
+4121:        let params = vec![MockParam {
+4122-            symbol: "readFile".to_string(),
+4123-            return_type: TypeInfo::Str,
+4124-            category: IoCategory::FileSystem,
+4125-            call_count_estimate: 3,
+4126:            value_source: crate::auto_mock::ValueSource::AutoGenerated,
+4127-        }];
+4128-
+4129:        let configs = generate_mock_values(&params, &mut rng, None);
+4130-        assert_eq!(configs.len(), 1);
+4131-        assert_eq!(configs[0].symbol, "readFile");
+--
+4137-
+4138-    #[test]
+4139:    fn generate_mock_values_unknown_uses_category_shaping() {
+4140-        let mut rng = seeded_rng();
+4141:        let params = vec![MockParam {
+4142-            symbol: "query".to_string(),
+4143-            return_type: TypeInfo::Unknown,
+4144-            category: IoCategory::Database,
+4145-            call_count_estimate: 2,
+4146:            value_source: crate::auto_mock::ValueSource::AutoGenerated,
+4147-        }];
+4148-
+4149:        let configs = generate_mock_values(&params, &mut rng, None);
+4150-        assert_eq!(configs[0].return_values.len(), 2);
+4151-        for val in &configs[0].return_values {
+--
+4155-
+4156-    #[test]
+4157:    fn generate_mock_values_result_type_produces_ok_and_err() {
+4158-        let mut rng = seeded_rng();
+4159:        let params = vec![MockParam {
+4160-            symbol: "tryConnect".to_string(),
+4161-            return_type: TypeInfo::Complex {
+--
+4166-            category: IoCategory::Network,
+4167-            call_count_estimate: 4,
+4168:            value_source: crate::auto_mock::ValueSource::AutoGenerated,
+4169-        }];
+4170-
+4171:        let configs = generate_mock_values(&params, &mut rng, None);
+4172-        assert_eq!(configs[0].return_values.len(), 4);
+4173-
+--
+4187-
+4188-    #[test]
+4189:    fn generate_mock_values_union_with_error_produces_both() {
+4190-        let mut rng = seeded_rng();
+4191:        let params = vec![MockParam {
+4192-            symbol: "fetchData".to_string(),
+4193-            return_type: TypeInfo::Union {
+--
+4203-            category: IoCategory::Network,
+4204-            call_count_estimate: 4,
+4205:            value_source: crate::auto_mock::ValueSource::AutoGenerated,
+4206-        }];
+4207-
+4208:        let configs = generate_mock_values(&params, &mut rng, None);
+4209-        assert_eq!(configs[0].return_values.len(), 4);
+4210-
+--
+4214-        assert!(configs[0].return_values[0].is_string(),
+4215-            "expected string at index 0, got {:?}", configs[0].return_values[0]);
+4216:        assert_eq!(configs[0].default_behavior, MockBehavior::ReturnGenerated);
+4217-    }
+4218-
+4219-    #[test]
+4220:    fn generate_mock_values_zero_call_count_produces_at_least_one() {
+4221-        let mut rng = seeded_rng();
+4222:        let params = vec![MockParam {
+4223-            symbol: "unused".to_string(),
+4224-            return_type: TypeInfo::Int,
+4225-            category: IoCategory::ExternalOther,
+4226-            call_count_estimate: 0,
+4227:            value_source: crate::auto_mock::ValueSource::AutoGenerated,
+4228-        }];
+4229-
+4230:        let configs = generate_mock_values(&params, &mut rng, None);
+4231-        assert_eq!(configs[0].return_values.len(), 1);
+4232-    }
+4233-
+4234-    #[test]
+4235:    fn mutate_mock_values_preserves_symbol_and_count() {
+4236-        let mut rng = seeded_rng();
+4237:        let params = vec![MockParam {
+4238-            symbol: "query".to_string(),
+4239-            return_type: TypeInfo::Int,
+4240-            category: IoCategory::Database,
+4241-            call_count_estimate: 3,
+4242:            value_source: crate::auto_mock::ValueSource::AutoGenerated,
+4243-        }];
+4244:        let configs = generate_mock_values(&params, &mut rng, None);
+4245:        let mutated = mutate_mock_values(&configs, &params, 1.0, &[], &mut rng);
+4246-
+4247:        assert_eq!(mutated[0].symbol, "query");
+4248:        assert_eq!(mutated[0].return_values.len(), configs[0].return_values.len());
+4249-    }
+4250-
+4251-    #[test]
+4252:    fn crossover_mock_values_preserves_length() {
+4253-        let mut rng = seeded_rng();
+4254-        let params = vec![
+4255:            MockParam {
+4256-                symbol: "a".to_string(),
+4257-                return_type: TypeInfo::Int,
+4258-                category: IoCategory::ExternalOther,
+4259-                call_count_estimate: 3,
+4260:                value_source: crate::auto_mock::ValueSource::AutoGenerated,
+4261-            },
+4262:            MockParam {
+4263-                symbol: "b".to_string(),
+4264-                return_type: TypeInfo::Str,
+4265-                category: IoCategory::ExternalOther,
+4266-                call_count_estimate: 2,
+4267:                value_source: crate::auto_mock::ValueSource::AutoGenerated,
+4268-            },
+4269-        ];
+4270:        let parent_a = generate_mock_values(&params, &mut rng, None);
+4271:        let parent_b = generate_mock_values(&params, &mut rng, None);
+4272-
+4273:        let (child1, child2) = crossover_mock_values(&parent_a, &parent_b, &params, 1.0, &mut rng);
+4274-        assert_eq!(child1.len(), 2);
+4275-        assert_eq!(child2.len(), 2);
+--
+4277-
+4278-    #[test]
+4279:    fn generate_mock_values_network_unknown_produces_http_shape() {
+4280-        let mut rng = seeded_rng();
+4281:        let params = vec![MockParam {
+4282-            symbol: "get".to_string(),
+4283-            return_type: TypeInfo::Unknown,
+4284-            category: IoCategory::Network,
+4285-            call_count_estimate: 1,
+4286:            value_source: crate::auto_mock::ValueSource::AutoGenerated,
+4287-        }];
+4288-
+4289:        let configs = generate_mock_values(&params, &mut rng, None);
+4290-        let val = &configs[0].return_values[0];
+4291:        assert!(val.get("status").is_some(), "network mock should have status field");
+4292-    }
+4293-}

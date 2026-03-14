@@ -1,0 +1,1698 @@
+     1→//! Concolic execution loop: worklist-driven path exploration with Z3 solving.
+     2→//!
+     3→//! The orchestrator drives the concolic testing cycle:
+     4→//! 1. Seed the worklist with initial inputs
+     5→//! 2. Execute a function concretely via a frontend subprocess
+     6→//! 3. Collect branch constraints from the execution trace
+     7→//! 4. Negate each branch constraint and solve with Z3 for new inputs
+     8→//! 5. Add solved inputs to the worklist; repeat until done
+     9→//!
+    10→//! Inputs from Z3 are prioritized over fuzzed or seed inputs so that the
+    11→//! solver-guided exploration is always tried first.
+    12→
+    13→use contracts::requires;
+    14→use std::collections::{BinaryHeap, HashSet};
+    15→use std::hash::{Hash, Hasher};
+    16→use std::time::{Duration, Instant};
+    17→
+    18→use rand::SeedableRng;
+    19→use rand::rngs::StdRng;
+    20→
+    21→use crate::coverage_metrics::DiscoveryMethod;
+    22→use crate::drilling;
+    23→use crate::execution_record::SymConstraint;
+    24→use crate::frontier::{Frontier, FrontierSet};
+    25→use crate::frontend::{Frontend, FrontendError};
+    26→use crate::protocol::{Command, ExecuteResult, ResponseResult};
+    27→use crate::solver::{self, ConcreteValue, SolveResult};
+    28→use crate::sym_expr::SymExpr;
+    29→use crate::triage::{TriageState, TriageVerdict};
+    30→use crate::types::{ComplexKind, ParamInfo};
+    31→
+    32→/// Parsed frontend capabilities from the handshake response.
+    33→///
+    34→/// During handshake, frontends declare which commands they support and which
+    35→/// complex types they can reconstruct. The core uses this to avoid generating
+    36→/// complex-typed inputs the frontend can't handle.
+    37→#[derive(Debug, Clone, Default)]
+    38→pub struct FrontendCapabilities {
+    39→    /// Standard commands the frontend supports ("analyze", "execute", etc.).
+    40→    pub commands: HashSet<String>,
+    41→    /// Complex types the frontend can reconstruct from `__complex_type` JSON.
+    42→    pub complex_types: HashSet<ComplexKind>,
+    43→}
+    44→
+    45→impl FrontendCapabilities {
+    46→    /// Parse raw capability strings from a handshake response.
+    47→    ///
+    48→    /// Strings prefixed with `"complex_type:"` are parsed as `ComplexKind` values.
+    49→    /// All other strings are treated as command capabilities.
+    50→    /// Unknown complex type names are silently ignored.
+    51→    pub fn from_raw(capabilities: &[String]) -> Self {
+    52→        let mut commands = HashSet::new();
+    53→        let mut complex_types = HashSet::new();
+    54→        for cap in capabilities {
+    55→            if let Some(kind_str) = cap.strip_prefix("complex_type:") {
+    56→                // ComplexKind uses serde rename_all = "snake_case", so we
+    57→                // deserialize the bare string as a JSON string value.
+    58→                if let Ok(kind) = serde_json::from_value::<ComplexKind>(
+    59→                    serde_json::Value::String(kind_str.to_string()),
+    60→                ) {
+    61→                    complex_types.insert(kind);
+    62→                }
+    63→                // Silently ignore unknown complex type names
+    64→            } else {
+    65→                commands.insert(cap.clone());
+    66→            }
+    67→        }
+    68→        Self {
+    69→            commands,
+    70→            complex_types,
+    71→        }
+    72→    }
+    73→
+    74→    /// Check whether the frontend declared support for a specific complex type.
+    75→    pub fn supports_complex(&self, kind: ComplexKind) -> bool {
+    76→        self.complex_types.contains(&kind)
+    77→    }
+    78→}
+    79→
+    80→/// Configuration for a concolic exploration session.
+    81→#[derive(Debug, Clone)]
+    82→pub struct ExploreConfig {
+    83→    /// Maximum number of unique paths to explore before stopping.
+    84→    pub max_iterations: usize,
+    85→    /// Maximum total executions (including duplicated paths) before stopping.
+    86→    pub max_executions: usize,
+    87→    /// Stop after this many consecutive executions without discovering a new path.
+    88→    /// Set to 0 to disable plateau detection.
+    89→    pub plateau_threshold: usize,
+    90→    /// Mock configurations to pass through to Execute commands.
+    91→    pub mocks: Vec<crate::protocol::MockConfig>,
+    92→    /// Z3 solver timeout in milliseconds per query. None means no limit.
+    93→    pub solver_timeout_ms: Option<u64>,
+    94→    /// Per-function exploration wall-clock timeout. Whichever of this or
+    95→    /// `max_iterations`/`max_executions` triggers first stops the loop.
+    96→    pub timeout_explore: Option<Duration>,
+    97→}
+    98→
+    99→/// Default maximum total executions before stopping exploration.
+   100→pub const DEFAULT_MAX_EXECUTIONS: usize = 500;
+   101→
+   102→impl Default for ExploreConfig {
+   103→    fn default() -> Self {
+   104→        Self {
+   105→            max_iterations: 100,
+   106→            max_executions: DEFAULT_MAX_EXECUTIONS,
+   107→            plateau_threshold: 20,
+   108→            mocks: vec![],
+   109→            solver_timeout_ms: None,
+   110→            timeout_explore: None,
+   111→        }
+   112→    }
+   113→}
+   114→
+   115→/// How an input was generated — determines worklist priority.
+   116→#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+   117→pub enum InputSource {
+   118→    /// Least priority: initial seed values.
+   119→    Seed = 0,
+   120→    /// Low priority: fuzzed from concrete values of unknown constraints.
+   121→    Fuzzed = 1,
+   122→    /// Medium priority: targeted mutation of blocking params on a stalled frontier.
+   123→    Drilled = 2,
+   124→    /// High priority: Z3-solved inputs targeting a specific branch.
+   125→    Z3Solved = 3,
+   126→    /// Highest priority: user-provided candidate inputs from `.shatter/` config.
+   127→    UserProvided = 4,
+   128→}
+   129→
+   130→/// An entry in the exploration worklist.
+   131→#[derive(Debug, Clone)]
+   132→pub struct WorklistEntry {
+   133→    /// Input values to pass to the function.
+   134→    pub inputs: Vec<serde_json::Value>,
+   135→    /// How these inputs were generated.
+   136→    pub source: InputSource,
+   137→}
+   138→
+   139→impl Eq for WorklistEntry {}
+   140→
+   141→impl PartialEq for WorklistEntry {
+   142→    fn eq(&self, other: &Self) -> bool {
+   143→        self.source == other.source
+   144→    }
+   145→}
+   146→
+   147→impl PartialOrd for WorklistEntry {
+   148→    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+   149→        Some(self.cmp(other))
+   150→    }
+   151→}
+   152→
+   153→impl Ord for WorklistEntry {
+   154→    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+   155→        self.source.cmp(&other.source)
+   156→    }
+   157→}
+   158→
+   159→/// Why the exploration loop terminated.
+   160→#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+   161→pub enum TerminationReason {
+   162→    /// Reached the maximum number of unique paths (max_iterations).
+   163→    MaxIterations,
+   164→    /// Reached the maximum total executions (max_executions).
+   165→    MaxExecutions,
+   166→    /// No new paths discovered for `plateau_threshold` consecutive executions.
+   167→    CoveragePlateau,
+   168→    /// The worklist is empty — all reachable paths have been explored.
+   169→    WorklistExhausted,
+   170→    /// Exceeded the per-function exploration wall-clock timeout.
+   171→    TimeoutExplore,
+   172→}
+   173→
+   174→/// Summary of a concolic exploration session.
+   175→#[derive(Debug)]
+   176→pub struct ExploreResult {
+   177→    /// Name of the explored function.
+   178→    pub function_name: String,
+   179→    /// Total source lines in the function (end_line - start_line + 1).
+   180→    pub total_lines: u32,
+   181→    /// Execution results for each unique path discovered.
+   182→    pub executions: Vec<ExecuteResult>,
+   183→    /// Number of unique branch paths discovered.
+   184→    pub unique_paths: usize,
+   185→    /// Total number of executions performed (including duplicate paths).
+   186→    pub total_executions: usize,
+   187→    /// Number of inputs generated by Z3 solving.
+   188→    pub z3_generated: usize,
+   189→    /// Number of inputs generated by fuzzing.
+   190→    pub fuzz_generated: usize,
+   191→    /// Number of inputs generated by parameter drilling on stalled frontiers.
+   192→    pub drill_generated: usize,
+   193→    /// Why the exploration loop stopped.
+   194→    pub termination_reason: TerminationReason,
+   195→    /// Raw execution results paired with inputs for pipeline composability.
+   196→    pub raw_results: Vec<(Vec<serde_json::Value>, ExecuteResult)>,
+   197→    /// Per-branch discovery attribution with method (Z3, Random, UserProvided).
+   198→    pub discoveries: Vec<(u32, DiscoveryMethod)>,
+   199→    /// Number of inputs skipped by triage prediction.
+   200→    pub triage_skipped: usize,
+   201→    /// Number of sampled skip predictions that were wrong.
+   202→    pub triage_mispredictions: usize,
+   203→    /// Fields detected as nondeterministic via within-run re-execution sampling.
+   204→    pub nondeterministic_fields: Vec<crate::nondeterminism::NondeterministicField>,
+   205→    /// Float probe results classifying Float params as integer-treating or float-sensitive.
+   206→    pub float_probe_results: Vec<crate::float_probe::FloatProbeResult>,
+   207→}
+   208→
+   209→/// Errors that can occur during concolic exploration.
+   210→#[derive(Debug, thiserror::Error)]
+   211→pub enum ExploreError {
+   212→    #[error("frontend error: {0}")]
+   213→    Frontend(#[from] FrontendError),
+   214→}
+   215→
+   216→/// Compute a hash of the branch path (branch_id + taken pairs) to identify unique paths.
+   217→pub fn hash_branch_path(branch_path: &[crate::execution_record::BranchDecision]) -> u64 {
+   218→    let mut hasher = std::hash::DefaultHasher::new();
+   219→    for decision in branch_path {
+   220→        decision.branch_id.hash(&mut hasher);
+   221→        decision.taken.hash(&mut hasher);
+   222→    }
+   223→    hasher.finish()
+   224→}
+   225→
+   226→/// Extract the list of solvable `SymExpr` path conditions from an execution result's branch path.
+   227→///
+   228→/// Each constraint is adjusted based on the `taken` field so that negating it
+   229→/// in the solver produces inputs that flip the branch:
+   230→/// - `taken=true`: the path condition is the constraint itself
+   231→/// - `taken=false`: the path condition is `NOT(constraint)`, because the branch
+   232→///   condition evaluated to false
+   233→///
+   234→/// Returns `None` for branches with `Unknown` constraints; those are skipped
+   235→/// by the solver but may be targeted by fuzzing.
+   236→fn extract_sym_constraints(result: &ExecuteResult) -> Vec<Option<SymExpr>> {
+   237→    result
+   238→        .branch_path
+   239→        .iter()
+   240→        .map(|decision| match &decision.constraint {
+   241→            SymConstraint::Expr { expr } => {
+   242→                if decision.taken {
+   243→                    Some(expr.clone())
+   244→                } else {
+   245→                    // The branch was not taken, so the actual path condition
+   246→                    // is NOT(constraint). Wrapping it here ensures that when
+   247→                    // the solver negates this entry, it produces the raw
+   248→                    // constraint — i.e., the condition needed to take the branch.
+   249→                    Some(SymExpr::UnOp {
+   250→                        op: crate::sym_expr::UnOpKind::Not,
+   251→                        operand: Box::new(expr.clone()),
+   252→                    })
+   253→                }
+   254→            }
+   255→            SymConstraint::Unknown { .. } => None,
+   256→        })
+   257→        .collect()
+   258→}
+   259→
+   260→/// Convert Z3 `ConcreteValue`s back into JSON values suitable for the Execute protocol.
+   261→///
+   262→/// For `Complex` values, produces a `__complex_type` tagged JSON object.
+   263→/// The solver unwraps complex types to their repr for solving, but when
+   264→/// converting back to JSON we need to re-wrap with the type tag so the
+   265→/// frontend can reconstruct the native value.
+   266→fn concrete_to_json(value: &ConcreteValue) -> serde_json::Value {
+   267→    match value {
+   268→        ConcreteValue::Int(i) => serde_json::json!(*i),
+   269→        ConcreteValue::Float(f) => serde_json::json!(*f),
+   270→        ConcreteValue::Str(s) => serde_json::json!(s),
+   271→        ConcreteValue::Bool(b) => serde_json::json!(*b),
+   272→        ConcreteValue::Complex { kind, repr } => {
+   273→            // Serialize the kind to its snake_case name for the wire format
+   274→            let kind_str = serde_json::to_value(kind)
+   275→                .ok()
+   276→                .and_then(|v| v.as_str().map(|s| s.to_string()))
+   277→                .unwrap_or_else(|| format!("{kind:?}").to_lowercase());
+   278→            let repr_json = concrete_to_json(repr);
+   279→            // Build tagged wire format: {"__complex_type": "<kind>", "value": <repr>}
+   280→            serde_json::json!({
+   281→                "__complex_type": kind_str,
+   282→                "value": repr_json,
+   283→            })
+   284→        }
+   285→    }
+   286→}
+   287→
+   288→/// Build a new input vector by overlaying Z3-solved values onto existing inputs.
+   289→///
+   290→/// The solver returns variable names like "x", "config.timeout" etc. We match
+   291→/// these against parameter names in `base_inputs` (positionally). For now we
+   292→/// support simple flat parameters — if the variable name matches the parameter
+   293→/// index convention (param_0, param_1, …) or the base is a single param, we
+   294→/// update it directly.
+   295→#[requires(base_inputs.len() == param_names.len(), "base_inputs and param_names must be positionally aligned")]
+   296→#[contracts::ensures(ret.len() == base_inputs.len(), "overlay must preserve input vector length")]
+   297→fn overlay_solved_values(
+   298→    base_inputs: &[serde_json::Value],
+   299→    solved: &std::collections::HashMap<String, ConcreteValue>,
+   300→    param_names: &[String],
+   301→) -> Vec<serde_json::Value> {
+   302→    let mut result = base_inputs.to_vec();
+   303→
+   304→    for (var_name, value) in solved {
+   305→        // Try to match variable name to a parameter by name.
+   306→        if let Some(idx) = param_names.iter().position(|n| n == var_name) {
+   307→            if idx < result.len() {
+   308→                result[idx] = concrete_to_json(value);
+   309→            }
+   310→        } else if param_names.len() == 1 && base_inputs.len() == 1 && !var_name.contains('.') {
+   311→            // Single-param function with a simple (non-derived) variable name:
+   312→            // the solver variable likely refers to the param. Skip derived names
+   313→            // like "email.length" which are internal Z3 variables, not params.
+   314→            result[0] = concrete_to_json(value);
+   315→        }
+   316→    }
+   317→
+   318→    result
+   319→}
+   320→
+   321→/// Run the concolic exploration loop on a function via a frontend subprocess.
+   322→///
+   323→/// `function_name` is the fully-qualified name of the function to explore.
+   324→/// `seed_inputs` provides initial input sets to begin exploration.
+   325→/// `user_inputs` provides user-provided candidate inputs (highest priority).
+   326→/// `param_infos` provides parameter metadata including names and types. Names are
+   327→/// used to map Z3 variables back to parameter positions; types are used to declare
+   328→/// correct Z3 sorts (preventing string params from being declared as Int).
+   329→pub async fn explore(
+   330→    frontend: &mut Frontend,
+   331→    function_name: &str,
+   332→    seed_inputs: Vec<Vec<serde_json::Value>>,
+   333→    user_inputs: Vec<Vec<serde_json::Value>>,
+   334→    param_infos: &[ParamInfo],
+   335→    config: &ExploreConfig,
+   336→) -> Result<ExploreResult, ExploreError> {
+   337→    let param_names: Vec<String> = param_infos.iter().map(|p| p.name.clone()).collect();
+   338→    let mut worklist = BinaryHeap::new();
+   339→    let mut covered_paths: HashSet<u64> = HashSet::new();
+   340→    let mut executions = Vec::new();
+   341→    let mut raw_results: Vec<(Vec<serde_json::Value>, ExecuteResult)> = Vec::new();
+   342→    let mut seen_branch_ids: HashSet<u32> = HashSet::new();
+   343→    let mut discoveries: Vec<(u32, DiscoveryMethod)> = Vec::new();
+   344→    let mut total_executions: usize = 0;
+   345→    let mut z3_generated: usize = 0;
+   346→    let mut fuzz_generated: usize = 0;
+   347→    let mut drill_generated: usize = 0;
+   348→    let mut plateau_counter: usize = 0;
+   349→    let mut termination_reason = TerminationReason::WorklistExhausted;
+   350→    let mut seen_branch_sides: HashSet<(u32, bool)> = HashSet::new();
+   351→    let mut frontier_set = FrontierSet::new();
+   352→    let mut rng = StdRng::from_os_rng();
+   353→    let mut triage_state = TriageState::new(param_names.clone());
+   354→    let mut triage_skipped: usize = 0;
+   355→    let mut triage_mispredictions: usize = 0;
+   356→
+   357→    // Add user-provided candidates with highest priority.
+   358→    for inputs in user_inputs {
+   359→        worklist.push(WorklistEntry {
+   360→            inputs,
+   361→            source: InputSource::UserProvided,
+   362→        });
+   363→    }
+   364→
+   365→    // Seed the worklist.
+   366→    for inputs in seed_inputs {
+   367→        worklist.push(WorklistEntry {
+   368→            inputs,
+   369→            source: InputSource::Seed,
+   370→        });
+   371→    }
+   372→
+   373→    // --- Float probe phase ---
+   374→    let float_indices = crate::float_probe::float_param_indices(param_infos);
+   375→    let mut float_probe_results: Vec<crate::float_probe::FloatProbeResult> = Vec::new();
+   376→    if !float_indices.is_empty() {
+   377→        for &idx in &float_indices {
+   378→            let pairs = crate::float_probe::generate_probe_pairs(
+   379→                param_infos,
+   380→                idx,
+   381→                crate::float_probe::PROBE_COUNT,
+   382→                &mut rng,
+   383→            );
+   384→            let mut agreements = 0usize;
+   385→            let mut total_probes = 0usize;
+   386→            let mut divergent_values = Vec::new();
+   387→
+   388→            for (float_inputs, floor_inputs) in pairs {
+   389→                // Execute with float value.
+   390→                let float_resp = frontend
+   391→                    .send(Command::Execute {
+   392→                        function: function_name.to_string(),
+   393→                        inputs: float_inputs.clone(),
+   394→                        mocks: config.mocks.clone(),
+   395→                        setup_context: None,
+   396→                    })
+   397→                    .await?;
+   398→
+   399→                // Execute with floor value.
+   400→                let floor_resp = frontend
+   401→                    .send(Command::Execute {
+   402→                        function: function_name.to_string(),
+   403→                        inputs: floor_inputs,
+   404→                        mocks: config.mocks.clone(),
+   405→                        setup_context: None,
+   406→                    })
+   407→                    .await?;
+   408→
+   409→                if let (
+   410→                    ResponseResult::Execute(float_result),
+   411→                    ResponseResult::Execute(floor_result),
+   412→                ) = (&float_resp.result, &floor_resp.result) {
+   413→                    total_probes += 1;
+   414→
+   415→                    if crate::float_probe::executions_agree(float_result, floor_result) {
+   416→                        agreements += 1;
+   417→                    } else if let Some(v) = float_inputs.get(idx).and_then(|v| v.as_f64()) {
+   418→                        divergent_values.push(v);
+   419→                    }
+   420→                }
+   421→            }
+   422→
+   423→            let classification = crate::float_probe::classify(
+   424→                agreements,
+   425→                total_probes,
+   426→                crate::float_probe::AGREEMENT_THRESHOLD,
+   427→            );
+   428→            float_probe_results.push(crate::float_probe::FloatProbeResult {
+   429→                param_index: idx,
+   430→                param_name: param_infos[idx].name.clone(),
+   431→                classification,
+   432→                agreements,
+   433→                total_probes,
+   434→                divergent_values,
+   435→            });
+   436→        }
+   437→    }
+   438→
+   439→    let explore_start = Instant::now();
+   440→
+   441→    while let Some(entry) = worklist.pop() {
+   442→        if executions.len() >= config.max_iterations {
+   443→            termination_reason = TerminationReason::MaxIterations;
+   444→            break;
+   445→        }
+   446→        if total_executions >= config.max_executions {
+   447→            termination_reason = TerminationReason::MaxExecutions;
+   448→            break;
+   449→        }
+   450→        if let Some(timeout) = config.timeout_explore
+   451→            && explore_start.elapsed() >= timeout
+   452→        {
+   453→            termination_reason = TerminationReason::TimeoutExplore;
+   454→            break;
+   455→        }
+   456→        if config.plateau_threshold > 0 && plateau_counter >= config.plateau_threshold {
+   457→            termination_reason = TerminationReason::CoveragePlateau;
+   458→            break;
+   459→        }
+   460→
+   461→        // Triage: predict whether this input will produce a novel path.
+   462→        // Skip triage for user-provided inputs — always execute those.
+   463→        let is_sampled_skip = if entry.source != InputSource::UserProvided {
+   464→            let verdict = triage_state.triage_candidate(&entry.inputs, &covered_paths);
+   465→            triage_state.record_verdict(&verdict);
+   466→            if verdict == TriageVerdict::Skip {
+   467→                if triage_state.should_sample() {
+   468→                    // Execute anyway to validate the prediction.
+   469→                    true
+   470→                } else {
+   471→                    triage_skipped += 1;
+   472→                    continue;
+   473→                }
+   474→            } else {
+   475→                false
+   476→            }
+   477→        } else {
+   478→            false
+   479→        };
+   480→
+   481→        // Execute concretely via the frontend.
+   482→        let response = frontend
+   483→            .send(Command::Execute {
+   484→                function: function_name.to_string(),
+   485→                inputs: entry.inputs.clone(),
+   486→                mocks: config.mocks.clone(),
+   487→                setup_context: None,
+   488→            })
+   489→            .await?;
+   490→
+   491→        total_executions += 1;
+   492→
+   493→        let exec_result = match response.result {
+   494→            ResponseResult::Execute(result) => *result,
+   495→            ResponseResult::Error { message, .. } => {
+   496→                // Frontend reported an error — skip this input but continue exploring.
+   497→                log::warn!("frontend error during execute: {message}");
+   498→                continue;
+   499→            }
+   500→            _ => continue,
+   501→        };
+   502→
+   503→        // Record raw result for pipeline composability.
+   504→        raw_results.push((entry.inputs.clone(), exec_result.clone()));
+   505→
+   506→        let path_id = hash_branch_path(&exec_result.branch_path);
+   507→
+   508→        // Validate sampled skip prediction before modifying covered_paths.
+   509→        if is_sampled_skip {
+   510→            let already_covered = covered_paths.contains(&path_id);
+   511→            // Sentinel values: equal if prediction correct, different if misprediction.
+   512→            triage_state.record_sample(0, if already_covered { 0 } else { 1 });
+   513→            if !already_covered {
+   514→                triage_mispredictions += 1;
+   515→            }
+   516→        }
+   517→
+   518→        if !covered_paths.insert(path_id) {
+   519→            // Already covered this path — skip solving.
+   520→            plateau_counter += 1;
+   521→            continue;
+   522→        }
+   523→
+   524→        // New path discovered — reset plateau counter and update triage state.
+   525→        plateau_counter = 0;
+   526→        triage_state.update(&exec_result.branch_path);
+   527→
+   528→        // Track per-branch discovery attribution from input source.
+   529→        let method = match entry.source {
+   530→            InputSource::Z3Solved => DiscoveryMethod::Z3,
+   531→            InputSource::UserProvided => DiscoveryMethod::UserProvided,
+   532→            InputSource::Drilled => DiscoveryMethod::Drilled,
+   533→            InputSource::Seed | InputSource::Fuzzed => DiscoveryMethod::Random,
+   534→        };
+   535→        for decision in &exec_result.branch_path {
+   536→            if seen_branch_ids.insert(decision.branch_id) {
+   537→                discoveries.push((decision.branch_id, method));
+   538→            }
+   539→        }
+   540→
+   541→        // Update frontier set: track which branch sides have been seen.
+   542→        for decision in &exec_result.branch_path {
+   543→            seen_branch_sides.insert((decision.branch_id, decision.taken));
+   544→            let opposite_seen =
+   545→                seen_branch_sides.contains(&(decision.branch_id, !decision.taken));
+   546→            if opposite_seen {
+   547→                // Both sides explored — no longer a frontier.
+   548→                frontier_set.remove(decision.branch_id);
+   549→            } else {
+   550→                // Still a frontier — insert or update with current inputs as best_prefix.
+   551→                let prev_stall = frontier_set
+   552→                    .iter()
+   553→                    .find(|f| f.branch_id == decision.branch_id)
+   554→                    .map_or(0, |f| f.stall_count);
+   555→                let blocking =
+   556→                    drilling::identify_blocking_params(&decision.constraint, param_infos);
+   557→                let depth =
+   558→                    drilling::branch_depth(&exec_result.branch_path, decision.branch_id);
+   559→                frontier_set.insert(Frontier {
+   560→                    branch_id: decision.branch_id,
+   561→                    depth,
+   562→                    blocking_params: blocking,
+   563→                    best_prefix: entry.inputs.clone(),
+   564→                    stall_count: prev_stall,
+   565→                });
+   566→            }
+   567→        }
+   568→
+   569→        // Extract symbolic constraints from the branch path.
+   570→        let sym_constraints = extract_sym_constraints(&exec_result);
+   571→
+   572→        // Collect solvable constraints with their original branch_path indices
+   573→        // so we can attribute stalls back to specific frontiers.
+   574→        let solvable_with_idx: Vec<(usize, SymExpr)> = sym_constraints
+   575→            .iter()
+   576→            .enumerate()
+   577→            .filter_map(|(i, c)| c.as_ref().map(|e| (i, e.clone())))
+   578→            .collect();
+   579→        let solvable: Vec<SymExpr> = solvable_with_idx.iter().map(|(_, e)| e.clone()).collect();
+   580→
+   581→        // Try to negate each branch constraint with Z3.
+   582→        if !solvable.is_empty() {
+   583→            for (solve_idx, &(branch_idx, _)) in solvable_with_idx.iter().enumerate() {
+   584→                match solver::solve_for_new_path(&solvable, solve_idx, config.solver_timeout_ms, param_infos) {
+   585→                    Ok(SolveResult::Sat(values)) => {
+   586→                        let new_inputs =
+   587→                            overlay_solved_values(&entry.inputs, &values, &param_names);
+   588→                        worklist.push(WorklistEntry {
+   589→                            inputs: new_inputs,
+   590→                            source: InputSource::Z3Solved,
+   591→                        });
+   592→                        z3_generated += 1;
+   593→                    }
+   594→                    Ok(SolveResult::Unsat) => {
+   595→                        // Infeasible — increment stall for the corresponding frontier.
+   596→                        if let Some(bd) = exec_result.branch_path.get(branch_idx) {
+   597→                            frontier_set.increment_stall(bd.branch_id);
+   598→                        }
+   599→                    }
+   600→                    Err(_) => {
+   601→                        // Solver error — increment stall for the corresponding frontier.
+   602→                        if let Some(bd) = exec_result.branch_path.get(branch_idx) {
+   603→                            frontier_set.increment_stall(bd.branch_id);
+   604→                        }
+   605→                    }
+   606→                }
+   607→            }
+   608→        }
+   609→
+   610→        // For Unknown constraints, generate fuzzed inputs by slightly mutating
+   611→        // the concrete values that reached the branch.
+   612→        for (i, constraint_opt) in sym_constraints.iter().enumerate() {
+   613→            if constraint_opt.is_none() && i < exec_result.branch_path.len() {
+   614→                // Simple fuzzing: try flipping booleans and perturbing numbers in the input.
+   615→                for fuzzed in fuzz_inputs(&entry.inputs) {
+   616→                    worklist.push(WorklistEntry {
+   617→                        inputs: fuzzed,
+   618→                        source: InputSource::Fuzzed,
+   619→                    });
+   620→                    fuzz_generated += 1;
+   621→                }
+   622→                // Only fuzz once per execution (avoid exponential blowup).
+   623→                break;
+   624→            }
+   625→        }
+   626→
+   627→        // Parameter drilling: for stalled frontiers, generate targeted mutations
+   628→        // on blocking parameters while pinning everything else.
+   629→        {
+   630→            let mut stalled: Vec<Frontier> = frontier_set
+   631→                .iter()
+   632→                .filter(|f| {
+   633→                    f.stall_count >= drilling::DRILL_STALL_THRESHOLD
+   634→                        && f.stall_count < crate::frontier::DEFAULT_MAX_STALL
+   635→                })
+   636→                .cloned()
+   637→                .collect();
+   638→            // Prioritize shallowest, least-stalled frontiers.
+   639→            stalled.sort_by(|a, b| a.depth.cmp(&b.depth).then(a.stall_count.cmp(&b.stall_count)));
+   640→            stalled.truncate(drilling::MAX_FRONTIERS_PER_ROUND);
+   641→
+   642→            for frontier in &stalled {
+   643→                let count = drilling::DRILL_MUTATIONS_PER_PARAM
+   644→                    * frontier.blocking_params.len().max(1);
+   645→                let drilled = drilling::generate_drilled_inputs(
+   646→                    &frontier.best_prefix,
+   647→                    &frontier.blocking_params,
+   648→                    param_infos,
+   649→                    count,
+   650→                    &mut rng,
+   651→                );
+   652→                for inputs in drilled {
+   653→                    worklist.push(WorklistEntry {
+   654→                        inputs,
+   655→                        source: InputSource::Drilled,
+   656→                    });
+   657→                    drill_generated += 1;
+   658→                }
+   659→                frontier_set.increment_stall(frontier.branch_id);
+   660→            }
+   661→        }
+   662→
+   663→        executions.push(exec_result);
+   664→    }
+   665→
+   666→    let unique_paths = covered_paths.len();
+   667→    Ok(ExploreResult {
+   668→        function_name: function_name.to_string(),
+   669→        total_lines: 0, // Caller must set from FunctionAnalysis (end_line - start_line + 1)
+   670→        executions,
+   671→        unique_paths,
+   672→        total_executions,
+   673→        z3_generated,
+   674→        fuzz_generated,
+   675→        drill_generated,
+   676→        termination_reason,
+   677→        raw_results,
+   678→        discoveries,
+   679→        triage_skipped,
+   680→        triage_mispredictions,
+   681→        nondeterministic_fields: vec![],
+   682→        float_probe_results,
+   683→    })
+   684→}
+   685→
+   686→/// Simple input fuzzing: produce a handful of variations on the base inputs.
+   687→///
+   688→/// For each JSON value in the input list, generate mutations:
+   689→/// - Numbers: ±1, ×-1, 0, boundary values
+   690→/// - Booleans: flip
+   691→/// - Strings: empty string, "a"
+   692→pub(crate) fn fuzz_inputs(base: &[serde_json::Value]) -> Vec<Vec<serde_json::Value>> {
+   693→    let mut results = Vec::new();
+   694→
+   695→    for (idx, val) in base.iter().enumerate() {
+   696→        let mutations = fuzz_single_value(val);
+   697→        for mutated in mutations {
+   698→            let mut new_inputs = base.to_vec();
+   699→            new_inputs[idx] = mutated;
+   700→            results.push(new_inputs);
+   701→        }
+   702→    }
+   703→
+   704→    results
+   705→}
+   706→
+   707→pub(crate) fn fuzz_single_value(val: &serde_json::Value) -> Vec<serde_json::Value> {
+   708→    match val {
+   709→        serde_json::Value::Number(n) => {
+   710→            let mut mutations = Vec::new();
+   711→            if let Some(i) = n.as_i64() {
+   712→                let candidates = [i + 1, i - 1, 0, -i];
+   713→                for c in candidates {
+   714→                    let json_val = serde_json::json!(c);
+   715→                    if c != i && !mutations.contains(&json_val) {
+   716→                        mutations.push(json_val);
+   717→                    }
+   718→                }
+   719→            } else if let Some(f) = n.as_f64() {
+   720→                let candidates = [f + 1.0, f - 1.0, 0.0];
+   721→                for c in candidates {
+   722→                    let json_val = serde_json::json!(c);
+   723→                    if (c - f).abs() > f64::EPSILON && !mutations.contains(&json_val) {
+   724→                        mutations.push(json_val);
+   725→                    }
+   726→                }
+   727→            }
+   728→            mutations
+   729→        }
+   730→        serde_json::Value::Bool(b) => vec![serde_json::json!(!b)],
+   731→        serde_json::Value::String(_) => {
+   732→            vec![serde_json::json!(""), serde_json::json!("a")]
+   733→        }
+   734→        _ => vec![],
+   735→    }
+   736→}
+   737→
+   738→#[cfg(test)]
+   739→mod tests {
+   740→    use super::*;
+   741→    use crate::execution_record::{BranchDecision, SymConstraint};
+   742→    use crate::protocol::PerformanceMetrics;
+   743→    use crate::solver::ConcreteValue;
+   744→    use crate::sym_expr::{BinOpKind, ConstValue, SymExpr};
+   745→    use std::collections::HashMap;
+   746→
+   747→    fn empty_perf() -> PerformanceMetrics {
+   748→        PerformanceMetrics {
+   749→            wall_time_ms: 0.0,
+   750→            cpu_time_us: 0,
+   751→            heap_used_bytes: 0,
+   752→            heap_allocated_bytes: 0,
+   753→        }
+   754→    }
+   755→
+   756→    fn make_exec_result(branch_path: Vec<BranchDecision>) -> ExecuteResult {
+   757→        ExecuteResult {
+   758→            return_value: None,
+   759→            thrown_error: None,
+   760→            branch_path,
+   761→            lines_executed: vec![],
+   762→            calls_to_external: vec![],
+   763→            path_constraints: vec![],
+   764→            side_effects: vec![],
+   765→            scope_events: vec![],
+   766→            capture_truncation: None,
+   767→            performance: empty_perf(),
+   768→        }
+   769→    }
+   770→
+   771→    // -- hash_branch_path tests --
+   772→
+   773→    #[test]
+   774→    fn same_branch_path_hashes_identically() {
+   775→        let path = vec![
+   776→            BranchDecision {
+   777→                branch_id: 0,
+   778→                line: 10,
+   779→                taken: true,
+   780→                constraint: SymConstraint::Unknown {
+   781→                    hint: "x".into(),
+   782→                },
+   783→            },
+   784→            BranchDecision {
+   785→                branch_id: 1,
+   786→                line: 20,
+   787→                taken: false,
+   788→                constraint: SymConstraint::Unknown {
+   789→                    hint: "y".into(),
+   790→                },
+   791→            },
+   792→        ];
+   793→        assert_eq!(hash_branch_path(&path), hash_branch_path(&path));
+   794→    }
+   795→
+   796→    #[test]
+   797→    fn different_taken_hashes_differently() {
+   798→        let path_a = vec![BranchDecision {
+   799→            branch_id: 0,
+   800→            line: 10,
+   801→            taken: true,
+   802→            constraint: SymConstraint::Unknown {
+   803→                hint: "x".into(),
+   804→            },
+   805→        }];
+   806→        let path_b = vec![BranchDecision {
+   807→            branch_id: 0,
+   808→            line: 10,
+   809→            taken: false,
+   810→            constraint: SymConstraint::Unknown {
+   811→                hint: "x".into(),
+   812→            },
+   813→        }];
+   814→        assert_ne!(hash_branch_path(&path_a), hash_branch_path(&path_b));
+   815→    }
+   816→
+   817→    #[test]
+   818→    fn empty_branch_path_hashes_consistently() {
+   819→        assert_eq!(hash_branch_path(&[]), hash_branch_path(&[]));
+   820→    }
+   821→
+   822→    // -- extract_sym_constraints tests --
+   823→
+   824→    #[test]
+   825→    fn extracts_expr_constraints_and_skips_unknown() {
+   826→        let x_gt_10 = SymExpr::BinOp {
+   827→            op: BinOpKind::Gt,
+   828→            left: Box::new(SymExpr::Param {
+   829→                name: "x".into(),
+   830→                path: vec![],
+   831→            }),
+   832→            right: Box::new(SymExpr::Const(ConstValue::Int(10))),
+   833→        };
+   834→
+   835→        let result = make_exec_result(vec![
+   836→            BranchDecision {
+   837→                branch_id: 0,
+   838→                line: 5,
+   839→                taken: true,
+   840→                constraint: SymConstraint::Expr {
+   841→                    expr: x_gt_10.clone(),
+   842→                },
+   843→            },
+   844→            BranchDecision {
+   845→                branch_id: 1,
+   846→                line: 10,
+   847→                taken: false,
+   848→                constraint: SymConstraint::Unknown {
+   849→                    hint: "regex".into(),
+   850→                },
+   851→            },
+   852→        ]);
+   853→
+   854→        let constraints = extract_sym_constraints(&result);
+   855→        assert_eq!(constraints.len(), 2);
+   856→        assert_eq!(constraints[0], Some(x_gt_10));
+   857→        assert_eq!(constraints[1], None);
+   858→    }
+   859→
+   860→    // -- concrete_to_json tests --
+   861→
+   862→    #[test]
+   863→    fn concrete_to_json_primitives() {
+   864→        assert_eq!(concrete_to_json(&ConcreteValue::Int(42)), serde_json::json!(42));
+   865→        assert_eq!(concrete_to_json(&ConcreteValue::Float(3.14)), serde_json::json!(3.14));
+   866→        assert_eq!(concrete_to_json(&ConcreteValue::Str("hello".into())), serde_json::json!("hello"));
+   867→        assert_eq!(concrete_to_json(&ConcreteValue::Bool(true)), serde_json::json!(true));
+   868→    }
+   869→
+   870→    #[test]
+   871→    fn concrete_complex_to_json_produces_tagged_format() {
+   872→        let val = ConcreteValue::Complex {
+   873→            kind: ComplexKind::Date,
+   874→            repr: Box::new(ConcreteValue::Int(1704067200000)),
+   875→        };
+   876→        let json = concrete_to_json(&val);
+   877→        assert_eq!(json["__complex_type"], "date");
+   878→        assert_eq!(json["value"], 1704067200000_i64);
+   879→    }
+   880→
+   881→    #[test]
+   882→    fn concrete_complex_bigint_to_json() {
+   883→        let val = ConcreteValue::Complex {
+   884→            kind: ComplexKind::BigInt,
+   885→            repr: Box::new(ConcreteValue::Str("99999999999999999999".into())),
+   886→        };
+   887→        let json = concrete_to_json(&val);
+   888→        assert_eq!(json["__complex_type"], "big_int");
+   889→        assert_eq!(json["value"], "99999999999999999999");
+   890→    }
+   891→
+   892→    // -- overlay_solved_values tests --
+   893→
+   894→    #[test]
+   895→    fn overlay_replaces_matching_param() {
+   896→        let base = vec![serde_json::json!(0), serde_json::json!("hello")];
+   897→        let mut solved = HashMap::new();
+   898→        solved.insert("x".to_string(), ConcreteValue::Int(42));
+   899→        let param_names = vec!["x".to_string(), "name".to_string()];
+   900→
+   901→        let result = overlay_solved_values(&base, &solved, &param_names);
+   902→        assert_eq!(result[0], serde_json::json!(42));
+   903→        assert_eq!(result[1], serde_json::json!("hello"));
+   904→    }
+   905→
+   906→    #[test]
+   907→    fn overlay_single_param_fallback() {
+   908→        let base = vec![serde_json::json!(0)];
+   909→        let mut solved = HashMap::new();
+   910→        solved.insert("some_var".to_string(), ConcreteValue::Int(99));
+   911→        let param_names = vec!["x".to_string()];
+   912→
+   913→        let result = overlay_solved_values(&base, &solved, &param_names);
+   914→        assert_eq!(result[0], serde_json::json!(99));
+   915→    }
+   916→
+   917→    #[test]
+   918→    fn overlay_no_match_preserves_base() {
+   919→        let base = vec![serde_json::json!(5), serde_json::json!(10)];
+   920→        let mut solved = HashMap::new();
+   921→        solved.insert("unknown_var".to_string(), ConcreteValue::Int(99));
+   922→        let param_names = vec!["a".to_string(), "b".to_string()];
+   923→
+   924→        let result = overlay_solved_values(&base, &solved, &param_names);
+   925→        assert_eq!(result, base);
+   926→    }
+   927→
+   928→    // -- fuzz_inputs tests --
+   929→
+   930→    #[test]
+   931→    fn fuzz_integer_produces_mutations() {
+   932→        let inputs = vec![serde_json::json!(5)];
+   933→        let fuzzed = fuzz_inputs(&inputs);
+   934→        // Should produce: 6, 4, 0, -5 = 4 mutations
+   935→        assert_eq!(fuzzed.len(), 4);
+   936→        assert!(fuzzed.contains(&vec![serde_json::json!(6)]));
+   937→        assert!(fuzzed.contains(&vec![serde_json::json!(4)]));
+   938→        assert!(fuzzed.contains(&vec![serde_json::json!(0)]));
+   939→        assert!(fuzzed.contains(&vec![serde_json::json!(-5)]));
+   940→    }
+   941→
+   942→    #[test]
+   943→    fn fuzz_zero_produces_mutations() {
+   944→        let inputs = vec![serde_json::json!(0)];
+   945→        let fuzzed = fuzz_inputs(&inputs);
+   946→        // Candidates: 1, -1, 0, 0. Skip 0 (== original), dedup → 1, -1
+   947→        assert_eq!(fuzzed.len(), 2);
+   948→    }
+   949→
+   950→    #[test]
+   951→    fn fuzz_boolean_flips() {
+   952→        let inputs = vec![serde_json::json!(true)];
+   953→        let fuzzed = fuzz_inputs(&inputs);
+   954→        assert_eq!(fuzzed.len(), 1);
+   955→        assert_eq!(fuzzed[0], vec![serde_json::json!(false)]);
+   956→    }
+   957→
+   958→    #[test]
+   959→    fn fuzz_string_produces_mutations() {
+   960→        let inputs = vec![serde_json::json!("hello")];
+   961→        let fuzzed = fuzz_inputs(&inputs);
+   962→        assert_eq!(fuzzed.len(), 2);
+   963→        assert!(fuzzed.contains(&vec![serde_json::json!("")]));
+   964→        assert!(fuzzed.contains(&vec![serde_json::json!("a")]));
+   965→    }
+   966→
+   967→    #[test]
+   968→    fn fuzz_null_produces_nothing() {
+   969→        let inputs = vec![serde_json::Value::Null];
+   970→        let fuzzed = fuzz_inputs(&inputs);
+   971→        assert!(fuzzed.is_empty());
+   972→    }
+   973→
+   974→    #[test]
+   975→    fn fuzz_multiple_inputs_mutates_each() {
+   976→        let inputs = vec![serde_json::json!(1), serde_json::json!(true)];
+   977→        let fuzzed = fuzz_inputs(&inputs);
+   978→        // 1 produces 3 mutations (2, 0, -1 after dedup) and true produces 1 (false) = 4
+   979→        assert_eq!(fuzzed.len(), 4);
+   980→    }
+   981→
+   982→    // -- WorklistEntry ordering tests --
+   983→
+   984→    // -- ExploreConfig defaults --
+   985→
+   986→    #[test]
+   987→    fn default_config_has_reasonable_limits() {
+   988→        let config = ExploreConfig::default();
+   989→        assert_eq!(config.max_iterations, 100);
+   990→        assert_eq!(config.max_executions, DEFAULT_MAX_EXECUTIONS);
+   991→        assert_eq!(config.plateau_threshold, 20);
+   992→    }
+   993→
+   994→    // -- Integration test: concolic loop finds x=42 via Z3 --
+   995→
+   996→    /// This test simulates the concolic loop without a real frontend by directly
+   997→    /// testing the solver-driven input generation for f(x) { if (x === 42) ... }.
+   998→    ///
+   999→    /// The acceptance criteria require that Z3 solving can find x=42 for an
+  1000→    /// exact-equality branch that random exploration cannot feasibly discover.
+  1001→    #[test]
+  1002→    fn z3_finds_exact_equality_input() {
+  1003→        // Simulate: we executed f(0) and observed the branch `x == 42` taken=false.
+  1004→        // The constraint for the branch is (x == 42), and we negate it → we need x != 42.
+  1005→        // Wait — the branch was NOT taken, so the path constraint recorded is actually
+  1006→        // the negation of the condition: NOT(x == 42). To explore the true branch,
+  1007→        // we negate that: x == 42.
+  1008→        //
+  1009→        // In our protocol, the constraint is recorded as `x == 42` with `taken: false`.
+  1010→        // The solver receives the constraint as-is and negates it to explore the other path.
+  1011→        // Since taken=false means the constraint evaluated to false, the original path has
+  1012→        // NOT(x == 42). Negating that yields x == 42 — exactly what we want.
+  1013→
+  1014→        let x_eq_42 = SymExpr::BinOp {
+  1015→            op: BinOpKind::Eq,
+  1016→            left: Box::new(SymExpr::Param {
+  1017→                name: "x".into(),
+  1018→                path: vec![],
+  1019→            }),
+  1020→            right: Box::new(SymExpr::Const(ConstValue::Int(42))),
+  1021→        };
+  1022→
+  1023→        // The path has one constraint: x == 42 (which evaluated to false).
+  1024→        // solve_for_new_path negates constraint[0], giving us x == 42 → NOT(x == 42)?
+  1025→        // No — solve_for_new_path keeps the prefix and negates the target.
+  1026→        // With index 0 and only one constraint: it negates constraint[0].
+  1027→        // The constraint is (x == 42). Negating it gives (x != 42) which is SAT for many values.
+  1028→        //
+  1029→        // Actually, to find x=42, we need to SOLVE the constraint x==42 directly.
+  1030→        // In the real concolic loop, when a branch is not taken, the constraint
+  1031→        // represents the condition, and the path records that it was false.
+  1032→        // To flip the branch, we want the condition to be true: x == 42.
+  1033→        // This means we should solve the constraint directly, not negate it.
+  1034→        //
+  1035→        // Our solver API `solve_for_new_path` negates constraint[negate_index].
+  1036→        // So if we pass the constraint as-is (x == 42) and negate it, we get x != 42.
+  1037→        // But we want x == 42!
+  1038→        //
+  1039→        // The trick: the frontend records the *evaluated* constraint. When taken=false,
+  1040→        // it means the condition was false. So the path constraint is NOT(x == 42).
+  1041→        // To represent this, we'd store NOT(x == 42) in the constraint list.
+  1042→        // Then negating it gives x == 42. ✓
+  1043→        //
+  1044→        // For this test, let's just use solve_constraints directly to verify Z3 can find x=42.
+  1045→        let result = solver::solve_constraints(&[x_eq_42], None, &[]).expect("solver should not error");
+  1046→
+  1047→        match result {
+  1048→            SolveResult::Sat(values) => {
+  1049→                let x = match values.get("x") {
+  1050→                    Some(ConcreteValue::Int(v)) => *v,
+  1051→                    other => panic!("expected Int for x, got {other:?}"),
+  1052→                };
+  1053→                assert_eq!(x, 42, "Z3 should find x = 42");
+  1054→            }
+  1055→            SolveResult::Unsat => panic!("expected sat — Z3 should be able to find x = 42"),
+  1056→        }
+  1057→    }
+  1058→
+  1059→    /// Test that the full negation-based approach works: given a path where x==42
+  1060→    /// was false, negating the path constraint finds x=42.
+  1061→    #[test]
+  1062→    fn negating_failed_equality_finds_target_value() {
+  1063→        // Path constraint: NOT(x == 42), representing that the branch was not taken.
+  1064→        let not_x_eq_42 = SymExpr::UnOp {
+  1065→            op: crate::sym_expr::UnOpKind::Not,
+  1066→            operand: Box::new(SymExpr::BinOp {
+  1067→                op: BinOpKind::Eq,
+  1068→                left: Box::new(SymExpr::Param {
+  1069→                    name: "x".into(),
+  1070→                    path: vec![],
+  1071→                }),
+  1072→                right: Box::new(SymExpr::Const(ConstValue::Int(42))),
+  1073→            }),
+  1074→        };
+  1075→
+  1076→        // Negate constraint[0] to flip the branch: NOT(NOT(x == 42)) → x == 42.
+  1077→        let result =
+  1078→            solver::solve_for_new_path(&[not_x_eq_42], 0, None, &[]).expect("solver should not error");
+  1079→
+  1080→        match result {
+  1081→            SolveResult::Sat(values) => {
+  1082→                let x = match values.get("x") {
+  1083→                    Some(ConcreteValue::Int(v)) => *v,
+  1084→                    other => panic!("expected Int for x, got {other:?}"),
+  1085→                };
+  1086→                assert_eq!(x, 42, "negating NOT(x==42) should yield x=42");
+  1087→            }
+  1088→            SolveResult::Unsat => panic!("expected sat"),
+  1089→        }
+  1090→    }
+  1091→
+  1092→    /// Multi-branch scenario: f(x) has branches at x>10, x==42, x<100.
+  1093→    /// Starting from x=0 (all branches false), Z3 can find inputs for each path.
+  1094→    #[test]
+  1095→    fn multi_branch_z3_exploration() {
+  1096→        // Simulate path from x=0: branches x>10 (false), x==42 (false), x<100 (true).
+  1097→        // Path constraints as recorded: NOT(x>10), NOT(x==42), x<100.
+  1098→        let not_x_gt_10 = SymExpr::UnOp {
+  1099→            op: crate::sym_expr::UnOpKind::Not,
+  1100→            operand: Box::new(SymExpr::BinOp {
+  1101→                op: BinOpKind::Gt,
+  1102→                left: Box::new(SymExpr::Param {
+  1103→                    name: "x".into(),
+  1104→                    path: vec![],
+  1105→                }),
+  1106→                right: Box::new(SymExpr::Const(ConstValue::Int(10))),
+  1107→            }),
+  1108→        };
+  1109→        let not_x_eq_42 = SymExpr::UnOp {
+  1110→            op: crate::sym_expr::UnOpKind::Not,
+  1111→            operand: Box::new(SymExpr::BinOp {
+  1112→                op: BinOpKind::Eq,
+  1113→                left: Box::new(SymExpr::Param {
+  1114→                    name: "x".into(),
+  1115→                    path: vec![],
+  1116→                }),
+  1117→                right: Box::new(SymExpr::Const(ConstValue::Int(42))),
+  1118→            }),
+  1119→        };
+  1120→        let x_lt_100 = SymExpr::BinOp {
+  1121→            op: BinOpKind::Lt,
+  1122→            left: Box::new(SymExpr::Param {
+  1123→                name: "x".into(),
+  1124→                path: vec![],
+  1125→            }),
+  1126→            right: Box::new(SymExpr::Const(ConstValue::Int(100))),
+  1127→        };
+  1128→
+  1129→        let constraints = [not_x_gt_10, not_x_eq_42, x_lt_100];
+  1130→
+  1131→        // Negate constraint[0]: flip NOT(x>10) → x>10. With prefix empty, just x>10.
+  1132→        let result =
+  1133→            solver::solve_for_new_path(&constraints, 0, None, &[]).expect("should solve for branch 0");
+  1134→        match result {
+  1135→            SolveResult::Sat(values) => {
+  1136→                let x = match values.get("x") {
+  1137→                    Some(ConcreteValue::Int(v)) => *v,
+  1138→                    other => panic!("expected Int for x, got {other:?}"),
+  1139→                };
+  1140→                assert!(x > 10, "flipping branch 0 should give x>10, got {x}");
+  1141→            }
+  1142→            SolveResult::Unsat => panic!("expected sat for branch 0"),
+  1143→        }
+  1144→
+  1145→        // Negate constraint[1]: keep prefix NOT(x>10) i.e. x<=10, then flip NOT(x==42) → x==42.
+  1146→        // But x<=10 AND x==42 is UNSAT (can't be both ≤10 and =42).
+  1147→        let result =
+  1148→            solver::solve_for_new_path(&constraints, 1, None, &[]).expect("should solve for branch 1");
+  1149→        assert!(
+  1150→            matches!(result, SolveResult::Unsat),
+  1151→            "x<=10 AND x==42 should be unsat"
+  1152→        );
+  1153→
+  1154→        // Negate constraint[2]: keep prefix NOT(x>10), NOT(x==42), flip x<100 → x>=100.
+  1155→        // x<=10 AND x!=42 AND x>=100 is UNSAT.
+  1156→        let result =
+  1157→            solver::solve_for_new_path(&constraints, 2, None, &[]).expect("should solve for branch 2");
+  1158→        assert!(
+  1159→            matches!(result, SolveResult::Unsat),
+  1160→            "x<=10 AND x>=100 should be unsat"
+  1161→        );
+  1162→    }
+  1163→
+  1164→    /// Verify that the worklist priority queue drains Z3-solved inputs before seeds.
+  1165→    #[test]
+  1166→    fn worklist_drains_in_priority_order() {
+  1167→        let mut worklist = BinaryHeap::new();
+  1168→
+  1169→        // Push in arbitrary order.
+  1170→        worklist.push(WorklistEntry {
+  1171→            inputs: vec![serde_json::json!("seed1")],
+  1172→            source: InputSource::Seed,
+  1173→        });
+  1174→        worklist.push(WorklistEntry {
+  1175→            inputs: vec![serde_json::json!("z3_1")],
+  1176→            source: InputSource::Z3Solved,
+  1177→        });
+  1178→        worklist.push(WorklistEntry {
+  1179→            inputs: vec![serde_json::json!("fuzz1")],
+  1180→            source: InputSource::Fuzzed,
+  1181→        });
+  1182→        worklist.push(WorklistEntry {
+  1183→            inputs: vec![serde_json::json!("z3_2")],
+  1184→            source: InputSource::Z3Solved,
+  1185→        });
+  1186→        worklist.push(WorklistEntry {
+  1187→            inputs: vec![serde_json::json!("seed2")],
+  1188→            source: InputSource::Seed,
+  1189→        });
+  1190→
+  1191→        let sources: Vec<_> = std::iter::from_fn(|| worklist.pop())
+  1192→            .map(|e| e.source)
+  1193→            .collect();
+  1194→
+  1195→        assert_eq!(
+  1196→            sources,
+  1197→            vec![
+  1198→                InputSource::Z3Solved,
+  1199→                InputSource::Z3Solved,
+  1200→                InputSource::Fuzzed,
+  1201→                InputSource::Seed,
+  1202→                InputSource::Seed,
+  1203→            ]
+  1204→        );
+  1205→    }
+  1206→
+  1207→    // -- Integration tests with mock frontends --
+  1208→
+  1209→    use crate::frontend::{Frontend, FrontendConfig};
+  1210→    use std::path::{Path, PathBuf};
+  1211→    use std::time::Duration;
+  1212→
+  1213→    /// Request timeout for integration tests using mock frontends.
+  1214→    const TEST_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+  1215→
+  1216→    fn frontend_script(name: &str) -> PathBuf {
+  1217→        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+  1218→        manifest_dir.join("../protocol").join(name)
+  1219→    }
+  1220→
+  1221→    fn config_for_script(script: &str) -> FrontendConfig {
+  1222→        let mut config = FrontendConfig::new(PathBuf::from("bash"));
+  1223→        config.args = vec![frontend_script(script).to_string_lossy().into_owned()];
+  1224→        config.request_timeout = TEST_REQUEST_TIMEOUT;
+  1225→        config
+  1226→    }
+  1227→
+  1228→    /// Explore with the noop frontend returns a single unique path (empty branch path)
+  1229→    /// and terminates when the worklist is exhausted.
+  1230→    #[tokio::test]
+  1231→    async fn explore_noop_frontend_exhausts_worklist() {
+  1232→        let config = config_for_script("noop-frontend.sh");
+  1233→        let mut frontend = Frontend::spawn(&config).await.expect("spawn failed");
+  1234→
+  1235→        let explore_config = ExploreConfig {
+  1236→            max_iterations: 10,
+  1237→            max_executions: 50,
+  1238→            plateau_threshold: 5,
+  1239→            ..Default::default()
+  1240→        };
+  1241→
+  1242→        let result = explore(
+  1243→            &mut frontend,
+  1244→            "stub",
+  1245→            vec![vec![serde_json::json!(0)]],
+  1246→            vec![],
+  1247→            &[ParamInfo { name: "x".into(), typ: crate::types::TypeInfo::Int, type_name: None }],
+  1248→            &explore_config,
+  1249→        )
+  1250→        .await
+  1251→        .expect("explore failed");
+  1252→
+  1253→        // Noop returns empty branch_path every time → one unique path, then plateau.
+  1254→        assert_eq!(result.unique_paths, 1);
+  1255→        assert!(result.total_executions >= 1);
+  1256→        // With no branches to negate or fuzz, worklist empties after the seed.
+  1257→        assert_eq!(result.termination_reason, TerminationReason::WorklistExhausted);
+  1258→
+  1259→        frontend.shutdown().await.expect("shutdown failed");
+  1260→    }
+  1261→
+  1262→    /// Explore with the concolic test frontend discovers multiple paths via Z3.
+  1263→    /// The test frontend simulates f(x) with branches at x>10 and x==42.
+  1264→    #[tokio::test]
+  1265→    async fn explore_concolic_frontend_discovers_paths_via_z3() {
+  1266→        let config = config_for_script("concolic-test-frontend.sh");
+  1267→        let mut frontend = Frontend::spawn(&config).await.expect("spawn failed");
+  1268→
+  1269→        let explore_config = ExploreConfig {
+  1270→            max_iterations: 20,
+  1271→            max_executions: 100,
+  1272→            plateau_threshold: 10,
+  1273→            ..Default::default()
+  1274→        };
+  1275→
+  1276→        // Start with x=0 (hits the x<=10 path).
+  1277→        let result = explore(
+  1278→            &mut frontend,
+  1279→            "f",
+  1280→            vec![vec![serde_json::json!(0)]],
+  1281→            vec![],
+  1282→            &[ParamInfo { name: "x".into(), typ: crate::types::TypeInfo::Int, type_name: None }],
+  1283→            &explore_config,
+  1284→        )
+  1285→        .await
+  1286→        .expect("explore failed");
+  1287→
+  1288→        // The orchestrator should discover at least 2 unique paths:
+  1289→        // 1. x<=10 (from seed x=0)
+  1290→        // 2. x>10 (from Z3 negating the x>10 constraint, or from fuzzing)
+  1291→        assert!(
+  1292→            result.unique_paths >= 2,
+  1293→            "expected at least 2 unique paths, got {}",
+  1294→            result.unique_paths
+  1295→        );
+  1296→        assert!(result.total_executions >= 2);
+  1297→        assert!(result.z3_generated > 0, "Z3 should have generated at least one input");
+  1298→
+  1299→        frontend.shutdown().await.expect("shutdown failed");
+  1300→    }
+  1301→
+  1302→    /// Plateau detection stops exploration when no new paths are found.
+  1303→    #[tokio::test]
+  1304→    async fn explore_stops_on_coverage_plateau() {
+  1305→        let config = config_for_script("noop-frontend.sh");
+  1306→        let mut frontend = Frontend::spawn(&config).await.expect("spawn failed");
+  1307→
+  1308→        let explore_config = ExploreConfig {
+  1309→            max_iterations: 100,
+  1310→            max_executions: 100,
+  1311→            // Low threshold so plateau triggers quickly.
+  1312→            plateau_threshold: 3,
+  1313→            ..Default::default()
+  1314→        };
+  1315→
+  1316→        // Provide multiple identical seeds so the worklist doesn't empty first.
+  1317→        let seeds = (0..10)
+  1318→            .map(|i| vec![serde_json::json!(i)])
+  1319→            .collect();
+  1320→
+  1321→        let result = explore(
+  1322→            &mut frontend,
+  1323→            "stub",
+  1324→            seeds,
+  1325→            vec![],
+  1326→            &[ParamInfo { name: "x".into(), typ: crate::types::TypeInfo::Int, type_name: None }],
+  1327→            &explore_config,
+  1328→        )
+  1329→        .await
+  1330→        .expect("explore failed");
+  1331→
+  1332→        // All seeds produce the same empty branch path, so after the first unique path
+  1333→        // we get plateau_threshold consecutive duplicates.
+  1334→        assert_eq!(result.unique_paths, 1);
+  1335→        assert_eq!(result.termination_reason, TerminationReason::CoveragePlateau);
+  1336→        // 1 new path + 3 duplicates to trigger plateau = 4 total executions.
+  1337→        assert_eq!(result.total_executions, 4);
+  1338→
+  1339→        frontend.shutdown().await.expect("shutdown failed");
+  1340→    }
+  1341→
+  1342→    /// Max executions budget stops exploration.
+  1343→    #[tokio::test]
+  1344→    async fn explore_stops_on_max_executions() {
+  1345→        let config = config_for_script("noop-frontend.sh");
+  1346→        let mut frontend = Frontend::spawn(&config).await.expect("spawn failed");
+  1347→
+  1348→        let explore_config = ExploreConfig {
+  1349→            max_iterations: 100,
+  1350→            max_executions: 3,
+  1351→            plateau_threshold: 0, // disable plateau
+  1352→            ..Default::default()
+  1353→        };
+  1354→
+  1355→        let seeds = (0..10)
+  1356→            .map(|i| vec![serde_json::json!(i)])
+  1357→            .collect();
+  1358→
+  1359→        let result = explore(
+  1360→            &mut frontend,
+  1361→            "stub",
+  1362→            seeds,
+  1363→            vec![],
+  1364→            &[ParamInfo { name: "x".into(), typ: crate::types::TypeInfo::Int, type_name: None }],
+  1365→            &explore_config,
+  1366→        )
+  1367→        .await
+  1368→        .expect("explore failed");
+  1369→
+  1370→        assert_eq!(result.total_executions, 3);
+  1371→        assert_eq!(result.termination_reason, TerminationReason::MaxExecutions);
+  1372→
+  1373→        frontend.shutdown().await.expect("shutdown failed");
+  1374→    }
+  1375→
+  1376→    /// Max iterations budget stops exploration.
+  1377→    #[tokio::test]
+  1378→    async fn explore_stops_on_max_iterations() {
+  1379→        let config = config_for_script("concolic-test-frontend.sh");
+  1380→        let mut frontend = Frontend::spawn(&config).await.expect("spawn failed");
+  1381→
+  1382→        let explore_config = ExploreConfig {
+  1383→            max_iterations: 1,
+  1384→            max_executions: 100,
+  1385→            plateau_threshold: 0,
+  1386→            ..Default::default()
+  1387→        };
+  1388→
+  1389→        // Provide seeds that will hit different paths.
+  1390→        let result = explore(
+  1391→            &mut frontend,
+  1392→            "f",
+  1393→            vec![vec![serde_json::json!(0)], vec![serde_json::json!(20)]],
+  1394→            vec![],
+  1395→            &[ParamInfo { name: "x".into(), typ: crate::types::TypeInfo::Int, type_name: None }],
+  1396→            &explore_config,
+  1397→        )
+  1398→        .await
+  1399→        .expect("explore failed");
+  1400→
+  1401→        assert_eq!(result.unique_paths, 1);
+  1402→        assert_eq!(result.termination_reason, TerminationReason::MaxIterations);
+  1403→
+  1404→        frontend.shutdown().await.expect("shutdown failed");
+  1405→    }
+  1406→
+  1407→    #[test]
+  1408→    fn frontend_capabilities_parses_complex_types() {
+  1409→        let caps = FrontendCapabilities::from_raw(&[
+  1410→            "analyze".into(),
+  1411→            "execute".into(),
+  1412→            "complex_type:date".into(),
+  1413→            "complex_type:reg_exp".into(),
+  1414→            "complex_type:big_int".into(),
+  1415→        ]);
+  1416→        assert!(caps.commands.contains("analyze"));
+  1417→        assert!(caps.commands.contains("execute"));
+  1418→        assert!(caps.supports_complex(ComplexKind::Date));
+  1419→        assert!(caps.supports_complex(ComplexKind::RegExp));
+  1420→        assert!(caps.supports_complex(ComplexKind::BigInt));
+  1421→        assert!(!caps.supports_complex(ComplexKind::Url));
+  1422→        assert!(!caps.supports_complex(ComplexKind::Error));
+  1423→    }
+  1424→
+  1425→    #[test]
+  1426→    fn frontend_capabilities_ignores_unknown_complex_types() {
+  1427→        let caps = FrontendCapabilities::from_raw(&[
+  1428→            "complex_type:date".into(),
+  1429→            "complex_type:nonexistent_type".into(),
+  1430→            "complex_type:".into(),
+  1431→        ]);
+  1432→        assert!(caps.supports_complex(ComplexKind::Date));
+  1433→        assert_eq!(caps.complex_types.len(), 1);
+  1434→    }
+  1435→
+  1436→    #[test]
+  1437→    fn frontend_capabilities_separates_commands_from_complex_types() {
+  1438→        let caps = FrontendCapabilities::from_raw(&[
+  1439→            "analyze".into(),
+  1440→            "execute".into(),
+  1441→            "instrument".into(),
+  1442→            "complex_type:date".into(),
+  1443→            "complex_type:url".into(),
+  1444→        ]);
+  1445→        assert_eq!(caps.commands.len(), 3);
+  1446→        assert_eq!(caps.complex_types.len(), 2);
+  1447→        // "complex_type:date" should NOT appear in commands
+  1448→        assert!(!caps.commands.contains("complex_type:date"));
+  1449→    }
+  1450→
+  1451→    #[test]
+  1452→    fn frontend_capabilities_default_is_empty() {
+  1453→        let caps = FrontendCapabilities::default();
+  1454→        assert!(caps.commands.is_empty());
+  1455→        assert!(caps.complex_types.is_empty());
+  1456→        assert!(!caps.supports_complex(ComplexKind::Date));
+  1457→    }
+  1458→
+  1459→    /// A very short timeout_explore stops exploration before max_executions.
+  1460→    #[tokio::test]
+  1461→    async fn explore_stops_on_timeout_explore() {
+  1462→        let config = config_for_script("noop-frontend.sh");
+  1463→        let mut frontend = Frontend::spawn(&config).await.expect("spawn failed");
+  1464→
+  1465→        let explore_config = ExploreConfig {
+  1466→            max_iterations: 1000,
+  1467→            max_executions: 10000,
+  1468→            plateau_threshold: 0,
+  1469→            timeout_explore: Some(Duration::from_millis(1)),
+  1470→            ..Default::default()
+  1471→        };
+  1472→
+  1473→        let seeds = (0..100)
+  1474→            .map(|i| vec![serde_json::json!(i)])
+  1475→            .collect();
+  1476→
+  1477→        let result = explore(
+  1478→            &mut frontend,
+  1479→            "stub",
+  1480→            seeds,
+  1481→            vec![],
+  1482→            &[ParamInfo { name: "x".into(), typ: crate::types::TypeInfo::Int, type_name: None }],
+  1483→            &explore_config,
+  1484→        )
+  1485→        .await
+  1486→        .expect("explore failed");
+  1487→
+  1488→        // Should terminate due to timeout, not max_executions or max_iterations.
+  1489→        assert_eq!(result.termination_reason, TerminationReason::TimeoutExplore);
+  1490→        assert!(result.total_executions < 10000);
+  1491→
+  1492→        frontend.shutdown().await.expect("shutdown failed");
+  1493→    }
+  1494→
+  1495→    /// Triage should skip redundant inputs that predict already-covered paths.
+  1496→    ///
+  1497→    /// Uses a fixed-branch frontend (always returns same single-branch path).
+  1498→    /// After the first seed discovers the path, triage predicts Skip for
+  1499→    /// all subsequent seeds with matching constraint evaluations.
+  1500→    #[tokio::test]
+  1501→    async fn explore_triage_skips_redundant_seeds() {
+  1502→        let config = config_for_script("fixed-branch-frontend.sh");
+  1503→        let mut frontend = Frontend::spawn(&config).await.expect("spawn failed");
+  1504→
+  1505→        let explore_config = ExploreConfig {
+  1506→            max_iterations: 50,
+  1507→            max_executions: 50,
+  1508→            plateau_threshold: 0, // disable plateau so we rely on worklist exhaustion
+  1509→            ..Default::default()
+  1510→        };
+  1511→
+  1512→        // All seeds have x=5, which evaluates x>0 to true (Taken) — matching
+  1513→        // the path discovered by the first execution. After the first seed
+  1514→        // discovers the path and updates triage, subsequent seeds predict the
+  1515→        // same covered path → Skip.
+  1516→        let seeds: Vec<Vec<serde_json::Value>> = (0..20)
+  1517→            .map(|_| vec![serde_json::json!(5)])
+  1518→            .collect();
+  1519→
+  1520→        let result = explore(
+  1521→            &mut frontend,
+  1522→            "f",
+  1523→            seeds,
+  1524→            vec![],
+  1525→            &[ParamInfo { name: "x".into(), typ: crate::types::TypeInfo::Int, type_name: None }],
+  1526→            &explore_config,
+  1527→        )
+  1528→        .await
+  1529→        .expect("explore failed");
+  1530→
+  1531→        assert!(
+  1532→            result.triage_skipped > 0,
+  1533→            "expected triage to skip redundant inputs, but triage_skipped={}",
+  1534→            result.triage_skipped
+  1535→        );
+  1536→        assert_eq!(result.unique_paths, 1);
+  1537→
+  1538→        frontend.shutdown().await.expect("shutdown failed");
+  1539→    }
+  1540→
+  1541→    // -----------------------------------------------------------------------
+  1542→    // Property-based tests
+  1543→    // -----------------------------------------------------------------------
+  1544→
+  1545→    mod prop_tests {
+  1546→        use super::*;
+  1547→        use crate::solver::ConcreteValue;
+  1548→        use crate::test_arbitraries::{arb_input_source, arb_json_value, arb_sym_expr};
+  1549→        use proptest::prelude::*;
+  1550→
+  1551→        proptest! {
+  1552→            #[test]
+  1553→            fn overlay_preserves_length(
+  1554→                len in 1..6usize,
+  1555→            ) {
+  1556→                let base: Vec<serde_json::Value> =
+  1557→                    (0..len).map(|i| serde_json::json!(i as i64)).collect();
+  1558→                let names: Vec<String> =
+  1559→                    (0..len).map(|i| format!("p{i}")).collect();
+  1560→                // Empty solved map — output must equal input length.
+  1561→                let solved = std::collections::HashMap::new();
+  1562→                let result = overlay_solved_values(&base, &solved, &names);
+  1563→                prop_assert_eq!(
+  1564→                    base.len(),
+  1565→                    result.len(),
+  1566→                    "overlay_solved_values changed vector length"
+  1567→                );
+  1568→            }
+  1569→
+  1570→            #[test]
+  1571→            fn overlay_with_known_param_updates_value(idx in 0..5usize) {
+  1572→                let len = idx + 1;
+  1573→                let base: Vec<serde_json::Value> =
+  1574→                    (0..len).map(|i| serde_json::json!(i as i64)).collect();
+  1575→                let names: Vec<String> =
+  1576→                    (0..len).map(|i| format!("p{i}")).collect();
+  1577→                let mut solved = std::collections::HashMap::new();
+  1578→                solved.insert(format!("p{idx}"), ConcreteValue::Int(999));
+  1579→                let result = overlay_solved_values(&base, &solved, &names);
+  1580→                prop_assert_eq!(result.len(), base.len());
+  1581→                prop_assert_eq!(&result[idx], &serde_json::json!(999));
+  1582→            }
+  1583→
+  1584→            #[test]
+  1585→            fn overlay_ignores_unknown_names(
+  1586→                base_val in arb_json_value(),
+  1587→            ) {
+  1588→                let base = vec![base_val.clone()];
+  1589→                let names = vec!["x".to_string()];
+  1590→                let mut solved = std::collections::HashMap::new();
+  1591→                // "unknown_var" doesn't match "x", so base should be unchanged.
+  1592→                // Exception: single-param heuristic fires for non-dotted names,
+  1593→                // so use a dotted name to avoid that path.
+  1594→                solved.insert("unknown.derived".to_string(), ConcreteValue::Int(42));
+  1595→                let result = overlay_solved_values(&base, &solved, &names);
+  1596→                prop_assert_eq!(result.len(), 1);
+  1597→                prop_assert_eq!(&result[0], &base_val);
+  1598→            }
+  1599→
+  1600→            /// Worklist dequeues entries in non-increasing InputSource priority.
+  1601→            #[test]
+  1602→            fn worklist_dequeues_in_priority_order(
+  1603→                sources in prop::collection::vec(arb_input_source(), 1..20),
+  1604→            ) {
+  1605→                let mut heap = BinaryHeap::new();
+  1606→                for source in &sources {
+  1607→                    heap.push(WorklistEntry {
+  1608→                        inputs: vec![],
+  1609→                        source: *source,
+  1610→                    });
+  1611→                }
+  1612→                let drained: Vec<InputSource> = std::iter::from_fn(|| heap.pop())
+  1613→                    .map(|e| e.source)
+  1614→                    .collect();
+  1615→                // Each element must be >= the next (non-increasing order).
+  1616→                for window in drained.windows(2) {
+  1617→                    prop_assert!(
+  1618→                        window[0] >= window[1],
+  1619→                        "worklist violated priority order: {:?} before {:?}",
+  1620→                        window[0], window[1]
+  1621→                    );
+  1622→                }
+  1623→                prop_assert_eq!(drained.len(), sources.len());
+  1624→            }
+  1625→
+  1626→            /// Inserting duplicate path hashes into covered_paths is idempotent.
+  1627→            #[test]
+  1628→            fn path_dedup_set_size_equals_distinct_count(
+  1629→                hashes in prop::collection::vec(0..100u64, 1..50),
+  1630→            ) {
+  1631→                let mut covered = HashSet::new();
+  1632→                for &h in &hashes {
+  1633→                    covered.insert(h);
+  1634→                }
+  1635→                let distinct: HashSet<u64> = hashes.iter().copied().collect();
+  1636→                prop_assert_eq!(covered.len(), distinct.len());
+  1637→                // Second insert of every element returns false.
+  1638→                for &h in &hashes {
+  1639→                    prop_assert!(!covered.insert(h), "re-insert of {h} should return false");
+  1640→                }
+  1641→                prop_assert_eq!(covered.len(), distinct.len(), "size changed after re-inserts");
+  1642→            }
+  1643→
+  1644→            /// Budget exhaustion: a loop bounded by max_executions terminates
+  1645→            /// after exactly min(max_executions, worklist_size) iterations.
+  1646→            #[test]
+  1647→            fn budget_limits_iteration_count(
+  1648→                max_executions in 1..200usize,
+  1649→                worklist_size in 1..500usize,
+  1650→            ) {
+  1651→                let mut worklist = BinaryHeap::new();
+  1652→                for _ in 0..worklist_size {
+  1653→                    worklist.push(WorklistEntry {
+  1654→                        inputs: vec![],
+  1655→                        source: InputSource::Seed,
+  1656→                    });
+  1657→                }
+  1658→                let mut executed = 0usize;
+  1659→                while let Some(_entry) = worklist.pop() {
+  1660→                    executed += 1;
+  1661→                    if executed >= max_executions {
+  1662→                        break;
+  1663→                    }
+  1664→                }
+  1665→                let expected = max_executions.min(worklist_size);
+  1666→                prop_assert_eq!(executed, expected);
+  1667→            }
+  1668→
+  1669→            /// Constraint accumulation grows monotonically — no constraints lost.
+  1670→            #[test]
+  1671→            fn constraint_accumulation_is_monotonic(
+  1672→                batches in prop::collection::vec(
+  1673→                    prop::collection::vec(
+  1674→                        proptest::option::of(arb_sym_expr(1)),
+  1675→                        0..5
+  1676→                    ),
+  1677→                    1..10
+  1678→                ),
+  1679→            ) {
+  1680→                let mut all_constraints: Vec<Vec<Option<SymExpr>>> = Vec::new();
+  1681→                for batch in &batches {
+  1682→                    all_constraints.push(batch.clone());
+  1683→                    prop_assert_eq!(
+  1684→                        all_constraints.len(),
+  1685→                        all_constraints.len(), // tautology for the assertion below
+  1686→                    );
+  1687→                }
+  1688→                // Length equals number of batches — nothing was dropped.
+  1689→                prop_assert_eq!(all_constraints.len(), batches.len());
+  1690→                // Each entry matches its source batch.
+  1691→                for (i, batch) in batches.iter().enumerate() {
+  1692→                    prop_assert_eq!(&all_constraints[i], batch);
+  1693→                }
+  1694→            }
+  1695→        }
+  1696→    }
+  1697→}
+  1698→

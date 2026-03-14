@@ -1,0 +1,10 @@
+{
+  "id": "10",
+  "subject": "kapow-n92.6: Contract traceability checker",
+  "description": "Implement checker that fails when protected source surfaces change without required contract/docs/traceability updates.",
+  "activeForm": "Building contract traceability checker",
+  "owner": "traceability",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

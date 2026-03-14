@@ -1,0 +1,10 @@
+{
+  "id": "2",
+  "subject": "flt-it8.9: Chrome extension",
+  "description": "Manifest V3 Chrome extension for bookmark capture. One-click save, optional text selection, tag input. Authenticates via JWT. Talks to existing API endpoints.",
+  "activeForm": "Building Chrome extension",
+  "owner": "chrome-ext",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

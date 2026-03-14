@@ -1,0 +1,341 @@
+package middleware
+
+import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/ketang/flotsam/api/internal/auth"
+)
+
+// mockValidator implements auth.Validator for testing.
+type mockValidator struct {
+	claims *auth.Claims
+	err    error
+}
+
+func (m *mockValidator) Validate(_ string) (*auth.Claims, error) {
+	return m.claims, m.err
+}
+
+// --- RequestID tests ---
+
+func TestRequestID_GeneratesID(t *testing.T) {
+	handler := RequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := requestIDFromContext(r.Context())
+		if id == "" {
+			t.Error("request ID not in context")
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
+
+	if rr.Header().Get("X-Request-ID") == "" {
+		t.Error("X-Request-ID header not set")
+	}
+}
+
+func TestRequestID_PassesThrough(t *testing.T) {
+	handler := RequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := requestIDFromContext(r.Context())
+		if id != "my-custom-id" {
+			t.Errorf("request ID = %q, want %q", id, "my-custom-id")
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("X-Request-ID", "my-custom-id")
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if got := rr.Header().Get("X-Request-ID"); got != "my-custom-id" {
+		t.Errorf("X-Request-ID = %q, want %q", got, "my-custom-id")
+	}
+}
+
+// --- Logging tests ---
+
+func TestLogging(t *testing.T) {
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = fmt.Fprint(w, "hello")
+	})
+
+	handler := Logging(inner)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, httptest.NewRequest("GET", "/test", nil))
+
+	if rr.Code != http.StatusCreated {
+		t.Errorf("status = %d, want %d", rr.Code, http.StatusCreated)
+	}
+	if rr.Body.String() != "hello" {
+		t.Errorf("body = %q, want %q", rr.Body.String(), "hello")
+	}
+}
+
+// --- Recovery tests ---
+
+func TestRecovery_NoPanic(t *testing.T) {
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := Recovery(inner)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", rr.Code, http.StatusOK)
+	}
+}
+
+func TestRecovery_CatchesPanic(t *testing.T) {
+	inner := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		panic("test panic")
+	})
+
+	handler := Recovery(inner)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", rr.Code, http.StatusInternalServerError)
+	}
+}
+
+// --- Auth tests ---
+
+func TestAuth_ValidToken(t *testing.T) {
+	claims := &auth.Claims{Email: "user@example.com"}
+	v := &mockValidator{claims: claims}
+
+	var gotClaims *auth.Claims
+	inner := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		gotClaims = auth.GetClaims(r.Context())
+	})
+
+	handler := Auth(v)(inner)
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("Authorization", "Bearer valid-token")
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", rr.Code, http.StatusOK)
+	}
+	if gotClaims == nil || gotClaims.Email != "user@example.com" {
+		t.Errorf("claims not set in context")
+	}
+}
+
+func TestAuth_MissingHeader(t *testing.T) {
+	v := &mockValidator{}
+
+	handler := Auth(v)(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Error("handler should not be called")
+	}))
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", rr.Code, http.StatusUnauthorized)
+	}
+	if got := rr.Header().Get("WWW-Authenticate"); got == "" {
+		t.Error("WWW-Authenticate header not set")
+	}
+}
+
+func TestAuth_MalformedHeader(t *testing.T) {
+	v := &mockValidator{}
+
+	tests := []struct {
+		name   string
+		header string
+	}{
+		{"Token prefix", "Token abc"},
+		{"Bearer empty", "Bearer "},
+		{"Bearer only", "Bearer"},
+		{"No space", "Bearertoken"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := Auth(v)(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+				t.Error("handler should not be called")
+			}))
+
+			req := httptest.NewRequest("GET", "/", nil)
+			req.Header.Set("Authorization", tt.header)
+
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusUnauthorized {
+				t.Errorf("status = %d, want %d", rr.Code, http.StatusUnauthorized)
+			}
+		})
+	}
+}
+
+func TestAuth_InvalidToken(t *testing.T) {
+	v := &mockValidator{err: fmt.Errorf("invalid")}
+
+	handler := Auth(v)(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Error("handler should not be called")
+	}))
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("Authorization", "Bearer bad-token")
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", rr.Code, http.StatusUnauthorized)
+	}
+}
+
+// --- OptionalAuth tests ---
+
+func TestOptionalAuth_NoHeader(t *testing.T) {
+	v := &mockValidator{}
+	called := false
+
+	handler := OptionalAuth(v)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		if auth.GetClaims(r.Context()) != nil {
+			t.Error("claims should be nil when no auth header")
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
+
+	if !called {
+		t.Error("handler should have been called")
+	}
+	if rr.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", rr.Code, http.StatusOK)
+	}
+}
+
+func TestOptionalAuth_ValidToken(t *testing.T) {
+	claims := &auth.Claims{Email: "user@example.com"}
+	v := &mockValidator{claims: claims}
+
+	var gotClaims *auth.Claims
+	handler := OptionalAuth(v)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		gotClaims = auth.GetClaims(r.Context())
+	}))
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("Authorization", "Bearer valid-token")
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", rr.Code, http.StatusOK)
+	}
+	if gotClaims == nil || gotClaims.Email != "user@example.com" {
+		t.Error("claims not set in context")
+	}
+}
+
+func TestOptionalAuth_InvalidToken(t *testing.T) {
+	v := &mockValidator{err: fmt.Errorf("invalid")}
+
+	handler := OptionalAuth(v)(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Error("handler should not be called with invalid token")
+	}))
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("Authorization", "Bearer bad-token")
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", rr.Code, http.StatusUnauthorized)
+	}
+}
+
+// --- RateLimit tests ---
+
+func TestRateLimiter_AllowsWithinLimit(t *testing.T) {
+	rl := NewRateLimiter(600) // 10/sec — generous for testing
+
+	handler := rl.Limit(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	for i := range 5 {
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/", nil)
+		req.RemoteAddr = "192.168.1.1:1234"
+		handler.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Errorf("request %d: status = %d, want %d", i, rr.Code, http.StatusOK)
+		}
+	}
+}
+
+func TestRateLimiter_BlocksExceeding(t *testing.T) {
+	rl := NewRateLimiter(1) // 1 per minute, burst=1
+
+	handler := rl.Limit(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// First request should succeed (uses the burst token)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "10.0.0.1:5000"
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("first request: status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	// Second request should be rate limited
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "10.0.0.1:5000"
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusTooManyRequests {
+		t.Errorf("second request: status = %d, want %d", rr.Code, http.StatusTooManyRequests)
+	}
+}
+
+func TestRateLimiter_DifferentIPs(t *testing.T) {
+	rl := NewRateLimiter(1) // 1 per minute, burst=1
+
+	handler := rl.Limit(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// First IP — should succeed
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "10.0.0.1:5000"
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Errorf("IP1: status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	// Second IP — should also succeed (independent limit)
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "10.0.0.2:5000"
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Errorf("IP2: status = %d, want %d", rr.Code, http.StatusOK)
+	}
+}

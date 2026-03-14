@@ -1,0 +1,1156 @@
+11-use shatter_core::behavior::BehaviorMap;
+12-use shatter_core::cache::BehaviorMapCache;
+13-use shatter_core::call_graph::CallGraph;
+14-use shatter_core::config::{self as shatter_config, ShatterConfig};
+15-use shatter_core::discovery::{self, DiscoveryOptions, Language as DiscoveryLanguage};
+16:use shatter_core::explorer::{self, ExploreConfig, ReportOptions};
+17-use shatter_core::executability;
+18-use shatter_core::export;
+19-use shatter_core::frontend::{Frontend, FrontendConfig};
+20-use shatter_core::log_level::LogLevel;
+21-use shatter_core::protocol::{Command as ProtoCommand, ResponseResult};
+--
+151-#[derive(Subcommand, Debug)]
+152-#[allow(clippy::large_enum_variant)] // CLI command enums are parsed once, size is not a concern
+153-enum CliCommand {
+154-    /// Explore functions by analyzing their branches and generating test inputs.
+155-    Explore {
+156:        /// Targets to explore: <file>:<function> for a single function, or just
+157:        /// <file> to explore all exported functions.
+158-        /// The file extension determines the language frontend (.ts = TypeScript, .go = Go).
+159-        #[arg(required = true)]
+160-        targets: Vec<String>,
+161-
+162-        /// Maximum number of iterations for the concolic loop.
+--
+166-        /// Timeout in seconds for the entire exploration.
+167-        #[arg(long, default_value_t = 60)]
+168-        timeout: u64,
+169-
+170-        /// Per-function exploration wall-clock timeout in seconds. If both
+171:        /// --max-iterations and --timeout-explore are set, whichever triggers
+172-        /// first stops exploration for that function.
+173-        #[arg(long)]
+174:        timeout_explore: Option<f64>,
+175-
+176-        /// Path to a scope configuration YAML file (shatter.scope.yaml).
+177-        #[arg(long)]
+178-        scope: Option<PathBuf>,
+179-
+--
+234-
+235-        /// Disable built-in boundary values as seed inputs.
+236-        #[arg(long)]
+237-        no_boundary_values: bool,
+238-
+239:        /// Enable Daikon-style invariant detection on explored functions.
+240-        #[arg(long)]
+241-        invariants: bool,
+242-
+243:        /// Use the concolic (Z3-backed) explorer instead of the random explorer.
+244-        #[arg(long)]
+245-        concolic: bool,
+246-
+247:        /// Enable the genetic algorithm explorer.
+248-        #[arg(long)]
+249-        genetic: bool,
+250-
+251-        / Population size for the genetic algorithm (default: 50).
+252-        #[arg(long)]
+--
+270-
+271-        /// Ignore existing spec file and force full re-exploration (no incremental reuse).
+272-        #[arg(long)]
+273-        clean: bool,
+274-
+275:        /// Analyze and compare fingerprints, print stale/fresh/removed functions, then exit
+276-        /// without exploring. Requires --output.
+277-        #[arg(long)]
+278-        dry_run: bool,
+279-
+280-        /// Loop iteration bucket boundaries for path hashing (comma-separated).
+--
+291-        /// Disable loading and saving the cross-function seed pool.
+292-        #[arg(long)]
+293-        no_seeds: bool,
+294-    },
+295-
+296:    /// Scan a directory for source files, analyze and explore all functions in
+297-    /// dependency order, using behavior maps as mocks.
+298-    Scan {
+299-        /// Directory to scan for source files.
+300-        #[arg(required = true)]
+301-        directory: String,
+--
+372-
+373-        /// Emit progress events to stderr during scan.
+374-        #[arg(long)]
+375-        progress: bool,
+376-
+377:        /// Select a representative core sample of functions to explore.
+378-        /// Accepts a percentage (e.g. "50%") or absolute count (e.g. "20").
+379-        #[arg(long)]
+380-        core_sample: Option<String>,
+381-
+382-        /// Seed for deterministic core sample selection.
+--
+388-        /// "0" (first batch), "next" (auto-detect), "0-2" (run batches 0 through 2).
+389-        /// Requires --core-sample.
+390-        #[arg(long)]
+391-        batch: Option<String>,
+392-
+393:        /// Stratum filter: explore only specific call graph layers.
+394-        / Examples: "0" (leaves), "0..3", "-2..-0" (top 3 layers), "3.."
+395-        #[arg(long)]
+396-        stratum: Option<String>,
+397-
+398-        /// Maximum number of iterations per function.
+399-        #[arg(long, default_value_t = 100)]
+400-        max_iterations: u32,
+401-
+402-        /// Per-function exploration wall-clock timeout in seconds. If both
+403:        /// --max-iterations and --timeout-explore are set, whichever triggers
+404-        /// first stops exploration for that function.
+405-        #[arg(long)]
+406:        timeout_explore: Option<f64>,
+407-
+408-        /// Directory for caching behavior maps across runs.
+409-        /// Falls back to SHATTER_CACHE_DIR env var, then `.shatter/cache/`.
+410-        #[arg(long, env = "SHATTER_CACHE_DIR")]
+411-        cache_dir: Option<PathBuf>,
+--
+426-        /// Build timeout in seconds for compiling instrumented code in the frontend.
+427-        / Default: 30s.
+428-        #[arg(long, default_value_t = 30)]
+429-        build_timeout: u64,
+430-
+431:        /// Enable the genetic algorithm explorer.
+432-        #[arg(long)]
+433-        genetic: bool,
+434-
+435-        / Population size for the genetic algorithm (default: 50).
+436-        #[arg(long)]
+--
+471-    /// Export generated tests from behavior maps produced by exploration.
+472-    ///
+473-    /// Runs exploration on the given targets, then generates test files in the
+474-    /// specified framework format.
+475-    ExportTests {
+476:        /// Targets to explore and export tests for, in <file>:<function> format.
+477-        #[arg(required = true)]
+478-        targets: Vec<String>,
+479-
+480-        / Test framework to generate: jest, vitest, or gotest.
+481-        #[arg(long, default_value = "jest")]
+--
+518-        /// Memory limit in MB for the frontend process.
+519-        #[arg(long)]
+520-        memory_limit: Option<u64>,
+521-    },
+522-
+523:    /// Discover, analyze, and explore an entire repository in one shot.
+524-    ///
+525-    /// Accepts a local directory path, discovers all supported source files,
+526:    /// analyzes them, builds a call graph, and explores functions in dependency
+527-    /// order (leaves first). Outputs a markdown summary report.
+528-    Run {
+529-        /// Path to the repository root (local directory).
+530-        #[arg(required = true)]
+531-        path: String,
+--
+586-        json: bool,
+587-    },
+588-
+589-    /// Compare two function specifications and report behavioral changes.
+590-    ///
+591:    /// Accepts two spec JSON files (as produced by `explore --spec-json`).
+592-    /// Exit code is 0 when specs are equivalent, nonzero when regressions are found.
+593-    #[command(name = "spec-diff")]
+594-    SpecDiff {
+595-        /// Path to the old (baseline) spec JSON file.
+596-        #[arg(required = true)]
+--
+623-        / Output directory (default: `.shatter/bin/`).
+624-        #[arg(long, short)]
+625-        output: Option<PathBuf>,
+626-    },
+627-
+628:    /// Check which functions in a source file are stale relative to a spec file.
+629-    ///
+630:    /// Analyzes the source file, computes fingerprints, and compares against the
+631:    /// spec. Exit code: 0 = all fresh, 1 = some stale or removed.
+632-    Stale {
+633-        /// Source file to analyze (e.g., "src/math.ts").
+634-        #[arg(required = true)]
+635-        source: String,
+636-
+--
+840-    ));
+841-}
+842-
+843-/// Parse a `--loop-buckets` CLI string into `LoopBuckets`.
+844-/// Accepts "none" (disables bucketing) or comma-separated u32 values like "0,1,2,5".
+845:fn parse_loop_buckets(s: &str) -> Result<explorer::LoopBuckets, Box<dyn std::error::Error>> {
+846-    let trimmed = s.trim();
+847-    if trimmed.eq_ignore_ascii_case("none") {
+848:        return Ok(explorer::LoopBuckets::none());
+849-    }
+850-    let boundaries: Vec<u32> = trimmed
+851-        .split(',')
+852-        .map(|v| v.trim().parse::<u32>())
+853-        .collect::<Result<Vec<_>, _>>()
+854-        .map_err(|e| format!("invalid --loop-buckets value \"{s}\": {e}"))?;
+855:    Ok(explorer::LoopBuckets::from_boundaries(boundaries))
+856-}
+857-
+858:/// Run the explore command.
+859-// Each argument corresponds to a CLI flag; grouping into a struct would add indirection
+860-// without improving clarity since this is only called from one callsite.
+861-#[allow(clippy::too_many_arguments)]
+862:async fn run_explore(
+863-    targets: &[String],
+864-    max_iterations: u32,
+865-    timeout: u64,
+866:    timeout_explore: Option<f64>,
+867-    scope_path: Option<&Path>,
+868-    analyze_only: bool,
+869-    _show_clusters: bool,
+870-    cache_dir: Option<&Path>,
+871-    no_cache: bool,
+--
+1027-            }
+1028-            shutdown_frontend(frontend).await;
+1029-            continue;
+1030-        }
+1031-
+1032:        // Incremental plan: compare fingerprints against existing spec when --output is set
+1033-        use std::collections::HashSet;
+1034-        let incremental_plan = if let Some(out) = output_path
+1035-            && !clean
+1036-            && out.exists()
+1037-        {
+--
+1052-            }
+1053-        } else {
+1054-            None
+1055-        };
+1056-
+1057:        let fresh_set: HashSet<String> = incremental_plan
+1058-            .as_ref()
+1059:            .map(|(plan, _)| plan.fresh.iter().cloned().collect())
+1060-            .unwrap_or_default();
+1061-
+1062-        / Dry-run mode: print incremental plan and exit
+1063-        if dry_run {
+1064-            if let Some((ref plan, _)) = incremental_plan {
+1065:                if !plan.stale.is_empty() {
+1066:                    eprintln!("Stale ({}):", plan.stale.len());
+1067:                    for name in &plan.stale {
+1068-                        eprintln!("  {name}");
+1069-                    }
+1070-                }
+1071:                if !plan.fresh.is_empty() {
+1072:                    eprintln!("Fresh ({}):", plan.fresh.len());
+1073:                    for name in &plan.fresh {
+1074-                        eprintln!("  {name}");
+1075-                    }
+1076-                }
+1077-                if !plan.removed.is_empty() {
+1078-                    eprintln!("Removed ({}):", plan.removed.len());
+1079-                    for name in &plan.removed {
+1080-                        eprintln!("  {name}");
+1081-                    }
+1082-                }
+1083-            } else {
+1084:                eprintln!("No existing spec to compare against — all {} function(s) are stale.", functions.len());
+1085-                for func in &functions {
+1086-                    eprintln!("  {}", func.name);
+1087-                }
+1088-            }
+1089-            shutdown_frontend(frontend).await;
+1090-            continue;
+1091-        }
+1092-
+1093:        if !fresh_set.is_empty() && log::log_enabled!(log::Level::Info) {
+1094:            log::info!("Skipping {} fresh function(s):", fresh_set.len());
+1095:            for name in &fresh_set {
+1096-                log::info!("  {name}");
+1097-            }
+1098-        }
+1099-
+1100-        // Load .shatter/ config for this target
+--
+1109-            let target_dir = target.file.parent().unwrap_or(Path::new("."));
+1110-            shatter_config::discover_configs(target_dir)
+1111-                .map_err(|e| format!("config discovery error: {e}"))?
+1112-        };
+1113-
+1114:        // Compute deep fingerprints (call-graph-aware) for spec output.
+1115:        let deep_fingerprints: std::collections::HashMap<String, String> =
+1116:            shatter_core::fingerprint::compute_deep_fingerprints(&target.file, &functions)
+1117-                .unwrap_or_default();
+1118-
+1119-        // Track function count for header/footer.
+1120-        total_function_count += functions.len();
+1121-
+--
+1131-
+1132-        / Exploration phase: generate random inputs and execute
+1133-        let mut skipped_unexecutable: Vec<(String, Vec<executability::SkipReason>)> = Vec::new();
+1134-        let mut file_specs: Vec<shatter_core::spec::FunctionSpec> = Vec::new();
+1135-        for func in &functions {
+1136:            // Skip fresh functions in incremental mode
+1137:            if fresh_set.contains(&func.name) {
+1138-                continue;
+1139-            }
+1140-
+1141-            let function_id = format!("{}:{}", file_str, func.name);
+1142-
+--
+1170-                &resolved.mock_overrides,
+1171-                &[],
+1172-            );
+1173-            let mock_symbols: Vec<String> = auto_mocks.iter().map(|m| m.symbol.clone()).collect();
+1174-
+1175:            let explore_config = ExploreConfig {
+1176-                file: file_str.to_string(),
+1177-                max_iterations: resolved.max_iterations,
+1178-                seed: None,
+1179-                mocks: auto_mocks,
+1180-                setup_file: resolved.setup.as_ref().map(|p| p.display().to_string()),
+--
+1197-                    },
+1198-                    None => vec![],
+1199-                },
+1200-                project_root: project_root_str.clone(),
+1201-                loop_buckets: loop_buckets.clone(),
+1202:                timeout_explore: timeout_explore.map(Duration::from_secs_f64),
+1203-            };
+1204-
+1205-            if !resolved.candidate_inputs.is_empty() {
+1206-                log::debug!(
+1207-                    "Exploring {} ({} candidate input(s) from config)...",
+--
+1215-            let _ = &shatter_configs; // suppress unused warning
+1216-
+1217-            let func_start = Instant::now();
+1218-
+1219-            / Choose exploration strategy: concolic (Z3-backed) or random.
+1220:            let explore_result: Result<shatter_core::explorer::ObservationOutput, shatter_core::explorer::ExploreError> = if use_concolic {
+1221-                let mut seed_inputs = shatter_core::boundary_dict::generate_boundary_inputs(&func.params);
+1222-                let user_inputs: Vec<Vec<serde_json::Value>> = resolved.candidate_inputs
+1223-                    .iter()
+1224-                    .map(|input| input.args.clone())
+1225-                    .collect();
+--
+1235-                / Literal-derived seeds: string/number constants from static analysis
+1236-                let literal_candidates = shatter_core::input_gen::literals_to_candidate_inputs(&func.params, &func.literals);
+1237-                seed_inputs.extend(literal_candidates);
+1238-
+1239-                let concolic_config = shatter_core::orchestrator::ExploreConfig {
+1240:                    max_iterations: explore_config.max_iterations as usize,
+1241:                    max_executions: (explore_config.max_iterations as usize) * 5,
+1242-                    plateau_threshold: 20,
+1243:                    mocks: explore_config.mocks.clone(),
+1244-                    solver_timeout_ms: solver_timeout.map(|s| s * 1000),
+1245:                    timeout_explore: timeout_explore.map(Duration::from_secs_f64),
+1246-                };
+1247-
+1248:                match shatter_core::orchestrator::explore(
+1249-                    &mut frontend,
+1250-                    &func.name,
+1251-                    seed_inputs,
+1252-                    user_inputs,
+1253-                    &func.params,
+--
+1256-                    Ok(mut concolic_result) => {
+1257-                        / Fallback: concolic path doesn't call instrument, so no
+1258-                        // instrumentable_line_count available. Use raw span for now.
+1259-                        concolic_result.total_lines = func.end_line.saturating_sub(func.start_line) + 1;
+1260-
+1261:                        let obs: shatter_core::explorer::ObservationOutput = concolic_result.into();
+1262-                        Ok(obs)
+1263-                    }
+1264-                    Err(shatter_core::orchestrator::ExploreError::Frontend(fe)) => {
+1265:                        Err(shatter_core::explorer::ExploreError::Frontend(fe))
+1266-                    }
+1267-                }
+1268-            } else {
+1269:                explorer::explore_function(&mut frontend, func, &explore_config).await
+1270-            };
+1271-
+1272:            match explore_result {
+1273-                Ok(result) => {
+1274-                    let wall_time = func_start.elapsed();
+1275-
+1276-                    // Harvest interesting inputs into the cross-function pool.
+1277:                    // Applies to both concolic and random explorer paths — provenance doesn't matter.
+1278-                    if let Some(ref pp) = pool_path {
+1279-                        let mut pool = shatter_core::interesting_pool::load_pool(pp)
+1280-                            .unwrap_or_else(|e| {
+1281-                                log::warn!("failed to load interesting pool: {e}");
+1282-                                None
+--
+1303-                    // Run the Analyze stage to get coverage metrics and eq classes.
+1304-                    let analyze_output = shatter_core::pipeline::analyze(&result, func);
+1305-
+1306-                    if log::log_enabled!(log::Level::Info) {
+1307-                        if log::log_enabled!(log::Level::Trace) {
+1308:                            eprint!("{}", explorer::format_exploration_report_verbose(&result));
+1309-                        } else {
+1310-                            let report_opts = ReportOptions {
+1311-                                location: Some(format!("{file_str}:{}-{}", func.start_line, func.end_line)),
+1312-                                show_perf,
+1313-                                wall_time: Some(wall_time),
+1314-                                coverage_metrics: Some(analyze_output.coverage_metrics.clone()),
+1315-                                style: report_style.clone(),
+1316-                            };
+1317:                            eprint!("{}", explorer::format_exploration_report(&result, &report_opts));
+1318-                        }
+1319-                        if !mock_symbols.is_empty() {
+1320-                            eprintln!("  Mocks used: {}", mock_symbols.join(", "));
+1321-                        }
+1322-                        if use_concolic {
+--
+1328-                    / Spec output: use eq classes from analyze stage
+1329-                    if show_spec || detect_invariants {
+1330-                        let eq_classes = &analyze_output.eq_classes;
+1331-                        let location = Some(format!("{file_str}:{}-{}", func.start_line, func.end_line));
+1332-
+1333:                        // Use deep fingerprint (call-graph-aware) for spec output.
+1334:                        let fingerprint = deep_fingerprints.get(&func.name).cloned();
+1335-
+1336-                        let spec = if detect_invariants {
+1337-                            shatter_core::spec::build_spec_with_invariants(
+1338:                                &result, eq_classes, location, fingerprint,
+1339-                            )
+1340-                        } else {
+1341:                            shatter_core::spec::build_spec(&result, eq_classes, location, fingerprint)
+1342-                        };
+1343-                        if output_path.is_some() {
+1344-                            // Collect for file-level bundle output
+1345-                            file_specs.push(spec);
+1346-                        } else if spec_as_json {
+--
+1392-        if output_path.is_some() {
+1393-            let current_function_names: HashSet<String> =
+1394-                functions.iter().map(|f| f.name.clone()).collect();
+1395-
+1396-            let bundle = if let Some((_, ref existing)) = incremental_plan {
+1397:                // Merge newly explored specs with fresh specs carried over from existing
+1398-                shatter_core::spec::merge_file_spec_bundles(
+1399-                    existing,
+1400-                    &file_specs,
+1401-                    &current_function_names,
+1402-                )
+--
+1417-
+1418-    // Print summary footer.
+1419-    if header_printed && log::log_enabled!(log::Level::Info) {
+1420-        eprint!(
+1421-            "{}",
+1422:            explorer::format_explore_footer(
+1423-                total_paths,
+1424-                total_function_count,
+1425-                total_covered,
+1426-                total_lines,
+1427-                &report_style,
+--
+1444-    }
+1445-
+1446-    Ok(())
+1447-}
+1448-
+1449:/// Run the scan command: explore multiple functions in dependency order.
+1450-#[allow(clippy::too_many_arguments)]
+1451-async fn run_scan(
+1452-    directory: &str,
+1453-    language_filter: Option<&str>,
+1454-    include_patterns: &[String],
+--
+1465-    request_timeout: u64,
+1466-    exec_timeout: u64,
+1467-    build_timeout: u64,
+1468-    parallelism: usize,
+1469-    timeout_per_fn: u64,
+1470:    timeout_explore: Option<f64>,
+1471-    output_dir: Option<&Path>,
+1472-    report_format_str: &str,
+1473-    progress: bool,
+1474-    emit_tests: Option<&str>,
+1475-    dry_run: bool,
+--
+1872-            resume_path: None,
+1873-            timeout_total: None,
+1874-            pool_path: scan_pool_path.clone(),
+1875-            project_root: project_root_str.clone(),
+1876-            config_dir: Some(std::path::PathBuf::from(directory)),
+1877:            timeout_explore: timeout_explore.map(Duration::from_secs_f64),
+1878-        };
+1879-        let plan = scan_orchestrator::format_dry_run_plan(
+1880-            &all_analyses,
+1881-            &skipped_for_executability,
+1882-            &scan_config,
+--
+1941-        resume_path: resume.map(|p| p.to_path_buf()),
+1942-        timeout_total: if timeout_total == 0 { None } else { Some(Duration::from_secs(timeout_total)) },
+1943-        pool_path: scan_pool_path,
+1944-        project_root: project_root_str.clone(),
+1945-        config_dir: Some(std::path::PathBuf::from(directory)),
+1946:        timeout_explore: timeout_explore.map(Duration::from_secs_f64),
+1947-    };
+1948-
+1949-    let scan_start = Instant::now();
+1950-    let total_functions = all_analyses.len();
+1951-
+--
+1999-                    shatter_core::checkpoint::ScanCheckpoint::compute_scan_id(&file_paths);
+2000-
+2001-                let mut state = match shatter_core::batch_state::BatchState::load(&batch_state_path) {
+2002-                    Ok(Some(s)) if s.scan_id == scan_id => s,
+2003-                    Ok(Some(_)) => {
+2004:                        log::info!("batch state scan_id mismatch, starting fresh");
+2005-                        shatter_core::batch_state::BatchState::new(
+2006-                            scan_id,
+2007-                            total_scope_functions,
+2008-                        )
+2009-                    }
+2010-                    Ok(None) => shatter_core::batch_state::BatchState::new(
+2011-                        scan_id,
+2012-                        total_scope_functions,
+2013-                    ),
+2014-                    Err(e) => {
+2015:                        log::warn!("failed to load batch state: {e}, starting fresh");
+2016-                        shatter_core::batch_state::BatchState::new(
+2017-                            "unknown".to_string(),
+2018-                            total_scope_functions,
+2019-                        )
+2020-                    }
+--
+2148-    }
+2149-
+2150-    Ok(result.has_regressions())
+2151-}
+2152-
+2153:/// Run the export-tests command: explore targets and generate test code.
+2154-#[allow(clippy::too_many_arguments)]
+2155-async fn run_export_tests(
+2156-    targets: &[String],
+2157-    framework: &str,
+2158-    module_path: &str,
+--
+2226-                continue;
+2227-            }
+2228-        };
+2229-
+2230-        // Explore each function and generate tests
+2231:        let explore_config = ExploreConfig {
+2232-            file: file_str.to_string(),
+2233-            max_iterations,
+2234-            seed: None,
+2235-            mocks: vec![],
+2236-            setup_file: None,
+--
+2239-            capabilities: shatter_core::orchestrator::FrontendCapabilities::default(),
+2240-            user_seeds: vec![],
+2241-            candidate_inputs: vec![],
+2242-            pool_seeds: vec![],
+2243-            project_root: project_root_str.clone(),
+2244:            loop_buckets: explorer::LoopBuckets::default(),
+2245:            timeout_explore: None,
+2246-        };
+2247-
+2248-        for func in &functions {
+2249-            log::info!("Exploring {}...", func.name);
+2250-
+2251:            match explorer::explore_function(&mut frontend, func, &explore_config).await {
+2252-                Ok(result) => {
+2253-                    let behavior_map = BehaviorMap::from_exploration_result(&func.name, &result);
+2254-
+2255-                    let test_code = match framework {
+2256-                        "jest" => export::generate_jest_tests(&behavior_map, &func.name, module_path),
+--
+2357-        DiscoveryLanguage::Go => Some(Language::Go),
+2358-        DiscoveryLanguage::Rust => Some(Language::Rust),
+2359-    }
+2360-}
+2361-
+2362:/// Run the run command: discover, analyze, build call graph, explore, and report.
+2363-#[allow(clippy::too_many_arguments)]
+2364-async fn run_run(
+2365-    path: &str,
+2366-    output_dir: Option<&Path>,
+2367-    max_iterations: u32,
+--
+2480-    let total_branches: usize = registry.entries().iter().map(|e| e.branch_count).sum();
+2481-
+2482-    log::debug!("Found {} function(s) with {} total branch(es)", total_functions, total_branches);
+2483-
+2484-    if total_functions == 0 {
+2485:        log::info!("No functions found to explore.");
+2486-        shutdown_all_frontends(frontends).await;
+2487-        return Ok(());
+2488-    }
+2489-
+2490-    / Step 4: Build call graph
+--
+2525-    }
+2526-
+2527-    / Step 5: Explore in dependency order (layer by layer)
+2528-    log::debug!("Exploring functions in dependency order...");
+2529-
+2530:    let mut exploration_results: Vec<(String, explorer::ObservationOutput)> = Vec::new();
+2531-
+2532-    for (layer_idx, layer) in layers.iter().enumerate() {
+2533-        log::debug!("Layer {} ({} function(s)):", layer_idx, layer.len());
+2534-
+2535-        for qualified_name in layer {
+--
+2548-            let frontend = match frontends.get_mut(&disc_lang) {
+2549-                Some(f) => f,
+2550-                None => continue,
+2551-            };
+2552-
+2553:            // Analyze to get FunctionAnalysis (needed for explore_function)
+2554-            let analyze_response = frontend
+2555-                .send(ProtoCommand::Analyze {
+2556-                    file: entry.file_path.to_string_lossy().into_owned(),
+2557-                    function: Some(entry.name.clone()),
+2558-                    project_root: project_root_str.clone(),
+--
+2572-                continue;
+2573-            };
+2574-
+2575-            log::debug!("Exploring {}...", entry.name);
+2576-
+2577:            let explore_config = ExploreConfig {
+2578-                file: entry.file_path.to_string_lossy().into_owned(),
+2579-                max_iterations,
+2580-                seed: None,
+2581-                mocks: vec![],
+2582-                setup_file: None,
+--
+2585-                capabilities: shatter_core::orchestrator::FrontendCapabilities::default(),
+2586-                user_seeds: vec![],
+2587-                candidate_inputs: vec![],
+2588-                pool_seeds: vec![],
+2589-                project_root: project_root_str.clone(),
+2590:                loop_buckets: explorer::LoopBuckets::default(),
+2591:                timeout_explore: None,
+2592-                };
+2593-
+2594:            match explorer::explore_function(frontend, &func_analysis, &explore_config).await {
+2595-                Ok(result) => {
+2596-                    log::debug!(
+2597-                        "{}: {} path(s), {}/{} lines",
+2598-                        entry.name, result.unique_paths, result.lines_covered, result.total_lines
+2599-                    );
+--
+2651-    rs_files: &[PathBuf],
+2652-    registry: &FunctionRegistry,
+2653-    call_graph: &CallGraph,
+2654-    layers: &[Vec<String>],
+2655-    cycles: &[Vec<String>],
+2656:    exploration_results: &[(String, explorer::ObservationOutput)],
+2657-    elapsed: Duration,
+2658-    use_color: bool,
+2659-) {
+2660-    use std::fmt::Write;
+2661-    let mut md = String::new();
+--
+2787-
+2788-/// Write full run report with per-function files to output directory.
+2789-fn write_run_report(
+2790-    dir: &Path,
+2791-    call_graph: &CallGraph,
+2792:    exploration_results: &[(String, explorer::ObservationOutput)],
+2793-) -> Result<(), Box<dyn std::error::Error>> {
+2794-    std::fs::create_dir_all(dir)
+2795-        .map_err(|e| format!("failed to create output dir '{}': {e}", dir.display()))?;
+2796-
+2797-    for (qname, result) in exploration_results {
+--
+2873-    if let Err(e) = frontend.shutdown().await {
+2874-        log::warn!("frontend shutdown error: {e}");
+2875-    }
+2876-}
+2877-
+2878:/// Run the stale command: check which functions are stale relative to a spec file.
+2879-///
+2880:/// Returns `Ok(true)` if all functions are fresh, `Ok(false)` if any are stale or removed.
+2881-// Each argument corresponds to a CLI flag; this is only called from one callsite.
+2882-#[allow(clippy::too_many_arguments)]
+2883:async fn run_stale(
+2884-    source: &str,
+2885-    spec_path: &Path,
+2886-    format: &str,
+2887-    request_timeout: u64,
+2888-    exec_timeout: u64,
+--
+2928-        .map_err(|e| format!("failed to read spec file {}: {e}", spec_path.display()))?;
+2929-
+2930-    let plan = shatter_core::spec::compute_incremental_plan(&target.file, &functions, &existing)
+2931-        .map_err(|e| format!("failed to compute incremental plan: {e}"))?;
+2932-
+2933:    let all_fresh = plan.stale.is_empty() && plan.removed.is_empty();
+2934-
+2935-    if format == "json" {
+2936-        let output = serde_json::json!({
+2937:            "stale": plan.stale,
+2938:            "fresh": plan.fresh,
+2939-            "removed": plan.removed,
+2940:            "all_fresh": all_fresh,
+2941-        });
+2942-        println!("{}", serde_json::to_string_pretty(&output)?);
+2943-    } else {
+2944:        if !plan.stale.is_empty() {
+2945:            println!("Stale ({}):", plan.stale.len());
+2946:            for name in &plan.stale {
+2947-                println!("  {name}");
+2948-            }
+2949-        }
+2950:        if !plan.fresh.is_empty() {
+2951:            println!("Fresh ({}):", plan.fresh.len());
+2952:            for name in &plan.fresh {
+2953-                println!("  {name}");
+2954-            }
+2955-        }
+2956-        if !plan.removed.is_empty() {
+2957-            println!("Removed ({}):", plan.removed.len());
+2958-            for name in &plan.removed {
+2959-                println!("  {name}");
+2960-            }
+2961-        }
+2962:        if all_fresh {
+2963:            println!("All functions are fresh.");
+2964-        }
+2965-    }
+2966-
+2967:    Ok(all_fresh)
+2968-}
+2969-
+2970-#[tokio::main]
+2971-async fn main() -> ExitCode {
+2972-    let cli = Cli::parse();
+--
+3021-            solver_timeout,
+3022-            memory_limit,
+3023-            clean,
+3024-            dry_run,
+3025-            loop_buckets,
+3026:            timeout_explore,
+3027-            seeds_dir,
+3028-            no_seeds,
+3029-        } => {
+3030:            run_explore(
+3031-                &targets,
+3032-                max_iterations,
+3033-                timeout,
+3034:                timeout_explore,
+3035-                scope.as_deref(),
+3036-                analyze_only,
+3037-                show_clusters,
+3038-                cache_dir.as_deref(),
+3039-                no_cache,
+--
+3098-            genetic_generations: _,
+3099-            genetic_timeout: _,
+3100-            solver_timeout: _,
+3101-            memory_limit,
+3102-            loop_buckets: _,
+3103:            timeout_explore,
+3104-            seeds_dir,
+3105-            no_seeds,
+3106-        } => {
+3107-            run_scan(
+3108-                &directory,
+--
+3121-                request_timeout,
+3122-                exec_timeout,
+3123-                build_timeout,
+3124-                parallelism,
+3125-                timeout_per_fn,
+3126:                timeout_explore,
+3127-                output.as_deref(),
+3128-                &format,
+3129-                progress,
+3130-                emit_tests.as_deref(),
+3131-                dry_run,
+--
+3243-            request_timeout,
+3244-            exec_timeout,
+3245-            build_timeout,
+3246-            memory_limit,
+3247-        } => {
+3248:            match run_stale(
+3249-                &source,
+3250-                &spec,
+3251-                &format,
+3252-                request_timeout,
+3253-                exec_timeout,
+--
+3256-                log_level,
+3257-                cli.project_dir.as_deref(),
+3258-            )
+3259-            .await
+3260-            {
+3261:                Ok(all_fresh) => {
+3262:                    if all_fresh {
+3263-                        return ExitCode::SUCCESS;
+3264-                    }
+3265-                    return ExitCode::FAILURE;
+3266-                }
+3267-                Err(e) => Err(e),
+--
+3805-        assert_eq!(Language::Go.label(), "go");
+3806-        assert_eq!(Language::Rust.label(), "rust");
+3807-    }
+3808-
+3809-    #[test]
+3810:    fn cli_parses_explore_subcommand() {
+3811-        let cli = Cli::parse_from([
+3812-            "shatter",
+3813:            "explore",
+3814-            "test.ts:myFunc",
+3815-        ]);
+3816-        match cli.command {
+3817-            CliCommand::Explore {
+3818-                targets,
+--
+3843-            _ => panic!("expected Explore command"),
+3844-        }
+3845-    }
+3846-
+3847-    #[test]
+3848:    fn cli_parses_explore_with_scope_flag() {
+3849-        let cli = Cli::parse_from([
+3850-            "shatter",
+3851:            "explore",
+3852-            "--scope", "shatter.scope.yaml",
+3853-            "test.ts:myFunc",
+3854-        ]);
+3855-        match cli.command {
+3856-            CliCommand::Explore { scope, .. } => {
+--
+3859-            _ => panic!("expected Explore command"),
+3860-        }
+3861-    }
+3862-
+3863-    #[test]
+3864:    fn cli_parses_explore_with_flags() {
+3865-        let cli = Cli::parse_from([
+3866-            "shatter",
+3867:            "explore",
+3868-            "--max-iterations", "50",
+3869-            "--timeout", "120",
+3870-            "--analyze-only",
+3871-            "a.ts:fn1",
+3872-            "b.go:Fn2",
+--
+3904-
+3905-    #[test]
+3906-    fn cli_parses_cache_dir_flag() {
+3907-        let cli = Cli::parse_from([
+3908-            "shatter",
+3909:            "explore",
+3910-            "--cache-dir", "/tmp/foo",
+3911-            "test.ts:myFunc",
+3912-        ]);
+3913-        match cli.command {
+3914-            CliCommand::Explore { cache_dir, .. } => {
+--
+3920-
+3921-    #[test]
+3922-    fn cli_cache_dir_defaults_to_none() {
+3923-        let cli = Cli::parse_from([
+3924-            "shatter",
+3925:            "explore",
+3926-            "test.ts:myFunc",
+3927-        ]);
+3928-        match cli.command {
+3929-            CliCommand::Explore { cache_dir, .. } => {
+3930-                assert!(cache_dir.is_none());
+--
+3932-            _ => panic!("expected Explore command"),
+3933-        }
+3934-    }
+3935-
+3936-    #[test]
+3937:    fn cli_parses_explore_with_request_timeout() {
+3938-        let cli = Cli::parse_from([
+3939-            "shatter",
+3940:            "explore",
+3941-            "--request-timeout", "10",
+3942-            "test.ts:myFunc",
+3943-        ]);
+3944-        match cli.command {
+3945-            CliCommand::Explore { request_timeout, timeout, .. } => {
+--
+3949-            _ => panic!("expected Explore command"),
+3950-        }
+3951-    }
+3952-
+3953-    #[test]
+3954:    fn cli_parses_explore_with_inputs_flag() {
+3955-        let cli = Cli::parse_from([
+3956-            "shatter",
+3957:            "explore",
+3958-            "--inputs", "candidates.json",
+3959-            "test.ts:myFunc",
+3960-        ]);
+3961-        match cli.command {
+3962-            CliCommand::Explore { inputs, config_path, .. } => {
+--
+3966-            _ => panic!("expected Explore command"),
+3967-        }
+3968-    }
+3969-
+3970-    #[test]
+3971:    fn cli_parses_explore_with_config_flag() {
+3972-        let cli = Cli::parse_from([
+3973-            "shatter",
+3974:            "explore",
+3975-            "--config", ".shatter/config.yaml",
+3976-            "test.ts:myFunc",
+3977-        ]);
+3978-        match cli.command {
+3979-            CliCommand::Explore { inputs, config_path, .. } => {
+--
+4034-            _ => panic!("expected Run command"),
+4035-        }
+4036-    }
+4037-
+4038-    #[test]
+4039:    fn cli_parses_explore_with_exec_timeout() {
+4040-        let cli = Cli::parse_from([
+4041-            "shatter",
+4042:            "explore",
+4043-            "--exec-timeout", "20",
+4044-            "--build-timeout", "45",
+4045-            "test.go:myFunc",
+4046-        ]);
+4047-        match cli.command {
+--
+4052-            _ => panic!("expected Explore command"),
+4053-        }
+4054-    }
+4055-
+4056-    #[test]
+4057:    fn cli_explore_exec_timeout_defaults() {
+4058-        let cli = Cli::parse_from([
+4059-            "shatter",
+4060:            "explore",
+4061-            "test.go:myFunc",
+4062-        ]);
+4063-        match cli.command {
+4064-            CliCommand::Explore { exec_timeout, build_timeout, .. } => {
+4065-                assert_eq!(exec_timeout, 10);
+--
+4068-            _ => panic!("expected Explore command"),
+4069-        }
+4070-    }
+4071-
+4072-    #[test]
+4073:    fn cli_parses_explore_with_concolic_flag() {
+4074-        let cli = Cli::parse_from([
+4075-            "shatter",
+4076:            "explore",
+4077-            "--concolic",
+4078-            "test.ts:myFunc",
+4079-        ]);
+4080-        match cli.command {
+4081-            CliCommand::Explore { concolic, .. } => {
+--
+4087-
+4088-    #[test]
+4089-    fn cli_concolic_defaults_to_false() {
+4090-        let cli = Cli::parse_from([
+4091-            "shatter",
+4092:            "explore",
+4093-            "test.ts:myFunc",
+4094-        ]);
+4095-        match cli.command {
+4096-            CliCommand::Explore { concolic, .. } => {
+4097-                assert!(!concolic);
+--
+4125-        assert_eq!(env_map.get("SHATTER_EXEC_TIMEOUT").map(|s| s.as_str()), Some("20"));
+4126-        assert_eq!(env_map.get("SHATTER_BUILD_TIMEOUT").map(|s| s.as_str()), Some("45"));
+4127-    }
+4128-
+4129-    #[test]
+4130:    fn cli_explore_requires_at_least_one_target() {
+4131:        let result = Cli::try_parse_from(["shatter", "explore"]);
+4132-        assert!(result.is_err());
+4133-        let err = result.unwrap_err();
+4134-        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
+4135-    }
+4136-
+--
+4278-            "expected embedded binary path, got: {cmd_str}",
+4279-        );
+4280-    }
+4281-
+4282-    #[test]
+4283:    fn cli_parses_explore_with_no_cache() {
+4284-        let cli = Cli::parse_from([
+4285-            "shatter",
+4286:            "explore",
+4287-            "--no-cache",
+4288-            "test.ts:myFunc",
+4289-        ]);
+4290-        match cli.command {
+4291-            CliCommand::Explore { no_cache, .. } => {
+--
+4310-            _ => panic!("expected Scan command"),
+4311-        }
+4312-    }
+4313-
+4314-    #[test]
+4315:    fn cli_no_cache_defaults_to_false_for_explore() {
+4316-        let cli = Cli::parse_from([
+4317-            "shatter",
+4318:            "explore",
+4319-            "test.ts:myFunc",
+4320-        ]);
+4321-        match cli.command {
+4322-            CliCommand::Explore { no_cache, .. } => {
+4323-                assert!(!no_cache);
+--
+4731-            _ => panic!("expected Scan command"),
+4732-        }
+4733-    }
+4734-
+4735-    #[test]
+4736:    fn cli_parses_explore_with_output_flag() {
+4737-        let cli = Cli::parse_from([
+4738-            "shatter",
+4739:            "explore",
+4740-            "--output", "spec.json",
+4741-            "src/app.ts:foo",
+4742-        ]);
+4743-        match cli.command {
+4744-            CliCommand::Explore { output, .. } => {
+--
+4748-        }
+4749-    }
+4750-
+4751-    #[test]
+4752-    fn cli_output_defaults_to_none() {
+4753:        let cli = Cli::parse_from(["shatter", "explore", "src/app.ts:foo"]);
+4754-        match cli.command {
+4755-            CliCommand::Explore { output, .. } => {
+4756-                assert!(output.is_none());
+4757-            }
+4758-            _ => panic!("expected Explore command"),
+4759-        }
+4760-    }
+4761-
+4762-    #[test]
+4763:    fn cli_parses_explore_with_genetic_flag() {
+4764-        let cli = Cli::parse_from([
+4765-            "shatter",
+4766:            "explore",
+4767-            "--genetic",
+4768-            "test.ts:myFunc",
+4769-        ]);
+4770-        match cli.command {
+4771-            CliCommand::Explore { genetic, genetic_population, genetic_generations, genetic_timeout, .. } => {
+--
+4780-
+4781-    #[test]
+4782-    fn cli_genetic_defaults_to_false() {
+4783-        let cli = Cli::parse_from([
+4784-            "shatter",
+4785:            "explore",
+4786-            "test.ts:myFunc",
+4787-        ]);
+4788-        match cli.command {
+4789-            CliCommand::Explore { genetic, .. } => {
+4790-                assert!(!genetic);
+--
+4792-            _ => panic!("expected Explore command"),
+4793-        }
+4794-    }
+4795-
+4796-    #[test]
+4797:    fn cli_parses_explore_with_genetic_options() {
+4798-        let cli = Cli::parse_from([
+4799-            "shatter",
+4800:            "explore",
+4801-            "--genetic",
+4802-            "--genetic-population", "200",
+4803-            "--genetic-generations", "500",
+4804-            "--genetic-timeout", "600",
+4805-            "test.ts:myFunc",
+--
+4834-            _ => panic!("expected Scan command"),
+4835-        }
+4836-    }
+4837-
+4838-    #[test]
+4839:    fn cli_parses_explore_with_clean_flag() {
+4840-        let cli = Cli::parse_from([
+4841-            "shatter",
+4842:            "explore",
+4843-            "--clean",
+4844-            "test.ts:myFunc",
+4845-        ]);
+4846-        match cli.command {
+4847-            CliCommand::Explore { clean, dry_run, .. } => {
+--
+4851-            _ => panic!("expected Explore command"),
+4852-        }
+4853-    }
+4854-
+4855-    #[test]
+4856:    fn cli_parses_explore_with_dry_run_flag() {
+4857-        let cli = Cli::parse_from([
+4858-            "shatter",
+4859:            "explore",
+4860-            "--dry-run",
+4861-            "--output", "spec.json",
+4862-            "test.ts:myFunc",
+4863-        ]);
+4864-        match cli.command {
+--
+4873-
+4874-    #[test]
+4875-    fn cli_clean_and_dry_run_default_to_false() {
+4876-        let cli = Cli::parse_from([
+4877-            "shatter",
+4878:            "explore",
+4879-            "test.ts:myFunc",
+4880-        ]);
+4881-        match cli.command {
+4882-            CliCommand::Explore { clean, dry_run, .. } => {
+4883-                assert!(!clean);
+--
+4886-            _ => panic!("expected Explore command"),
+4887-        }
+4888-    }
+4889-
+4890-    #[test]
+4891:    fn cli_parses_stale_subcommand() {
+4892-        let cli = Cli::parse_from([
+4893-            "shatter",
+4894:            "stale",
+4895-            "src/math.ts",
+4896-            "spec.json",
+4897-        ]);
+4898-        match cli.command {
+4899-            CliCommand::Stale { source, spec, format, request_timeout, .. } => {
+--
+4905-            _ => panic!("expected Stale command"),
+4906-        }
+4907-    }
+4908-
+4909-    #[test]
+4910:    fn cli_parses_stale_with_json_format() {
+4911-        let cli = Cli::parse_from([
+4912-            "shatter",
+4913:            "stale",
+4914-            "--format", "json",
+4915-            "src/math.ts",
+4916-            "spec.json",
+4917-        ]);
+4918-        match cli.command {

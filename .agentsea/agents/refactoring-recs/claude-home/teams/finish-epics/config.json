@@ -1,0 +1,45 @@
+{
+  "name": "finish-epics",
+  "description": "Finish str-fpgb and str-3ky9 epics - 4 parallel leaf issues",
+  "createdAt": 1773290464649,
+  "leadAgentId": "team-lead@finish-epics",
+  "leadSessionId": "54746d05-7836-4bc8-b5a6-f02b59135d18",
+  "members": [
+    {
+      "agentId": "team-lead@finish-epics",
+      "name": "team-lead",
+      "agentType": "team-lead",
+      "model": "claude-opus-4-6",
+      "joinedAt": 1773290464649,
+      "tmuxPaneId": "",
+      "cwd": "/home/ketan/project/shatter",
+      "subscriptions": []
+    },
+    {
+      "agentId": "conformance@finish-epics",
+      "name": "conformance",
+      "model": "claude-opus-4-6",
+      "prompt": "You are working on issue str-fpgb.6: Frontend conformance harness.\n\n**Goal**: Build a black-box protocol conformance harness that runs the same NDJSON request/response cases against each frontend subprocess (TS, Go, Rust, noop) and reports behavioral drift.\n\n**Acceptance criteria**:\n- Shared conformance cases run against TS, Go, Rust, and the noop frontend\n- Protocol field mismatches fail the harness\n- Expected dynamic fields are normalized explicitly\n\n**Context**: This is P1 and blocks str-fpgb.7 (Rust frontend quality gate) and str-fpgb.9 (Protocol governance docs). The project already has:\n- Protocol fixture corpus (str-fpgb.4, done)\n- Schema fixture validator (str-fpgb.5, done)\n- Error code contract parity (str-fpgb.2, done)\n- Lifecycle schema coverage (str-fpgb.3, done)\n\nRun `bd show str-fpgb.6` for full issue details. Study the existing protocol test infrastructure before planning.\n\n**Your task**: Task #1 in the team task list. Claim it, plan your approach, implement, test, commit, and mark done. Follow all project conventions in CLAUDE.md. Run the relevant test tier before committing.",
+      "color": "blue",
+      "planModeRequired": true,
+      "joinedAt": 1773290497646,
+      "tmuxPaneId": "%265",
+      "cwd": "/home/ketan/project/shatter",
+      "subscriptions": [],
+      "backendType": "tmux"
+    },
+    {
+      "agentId": "refactoring-recs@finish-epics",
+      "name": "refactoring-recs",
+      "model": "claude-opus-4-6",
+      "prompt": "You are working on issue str-3ky9.15: Refactoring recs for hard-to-mock deps.\n\n**Goal**: Detect hard-to-mock calls (dynamic dispatch, closures, subprocess spawning, multi-layer indirection) and produce refactoring recommendations in scan output: extract to parameter, wrap in named function, move behind interface.\n\n**Acceptance criteria**:\n- Hard-to-mock calls detected\n- Recommendations appear in scan report\n- Suggestions are actionable (extract, wrap, interface)\n\n**Context**: This depends on str-3ky9.12 (Execution-time dep gap detection, done). The project has existing mock infrastructure in shatter-core. Study the scan output format and existing mock detection before planning.\n\nRun `bd show str-3ky9.15` for full issue details.\n\n**Your task**: Task #2 in the team task list. Claim it, plan your approach, implement, test, commit, and mark done. Follow all project conventions in CLAUDE.md. Run the relevant test tier before committing.",
+      "color": "green",
+      "planModeRequired": true,
+      "joinedAt": 1773290502214,
+      "tmuxPaneId": "%266",
+      "cwd": "/home/ketan/project/shatter",
+      "subscriptions": [],
+      "backendType": "tmux"
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+[
+  {
+    "from": "team-lead",
+    "text": "You are working on beads issue kapow-8ra: Production Mantine theme wiring (bug fix).\n\n## WORKTREE SETUP — RUN FIRST\nBefore doing anything else, create and enter an isolated worktree:\n```bash\nREPO_ROOT=\"$(git rev-parse --show-toplevel)\"\nBRANCH_NAME=\"worktree/mantine-theme-fix\"\nWORKTREE_DIR=\"$REPO_ROOT/.claude/worktrees/$BRANCH_NAME\"\n\nif [ -d \"$WORKTREE_DIR\" ]; then\n  echo \"Worktree already exists, reusing\"\nelse\n  git worktree add \"$WORKTREE_DIR\" -b \"$BRANCH_NAME\"\nfi\n\ncd \"$WORKTREE_DIR\"\n```\nVerify you are in the right place:\n```bash\necho \"CWD: $(pwd)\"\necho \"Branch: $(git branch --show-current)\"\necho \"$(pwd)\" | grep -q '\\.claude/worktrees/' && echo \"WORKTREE VERIFIED\" || echo \"FATAL: NOT in a worktree\"\n```\nIf verification fails, STOP.\n\nALL subsequent commands must run from this worktree directory.\n\n## Issue Details\n**kapow-8ra [BUG]: Production Mantine theme wiring**\n\nWire the shared Mantine theme into the production app. A custom theme exists and tests use it, but the live app mounts MantineProvider without the shared theme, creating a styling gap between test assumptions and production behavior.\n\n**Acceptance Criteria**: The production app mounts MantineProvider with the shared theme. Brand and accent token usages render correctly in live pages. Core page visuals are smoke-tested and existing tests continue to pass with the shared theme.\n\n## Instructions\n1. Read web/CLAUDE.md for frontend conventions\n2. Read web/src/main.tsx — look at how MantineProvider is currently mounted\n3. Read web/src/theme.ts — the shared theme definition\n4. Read web/src/test/render.tsx — how tests use the theme\n5. Fix main.tsx to pass the shared theme to MantineProvider:\n   ```tsx\n   import { theme } from './theme'\n   // ...\n   <MantineProvider theme={theme}>\n   ```\n6. Verify brand colors (brand.9, accent) are referenced in components and would now render correctly\n7. Check if there are any existing tests that verify theme wiring — update if needed\n8. Run all web tests and build to verify nothing breaks\n\n## Quality Gate\nWeb-only change. Run: `cd web && pnpm build && pnpm lint && pnpm test`\n\n## When Done\nCommit and push:\n```bash\ngit add -A\ngit commit -m \"fix: wire shared Mantine theme in production MantineProvider\n\nPasses the shared theme to MantineProvider in main.tsx so brand and\naccent colors render correctly in production, matching test assumptions.\n\nCloses kapow-8ra\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\"\ngit push -u origin HEAD\n```\nReport completion with build/test results.",
+    "timestamp": "2026-03-11T02:27:59.482Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"task_assignment\",\"taskId\":\"8\",\"subject\":\"kapow-8ra: Production Mantine theme wiring\",\"description\":\"Wire the shared Mantine theme into the production app. A custom theme exists and tests use it, but the live app mounts MantineProvider without the shared theme. AC: The production app mounts MantineProvider with the shared theme. Brand and accent token usages render correctly in live pages.\",\"assignedBy\":\"team-lead\",\"timestamp\":\"2026-03-11T02:28:08.747Z\"}",
+    "timestamp": "2026-03-11T02:28:08.747Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773196086131-8y0gfvb\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"REPO_ROOT=\\\"$(git rev-parse --show-toplevel)\\\" && BRANCH_NAME=\\\"worktree/mantine-theme-fix\\\" && WORKTREE_DIR=\\\"$REPO_ROOT/.claude/worktrees/$BRANCH_NAME\\\" && if [ -d \\\"$WORKTREE_DIR\\\" ]; then echo \\\"Worktree already exists, reusing\\\"; else git worktree add \\\"$WORKTREE_DIR\\\" -b \\\"$BRANCH_NAME\\\"; fi && cd \\\"$WORKTREE_DIR\\\" && echo \\\"CWD: $(pwd)\\\" && echo \\\"Branch: $(git branch --show-current)\\\" && echo \\\"$(pwd)\\\" | grep -q '\\\\.claude/worktrees/' && echo \\\"WORKTREE VERIFIED\\\" || echo \\\"FATAL: NOT in a worktree\\\"\",\"description\":\"Set up isolated worktree for mantine theme fix\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T02:36:31.252Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"plan_approval_response\",\"requestId\":\"plan_approval-1773196629506@mantine-theme-fix@joyful-frolicking-teapot\",\"approved\":true,\"timestamp\":\"2026-03-11T02:37:10.663Z\",\"permissionMode\":\"default\"}",
+    "timestamp": "2026-03-11T02:37:10.663Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"plan_approval_response\",\"requestId\":\"plan_approval-1773196629506@mantine-theme-fix@joyful-frolicking-teapot\",\"approved\":true,\"timestamp\":\"2026-03-11T02:37:22.255Z\",\"permissionMode\":\"default\"}",
+    "timestamp": "2026-03-11T02:37:22.255Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"shutdown_request\",\"requestId\":\"shutdown-1773197060863@mantine-theme-fix\",\"from\":\"team-lead\",\"reason\":\"Issue already fixed, task complete. Shutting down.\",\"timestamp\":\"2026-03-11T02:44:20.863Z\"}",
+    "timestamp": "2026-03-11T02:44:20.863Z",
+    "read": true
+  }
+]

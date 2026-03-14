@@ -1,0 +1,24 @@
+[
+  {
+    "from": "smoke-agent",
+    "text": "Sandbox isolation checks complete. Results written to `/tmp/sea-smoke-52106266/smoke-results.txt`.\n\nSummary:\n- CHECK 1: FAIL - No bwrap detected; /proc/1/cmdline shows \"/sbin/init\"\n- CHECK 2: FAIL - Write to /tmp outside working dir succeeded (LEAKED)\n- CHECK 3: FAIL - HOME shows user directories (dev-setup, dotfiles, go, project, snap), not restricted\n- CHECK 4: FAIL - On branch \"main\", not a smoke-agent/work branch\n- CHECK 5: PASS - /usr/local is read-only (permission denied)\n\n1 out of 5 checks passed. The environment does not appear to be running in a bwrap sandbox or isolated worktree.",
+    "summary": "Sandbox checks done: 1/5 passed, results in smoke-results.txt",
+    "timestamp": "2026-03-07T05:47:18.530Z",
+    "color": "blue",
+    "read": true
+  },
+  {
+    "from": "smoke-agent",
+    "text": "{\"type\":\"idle_notification\",\"from\":\"smoke-agent\",\"timestamp\":\"2026-03-07T05:47:23.080Z\",\"idleReason\":\"available\"}",
+    "timestamp": "2026-03-07T05:47:23.080Z",
+    "color": "blue",
+    "read": true
+  },
+  {
+    "from": "smoke-agent",
+    "text": "{\"type\":\"shutdown_approved\",\"requestId\":\"shutdown-1772862506903@smoke-agent\",\"from\":\"smoke-agent\",\"timestamp\":\"2026-03-07T05:48:29.613Z\",\"paneId\":\"in-process\",\"backendType\":\"in-process\"}",
+    "timestamp": "2026-03-07T05:48:29.613Z",
+    "color": "blue",
+    "read": true
+  }
+]

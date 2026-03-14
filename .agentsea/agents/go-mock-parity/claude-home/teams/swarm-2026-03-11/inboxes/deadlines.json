@@ -1,0 +1,44 @@
+[
+  {
+    "from": "team-lead",
+    "text": "## WORKTREE SETUP — RUN FIRST\nBefore doing anything else, create and enter an isolated worktree:\n```bash\nREPO_ROOT=\"$(git rev-parse --show-toplevel)\"\nBRANCH_NAME=\"worktree/deadlines\"\nWORKTREE_DIR=\"$REPO_ROOT/.claude/worktrees/$BRANCH_NAME\"\n\nif [ -d \"$WORKTREE_DIR\" ]; then\n  echo \"Worktree already exists, reusing\"\nelse\n  git worktree add \"$WORKTREE_DIR\" -b \"$BRANCH_NAME\"\nfi\n\ncd \"$WORKTREE_DIR\"\n```\nVerify you are in the right place:\n```bash\necho \"CWD: $(pwd)\"\necho \"Branch: $(git branch --show-current)\"\necho \"$(pwd)\" | grep -q '\\.claude/worktrees/' && echo \"WORKTREE VERIFIED\" || echo \"FATAL: NOT in a worktree\"\n```\nIf verification fails, STOP and report the error to the team lead.\n\nALL subsequent commands must run from this worktree directory.\nNEVER cd back to the main repo directory. Commit and push ONLY on\nyour worktree branch — never touch main.\n\nWhen done, push your branch:\n```bash\ngit push -u origin HEAD\n```\n\n---\n\n## Task: kapow-t77.2 — Deadline data types and DB helpers\n\n**Beads ID**: kapow-t77.2\n\nCreate `tools/kapow/internal/deadlines/` package with core types and DB operations.\n\n### Requirements\n\n**types.go**:\n- `DeadlinePlan` struct: deadline, notification, deposit_due (string date fields), binding (bool), opens, closes (string date fields), notification_weeks (int), source_url (string), confidence (string)\n- `DeadlineData` struct: plans (map[string]DeadlinePlan), fee_usd (int), fee_waiver (bool), has_early_decision, has_early_action, has_rolling_admissions (booleans), source_urls ([]string), extracted_at (string), bigfuture_id (string), bigfuture_agrees (bool)\n- Plan key constants: early_decision_1, early_decision_2, early_action, restrictive_early_action, regular, rolling, priority\n\n**store.go**:\n- `StoreScrapedPage` — INSERT into search_base.scraped_page (the table exists per migration 00009)\n- `UpsertDeadlines` — wraps `dbutil.UpsertAnnualDataset` with theme=ADMISSIONS, datakey=deadlines\n- `LoadExistingDeadlines` — query existing deadline data\n\n**store_test.go**: unit tests for JSON marshaling and struct behavior (no DB needed).\n\n### Key context\n- Module: `github.com/ketang/kapow/tools/kapow`\n- Existing dbutil helpers: see `tools/kapow/internal/dbutil/upsert.go` — has UpsertAnnualDataset\n- AnnualDataset model: UnitID, Year, Theme, Datakey, Data ([]byte)\n- The scraped_page table schema (migration 00009):\n  ```sql\n  CREATE TABLE search_base.scraped_page (\n      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n      unit_id VARCHAR(20) NOT NULL REFERENCES search_base.institution(unit_id),\n      page_type VARCHAR(30) NOT NULL,\n      url TEXT NOT NULL,\n      content_text TEXT NOT NULL,\n      content_html TEXT,\n      api_response JSONB,\n      fetched_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n      http_status SMALLINT,\n      content_hash VARCHAR(64),\n      UNIQUE (unit_id, page_type, fetched_at)\n  );\n  ```\n- JSONB schema for deadline data (stored in annual_dataset.data):\n  ```json\n  {\n    \"plans\": {\n      \"early_decision_1\": { \"deadline\": \"2026-11-01\", \"notification\": \"2026-12-15\", \"deposit_due\": \"2027-01-15\", \"binding\": true, \"source_url\": \"...\", \"confidence\": \"high\" },\n      \"rolling\": { \"opens\": \"2026-08-01\", \"closes\": \"2027-06-01\", \"notification_weeks\": 4, \"binding\": false, \"source_url\": \"...\", \"confidence\": \"high\" }\n    },\n    \"fee_usd\": 75,\n    \"fee_waiver\": true,\n    \"has_early_decision\": true,\n    \"has_early_action\": false,\n    \"has_rolling_admissions\": false,\n    \"source_urls\": [\"https://www.example.edu/admissions\"],\n    \"extracted_at\": \"2026-08-15T14:30:00Z\",\n    \"bigfuture_id\": \"1251\",\n    \"bigfuture_agrees\": true\n  }\n  ```\n\n### Quality gate\n```bash\ncd tools/kapow && go test ./internal/deadlines/... -short -count=1\n```\n\n### Conventions\n- Follow CLAUDE.md and tools/CLAUDE.md conventions\n- Error wrapping: `fmt.Errorf(\"deadlines: context: %w\", err)`\n- Context always first param\n- Use `$N` parameterized SQL, never fmt.Sprintf for SQL\n- Exported types first, unexported helpers below\n\nAfter completing, commit your changes with a descriptive message and push the branch.",
+    "timestamp": "2026-03-11T05:16:55.933Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773206222884-ru5eft8\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"REPO_ROOT=\\\"$(git rev-parse --show-toplevel)\\\" && BRANCH_NAME=\\\"worktree/deadlines\\\" && WORKTREE_DIR=\\\"$REPO_ROOT/.claude/worktrees/$BRANCH_NAME\\\" && if [ -d \\\"$WORKTREE_DIR\\\" ]; then echo \\\"Worktree already exists, reusing\\\"; else git worktree add \\\"$WORKTREE_DIR\\\" -b \\\"$BRANCH_NAME\\\"; fi && cd \\\"$WORKTREE_DIR\\\" && echo \\\"CWD: $(pwd)\\\" && echo \\\"Branch: $(git branch --show-current)\\\" && echo \\\"$(pwd)\\\" | grep -q '\\\\.claude/worktrees/' && echo \\\"WORKTREE VERIFIED\\\" || echo \\\"FATAL: NOT in a worktree\\\"\",\"description\":\"Create and verify worktree\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T05:18:13.649Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"plan_approval_response\",\"requestId\":\"plan_approval-1773206366852@deadlines@swarm-2026-03-11\",\"approved\":true,\"timestamp\":\"2026-03-11T05:19:27.297Z\",\"permissionMode\":\"acceptEdits\"}",
+    "timestamp": "2026-03-11T05:19:27.297Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"plan_approval_response\",\"requestId\":\"plan_approval-1773206366852@deadlines@swarm-2026-03-11\",\"approved\":true,\"timestamp\":\"2026-03-11T05:20:42.946Z\",\"permissionMode\":\"acceptEdits\"}",
+    "timestamp": "2026-03-11T05:20:42.946Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773206459944-zh855oc\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"cd /home/ketan/project/kapow/.claude/worktrees/worktree/deadlines && git add tools/kapow/internal/deadlines/types.go tools/kapow/internal/deadlines/store.go tools/kapow/internal/deadlines/store_test.go && git commit -m \\\"$(cat <<'EOF'\\nfeat: add deadlines package with data types and DB helpers\\n\\nAdd tools/kapow/internal/deadlines/ with:\\n- types.go: DeadlinePlan, DeadlineData structs and plan key constants\\n- store.go: StoreScrapedPage, UpsertDeadlines, LoadExistingDeadlines\\n- store_test.go: unit tests for JSON marshaling and struct behavior\\n\\nPart of kapow-t77 (admissions deadlines).\\n\\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\\nEOF\\n)\\\"\",\"description\":\"Commit deadlines package\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T05:21:07.966Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773206470999-z7sczji\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"git push -u origin HEAD\",\"description\":\"Push branch to origin\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T05:21:12.539Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"shutdown_request\",\"requestId\":\"shutdown-1773206590218@deadlines\",\"from\":\"team-lead\",\"reason\":\"Merged and closed. Thanks!\",\"timestamp\":\"2026-03-11T05:23:10.218Z\"}",
+    "timestamp": "2026-03-11T05:23:10.218Z",
+    "read": true
+  }
+]

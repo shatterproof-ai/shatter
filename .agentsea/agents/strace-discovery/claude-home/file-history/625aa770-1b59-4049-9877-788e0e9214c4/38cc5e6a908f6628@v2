@@ -1,0 +1,32 @@
+import { useEffect, useRef } from 'react'
+import { useLocation } from 'react-router-dom'
+import { posthog, posthogEnabled } from '@/lib/posthog'
+import { useAuthStore } from '@/stores/authStore'
+
+/** Captures a $pageview event on every pathname change. No-op when PostHog is disabled. */
+export function usePostHogPageview() {
+  const { pathname } = useLocation()
+
+  useEffect(() => {
+    if (!posthogEnabled) return
+    posthog.capture('$pageview', { $current_url: window.location.href })
+  }, [pathname])
+}
+
+/** Identifies/resets the PostHog user when auth state changes. No-op when PostHog is disabled. */
+export function usePostHogIdentify() {
+  const user = useAuthStore((s) => s.user)
+  const identifiedRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    if (!posthogEnabled) return
+
+    if (user && identifiedRef.current !== user.id) {
+      posthog.identify(user.id, { email: user.email })
+      identifiedRef.current = user.id
+    } else if (!user && identifiedRef.current) {
+      posthog.reset()
+      identifiedRef.current = null
+    }
+  }, [user])
+}

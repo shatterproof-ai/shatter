@@ -1,0 +1,117 @@
+[
+  {
+    "from": "team-lead",
+    "text": "You are a teammate working on issue flt-ncn: Coverage debt reduction.\n\n## Issue Details\nRaise coverage on failing Go packages and the web app to meet the 80% line coverage threshold. Add meaningful tests for real behavior — not wiring-only coverage.\n\n### Go packages failing (< 80%):\n- graph/resolver: 16.3%\n- internal/item: 22.6%\n- internal/user: 11.4%\n- internal/audit: 6.7%\n- internal/mcpclient: 16.4%\n- internal/worker: 49.0%\n- internal/storage: 57.4%\n- internal/db: 70.3%\n- internal/provider: 72.0%\n\n### Web coverage (global 71.47%, needs 80%):\n- App.tsx: 0%\n- urqlClient.ts: 48%\n- ItemDetail.tsx: 52%\n- Capture.tsx: 57%\n- Browse.tsx: 61%\n- Search.tsx: 65%\n- Login.tsx: 75%\n- Register.tsx: 75%\n\n### Acceptance criteria\n- Targeted packages improve materially toward 80%\n- Tests cover real behavior (user-facing and trust-boundary paths)\n- Any exemptions are justified, not silently relied on\n- Out of scope: meaningless coverage in wiring-only code (cmd/server, internal/router are exempt)\n\n### Prioritization\nFocus on the packages with the biggest gaps AND highest importance:\n1. internal/item (22.6% — core CRUD + search)\n2. internal/user (11.4% — user management)\n3. graph/resolver (16.3% — GraphQL resolvers)\n4. internal/worker (49% — background jobs)\n5. internal/storage (57.4% — S3 abstraction)\n6. internal/provider (72% — close to threshold)\n7. internal/db (70.3% — close to threshold)\n8. internal/audit (6.7%)\n9. internal/mcpclient (16.4%)\n10. Web pages (ItemDetail, Capture, Browse, Search, Login, Register)\n\nFor Go unit tests: use `-short` guard, no real DB, mock external deps.\nFor web tests: use Vitest + happy-dom, renderWithMantine() from src/test/render.tsx.\n\n## WORKTREE ISOLATION — CRITICAL\n\n### Create your worktree (MANDATORY FIRST STEP)\nBefore doing ANY other work, create and enter your worktree:\n\n```bash\nWORKTREE_NAME=\"coverage-worker\"\nREPO_ROOT=$(git rev-parse --show-toplevel)\nWORKTREE_DIR=\"$REPO_ROOT/.claude/worktrees/$WORKTREE_NAME\"\nBRANCH_NAME=\"worktree/$WORKTREE_NAME\"\n\n# Create worktree (if it already exists, just cd into it)\nif [ -d \"$WORKTREE_DIR\" ]; then\n  echo \"Worktree already exists, reusing\"\nelse\n  git worktree add \"$WORKTREE_DIR\" -b \"$BRANCH_NAME\"\nfi\n\ncd \"$WORKTREE_DIR\"\n```\n\nThen verify you are in the right place:\n\n```bash\necho \"=== WORKTREE VERIFICATION ===\" && \\\necho \"CWD: $(pwd)\" && \\\necho \"Branch: $(git branch --show-current)\" && \\\nif echo \"$(pwd)\" | grep -q '\\.claude/worktrees/'; then \\\n  echo \"WORKTREE VERIFIED\"; \\\nelse \\\n  echo \"FATAL: NOT in a worktree! CWD=$(pwd)\"; \\\n  echo \"You MUST stop and report this error to the team lead.\"; \\\n  exit 1; \\\nfi\n```\n\nIf the verification FAILS, do NOT proceed. Report the error to the team lead immediately via SendMessage and stop all work.\n\n### Rules\n1. NEVER cd to the main repo — stay in your worktree directory\n2. NEVER run `git checkout` to switch branches — you are already on your branch\n3. ALWAYS use relative paths or `$(pwd)` for all operations\n4. Before EVERY `git commit` and `git push`, re-verify your CWD is in `.claude/worktrees/`\n5. Commit and push ONLY on your worktree branch — never touch main\n6. When running `make` targets, run them from your worktree root (your CWD)\n7. If ANY command output shows your CWD changed to the main repo, STOP immediately, cd back to your worktree, and re-verify\n\n### How to push your branch\n```bash\ngit add <files>\ngit commit -m \"your message\"\ngit push origin HEAD  # pushes your worktree branch, NOT main\n```\nNEVER run `git push origin main` or `git push origin HEAD:main`.\n\n## Quality Gate\nBefore reporting done, run:\n```bash\nmake test-standard\n```\nThis must pass. Also run `make coverage` to show improvement.\n\n## Instructions\n- Follow CLAUDE.md and api/CLAUDE.md and web/CLAUDE.md conventions\n- Write tests alongside the code they test\n- Commit your work on your worktree branch and push before reporting completion\n- Send a message to the team lead when done, including coverage numbers before/after\n",
+    "timestamp": "2026-03-12T01:49:43.065Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773280195973-opo6sqw\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"WORKTREE_NAME=\\\"coverage-worker\\\" && REPO_ROOT=$(git rev-parse --show-toplevel) && WORKTREE_DIR=\\\"$REPO_ROOT/.claude/worktrees/$WORKTREE_NAME\\\" && BRANCH_NAME=\\\"worktree/$WORKTREE_NAME\\\" && if [ -d \\\"$WORKTREE_DIR\\\" ]; then echo \\\"Worktree already exists, reusing\\\"; else git worktree add \\\"$WORKTREE_DIR\\\" -b \\\"$BRANCH_NAME\\\"; fi && cd \\\"$WORKTREE_DIR\\\" && echo \\\"=== WORKTREE VERIFICATION ===\\\" && echo \\\"CWD: $(pwd)\\\" && echo \\\"Branch: $(git branch --show-current)\\\" && if echo \\\"$(pwd)\\\" | grep -q '\\\\.claude/worktrees/'; then echo \\\"WORKTREE VERIFIED\\\"; else echo \\\"FATAL: NOT in a worktree! CWD=$(pwd)\\\"; exit 1; fi\",\"description\":\"Create and verify worktree for coverage work\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-12T01:51:28.300Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773280309440-ctu7des\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"find /home/ketan/project/flotsam/web -type f \\\\( -name \\\"*.test.ts\\\" -o -name \\\"*.test.tsx\\\" -o -name \\\"*.spec.ts\\\" -o -name \\\"*.spec.tsx\\\" \\\\) 2>/dev/null | head -20\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-12T01:52:05.924Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"plan_approval_response\",\"requestId\":\"plan_approval-1773280526272@coverage-worker@lovely-finding-wadler\",\"approved\":true,\"timestamp\":\"2026-03-12T01:55:26.561Z\",\"permissionMode\":\"default\"}",
+    "timestamp": "2026-03-12T01:55:26.561Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"plan_approval_response\",\"requestId\":\"plan_approval-1773280526272@coverage-worker@lovely-finding-wadler\",\"approved\":false,\"feedback\":\"Good plan for Go coverage. Two things to address before approval:\\n\\n1. **Add web coverage** — the issue requires web global coverage to improve materially (currently 71.47%, needs 80%). Add a section for the highest-impact web pages: ItemDetail (52%), Capture (57%), Browse (61%), Search (65%). Use Vitest + happy-dom + renderWithMantine() per web/CLAUDE.md.\\n\\n2. **Resolver interfaces** — your approach is correct (consumer-side interfaces in the resolver package). Just confirm: you will NOT refactor the service packages themselves, only define interfaces in `graph/resolver/` that the concrete services already satisfy.\\n\\nEverything else is solid. Revise and resubmit.\",\"timestamp\":\"2026-03-12T01:55:59.539Z\"}",
+    "timestamp": "2026-03-12T01:55:59.539Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773280537967-unakanx\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"echo \\\"CWD: $(pwd)\\\" && echo \\\"Branch: $(git branch --show-current)\\\" && echo \\\"WORKTREE VERIFIED\\\"\",\"description\":\"Verify worktree location\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-12T01:58:04.752Z",
+    "read": true
+  },
+  {
+    "from": "coverage-worker",
+    "text": "{\"type\":\"task_assignment\",\"taskId\":\"1\",\"subject\":\"flt-ncn: Coverage debt reduction\",\"description\":\"Raise coverage on failing Go packages and web app to meet 80% threshold. Key gaps: graph/resolver (16%), internal/item (22%), internal/user (11%), internal/audit (7%), internal/mcpclient (16%), internal/worker (49%), internal/storage (57%), internal/db (70%), internal/provider (72%). Web: global 71% (pages like ItemDetail 52%, Capture 57%, Browse 61%). Add meaningful tests for real behavior, not wiring-only coverage. Beads ID: flt-ncn.\",\"assignedBy\":\"coverage-worker\",\"timestamp\":\"2026-03-12T01:59:02.557Z\"}",
+    "timestamp": "2026-03-12T01:59:02.557Z",
+    "color": "blue",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773281121451-uzmp3az\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"cd /home/ketan/project/flotsam/.claude/worktrees/coverage-worker && cd api && go build ./... 2>&1\",\"timeout\":60000,\"description\":\"Check Go compilation\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-12T02:58:36.357Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773284326506-6xc4o3z\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"cd /home/ketan/project/flotsam/.claude/worktrees/coverage-worker && cd api && go test -short -count=1 ./graph/resolver/ ./internal/mcpclient/ ./internal/audit/ ./internal/item/ ./internal/user/ ./internal/worker/ 2>&1\",\"timeout\":120000,\"description\":\"Run unit tests for all modified packages\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-12T02:59:48.956Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773284424214-jn6ownj\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"cd /home/ketan/project/flotsam/.claude/worktrees/coverage-worker && cd api && go test -short -count=1 ./... 2>&1\",\"timeout\":120000,\"description\":\"Run all Go unit tests\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-12T03:02:11.361Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773284581263-f5z1roy\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"cd /home/ketan/project/flotsam/.claude/worktrees/coverage-worker/api && go test -short -coverprofile=/tmp/provider.cov ./internal/provider/ 2>&1 && go tool cover -func=/tmp/provider.cov 2>&1 | grep -v \\\"100.0%\\\"\",\"timeout\":30000,\"description\":\"Check provider coverage details\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-12T03:04:32.449Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773284716617-ybyzen1\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"go test -short -coverprofile=/tmp/db.cov ./internal/db/ 2>&1 && go tool cover -func=/tmp/db.cov 2>&1\",\"timeout\":30000,\"description\":\"Check db coverage details\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-12T03:08:00.037Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773284906458-q1jm087\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"cd /home/ketan/project/flotsam/.claude/worktrees/coverage-worker && cd api && go test -short -count=1 ./internal/provider/ 2>&1\",\"timeout\":30000,\"description\":\"Run provider tests\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-12T03:08:28.722Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773284930342-1jpyuon\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"cd /home/ketan/project/flotsam/.claude/worktrees/coverage-worker && cd api && go test -short -count=1 ./internal/provider/ 2>&1\",\"timeout\":30000,\"description\":\"Run provider tests\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-12T03:10:11.631Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773285042280-j1qak30\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"cd /home/ketan/project/flotsam/.claude/worktrees/coverage-worker/api && go test -short -coverprofile=/tmp/all.cov ./internal/item/ ./internal/worker/ 2>&1 && go tool cover -func=/tmp/all.cov 2>&1 | grep -v \\\"100.0%\\\"\",\"timeout\":30000,\"description\":\"Check item and worker coverage details\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-12T03:11:00.131Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773285311878-ilr5tgf\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"cd /home/ketan/project/flotsam/.claude/worktrees/coverage-worker && git status --short | head -30\",\"description\":\"Check worktree git status\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-12T04:34:51.630Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773290158287-o3d5kvr\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"ls node_modules/wonka 2>/dev/null && echo \\\"---wonka exists---\\\" || echo \\\"no wonka\\\"\",\"description\":\"Check if wonka is available\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-12T04:37:15.066Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773290244955-k4fxqft\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"ls node_modules/wonka 2>/dev/null; cat node_modules/urql/package.json 2>/dev/null | grep -E '\\\"(version|dependencies)\\\"' | head -5; ls node_modules/@urql/core/node_modules/wonka 2>/dev/null; ls node_modules/@urql/core/package.json 2>/dev/null && cat node_modules/@urql/core/package.json | grep wonka; echo \\\"---\\\"; grep wonka node_modules/urql/node_modules/@urql/core/package.json 2>/dev/null || echo \\\"no nested wonka\\\"\",\"description\":\"Check wonka availability through urql\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-12T04:38:59.979Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773290350624-cckjllm\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"node -e \\\"const w = require('wonka'); console.log(Object.keys(w).slice(0,10))\\\" 2>&1 || echo \\\"CJS fail\\\"; node -e \\\"import('wonka').then(w => console.log(Object.keys(w).slice(0,10)))\\\" 2>&1\",\"description\":\"Check if wonka is importable\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-12T04:40:52.400Z",
+    "read": true
+  }
+]

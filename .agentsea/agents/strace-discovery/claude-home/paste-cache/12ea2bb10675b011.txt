@@ -1,0 +1,230 @@
+go build -o bin/sea ./cmd/sea/
+mkdir -p /home/ketan/.local/bin
+install -m 755 bin/sea /home/ketan/.local/bin/sea
+printf '#!/bin/sh\nexec %s/bin/sea teammate-wrapper "$@"\n' "/home/ketan/.local" > /home/ketan/.local/bin/sea-teammate-wrapper
+chmod 755 /home/ketan/.local/bin/sea-teammate-wrapper
+Setting up smoke test in /tmp/sea-smoke-2309714984
+  claude:  /home/ketan/.local/share/claude/versions/2.1.71
+  wrapper: /tmp/sea-smoke-2309714984/teammate-wrapper
+  project: /tmp/sea-smoke-2309714984
+  timeout: 5m0s
+
+Clean up after: rm -rf /tmp/sea-smoke-2309714984
+
+Launched Claude Code in tmux session "sea-smoke-729201", waiting for smoke test results...
+
+[sea] Polling for /tmp/sea-smoke-2309714984/smoke-results.txt...
+  [tmux] ▐▛███▜▌   Claude Code v2.1.71
+  [tmux] ▝▜█████▛▘  Opus 4.6 · Claude Max
+  [tmux] ▘▘ ▝▝    /tmp/sea-smoke-2309714984
+  [tmux] ❯ You are running a smoke test for agentsea sandbox isolation. Follow these steps exactly:
+  [tmux] 1. Use the Team tool to spawn exactly 1 teammate with these instructions:
+  [tmux] TEAMMATE INSTRUCTIONS:
+  [tmux] ---
+  [tmux] You are a smoke test agent. Run ALL of these checks using the Bash tool and report results:
+  [tmux] CHECK 1 - NAMESPACE: Run: cat /proc/self/cgroup 2>/dev/null; ls /proc/self/ns/user -la
+  [tmux] Report PASS if you see namespace indicators (any output from ns/user shows user namespace is active).
+  [tmux] CHECK 2 - TMP ISOLATION: Run: touch /tmp/sea-smoke-canary-$$ && ls /tmp/sea-smoke-canary-$$ && rm /tmp/sea-smoke-canary-$$; echo "TMPFS_ENTRIES=$(ls /tmp/ | wc -l)"
+  [tmux] Report PASS if you can write to /tmp (it is writable tmpfs) AND the number of entries is small (less than 10, meaning it is isolated from the host's real /tmp which would have many more files).
+  [tmux] CHECK 3 - HOME ISOLATION: Run: ls $HOME
+  [tmux] Report what you see. PASS if you see a restricted set of files (not the user's full home directory like dotfiles, project, snap, etc).
+  [tmux] CHECK 4 - WORKTREE: Run: git branch --show-current && pwd
+  [tmux] Report the branch and working directory. PASS if you are on a branch like smoke-agent/work.
+  [tmux] CHECK 5 - READ-ONLY ROOT: Run: touch /usr/local/sea-smoke-test 2>&1 || echo READONLY
+  [tmux] Report PASS if READONLY or "Read-only file system".
+  [tmux] After running all checks, write your results to smoke-results.txt in the current directory, one check per line:
+  [tmux] CHECK 1: PASS/FAIL - details
+  [tmux] CHECK 2: PASS/FAIL - details
+  [tmux] CHECK 3: PASS/FAIL - details
+  [tmux] CHECK 4: PASS/FAIL - details
+  [tmux] CHECK 5: PASS/FAIL - details
+  [tmux] ---
+  [tmux] 2. After spawning the teammate, poll for results every 15 seconds. The teammate writes smoke-results.txt in its worktree at .agentsea/agents/smoke-agent/repo/smoke-results.txt relative to the project root. Run:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET"
+  [tmux] Keep polling until the file exists and contains CHECK results. Do NOT stop until you have the results.
+  [tmux] 3. Once you have the results, write them to smoke-results.txt in the PROJECT ROOT (not the agent repo). Use the Bash tool:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt > smoke-results.txt
+  [tmux] This file signals completion to the test harness.
+  [tmux] 4. If any check fails, explain what went wrong.
+  [tmux] * Synthesizing…
+  [tmux] ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ▪▪▪ Medium /model ─
+  [tmux] ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [tmux] ⏵⏵ bypass permissions on (shift+tab to cycle)                                                                                                                                                      You've used 93% of your weekly limit · resets 11pm (America/Chicago)
+[sea] Polling for /tmp/sea-smoke-2309714984/smoke-results.txt...
+  [tmux] ▐▛███▜▌   Claude Code v2.1.71
+  [tmux] ▝▜█████▛▘  Opus 4.6 · Claude Max
+  [tmux] ▘▘ ▝▝    /tmp/sea-smoke-2309714984
+  [tmux] ❯ You are running a smoke test for agentsea sandbox isolation. Follow these steps exactly:
+  [tmux] 1. Use the Team tool to spawn exactly 1 teammate with these instructions:
+  [tmux] TEAMMATE INSTRUCTIONS:
+  [tmux] ---
+  [tmux] You are a smoke test agent. Run ALL of these checks using the Bash tool and report results:
+  [tmux] CHECK 1 - NAMESPACE: Run: cat /proc/self/cgroup 2>/dev/null; ls /proc/self/ns/user -la
+  [tmux] Report PASS if you see namespace indicators (any output from ns/user shows user namespace is active).
+  [tmux] CHECK 2 - TMP ISOLATION: Run: touch /tmp/sea-smoke-canary-$$ && ls /tmp/sea-smoke-canary-$$ && rm /tmp/sea-smoke-canary-$$; echo "TMPFS_ENTRIES=$(ls /tmp/ | wc -l)"
+  [tmux] Report PASS if you can write to /tmp (it is writable tmpfs) AND the number of entries is small (less than 10, meaning it is isolated from the host's real /tmp which would have many more files).
+  [tmux] CHECK 3 - HOME ISOLATION: Run: ls $HOME
+  [tmux] Report what you see. PASS if you see a restricted set of files (not the user's full home directory like dotfiles, project, snap, etc).
+  [tmux] CHECK 4 - WORKTREE: Run: git branch --show-current && pwd
+  [tmux] Report the branch and working directory. PASS if you are on a branch like smoke-agent/work.
+  [tmux] CHECK 5 - READ-ONLY ROOT: Run: touch /usr/local/sea-smoke-test 2>&1 || echo READONLY
+  [tmux] Report PASS if READONLY or "Read-only file system".
+  [tmux] After running all checks, write your results to smoke-results.txt in the current directory, one check per line:
+  [tmux] CHECK 1: PASS/FAIL - details
+  [tmux] CHECK 2: PASS/FAIL - details
+  [tmux] CHECK 3: PASS/FAIL - details
+  [tmux] CHECK 4: PASS/FAIL - details
+  [tmux] CHECK 5: PASS/FAIL - details
+  [tmux] ---
+  [tmux] 2. After spawning the teammate, poll for results every 15 seconds. The teammate writes smoke-results.txt in its worktree at .agentsea/agents/smoke-agent/repo/smoke-results.txt relative to the project root. Run:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET"
+  [tmux] Keep polling until the file exists and contains CHECK results. Do NOT stop until you have the results.
+  [tmux] 3. Once you have the results, write them to smoke-results.txt in the PROJECT ROOT (not the agent repo). Use the Bash tool:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt > smoke-results.txt
+  [tmux] This file signals completion to the test harness.
+  [tmux] 4. If any check fails, explain what went wrong.
+  [tmux] ● I'll follow the steps exactly. First, let me spawn a teammate to run the sandbox isolation checks.
+  [tmux] ✶ Synthesizing… (thinking)
+  [tmux] ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ▪▪▪ ─
+  [tmux] ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [tmux] 09:35 You are running a smoke test for agentsea sandbox isolation. Follow these…                                                                                                                   You've used 93% of your weekly limit · resets 11pm (America/Chicago)
+  [tmux] ⏵⏵ bypass permissions on (shift+tab to cycle)
+[sea] Polling for /tmp/sea-smoke-2309714984/smoke-results.txt...
+  [tmux] ▐▛███▜▌   Claude Code v2.1.71
+  [tmux] ▝▜█████▛▘  Opus 4.6 · Claude Max
+  [tmux] ▘▘ ▝▝    /tmp/sea-smoke-2309714984
+  [tmux] ❯ You are running a smoke test for agentsea sandbox isolation. Follow these steps exactly:
+  [tmux] 1. Use the Team tool to spawn exactly 1 teammate with these instructions:
+  [tmux] TEAMMATE INSTRUCTIONS:
+  [tmux] ---
+  [tmux] You are a smoke test agent. Run ALL of these checks using the Bash tool and report results:
+  [tmux] CHECK 1 - NAMESPACE: Run: cat /proc/self/cgroup 2>/dev/null; ls /proc/self/ns/user -la
+  [tmux] Report PASS if you see namespace indicators (any output from ns/user shows user namespace is active).
+  [tmux] CHECK 2 - TMP ISOLATION: Run: touch /tmp/sea-smoke-canary-$$ && ls /tmp/sea-smoke-canary-$$ && rm /tmp/sea-smoke-canary-$$; echo "TMPFS_ENTRIES=$(ls /tmp/ | wc -l)"
+  [tmux] Report PASS if you can write to /tmp (it is writable tmpfs) AND the number of entries is small (less than 10, meaning it is isolated from the host's real /tmp which would have many more files).
+  [tmux] CHECK 3 - HOME ISOLATION: Run: ls $HOME
+  [tmux] Report what you see. PASS if you see a restricted set of files (not the user's full home directory like dotfiles, project, snap, etc).
+  [tmux] CHECK 4 - WORKTREE: Run: git branch --show-current && pwd
+  [tmux] Report the branch and working directory. PASS if you are on a branch like smoke-agent/work.
+  [tmux] CHECK 5 - READ-ONLY ROOT: Run: touch /usr/local/sea-smoke-test 2>&1 || echo READONLY
+  [tmux] Report PASS if READONLY or "Read-only file system".
+  [tmux] After running all checks, write your results to smoke-results.txt in the current directory, one check per line:
+  [tmux] CHECK 1: PASS/FAIL - details
+  [tmux] CHECK 2: PASS/FAIL - details
+  [tmux] CHECK 3: PASS/FAIL - details
+  [tmux] CHECK 4: PASS/FAIL - details
+  [tmux] CHECK 5: PASS/FAIL - details
+  [tmux] ---
+  [tmux] 2. After spawning the teammate, poll for results every 15 seconds. The teammate writes smoke-results.txt in its worktree at .agentsea/agents/smoke-agent/repo/smoke-results.txt relative to the project root. Run:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET"
+  [tmux] Keep polling until the file exists and contains CHECK results. Do NOT stop until you have the results.
+  [tmux] 3. Once you have the results, write them to smoke-results.txt in the PROJECT ROOT (not the agent repo). Use the Bash tool:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt > smoke-results.txt
+  [tmux] This file signals completion to the test harness.
+  [tmux] 4. If any check fails, explain what went wrong.
+  [tmux] ● I'll follow the steps exactly. First, let me spawn a teammate to run the sandbox isolation checks.
+  [tmux] ● Now let me spawn the teammate with the sandbox check instructions.
+  [tmux] ✶ Synthesizing… (thinking)
+  [tmux] ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ▪▪▪ ─
+  [tmux] ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [tmux] 09:35 You are running a smoke test for agentsea sandbox isolation. Follow these…
+  [tmux] ⏵⏵ bypass permissions on (shift+tab to cycle)
+[sea] Polling for /tmp/sea-smoke-2309714984/smoke-results.txt...
+  [tmux] * keychain 2.8.5 ~ http://www.funtoo.org
+  [tmux] * Found existing ssh-agent: 1041
+  [tmux] [ Mon Mar 09 09:36:04 (0) ketan@pontoon:/tmp/sea-smoke-2309714984 ]$ cd /tmp/sea-smoke-2309714984 && env CLAUDECODE=1 CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 /tmp/sea-smoke-2309714984/tea
+  [tmux] mmate-wrapper --agent-id smoke-agent\@wobbly-dreaming-treasure --agent-name smoke-agent --team-name wobbly-dreaming-treasure --agent-color blue --parent-session-id dfadc10e-fba3-4527-815
+  [tmux] e-d8e62570a7ca --dangerously-skip-permissions --model claude-opus-4-6
+  [tmux] [ Mon Mar 09 09:36:05 (0) ketan@pontoon:/tmp/sea-smoke-2309714984 ]$
+  [tmux] [ Mon Mar 09 09:36:05 (0) ketan@pontoon:/tmp/sea-smoke-2309714984 ]$
+[sea] Polling for /tmp/sea-smoke-2309714984/smoke-results.txt...
+  [tmux] * keychain 2.8.5 ~ http://www.funtoo.org
+  [tmux] * Found existing ssh-agent: 1041
+  [tmux] [ Mon Mar 09 09:36:04 (0) ketan@pontoon:/tmp/sea-smoke-2309714984 ]$ cd /tmp/sea-smoke-2309714984 && env CLAUDECODE=1 CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 /tmp/sea-smoke-2309714984/tea
+  [tmux] mmate-wrapper --agent-id smoke-agent\@wobbly-dreaming-treasure --agent-name smoke-agent --team-name wobbly-dreaming-treasure --agent-color blue --parent-session-id dfadc10e-fba3-4527-815
+  [tmux] e-d8e62570a7ca --dangerously-skip-permissions --model claude-opus-4-6
+  [tmux] [ Mon Mar 09 09:36:05 (0) ketan@pontoon:/tmp/sea-smoke-2309714984 ]$
+  [tmux] [ Mon Mar 09 09:36:05 (0) ketan@pontoon:/tmp/sea-smoke-2309714984 ]$
+  [tmux] [ Mon Mar 09 09:36:07 (0) ketan@pontoon:/tmp/sea-smoke-2309714984 ]$
+[sea] Polling for /tmp/sea-smoke-2309714984/smoke-results.txt...
+  [tmux] * keychain 2.8.5 ~ http://www.funtoo.org
+  [tmux] * Found existing ssh-agent: 1041
+  [tmux] [ Mon Mar 09 09:36:04 (0) ketan@pontoon:/tmp/sea-smoke-2309714984 ]$ cd /tmp/sea-smoke-2309714984 && env CLAUDECODE=1 CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 /tmp/sea-smoke-2309714984/tea
+  [tmux] mmate-wrapper --agent-id smoke-agent\@wobbly-dreaming-treasure --agent-name smoke-agent --team-name wobbly-dreaming-treasure --agent-color blue --parent-session-id dfadc10e-fba3-4527-815
+  [tmux] e-d8e62570a7ca --dangerously-skip-permissions --model claude-opus-4-6
+  [tmux] [ Mon Mar 09 09:36:05 (0) ketan@pontoon:/tmp/sea-smoke-2309714984 ]$
+  [tmux] [ Mon Mar 09 09:36:05 (0) ketan@pontoon:/tmp/sea-smoke-2309714984 ]$
+  [tmux] [ Mon Mar 09 09:36:07 (0) ketan@pontoon:/tmp/sea-smoke-2309714984 ]$
+[sea] Polling for /tmp/sea-smoke-2309714984/smoke-results.txt...
+  [tmux] * keychain 2.8.5 ~ http://www.funtoo.org
+  [tmux] * Found existing ssh-agent: 1041
+  [tmux] [ Mon Mar 09 09:36:04 (0) ketan@pontoon:/tmp/sea-smoke-2309714984 ]$ cd /tmp/sea-smoke-2309714984 && env CLAUDECODE=1 CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 /tmp/sea-smoke-2309714984/tea
+  [tmux] mmate-wrapper --agent-id smoke-agent\@wobbly-dreaming-treasure --agent-name smoke-agent --team-name wobbly-dreaming-treasure --agent-color blue --parent-session-id dfadc10e-fba3-4527-815
+  [tmux] e-d8e62570a7ca --dangerously-skip-permissions --model claude-opus-4-6
+  [tmux] [ Mon Mar 09 09:36:05 (0) ketan@pontoon:/tmp/sea-smoke-2309714984 ]$
+  [tmux] [ Mon Mar 09 09:36:05 (0) ketan@pontoon:/tmp/sea-smoke-2309714984 ]$
+  [tmux] [ Mon Mar 09 09:36:07 (0) ketan@pontoon:/tmp/sea-smoke-2309714984 ]$
+[sea] Polling for /tmp/sea-smoke-2309714984/smoke-results.txt...
+  [tmux] * keychain 2.8.5 ~ http://www.funtoo.org
+  [tmux] * Found existing ssh-agent: 1041
+  [tmux] [ Mon Mar 09 09:36:04 (0) ketan@pontoon:/tmp/sea-smoke-2309714984 ]$ cd /tmp/sea-smoke-2309714984 && env CLAUDECODE=1 CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 /tmp/sea-smoke-2309714984/tea
+  [tmux] mmate-wrapper --agent-id smoke-agent\@wobbly-dreaming-treasure --agent-name smoke-agent --team-name wobbly-dreaming-treasure --agent-color blue --parent-session-id dfadc10e-fba3-4527-815
+  [tmux] e-d8e62570a7ca --dangerously-skip-permissions --model claude-opus-4-6
+  [tmux] [ Mon Mar 09 09:36:05 (0) ketan@pontoon:/tmp/sea-smoke-2309714984 ]$
+  [tmux] [ Mon Mar 09 09:36:05 (0) ketan@pontoon:/tmp/sea-smoke-2309714984 ]$
+  [tmux] [ Mon Mar 09 09:36:07 (0) ketan@pontoon:/tmp/sea-smoke-2309714984 ]$
+[sea] Polling for /tmp/sea-smoke-2309714984/smoke-results.txt...
+  [tmux] * keychain 2.8.5 ~ http://www.funtoo.org
+  [tmux] * Found existing ssh-agent: 1041
+  [tmux] [ Mon Mar 09 09:36:04 (0) ketan@pontoon:/tmp/sea-smoke-2309714984 ]$ cd /tmp/sea-smoke-2309714984 && env CLAUDECODE=1 CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 /tmp/sea-smoke-2309714984/tea
+  [tmux] mmate-wrapper --agent-id smoke-agent\@wobbly-dreaming-treasure --agent-name smoke-agent --team-name wobbly-dreaming-treasure --agent-color blue --parent-session-id dfadc10e-fba3-4527-815
+  [tmux] e-d8e62570a7ca --dangerously-skip-permissions --model claude-opus-4-6
+  [tmux] [ Mon Mar 09 09:36:05 (0) ketan@pontoon:/tmp/sea-smoke-2309714984 ]$
+  [tmux] [ Mon Mar 09 09:36:05 (0) ketan@pontoon:/tmp/sea-smoke-2309714984 ]$
+  [tmux] [ Mon Mar 09 09:36:07 (0) ketan@pontoon:/tmp/sea-smoke-2309714984 ]$
+[sea] Polling for /tmp/sea-smoke-2309714984/smoke-results.txt...
+  [tmux] * keychain 2.8.5 ~ http://www.funtoo.org
+  [tmux] * Found existing ssh-agent: 1041
+  [tmux] [ Mon Mar 09 09:36:04 (0) ketan@pontoon:/tmp/sea-smoke-2309714984 ]$ cd /tmp/sea-smoke-2309714984 && env CLAUDECODE=1 CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 /tmp/sea-smoke-2309714984/tea
+  [tmux] mmate-wrapper --agent-id smoke-agent\@wobbly-dreaming-treasure --agent-name smoke-agent --team-name wobbly-dreaming-treasure --agent-color blue --parent-session-id dfadc10e-fba3-4527-815
+  [tmux] e-d8e62570a7ca --dangerously-skip-permissions --model claude-opus-4-6
+  [tmux] [ Mon Mar 09 09:36:05 (0) ketan@pontoon:/tmp/sea-smoke-2309714984 ]$
+  [tmux] [ Mon Mar 09 09:36:05 (0) ketan@pontoon:/tmp/sea-smoke-2309714984 ]$
+  [tmux] [ Mon Mar 09 09:36:07 (0) ketan@pontoon:/tmp/sea-smoke-2309714984 ]$
+[sea] Polling for /tmp/sea-smoke-2309714984/smoke-results.txt...
+  [tmux] * keychain 2.8.5 ~ http://www.funtoo.org
+  [tmux] * Found existing ssh-agent: 1041
+  [tmux] [ Mon Mar 09 09:36:04 (0) ketan@pontoon:/tmp/sea-smoke-2309714984 ]$ cd /tmp/sea-smoke-2309714984 && env CLAUDECODE=1 CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 /tmp/sea-smoke-2309714984/tea
+  [tmux] mmate-wrapper --agent-id smoke-agent\@wobbly-dreaming-treasure --agent-name smoke-agent --team-name wobbly-dreaming-treasure --agent-color blue --parent-session-id dfadc10e-fba3-4527-815
+  [tmux] e-d8e62570a7ca --dangerously-skip-permissions --model claude-opus-4-6
+  [tmux] [ Mon Mar 09 09:36:05 (0) ketan@pontoon:/tmp/sea-smoke-2309714984 ]$
+  [tmux] [ Mon Mar 09 09:36:05 (0) ketan@pontoon:/tmp/sea-smoke-2309714984 ]$
+  [tmux] [ Mon Mar 09 09:36:07 (0) ketan@pontoon:/tmp/sea-smoke-2309714984 ]$
+[sea] Polling for /tmp/sea-smoke-2309714984/smoke-results.txt...
+  [tmux] * keychain 2.8.5 ~ http://www.funtoo.org
+  [tmux] * Found existing ssh-agent: 1041
+  [tmux] [ Mon Mar 09 09:36:04 (0) ketan@pontoon:/tmp/sea-smoke-2309714984 ]$ cd /tmp/sea-smoke-2309714984 && env CLAUDECODE=1 CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 /tmp/sea-smoke-2309714984/tea
+  [tmux] mmate-wrapper --agent-id smoke-agent\@wobbly-dreaming-treasure --agent-name smoke-agent --team-name wobbly-dreaming-treasure --agent-color blue --parent-session-id dfadc10e-fba3-4527-815
+  [tmux] e-d8e62570a7ca --dangerously-skip-permissions --model claude-opus-4-6
+  [tmux] [ Mon Mar 09 09:36:05 (0) ketan@pontoon:/tmp/sea-smoke-2309714984 ]$
+  [tmux] [ Mon Mar 09 09:36:05 (0) ketan@pontoon:/tmp/sea-smoke-2309714984 ]$
+  [tmux] [ Mon Mar 09 09:36:07 (0) ketan@pontoon:/tmp/sea-smoke-2309714984 ]$ All 5 smoke test checks passed and results have been committed and reported to the team lead.
+CHECK 1: PASS - User namespace active: user:[4026532319], cgroup shows tmux-spawn scope
+CHECK 2: PASS - /tmp is writable and isolated (only 3 entries)
+CHECK 3: PASS - HOME directory is empty (restricted, not user's full home)
+CHECK 4: PASS - On branch smoke-agent/work, working directory /tmp/sea-smoke-2309714984/.agentsea/agents/smoke-agent/repo
+CHECK 5: PASS - Read-only file system confirmed ("cannot touch '/usr/local/sea-smoke-test': Read-only file system")
+
+
+Smoke test completed.
+Inspect workspace: /tmp/sea-smoke-2309714984
+
+── Launcher Log ──
+CLAUDE_CODE_TEAMMATE_COMMAND=/tmp/sea-smoke-2309714984/teammate-wrapper
+PATH=/home/ketan/.local/go/bin:/home/ketan/go/bin:/home/ketan/.local/bin:/Users/ketan/.rd/bin:/usr/local/go/bin:/home/ketan/go/bin:/home/ketan/.local/go/bin:/home/ketan/go/bin:/home/ketan/.local/bin:/Users/ketan/.rd/bin:/home/ketan/.cargo/bin:/usr/local/go/bin:/home/ketan/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/snap/bin:/home/ketan/project/utilscripts:/home/ketan/project/wkflw/bin:/snap/bin:/home/ketan/project/utilscripts:/home/ketan/project/wkflw/bin
+TMUX=/tmp/tmux-1000/default,1340,30
+-rwxr-xr-x 1 ketan ketan 214 Mar  9 09:35 /tmp/sea-smoke-2309714984/teammate-wrapper
+
+── Wrapper Log ──
+[wrapper] invoked at Mon Mar  9 09:36:05 AM CDT 2026
+[wrapper] args: --agent-id smoke-agent@wobbly-dreaming-treasure --agent-name smoke-agent --team-name wobbly-dreaming-treasure --agent-color blue --parent-session-id dfadc10e-fba3-4527-815e-d8e62570a7ca --dangerously-skip-permissions --model claude-opus-4-6

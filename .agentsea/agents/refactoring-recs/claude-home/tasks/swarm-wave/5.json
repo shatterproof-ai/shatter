@@ -1,0 +1,10 @@
+{
+  "id": "5",
+  "subject": "[str-28vd.6] Local hook bootstrap",
+  "description": "Add repo docs/config for local hook integration. Pre-commit and pre-push call repo-owned quality scripts (scripts/quality/) instead of duplicating command logic. Branch: str-28vd.6. See `bd show str-28vd.6`.",
+  "activeForm": "Adding local hook bootstrap",
+  "owner": "guardrails",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

@@ -1,0 +1,61 @@
+import { Component, type ErrorInfo, type ReactNode } from 'react'
+import { Button, Container, Stack, Text, Title } from '@mantine/core'
+import { posthog, posthogEnabled } from '@/lib/posthog'
+
+interface Props {
+  children: ReactNode
+}
+
+interface State {
+  hasError: boolean
+  error: Error | null
+}
+
+export class ErrorBoundary extends Component<Props, State> {
+  constructor(props: Props) {
+    super(props)
+    this.state = { hasError: false, error: null }
+  }
+
+  static getDerivedStateFromError(error: Error): State {
+    return { hasError: true, error }
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    if (posthogEnabled) {
+      posthog.capture('$exception', {
+        $exception_message: error.message,
+        $exception_type: error.name,
+        $exception_stack_trace_raw: error.stack,
+        $exception_source: 'react_error_boundary',
+        $exception_component_stack: errorInfo.componentStack,
+      })
+    }
+  }
+
+  handleReload = () => {
+    window.location.reload()
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <Container size="sm" py="xl">
+          <Stack align="center" gap="md">
+            <Title order={2} c="brand.9">
+              Something went wrong
+            </Title>
+            <Text c="dimmed" ta="center">
+              An unexpected error occurred. Please try reloading the page.
+            </Text>
+            <Button color="accent" onClick={this.handleReload}>
+              Reload page
+            </Button>
+          </Stack>
+        </Container>
+      )
+    }
+
+    return this.props.children
+  }
+}

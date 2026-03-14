@@ -1,0 +1,9 @@
+{
+  "id": "1",
+  "subject": "str-fpgb.1: Protocol registry scaffold",
+  "description": "Add a canonical machine-readable protocol registry under protocol/ that becomes the single source of truth for commands, statuses, capabilities, error codes, and compatibility policy. Beads ID: str-fpgb.1",
+  "owner": "registry-scaffold",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

@@ -1,0 +1,15 @@
+[
+  {
+    "from": "team-lead",
+    "text": "Your plan was approved earlier. Please proceed with implementation. Run your quality gate (cd web && pnpm install && pnpm build && pnpm lint && pnpm test) before reporting done, and push your branch.",
+    "summary": "Plan approved, proceed with implementation",
+    "timestamp": "2026-03-12T02:59:39.739Z",
+    "read": false
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"shutdown_request\",\"requestId\":\"shutdown-1773290091614@search-analytics\",\"from\":\"team-lead\",\"reason\":\"Work completed by replacement agent and merged. Shutting down.\",\"timestamp\":\"2026-03-12T04:34:51.614Z\"}",
+    "timestamp": "2026-03-12T04:34:51.614Z",
+    "read": false
+  }
+]

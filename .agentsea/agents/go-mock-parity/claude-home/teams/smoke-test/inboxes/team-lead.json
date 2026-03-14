@@ -1,0 +1,248 @@
+[
+  {
+    "from": "teammate-1",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1772855779399-brei48c\",\"agent_id\":\"teammate-1\",\"tool_name\":\"Bash\",\"tool_use_id\":\"toolu_01QiQoz9UzCHe9NdcMjZfKnD\",\"description\":\"Check if bwrap appears in PID 1 cmdline\",\"input\":{\"command\":\"cat /proc/1/cmdline | tr '\\\\0' ' '\",\"description\":\"Check if bwrap appears in PID 1 cmdline\"},\"permission_suggestions\":[{\"type\":\"addRules\",\"rules\":[{\"toolName\":\"Read\",\"ruleContent\":\"//proc/1/**\"}],\"behavior\":\"allow\",\"destination\":\"session\"}]}",
+    "timestamp": "2026-03-07T03:56:19.403Z",
+    "color": "blue",
+    "read": true
+  },
+  {
+    "from": "teammate-2",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1772855782972-lqz7is7\",\"agent_id\":\"teammate-2\",\"tool_name\":\"Bash\",\"tool_use_id\":\"toolu_01V2uEXhkrt2a7R6DR2WJXdu\",\"description\":\"Check if bwrap appears in PID 1 cmdline\",\"input\":{\"command\":\"cat /proc/1/cmdline | tr '\\\\0' ' '\",\"description\":\"Check if bwrap appears in PID 1 cmdline\"},\"permission_suggestions\":[{\"type\":\"addRules\",\"rules\":[{\"toolName\":\"Read\",\"ruleContent\":\"//proc/1/**\"}],\"behavior\":\"allow\",\"destination\":\"session\"}]}",
+    "timestamp": "2026-03-07T03:56:22.973Z",
+    "color": "green",
+    "read": true
+  },
+  {
+    "from": "teammate-1",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1772855801624-1opd0hz\",\"agent_id\":\"teammate-1\",\"tool_name\":\"Bash\",\"tool_use_id\":\"toolu_015TicAFRBiVKCC4mwBwZkak\",\"description\":\"Check PID 1 cmdline for bwrap\",\"input\":{\"command\":\"cat /proc/1/cmdline 2>&1 | tr '\\\\0' ' ' || echo \\\"CANNOT READ\\\"\",\"description\":\"Check PID 1 cmdline for bwrap\"},\"permission_suggestions\":[{\"type\":\"addRules\",\"rules\":[{\"toolName\":\"Read\",\"ruleContent\":\"//proc/1/**\"}],\"behavior\":\"allow\",\"destination\":\"session\"}]}",
+    "timestamp": "2026-03-07T03:56:41.625Z",
+    "color": "blue",
+    "read": true
+  },
+  {
+    "from": "teammate-2",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1772855804700-4sjhlyo\",\"agent_id\":\"teammate-2\",\"tool_name\":\"Read\",\"tool_use_id\":\"toolu_01J4PKtKVbUBGm5gS8UuqizS\",\"description\":\"Read a file from the local filesystem.\",\"input\":{\"file_path\":\"/proc/1/cmdline\"},\"permission_suggestions\":[{\"type\":\"addRules\",\"rules\":[{\"toolName\":\"Read\",\"ruleContent\":\"//proc/1/**\"}],\"behavior\":\"allow\",\"destination\":\"session\"}]}",
+    "timestamp": "2026-03-07T03:56:44.700Z",
+    "color": "green",
+    "read": true
+  },
+  {
+    "from": "teammate-1",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1772855806064-tyftez1\",\"agent_id\":\"teammate-1\",\"tool_name\":\"Bash\",\"tool_use_id\":\"toolu_01Pno54Nub7dgMfz8t1yYNc5\",\"description\":\"Read PID 1 cmdline using strings\",\"input\":{\"command\":\"strings /proc/1/cmdline 2>&1 || echo \\\"CANNOT_READ\\\"\",\"description\":\"Read PID 1 cmdline using strings\"},\"permission_suggestions\":[{\"type\":\"addRules\",\"rules\":[{\"toolName\":\"Read\",\"ruleContent\":\"//proc/1/**\"}],\"behavior\":\"allow\",\"destination\":\"session\"}]}",
+    "timestamp": "2026-03-07T03:56:46.065Z",
+    "color": "blue",
+    "read": true
+  },
+  {
+    "from": "teammate-1",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1772855813462-qwjbc7k\",\"agent_id\":\"teammate-1\",\"tool_name\":\"Bash\",\"tool_use_id\":\"toolu_01QRwUFUYoE2oUSx6d3DmNNB\",\"description\":\"List proc 1 directory\",\"input\":{\"command\":\"ls /proc/1/\",\"description\":\"List proc 1 directory\"},\"permission_suggestions\":[{\"type\":\"addRules\",\"rules\":[{\"toolName\":\"Read\",\"ruleContent\":\"//proc/1/**\"}],\"behavior\":\"allow\",\"destination\":\"session\"}]}",
+    "timestamp": "2026-03-07T03:56:53.462Z",
+    "color": "blue",
+    "read": true
+  },
+  {
+    "from": "teammate-2",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1772855813704-5vwsqj4\",\"agent_id\":\"teammate-2\",\"tool_name\":\"Bash\",\"tool_use_id\":\"toolu_01NWVSW9uXrfZkEBhXKK3ZBe\",\"description\":\"Check CLAUDE_CODE_TEAMMATE_COMMAND env var\",\"input\":{\"command\":\"echo $CLAUDE_CODE_TEAMMATE_COMMAND\",\"description\":\"Check CLAUDE_CODE_TEAMMATE_COMMAND env var\"},\"permission_suggestions\":[{\"type\":\"addRules\",\"rules\":[{\"toolName\":\"Bash\",\"ruleContent\":\"echo $CLAUDE_CODE_TEAMMATE_COMMAND\"}],\"behavior\":\"allow\",\"destination\":\"localSettings\"}]}",
+    "timestamp": "2026-03-07T03:56:53.705Z",
+    "color": "green",
+    "read": true
+  },
+  {
+    "from": "teammate-1",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1772855821842-g5krpew\",\"agent_id\":\"teammate-1\",\"tool_name\":\"Bash\",\"tool_use_id\":\"toolu_01RBTEqopNrehphez8XXDeDH\",\"description\":\"Check env var value\",\"input\":{\"command\":\"echo \\\"TEAMMATE_CMD=$CLAUDE_CODE_TEAMMATE_COMMAND\\\"\",\"description\":\"Check env var value\"},\"permission_suggestions\":[{\"type\":\"addRules\",\"rules\":[{\"toolName\":\"Bash\",\"ruleContent\":\"echo \\\"TEAMMATE_CMD=$CLAUDE_CODE_TEAMMATE_COMMAND\\\"\"}],\"behavior\":\"allow\",\"destination\":\"localSettings\"}]}",
+    "timestamp": "2026-03-07T03:57:01.846Z",
+    "color": "blue",
+    "read": true
+  },
+  {
+    "from": "teammate-2",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1772855822600-omw89x6\",\"agent_id\":\"teammate-2\",\"tool_name\":\"Bash\",\"tool_use_id\":\"toolu_01ME8jS775sDb3Luka3qqFTQ\",\"description\":\"Check CLAUDE_CODE_TEAMMATE_COMMAND env var\",\"input\":{\"command\":\"echo $CLAUDE_CODE_TEAMMATE_COMMAND\",\"description\":\"Check CLAUDE_CODE_TEAMMATE_COMMAND env var\"},\"permission_suggestions\":[{\"type\":\"addRules\",\"rules\":[{\"toolName\":\"Bash\",\"ruleContent\":\"echo $CLAUDE_CODE_TEAMMATE_COMMAND\"}],\"behavior\":\"allow\",\"destination\":\"localSettings\"}]}",
+    "timestamp": "2026-03-07T03:57:02.600Z",
+    "color": "green",
+    "read": true
+  },
+  {
+    "from": "teammate-1",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1772855827612-917oc63\",\"agent_id\":\"teammate-1\",\"tool_name\":\"Bash\",\"tool_use_id\":\"toolu_01FoxGAiF9wnMioyzujGtiPc\",\"description\":\"Print teammate command env var\",\"input\":{\"command\":\"printenv CLAUDE_CODE_TEAMMATE_COMMAND\",\"description\":\"Print teammate command env var\"},\"permission_suggestions\":[{\"type\":\"addRules\",\"rules\":[{\"toolName\":\"Bash\",\"ruleContent\":\"printenv CLAUDE_CODE_TEAMMATE_COMMAND\"}],\"behavior\":\"allow\",\"destination\":\"localSettings\"}]}",
+    "timestamp": "2026-03-07T03:57:07.612Z",
+    "color": "blue",
+    "read": true
+  },
+  {
+    "from": "teammate-2",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1772855835624-sdew6ni\",\"agent_id\":\"teammate-2\",\"tool_name\":\"Bash\",\"tool_use_id\":\"toolu_019dqnmLatzGw4bJZ217vtSE\",\"description\":\"Print CLAUDE_CODE_TEAMMATE_COMMAND env var\",\"input\":{\"command\":\"printenv CLAUDE_CODE_TEAMMATE_COMMAND\",\"description\":\"Print CLAUDE_CODE_TEAMMATE_COMMAND env var\"},\"permission_suggestions\":[{\"type\":\"addRules\",\"rules\":[{\"toolName\":\"Bash\",\"ruleContent\":\"printenv CLAUDE_CODE_TEAMMATE_COMMAND\"}],\"behavior\":\"allow\",\"destination\":\"localSettings\"}]}",
+    "timestamp": "2026-03-07T03:57:15.624Z",
+    "color": "green",
+    "read": true
+  },
+  {
+    "from": "teammate-1",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1772855837283-smmybr2\",\"agent_id\":\"teammate-1\",\"tool_name\":\"Bash\",\"tool_use_id\":\"toolu_01UUfKP8vUgnLaaMMrb2dbMS\",\"description\":\"List home directory\",\"input\":{\"command\":\"ls $HOME\",\"description\":\"List home directory\"},\"permission_suggestions\":[{\"type\":\"addRules\",\"rules\":[{\"toolName\":\"Read\",\"ruleContent\":\"//tmp/sea-smoke-4263254298/**\"}],\"behavior\":\"allow\",\"destination\":\"session\"}]}",
+    "timestamp": "2026-03-07T03:57:17.283Z",
+    "color": "blue",
+    "read": true
+  },
+  {
+    "from": "teammate-2",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1772855839698-f5i78qz\",\"agent_id\":\"teammate-2\",\"tool_name\":\"Bash\",\"tool_use_id\":\"toolu_01DfnYRrz4SRW9Q9CJLSHEcP\",\"description\":\"Search for CLAUDE_CODE_TEAMMATE env vars\",\"input\":{\"command\":\"env | grep CLAUDE_CODE_TEAMMATE\",\"description\":\"Search for CLAUDE_CODE_TEAMMATE env vars\"},\"permission_suggestions\":[{\"type\":\"addRules\",\"rules\":[{\"toolName\":\"Bash\",\"ruleContent\":\"env\"}],\"behavior\":\"allow\",\"destination\":\"localSettings\"}]}",
+    "timestamp": "2026-03-07T03:57:19.698Z",
+    "color": "green",
+    "read": true
+  },
+  {
+    "from": "teammate-1",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1772855844663-n8ra7l4\",\"agent_id\":\"teammate-1\",\"tool_name\":\"Bash\",\"tool_use_id\":\"toolu_01SGQFGkV8VPg9JxSCumWUR6\",\"description\":\"List home directory contents\",\"input\":{\"command\":\"ls ~/\",\"description\":\"List home directory contents\"},\"permission_suggestions\":[{\"type\":\"addRules\",\"rules\":[{\"toolName\":\"Read\",\"ruleContent\":\"//home/ketan/**\"}],\"behavior\":\"allow\",\"destination\":\"session\"}]}",
+    "timestamp": "2026-03-07T03:57:24.666Z",
+    "color": "blue",
+    "read": true
+  },
+  {
+    "from": "teammate-2",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1772855847750-ij49s0c\",\"agent_id\":\"teammate-2\",\"tool_name\":\"Bash\",\"tool_use_id\":\"toolu_01FAogStM8EzXPtPTyvc7zNP\",\"description\":\"List tmp directory contents\",\"input\":{\"command\":\"ls /tmp/\",\"description\":\"List tmp directory contents\"},\"permission_suggestions\":[{\"type\":\"addRules\",\"rules\":[{\"toolName\":\"Read\",\"ruleContent\":\"//tmp/**\"}],\"behavior\":\"allow\",\"destination\":\"session\"}]}",
+    "timestamp": "2026-03-07T03:57:27.750Z",
+    "color": "green",
+    "read": true
+  },
+  {
+    "from": "teammate-1",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1772855850640-p4idzls\",\"agent_id\":\"teammate-1\",\"tool_name\":\"Bash\",\"tool_use_id\":\"toolu_01BvK94n54MpN8d5yV9X4zvm\",\"description\":\"List home directory\",\"input\":{\"command\":\"ls /home/ketan/\",\"description\":\"List home directory\"},\"permission_suggestions\":[{\"type\":\"addRules\",\"rules\":[{\"toolName\":\"Read\",\"ruleContent\":\"//home/ketan/**\"}],\"behavior\":\"allow\",\"destination\":\"session\"}]}",
+    "timestamp": "2026-03-07T03:57:30.641Z",
+    "color": "blue",
+    "read": true
+  },
+  {
+    "from": "teammate-2",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1772855858513-f4cd51u\",\"agent_id\":\"teammate-2\",\"tool_name\":\"Bash\",\"tool_use_id\":\"toolu_01L44kB9daQoqRtBzEM1qbWJ\",\"description\":\"Test write isolation by attempting to create file in /tmp\",\"input\":{\"command\":\"touch /tmp/sea-smoke-escape-test 2>&1; echo \\\"exit: $?\\\"\",\"description\":\"Test write isolation by attempting to create file in /tmp\"},\"permission_suggestions\":[{\"type\":\"addRules\",\"rules\":[{\"toolName\":\"Bash\",\"ruleContent\":\"touch /tmp/sea-smoke-escape-test\"},{\"toolName\":\"Bash\",\"ruleContent\":\"echo \\\"exit: $?\\\"\"}],\"behavior\":\"allow\",\"destination\":\"localSettings\"}]}",
+    "timestamp": "2026-03-07T03:57:38.515Z",
+    "color": "green",
+    "read": true
+  },
+  {
+    "from": "teammate-1",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1772855861554-kyvqns8\",\"agent_id\":\"teammate-1\",\"tool_name\":\"Bash\",\"tool_use_id\":\"toolu_01CNRXNqmw5NKJhgaHYBTuyd\",\"description\":\"Test write outside workdir\",\"input\":{\"command\":\"touch /tmp/sea-smoke-escape-test && echo LEAKED || echo BLOCKED\",\"description\":\"Test write outside workdir\"},\"permission_suggestions\":[{\"type\":\"addDirectories\",\"directories\":[\"/tmp\"],\"destination\":\"session\"},{\"type\":\"setMode\",\"mode\":\"acceptEdits\",\"destination\":\"session\"}]}",
+    "timestamp": "2026-03-07T03:57:41.558Z",
+    "color": "blue",
+    "read": true
+  },
+  {
+    "from": "teammate-2",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1772855865440-w9i438r\",\"agent_id\":\"teammate-2\",\"tool_name\":\"Bash\",\"tool_use_id\":\"toolu_01KWuE4A9UuFkKrVMbr7YQ5t\",\"description\":\"List home directory\",\"input\":{\"command\":\"ls ~\",\"description\":\"List home directory\"},\"permission_suggestions\":[{\"type\":\"addRules\",\"rules\":[{\"toolName\":\"Read\",\"ruleContent\":\"//home/ketan/**\"}],\"behavior\":\"allow\",\"destination\":\"session\"}]}",
+    "timestamp": "2026-03-07T03:57:45.445Z",
+    "color": "green",
+    "read": true
+  },
+  {
+    "from": "teammate-1",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1772855868618-ibq9dz5\",\"agent_id\":\"teammate-1\",\"tool_name\":\"Bash\",\"tool_use_id\":\"toolu_01H8btpzi196rY5BPxR14H9y\",\"description\":\"Test if root filesystem is read-only\",\"input\":{\"command\":\"touch /usr/local/sea-smoke-test 2>&1 || echo READONLY\",\"description\":\"Test if root filesystem is read-only\"},\"permission_suggestions\":[{\"type\":\"addDirectories\",\"directories\":[\"/usr/local\"],\"destination\":\"session\"},{\"type\":\"setMode\",\"mode\":\"acceptEdits\",\"destination\":\"session\"}]}",
+    "timestamp": "2026-03-07T03:57:48.619Z",
+    "color": "blue",
+    "read": true
+  },
+  {
+    "from": "teammate-2",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1772855872055-a4ellm2\",\"agent_id\":\"teammate-2\",\"tool_name\":\"Bash\",\"tool_use_id\":\"toolu_014BMUUbStA8LzhhH24na5Eg\",\"description\":\"Test if root filesystem is read-only\",\"input\":{\"command\":\"touch /usr/local/sea-smoke-test 2>&1; echo \\\"result: $?\\\"\",\"description\":\"Test if root filesystem is read-only\"},\"permission_suggestions\":[{\"type\":\"addRules\",\"rules\":[{\"toolName\":\"Bash\",\"ruleContent\":\"touch /usr/local/sea-smoke-test\"},{\"toolName\":\"Bash\",\"ruleContent\":\"echo \\\"result: $?\\\"\"}],\"behavior\":\"allow\",\"destination\":\"localSettings\"}]}",
+    "timestamp": "2026-03-07T03:57:52.057Z",
+    "color": "green",
+    "read": true
+  },
+  {
+    "from": "teammate-1",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1772855875445-21g865l\",\"agent_id\":\"teammate-1\",\"tool_name\":\"Bash\",\"tool_use_id\":\"toolu_01BGb6aGfV5fwZDQNEU9EBYQ\",\"description\":\"Check for teammate env vars\",\"input\":{\"command\":\"env | grep TEAMMATE\",\"description\":\"Check for teammate env vars\"},\"permission_suggestions\":[{\"type\":\"addRules\",\"rules\":[{\"toolName\":\"Bash\",\"ruleContent\":\"env\"}],\"behavior\":\"allow\",\"destination\":\"localSettings\"}]}",
+    "timestamp": "2026-03-07T03:57:55.445Z",
+    "color": "blue",
+    "read": true
+  },
+  {
+    "from": "teammate-2",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1772855886233-0hkct26\",\"agent_id\":\"teammate-2\",\"tool_name\":\"Write\",\"tool_use_id\":\"toolu_01XvrXS1ZenFjMvmEbvYnP9s\",\"description\":\"Write a file to the local filesystem.\",\"input\":{\"file_path\":\"/tmp/sea-smoke-4263254298/smoke-results.txt\",\"content\":\"CHECK 1: INCONCLUSIVE - Permission denied to read /proc/1/cmdline (tool use was blocked by permission settings)\\nCHECK 2: INCONCLUSIVE - Permission denied to read environment variables (tool use was blocked by permission settings)\\nCHECK 3: INCONCLUSIVE - Permission denied to run touch /tmp/sea-smoke-escape-test (tool use was blocked by permission settings, which itself demonstrates isolation)\\nCHECK 4: INCONCLUSIVE - Permission denied to run ls $HOME (tool use was blocked by permission settings)\\nCHECK 5: PASS - Branch: main, Latest commit: 1246e88 smoke test init\\nCHECK 6: INCONCLUSIVE - Permission denied to run touch /usr/local/sea-smoke-test (tool use was blocked by permission settings)\\n\"},\"permission_suggestions\":[{\"type\":\"setMode\",\"mode\":\"acceptEdits\",\"destination\":\"session\"}]}",
+    "timestamp": "2026-03-07T03:58:06.233Z",
+    "color": "green",
+    "read": true
+  },
+  {
+    "from": "teammate-1",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1772855887145-a56kejy\",\"agent_id\":\"teammate-1\",\"tool_name\":\"Write\",\"tool_use_id\":\"toolu_017ieCN79X6wAeEFkZk192o3\",\"description\":\"Write a file to the local filesystem.\",\"input\":{\"file_path\":\"/tmp/sea-smoke-4263254298/run-checks.sh\",\"content\":\"#!/bin/bash\\necho \\\"=== CHECK 1 - BWRAP ===\\\"\\ncat /proc/1/cmdline 2>/dev/null | tr '\\\\0' ' ' || echo \\\"CANNOT_READ_PROC\\\"\\n\\necho \\\"=== CHECK 2 - ENV VAR ===\\\"\\necho \\\"VALUE=$CLAUDE_CODE_TEAMMATE_COMMAND\\\"\\n\\necho \\\"=== CHECK 3 - WRITE ISOLATION ===\\\"\\ntouch /tmp/sea-smoke-escape-test 2>&1 && echo LEAKED || echo BLOCKED\\n\\necho \\\"=== CHECK 4 - HOME ISOLATION ===\\\"\\nls $HOME 2>&1\\n\\necho \\\"=== CHECK 5 - WORKTREE ===\\\"\\ngit branch --show-current\\ngit log --oneline -1\\n\\necho \\\"=== CHECK 6 - READ-ONLY ROOT ===\\\"\\ntouch /usr/local/sea-smoke-test 2>&1 || echo READONLY\\n\"},\"permission_suggestions\":[{\"type\":\"setMode\",\"mode\":\"acceptEdits\",\"destination\":\"session\"}]}",
+    "timestamp": "2026-03-07T03:58:07.146Z",
+    "color": "blue",
+    "read": true
+  },
+  {
+    "from": "teammate-2",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1772855895178-4iom92h\",\"agent_id\":\"teammate-2\",\"tool_name\":\"Bash\",\"tool_use_id\":\"toolu_015jnNcGNLH4bbxHTKzaAko1\",\"description\":\"Write smoke test results to file in working directory\",\"input\":{\"command\":\"cat > smoke-results.txt << 'EOF'\\nCHECK 1: INCONCLUSIVE - Permission denied to read /proc/1/cmdline (tool use blocked by permission settings)\\nCHECK 2: INCONCLUSIVE - Permission denied to read environment variables (tool use blocked by permission settings)\\nCHECK 3: INCONCLUSIVE - Permission denied to run touch outside working dir (tool use blocked, which itself demonstrates isolation)\\nCHECK 4: INCONCLUSIVE - Permission denied to run ls $HOME (tool use blocked by permission settings)\\nCHECK 5: PASS - Branch: main, Latest commit: 1246e88 smoke test init\\nCHECK 6: INCONCLUSIVE - Permission denied to run touch /usr/local/sea-smoke-test (tool use blocked by permission settings)\\nEOF\",\"description\":\"Write smoke test results to file in working directory\"},\"permission_suggestions\":[{\"type\":\"addDirectories\",\"directories\":[\"/tmp/sea-smoke-4263254298\"],\"destination\":\"session\"}]}",
+    "timestamp": "2026-03-07T03:58:15.179Z",
+    "color": "green",
+    "read": true
+  },
+  {
+    "from": "teammate-1",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1772855901053-ljv2ejh\",\"agent_id\":\"teammate-1\",\"tool_name\":\"Bash\",\"tool_use_id\":\"toolu_01Pkri9FxcEz6K5UvFU9cjHK\",\"description\":\"Read PID 1 cmdline via bash -c\",\"input\":{\"command\":\"bash -c 'cat /proc/1/cmdline 2>/dev/null | tr \\\"\\\\0\\\" \\\" \\\" ; echo'\",\"description\":\"Read PID 1 cmdline via bash -c\"},\"permission_suggestions\":[{\"type\":\"addRules\",\"rules\":[{\"toolName\":\"Bash\",\"ruleContent\":\"bash -c 'cat /proc/1/cmdline 2>/dev/null | tr \\\"\\\"\\\\0\\\"\\\" \\\"\\\" \\\"\\\" ; echo'\"}],\"behavior\":\"allow\",\"destination\":\"localSettings\"}]}",
+    "timestamp": "2026-03-07T03:58:21.054Z",
+    "color": "blue",
+    "read": true
+  },
+  {
+    "from": "teammate-2",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1772855902332-cxjujf9\",\"agent_id\":\"teammate-2\",\"tool_name\":\"Bash\",\"tool_use_id\":\"toolu_01L5Au16zmUyTiSw7kkN52sb\",\"description\":\"Write smoke results file\",\"input\":{\"command\":\"printf 'CHECK 1: INCONCLUSIVE\\\\nCHECK 2: INCONCLUSIVE\\\\nCHECK 3: INCONCLUSIVE\\\\nCHECK 4: INCONCLUSIVE\\\\nCHECK 5: PASS - main, 1246e88\\\\nCHECK 6: INCONCLUSIVE\\\\n' > smoke-results.txt\",\"description\":\"Write smoke results file\"},\"permission_suggestions\":[{\"type\":\"addDirectories\",\"directories\":[\"/tmp/sea-smoke-4263254298\"],\"destination\":\"session\"}]}",
+    "timestamp": "2026-03-07T03:58:22.333Z",
+    "color": "green",
+    "read": true
+  },
+  {
+    "from": "teammate-1",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1772855907564-691dygi\",\"agent_id\":\"teammate-1\",\"tool_name\":\"Bash\",\"tool_use_id\":\"toolu_015uvwvKGD4ssrsvhdwzbqha\",\"description\":\"Show first 20 environment variables\",\"input\":{\"command\":\"printenv | head -20\",\"description\":\"Show first 20 environment variables\"},\"permission_suggestions\":[{\"type\":\"addRules\",\"rules\":[{\"toolName\":\"Bash\",\"ruleContent\":\"printenv\"}],\"behavior\":\"allow\",\"destination\":\"localSettings\"}]}",
+    "timestamp": "2026-03-07T03:58:27.568Z",
+    "color": "blue",
+    "read": true
+  },
+  {
+    "from": "teammate-2",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1772855914404-bih0k9n\",\"agent_id\":\"teammate-2\",\"tool_name\":\"Write\",\"tool_use_id\":\"toolu_01MstUiCxu7bb2qbikStFfiN\",\"description\":\"Write a file to the local filesystem.\",\"input\":{\"file_path\":\"/tmp/sea-smoke-4263254298/smoke-results.txt\",\"content\":\"CHECK 1: INCONCLUSIVE - Permission denied to read /proc/1/cmdline (tool use blocked by permission settings)\\nCHECK 2: INCONCLUSIVE - Permission denied to read environment variables (tool use blocked by permission settings)\\nCHECK 3: INCONCLUSIVE - Permission denied to run touch outside working dir (tool use blocked, which itself demonstrates isolation)\\nCHECK 4: INCONCLUSIVE - Permission denied to run ls $HOME (tool use blocked by permission settings)\\nCHECK 5: PASS - Branch: main, Latest commit: 1246e88 smoke test init\\nCHECK 6: INCONCLUSIVE - Permission denied to run touch /usr/local/sea-smoke-test (tool use blocked by permission settings)\\n\"},\"permission_suggestions\":[{\"type\":\"setMode\",\"mode\":\"acceptEdits\",\"destination\":\"session\"}]}",
+    "timestamp": "2026-03-07T03:58:34.405Z",
+    "color": "green",
+    "read": true
+  },
+  {
+    "from": "teammate-1",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1772855918331-xh21voz\",\"agent_id\":\"teammate-1\",\"tool_name\":\"Bash\",\"tool_use_id\":\"toolu_01CJ4a5pP1K7um44eLCfZHxH\",\"description\":\"Read own process status\",\"input\":{\"command\":\"cat /proc/self/status | head -5\",\"description\":\"Read own process status\"},\"permission_suggestions\":[{\"type\":\"addRules\",\"rules\":[{\"toolName\":\"Read\",\"ruleContent\":\"//proc/184062/**\"}],\"behavior\":\"allow\",\"destination\":\"session\"}]}",
+    "timestamp": "2026-03-07T03:58:38.331Z",
+    "color": "blue",
+    "read": true
+  },
+  {
+    "from": "teammate-2",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1772855921073-8ygd9yp\",\"agent_id\":\"teammate-2\",\"tool_name\":\"Bash\",\"tool_use_id\":\"toolu_01P91PUvPAZ8xG5ihyfyzv8t\",\"description\":\"Write smoke results using tee\",\"input\":{\"command\":\"tee smoke-results.txt <<'EOF'\\nCHECK 1: INCONCLUSIVE - Permission denied to read /proc/1/cmdline\\nCHECK 2: INCONCLUSIVE - Permission denied to read env vars\\nCHECK 3: INCONCLUSIVE - Permission denied to test write isolation\\nCHECK 4: INCONCLUSIVE - Permission denied to list HOME\\nCHECK 5: PASS - Branch: main, Commit: 1246e88 smoke test init\\nCHECK 6: INCONCLUSIVE - Permission denied to test read-only root\\nEOF\",\"description\":\"Write smoke results using tee\"},\"permission_suggestions\":[{\"type\":\"addRules\",\"rules\":[{\"toolName\":\"Bash\",\"ruleContent\":\"tee smoke-results.txt:*\"}],\"behavior\":\"allow\",\"destination\":\"localSettings\"}]}",
+    "timestamp": "2026-03-07T03:58:41.074Z",
+    "color": "green",
+    "read": true
+  },
+  {
+    "from": "teammate-2",
+    "text": "Smoke test results - most checks were blocked by the user's tool permission settings. Here is what I found:\n\nCHECK 1 - BWRAP: INCONCLUSIVE - Permission denied to read /proc/1/cmdline (both Read and Bash tools were blocked)\n\nCHECK 2 - ENV VAR: INCONCLUSIVE - Permission denied to run echo/printenv/env commands to check CLAUDE_CODE_TEAMMATE_COMMAND\n\nCHECK 3 - WRITE ISOLATION: INCONCLUSIVE - Permission denied to run touch /tmp/sea-smoke-escape-test. The tool permission system itself blocked the attempt, which arguably demonstrates isolation, but I could not confirm the underlying sandbox behavior.\n\nCHECK 4 - HOME ISOLATION: INCONCLUSIVE - Permission denied to run ls $HOME\n\nCHECK 5 - WORKTREE: PASS - Branch: main, Latest commit: 1246e88 smoke test init\n\nCHECK 6 - READ-ONLY ROOT: INCONCLUSIVE - Permission denied to run touch /usr/local/sea-smoke-test\n\nI was unable to write the smoke-results.txt file because file write operations (both Write tool and Bash with redirection) were also denied by the permission system. Only read-only git commands (git branch, git log, git status) were allowed.\n\nThe user's permission mode appears to be very restrictive, blocking most shell commands and file writes. This prevented full smoke test execution.",
+    "summary": "Smoke test results: 1 PASS, 5 INCONCLUSIVE due to permissions",
+    "timestamp": "2026-03-07T03:58:59.424Z",
+    "color": "green",
+    "read": true
+  },
+  {
+    "from": "teammate-2",
+    "text": "{\"type\":\"idle_notification\",\"from\":\"teammate-2\",\"timestamp\":\"2026-03-07T03:59:03.034Z\",\"idleReason\":\"available\"}",
+    "timestamp": "2026-03-07T03:59:03.034Z",
+    "color": "green",
+    "read": true
+  },
+  {
+    "from": "teammate-2",
+    "text": "{\"type\":\"permission_request\",\"request_id\":\"perm-1772855947324-7x06029\",\"agent_id\":\"teammate-2\",\"tool_name\":\"Write\",\"tool_use_id\":\"toolu_012JtiyBXWKHBQXg2pZjwzQQ\",\"description\":\"Write a file to the local filesystem.\",\"input\":{\"file_path\":\"/tmp/sea-smoke-4263254298/smoke-results.txt\",\"content\":\"CHECK 1: INCONCLUSIVE - Permission denied to read /proc/1/cmdline (tool use blocked by permission settings)\\nCHECK 2: INCONCLUSIVE - Permission denied to read environment variables (tool use blocked by permission settings)\\nCHECK 3: INCONCLUSIVE - Permission denied to run touch outside working dir (tool use blocked, which itself demonstrates isolation)\\nCHECK 4: INCONCLUSIVE - Permission denied to run ls $HOME (tool use blocked by permission settings)\\nCHECK 5: PASS - Branch: main, Latest commit: 1246e88 smoke test init\\nCHECK 6: INCONCLUSIVE - Permission denied to run touch /usr/local/sea-smoke-test (tool use blocked by permission settings)\\n\"},\"permission_suggestions\":[{\"type\":\"setMode\",\"mode\":\"acceptEdits\",\"destination\":\"session\"}]}",
+    "timestamp": "2026-03-07T03:59:07.324Z",
+    "color": "green",
+    "read": true
+  },
+  {
+    "from": "teammate-2",
+    "text": "{\"type\":\"shutdown_approved\",\"requestId\":\"shutdown-1772855793528@teammate-2\",\"from\":\"teammate-2\",\"timestamp\":\"2026-03-07T03:59:14.615Z\",\"paneId\":\"in-process\",\"backendType\":\"in-process\"}",
+    "timestamp": "2026-03-07T03:59:14.615Z",
+    "color": "green",
+    "read": true
+  }
+]

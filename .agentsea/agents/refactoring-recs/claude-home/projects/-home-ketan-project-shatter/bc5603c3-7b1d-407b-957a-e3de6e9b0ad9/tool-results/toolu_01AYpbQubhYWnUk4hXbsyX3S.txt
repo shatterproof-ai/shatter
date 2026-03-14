@@ -1,0 +1,281 @@
+shatter-core/src/revalidation.rs-499-            thrown_error: None,
+shatter-core/src/revalidation.rs-500-            branch_path: vec![],
+shatter-core/src/revalidation.rs-501-            side_effects: vec![],
+shatter-core/src/revalidation.rs:502:            dependency_trace: None,
+/home/ketan/project/shatter/shatter-core/src/revalidation.rs-503-        };
+shatter-core/src/revalidation.rs-504-        assert_eq!(severity_from_behavior(&b), Severity::RarePath);
+/home/ketan/project/shatter/shatter-core/src/revalidation.rs-505-    }
+--
+/home/ketan/project/shatter/shatter-core/src/revalidation.rs-519-            }),
+shatter-core/src/revalidation.rs-520-            branch_path: vec![],
+shatter-core/src/revalidation.rs-521-            side_effects: vec![],
+shatter-core/src/revalidation.rs:522:            dependency_trace: None,
+/home/ketan/project/shatter/shatter-core/src/revalidation.rs-523-        };
+shatter-core/src/revalidation.rs-524-        assert_eq!(severity_from_behavior(&b), Severity::UnhandledError);
+/home/ketan/project/shatter/shatter-core/src/revalidation.rs-525-    }
+--
+/home/ketan/project/shatter/shatter-core/src/revalidation.rs-539-            }),
+shatter-core/src/revalidation.rs-540-            branch_path: vec![],
+shatter-core/src/revalidation.rs-541-            side_effects: vec![],
+shatter-core/src/revalidation.rs:542:            dependency_trace: None,
+/home/ketan/project/shatter/shatter-core/src/revalidation.rs-543-        };
+shatter-core/src/revalidation.rs-544-        assert_eq!(severity_from_behavior(&b), Severity::HandledError);
+/home/ketan/project/shatter/shatter-core/src/revalidation.rs-545-    }
+--
+shatter-core/src/reporter.rs-834-                    thrown_error: None,
+shatter-core/src/reporter.rs-835-                    branch_path: vec![],
+shatter-core/src/reporter.rs-836-                    side_effects: vec![],
+shatter-core/src/reporter.rs:837:                    dependency_trace: None,
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-838-                },
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-839-                Behavior {
+shatter-core/src/reporter.rs-840-                    id: 1,
+--
+shatter-core/src/reporter.rs-843-                    thrown_error: None,
+shatter-core/src/reporter.rs-844-                    branch_path: vec![],
+shatter-core/src/reporter.rs-845-                    side_effects: vec![],
+shatter-core/src/reporter.rs:846:                    dependency_trace: None,
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-847-                },
+/home/ketan/project/shatter/shatter-core/src/reporter.rs-848-            ],
+shatter-core/src/reporter.rs-849-            fingerprint: None,
+--
+shatter-core/src/export.rs-522-            thrown_error: error,
+shatter-core/src/export.rs-523-            branch_path: vec![],
+shatter-core/src/export.rs-524-            side_effects: vec![],
+shatter-core/src/export.rs:525:            dependency_trace: None,
+/home/ketan/project/shatter/shatter-core/src/export.rs-526-        }
+/home/ketan/project/shatter/shatter-core/src/export.rs-527-    }
+/home/ketan/project/shatter/shatter-core/src/export.rs-528-
+--
+shatter-core/src/mock_gen.rs-237-            thrown_error: error,
+shatter-core/src/mock_gen.rs-238-            branch_path: vec![],
+shatter-core/src/mock_gen.rs-239-            side_effects: vec![],
+shatter-core/src/mock_gen.rs:240:            dependency_trace: None,
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-241-        }
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-242-    }
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-243-
+--
+shatter-core/src/mock_gen.rs-576-                    thrown_error: None,
+shatter-core/src/mock_gen.rs-577-                    branch_path: vec![],
+shatter-core/src/mock_gen.rs-578-                    side_effects: vec![],
+shatter-core/src/mock_gen.rs:579:                    dependency_trace: None,
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-580-                },
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-581-                make_behavior(1, vec![json!("y")], Some(json!("ok")), None),
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-582-            ],
+--
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-158-/// Build a [`DependencyTrace`] from an [`ExecuteResult`].
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-159-///
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-160-/// External calls are indexed first, then side effects.
+shatter-core/src/behavior.rs:161:pub fn build_dependency_trace(result: &ExecuteResult) -> DependencyTrace {
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-162-    let external_calls = build_traced_calls(&result.calls_to_external, 0);
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-163-    let se_start = external_calls.len() as u32;
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-164-    let side_effects = build_traced_side_effects(&result.side_effects, se_start);
+--
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-174-/// Build a [`DependencyTrace`] from an [`ExecutionRecord`].
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-175-///
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-176-/// External calls are indexed first, then side effects.
+shatter-core/src/behavior.rs:177:pub fn build_dependency_trace_from_record(record: &ExecutionRecord) -> DependencyTrace {
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-178-    let external_calls = build_traced_calls(&record.calls_to_external, 0);
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-179-    let se_start = external_calls.len() as u32;
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-180-    let side_effects = build_traced_side_effects(&record.side_effects, se_start);
+--
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-203-    /// Full dependency interaction trace, present when the execution involved
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-204-    /// external calls or side effects.
+shatter-core/src/behavior.rs-205-    #[serde(default, skip_serializing_if = "Option::is_none")]
+shatter-core/src/behavior.rs:206:    pub dependency_trace: Option<DependencyTrace>,
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-207-}
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-208-
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-209-/// All observed behaviors for a function, built from execution records.
+--
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-233-            if !seen_hashes.insert(record.input_hash) {
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-234-                continue;
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-235-            }
+shatter-core/src/behavior.rs:236:            let dependency_trace =
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-237-                if record.calls_to_external.is_empty() && record.side_effects.is_empty() {
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-238-                    None
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-239-                } else {
+shatter-core/src/behavior.rs:240:                    Some(build_dependency_trace_from_record(record))
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-241-                };
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-242-            behaviors.push(Behavior {
+shatter-core/src/behavior.rs-243-                id: next_id,
+--
+shatter-core/src/behavior.rs-246-                thrown_error: record.thrown_error.clone(),
+shatter-core/src/behavior.rs-247-                branch_path: record.branch_path.clone(),
+shatter-core/src/behavior.rs-248-                side_effects: record.side_effects.clone(),
+shatter-core/src/behavior.rs:249:                dependency_trace,
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-250-            });
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-251-            next_id += 1;
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-252-        }
+--
+shatter-core/src/behavior.rs-279-                    stack: None, error_category: None });
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-280-                // Try to find the matching raw result for this execution to
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-281-                // extract the dependency trace.
+shatter-core/src/behavior.rs:282:                let dependency_trace = result
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-283-                    .raw_results
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-284-                    .iter()
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-285-                    .find(|(inputs, _)| *inputs == exec.inputs)
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-286-                    .filter(|(_, res)| {
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-287-                        !res.calls_to_external.is_empty() || !res.side_effects.is_empty()
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-288-                    })
+shatter-core/src/behavior.rs:289:                    .map(|(_, res)| build_dependency_trace(res));
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-290-                Behavior {
+shatter-core/src/behavior.rs-291-                    id: i as u32,
+shatter-core/src/behavior.rs-292-                    input_args: exec.inputs.clone(),
+--
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-294-                    thrown_error,
+shatter-core/src/behavior.rs-295-                    branch_path: vec![],
+shatter-core/src/behavior.rs-296-                    side_effects: vec![],
+shatter-core/src/behavior.rs:297:                    dependency_trace,
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-298-                }
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-299-            })
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-300-            .collect();
+--
+shatter-core/src/behavior.rs-973-                    thrown_error: None,
+shatter-core/src/behavior.rs-974-                    branch_path: vec![],
+shatter-core/src/behavior.rs-975-                    side_effects: vec![],
+shatter-core/src/behavior.rs:976:                    dependency_trace: None,
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-977-                }],
+shatter-core/src/behavior.rs-978-                fingerprint: None,
+shatter-core/src/behavior.rs-979-                nondeterministic_fields: vec![],
+--
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1071-    // -----------------------------------------------------------------------
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1072-
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1073-    #[test]
+shatter-core/src/behavior.rs:1074:    fn build_dependency_trace_from_execute_result() {
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1075-        let result = ExecuteResult {
+shatter-core/src/behavior.rs-1076-            return_value: Some(json!(42)),
+shatter-core/src/behavior.rs-1077-            thrown_error: None,
+--
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1101-            },
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1102-        };
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1103-
+shatter-core/src/behavior.rs:1104:        let trace = build_dependency_trace(&result);
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1105-        assert_eq!(trace.external_calls.len(), 2);
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1106-        assert_eq!(trace.external_calls[0].function_name, "getRate");
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1107-        assert_eq!(trace.external_calls[0].call_index, 0);
+--
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1112-    }
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1113-
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1114-    #[test]
+shatter-core/src/behavior.rs:1115:    fn dependency_trace_captures_call_ordering() {
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1116-        let result = ExecuteResult {
+shatter-core/src/behavior.rs-1117-            return_value: Some(json!("ok")),
+shatter-core/src/behavior.rs-1118-            thrown_error: None,
+--
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1138-            },
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1139-        };
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1140-
+shatter-core/src/behavior.rs:1141:        let trace = build_dependency_trace(&result);
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1142-        assert_eq!(trace.external_calls.len(), 1);
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1143-        assert_eq!(trace.side_effects.len(), 1);
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1144-        assert_eq!(trace.external_calls[0].call_index, 0);
+--
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1158-
+shatter-core/src/behavior.rs-1159-        let map = BehaviorMap::from_records("myFunc", &[record]);
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1160-        assert_eq!(map.behaviors.len(), 1);
+shatter-core/src/behavior.rs:1161:        assert!(map.behaviors[0].dependency_trace.is_some());
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1162-
+shatter-core/src/behavior.rs:1163:        let trace = map.behaviors[0].dependency_trace.as_ref().unwrap();
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1164-        assert_eq!(trace.external_calls.len(), 1);
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1165-        assert_eq!(trace.external_calls[0].function_name, "helper");
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1166-    }
+--
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1170-        let record = make_record("pureFunc", 1, vec![json!(5)], Some(json!(10)));
+shatter-core/src/behavior.rs-1171-        let map = BehaviorMap::from_records("pureFunc", &[record]);
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1172-        assert_eq!(map.behaviors.len(), 1);
+shatter-core/src/behavior.rs:1173:        assert!(map.behaviors[0].dependency_trace.is_none());
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1174-    }
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1175-
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1176-    #[test]
+shatter-core/src/behavior.rs:1177:    fn dependency_trace_round_trips() {
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1178-        let trace = DependencyTrace {
+shatter-core/src/behavior.rs-1179-            external_calls: vec![TracedCall {
+shatter-core/src/behavior.rs-1180-                function_name: "getRate".to_string(),
+--
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1212-            },
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1213-        };
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1214-
+shatter-core/src/behavior.rs:1215:        let trace = build_dependency_trace(&result);
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1216-        assert_eq!(trace.external_calls.len(), 0);
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1217-        assert_eq!(trace.side_effects.len(), 0);
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1218-        assert_eq!(trace.call_ordering, 0);
+--
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1253-    }
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1254-
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1255-    #[test]
+shatter-core/src/behavior.rs:1256:    fn dependency_trace_with_side_effects_only() {
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1257-        let result = ExecuteResult {
+shatter-core/src/behavior.rs-1258-            return_value: None,
+shatter-core/src/behavior.rs-1259-            thrown_error: None,
+--
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1282-            },
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1283-        };
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1284-
+shatter-core/src/behavior.rs:1285:        let trace = build_dependency_trace(&result);
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1286-        assert_eq!(trace.external_calls.len(), 0);
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1287-        assert_eq!(trace.side_effects.len(), 2);
+shatter-core/src/behavior.rs-1288-        assert_eq!(trace.side_effects[0].kind, SideEffectKind::FileWrite);
+--
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1336-
+shatter-core/src/behavior.rs-1337-        let map = BehaviorMap::from_exploration_result("classify", &result);
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1338-        assert_eq!(map.behaviors.len(), 1);
+shatter-core/src/behavior.rs:1339:        assert!(map.behaviors[0].dependency_trace.is_some());
+shatter-core/src/behavior.rs:1340:        let trace = map.behaviors[0].dependency_trace.as_ref().unwrap();
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1341-        assert_eq!(trace.external_calls.len(), 1);
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1342-        assert_eq!(trace.external_calls[0].function_name, "logger");
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1343-    }
+--
+shatter-core/src/checkpoint.rs-143-                thrown_error: None,
+shatter-core/src/checkpoint.rs-144-                branch_path: vec![],
+shatter-core/src/checkpoint.rs-145-                side_effects: vec![],
+shatter-core/src/checkpoint.rs:146:                dependency_trace: None,
+/home/ketan/project/shatter/shatter-core/src/checkpoint.rs-147-            }],
+shatter-core/src/checkpoint.rs-148-            fingerprint: fingerprint.map(String::from),
+shatter-core/src/checkpoint.rs-149-            nondeterministic_fields: vec![],
+--
+shatter-core/src/cache.rs-282-                thrown_error: None,
+shatter-core/src/cache.rs-283-                branch_path: vec![],
+shatter-core/src/cache.rs-284-                side_effects: vec![],
+shatter-core/src/cache.rs:285:                dependency_trace: None,
+/home/ketan/project/shatter/shatter-core/src/cache.rs-286-            }],
+shatter-core/src/cache.rs-287-            fingerprint: None,
+shatter-core/src/cache.rs-288-            nondeterministic_fields: vec![],
+--
+shatter-core/src/cache.rs-342-            thrown_error: None,
+shatter-core/src/cache.rs-343-            branch_path: vec![],
+shatter-core/src/cache.rs-344-            side_effects: vec![],
+shatter-core/src/cache.rs:345:            dependency_trace: None,
+/home/ketan/project/shatter/shatter-core/src/cache.rs-346-        });
+/home/ketan/project/shatter/shatter-core/src/cache.rs-347-        cache.store(&v2).unwrap();
+/home/ketan/project/shatter/shatter-core/src/cache.rs-348-
+--
+shatter-core/src/snapshot.rs-426-            thrown_error: error,
+shatter-core/src/snapshot.rs-427-            branch_path: vec![],
+shatter-core/src/snapshot.rs-428-            side_effects: vec![],
+shatter-core/src/snapshot.rs:429:            dependency_trace: None,
+/home/ketan/project/shatter/shatter-core/src/snapshot.rs-430-        }
+/home/ketan/project/shatter/shatter-core/src/snapshot.rs-431-    }
+/home/ketan/project/shatter/shatter-core/src/snapshot.rs-432-
+--
+shatter-core/src/report.rs-811-                thrown_error: None,
+shatter-core/src/report.rs-812-                branch_path: vec![],
+shatter-core/src/report.rs-813-                side_effects: vec![],
+shatter-core/src/report.rs:814:                dependency_trace: None,
+/home/ketan/project/shatter/shatter-core/src/report.rs-815-            })
+/home/ketan/project/shatter/shatter-core/src/report.rs-816-            .collect();
+/home/ketan/project/shatter/shatter-core/src/report.rs-817-
+--
+shatter-core/src/report.rs-1083-                stack: None, error_category: None }),
+shatter-core/src/report.rs-1084-            branch_path: vec![],
+shatter-core/src/report.rs-1085-            side_effects: vec![],
+shatter-core/src/report.rs:1086:            dependency_trace: None,
+/home/ketan/project/shatter/shatter-core/src/report.rs-1087-        });
+/home/ketan/project/shatter/shatter-core/src/report.rs-1088-        func_result
+/home/ketan/project/shatter/shatter-core/src/report.rs-1089-            .exploration
+--
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-981-                thrown_error,
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-982-                branch_path,
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-983-                side_effects,
+shatter-core/src/test_arbitraries.rs:984:                dependency_trace: None,
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-985-            },
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-986-        )
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-987-}

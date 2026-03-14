@@ -1,0 +1,14 @@
+[
+  {
+    "from": "team-lead",
+    "text": "You are working on task str-92xe: Concolic report input loss (P1 bug).\n\n**Problem:** Concolic explore output drops example inputs in ObservationOutput.new_path_executions during conversion from orchestrator ExploreResult. pipeline.rs builds ExecutionSummary with inputs = [] even though raw_results carries the executed inputs. This causes report rendering to show empty call examples in concolic mode.\n\n**Requirements (bug fix — reproduction test first):**\n1. Read shatter-core/src/pipeline.rs to find where ExecutionSummary is built from concolic results\n2. Read shatter-core/src/report.rs to understand how inputs are rendered\n3. Write a regression test FIRST that asserts concolic conversion preserves non-empty inputs — verify it fails\n4. Fix pipeline.rs so conversion maps inputs correctly from raw_results\n5. Verify the test passes\n6. Run `cargo test --lib` and `cargo clippy -p shatter-core -- -D warnings`\n\nWhen done, mark the beads issue closed: `bd close str-92xe -r \"description\"`",
+    "timestamp": "2026-03-10T22:35:02.845Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"shutdown_request\",\"requestId\":\"shutdown-1773182365820@report-fix\",\"from\":\"team-lead\",\"reason\":\"Good fix, thanks. Shutting down.\",\"timestamp\":\"2026-03-10T22:39:25.820Z\"}",
+    "timestamp": "2026-03-10T22:39:25.820Z",
+    "read": true
+  }
+]

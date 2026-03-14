@@ -1,0 +1,334 @@
+/home/ketan/project/kapow/api/internal/mcp/tools.go:82:		countSQL, countArgs, err := search.BuildCountQuery(registry, req)
+/home/ketan/project/kapow/api/internal/mcp/tools.go:84:			slog.Error("mcp: search_colleges build count query failed", "error", err)
+/home/ketan/project/kapow/api/internal/mcp/tools.go:88:		if err := db.QueryRow(ctx, countSQL, countArgs...).Scan(&total); err != nil {
+/home/ketan/project/kapow/api/internal/mcp/tools.go:89:			slog.Error("mcp: search_colleges count query failed", "error", err)
+/home/ketan/project/kapow/api/internal/mcp/tools.go:94:		rowsSQL, rowsArgs, err := search.BuildQuery(registry, req)
+/home/ketan/project/kapow/api/internal/mcp/tools.go:96:			slog.Error("mcp: search_colleges build query failed", "error", err)
+/home/ketan/project/kapow/api/internal/mcp/tools.go:99:		rows, err := db.Query(ctx, rowsSQL, rowsArgs...)
+/home/ketan/project/kapow/api/internal/mcp/tools.go:101:			slog.Error("mcp: search_colleges query failed", "error", err)
+/home/ketan/project/kapow/api/internal/mcp/tools.go:213:			slog.Error("mcp: get_college_detail query failed",
+/home/ketan/project/kapow/api/cmd/fixtureutil/main.go:1:// Command fixtureutil loads JSON fixture data into a PostgreSQL database.
+/home/ketan/project/kapow/api/cmd/fixtureutil/main.go:25:	databaseURL := flag.String("database-url", "", "PostgreSQL connection string (falls back to DATABASE_URL env var)")
+/home/ketan/project/kapow/api/internal/fixture/fixture.go:1:// Package fixture loads JSON fixture data into a PostgreSQL database.
+/home/ketan/project/kapow/api/internal/fixture/fixture.go:33:// the extraction order in tools/samplesql/extractor.go.
+/home/ketan/project/kapow/api/internal/fixture/fixture.go:267:	dropSQL := fmt.Sprintf("DROP TABLE IF EXISTS %s", tempName)
+/home/ketan/project/kapow/api/internal/fixture/fixture.go:268:	if _, err := tx.Exec(ctx, dropSQL); err != nil {
+/home/ketan/project/kapow/api/internal/fixture/fixture.go:272:	createSQL := fmt.Sprintf("CREATE TEMP TABLE %s (%s)", tempName, strings.Join(createCols, ", "))
+/home/ketan/project/kapow/api/internal/fixture/fixture.go:273:	if _, err := tx.Exec(ctx, createSQL); err != nil {
+/home/ketan/project/kapow/api/internal/fixture/fixture.go:320:	insertSQL := fmt.Sprintf(
+/home/ketan/project/kapow/api/internal/fixture/fixture.go:327:	if _, err := tx.Exec(ctx, insertSQL); err != nil {
+/home/ketan/project/kapow/api/internal/fixture/fixture.go:331:	if _, err := tx.Exec(ctx, dropSQL); err != nil {
+/home/ketan/project/kapow/api/internal/db/querier.go:13:	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+/home/ketan/project/kapow/api/internal/db/querier.go:14:	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+/home/ketan/project/kapow/api/internal/db/migrate.go:5:	"database/sql"
+/home/ketan/project/kapow/api/internal/db/migrate.go:20:	db, err := sql.Open("pgx", databaseURL)
+/home/ketan/project/kapow/api/internal/db/migrate.go:45:	db, err := sql.Open("pgx", databaseURL)
+/home/ketan/project/kapow/api/internal/search/blend_test.go:228:		sql, _, err := BuildQuery(reg, req)
+/home/ketan/project/kapow/api/internal/search/blend_test.go:232:		if !strings.Contains(sql, "AS blend_score") {
+/home/ketan/project/kapow/api/internal/search/blend_test.go:233:			t.Errorf("expected blend_score column, got: %s", sql)
+/home/ketan/project/kapow/api/internal/search/blend_test.go:235:		if !strings.Contains(sql, "ORDER BY 10 ASC NULLS LAST") {
+/home/ketan/project/kapow/api/internal/search/blend_test.go:236:			t.Errorf("expected ORDER BY 10, got: %s", sql)
+/home/ketan/project/kapow/api/internal/search/blend_test.go:242:		sql, _, err := BuildQuery(reg, req)
+/home/ketan/project/kapow/api/internal/search/blend_test.go:246:		if !strings.Contains(sql, "NULL::double precision AS blend_score") {
+/home/ketan/project/kapow/api/internal/search/blend_test.go:247:			t.Errorf("expected NULL blend_score, got: %s", sql)
+/home/ketan/project/kapow/api/internal/search/blend_test.go:249:		if strings.Contains(sql, "ORDER BY 10") {
+/home/ketan/project/kapow/api/internal/search/blend_test.go:250:			t.Errorf("should not ORDER BY 10 without blend, got: %s", sql)
+/home/ketan/project/kapow/api/migrations/migrations.go:1:// Package migrations embeds SQL migration files so they can be included in the binary.
+/home/ketan/project/kapow/api/migrations/migrations.go:6:// FS holds all embedded SQL migration files.
+/home/ketan/project/kapow/api/migrations/migrations.go:8://go:embed *.sql
+/home/ketan/project/kapow/api/internal/handler/health_test.go:66:// JSON body when the database is reachable. It uses a containerised PostgreSQL
+/home/ketan/project/kapow/api/internal/search/similarity.go:78:// normTerm generates a SQL expression for the squared normalized difference
+/home/ketan/project/kapow/api/internal/search/similarity.go:92:// rateTerm generates a SQL expression for the squared difference between
+/home/ketan/project/kapow/api/internal/search/kind.go:4:// filter struct is used and how SQL is generated.
+/home/ketan/project/kapow/api/internal/handler/export.go:80:		sqlStr, args, err := search.BuildExportQuery(reg, req, maxRows)
+/home/ketan/project/kapow/api/internal/handler/export.go:87:		rows, err := pool.Query(r.Context(), sqlStr, args...)
+/home/ketan/project/kapow/api/internal/testdb/testdb.go:1:// Package testdb provides a test helper for acquiring a PostgreSQL database
+/home/ketan/project/kapow/api/internal/testdb/testdb.go:23:// SQL Fixture (legacy) — when TEST_FIXTURE_SQL is set to the path of a .sql
+/home/ketan/project/kapow/api/internal/testdb/testdb.go:24:// or .sql.xz file, that file is decompressed (if needed) and piped through
+/home/ketan/project/kapow/api/internal/testdb/testdb.go:25:// psql. The fixture must be a complete pg_dump that manages its own schema,
+/home/ketan/project/kapow/api/internal/testdb/testdb.go:33:	"database/sql"
+/home/ketan/project/kapow/api/internal/testdb/testdb.go:58:	fixtureEnvVar     = "TEST_FIXTURE_SQL"
+/home/ketan/project/kapow/api/internal/testdb/testdb.go:79:// New returns a *pgxpool.Pool connected to a test PostgreSQL database. The test
+/home/ketan/project/kapow/api/internal/testdb/testdb.go:100:		// Legacy SQL fixture mode: the SQL dump manages its own schema, extensions,
+/home/ketan/project/kapow/api/internal/testdb/testdb.go:102:		if err := loadFixtureSQL(ctx, t, dsn, fixturePath); err != nil {
+/home/ketan/project/kapow/api/internal/testdb/testdb.go:183:	conn, err := sql.Open("pgx", dsn)
+/home/ketan/project/kapow/api/internal/testdb/testdb.go:280:// loadFixtureSQL decompresses (if the path ends with .xz) and pipes the SQL
+/home/ketan/project/kapow/api/internal/testdb/testdb.go:281:// file through psql against dsn. The SQL is expected to be a complete pg_dump
+/home/ketan/project/kapow/api/internal/testdb/testdb.go:285:// psql meta-commands (lines starting with \, other than the COPY terminator \.)
+/home/ketan/project/kapow/api/internal/testdb/testdb.go:286:// are filtered out before being sent to psql so that non-standard directives
+/home/ketan/project/kapow/api/internal/testdb/testdb.go:288:func loadFixtureSQL(ctx context.Context, t *testing.T, dsn, path string) error {
+/home/ketan/project/kapow/api/internal/testdb/testdb.go:316:	// Filter the SQL stream: drop psql meta-command lines (\ followed by
+/home/ketan/project/kapow/api/internal/testdb/testdb.go:318:	// \restrict don't cause psql to error. The COPY terminator \. must be
+/home/ketan/project/kapow/api/internal/testdb/testdb.go:337:	// Pipe filtered SQL into psql.
+/home/ketan/project/kapow/api/internal/testdb/testdb.go:338:	psqlCmd := exec.CommandContext(ctx, "psql", dsn) //nolint:gosec // G204: dsn is from trusted test config
+/home/ketan/project/kapow/api/internal/testdb/testdb.go:339:	psqlCmd.Stdin = pr
+/home/ketan/project/kapow/api/internal/testdb/testdb.go:340:	psqlCmd.Stdout = io.Discard
+/home/ketan/project/kapow/api/internal/testdb/testdb.go:341:	var psqlStderr bytes.Buffer
+/home/ketan/project/kapow/api/internal/testdb/testdb.go:342:	psqlCmd.Stderr = &psqlStderr
+/home/ketan/project/kapow/api/internal/testdb/testdb.go:344:	if err := psqlCmd.Run(); err != nil {
+/home/ketan/project/kapow/api/internal/testdb/testdb.go:345:		t.Logf("testdb: psql stderr:\n%s", psqlStderr.String())
+/home/ketan/project/kapow/api/internal/testdb/testdb.go:346:		return fmt.Errorf("psql: %w", err)
+/home/ketan/project/kapow/api/internal/testdb/testdb.go:348:	if psqlStderr.Len() > 0 {
+/home/ketan/project/kapow/api/internal/testdb/testdb.go:349:		t.Logf("testdb: psql warnings:\n%s", psqlStderr.String())
+/home/ketan/project/kapow/api/internal/search/field.go:12:// search_base.theme PostgreSQL enum — keep them in sync.
+/home/ketan/project/kapow/api/internal/search/field.go:236:	// BuildSQL parses rawFilter JSON, validates, and returns a parameterised SQL
+/home/ketan/project/kapow/api/internal/search/field.go:238:	BuildSQL(rawFilter json.RawMessage, argStart int) (expr string, args []any, err error)
+/home/ketan/project/kapow/api/internal/search/field.go:319:		return src.SQLRef() + " IS NOT NULL AND "
+/home/ketan/project/kapow/api/internal/search/field.go:332:func (f *FullTextSearchField) BuildSQL(rawFilter json.RawMessage, argStart int) (string, []any, error) {
+/home/ketan/project/kapow/api/internal/search/field.go:350:func (f *SubstringField) BuildSQL(rawFilter json.RawMessage, argStart int) (string, []any, error) {
+/home/ketan/project/kapow/api/internal/search/field.go:355:	ref := f.source.SQLRef()
+/home/ketan/project/kapow/api/internal/search/field.go:370:func (f *ExactStringField) BuildSQL(rawFilter json.RawMessage, argStart int) (string, []any, error) {
+/home/ketan/project/kapow/api/internal/search/field.go:375:	ref := f.source.SQLRef()
+/home/ketan/project/kapow/api/internal/search/field.go:402:func (f *ExactNumericField) BuildSQL(rawFilter json.RawMessage, argStart int) (string, []any, error) {
+/home/ketan/project/kapow/api/internal/search/field.go:407:	ref := f.source.SQLRef()
+/home/ketan/project/kapow/api/internal/search/field.go:409:	castType := sqlCastType(f.source.ValueType)
+/home/ketan/project/kapow/api/internal/search/field.go:410:	castRef := f.source.SQLRefAs(castType)
+/home/ketan/project/kapow/api/internal/search/field.go:444:func (f *NumericRangeField) BuildSQL(rawFilter json.RawMessage, argStart int) (string, []any, error) {
+/home/ketan/project/kapow/api/internal/search/field.go:454:	ref := f.source.SQLRef()
+/home/ketan/project/kapow/api/internal/search/field.go:455:	castType := sqlCastType(f.source.ValueType)
+/home/ketan/project/kapow/api/internal/search/field.go:456:	castRef := f.source.SQLRefAs(castType)
+/home/ketan/project/kapow/api/internal/search/field.go:488:func (f *RankingField) BuildSQL(rawFilter json.RawMessage, argStart int) (string, []any, error) {
+/home/ketan/project/kapow/api/internal/search/field.go:498:	ref := f.source.SQLRef() // e.g. data #>> '{us_news____national_universities,rank}'
+/home/ketan/project/kapow/api/internal/search/field.go:544:func (f *GeoField) BuildSQL(rawFilter json.RawMessage, argStart int) (string, []any, error) {
+/home/ketan/project/kapow/api/internal/search/field.go:596:func (f *SingleEnumField) BuildSQL(rawFilter json.RawMessage, argStart int) (string, []any, error) {
+/home/ketan/project/kapow/api/internal/search/field.go:601:	ref := f.source.SQLRef()
+/home/ketan/project/kapow/api/internal/search/field.go:610:// SQL against the existing data columns without any schema changes.
+/home/ketan/project/kapow/api/internal/search/field.go:627:func (f *GenderField) BuildSQL(rawFilter json.RawMessage, argStart int) (string, []any, error) {
+/home/ketan/project/kapow/api/internal/search/field.go:677:func (f *MultiColumnEnumField) BuildSQL(rawFilter json.RawMessage, argStart int) (string, []any, error) {
+/home/ketan/project/kapow/api/internal/search/field.go:711:func (f *MultiEnumField) BuildSQL(rawFilter json.RawMessage, argStart int) (string, []any, error) {
+/home/ketan/project/kapow/api/internal/search/source.go:38:// SQLRef returns the bare SQL reference to the field value.
+/home/ketan/project/kapow/api/internal/search/source.go:41:func (s FieldSource) SQLRef() string {
+/home/ketan/project/kapow/api/internal/search/source.go:48:// SQLRefAs wraps SQLRef in a cast: `(data #>> '{...}')::castType`.
+/home/ketan/project/kapow/api/internal/search/source.go:49:func (s FieldSource) SQLRefAs(castType string) string {
+/home/ketan/project/kapow/api/internal/search/source.go:50:	return fmt.Sprintf("(%s)::%s", s.SQLRef(), castType)
+/home/ketan/project/kapow/api/internal/search/source.go:53:// sqlCastType maps a JSONBValueType to the PostgreSQL cast keyword used in SQL expressions.
+/home/ketan/project/kapow/api/internal/search/source.go:54:func sqlCastType(vt JSONBValueType) string {
+/home/ketan/project/kapow/api/internal/search/similarity_test.go:12:	sql := search.BuildSimilarInstitutionsQuery()
+/home/ketan/project/kapow/api/internal/search/similarity_test.go:41:			if !strings.Contains(sql, tc.contains) {
+/home/ketan/project/kapow/api/internal/search/similarity_test.go:42:				t.Errorf("expected SQL to contain %q, got:\n%s", tc.contains, sql)
+/home/ketan/project/kapow/api/internal/search/similarity_test.go:48:	count := strings.Count(sql, "$1") + strings.Count(sql, "$2")
+/home/ketan/project/kapow/api/internal/search/similarity_test.go:54:	if strings.Contains(sql, "$3") {
+/home/ketan/project/kapow/api/internal/search/similarity_test.go:55:		t.Error("unexpected $3 placeholder in SQL")
+/home/ketan/project/kapow/api/internal/search/similarity_test.go:61:	sql := search.BuildSimilarInstitutionsQuery()
+/home/ketan/project/kapow/api/internal/search/similarity_test.go:64:	if !strings.Contains(sql, "power(") {
+/home/ketan/project/kapow/api/internal/search/similarity_test.go:69:	if !strings.Contains(sql, "CASE WHEN") {
+/home/ketan/project/kapow/api/internal/search/search_integration_test.go:53:			sql, args, err := search.BuildQuery(reg, req)
+/home/ketan/project/kapow/api/internal/search/search_integration_test.go:57:			assertQueryExecutes(t, ctx, pool, sql, args)
+/home/ketan/project/kapow/api/internal/search/search_integration_test.go:60:			csql, cargs, err := search.BuildCountQuery(reg, req)
+/home/ketan/project/kapow/api/internal/search/search_integration_test.go:65:			if err := pool.QueryRow(ctx, csql, cargs...).Scan(&count); err != nil {
+/home/ketan/project/kapow/api/internal/search/search_integration_test.go:66:				t.Fatalf("count query failed: %v\nSQL: %s\nArgs: %v", err, csql, cargs)
+/home/ketan/project/kapow/api/internal/search/search_integration_test.go:76:// that combine every unique pair of searchable fields. This catches SQL
+/home/ketan/project/kapow/api/internal/search/search_integration_test.go:115:				sql, args, err := search.BuildQuery(reg, req)
+/home/ketan/project/kapow/api/internal/search/search_integration_test.go:119:				assertQueryExecutes(t, ctx, pool, sql, args)
+/home/ketan/project/kapow/api/internal/search/search_integration_test.go:127:// test for placeholder numbering and SQL generation.
+/home/ketan/project/kapow/api/internal/search/search_integration_test.go:155:	sql, args, err := search.BuildQuery(reg, req)
+/home/ketan/project/kapow/api/internal/search/search_integration_test.go:159:	assertQueryExecutes(t, ctx, pool, sql, args)
+/home/ketan/project/kapow/api/internal/search/search_integration_test.go:276:// assertQueryExecutes runs the SQL query and verifies that every returned row
+/home/ketan/project/kapow/api/internal/search/search_integration_test.go:278:func assertQueryExecutes(t *testing.T, ctx context.Context, pool *pgxpool.Pool, sql string, args []any) {
+/home/ketan/project/kapow/api/internal/search/search_integration_test.go:281:	rows, err := pool.Query(ctx, sql, args...)
+/home/ketan/project/kapow/api/internal/search/search_integration_test.go:283:		t.Fatalf("query failed: %v\nSQL: %s\nArgs: %v", err, sql, args)
+/home/ketan/project/kapow/api/internal/search/search_integration_test.go:295:			t.Fatalf("scan row %d: %v\nSQL: %s", rowCount, err, sql)
+/home/ketan/project/kapow/api/internal/search/search_integration_test.go:306:		t.Fatalf("rows iteration: %v\nSQL: %s", err, sql)
+/home/ketan/project/kapow/api/internal/search/field_internal_test.go:20:	expr, _, err := f.BuildSQL(raw, 1)
+/home/ketan/project/kapow/api/internal/search/field_internal_test.go:43:	expr, _, err := f.BuildSQL(raw, 1)
+/home/ketan/project/kapow/api/internal/search/field_internal_test.go:63:	_, _, err := f.BuildSQL(raw, 1)
+/home/ketan/project/kapow/api/internal/search/field_internal_test.go:86:		got := sqlCastType(tc.vt)
+/home/ketan/project/kapow/api/internal/search/field_internal_test.go:88:			t.Errorf("sqlCastType(%s) = %q, want %q", tc.vt, got, tc.want)
+/home/ketan/project/kapow/api/internal/search/sql.go:11:func BuildQuery(reg *Registry, req SearchRequest) (sql string, args []any, err error) {
+/home/ketan/project/kapow/api/internal/search/sql.go:138:		castType := sqlCastType(src.ValueType)
+/home/ketan/project/kapow/api/internal/search/sql.go:139:		return fmt.Sprintf(" ORDER BY (%s)::%s %s %s", src.SQLRef(), castType, dir, nulls), nil
+/home/ketan/project/kapow/api/internal/search/sql.go:147:func BuildCountQuery(reg *Registry, req SearchRequest) (sql string, args []any, err error) {
+/home/ketan/project/kapow/api/internal/search/sql.go:165:func BuildExportQuery(reg *Registry, req SearchRequest, maxRows int) (sql string, args []any, err error) {
+/home/ketan/project/kapow/api/internal/search/sql.go:241:// buildWhere resolves each FilterInput to a SQL clause, advancing the placeholder
+/home/ketan/project/kapow/api/internal/search/sql.go:251:		clause, fieldArgs, ferr := field.BuildSQL(fi.Value, argStart)
+/home/ketan/project/kapow/api/internal/search/blend.go:50:// buildBlendExpression generates a SQL expression that computes a normalized
+/home/ketan/project/kapow/api/internal/search/blend.go:94:		ref := src.SQLRef() // e.g. data #>> '{us_news____national_universities,rank}'
+/home/ketan/project/kapow/api/graph/resolver/similarity.resolvers.go:30:	sql := search.BuildSimilarInstitutionsQuery()
+/home/ketan/project/kapow/api/graph/resolver/similarity.resolvers.go:31:	rows, err := r.DB.Query(ctx, sql, unitID, n)
+/home/ketan/project/kapow/api/internal/search/search_test.go:18:func countPlaceholders(sql string) int {
+/home/ketan/project/kapow/api/internal/search/search_test.go:19:	return len(placeholderRe.FindAllString(sql, -1))
+/home/ketan/project/kapow/api/internal/search/search_test.go:291:		sql, args, err := search.BuildQuery(reg, req)
+/home/ketan/project/kapow/api/internal/search/search_test.go:295:		if !strings.Contains(sql, "FROM search_base.dataset_merged") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:296:			t.Errorf("missing table: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:299:		if !strings.Contains(sql, "WHERE") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:300:			t.Errorf("expected WHERE clause with permanent filter: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:302:		if !strings.Contains(sql, "degrees_awarded_highest") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:303:			t.Errorf("expected permanent degree filter: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:305:		if !strings.Contains(sql, "LIMIT") || !strings.Contains(sql, "OFFSET") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:306:			t.Errorf("missing pagination: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:321:		sql, args, err := search.BuildQuery(reg, req)
+/home/ketan/project/kapow/api/internal/search/search_test.go:325:		if !strings.Contains(sql, "WHERE") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:326:			t.Errorf("expected WHERE clause: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:328:		if !strings.Contains(sql, "BETWEEN") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:329:			t.Errorf("expected BETWEEN in SQL: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:347:		sql, args, err := search.BuildQuery(reg, req)
+/home/ketan/project/kapow/api/internal/search/search_test.go:351:		if !strings.Contains(sql, "ST_DWithin") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:352:			t.Errorf("expected ST_DWithin: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:367:		sql, args, err := search.BuildQuery(reg, req)
+/home/ketan/project/kapow/api/internal/search/search_test.go:371:		if !strings.Contains(sql, "?|") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:372:			t.Errorf("expected ?| operator: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:387:		sql, args, err := search.BuildQuery(reg, req)
+/home/ketan/project/kapow/api/internal/search/search_test.go:391:		if !strings.Contains(sql, "'rank'") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:392:			t.Errorf("expected method guard: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:394:		if !strings.Contains(sql, "BETWEEN") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:395:			t.Errorf("expected BETWEEN: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:409:		sql, args, err := search.BuildCountQuery(reg, req)
+/home/ketan/project/kapow/api/internal/search/search_test.go:413:		if !strings.HasPrefix(sql, "SELECT COUNT(*)") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:414:			t.Errorf("expected COUNT(*): %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:416:		if strings.Contains(sql, "LIMIT") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:417:			t.Errorf("unexpected LIMIT in count query: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:432:		sql, _, err := search.BuildQuery(reg, req)
+/home/ketan/project/kapow/api/internal/search/search_test.go:436:		if !strings.Contains(sql, " AND ") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:437:			t.Errorf("expected AND between clauses: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:443:// Table-driven BuildSQL test for every registry field
+/home/ketan/project/kapow/api/internal/search/search_test.go:446:func TestBuildSQLAllFields(t *testing.T) {
+/home/ketan/project/kapow/api/internal/search/search_test.go:458:			expr, args, err := f.BuildSQL(raw, 1)
+/home/ketan/project/kapow/api/internal/search/search_test.go:460:				t.Fatalf("BuildSQL error: %v", err)
+/home/ketan/project/kapow/api/internal/search/search_test.go:463:				t.Fatalf("BuildSQL returned empty expression")
+/home/ketan/project/kapow/api/internal/search/search_test.go:473:			// Verify no obvious SQL injection via string interpolation:
+/home/ketan/project/kapow/api/internal/search/search_test.go:476:				t.Errorf("value leaked into SQL expression: %s", expr)
+/home/ketan/project/kapow/api/internal/search/search_test.go:547:// Specific SQL shape tests
+/home/ketan/project/kapow/api/internal/search/search_test.go:550:func TestBuildSQLShapes(t *testing.T) {
+/home/ketan/project/kapow/api/internal/search/search_test.go:564:		expr, args, err := f.BuildSQL(mustJSON(search.FullTextFilter{Query: "MIT"}), 1)
+/home/ketan/project/kapow/api/internal/search/search_test.go:578:		expr, args, err := f.BuildSQL(mustJSON(search.SubstringFilter{Value: "big ten"}), 1)
+/home/ketan/project/kapow/api/internal/search/search_test.go:592:		expr, _, err := f.BuildSQL(mustJSON(search.SubstringFilter{Value: "ACC"}), 1)
+/home/ketan/project/kapow/api/internal/search/search_test.go:603:		expr, _, err := f.BuildSQL(mustJSON(search.NumericRangeFilter{Min: ptrF(1000)}), 1)
+/home/ketan/project/kapow/api/internal/search/search_test.go:617:		expr, args, err := f.BuildSQL(mustJSON(search.NumericRangeFilter{Min: ptrF(1), Max: ptrF(100)}), 1)
+/home/ketan/project/kapow/api/internal/search/search_test.go:631:		expr, args, err := f.BuildSQL(mustJSON(search.GeoFilterInput{
+/home/ketan/project/kapow/api/internal/search/search_test.go:648:		expr, args, err := f.BuildSQL(mustJSON(search.MultiEnumFilter{Values: []string{"CA", "NY", "TX"}}), 1)
+/home/ketan/project/kapow/api/internal/search/search_test.go:671:		expr, _, err := f.BuildSQL(mustJSON(search.MultiEnumFilter{Values: []string{"CA"}}), 5)
+/home/ketan/project/kapow/api/internal/search/search_test.go:682:		_, _, err := f.BuildSQL(mustJSON(search.MultiEnumFilter{Values: []string{}}), 1)
+/home/ketan/project/kapow/api/internal/search/search_test.go:693:		_, _, err := f.BuildSQL(json.RawMessage(`not-json`), 1)
+/home/ketan/project/kapow/api/internal/search/search_test.go:705:		expr, _, err := f.BuildSQL(mustJSON(search.MultiEnumFilter{Values: []string{"52.0101"}}), 1)
+/home/ketan/project/kapow/api/internal/search/search_test.go:721:		sql, args, err := search.BuildQuery(reg, req)
+/home/ketan/project/kapow/api/internal/search/search_test.go:729:		// Check $3 comes after $2 in the SQL (state clause uses $3)
+/home/ketan/project/kapow/api/internal/search/search_test.go:730:		idx2 := strings.Index(sql, "$2")
+/home/ketan/project/kapow/api/internal/search/search_test.go:731:		idx3 := strings.Index(sql, "$3")
+/home/ketan/project/kapow/api/internal/search/search_test.go:733:			t.Errorf("placeholder ordering wrong: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:950:// BuildSQL error paths for individual field types
+/home/ketan/project/kapow/api/internal/search/search_test.go:953:func TestBuildSQL_ErrorPaths(t *testing.T) {
+/home/ketan/project/kapow/api/internal/search/search_test.go:974:			_, _, err := f.BuildSQL(bad, 1)
+/home/ketan/project/kapow/api/internal/search/search_test.go:982:func TestBuildSQL_NumericRange_MaxOnly(t *testing.T) {
+/home/ketan/project/kapow/api/internal/search/search_test.go:986:	expr, args, err := f.BuildSQL(mustJSON(search.NumericRangeFilter{Max: ptrF(5000)}), 1)
+/home/ketan/project/kapow/api/internal/search/search_test.go:998:func TestBuildSQL_NumericRange_BothNil(t *testing.T) {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1002:	_, _, err := f.BuildSQL(mustJSON(search.NumericRangeFilter{}), 1)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1008:func TestBuildSQL_Ranking_MinOnly(t *testing.T) {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1012:	expr, args, err := f.BuildSQL(mustJSON(search.NumericRangeFilter{Min: ptrF(10)}), 1)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1024:func TestBuildSQL_Ranking_MaxOnly(t *testing.T) {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1028:	expr, args, err := f.BuildSQL(mustJSON(search.NumericRangeFilter{Max: ptrF(50)}), 1)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1040:func TestBuildSQL_Ranking_BothNil(t *testing.T) {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1044:	_, _, err := f.BuildSQL(mustJSON(search.NumericRangeFilter{}), 1)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1050:func TestBuildSQL_ExactString_CaseSensitive(t *testing.T) {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1054:	expr, _, err := f.BuildSQL(mustJSON(search.ExactStringFilter{Value: "123456"}), 1)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1066:func TestBuildSQL_ExactString_CaseInsensitive(t *testing.T) {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1070:	expr, _, err := f.BuildSQL(mustJSON(search.ExactStringFilter{Value: "Boston"}), 1)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1083:func TestBuildSQL_GeoField_UnknownKind(t *testing.T) {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1087:	_, _, err := f.BuildSQL(mustJSON(search.GeoFilterInput{Kind: "polygon"}), 1)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1096:func TestBuildSQL_GeoField_RadiusMissingObject(t *testing.T) {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1100:	_, _, err := f.BuildSQL(mustJSON(search.GeoFilterInput{Kind: search.GeoFilterKindRadius}), 1)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1106:func TestBuildSQL_GeoField_BBoxMissingObject(t *testing.T) {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1110:	_, _, err := f.BuildSQL(mustJSON(search.GeoFilterInput{Kind: search.GeoFilterKindBBox}), 1)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1116:func TestBuildSQL_MultiColumnEnum_EmptyValues(t *testing.T) {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1120:	_, _, err := f.BuildSQL(mustJSON(search.MultiEnumFilter{Values: []string{}}), 1)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1126:func TestBuildSQL_MultiEnum_EmptyValues(t *testing.T) {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1130:	_, _, err := f.BuildSQL(mustJSON(search.MultiEnumFilter{Values: []string{}}), 1)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1136:func TestBuildSQL_SingleEnum_JSONB(t *testing.T) {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1140:	expr, _, err := f.BuildSQL(mustJSON(search.SingleEnumFilter{Value: "1"}), 1)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1150:// MultiEnumField BuildSQL — all storage/selection combinations
+/home/ketan/project/kapow/api/internal/search/search_test.go:1157:	expr, _, err := f.BuildSQL(mustJSON(search.MultiEnumFilter{Values: []string{"Common", "Coalition"}}), 1)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1170:	expr, _, err := f.BuildSQL(mustJSON(search.MultiEnumFilter{Values: []string{"52.0101"}}), 1)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1180:// sqlCastType — boolean branch
+/home/ketan/project/kapow/api/internal/search/search_test.go:1183:func TestSQLRefAs_BooleanCast(t *testing.T) {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1190:	ref := src.SQLRefAs("boolean")
+/home/ketan/project/kapow/api/internal/search/search_test.go:1228:func TestBuildQuery_FieldBuildSQLError(t *testing.T) {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1231:	// numeric range with both nil causes BuildSQL error
+/home/ketan/project/kapow/api/internal/search/search_test.go:1239:		t.Error("expected error from field BuildSQL")
+/home/ketan/project/kapow/api/internal/search/search_test.go:1247:	sql, args, err := search.BuildQuery(reg, req)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1251:	if !strings.Contains(sql, "LIMIT") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1252:		t.Errorf("expected LIMIT in query: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1327:	sql, args, err := search.BuildCountQuery(reg, req)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1331:	if !strings.HasPrefix(sql, "SELECT COUNT(*)") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1332:		t.Errorf("expected COUNT(*): %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1335:	if !strings.Contains(sql, "WHERE") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1336:		t.Errorf("expected WHERE with permanent filter: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1338:	if !strings.Contains(sql, "degrees_awarded_highest") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1339:		t.Errorf("expected permanent degree filter: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1355:		sql, args, err := search.BuildQuery(reg, search.SearchRequest{Limit: 10})
+/home/ketan/project/kapow/api/internal/search/search_test.go:1359:		if !strings.Contains(sql, "degrees_awarded_highest") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1360:			t.Errorf("permanent filter missing from BuildQuery: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1375:		sql, args, err := search.BuildQuery(reg, req)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1379:		if !strings.Contains(sql, "degrees_awarded_highest") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1380:			t.Errorf("permanent filter missing: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1387:		if !strings.Contains(sql, "$1") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1388:			t.Errorf("expected $1 placeholder for user filter: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1393:		sql, _, err := search.BuildCountQuery(reg, search.SearchRequest{})
+/home/ketan/project/kapow/api/internal/search/search_test.go:1397:		if !strings.Contains(sql, "degrees_awarded_highest") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1398:			t.Errorf("permanent filter missing from BuildCountQuery: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1403:		sql, _, err := search.BuildExportQuery(reg, search.SearchRequest{Limit: 10}, 500)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1407:		if !strings.Contains(sql, "degrees_awarded_highest") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1408:			t.Errorf("permanent filter missing from BuildExportQuery: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1429:		sql, args, err := search.BuildQuery(reg, req)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1433:		if !strings.Contains(sql, "ST_Distance") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1434:			t.Errorf("expected ST_Distance in SQL: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1436:		if !strings.Contains(sql, "1609.344") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1437:			t.Errorf("expected meters-to-miles conversion: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1440:		if !strings.Contains(sql, "NULL::integer") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1441:			t.Errorf("expected NULL::integer for myPrice when no state: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1461:		sql, args, err := search.BuildQuery(reg, req)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1465:		if !strings.Contains(sql, "ST_Distance") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1466:			t.Errorf("expected ST_Distance: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1468:		if !strings.Contains(sql, "tuition_in_state") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1469:			t.Errorf("expected tuition_in_state in myPrice CASE: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1471:		if !strings.Contains(sql, "tuition_out_of_state") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1472:			t.Errorf("expected tuition_out_of_state in myPrice CASE: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1485:		sql, args, err := search.BuildQuery(reg, req)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1489:		if !strings.Contains(sql, "NULL::double precision") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1490:			t.Errorf("expected NULL::double precision: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1492:		if !strings.Contains(sql, "NULL::integer") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1493:			t.Errorf("expected NULL::integer: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1515:		sql, _, err := search.BuildQuery(reg, req)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1519:		if !strings.Contains(sql, "ORDER BY institution_name ASC") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1520:			t.Errorf("expected ORDER BY institution_name ASC: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1529:		sql, _, err := search.BuildQuery(reg, req)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1533:		if !strings.Contains(sql, "ORDER BY institution_name DESC") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1534:			t.Errorf("expected ORDER BY institution_name DESC: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1544:		sql, _, err := search.BuildQuery(reg, req)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1548:		if !strings.Contains(sql, "ORDER BY 7 ASC NULLS LAST") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1549:			t.Errorf("expected ORDER BY 7 ASC NULLS LAST: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1559:		sql, _, err := search.BuildQuery(reg, req)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1563:		if !strings.Contains(sql, "ORDER BY 7 DESC NULLS FIRST") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1564:			t.Errorf("expected ORDER BY 7 DESC NULLS FIRST: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1570:		sql, _, err := search.BuildQuery(reg, req)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1574:		if !strings.Contains(sql, "ORDER BY institution_name ASC") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1575:			t.Errorf("expected default ORDER BY institution_name ASC: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1584:		sql, _, err := search.BuildQuery(reg, req)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1588:		if !strings.Contains(sql, "ORDER BY (data #>> '{nces,size}')::integer ASC NULLS LAST") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1589:			t.Errorf("unexpected ORDER BY clause: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1598:		sql, _, err := search.BuildQuery(reg, req)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1602:		if !strings.Contains(sql, "ORDER BY (data #>> '{nces,admission_rate_overall}')::numeric DESC NULLS FIRST") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1603:			t.Errorf("unexpected ORDER BY clause: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1612:		sql, _, err := search.BuildQuery(reg, req)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1616:		if !strings.Contains(sql, "ORDER BY city ASC NULLS LAST") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1617:			t.Errorf("unexpected ORDER BY clause: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1657:		sql, _, err := search.BuildQuery(reg, req)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1661:		if !strings.Contains(sql, "ORDER BY 10 ASC NULLS LAST") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1662:			t.Errorf("expected ORDER BY 10 ASC NULLS LAST: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1674:		sql, _, err := search.BuildQuery(reg, req)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1678:		if !strings.Contains(sql, "ORDER BY 10 DESC NULLS FIRST") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1679:			t.Errorf("expected ORDER BY 10 DESC NULLS FIRST: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1691:		sql, _, err := search.BuildQuery(reg, req)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1695:		if !strings.Contains(sql, "ORDER BY (data #>> '{nces,size}')::integer DESC NULLS FIRST") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1696:			t.Errorf("expected enrollment sort, got: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1707:		sql, _, err := search.BuildQuery(reg, req)
+/home/ketan/project/kapow/api/internal/search/search_test.go:1711:		if !strings.Contains(sql, "ORDER BY 10 ASC NULLS LAST") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:1712:			t.Errorf("expected default blend ORDER BY 10 ASC NULLS LAST: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:2044:		sql, args, err := search.BuildExportQuery(reg, req, 500)
+/home/ketan/project/kapow/api/internal/search/search_test.go:2048:		if !strings.Contains(sql, "LIMIT") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:2049:			t.Errorf("expected LIMIT in query: %s", sql)
+/home/ketan/project/kapow/api/internal/search/search_test.go:2087:	sql, _, err := search.BuildExportQuery(reg, req, 500)
+/home/ketan/project/kapow/api/internal/search/search_test.go:2091:	if strings.Contains(sql, "OFFSET") {
+/home/ketan/project/kapow/api/internal/search/search_test.go:2092:		t.Errorf("export query should not contain OFFSET: %s", sql)
+/home/ketan/project/kapow/api/graph/resolver/search.resolvers.go:93:	countSQL, countArgs, err := search.BuildCountQuery(r.Resolver.Search, req)
+/home/ketan/project/kapow/api/graph/resolver/search.resolvers.go:102:	if err := r.DB.QueryRow(ctx, countSQL, countArgs...).Scan(&total); err != nil {
+/home/ketan/project/kapow/api/graph/resolver/search.resolvers.go:111:	rowsSQL, rowsArgs, err := search.BuildQuery(r.Resolver.Search, req)
+/home/ketan/project/kapow/api/graph/resolver/search.resolvers.go:119:	rows, err := r.DB.Query(ctx, rowsSQL, rowsArgs...)

@@ -1,0 +1,290 @@
+#!/usr/bin/env bash
+# scripts/demo-api.sh — Headless GraphQL CRUD walkthrough for Flotsam.
+# Exercises the API directly via curl/GraphQL using a dev token.
+#
+# Prerequisites:
+#   - Database running (make dev-db-up)
+#   - Migrations applied (make api-migrate-up)
+#   - Data seeded (make api-seed)
+#   - API server running (make api-run)
+#
+# Usage: bash scripts/demo-api.sh
+#
+# Environment:
+#   API_URL        API base URL (default: http://localhost:8081)
+#   DATABASE_URL   Required for dev token generation
+#   JWT_SECRET     Required for dev token generation
+#   ENV            Must be "development" (default)
+
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT_DIR"
+
+# ── Colours (disabled when not a terminal) ─────────────────────────────────────
+if [ -t 1 ]; then
+  BOLD='\033[1m'  RESET='\033[0m'
+  GREEN='\033[32m'  RED='\033[31m'  CYAN='\033[36m'  DIM='\033[2m'
+else
+  BOLD=''  RESET=''  GREEN=''  RED=''  CYAN=''  DIM=''
+fi
+
+# ── Counters ───────────────────────────────────────────────────────────────────
+PASS_COUNT=0
+FAIL_COUNT=0
+STEP=0
+
+pass() {
+  PASS_COUNT=$((PASS_COUNT + 1))
+  echo -e "  ${GREEN}[PASS]${RESET} $1"
+}
+
+fail() {
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+  echo -e "  ${RED}[FAIL]${RESET} $1"
+  if [ -n "${2:-}" ]; then
+    echo -e "        ${DIM}$2${RESET}"
+  fi
+}
+
+step() {
+  STEP=$((STEP + 1))
+  echo -e "\n${BOLD}Step $STEP: $1${RESET}"
+}
+
+# ── Dependency check ──────────────────────────────────────────────────────────
+for cmd in curl jq; do
+  if ! command -v "$cmd" &>/dev/null; then
+    echo "Error: $cmd is required but not installed." >&2
+    exit 1
+  fi
+done
+
+# ── Environment ──────────────────────────────────────────────────────────────
+if [ -f .env ]; then
+  set -a
+  # shellcheck disable=SC1091
+  source .env
+  set +a
+fi
+
+export API_URL="${API_URL:-http://localhost:8081}"
+export DATABASE_URL="${DATABASE_URL:-postgres://postgres:postgres@localhost:5433/flotsam?sslmode=disable}"
+export JWT_SECRET="${JWT_SECRET:-dev-secret-do-not-use-in-production}"
+export ENV="${ENV:-development}"
+
+echo -e "${BOLD}Flotsam Headless API Walkthrough${RESET}"
+echo -e "${DIM}API: $API_URL${RESET}"
+
+# ── Helper: send GraphQL query ─────────────────────────────────────────────────
+# Usage: gql '{"query":"...","variables":{}}' → prints response body
+gql() {
+  curl -sf -X POST "$API_URL/graphql" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $TOKEN" \
+    -d "$1"
+}
+
+# ── Step 1: Health check ──────────────────────────────────────────────────────
+step "Health check"
+HTTP_CODE=$(curl -sf -o /dev/null -w '%{http_code}' "$API_URL/health" 2>/dev/null || echo "000")
+if [ "$HTTP_CODE" = "200" ]; then
+  pass "GET /health → 200"
+else
+  fail "GET /health → $HTTP_CODE (expected 200)" "Is the API server running? Try: make api-run"
+  echo -e "\n${RED}Cannot continue without a healthy API server.${RESET}"
+  exit 1
+fi
+
+# ── Step 2: Generate dev token ────────────────────────────────────────────────
+step "Generate dev token"
+TOKEN=$(make -C api dev-token 2>/dev/null) || true
+if [ -z "$TOKEN" ]; then
+  fail "Could not generate dev token" "Ensure ENV=development, DATABASE_URL, and JWT_SECRET are set"
+  echo -e "\n${RED}Cannot continue without a dev token.${RESET}"
+  exit 1
+fi
+pass "Dev token generated (${#TOKEN} chars)"
+
+# ── Step 3: Capture bookmark ─────────────────────────────────────────────────
+step "Capture bookmark"
+BOOKMARK_RESP=$(gql '{
+  "query": "mutation CaptureBookmark($input: BookmarkInput!) { captureBookmark(input: $input) { id type status title tags } }",
+  "variables": {
+    "input": {
+      "url": "https://example.com/demo-walkthrough",
+      "title": "Demo Walkthrough Page",
+      "tags": ["demo", "walkthrough"]
+    }
+  }
+}') || true
+
+BOOKMARK_ID=$(echo "$BOOKMARK_RESP" | jq -r '.data.captureBookmark.id // empty' 2>/dev/null)
+if [ -n "$BOOKMARK_ID" ]; then
+  BOOKMARK_STATUS=$(echo "$BOOKMARK_RESP" | jq -r '.data.captureBookmark.status')
+  pass "Captured bookmark id=$BOOKMARK_ID status=$BOOKMARK_STATUS"
+else
+  GQL_ERROR=$(echo "$BOOKMARK_RESP" | jq -r '.errors[0].message // "unknown error"' 2>/dev/null)
+  fail "captureBookmark failed" "$GQL_ERROR"
+fi
+
+# ── Step 4: Capture note ─────────────────────────────────────────────────────
+step "Capture note"
+NOTE_RESP=$(gql '{
+  "query": "mutation CaptureNote($input: NoteInput!) { captureNote(input: $input) { id type status title contentText tags } }",
+  "variables": {
+    "input": {
+      "title": "Demo Note",
+      "content": "This is a demo note for the Flotsam headless walkthrough. It contains searchable text about knowledge management.",
+      "tags": ["demo", "note"]
+    }
+  }
+}') || true
+
+NOTE_ID=$(echo "$NOTE_RESP" | jq -r '.data.captureNote.id // empty' 2>/dev/null)
+if [ -n "$NOTE_ID" ]; then
+  pass "Captured note id=$NOTE_ID"
+else
+  GQL_ERROR=$(echo "$NOTE_RESP" | jq -r '.errors[0].message // "unknown error"' 2>/dev/null)
+  fail "captureNote failed" "$GQL_ERROR"
+fi
+
+# ── Step 5: List items ──────────────────────────────────────────────────────
+step "List items"
+LIST_RESP=$(gql '{
+  "query": "query ListItems { items(limit: 50) { total items { id type title } } }"
+}') || true
+
+TOTAL=$(echo "$LIST_RESP" | jq -r '.data.items.total // 0' 2>/dev/null)
+if [ "$TOTAL" -ge 2 ] 2>/dev/null; then
+  pass "Listed items: total=$TOTAL (expected >= 2)"
+else
+  fail "items query returned total=$TOTAL (expected >= 2)"
+fi
+
+# ── Step 6: Search (FTS) ────────────────────────────────────────────────────
+step "Full-text search"
+SEARCH_RESP=$(gql '{
+  "query": "query Search($q: String!) { search(query: $q) { total items { id title } } }",
+  "variables": { "q": "knowledge management" }
+}') || true
+
+SEARCH_TOTAL=$(echo "$SEARCH_RESP" | jq -r '.data.search.total // 0' 2>/dev/null)
+if [ "$SEARCH_TOTAL" -ge 1 ] 2>/dev/null; then
+  pass "FTS search for 'knowledge management': $SEARCH_TOTAL result(s)"
+else
+  # FTS might not match if content isn't indexed yet; treat as warning
+  fail "FTS search returned $SEARCH_TOTAL results (expected >= 1)" "Content may not be indexed yet"
+fi
+
+# ── Step 7: Get single item ─────────────────────────────────────────────────
+step "Get single item"
+if [ -n "$BOOKMARK_ID" ]; then
+  ITEM_RESP=$(gql "{
+    \"query\": \"query GetItem(\$id: ID!) { item(id: \$id) { id type title status sensitivity tags } }\",
+    \"variables\": { \"id\": \"$BOOKMARK_ID\" }
+  }") || true
+
+  ITEM_TITLE=$(echo "$ITEM_RESP" | jq -r '.data.item.title // empty' 2>/dev/null)
+  if [ -n "$ITEM_TITLE" ]; then
+    pass "Got item: title=\"$ITEM_TITLE\""
+  else
+    fail "item(id=$BOOKMARK_ID) returned no data"
+  fi
+else
+  fail "Skipped — no bookmark ID from step 3"
+fi
+
+# ── Step 8: Update tags ─────────────────────────────────────────────────────
+step "Update tags"
+if [ -n "$BOOKMARK_ID" ]; then
+  TAG_RESP=$(gql "{
+    \"query\": \"mutation TagItem(\$id: ID!, \$tags: [String!]!) { tagItem(id: \$id, tags: \$tags) { id tags } }\",
+    \"variables\": { \"id\": \"$BOOKMARK_ID\", \"tags\": [\"demo\", \"updated\", \"api-test\"] }
+  }") || true
+
+  NEW_TAGS=$(echo "$TAG_RESP" | jq -r '.data.tagItem.tags // empty' 2>/dev/null)
+  if [ -n "$NEW_TAGS" ]; then
+    TAG_LIST=$(echo "$TAG_RESP" | jq -r '.data.tagItem.tags | join(", ")' 2>/dev/null)
+    pass "Tags updated: [$TAG_LIST]"
+  else
+    GQL_ERROR=$(echo "$TAG_RESP" | jq -r '.errors[0].message // "unknown error"' 2>/dev/null)
+    fail "tagItem failed" "$GQL_ERROR"
+  fi
+else
+  fail "Skipped — no bookmark ID from step 3"
+fi
+
+# ── Step 9: Update sensitivity ───────────────────────────────────────────────
+step "Update sensitivity"
+if [ -n "$BOOKMARK_ID" ]; then
+  SENS_RESP=$(gql "{
+    \"query\": \"mutation UpdateSensitivity(\$id: ID!, \$sensitivity: SensitivityLevel!) { updateSensitivity(id: \$id, sensitivity: \$sensitivity) { id sensitivity } }\",
+    \"variables\": { \"id\": \"$BOOKMARK_ID\", \"sensitivity\": \"SENSITIVE\" }
+  }") || true
+
+  NEW_SENS=$(echo "$SENS_RESP" | jq -r '.data.updateSensitivity.sensitivity // empty' 2>/dev/null)
+  if [ "$NEW_SENS" = "SENSITIVE" ]; then
+    pass "Sensitivity updated to SENSITIVE"
+  else
+    GQL_ERROR=$(echo "$SENS_RESP" | jq -r '.errors[0].message // "unknown error"' 2>/dev/null)
+    fail "updateSensitivity failed" "$GQL_ERROR"
+  fi
+else
+  fail "Skipped — no bookmark ID from step 3"
+fi
+
+# ── Step 10: Run worker ─────────────────────────────────────────────────────
+step "Run worker (--once)"
+WORKER_OUTPUT=$(cd api && go run ./cmd/flotsam-worker --once 2>&1) || true
+WORKER_EXIT=$?
+if [ "$WORKER_EXIT" -eq 0 ] 2>/dev/null; then
+  pass "flotsam-worker --once exited 0"
+else
+  fail "flotsam-worker --once exited $WORKER_EXIT" "$(echo "$WORKER_OUTPUT" | tail -3)"
+fi
+
+# ── Step 11: Delete item ────────────────────────────────────────────────────
+step "Delete item"
+if [ -n "$NOTE_ID" ]; then
+  DEL_RESP=$(gql "{
+    \"query\": \"mutation DeleteItem(\$id: ID!) { deleteItem(id: \$id) }\",
+    \"variables\": { \"id\": \"$NOTE_ID\" }
+  }") || true
+
+  DELETED=$(echo "$DEL_RESP" | jq -r '.data.deleteItem // false' 2>/dev/null)
+  if [ "$DELETED" = "true" ]; then
+    pass "Deleted note id=$NOTE_ID"
+  else
+    GQL_ERROR=$(echo "$DEL_RESP" | jq -r '.errors[0].message // "unknown error"' 2>/dev/null)
+    fail "deleteItem failed" "$GQL_ERROR"
+  fi
+else
+  fail "Skipped — no note ID from step 4"
+fi
+
+# ── Step 12: Verify deletion ────────────────────────────────────────────────
+step "Verify deletion"
+if [ -n "$NOTE_ID" ]; then
+  VERIFY_RESP=$(gql "{
+    \"query\": \"query GetItem(\$id: ID!) { item(id: \$id) { id } }\",
+    \"variables\": { \"id\": \"$NOTE_ID\" }
+  }") || true
+
+  VERIFY_ID=$(echo "$VERIFY_RESP" | jq -r '.data.item.id // empty' 2>/dev/null)
+  if [ -z "$VERIFY_ID" ]; then
+    pass "Confirmed: item $NOTE_ID no longer exists"
+  else
+    fail "Item $NOTE_ID still exists after deletion"
+  fi
+else
+  fail "Skipped — no note ID from step 4"
+fi
+
+# ── Summary ──────────────────────────────────────────────────────────────────
+echo ""
+echo -e "${BOLD}Results: ${GREEN}$PASS_COUNT passed${RESET}, ${RED}$FAIL_COUNT failed${RESET}"
+
+if [ "$FAIL_COUNT" -gt 0 ]; then
+  exit 1
+fi

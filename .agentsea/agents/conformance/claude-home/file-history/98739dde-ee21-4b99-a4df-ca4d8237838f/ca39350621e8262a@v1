@@ -1,0 +1,397 @@
+# .bashrc
+
+# bail out early for non-interactive shells (scp, scripts, etc.)
+case $- in *i*) ;; *) return;; esac
+
+if [ "$CODESPACES" != "true" ]; then
+    eval $(keychain --eval --agents ssh $(find ~/.ssh -name 'id_*' ! -name '*.pub' -type f 2>/dev/null))
+fi
+
+export BASHRC_TARGET=`readlink -f "$HOME"/.bashrc`
+export DOTFILES=`dirname "$BASHRC_TARGET"`
+
+# User specific aliases and functions
+
+# Source global definitions
+if [ -f /etc/bashrc ]; then
+    . /etc/bashrc
+fi
+
+shopt -s extglob
+shopt -s checkwinsize
+
+export HISTCONTROL=erasedups
+shopt -s histappend
+
+export TZ='America/Chicago'
+export PAGER='less -z-3'
+export PAGER='more'
+
+# set up the right editor TODO: make this a function
+EDITOR=vi
+VIM=`which vim`
+GVIM=`which gvim`
+if [ -z "$GVIM" ] || [ -z "$DISPLAY" ]; then
+    if [ -z "$VIM" ]; then # -n doesn't work the way I expect
+        echo -n > /dev/null
+    else
+        EDITOR="$VIM"
+    fi
+else
+    EDITOR="$GVIM"
+fi
+
+export EDITOR
+# TODO: figure out how to do this for hg
+if [ `basename "$EDITOR"` == "gvim" ]; then
+    CVSEDITOR="$EDITOR --no-fork"
+else
+    CVSEDITOR="$EDITOR"
+fi
+export CVSEDITOR
+
+# default options for grep: highlight matches; skip directories; skip devices/FIFOs/sockets
+export GREP_OPTIONS="--color=tty -d skip -D skip"
+
+HOST=`hostname`
+SHORT_HOST=`echo $HOST | sed 's/^\([^.]\{1,\}\)\..\{1,\}$/\1/'` # | tr '[:lower:]' '[:upper:]'`
+
+if [ -n "$SSH_AGENT_PID" ]
+then
+    SSH_AGENT="ssh-agent"
+fi
+
+# if this shell is running within screen, define the title escape
+if [ "$TERM" == "screen" ] || [ "$TERM" == "screen-w" ]; then
+    export ESC=`echo -n -e "\033k\033\134"`
+fi
+
+
+PYTHONSTARTUP="$HOME/.pythonrc"
+if [ -f "$PYTHONSTARTUP" ]; then
+    export PYTHONSTARTUP
+fi
+
+if [ -d "/snap/bin" ]; then
+    export PATH="$PATH:/snap/bin"
+fi
+
+if [ -d "$HOME/bin" ]; then
+    export PATH="$PATH:$HOME/bin"
+fi
+
+alias cd.='cd ..'
+alias cd..='cd ..'
+alias ci='git ci'
+alias cvd='cvs diff -u'
+alias ds='date +%s'
+alias f='finger -m'
+alias got='git'
+alias gre='grep'
+alias gri='grep -i'
+alias grin='grep -in'
+alias grv='grep -v'
+alias j='jobs'
+alias l='$PAGER'
+alias less='$PAGER'
+
+if [ -x /usr/bin/dircolors ]; then
+    test -r ~/.dircolors && eval "$(dircolors -b ~/.dircolors)" || eval "$(dircolors -b)"
+    alias ls='ls -FC --color=auto'
+else
+    alias ls='ls -FCG'
+fi
+alias ll='ls -al'
+
+alias md='mkdir'
+alias more='$PAGER'
+alias mroe='$PAGER'
+alias nowdate="date '+%Y.%m.%d-%H.%M.%S'"
+alias nowts="date '+%s'"
+alias nsl='nslookup'
+alias psk='pstree -ahp $USER'
+alias pst='pstree -ahp'
+alias pud='pushd'
+alias rd='rmdir'
+alias rm='rm -i'
+alias rs='. ~/.bashrc'
+alias screen='screen -d -R -h 8192 -e^Tt'
+alias se='stty echo'
+alias ssh-agent='ssh-agent bash'
+alias trace='traceroute -P ICMP '
+alias vb='$EDITOR ~/.bashrc'
+alias vbl='$EDITOR ~/.bashrc.local'
+alias vi='$EDITOR'
+alias vim='$EDITOR'
+alias whoip='whois -h whois.arin.net'
+alias mct='mkt'
+
+function mkt()
+{
+    TEMPLATE="$1"
+    DIR=""
+    if [ -n "$TEMPLATE" ]; then
+        DIR=`mktemp -d -t "$TEMPLATE.XXXXXX"`
+    else
+        DIR=`mktemp -d`
+    fi
+    cd "$DIR"
+}
+
+function ef()
+{
+    if [ $# -ne 1 ]
+    then
+        echo "Need to pass exactly one 'find' pattern"
+    else "$EDITOR" `find . -iname "$1"`
+    fi
+}
+
+function zero()
+{
+    while [ $# -ne 0 ]; do
+        echo -n > $1
+        shift
+    done
+}
+
+function mcd()
+{
+    if [ $# -ne 0 ]
+    then
+        [ -d $1 ] ||  mkdir -p $1
+        cd $1
+    else echo "usage: mcd dir-name"
+    fi
+}
+
+function mct()
+{
+    if [ $# -ne 0 ]
+    then
+        mcd /tmp/"$1"
+    else
+        cd `mktemp -d`
+    fi
+}
+
+function tgz()
+{
+    if [ $# -ne 1 ]
+    then echo "usage: tgz package.tgz"
+    else gunzip -c $1 | tar -xvf -
+    fi
+}
+
+function finf()
+{
+    if [ $# -ne 2 ]
+    then echo "usage: fink searchstring fileglob"
+    else
+        find . -type d -a -name 'CVS' -prune -o -name "$2" -exec grep -Hin "$1" \{\} \;
+    fi
+}
+
+function utda()
+{
+    utd '*'
+}
+#    need to find a way to exclude CVS special files/dirs from wildcard matches
+function utd()
+{
+    if [ $# -eq 1 ]
+    then
+        find . -type d -a -name 'CVS' -prune -o -name "$1" -a -type f -a -exec cvs status \{\} \; 2> /dev/null | grep 'Status:' | grep -v 'Up-to-date' | grep -v 'Entry Invalid'
+    else
+        cvs status 2> /dev/null | grep 'Status:' | grep -v 'Up-to-date' | grep -v 'Entry Invalid'
+    fi
+}
+
+function tgz()
+{
+    if [ $# -ne 1 ]
+    then echo "usage: tgz package.tgz"
+    else gunzip -c $1 | tar -xvf -
+    fi
+}
+
+function finf()
+{
+    if [ $# -ne 2 ]
+    then echo "usage: fink searchstring fileglob"
+    else
+        find . -type d -a -name 'CVS' -prune -o -name "$2" -exec grep -Hin "$1" \{\} \;
+    fi
+}
+
+function utda()
+{
+    utd '*'
+}
+#    need to find a way to exclude CVS special files/dirs from wildcard matches
+function utd()
+{
+    if [ $# -eq 1 ]
+    then
+        find . -type d -a -name 'CVS' -prune -o -name "$1" -a -type f -a -exec cvs status \{\} \; 2> /dev/null | grep 'Status:' | grep -v 'Up-to-date' | grep -v 'Entry Invalid'
+    else
+        cvs status 2> /dev/null | grep 'Status:' | grep -v 'Up-to-date' | grep -v 'Entry Invalid'
+    fi
+}
+
+function rotateLog()
+{
+    if [ $# -ne 1 ]
+    then
+        echo "Usage: rotateLog logFile"
+    else
+        startPWD="$PWD"
+        baseLogFile=$1
+        if [ ! -f "$baseLogFile" ]
+        then
+            echo "$baseLogFile is not a file"
+        else
+            combinePaths "$PWD" "$baseLogFile"
+            filename=`basename $newPath`
+            dirname=`dirname $newPath`
+            cd "$dirname"
+
+            let i=0
+            while ([ -f "$filename.$i" ])
+            do
+                let i=$i+1
+            done
+            mv "$filename" "$filename.$i"
+            cd "$startPWD"
+        fi
+    fi
+}
+
+if [ -f "$DOTFILES"/secrets*.env ]; then
+    source "$DOTFILES"/secrets*.env
+    export $(sed 's/=.*//' "$DOTFILES"/secrets*.env)
+fi
+
+if [ -f ~/.bashrc.local ]; then
+    . ~/.bashrc.local
+fi
+
+if [ -f ~/.bashrc.$SHORT_HOST ]; then
+    . ~/.bashrc.$SHORT_HOST
+fi
+
+# per-host claude code permissions
+# $DOTFILES/claude/hosts/<hostname>/mode.txt:  single line, e.g. "acceptEdits"
+# $DOTFILES/claude/hosts/<hostname>/allow.txt: one --allowedTools rule per line
+# $DOTFILES/claude/hosts/<hostname>/deny.txt:  one --disallowedTools rule per line
+_claude_hostdir="$DOTFILES/claude/hosts/$(hostname -s)"
+if [ -d "$_claude_hostdir" ]; then
+    _claude_args=""
+    if [ -f "$_claude_hostdir/mode.txt" ]; then
+        _claude_mode="$(head -1 "$_claude_hostdir/mode.txt")"
+        [[ -n "$_claude_mode" && "$_claude_mode" != \#* ]] && _claude_args+=" --permission-mode $_claude_mode"
+        unset _claude_mode
+    fi
+    if [ -f "$_claude_hostdir/allow.txt" ]; then
+        while IFS= read -r _rule; do
+            [[ -z "$_rule" || "$_rule" == \#* ]] && continue
+            _claude_args+=" --allowedTools '$_rule'"
+        done < "$_claude_hostdir/allow.txt"
+    fi
+    if [ -f "$_claude_hostdir/deny.txt" ]; then
+        while IFS= read -r _rule; do
+            [[ -z "$_rule" || "$_rule" == \#* ]] && continue
+            _claude_args+=" --disallowedTools '$_rule'"
+        done < "$_claude_hostdir/deny.txt"
+    fi
+    alias claude="claude $_claude_args"
+    unset _claude_args _rule
+fi
+unset _claude_hostdir
+
+COLORS_FILE_GENERATOR="${DOTFILES}/generate-color-values.sh"
+COLORS_FILE="${DOTFILES}/gen/color-values.sh"
+export RESET=$(tput sgr0)
+
+if [ "$COLORS_FILE_GENERATOR" -nt "$COLORS_FILE" ]; then
+    $COLORS_FILE_GENERATOR
+fi
+
+source "${COLORS_FILE}"
+export RESET=$(tput sgr0)
+
+if [ -n "$BASHRC_EXTENSIONS" ]; then
+    for E in $BASHRC_EXTENSIONS; do
+        EFULL="$DOTFILES/$E"
+        if [ -f "$EFULL" ]; then
+            export XX="$XX; EFULL = $EFULL"
+            source "$EFULL"
+        fi
+    done
+fi
+
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # This loads nvm
+[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion
+
+[ -f "$HOME/.bashrc.local-only" ] && . "$HOME/.bashrc.local-only"
+
+# don't escape $ on tab completion but preserve pre 4.2.29 behavior of interpolating the value of the variable
+shopt -s direxpand
+
+### MANAGED BY RANCHER DESKTOP START (DO NOT EDIT)
+export PATH="/Users/ketan/.rd/bin:$PATH"
+### MANAGED BY RANCHER DESKTOP END (DO NOT EDIT)
+
+
+if [ "$color_prompt" = "yes" ]; then
+    # the \[ and \] tell bash that what's in between has zero width
+    PS1='\[${CC_Grey_FG}\]'
+    PS1+='${PS_1_MARKER}'
+    PS1+='[ '
+    PS1+='${PS_1_MARKER}'
+    PS1+='\[${CC_Olive_FG}\]'
+    PS1+='${PS_1_MARKER}'
+    PS1+='\d \t '
+    PS1+='${PS_1_MARKER}'
+    PS1+='\[${CC_Navy_FG}\]'
+    PS1+='${PS_1_MARKER}'
+    PS1+='($?)'
+    PS1+='${PS_1_MARKER}'
+    PS1+='\[${CC_Grey_FG}\]'
+    PS1+='${PS_1_MARKER}'
+    PS1+='\[${CC_Green_FG}\] '
+    PS1+='${PS_1_MARKER}'
+    PS1+='\u'
+    PS1+='${PS_1_MARKER}'
+    PS1+='\[${CC_Grey_53}\]'
+    PS1+='${PS_1_MARKER}'
+    PS1+='@'
+    PS1+='${PS_1_MARKER}'
+    PS1+='\[${CC_Blue_FG}\]'
+    PS1+='${PS_1_MARKER}'
+    PS1+='\h'
+    PS1+='${PS_1_MARKER}'
+    PS1+='\[${CC_Grey89_FG}\]'
+    PS1+='${PS_1_MARKER}'
+    PS1+=':'
+    PS1+='${PS_1_MARKER}'
+    PS1+='\[${CC_SpringGreen5_FG}\]'
+    PS1+='${PS_1_MARKER}'
+    PS1+='${PWD}'
+    PS1+='${PS_1_MARKER}'
+    PS1+='\[${CC_Grey_FG}\]'
+    PS1+='${PS_1_MARKER}'
+    PS1+=' ]$ '
+    PS1+='\[${RESET}\]'
+    PS1+='${PS_1_MARKER}'
+else
+    PS1='\[$ESC\][\t ($?) \u@\h$PWD]\$ '
+fi
+
+export PS1
+export PATH="$HOME/.local/bin:$PATH"
+. "$HOME/.cargo/env"
+
+# Go (installed by kapow setup-user.sh)
+export PATH="$HOME/.local/go/bin:$HOME/go/bin:$PATH"

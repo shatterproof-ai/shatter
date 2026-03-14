@@ -1,0 +1,74 @@
+2026-03-06T15:14:09.437Z [DEBUG] detectFileEncoding failed for expected reason: ENOENT
+2026-03-06T15:14:09.437Z [DEBUG] MDM settings load completed in 1ms
+2026-03-06T15:14:09.466Z [DEBUG] detectFileEncoding failed for expected reason: ENOENT
+2026-03-06T15:14:09.466Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /home/ketan/.claude/settings.local.json
+2026-03-06T15:14:09.466Z [DEBUG] detectFileEncoding failed for expected reason: ENOENT
+2026-03-06T15:14:09.466Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-06T15:14:09.466Z [DEBUG] detectFileEncoding failed for expected reason: ENOENT
+2026-03-06T15:14:09.466Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-06T15:14:09.467Z [DEBUG] [init] configureGlobalMTLS starting
+2026-03-06T15:14:09.467Z [DEBUG] [init] configureGlobalMTLS complete
+2026-03-06T15:14:09.467Z [DEBUG] [init] configureGlobalAgents starting
+2026-03-06T15:14:09.467Z [DEBUG] [init] configureGlobalAgents complete
+2026-03-06T15:14:09.470Z [DEBUG] Error log sink initialized
+2026-03-06T15:14:09.475Z [DEBUG] Git remote URL: null
+2026-03-06T15:14:09.475Z [DEBUG] No git remote URL found
+2026-03-06T15:14:09.508Z [DEBUG] [keybindings] KeybindingSetup initialized with 104 bindings, 0 warnings
+2026-03-06T15:14:09.532Z [DEBUG] [keybindings] Watching for changes to /home/ketan/.claude/keybindings.json
+2026-03-06T15:14:09.580Z [DEBUG] Loaded 1 installed plugins from /home/ketan/.claude/plugins/installed_plugins.json
+2026-03-06T15:14:09.581Z [DEBUG] detectFileEncoding failed for expected reason: ENOENT
+2026-03-06T15:14:09.581Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-06T15:14:09.581Z [DEBUG] detectFileEncoding failed for expected reason: ENOENT
+2026-03-06T15:14:09.581Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-06T15:14:09.582Z [DEBUG] Loading plugin rust-analyzer-lsp from source: "./plugins/rust-analyzer-lsp"
+2026-03-06T15:14:09.582Z [DEBUG] Using provided version for rust-analyzer-lsp@claude-plugins-official: 1.0.0
+2026-03-06T15:14:09.583Z [DEBUG] Plugin rust-analyzer-lsp@claude-plugins-official version 1.0.0 already cached at /home/ketan/.claude/plugins/cache/claude-plugins-official/rust-analyzer-lsp/1.0.0
+2026-03-06T15:14:09.583Z [DEBUG] Resolved local plugin rust-analyzer-lsp to versioned cache: /home/ketan/.claude/plugins/cache/claude-plugins-official/rust-analyzer-lsp/1.0.0
+2026-03-06T15:14:09.584Z [DEBUG] Plugin rust-analyzer-lsp has no entry.skills defined
+2026-03-06T15:14:09.584Z [DEBUG] Found 1 plugins (1 enabled, 0 disabled)
+2026-03-06T15:14:09.584Z [DEBUG] Plugin not available for MCP: beads@beads-marketplace - error type: plugin-not-found
+2026-03-06T15:14:09.584Z [DEBUG] Plugin not available for MCP: beads@beads-marketplace - error type: plugin-not-found
+2026-03-06T15:14:09.585Z [DEBUG] [claudeai-mcp] Checking gate (cached)...
+2026-03-06T15:14:09.585Z [DEBUG] [claudeai-mcp] Gate returned: true
+2026-03-06T15:14:09.585Z [DEBUG] [claudeai-mcp] Fetching from https://api.anthropic.com/v1/mcp_servers?limit=1000
+2026-03-06T15:14:09.602Z [DEBUG] Security messages are fresh (<1h old), skipping fetch
+2026-03-06T15:14:09.606Z [DEBUG] Plugin loading errors: Plugin beads not found in marketplace beads-marketplace
+2026-03-06T15:14:09.606Z [DEBUG] Total plugin commands loaded: 0
+2026-03-06T15:14:09.606Z [DEBUG] Plugin loading errors: Plugin beads not found in marketplace beads-marketplace
+2026-03-06T15:14:09.606Z [DEBUG] Total plugin agents loaded: 0
+2026-03-06T15:14:09.606Z [DEBUG] Registered 0 hooks from 1 plugins
+2026-03-06T15:14:09.606Z [DEBUG] Loaded plugins - Enabled: 1, Disabled: 0, Commands: 0, Agents: 0, Errors: 1
+2026-03-06T15:14:09.835Z [DEBUG] detectFileEncoding failed for expected reason: ENOENT
+2026-03-06T15:14:09.835Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-06T15:14:09.941Z [DEBUG] [claudeai-mcp] Fetched 2 servers
+2026-03-06T15:14:09.958Z [ERROR] rV1: rV1: Insufficient permissions for global npm install.
+    at Tu8 (file:///usr/lib/node_modules/@anthropic-ai/claude-code/cli.js:2499:1351)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async $w6 (file:///usr/lib/node_modules/@anthropic-ai/claude-code/cli.js:2509:15376)
+2026-03-06T15:14:09.972Z [DEBUG] CLAUDE_CODE_WEBSOCKET_AUTH_FILE_DESCRIPTOR not set, no file descriptor token available
+2026-03-06T15:14:09.972Z [DEBUG] MCP server "claude.ai Gmail": Initializing claude.ai proxy transport for server mcpsrv_01AfvN8syVPFvtp6AdWv3gnS
+2026-03-06T15:14:09.972Z [DEBUG] MCP server "claude.ai Gmail": Using claude.ai proxy at https://mcp-proxy.anthropic.com/v1/mcp/mcpsrv_01AfvN8syVPFvtp6AdWv3gnS
+2026-03-06T15:14:09.973Z [DEBUG] MCP server "claude.ai Gmail": claude.ai proxy transport created successfully
+2026-03-06T15:14:09.977Z [DEBUG] MCP server "claude.ai Gmail": Starting connection with timeout of 30000ms
+2026-03-06T15:14:09.977Z [DEBUG] MCP server "claude.ai Google Calendar": Initializing claude.ai proxy transport for server mcpsrv_01XEq5PhHnvDP9Cy111PBEpF
+2026-03-06T15:14:09.977Z [DEBUG] MCP server "claude.ai Google Calendar": Using claude.ai proxy at https://mcp-proxy.anthropic.com/v1/mcp/mcpsrv_01XEq5PhHnvDP9Cy111PBEpF
+2026-03-06T15:14:09.977Z [DEBUG] MCP server "claude.ai Google Calendar": claude.ai proxy transport created successfully
+2026-03-06T15:14:09.978Z [DEBUG] MCP server "claude.ai Google Calendar": Starting connection with timeout of 30000ms
+2026-03-06T15:14:10.179Z [ERROR] rV1: rV1: Insufficient permissions for global npm install.
+    at Tu8 (file:///usr/lib/node_modules/@anthropic-ai/claude-code/cli.js:2499:1351)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async $w6 (file:///usr/lib/node_modules/@anthropic-ai/claude-code/cli.js:2509:15376)
+2026-03-06T15:14:10.184Z [ERROR] rV1: rV1: Insufficient permissions for global npm install.
+    at Tu8 (file:///usr/lib/node_modules/@anthropic-ai/claude-code/cli.js:2499:1351)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async $w6 (file:///usr/lib/node_modules/@anthropic-ai/claude-code/cli.js:2509:15376)
+2026-03-06T15:14:10.348Z [DEBUG] MCP server "claude.ai Google Calendar": claude.ai proxy connection failed after 371ms: Streamable HTTP error: Error POSTing to endpoint: {"type":"error","error":{"type":"authentication_error","message":"MCP server requires authentication but no OAuth token is configured."},"request_id":"req_011CYn3Y7WGbhkCevT6hjBy4"}
+2026-03-06T15:14:10.349Z [ERROR] MCP server "claude.ai Google Calendar" Error: Streamable HTTP error: Error POSTing to endpoint: {"type":"error","error":{"type":"authentication_error","message":"MCP server requires authentication but no OAuth token is configured."},"request_id":"req_011CYn3Y7WGbhkCevT6hjBy4"}
+2026-03-06T15:14:10.349Z [DEBUG] MCP server "claude.ai Google Calendar": Authentication required for claude.ai proxy server
+2026-03-06T15:14:10.359Z [DEBUG] MCP server "claude.ai Gmail": claude.ai proxy connection failed after 387ms: Streamable HTTP error: Error POSTing to endpoint: {"type":"error","error":{"type":"authentication_error","message":"MCP server requires authentication but no OAuth token is configured."},"request_id":"req_011CYn3Y7Y1EkTpMKjusqVMd"}
+2026-03-06T15:14:10.359Z [ERROR] MCP server "claude.ai Gmail" Error: Streamable HTTP error: Error POSTing to endpoint: {"type":"error","error":{"type":"authentication_error","message":"MCP server requires authentication but no OAuth token is configured."},"request_id":"req_011CYn3Y7Y1EkTpMKjusqVMd"}
+2026-03-06T15:14:10.359Z [DEBUG] MCP server "claude.ai Gmail": Authentication required for claude.ai proxy server
+2026-03-06T15:14:10.668Z [ERROR] rV1: rV1: Insufficient permissions for global npm install.
+    at Tu8 (file:///usr/lib/node_modules/@anthropic-ai/claude-code/cli.js:2499:1351)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async $w6 (file:///usr/lib/node_modules/@anthropic-ai/claude-code/cli.js:2509:15376)

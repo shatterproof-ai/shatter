@@ -1,0 +1,33 @@
+{
+  "name": "gentle-cuddling-puddle",
+  "description": "Swarm run working all ready Flotsam issues in parallel",
+  "createdAt": 1773193795577,
+  "leadAgentId": "team-lead@gentle-cuddling-puddle",
+  "leadSessionId": "5312ecda-8120-4925-b25f-acb70030e20a",
+  "members": [
+    {
+      "agentId": "team-lead@gentle-cuddling-puddle",
+      "name": "team-lead",
+      "agentType": "team-lead",
+      "model": "claude-opus-4-6",
+      "joinedAt": 1773193795577,
+      "tmuxPaneId": "",
+      "cwd": "/home/ketan/project/flotsam",
+      "subscriptions": []
+    },
+    {
+      "agentId": "mcp-auth@gentle-cuddling-puddle",
+      "name": "mcp-auth",
+      "model": "claude-opus-4-6",
+      "prompt": "You are working on beads issue flt-it8.14: \"MCP authorization model\" (P2 feature).\n\n## Issue Details\nDefense-in-depth MCP auth: per-client API keys, tool permission allowlists, sensitivity-level filtering, human-in-the-loop approval for destructive ops, audit logging.\n\n## WORKTREE SETUP — RUN FIRST\n```bash\nREPO_ROOT=\"$(git rev-parse --show-toplevel)\"\nBRANCH_NAME=\"worktree/mcp-auth\"\nWORKTREE_DIR=\"$REPO_ROOT/.claude/worktrees/$BRANCH_NAME\"\nif [ -d \"$WORKTREE_DIR\" ]; then echo \"Worktree already exists, reusing\"; else git worktree add \"$WORKTREE_DIR\" -b \"$BRANCH_NAME\"; fi\ncd \"$WORKTREE_DIR\"\necho \"CWD: $(pwd)\" && echo \"Branch: $(git branch --show-current)\" && echo \"$(pwd)\" | grep -q '\\.claude/worktrees/' && echo \"WORKTREE VERIFIED\" || echo \"FATAL: NOT in a worktree\"\n```\nALL subsequent commands must run from this worktree directory.\n\n## Instructions\n1. Read CLAUDE.md, api/CLAUDE.md, and the existing MCP code in api/internal/mcp/\n2. Read docs/specs/product-overview.md for the planned MCP auth model\n3. Implement:\n   - Per-client API key authentication (alongside existing JWT)\n   - MCP client registry (DB table for registered clients with permissions)\n   - Tool permission allowlists per client\n   - Sensitivity-level filtering (clients can only access items at or below their sensitivity level)\n   - Audit logging for MCP operations\n4. Create migration for mcp_clients table and mcp_audit_log table\n5. Write comprehensive tests\n6. Follow Go conventions from CLAUDE.md\n\n## Quality Gate\n```bash\nmake api-test-unit && make api-lint\n```\n\n## Completion\nWhen done, commit, push branch, and report back with summary and quality gate results.",
+      "color": "cyan",
+      "planModeRequired": true,
+      "joinedAt": 1773198145655,
+      "tmuxPaneId": "%119",
+      "cwd": "/home/ketan/project/flotsam",
+      "subscriptions": [],
+      "backendType": "tmux",
+      "isActive": true
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "id": "8",
+  "subject": "kapow-n92.5: Config parity checker",
+  "description": "Implement config parity checker ensuring config fields match docs, usage, and test coverage.",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

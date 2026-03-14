@@ -1,0 +1,446 @@
+# Multi-Level Setup/Teardown for Shatter
+
+## Context
+
+Users need in-process setup and teardown for tests executed by Shatter — initializing databases, authentication keys, external services, etc. The current system supports two levels (`per_function` and `per_execution`) but lacks session-level and file-level setup, convention-based discovery, proper error propagation, separate timeouts, and implementations in Go/Rust frontends. The orchestrator path (`orchestrator.rs`) also completely ignores setup, violating the parallel-path parity rule.
+
+No backward compatibility constraints — we can redesign the protocol cleanly.
+
+## User-Facing Examples
+
+### TypeScript Setup Files
+
+**Session-level setup** (`shatter.setup.ts` in project root, or `.shatter/setup.ts`):
+
+```typescript
+// shatter.setup.ts — runs once for the entire shatter session
+
+import { Pool } from "pg";
+
+let pool: Pool;
+
+export async function setup(): Promise<{ db: Pool }> {
+  pool = new Pool({ connectionString: process.env.DATABASE_URL });
+  await pool.query("CREATE SCHEMA IF NOT EXISTS shatter_test");
+  return { db: pool };
+}
+
+export async function teardown(context: { db: Pool }): Promise<void> {
+  await context.db.query("DROP SCHEMA IF EXISTS shatter_test CASCADE");
+  await context.db.end();
+}
+```
+
+**File-level setup** (`src/db/users.shatter.setup.ts` co-located, or configured via glob):
+
+```typescript
+// users.shatter.setup.ts — runs once per source file being explored
+
+export async function setup(
+  scope: string,             // the source file path being explored
+  parentContext: { db: Pool } // context from session setup
+): Promise<{ table: string }> {
+  const table = `test_users_${Date.now()}`;
+  await parentContext.db.query(`CREATE TABLE ${table} (id SERIAL, name TEXT)`);
+  return { table };
+}
+
+export async function teardown(
+  scope: string,
+  context: { table: string },
+  parentContext: { db: Pool }
+): Promise<void> {
+  await parentContext.db.query(`DROP TABLE IF EXISTS ${context.table}`);
+}
+```
+
+**Function-level setup** (configured in `.shatter/config.yaml`):
+
+```typescript
+// .shatter/setup/auth-setup.ts — runs once per function
+
+export async function setup(
+  scope: string,                              // function name
+  parentContext: { db: Pool; table: string }   // merged session + file contexts
+): Promise<{ authToken: string }> {
+  const token = await generateTestToken(parentContext.db);
+  return { authToken: token };
+}
+
+export async function teardown(
+  scope: string,
+  context: { authToken: string },
+  parentContext: { db: Pool; table: string }
+): Promise<void> {
+  await revokeToken(context.authToken, parentContext.db);
+}
+```
+
+**Execution-level setup** (runs before every single execution of a function):
+
+```typescript
+// .shatter/setup/per-exec-setup.ts — runs before each execution
+
+export function setup(
+  scope: string,
+  parentContext: { db: Pool; table: string; authToken: string }
+): { requestId: string } {
+  return { requestId: crypto.randomUUID() };
+}
+
+// teardown is optional — if omitted, no teardown runs at this level
+```
+
+### Go Setup Files
+
+**Session-level setup** (`shatter_setup.go` in project root):
+
+```go
+package shatter_setup
+
+import (
+    "database/sql"
+    _ "github.com/lib/pq"
+)
+
+func Setup() (map[string]any, error) {
+    db, err := sql.Open("postgres", os.Getenv("DATABASE_URL"))
+    if err != nil {
+        return nil, err
+    }
+    return map[string]any{"db_dsn": os.Getenv("DATABASE_URL")}, nil
+}
+
+func Teardown(context map[string]any) error {
+    // cleanup
+    return nil
+}
+```
+
+### Rust Setup Files
+
+**Session-level setup** (`shatter_setup.rs` in project root):
+
+```rust
+// Compiled and executed as a subprocess that communicates via JSON on stdout
+
+use serde_json::json;
+
+fn main() {
+    // Setup logic
+    let context = json!({"db_url": std::env::var("DATABASE_URL").unwrap()});
+    println!("{}", context); // return context as JSON
+}
+```
+
+### Configuration
+
+**Convention-based** (zero config — just place files):
+
+```
+my-project/
+├── shatter.setup.ts              # session setup (auto-discovered)
+├── src/
+│   ├── db/
+│   │   ├── users.ts              # source file under test
+│   │   └── users.shatter.setup.ts # file-level setup (auto-discovered)
+│   └── auth/
+│       ├── login.ts
+│       └── login.shatter.setup.ts
+└── .shatter/
+    └── config.yaml               # optional overrides
+```
+
+**Config-based** (`.shatter/config.yaml`):
+
+```yaml
+# Session-level setup — runs once for the entire shatter run
+session_setup:
+  file: ./setup/global-init.ts
+  timeout: 60   # seconds
+
+# File-level setup — glob patterns map source files to setup files
+file_setup:
+  "src/db/**":   ./setup/db-file-init.ts
+  "src/auth/**": ./setup/auth-file-init.ts
+
+# Function-level defaults
+defaults:
+  setup: ./setup/default-function-setup.ts
+  setup_level: function     # function | execution
+  setup_timeout: 30
+
+# Per-function overrides
+functions:
+  "src/auth.ts:validateToken":
+    setup: ./setup/auth-token-setup.ts
+    setup_level: execution   # run before every execution
+    setup_timeout: 10
+```
+
+**CLI usage:**
+
+```bash
+# Basic — convention discovery handles everything
+shatter explore src/db/users.ts
+
+# With explicit setup timeout
+shatter explore src/db/users.ts --setup-timeout 60
+
+# Abort on any setup failure
+shatter explore src/db/users.ts --fail-on-error
+
+# Scan with setup (session setup runs once, file setups per file)
+shatter scan src/ --fail-on-error --setup-timeout 120
+```
+
+## Setup Levels
+
+| Level | Scope | Setup function signature |
+|-------|-------|------------------------|
+| **Session** | Once for entire shatter run | `setup() → context` |
+| **File** | Once per source file | `setup(filePath, sessionContext) → context` |
+| **Function** | Once per function | `setup(functionName, {session, file}) → context` |
+| **Execution** | Per individual execution | `setup(functionName, {session, file, function}) → context` |
+
+Each level's `setup()` receives the accumulated parent contexts. Each level's `teardown()` receives its own context plus the parent contexts.
+
+## Design
+
+### 1. Protocol
+
+Replace `SetupMode` with `SetupLevel` everywhere. Remove backward-compat shims.
+
+**`SetupLevel` enum:**
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SetupLevel {
+    Session,
+    File,
+    Function,
+    Execution,
+}
+```
+
+**`Setup` command:**
+
+```rust
+Setup {
+    file: String,           // path to the setup file
+    scope: String,          // "" for session, file path for file, fn name for function/execution
+    level: SetupLevel,
+    parent_context: Option<SetupContextStack>,  // accumulated parent contexts
+    project_root: Option<String>,
+}
+```
+
+**`Teardown` command:**
+
+```rust
+Teardown {
+    scope: String,
+    level: SetupLevel,
+}
+```
+
+**`SetupContextStack`** (replaces flat `setup_context`):
+
+```rust
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SetupContextStack {
+    pub session: Option<serde_json::Value>,
+    pub file: Option<serde_json::Value>,
+    pub function: Option<serde_json::Value>,
+    pub execution: Option<serde_json::Value>,
+}
+```
+
+**`Execute` command** — `setup_context: Option<Value>` → `setup_context: Option<SetupContextStack>`
+
+**`Setup` response** — unchanged: `Setup { setup_context: Value }`
+
+The core engine places each level's returned context into the appropriate `SetupContextStack` slot before sending Execute commands.
+
+### 2. Config Schema
+
+New fields in `ShatterConfig` (top level):
+- `session_setup: Option<SetupConfig>` where `SetupConfig { file: String, timeout: Option<u64> }`
+- `file_setup: Option<HashMap<String, String>>` (glob → setup file path)
+
+Rename in `DefaultsConfig` and `FunctionConfig`:
+- `setup_mode: Option<SetupMode>` → `setup_level: Option<SetupLevel>`
+- Add `setup_timeout: Option<u64>`
+
+`ResolvedFunctionConfig`:
+- `setup_mode: SetupMode` → `setup_level: SetupLevel`
+- Add `setup_timeout: u64`
+
+### 3. Convention-Based Discovery
+
+New function `discover_setup_files()` in `config.rs`:
+
+| Level | Convention | Location |
+|-------|-----------|----------|
+| Session | `shatter.setup.{ext}` | Project root |
+| Session | `.shatter/setup.{ext}` | Inside `.shatter/` dir |
+| File | `<stem>.shatter.setup.{ext}` | Co-located with source file |
+
+Where `{ext}` matches the frontend language (`ts`/`js` for TypeScript, `go` for Go, `rs` for Rust).
+
+Config-based setup always takes precedence over convention-discovered files.
+
+### 4. SetupManager (new module: `shatter-core/src/setup_manager.rs`)
+
+Centralizes all setup lifecycle logic, replacing the inline logic in `explorer.rs`:
+
+```rust
+pub struct SetupManager {
+    session_context: Option<Value>,
+    file_contexts: HashMap<String, Value>,
+    function_contexts: HashMap<String, Value>,
+    failures: SetupFailures,
+    fail_on_error: bool,
+    timeouts: SetupTimeouts,
+}
+
+pub struct SetupTimeouts {
+    pub session: Duration,
+    pub file: Duration,
+    pub function: Duration,
+    pub execution: Duration,
+}
+
+pub struct SetupFailures {
+    pub session: Option<String>,
+    pub files: HashMap<String, String>,
+    pub functions: HashMap<String, String>,
+}
+```
+
+Key methods:
+- `setup_session()` / `teardown_session()` — called by CLI/scan orchestrator
+- `setup_file()` / `teardown_file()` — called when transitioning between source files
+- `setup_function()` / `teardown_function()` — called by explorer/orchestrator per function
+- `setup_execution()` / `teardown_execution()` — called per execution in the explore loop
+- `context_stack(file, function)` → builds `SetupContextStack` from active contexts
+- `should_skip_file(file)` / `should_skip_function(fn)` → checks failures
+
+All setup calls are wrapped with `tokio::time::timeout()` using per-level timeouts.
+
+### 5. Error Propagation
+
+| Failure level | Effect | `--fail-on-error` |
+|---------------|--------|-------------------|
+| Session | All functions across all files skipped | Abort immediately |
+| File | All functions in that file skipped | Abort immediately |
+| Function | That function skipped | Abort immediately |
+| Execution | Recorded as error, loop continues | Abort immediately |
+
+Setup failures are reported in the exploration output with the skip reason.
+
+### 6. Timeout Configuration
+
+| Level | Default | Env var override |
+|-------|---------|-----------------|
+| Session | 120s | `SHATTER_SETUP_TIMEOUT` (global ceiling) |
+| File | 30s | `SHATTER_SETUP_TIMEOUT` |
+| Function | 15s | `SHATTER_SETUP_TIMEOUT` |
+| Execution | 5s | `SHATTER_SETUP_TIMEOUT` |
+
+CLI: `--setup-timeout <seconds>` sets the global ceiling. Per-level defaults can be overridden in config (`session_setup.timeout`, `defaults.setup_timeout`, per-function `setup_timeout`).
+
+### 7. CLI Flags
+
+- `--setup-timeout <seconds>` — global setup/teardown timeout ceiling
+- `--fail-on-error` — abort on any setup failure (default: skip dependents + continue)
+
+## File Changes
+
+### Phase 1: Protocol & Types
+
+| File | Changes |
+|------|---------|
+| `shatter-core/src/config.rs` | Replace `SetupMode` with `SetupLevel`. Add `SessionSetupConfig`, `file_setup` field, `setup_timeout` fields, `discover_setup_files()`. Update `ResolvedFunctionConfig`. |
+| `shatter-core/src/protocol.rs` | Replace `mode` with `level` in Setup/Teardown. Add `parent_context` to Setup. Change `setup_context` in Execute to `SetupContextStack`. Add `SetupContextStack` type. Rename `function` to `scope` in Setup/Teardown. |
+| `shatter-core/src/test_arbitraries.rs` | Replace `arb_setup_mode()` with `arb_setup_level()`. Add `arb_setup_context_stack()`. |
+| `shatter-ts/src/protocol.ts` | Replace `SetupMode` with `SetupLevel`. Update request/response interfaces. |
+| `shatter-go/protocol/types.go` | Mirror protocol changes. |
+| `shatter-rust/src/protocol.rs` | Mirror protocol changes. |
+
+### Phase 2: SetupManager
+
+| File | Changes |
+|------|---------|
+| `shatter-core/src/setup_manager.rs` | **New** — all setup lifecycle, context tracking, failure tracking, timeout |
+| `shatter-core/src/lib.rs` | Add `pub mod setup_manager;` |
+
+### Phase 3: Explorer & Orchestrator Integration
+
+| File | Changes |
+|------|---------|
+| `shatter-core/src/explorer.rs` | Remove `send_setup`/`send_teardown` functions and inline lifecycle. Replace `setup_file`/`setup_mode` in `ExploreConfig` with `SetupManager` reference. Use `context_stack()` for Execute commands. |
+| `shatter-core/src/orchestrator.rs` | Add setup support to `ExploreConfig`. Use `SetupManager` for function/execution setup. Replace `setup_context: None` with `context_stack()`. |
+| `shatter-core/src/scan_orchestrator.rs` | Wire session + file setup lifecycle. `SetupManager::setup_session` before scan, `setup_file` per file, teardowns in reverse. |
+
+### Phase 4: CLI Wiring
+
+| File | Changes |
+|------|---------|
+| `shatter-cli/src/main.rs` | Add `--setup-timeout` and `--fail-on-error` flags. Resolve setup files from config + convention. Set `SHATTER_SETUP_TIMEOUT` env var. Wire setup config into all explore/scan paths. |
+
+### Phase 5: Frontend Implementations
+
+**TypeScript (extend existing):**
+
+| File | Changes |
+|------|---------|
+| `shatter-ts/src/handlers.ts` | Handle `level` field and `parent_context`. Separate context caches per level. Pass parent contexts to setup functions. |
+| `shatter-ts/src/setup-loader.ts` | Update `runSetup()` to accept `SetupLevel` and `parentContext`. Setup function signature: `setup(scope, parentContext?)`. Support async setup/teardown. |
+| `shatter-ts/src/executor.ts` | Read `SHATTER_SETUP_TIMEOUT` for setup-specific timeout. |
+
+**Go (implement from stubs):**
+
+| File | Changes |
+|------|---------|
+| `shatter-go/protocol/handler.go` | Replace stubs with real implementations. Load Go setup files as compiled plugins or subprocess. Cache contexts per level. |
+| `shatter-go/setup/loader.go` | **New** — Go setup module loader. |
+
+**Rust (implement from stubs):**
+
+| File | Changes |
+|------|---------|
+| `shatter-rust/src/handler.rs` | Replace stubs. Rust setup files compiled and executed as subprocesses, returning JSON context on stdout. |
+| `shatter-rust/src/setup.rs` | **New** — Rust setup execution logic. |
+
+### Phase 6: Convention Discovery
+
+| File | Changes |
+|------|---------|
+| `shatter-core/src/config.rs` | `discover_setup_files()` — filesystem check for convention patterns |
+
+## Testing
+
+1. **Protocol round-trips** — all new types in all 4 language implementations
+2. **SetupManager unit tests** — lifecycle ordering, context merging, failure propagation, timeouts
+3. **SetupManager proptest** — arbitrary setup/teardown sequences maintain valid state
+4. **Config tests** — convention discovery, config merging with new fields, `SetupLevel` serialization
+5. **E2E tests** — new cases in `e2e_concolic.rs` exercising session + file setup with TS frontend
+6. **Parity tests** — explorer.rs and orchestrator.rs produce identical behavior with setup
+7. **Walkthrough** — add setup/teardown demo to `demo/walkthrough.sh`
+8. **Frontend tests** — handler tests for each level in TS, Go, Rust
+
+## Verification
+
+1. `cargo test` — all core tests pass (Quick tier)
+2. `cargo clippy -- -D warnings` — clean (Standard tier)
+3. `cd shatter-ts && npm test` — TS handler/setup tests pass
+4. `cd shatter-go && go test ./...` — Go handler/setup tests pass
+5. `cd shatter-rust && cargo test` — Rust handler/setup tests pass
+6. `cargo test --test e2e_concolic` — E2E pipeline with setup still works
+7. `bash demo/walkthrough.sh --auto --delay 0` — walkthrough passes
+
+## Implementation Order
+
+Phases 1→6 are sequential. Phase 5 (TS/Go/Rust frontends) can be parallelized via separate worktrees. Each phase must pass its test tier before proceeding.

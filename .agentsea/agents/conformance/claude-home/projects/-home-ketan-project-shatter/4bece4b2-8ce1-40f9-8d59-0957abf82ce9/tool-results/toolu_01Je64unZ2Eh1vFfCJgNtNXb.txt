@@ -1,0 +1,290 @@
+shatter-core/src/spec.rs:20:use crate::fingerprint::compute_deep_fingerprints;
+shatter-core/src/spec.rs:238:    /// SHA-256 fingerprint of the function's source, params, and branches.
+shatter-core/src/spec.rs:241:    pub fingerprint: Option<String>,
+shatter-core/src/spec.rs:256:    fingerprint: Option<String>,
+shatter-core/src/spec.rs:273:        fingerprint,
+shatter-core/src/spec.rs:286:    fingerprint: Option<String>,
+shatter-core/src/spec.rs:288:    let mut spec = build_spec(result, eq_classes, location, fingerprint);
+shatter-core/src/spec.rs:661:    /// Functions whose fingerprints changed or are new (need re-exploration).
+shatter-core/src/spec.rs:663:    /// Functions whose fingerprints match the existing spec (reuse old spec).
+shatter-core/src/spec.rs:671:/// Computes deep fingerprints (incorporating callee dependencies) for each function
+shatter-core/src/spec.rs:672:/// in `current_analyses`, then compares against `existing.functions[name].fingerprint`.
+shatter-core/src/spec.rs:673:/// A function is fresh only if its deep fingerprint matches. This means a caller is
+shatter-core/src/spec.rs:684:    external_fingerprints: &std::collections::HashMap<String, String>,
+shatter-core/src/spec.rs:692:    let deep_fps = compute_deep_fingerprints(file_path, current_analyses, external_fingerprints)?;
+shatter-core/src/spec.rs:704:            (Some(spec), Some(fp)) if spec.fingerprint.as_deref() == Some(fp.as_str()) => {
+shatter-core/src/spec.rs:1419:            fingerprint: None,
+shatter-core/src/spec.rs:1688:    fn make_spec_with_fingerprint(name: &str, fingerprint: Option<&str>) -> FunctionSpec {
+shatter-core/src/spec.rs:1697:            fingerprint: fingerprint.map(|s| s.to_string()),
+shatter-core/src/spec.rs:1711:            crate::fingerprint::compute_deep_fingerprints(&file, &[analysis.clone()], &std::collections::HashMap::new()).unwrap();
+shatter-core/src/spec.rs:1716:            functions: vec![make_spec_with_fingerprint("add", Some(fp))],
+shatter-core/src/spec.rs:1726:    fn incremental_plan_stale_on_fingerprint_mismatch() {
+shatter-core/src/spec.rs:1735:            functions: vec![make_spec_with_fingerprint("add", Some("old_fp_mismatch"))],
+shatter-core/src/spec.rs:1745:    fn incremental_plan_stale_when_no_fingerprint() {
+shatter-core/src/spec.rs:1754:            functions: vec![make_spec_with_fingerprint("add", None)],
+shatter-core/src/spec.rs:1789:                make_spec_with_fingerprint("add", Some("old")),
+shatter-core/src/spec.rs:1790:                make_spec_with_fingerprint("removed_fn", Some("old2")),
+shatter-core/src/spec.rs:1836:            crate::fingerprint::compute_deep_fingerprints(&file, &analyses_v1, &std::collections::HashMap::new()).unwrap();
+shatter-core/src/spec.rs:1841:                make_spec_with_fingerprint("leaf", Some(&deep_fps_v1["leaf"])),
+shatter-core/src/spec.rs:1842:                make_spec_with_fingerprint("caller", Some(&deep_fps_v1["caller"])),
+shatter-core/src/spec.rs:1872:                make_spec_with_fingerprint("fresh_fn", Some("fp1")),
+shatter-core/src/spec.rs:1873:                make_spec_with_fingerprint("stale_fn", Some("fp2")),
+shatter-core/src/spec.rs:1874:                make_spec_with_fingerprint("removed_fn", Some("fp3")),
+shatter-core/src/spec.rs:1878:        let new_stale_spec = make_spec_with_fingerprint("stale_fn", Some("fp2_new"));
+shatter-core/src/spec.rs:1890:        // Verify stale_fn has new fingerprint
+shatter-core/src/spec.rs:1892:        assert_eq!(stale.fingerprint.as_deref(), Some("fp2_new"));
+shatter-core/src/spec.rs:1894:        // Verify fresh_fn has old fingerprint
+shatter-core/src/spec.rs:1896:        assert_eq!(fresh.fingerprint.as_deref(), Some("fp1"));
+shatter-core/src/spec.rs:1906:        let new_spec = make_spec_with_fingerprint("add", Some("fp1"));
+shatter-core/src/spec.rs:1919:                make_spec_with_fingerprint("fn1", Some("fp1")),
+shatter-core/src/spec.rs:1920:                make_spec_with_fingerprint("fn2", Some("fp2")),
+shatter-core/src/spec.rs:2305:                override_spec.fingerprint = Some(override_fp.clone());
+shatter-core/src/spec.rs:2325:                prop_assert_eq!(result.fingerprint.as_deref(), Some(override_fp.as_str()),
+shatter-core/src/behavior.rs:219:    /// SHA-256 fingerprint of the function's source, params, and branches.
+shatter-core/src/behavior.rs:220:    /// Used for staleness detection: if the fingerprint matches a cached value,
+shatter-core/src/behavior.rs:223:    pub fingerprint: Option<String>,
+shatter-core/src/behavior.rs:263:            fingerprint: None,
+shatter-core/src/behavior.rs:316:            fingerprint: None,
+shatter-core/src/behavior.rs:990:                fingerprint: None,
+shatter-core/src/behavior.rs:1364:            fingerprint: None,
+shatter-core/src/cache.rs:136:    /// Check whether a cached behavior map exists and its fingerprint matches.
+shatter-core/src/cache.rs:139:    /// `function_id` whose fingerprint equals `current_fingerprint`.
+shatter-core/src/cache.rs:143:        current_fingerprint: &str,
+shatter-core/src/cache.rs:147:                .fingerprint
+shatter-core/src/cache.rs:149:                .is_some_and(|fp| fp == current_fingerprint)),
+shatter-core/src/cache.rs:271:    /// Check whether a cached spec exists and its fingerprint matches.
+shatter-core/src/cache.rs:275:        current_fingerprint: &str,
+shatter-core/src/cache.rs:279:                .fingerprint
+shatter-core/src/cache.rs:281:                .is_some_and(|fp| fp == current_fingerprint)),
+shatter-core/src/cache.rs:334:            fingerprint: None,
+shatter-core/src/cache.rs:348:            fingerprint: None,
+shatter-core/src/cache.rs:488:    fn is_fresh_returns_true_when_fingerprint_matches() {
+shatter-core/src/cache.rs:493:        map.fingerprint = Some("abc123".to_string());
+shatter-core/src/cache.rs:500:    fn is_fresh_returns_false_when_fingerprint_differs() {
+shatter-core/src/cache.rs:505:        map.fingerprint = Some("abc123".to_string());
+shatter-core/src/cache.rs:512:    fn is_fresh_returns_false_when_no_cached_fingerprint() {
+shatter-core/src/cache.rs:624:    fn spec_is_fresh_with_matching_fingerprint() {
+shatter-core/src/cache.rs:629:        spec.fingerprint = Some("fp123".to_string());
+shatter-core/src/cache.rs:713:        /// Freshness check is consistent: store with fingerprint, then is_fresh matches.
+shatter-core/src/cache.rs:722:            map.fingerprint = Some(fp.clone());
+shatter-core/src/cache.rs:737:            spec.fingerprint = Some(fp.clone());
+shatter-core/src/reporter.rs:851:            fingerprint: None,
+shatter-core/src/export.rs:535:            fingerprint: None,
+shatter-core/src/export.rs:547:            fingerprint: None,
+shatter-core/src/export.rs:560:            fingerprint: None,
+shatter-core/src/export.rs:580:            fingerprint: None,
+shatter-core/src/export.rs:600:            fingerprint: None,
+shatter-core/src/export.rs:617:            fingerprint: None,
+shatter-core/src/export.rs:632:            fingerprint: None,
+shatter-core/src/export.rs:650:            fingerprint: None,
+shatter-core/src/export.rs:675:            fingerprint: None,
+shatter-core/src/export.rs:688:            fingerprint: None,
+shatter-core/src/export.rs:703:            fingerprint: None,
+shatter-core/src/export.rs:719:            fingerprint: None,
+shatter-core/src/export.rs:745:            fingerprint: None,
+shatter-core/src/export.rs:763:            fingerprint: None,
+shatter-core/src/export.rs:778:            fingerprint: None,
+shatter-core/src/export.rs:792:            fingerprint: None,
+shatter-core/src/export.rs:805:            fingerprint: None,
+shatter-core/src/export.rs:828:            fingerprint: None,
+shatter-core/src/export.rs:858:            fingerprint: None,
+shatter-core/src/export.rs:1007:            fingerprint: None,
+shatter-core/src/export.rs:1019:            fingerprint: None,
+shatter-core/src/export.rs:1031:            fingerprint: None,
+shatter-core/src/export.rs:1044:            fingerprint: None,
+shatter-core/src/export.rs:1066:            fingerprint: None,
+shatter-core/src/export.rs:1082:            fingerprint: None,
+shatter-core/src/lib.rs:28:pub mod fingerprint;
+shatter-core/src/checkpoint.rs:3://! Persists the set of completed functions and their deep fingerprints after
+shatter-core/src/checkpoint.rs:35:    /// Map of function name → deep fingerprint for completed functions.
+shatter-core/src/checkpoint.rs:106:    /// 2. The stored deep fingerprint matches `current_deep_fp`
+shatter-core/src/checkpoint.rs:122:    /// Record a function as completed with its deep fingerprint.
+shatter-core/src/checkpoint.rs:136:    fn sample_map(function_id: &str, fingerprint: Option<&str>) -> BehaviorMap {
+shatter-core/src/checkpoint.rs:149:            fingerprint: fingerprint.map(String::from),
+shatter-core/src/spec_diff.rs:459:            fingerprint: None,
+shatter-core/src/test_arbitraries.rs:974:                fingerprint,
+shatter-core/src/test_arbitraries.rs:983:                fingerprint,
+shatter-core/src/test_arbitraries.rs:1020:            fingerprint: None,
+shatter-core/src/mock_gen.rs:249:            fingerprint: None,
+shatter-core/src/revalidation.rs:27:    /// Code fingerprint changed and behavior changed — expected drift.
+shatter-core/src/revalidation.rs:159:/// `current_fingerprint` is the freshly-computed fingerprint of the function's
+shatter-core/src/revalidation.rs:160:/// source. If it differs from `behavior_map.fingerprint`, the code has changed.
+shatter-core/src/revalidation.rs:169:    current_fingerprint: Option<&str>,
+shatter-core/src/revalidation.rs:171:    let code_changed = match (&behavior_map.fingerprint, current_fingerprint) {
+shatter-core/src/revalidation.rs:173:        // Missing fingerprint on either side → conservative: treat as changed.
+shatter-core/src/report.rs:835:                fingerprint: None,
+shatter-core/src/snapshot.rs:438:            fingerprint: None,
+shatter-core/src/scan_orchestrator.rs:230:/// Compute the fingerprint for a function using its source text and analysis.
+shatter-core/src/scan_orchestrator.rs:235:fn compute_fingerprint_for_function(
+shatter-core/src/scan_orchestrator.rs:244:    let source = crate::fingerprint::extract_function_source(
+shatter-core/src/scan_orchestrator.rs:250:    Some(crate::fingerprint::compute_function_fingerprint(&source, analysis))
+shatter-core/src/scan_orchestrator.rs:301:    let mut deep_fingerprints: HashMap<String, String> = HashMap::new();
+shatter-core/src/scan_orchestrator.rs:339:        // Compute shallow fingerprint, then deep fingerprint incorporating callees.
+shatter-core/src/scan_orchestrator.rs:340:        let shallow_fingerprint = compute_fingerprint_for_function(func_name, analysis, config);
+shatter-core/src/scan_orchestrator.rs:342:        let current_deep_fp = shallow_fingerprint.as_ref().map(|sfp| {
+shatter-core/src/scan_orchestrator.rs:343:            crate::fingerprint::compute_deep_fingerprint(sfp, &deep_fingerprints, &callees)
+shatter-core/src/scan_orchestrator.rs:352:            deep_fingerprints.insert(func_name.clone(), dfp.clone());
+shatter-core/src/scan_orchestrator.rs:361:        // Check cache freshness using deep fingerprint.
+shatter-core/src/scan_orchestrator.rs:367:            deep_fingerprints.insert(func_name.clone(), dfp.clone());
+shatter-core/src/scan_orchestrator.rs:370:                reason: "unchanged (fingerprint match)".into(),
+shatter-core/src/scan_orchestrator.rs:467:        analyze_out.behavior_map.fingerprint = current_deep_fp.clone();
+shatter-core/src/scan_orchestrator.rs:474:        // Record deep fingerprint for downstream functions.
+shatter-core/src/scan_orchestrator.rs:476:            deep_fingerprints.insert(func_name.clone(), dfp.clone());
+shatter-core/src/scan_orchestrator.rs:651:    // Deep fingerprints: accumulated across layers. Since functions within a
+shatter-core/src/scan_orchestrator.rs:654:    let mut deep_fingerprints: HashMap<String, String> = HashMap::new();
+shatter-core/src/scan_orchestrator.rs:722:            // Compute shallow fingerprint, then deep fingerprint incorporating callees.
+shatter-core/src/scan_orchestrator.rs:723:            let shallow_fingerprint =
+shatter-core/src/scan_orchestrator.rs:724:                compute_fingerprint_for_function(func_name, analysis, config);
+shatter-core/src/scan_orchestrator.rs:727:            let current_deep_fp = shallow_fingerprint.as_ref().map(|sfp| {
+shatter-core/src/scan_orchestrator.rs:728:                crate::fingerprint::compute_deep_fingerprint(sfp, &deep_fingerprints, &callees)
+shatter-core/src/scan_orchestrator.rs:748:            // Check cache freshness using deep fingerprint.
+shatter-core/src/scan_orchestrator.rs:759:                    reason: "unchanged (fingerprint match)".into(),
+shatter-core/src/scan_orchestrator.rs:935:                    // can incorporate it into their deep fingerprints.
+shatter-core/src/scan_orchestrator.rs:936:                    if let Some(ref fp) = result.behavior_map.fingerprint {
+shatter-core/src/scan_orchestrator.rs:966:        // Merge this layer's deep fingerprints into the accumulated map.
+shatter-core/src/scan_orchestrator.rs:969:            deep_fingerprints.insert(name, fp);
+shatter-core/src/scan_orchestrator.rs:1068:    fingerprint: Option<String>,
+shatter-core/src/scan_orchestrator.rs:1086:    analyze_out.behavior_map.fingerprint = fingerprint;
+shatter-core/src/scan_orchestrator.rs:1653:                        fingerprint: None,
+shatter-core/src/scan_orchestrator.rs:1674:                        fingerprint: None,
+shatter-core/src/scan_orchestrator.rs:1716:                    fingerprint: None,
+shatter-core/src/scan_orchestrator.rs:1751:                    fingerprint: None,
+shatter-core/src/scan_orchestrator.rs:1799:                    fingerprint: None,
+shatter-core/src/scan_orchestrator.rs:1846:                    fingerprint: None,
+shatter-core/src/scan_orchestrator.rs:1882:                    fingerprint: None,
+shatter-core/src/scan_orchestrator.rs:1925:                    fingerprint: None,
+shatter-core/src/scan_orchestrator.rs:2030:                    fingerprint: None,
+shatter-core/src/scan_orchestrator.rs:2075:                    fingerprint: None,
+shatter-core/src/fingerprint.rs:1://! Per-function fingerprinting for staleness detection.
+shatter-core/src/fingerprint.rs:3://! A fingerprint is a stable SHA-256 hash of a function's source text,
+shatter-core/src/fingerprint.rs:4://! parameter types, and branch structure. When a fingerprint matches a
+shatter-core/src/fingerprint.rs:9://! - **Single-file**: [`compute_deep_fingerprints`] computes deep FPs within one file.
+shatter-core/src/fingerprint.rs:10://! - **Cross-file**: [`compute_cross_file_deep_fingerprints`] uses a [`CallGraph`] to
+shatter-core/src/fingerprint.rs:11://!   compose fingerprints across file boundaries, and [`compute_cross_file_staleness`]
+shatter-core/src/fingerprint.rs:23:/// Compute a hex-encoded SHA-256 fingerprint for a function.
+shatter-core/src/fingerprint.rs:25:/// The fingerprint incorporates:
+shatter-core/src/fingerprint.rs:30:/// Any change to these inputs produces a different fingerprint.
+shatter-core/src/fingerprint.rs:31:pub fn compute_function_fingerprint(source_text: &str, analysis: &FunctionAnalysis) -> String {
+shatter-core/src/fingerprint.rs:80:/// Compute a deep fingerprint that incorporates callee fingerprints.
+shatter-core/src/fingerprint.rs:82:/// Extends the shallow fingerprint by hashing in the deep fingerprints of all
+shatter-core/src/fingerprint.rs:84:/// `callee_deep_fingerprints` are ignored (they are out-of-scope and assumed stable).
+shatter-core/src/fingerprint.rs:86:/// Because scans process functions leaves-first, callee deep fingerprints are
+shatter-core/src/fingerprint.rs:88:pub fn compute_deep_fingerprint(
+shatter-core/src/fingerprint.rs:89:    shallow_fingerprint: &str,
+shatter-core/src/fingerprint.rs:90:    callee_deep_fingerprints: &HashMap<String, String>,
+shatter-core/src/fingerprint.rs:95:    hasher.update(shallow_fingerprint.as_bytes());
+shatter-core/src/fingerprint.rs:100:            callee_deep_fingerprints
+shatter-core/src/fingerprint.rs:118:/// Compute deep fingerprints for all functions in a single file.
+shatter-core/src/fingerprint.rs:120:/// For each analysis, computes a shallow fingerprint from source text + metadata,
+shatter-core/src/fingerprint.rs:121:/// then composes it with callee deep fingerprints. Functions are processed in
+shatter-core/src/fingerprint.rs:123:/// fingerprints are available when computing callers. Cycles are broken by
+shatter-core/src/fingerprint.rs:124:/// processing remaining functions with partial callee fingerprints.
+shatter-core/src/fingerprint.rs:126:/// `external_fingerprints` provides deep fingerprints for cross-file callees
+shatter-core/src/fingerprint.rs:127:/// (looked up from cache). These are seeded into the deep fingerprint map so
+shatter-core/src/fingerprint.rs:128:/// that cross-file dependency changes propagate to callers' fingerprints.
+shatter-core/src/fingerprint.rs:131:/// Returns a map from function name to deep fingerprint.
+shatter-core/src/fingerprint.rs:132:pub fn compute_deep_fingerprints(
+shatter-core/src/fingerprint.rs:135:    external_fingerprints: &HashMap<String, String>,
+shatter-core/src/fingerprint.rs:139:    // Compute shallow fingerprints for all functions.
+shatter-core/src/fingerprint.rs:143:        shallow.insert(func.name.clone(), compute_function_fingerprint(&source, func));
+shatter-core/src/fingerprint.rs:201:    // Seed with external fingerprints so cross-file callees are available.
+shatter-core/src/fingerprint.rs:202:    let mut deep: HashMap<String, String> = external_fingerprints.clone();
+shatter-core/src/fingerprint.rs:212:                compute_deep_fingerprint(sfp, &deep, &callees),
+shatter-core/src/fingerprint.rs:229:    // Cycle remnants: process with partial callee fingerprints.
+shatter-core/src/fingerprint.rs:240:                compute_deep_fingerprint(sfp, &deep, &callees),
+shatter-core/src/fingerprint.rs:268:// Cross-file fingerprint registry and staleness analysis
+shatter-core/src/fingerprint.rs:271:/// Cross-file registry of shallow and deep fingerprints, keyed by qualified
+shatter-core/src/fingerprint.rs:323:/// Compute deep fingerprints for all functions across files using a [`CallGraph`].
+shatter-core/src/fingerprint.rs:328:/// functions with partial callee fingerprints (same strategy as the single-file
+shatter-core/src/fingerprint.rs:331:/// `shallow_fps` maps qualified name → shallow fingerprint. The call graph
+shatter-core/src/fingerprint.rs:333:pub fn compute_cross_file_deep_fingerprints(
+shatter-core/src/fingerprint.rs:354:            let dfp = compute_deep_fingerprint(sfp, &deep_map, &callees);
+shatter-core/src/fingerprint.rs:365:            let dfp = compute_deep_fingerprint(sfp, &deep_map, &HashSet::new());
+shatter-core/src/fingerprint.rs:380:    /// A transitive callee's fingerprint changed. Contains the callee's qualified name.
+shatter-core/src/fingerprint.rs:384:    /// The previous registry had no fingerprint for this function.
+shatter-core/src/fingerprint.rs:401:/// Compare current fingerprints against previous ones to determine cross-file staleness.
+shatter-core/src/fingerprint.rs:403:/// A function is stale if its deep fingerprint differs from the previous registry,
+shatter-core/src/fingerprint.rs:404:/// or if it's new / has no previous fingerprint. Staleness propagates transitively
+shatter-core/src/fingerprint.rs:537:    fn identical_inputs_produce_same_fingerprint() {
+shatter-core/src/fingerprint.rs:541:        let fp1 = compute_function_fingerprint(source, &analysis);
+shatter-core/src/fingerprint.rs:542:        let fp2 = compute_function_fingerprint(source, &analysis);
+shatter-core/src/fingerprint.rs:549:    fn different_source_text_produces_different_fingerprint() {
+shatter-core/src/fingerprint.rs:554:        let fp1 = compute_function_fingerprint(src1, &analysis);
+shatter-core/src/fingerprint.rs:555:        let fp2 = compute_function_fingerprint(src2, &analysis);
+shatter-core/src/fingerprint.rs:561:    fn different_param_types_produces_different_fingerprint() {
+shatter-core/src/fingerprint.rs:568:        let fp1 = compute_function_fingerprint(source, &analysis1);
+shatter-core/src/fingerprint.rs:569:        let fp2 = compute_function_fingerprint(source, &analysis2);
+shatter-core/src/fingerprint.rs:575:    fn different_branch_structure_produces_different_fingerprint() {
+shatter-core/src/fingerprint.rs:588:        let fp1 = compute_function_fingerprint(source, &analysis1);
+shatter-core/src/fingerprint.rs:589:        let fp2 = compute_function_fingerprint(source, &analysis2);
+shatter-core/src/fingerprint.rs:595:    fn param_order_does_not_affect_fingerprint() {
+shatter-core/src/fingerprint.rs:602:        let fp1 = compute_function_fingerprint(source, &analysis1);
+shatter-core/src/fingerprint.rs:603:        let fp2 = compute_function_fingerprint(source, &analysis2);
+shatter-core/src/fingerprint.rs:610:    fn whitespace_change_in_source_produces_different_fingerprint() {
+shatter-core/src/fingerprint.rs:615:        let fp1 = compute_function_fingerprint(src1, &analysis);
+shatter-core/src/fingerprint.rs:616:        let fp2 = compute_function_fingerprint(src2, &analysis);
+shatter-core/src/fingerprint.rs:645:    // --- deep fingerprint tests ---
+shatter-core/src/fingerprint.rs:653:        let fp1 = compute_deep_fingerprint("shallow1", &callee_fps, &callees);
+shatter-core/src/fingerprint.rs:654:        let fp2 = compute_deep_fingerprint("shallow1", &callee_fps, &callees);
+shatter-core/src/fingerprint.rs:668:        let fp1 = compute_deep_fingerprint("shallow1", &fps1, &callees);
+shatter-core/src/fingerprint.rs:669:        let fp2 = compute_deep_fingerprint("shallow1", &fps2, &callees);
+shatter-core/src/fingerprint.rs:682:        let fp_with_extra = compute_deep_fingerprint("shallow1", &callee_fps, &callees);
+shatter-core/src/fingerprint.rs:686:        let fp_minimal = compute_deep_fingerprint("shallow1", &callee_fps_minimal, &callees);
+shatter-core/src/fingerprint.rs:696:        let fp1 = compute_deep_fingerprint("shallow1", &empty_fps, &empty_callees);
+shatter-core/src/fingerprint.rs:697:        let fp2 = compute_deep_fingerprint("shallow1", &empty_fps, &empty_callees);
+shatter-core/src/fingerprint.rs:708:        let fp1 = compute_deep_fingerprint("shallow1", &empty_fps, &empty_callees);
+shatter-core/src/fingerprint.rs:709:        let fp2 = compute_deep_fingerprint("shallow2", &empty_fps, &empty_callees);
+shatter-core/src/fingerprint.rs:713:    // --- compute_deep_fingerprints (file-level) tests ---
+shatter-core/src/fingerprint.rs:748:    fn deep_fingerprints_single_function_no_deps() {
+shatter-core/src/fingerprint.rs:754:        let fps = compute_deep_fingerprints(&file, &analyses, &HashMap::new()).unwrap();
+shatter-core/src/fingerprint.rs:762:    fn deep_fingerprints_caller_incorporates_callee() {
+shatter-core/src/fingerprint.rs:775:        let fps = compute_deep_fingerprints(&file, &analyses, &HashMap::new()).unwrap();
+shatter-core/src/fingerprint.rs:780:        let caller_shallow = compute_function_fingerprint(
+shatter-core/src/fingerprint.rs:784:        let caller_no_deps = compute_deep_fingerprint(
+shatter-core/src/fingerprint.rs:793:    fn deep_fingerprints_callee_change_propagates_to_caller() {
+shatter-core/src/fingerprint.rs:814:        let fps1 = compute_deep_fingerprints(&file1, &analyses, &HashMap::new()).unwrap();
+shatter-core/src/fingerprint.rs:815:        let fps2 = compute_deep_fingerprints(&file2, &analyses, &HashMap::new()).unwrap();
+shatter-core/src/fingerprint.rs:824:    fn deep_fingerprints_out_of_scope_dep_ignored() {
+shatter-core/src/fingerprint.rs:831:        let fps = compute_deep_fingerprints(&file, &analyses, &HashMap::new()).unwrap();
+shatter-core/src/fingerprint.rs:838:    fn deep_fingerprints_diamond_dependency() {
+shatter-core/src/fingerprint.rs:854:        let fps = compute_deep_fingerprints(&file, &analyses, &HashMap::new()).unwrap();
+shatter-core/src/fingerprint.rs:857:        // All should have valid 64-char hex fingerprints.
+shatter-core/src/fingerprint.rs:896:    // --- compute_cross_file_deep_fingerprints tests ---
+shatter-core/src/fingerprint.rs:952:            let fp_reg = compute_cross_file_deep_fingerprints(&shallow, &graph);
+shatter-core/src/fingerprint.rs:959:            let main_standalone = compute_deep_fingerprint(
+shatter-core/src/fingerprint.rs:979:            let reg1 = compute_cross_file_deep_fingerprints(&shallow_v1, &graph);
+shatter-core/src/fingerprint.rs:985:            let reg2 = compute_cross_file_deep_fingerprints(&shallow_v2, &graph);
+shatter-core/src/fingerprint.rs:1014:            let fp_reg = compute_cross_file_deep_fingerprints(&shallow, &graph);
+shatter-core/src/fingerprint.rs:1033:            let fp_reg = compute_cross_file_deep_fingerprints(&shallow, &graph);
+shatter-core/src/fingerprint.rs:1200:    fn deep_fingerprints_cross_file_callee_changes_caller() {
+shatter-core/src/fingerprint.rs:1205:        // "external" is a cross-file dep — not in analyses but in external_fingerprints.
+shatter-core/src/fingerprint.rs:1213:        let fps_v1 = compute_deep_fingerprints(&file, &analyses, &ext_v1).unwrap();
+shatter-core/src/fingerprint.rs:1214:        let fps_v2 = compute_deep_fingerprints(&file, &analyses, &ext_v2).unwrap();
+shatter-core/src/fingerprint.rs:1221:    fn deep_fingerprints_external_entries_not_leaked() {
+shatter-core/src/fingerprint.rs:1230:        let fps = compute_deep_fingerprints(&file, &analyses, &ext).unwrap();
+shatter-core/src/fingerprint.rs:1239:    fn deep_fingerprints_empty_external_preserves_behavior() {
+shatter-core/src/fingerprint.rs:1253:        let fps = compute_deep_fingerprints(&file, &analyses, &HashMap::new()).unwrap();
+shatter-core/src/fingerprint.rs:1257:        let caller_shallow = compute_function_fingerprint(
+shatter-core/src/fingerprint.rs:1261:        let caller_no_deps = compute_deep_fingerprint(
+shatter-core/src/fingerprint.rs:1280:        fn fingerprint_deterministic(
+shatter-core/src/fingerprint.rs:1284:            let fp1 = compute_function_fingerprint(&source, &analysis);
+shatter-core/src/fingerprint.rs:1285:            let fp2 = compute_function_fingerprint(&source, &analysis);
+shatter-core/src/fingerprint.rs:1291:        fn fingerprint_length_invariant(
+shatter-core/src/fingerprint.rs:1295:            let fp = compute_function_fingerprint(&source, &analysis);
+shatter-core/src/fingerprint.rs:1300:        /// Deep fingerprints are deterministic.
+shatter-core/src/fingerprint.rs:1302:        fn deep_fingerprint_deterministic(
+shatter-core/src/fingerprint.rs:1311:            let fp1 = compute_deep_fingerprint(&shallow, &callee_fps, &callees);
+shatter-core/src/fingerprint.rs:1312:            let fp2 = compute_deep_fingerprint(&shallow, &callee_fps, &callees);
+shatter-core/src/fingerprint.rs:1316:        /// Deep fingerprints are always 64-character hex strings.
+shatter-core/src/fingerprint.rs:1318:        fn deep_fingerprint_length_invariant(
+shatter-core/src/fingerprint.rs:1321:            let fp = compute_deep_fingerprint(&shallow, &HashMap::new(), &HashSet::new());
+shatter-core/src/fingerprint.rs:1326:        /// Different source text produces different fingerprints (collision resistance).
+shatter-core/src/fingerprint.rs:1328:        fn different_source_different_fingerprint(
+shatter-core/src/fingerprint.rs:1334:            let fp1 = compute_function_fingerprint(&src1, &analysis);
+shatter-core/src/fingerprint.rs:1335:            let fp2 = compute_function_fingerprint(&src2, &analysis);
+shatter-core/src/fingerprint.rs:1398:            let reg1 = compute_cross_file_deep_fingerprints(&shallow, &graph);
+shatter-core/src/fingerprint.rs:1399:            let reg2 = compute_cross_file_deep_fingerprints(&shallow, &graph);
+shatter-core/src/fingerprint.rs:1419:            let reg = compute_cross_file_deep_fingerprints(&shallow, &graph);
+shatter-core/src/fingerprint.rs:1425:        /// External callee fingerprint change propagates to caller's deep fingerprint.
+shatter-core/src/fingerprint.rs:1441:            let fp1 = compute_deep_fingerprint(&shallow, &ext1, &callees);
+shatter-core/src/fingerprint.rs:1442:            let fp2 = compute_deep_fingerprint(&shallow, &ext2, &callees);

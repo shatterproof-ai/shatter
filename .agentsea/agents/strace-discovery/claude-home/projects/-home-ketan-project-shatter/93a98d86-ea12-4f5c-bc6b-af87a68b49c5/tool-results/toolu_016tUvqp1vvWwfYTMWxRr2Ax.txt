@@ -1,0 +1,284 @@
+shatter-rust/CLAUDE.md:17:Execution timeout: 5s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `exec_timeout_from_env()` in `src/handler.rs`. Currently stored but not applied (execute is unimplemented).
+shatter-rust/src/handler.rs:37:/// Read the execution timeout from `SHATTER_EXEC_TIMEOUT` env var (seconds).
+shatter-rust/src/handler.rs:40:    match std::env::var("SHATTER_EXEC_TIMEOUT") {
+shatter-rust/src/handler.rs:974:    // These tests exercise exec_timeout_from_env() which only reads SHATTER_EXEC_TIMEOUT.
+shatter-rust/src/handler.rs:978:        unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
+shatter-rust/src/handler.rs:984:        unsafe { std::env::set_var("SHATTER_EXEC_TIMEOUT", "3") };
+shatter-rust/src/handler.rs:986:        unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
+shatter-rust/src/handler.rs:992:        unsafe { std::env::set_var("SHATTER_EXEC_TIMEOUT", "2.5") };
+shatter-rust/src/handler.rs:994:        unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
+shatter-rust/src/handler.rs:1000:        unsafe { std::env::set_var("SHATTER_EXEC_TIMEOUT", "not-a-number") };
+shatter-rust/src/handler.rs:1002:        unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
+shatter-rust/src/handler.rs:1008:        unsafe { std::env::set_var("SHATTER_EXEC_TIMEOUT", "0") };
+shatter-rust/src/handler.rs:1010:        unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
+shatter-cli/src/main.rs:834:        "SHATTER_EXEC_TIMEOUT".to_string(),
+shatter-cli/src/main.rs:4145:        assert_eq!(env_map.get("SHATTER_EXEC_TIMEOUT").map(|s| s.as_str()), Some("20"));
+CLAUDE.md:203:All frontends MUST read the `SHATTER_EXEC_TIMEOUT` env var (seconds) and apply it to function execution. The CLI sets this var from `--timeout` before spawning frontends.
+CLAUDE.md:207:| Go | 5s | `SHATTER_EXEC_TIMEOUT` | `execTimeout()` in `instrument/executor.go` |
+CLAUDE.md:208:| TypeScript | 15s | `SHATTER_EXEC_TIMEOUT` | `getExecTimeoutMs()` in `src/executor.ts` |
+CLAUDE.md:209:| Rust | 5s | `SHATTER_EXEC_TIMEOUT` | `exec_timeout_from_env()` in `src/handler.rs` (stored, not yet applied — execute is unimplemented) |
+shatter-go/CLAUDE.md:21:Execution timeout: 5s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `execTimeout()` in `instrument/executor.go`.
+PARITY.md:27:| SHATTER_EXEC_TIMEOUT | Y | Y | Y | TS default 15s, Go default 5s, Rust default 5s (stored, not applied yet) |
+docs/plans/str-kapl-resilience-timeouts-memory.md:5:Shatter's defenses against pathological target code are uneven. The Go frontend handles timeouts well, but the TS and Rust frontends ignore `SHATTER_EXEC_TIMEOUT` entirely. The `--timeout-total` scan flag is parsed but never enforced. Z3 has no solver timeout. There are no cross-platform memory guards. This plan addresses all of these gaps.
+docs/plans/str-kapl-resilience-timeouts-memory.md:17:| `shatter-ts/src/executor.ts` | Add `getExecTimeoutMs()` reading `SHATTER_EXEC_TIMEOUT`, default 15000ms |
+docs/plans/str-kapl-resilience-timeouts-memory.md:99:All frontends MUST read SHATTER_EXEC_TIMEOUT (seconds) and apply it.
+shatter-go/instrument/property_test.go:88:		os.Setenv("SHATTER_EXEC_TIMEOUT", val)
+shatter-go/instrument/property_test.go:89:		defer os.Unsetenv("SHATTER_EXEC_TIMEOUT")
+shatter-go/instrument/property_test.go:120:		os.Setenv("SHATTER_EXEC_TIMEOUT", val)
+shatter-go/instrument/property_test.go:121:		defer os.Unsetenv("SHATTER_EXEC_TIMEOUT")
+shatter-go/instrument/property_test.go:135:		os.Setenv("SHATTER_EXEC_TIMEOUT", val)
+shatter-go/instrument/property_test.go:136:		defer os.Unsetenv("SHATTER_EXEC_TIMEOUT")
+shatter-go/instrument/property_test.go:159:		os.Setenv("SHATTER_EXEC_TIMEOUT", val)
+shatter-go/instrument/property_test.go:160:		defer os.Unsetenv("SHATTER_EXEC_TIMEOUT")
+shatter-go/instrument/executor.go:31:// execTimeout returns the execution timeout, reading from SHATTER_EXEC_TIMEOUT
+shatter-go/instrument/executor.go:34:	if d, ok := parseTimeoutEnv("SHATTER_EXEC_TIMEOUT"); ok {
+shatter-go/instrument/fuzz_test.go:10:// SHATTER_EXEC_TIMEOUT env var content. Invalid values must silently fall
+shatter-go/instrument/fuzz_test.go:27:		t.Setenv("SHATTER_EXEC_TIMEOUT", val)
+shatter-go/instrument/fuzz_test.go:92:		t.Setenv("SHATTER_EXEC_TIMEOUT", val)
+shatter-ts/CLAUDE.md:34:Execution timeout: 15s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `getExecTimeoutMs()` in `src/executor.ts`.
+shatter-ts/src/executor.ts:44: * Read SHATTER_EXEC_TIMEOUT env var (seconds) and return milliseconds.
+shatter-ts/src/executor.ts:48:  const raw = process.env["SHATTER_EXEC_TIMEOUT"];
+shatter-go/instrument/executor_test.go:388:	os.Unsetenv("SHATTER_EXEC_TIMEOUT")
+shatter-go/instrument/executor_test.go:395:	t.Setenv("SHATTER_EXEC_TIMEOUT", "25")
+shatter-go/instrument/executor_test.go:402:	t.Setenv("SHATTER_EXEC_TIMEOUT", "not-a-number")
+shatter-go/instrument/executor_test.go:409:	t.Setenv("SHATTER_EXEC_TIMEOUT", "0")
+shatter-go/instrument/executor_test.go:416:	t.Setenv("SHATTER_EXEC_TIMEOUT", "-5")
+shatter-ts/src/executor.test.ts:355:  const originalEnv = process.env["SHATTER_EXEC_TIMEOUT"];
+shatter-ts/src/executor.test.ts:359:      delete process.env["SHATTER_EXEC_TIMEOUT"];
+shatter-ts/src/executor.test.ts:361:      process.env["SHATTER_EXEC_TIMEOUT"] = originalEnv;
+shatter-ts/src/executor.test.ts:366:    delete process.env["SHATTER_EXEC_TIMEOUT"];
+shatter-ts/src/executor.test.ts:371:    process.env["SHATTER_EXEC_TIMEOUT"] = "20";
+shatter-ts/src/executor.test.ts:376:    process.env["SHATTER_EXEC_TIMEOUT"] = "2.5";
+shatter-ts/src/executor.test.ts:381:    process.env["SHATTER_EXEC_TIMEOUT"] = "not-a-number";
+shatter-ts/src/executor.test.ts:386:    process.env["SHATTER_EXEC_TIMEOUT"] = "0";
+shatter-ts/src/executor.test.ts:391:    process.env["SHATTER_EXEC_TIMEOUT"] = "-5";
+shatter-ts/src/executor.test.ts:398:  const originalEnv = process.env["SHATTER_EXEC_TIMEOUT"];
+shatter-ts/src/executor.test.ts:410:      delete process.env["SHATTER_EXEC_TIMEOUT"];
+shatter-ts/src/executor.test.ts:412:      process.env["SHATTER_EXEC_TIMEOUT"] = originalEnv;
+shatter-ts/src/executor.test.ts:417:    process.env["SHATTER_EXEC_TIMEOUT"] = "0.1";
+shatter-ts/src/executor.test.ts:530:  const originalEnv = process.env["SHATTER_EXEC_TIMEOUT"];
+shatter-ts/src/executor.test.ts:534:      delete process.env["SHATTER_EXEC_TIMEOUT"];
+shatter-ts/src/executor.test.ts:536:      process.env["SHATTER_EXEC_TIMEOUT"] = originalEnv;
+shatter-ts/src/executor.test.ts:555:    process.env["SHATTER_EXEC_TIMEOUT"] = "0.1";
+shatter-core/tests/rust_explore_integration.rs:65:        "SHATTER_EXEC_TIMEOUT".to_string(),
+.claude/worktrees/str-spsk/shatter-rust/CLAUDE.md:17:Execution timeout: 5s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `exec_timeout_from_env()` in `src/handler.rs`. Currently stored but not applied (execute is unimplemented).
+.claude/worktrees/str-spsk/shatter-rust/src/handler.rs:37:/// Read the execution timeout from `SHATTER_EXEC_TIMEOUT` env var (seconds).
+.claude/worktrees/str-spsk/shatter-rust/src/handler.rs:40:    match std::env::var("SHATTER_EXEC_TIMEOUT") {
+.claude/worktrees/str-spsk/shatter-rust/src/handler.rs:974:    // These tests exercise exec_timeout_from_env() which only reads SHATTER_EXEC_TIMEOUT.
+.claude/worktrees/str-spsk/shatter-rust/src/handler.rs:978:        unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
+.claude/worktrees/str-spsk/shatter-rust/src/handler.rs:984:        unsafe { std::env::set_var("SHATTER_EXEC_TIMEOUT", "3") };
+.claude/worktrees/str-spsk/shatter-rust/src/handler.rs:986:        unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
+.claude/worktrees/str-spsk/shatter-rust/src/handler.rs:992:        unsafe { std::env::set_var("SHATTER_EXEC_TIMEOUT", "2.5") };
+.claude/worktrees/str-spsk/shatter-rust/src/handler.rs:994:        unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
+.claude/worktrees/str-spsk/shatter-rust/src/handler.rs:1000:        unsafe { std::env::set_var("SHATTER_EXEC_TIMEOUT", "not-a-number") };
+.claude/worktrees/str-spsk/shatter-rust/src/handler.rs:1002:        unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
+.claude/worktrees/str-spsk/shatter-rust/src/handler.rs:1008:        unsafe { std::env::set_var("SHATTER_EXEC_TIMEOUT", "0") };
+.claude/worktrees/str-spsk/shatter-rust/src/handler.rs:1010:        unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
+.beads/backup/issues.jsonl:164:[Omitted long matching line]
+.beads/backup/issues.jsonl:221:[Omitted long matching line]
+.beads/backup/issues.jsonl:228:[Omitted long matching line]
+.beads/backup/issues.jsonl:459:[Omitted long matching line]
+.claude/worktrees/str-spsk/PARITY.md:27:| SHATTER_EXEC_TIMEOUT | Y | Y | Y | TS default 15s, Go default 5s, Rust default 5s (stored, not applied yet) |
+.claude/worktrees/str-spsk/shatter-ts/CLAUDE.md:34:Execution timeout: 15s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `getExecTimeoutMs()` in `src/executor.ts`.
+.claude/worktrees/str-spsk/shatter-ts/src/executor.ts:44: * Read SHATTER_EXEC_TIMEOUT env var (seconds) and return milliseconds.
+.claude/worktrees/str-spsk/shatter-ts/src/executor.ts:48:  const raw = process.env["SHATTER_EXEC_TIMEOUT"];
+.beads/issues.jsonl:29:[Omitted long matching line]
+.beads/issues.jsonl:204:[Omitted long matching line]
+.beads/issues.jsonl:205:[Omitted long matching line]
+.beads/issues.jsonl:413:[Omitted long matching line]
+.claude/worktrees/str-spsk/shatter-cli/src/main.rs:834:        "SHATTER_EXEC_TIMEOUT".to_string(),
+.claude/worktrees/str-spsk/shatter-cli/src/main.rs:4125:        assert_eq!(env_map.get("SHATTER_EXEC_TIMEOUT").map(|s| s.as_str()), Some("20"));
+.claude/worktrees/str-spsk/CLAUDE.md:203:All frontends MUST read the `SHATTER_EXEC_TIMEOUT` env var (seconds) and apply it to function execution. The CLI sets this var from `--timeout` before spawning frontends.
+.claude/worktrees/str-spsk/CLAUDE.md:207:| Go | 5s | `SHATTER_EXEC_TIMEOUT` | `execTimeout()` in `instrument/executor.go` |
+.claude/worktrees/str-spsk/CLAUDE.md:208:| TypeScript | 15s | `SHATTER_EXEC_TIMEOUT` | `getExecTimeoutMs()` in `src/executor.ts` |
+.claude/worktrees/str-spsk/CLAUDE.md:209:| Rust | 5s | `SHATTER_EXEC_TIMEOUT` | `exec_timeout_from_env()` in `src/handler.rs` (stored, not yet applied — execute is unimplemented) |
+.claude/worktrees/str-spsk/shatter-go/CLAUDE.md:21:Execution timeout: 5s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `execTimeout()` in `instrument/executor.go`.
+.claude/worktrees/str-spsk/shatter-ts/src/executor.test.ts:355:  const originalEnv = process.env["SHATTER_EXEC_TIMEOUT"];
+.claude/worktrees/str-spsk/shatter-ts/src/executor.test.ts:359:      delete process.env["SHATTER_EXEC_TIMEOUT"];
+.claude/worktrees/str-spsk/shatter-ts/src/executor.test.ts:361:      process.env["SHATTER_EXEC_TIMEOUT"] = originalEnv;
+.claude/worktrees/str-spsk/shatter-ts/src/executor.test.ts:366:    delete process.env["SHATTER_EXEC_TIMEOUT"];
+.claude/worktrees/str-spsk/shatter-ts/src/executor.test.ts:371:    process.env["SHATTER_EXEC_TIMEOUT"] = "20";
+.claude/worktrees/str-spsk/shatter-ts/src/executor.test.ts:376:    process.env["SHATTER_EXEC_TIMEOUT"] = "2.5";
+.claude/worktrees/str-spsk/shatter-ts/src/executor.test.ts:381:    process.env["SHATTER_EXEC_TIMEOUT"] = "not-a-number";
+.claude/worktrees/str-spsk/shatter-ts/src/executor.test.ts:386:    process.env["SHATTER_EXEC_TIMEOUT"] = "0";
+.claude/worktrees/str-spsk/shatter-ts/src/executor.test.ts:391:    process.env["SHATTER_EXEC_TIMEOUT"] = "-5";
+.claude/worktrees/str-spsk/shatter-ts/src/executor.test.ts:398:  const originalEnv = process.env["SHATTER_EXEC_TIMEOUT"];
+.claude/worktrees/str-spsk/shatter-ts/src/executor.test.ts:410:      delete process.env["SHATTER_EXEC_TIMEOUT"];
+.claude/worktrees/str-spsk/shatter-ts/src/executor.test.ts:412:      process.env["SHATTER_EXEC_TIMEOUT"] = originalEnv;
+.claude/worktrees/str-spsk/shatter-ts/src/executor.test.ts:417:    process.env["SHATTER_EXEC_TIMEOUT"] = "0.1";
+.claude/worktrees/str-spsk/shatter-ts/src/executor.test.ts:530:  const originalEnv = process.env["SHATTER_EXEC_TIMEOUT"];
+.claude/worktrees/str-spsk/shatter-ts/src/executor.test.ts:534:      delete process.env["SHATTER_EXEC_TIMEOUT"];
+.claude/worktrees/str-spsk/shatter-ts/src/executor.test.ts:536:      process.env["SHATTER_EXEC_TIMEOUT"] = originalEnv;
+.claude/worktrees/str-spsk/shatter-ts/src/executor.test.ts:555:    process.env["SHATTER_EXEC_TIMEOUT"] = "0.1";
+.claude/worktrees/str-spsk/shatter-go/instrument/property_test.go:88:		os.Setenv("SHATTER_EXEC_TIMEOUT", val)
+.claude/worktrees/str-spsk/shatter-go/instrument/property_test.go:89:		defer os.Unsetenv("SHATTER_EXEC_TIMEOUT")
+.claude/worktrees/str-spsk/shatter-go/instrument/property_test.go:120:		os.Setenv("SHATTER_EXEC_TIMEOUT", val)
+.claude/worktrees/str-spsk/shatter-go/instrument/property_test.go:121:		defer os.Unsetenv("SHATTER_EXEC_TIMEOUT")
+.claude/worktrees/str-spsk/shatter-go/instrument/property_test.go:135:		os.Setenv("SHATTER_EXEC_TIMEOUT", val)
+.claude/worktrees/str-spsk/shatter-go/instrument/property_test.go:136:		defer os.Unsetenv("SHATTER_EXEC_TIMEOUT")
+.claude/worktrees/str-spsk/shatter-go/instrument/property_test.go:159:		os.Setenv("SHATTER_EXEC_TIMEOUT", val)
+.claude/worktrees/str-spsk/shatter-go/instrument/property_test.go:160:		defer os.Unsetenv("SHATTER_EXEC_TIMEOUT")
+.claude/worktrees/str-spsk/shatter-go/instrument/executor.go:31:// execTimeout returns the execution timeout, reading from SHATTER_EXEC_TIMEOUT
+.claude/worktrees/str-spsk/shatter-go/instrument/executor.go:34:	if d, ok := parseTimeoutEnv("SHATTER_EXEC_TIMEOUT"); ok {
+.claude/worktrees/str-spsk/shatter-go/instrument/fuzz_test.go:10:// SHATTER_EXEC_TIMEOUT env var content. Invalid values must silently fall
+.claude/worktrees/str-spsk/shatter-go/instrument/fuzz_test.go:27:		t.Setenv("SHATTER_EXEC_TIMEOUT", val)
+.claude/worktrees/str-spsk/shatter-go/instrument/fuzz_test.go:92:		t.Setenv("SHATTER_EXEC_TIMEOUT", val)
+.claude/worktrees/str-spsk/docs/plans/str-kapl-resilience-timeouts-memory.md:5:Shatter's defenses against pathological target code are uneven. The Go frontend handles timeouts well, but the TS and Rust frontends ignore `SHATTER_EXEC_TIMEOUT` entirely. The `--timeout-total` scan flag is parsed but never enforced. Z3 has no solver timeout. There are no cross-platform memory guards. This plan addresses all of these gaps.
+.claude/worktrees/str-spsk/docs/plans/str-kapl-resilience-timeouts-memory.md:17:| `shatter-ts/src/executor.ts` | Add `getExecTimeoutMs()` reading `SHATTER_EXEC_TIMEOUT`, default 15000ms |
+.claude/worktrees/str-spsk/docs/plans/str-kapl-resilience-timeouts-memory.md:99:All frontends MUST read SHATTER_EXEC_TIMEOUT (seconds) and apply it.
+.claude/worktrees/str-spsk/shatter-go/instrument/executor_test.go:388:	os.Unsetenv("SHATTER_EXEC_TIMEOUT")
+.claude/worktrees/str-spsk/shatter-go/instrument/executor_test.go:395:	t.Setenv("SHATTER_EXEC_TIMEOUT", "25")
+.claude/worktrees/str-spsk/shatter-go/instrument/executor_test.go:402:	t.Setenv("SHATTER_EXEC_TIMEOUT", "not-a-number")
+.claude/worktrees/str-spsk/shatter-go/instrument/executor_test.go:409:	t.Setenv("SHATTER_EXEC_TIMEOUT", "0")
+.claude/worktrees/str-spsk/shatter-go/instrument/executor_test.go:416:	t.Setenv("SHATTER_EXEC_TIMEOUT", "-5")
+.claude/worktrees/str-spsk/.beads/issues.jsonl:29:[Omitted long matching line]
+.claude/worktrees/str-spsk/.beads/issues.jsonl:204:[Omitted long matching line]
+.claude/worktrees/str-spsk/.beads/issues.jsonl:205:[Omitted long matching line]
+.claude/worktrees/str-spsk/.beads/issues.jsonl:413:[Omitted long matching line]
+.claude/worktrees/str-jzd/shatter-rust/CLAUDE.md:17:Execution timeout: 5s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `exec_timeout_from_env()` in `src/handler.rs`. Currently stored but not applied (execute is unimplemented).
+.claude/worktrees/str-spsk/.beads/backup/issues.jsonl:164:[Omitted long matching line]
+.claude/worktrees/str-spsk/.beads/backup/issues.jsonl:221:[Omitted long matching line]
+.claude/worktrees/str-spsk/.beads/backup/issues.jsonl:228:[Omitted long matching line]
+.claude/worktrees/str-spsk/.beads/backup/issues.jsonl:459:[Omitted long matching line]
+.claude/worktrees/str-jzd/shatter-rust/src/handler.rs:37:/// Read the execution timeout from `SHATTER_EXEC_TIMEOUT` env var (seconds).
+.claude/worktrees/str-jzd/shatter-rust/src/handler.rs:40:    match std::env::var("SHATTER_EXEC_TIMEOUT") {
+.claude/worktrees/str-jzd/shatter-rust/src/handler.rs:974:    // These tests exercise exec_timeout_from_env() which only reads SHATTER_EXEC_TIMEOUT.
+.claude/worktrees/str-jzd/shatter-rust/src/handler.rs:978:        unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
+.claude/worktrees/str-jzd/shatter-rust/src/handler.rs:984:        unsafe { std::env::set_var("SHATTER_EXEC_TIMEOUT", "3") };
+.claude/worktrees/str-jzd/shatter-rust/src/handler.rs:986:        unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
+.claude/worktrees/str-jzd/shatter-rust/src/handler.rs:992:        unsafe { std::env::set_var("SHATTER_EXEC_TIMEOUT", "2.5") };
+.claude/worktrees/str-jzd/shatter-rust/src/handler.rs:994:        unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
+.claude/worktrees/str-jzd/shatter-rust/src/handler.rs:1000:        unsafe { std::env::set_var("SHATTER_EXEC_TIMEOUT", "not-a-number") };
+.claude/worktrees/str-jzd/shatter-rust/src/handler.rs:1002:        unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
+.claude/worktrees/str-jzd/shatter-rust/src/handler.rs:1008:        unsafe { std::env::set_var("SHATTER_EXEC_TIMEOUT", "0") };
+.claude/worktrees/str-jzd/shatter-rust/src/handler.rs:1010:        unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
+.claude/worktrees/str-jzd/shatter-core/tests/rust_explore_integration.rs:65:        "SHATTER_EXEC_TIMEOUT".to_string(),
+.claude/worktrees/str-zwgc/shatter-rust/CLAUDE.md:17:Execution timeout: 5s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `exec_timeout_from_env()` in `src/handler.rs`. Currently stored but not applied (execute is unimplemented).
+.claude/worktrees/str-zwgc/shatter-rust/src/handler.rs:37:/// Read the execution timeout from `SHATTER_EXEC_TIMEOUT` env var (seconds).
+.claude/worktrees/str-zwgc/shatter-rust/src/handler.rs:40:    match std::env::var("SHATTER_EXEC_TIMEOUT") {
+.claude/worktrees/str-zwgc/shatter-rust/src/handler.rs:974:    // These tests exercise exec_timeout_from_env() which only reads SHATTER_EXEC_TIMEOUT.
+.claude/worktrees/str-zwgc/shatter-rust/src/handler.rs:978:        unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
+.claude/worktrees/str-zwgc/shatter-rust/src/handler.rs:984:        unsafe { std::env::set_var("SHATTER_EXEC_TIMEOUT", "3") };
+.claude/worktrees/str-zwgc/shatter-rust/src/handler.rs:986:        unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
+.claude/worktrees/str-zwgc/shatter-rust/src/handler.rs:992:        unsafe { std::env::set_var("SHATTER_EXEC_TIMEOUT", "2.5") };
+.claude/worktrees/str-zwgc/shatter-rust/src/handler.rs:994:        unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
+.claude/worktrees/str-zwgc/shatter-rust/src/handler.rs:1000:        unsafe { std::env::set_var("SHATTER_EXEC_TIMEOUT", "not-a-number") };
+.claude/worktrees/str-zwgc/shatter-rust/src/handler.rs:1002:        unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
+.claude/worktrees/str-zwgc/shatter-rust/src/handler.rs:1008:        unsafe { std::env::set_var("SHATTER_EXEC_TIMEOUT", "0") };
+.claude/worktrees/str-zwgc/shatter-rust/src/handler.rs:1010:        unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
+.claude/worktrees/str-jzd/shatter-cli/src/main.rs:834:        "SHATTER_EXEC_TIMEOUT".to_string(),
+.claude/worktrees/str-jzd/shatter-cli/src/main.rs:4125:        assert_eq!(env_map.get("SHATTER_EXEC_TIMEOUT").map(|s| s.as_str()), Some("20"));
+.claude/worktrees/str-jzd/CLAUDE.md:203:All frontends MUST read the `SHATTER_EXEC_TIMEOUT` env var (seconds) and apply it to function execution. The CLI sets this var from `--timeout` before spawning frontends.
+.claude/worktrees/str-jzd/CLAUDE.md:207:| Go | 5s | `SHATTER_EXEC_TIMEOUT` | `execTimeout()` in `instrument/executor.go` |
+.claude/worktrees/str-jzd/CLAUDE.md:208:| TypeScript | 15s | `SHATTER_EXEC_TIMEOUT` | `getExecTimeoutMs()` in `src/executor.ts` |
+.claude/worktrees/str-jzd/CLAUDE.md:209:| Rust | 5s | `SHATTER_EXEC_TIMEOUT` | `exec_timeout_from_env()` in `src/handler.rs` (stored, not yet applied — execute is unimplemented) |
+.claude/worktrees/str-zwgc/docs/plans/str-kapl-resilience-timeouts-memory.md:5:Shatter's defenses against pathological target code are uneven. The Go frontend handles timeouts well, but the TS and Rust frontends ignore `SHATTER_EXEC_TIMEOUT` entirely. The `--timeout-total` scan flag is parsed but never enforced. Z3 has no solver timeout. There are no cross-platform memory guards. This plan addresses all of these gaps.
+.claude/worktrees/str-zwgc/docs/plans/str-kapl-resilience-timeouts-memory.md:17:| `shatter-ts/src/executor.ts` | Add `getExecTimeoutMs()` reading `SHATTER_EXEC_TIMEOUT`, default 15000ms |
+.claude/worktrees/str-zwgc/docs/plans/str-kapl-resilience-timeouts-memory.md:99:All frontends MUST read SHATTER_EXEC_TIMEOUT (seconds) and apply it.
+.claude/worktrees/str-zwgc/shatter-cli/src/main.rs:834:        "SHATTER_EXEC_TIMEOUT".to_string(),
+.claude/worktrees/str-zwgc/shatter-cli/src/main.rs:4125:        assert_eq!(env_map.get("SHATTER_EXEC_TIMEOUT").map(|s| s.as_str()), Some("20"));
+.claude/worktrees/str-zwgc/shatter-ts/CLAUDE.md:34:Execution timeout: 15s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `getExecTimeoutMs()` in `src/executor.ts`.
+.claude/worktrees/str-zwgc/CLAUDE.md:203:All frontends MUST read the `SHATTER_EXEC_TIMEOUT` env var (seconds) and apply it to function execution. The CLI sets this var from `--timeout` before spawning frontends.
+.claude/worktrees/str-zwgc/CLAUDE.md:207:| Go | 5s | `SHATTER_EXEC_TIMEOUT` | `execTimeout()` in `instrument/executor.go` |
+.claude/worktrees/str-zwgc/CLAUDE.md:208:| TypeScript | 15s | `SHATTER_EXEC_TIMEOUT` | `getExecTimeoutMs()` in `src/executor.ts` |
+.claude/worktrees/str-zwgc/CLAUDE.md:209:| Rust | 5s | `SHATTER_EXEC_TIMEOUT` | `exec_timeout_from_env()` in `src/handler.rs` (stored, not yet applied — execute is unimplemented) |
+.claude/worktrees/str-zwgc/shatter-go/CLAUDE.md:21:Execution timeout: 5s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `execTimeout()` in `instrument/executor.go`.
+.claude/worktrees/str-zwgc/shatter-ts/src/executor.ts:44: * Read SHATTER_EXEC_TIMEOUT env var (seconds) and return milliseconds.
+.claude/worktrees/str-zwgc/shatter-ts/src/executor.ts:48:  const raw = process.env["SHATTER_EXEC_TIMEOUT"];
+.claude/worktrees/str-zwgc/shatter-go/instrument/property_test.go:88:		os.Setenv("SHATTER_EXEC_TIMEOUT", val)
+.claude/worktrees/str-zwgc/shatter-go/instrument/property_test.go:89:		defer os.Unsetenv("SHATTER_EXEC_TIMEOUT")
+.claude/worktrees/str-zwgc/shatter-go/instrument/property_test.go:120:		os.Setenv("SHATTER_EXEC_TIMEOUT", val)
+.claude/worktrees/str-zwgc/shatter-go/instrument/property_test.go:121:		defer os.Unsetenv("SHATTER_EXEC_TIMEOUT")
+.claude/worktrees/str-zwgc/shatter-go/instrument/property_test.go:135:		os.Setenv("SHATTER_EXEC_TIMEOUT", val)
+.claude/worktrees/str-zwgc/shatter-go/instrument/property_test.go:136:		defer os.Unsetenv("SHATTER_EXEC_TIMEOUT")
+.claude/worktrees/str-zwgc/shatter-go/instrument/property_test.go:159:		os.Setenv("SHATTER_EXEC_TIMEOUT", val)
+.claude/worktrees/str-zwgc/shatter-go/instrument/property_test.go:160:		defer os.Unsetenv("SHATTER_EXEC_TIMEOUT")
+.claude/worktrees/str-zwgc/shatter-go/instrument/executor.go:31:// execTimeout returns the execution timeout, reading from SHATTER_EXEC_TIMEOUT
+.claude/worktrees/str-zwgc/shatter-go/instrument/executor.go:34:	if d, ok := parseTimeoutEnv("SHATTER_EXEC_TIMEOUT"); ok {
+.claude/worktrees/str-zwgc/shatter-ts/src/executor.test.ts:355:  const originalEnv = process.env["SHATTER_EXEC_TIMEOUT"];
+.claude/worktrees/str-zwgc/shatter-ts/src/executor.test.ts:359:      delete process.env["SHATTER_EXEC_TIMEOUT"];
+.claude/worktrees/str-zwgc/shatter-ts/src/executor.test.ts:361:      process.env["SHATTER_EXEC_TIMEOUT"] = originalEnv;
+.claude/worktrees/str-zwgc/shatter-ts/src/executor.test.ts:366:    delete process.env["SHATTER_EXEC_TIMEOUT"];
+.claude/worktrees/str-zwgc/shatter-ts/src/executor.test.ts:371:    process.env["SHATTER_EXEC_TIMEOUT"] = "20";
+.claude/worktrees/str-zwgc/shatter-ts/src/executor.test.ts:376:    process.env["SHATTER_EXEC_TIMEOUT"] = "2.5";
+.claude/worktrees/str-zwgc/shatter-ts/src/executor.test.ts:381:    process.env["SHATTER_EXEC_TIMEOUT"] = "not-a-number";
+.claude/worktrees/str-zwgc/shatter-ts/src/executor.test.ts:386:    process.env["SHATTER_EXEC_TIMEOUT"] = "0";
+.claude/worktrees/str-zwgc/shatter-ts/src/executor.test.ts:391:    process.env["SHATTER_EXEC_TIMEOUT"] = "-5";
+.claude/worktrees/str-zwgc/shatter-ts/src/executor.test.ts:398:  const originalEnv = process.env["SHATTER_EXEC_TIMEOUT"];
+.claude/worktrees/str-zwgc/shatter-ts/src/executor.test.ts:410:      delete process.env["SHATTER_EXEC_TIMEOUT"];
+.claude/worktrees/str-zwgc/shatter-ts/src/executor.test.ts:412:      process.env["SHATTER_EXEC_TIMEOUT"] = originalEnv;
+.claude/worktrees/str-zwgc/shatter-ts/src/executor.test.ts:417:    process.env["SHATTER_EXEC_TIMEOUT"] = "0.1";
+.claude/worktrees/str-zwgc/shatter-ts/src/executor.test.ts:530:  const originalEnv = process.env["SHATTER_EXEC_TIMEOUT"];
+.claude/worktrees/str-zwgc/shatter-ts/src/executor.test.ts:534:      delete process.env["SHATTER_EXEC_TIMEOUT"];
+.claude/worktrees/str-zwgc/shatter-ts/src/executor.test.ts:536:      process.env["SHATTER_EXEC_TIMEOUT"] = originalEnv;
+.claude/worktrees/str-zwgc/shatter-ts/src/executor.test.ts:555:    process.env["SHATTER_EXEC_TIMEOUT"] = "0.1";
+.claude/worktrees/str-zwgc/shatter-go/instrument/fuzz_test.go:10:// SHATTER_EXEC_TIMEOUT env var content. Invalid values must silently fall
+.claude/worktrees/str-zwgc/shatter-go/instrument/fuzz_test.go:27:		t.Setenv("SHATTER_EXEC_TIMEOUT", val)
+.claude/worktrees/str-zwgc/shatter-go/instrument/fuzz_test.go:92:		t.Setenv("SHATTER_EXEC_TIMEOUT", val)
+.claude/worktrees/str-zwgc/shatter-go/instrument/executor_test.go:388:	os.Unsetenv("SHATTER_EXEC_TIMEOUT")
+.claude/worktrees/str-zwgc/shatter-go/instrument/executor_test.go:395:	t.Setenv("SHATTER_EXEC_TIMEOUT", "25")
+.claude/worktrees/str-zwgc/shatter-go/instrument/executor_test.go:402:	t.Setenv("SHATTER_EXEC_TIMEOUT", "not-a-number")
+.claude/worktrees/str-zwgc/shatter-go/instrument/executor_test.go:409:	t.Setenv("SHATTER_EXEC_TIMEOUT", "0")
+.claude/worktrees/str-zwgc/shatter-go/instrument/executor_test.go:416:	t.Setenv("SHATTER_EXEC_TIMEOUT", "-5")
+.claude/worktrees/str-zwgc/shatter-core/tests/rust_explore_integration.rs:65:        "SHATTER_EXEC_TIMEOUT".to_string(),
+.claude/worktrees/str-zwgc/PARITY.md:27:| SHATTER_EXEC_TIMEOUT | Y | Y | Y | TS default 15s, Go default 5s, Rust default 5s (stored, not applied yet) |
+.claude/worktrees/str-jzd/shatter-go/CLAUDE.md:21:Execution timeout: 5s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `execTimeout()` in `instrument/executor.go`.
+.claude/worktrees/str-jzd/shatter-ts/CLAUDE.md:34:Execution timeout: 15s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `getExecTimeoutMs()` in `src/executor.ts`.
+.claude/worktrees/str-jzd/docs/plans/str-kapl-resilience-timeouts-memory.md:5:Shatter's defenses against pathological target code are uneven. The Go frontend handles timeouts well, but the TS and Rust frontends ignore `SHATTER_EXEC_TIMEOUT` entirely. The `--timeout-total` scan flag is parsed but never enforced. Z3 has no solver timeout. There are no cross-platform memory guards. This plan addresses all of these gaps.
+.claude/worktrees/str-jzd/docs/plans/str-kapl-resilience-timeouts-memory.md:17:| `shatter-ts/src/executor.ts` | Add `getExecTimeoutMs()` reading `SHATTER_EXEC_TIMEOUT`, default 15000ms |
+.claude/worktrees/str-jzd/docs/plans/str-kapl-resilience-timeouts-memory.md:99:All frontends MUST read SHATTER_EXEC_TIMEOUT (seconds) and apply it.
+.claude/worktrees/str-jzd/shatter-ts/src/executor.ts:44: * Read SHATTER_EXEC_TIMEOUT env var (seconds) and return milliseconds.
+.claude/worktrees/str-jzd/shatter-ts/src/executor.ts:48:  const raw = process.env["SHATTER_EXEC_TIMEOUT"];
+.claude/worktrees/str-jzd/shatter-go/instrument/property_test.go:88:		os.Setenv("SHATTER_EXEC_TIMEOUT", val)
+.claude/worktrees/str-jzd/shatter-go/instrument/property_test.go:89:		defer os.Unsetenv("SHATTER_EXEC_TIMEOUT")
+.claude/worktrees/str-jzd/shatter-go/instrument/property_test.go:120:		os.Setenv("SHATTER_EXEC_TIMEOUT", val)
+.claude/worktrees/str-jzd/shatter-go/instrument/property_test.go:121:		defer os.Unsetenv("SHATTER_EXEC_TIMEOUT")
+.claude/worktrees/str-jzd/shatter-go/instrument/property_test.go:135:		os.Setenv("SHATTER_EXEC_TIMEOUT", val)
+.claude/worktrees/str-jzd/shatter-go/instrument/property_test.go:136:		defer os.Unsetenv("SHATTER_EXEC_TIMEOUT")
+.claude/worktrees/str-jzd/shatter-go/instrument/property_test.go:159:		os.Setenv("SHATTER_EXEC_TIMEOUT", val)
+.claude/worktrees/str-jzd/shatter-go/instrument/property_test.go:160:		defer os.Unsetenv("SHATTER_EXEC_TIMEOUT")
+.claude/worktrees/str-jzd/shatter-go/instrument/executor.go:31:// execTimeout returns the execution timeout, reading from SHATTER_EXEC_TIMEOUT
+.claude/worktrees/str-jzd/shatter-go/instrument/executor.go:34:	if d, ok := parseTimeoutEnv("SHATTER_EXEC_TIMEOUT"); ok {
+.claude/worktrees/str-jzd/shatter-go/instrument/fuzz_test.go:10:// SHATTER_EXEC_TIMEOUT env var content. Invalid values must silently fall
+.claude/worktrees/str-jzd/shatter-go/instrument/fuzz_test.go:27:		t.Setenv("SHATTER_EXEC_TIMEOUT", val)
+.claude/worktrees/str-jzd/shatter-go/instrument/fuzz_test.go:92:		t.Setenv("SHATTER_EXEC_TIMEOUT", val)
+.claude/worktrees/str-spsk/shatter-core/tests/rust_explore_integration.rs:65:        "SHATTER_EXEC_TIMEOUT".to_string(),
+.claude/worktrees/str-jzd/PARITY.md:27:| SHATTER_EXEC_TIMEOUT | Y | Y | Y | TS default 15s, Go default 5s, Rust default 5s (stored, not applied yet) |
+.claude/worktrees/str-jzd/shatter-go/instrument/executor_test.go:388:	os.Unsetenv("SHATTER_EXEC_TIMEOUT")
+.claude/worktrees/str-jzd/shatter-go/instrument/executor_test.go:395:	t.Setenv("SHATTER_EXEC_TIMEOUT", "25")
+.claude/worktrees/str-jzd/shatter-go/instrument/executor_test.go:402:	t.Setenv("SHATTER_EXEC_TIMEOUT", "not-a-number")
+.claude/worktrees/str-jzd/shatter-go/instrument/executor_test.go:409:	t.Setenv("SHATTER_EXEC_TIMEOUT", "0")
+.claude/worktrees/str-jzd/shatter-go/instrument/executor_test.go:416:	t.Setenv("SHATTER_EXEC_TIMEOUT", "-5")
+.claude/worktrees/str-jzd/.beads/issues.jsonl:29:[Omitted long matching line]
+.claude/worktrees/str-jzd/.beads/issues.jsonl:204:[Omitted long matching line]
+.claude/worktrees/str-jzd/.beads/issues.jsonl:205:[Omitted long matching line]
+.claude/worktrees/str-jzd/.beads/issues.jsonl:413:[Omitted long matching line]
+.claude/worktrees/str-jzd/shatter-ts/src/executor.test.ts:355:  const originalEnv = process.env["SHATTER_EXEC_TIMEOUT"];
+.claude/worktrees/str-jzd/shatter-ts/src/executor.test.ts:359:      delete process.env["SHATTER_EXEC_TIMEOUT"];
+.claude/worktrees/str-jzd/shatter-ts/src/executor.test.ts:361:      process.env["SHATTER_EXEC_TIMEOUT"] = originalEnv;
+.claude/worktrees/str-jzd/shatter-ts/src/executor.test.ts:366:    delete process.env["SHATTER_EXEC_TIMEOUT"];
+.claude/worktrees/str-jzd/shatter-ts/src/executor.test.ts:371:    process.env["SHATTER_EXEC_TIMEOUT"] = "20";
+.claude/worktrees/str-jzd/shatter-ts/src/executor.test.ts:376:    process.env["SHATTER_EXEC_TIMEOUT"] = "2.5";
+.claude/worktrees/str-jzd/shatter-ts/src/executor.test.ts:381:    process.env["SHATTER_EXEC_TIMEOUT"] = "not-a-number";
+.claude/worktrees/str-jzd/shatter-ts/src/executor.test.ts:386:    process.env["SHATTER_EXEC_TIMEOUT"] = "0";
+.claude/worktrees/str-jzd/shatter-ts/src/executor.test.ts:391:    process.env["SHATTER_EXEC_TIMEOUT"] = "-5";
+.claude/worktrees/str-jzd/shatter-ts/src/executor.test.ts:398:  const originalEnv = process.env["SHATTER_EXEC_TIMEOUT"];
+.claude/worktrees/str-jzd/shatter-ts/src/executor.test.ts:410:      delete process.env["SHATTER_EXEC_TIMEOUT"];
+.claude/worktrees/str-jzd/shatter-ts/src/executor.test.ts:412:      process.env["SHATTER_EXEC_TIMEOUT"] = originalEnv;
+.claude/worktrees/str-jzd/shatter-ts/src/executor.test.ts:417:    process.env["SHATTER_EXEC_TIMEOUT"] = "0.1";
+.claude/worktrees/str-jzd/shatter-ts/src/executor.test.ts:530:  const originalEnv = process.env["SHATTER_EXEC_TIMEOUT"];
+.claude/worktrees/str-jzd/shatter-ts/src/executor.test.ts:534:      delete process.env["SHATTER_EXEC_TIMEOUT"];
+.claude/worktrees/str-jzd/shatter-ts/src/executor.test.ts:536:      process.env["SHATTER_EXEC_TIMEOUT"] = originalEnv;
+.claude/worktrees/str-jzd/shatter-ts/src/executor.test.ts:555:    process.env["SHATTER_EXEC_TIMEOUT"] = "0.1";
+.claude/worktrees/str-zwgc/.beads/issues.jsonl:29:[Omitted long matching line]
+.claude/worktrees/str-zwgc/.beads/issues.jsonl:204:[Omitted long matching line]
+.claude/worktrees/str-zwgc/.beads/issues.jsonl:205:[Omitted long matching line]
+.claude/worktrees/str-zwgc/.beads/issues.jsonl:413:[Omitted long matching line]
+.claude/worktrees/str-zwgc/.beads/backup/issues.jsonl:164:[Omitted long matching line]
+.claude/worktrees/str-zwgc/.beads/backup/issues.jsonl:221:[Omitted long matching line]
+.claude/worktrees/str-zwgc/.beads/backup/issues.jsonl:228:[Omitted long matching line]
+.claude/worktrees/str-zwgc/.beads/backup/issues.jsonl:459:[Omitted long matching line]
+.claude/worktrees/str-jzd/.beads/backup/issues.jsonl:164:[Omitted long matching line]
+.claude/worktrees/str-jzd/.beads/backup/issues.jsonl:221:[Omitted long matching line]
+.claude/worktrees/str-jzd/.beads/backup/issues.jsonl:228:[Omitted long matching line]
+.claude/worktrees/str-jzd/.beads/backup/issues.jsonl:459:[Omitted long matching line]

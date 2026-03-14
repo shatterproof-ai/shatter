@@ -1,0 +1,395 @@
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-70-impl Default for LoopBuckets {
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-71-    fn default() -> Self {
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-72-        Self(vec![0, 1, 2, 5])
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-73-    }
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-74-}
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-75-
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-76-/// Configuration for an exploration run.
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-77-#[derive(Debug, Clone)]
+shatter-core/src/explorer.rs:78:pub struct ExploreConfig {
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-79-    /// Path to the source file being explored (needed for instrumentation).
+shatter-core/src/explorer.rs-80-    pub file: String,
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-81-    /// Maximum number of iterations (execute calls) per function.
+shatter-core/src/explorer.rs-82-    pub max_iterations: u32,
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-83-    /// Random seed for reproducibility. If None, uses entropy.
+shatter-core/src/explorer.rs-84-    pub seed: Option<u64>,
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-85-    /// Mock configurations to pass to Execute commands.
+shatter-core/src/explorer.rs-86-    pub mocks: Vec<MockConfig>,
+--
+shatter-core/src/explorer.rs-1898-            crypto_boundaries: vec![],
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1899-        }
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1900-    }
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1901-
+shatter-core/src/explorer.rs-1902-    #[tokio::test]
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1903-    async fn explore_function_instruments_before_executing() {
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1904-        let mut frontend = spawn_noop_frontend().await;
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1905-        let analysis = stub_analysis();
+shatter-core/src/explorer.rs:1906:        let config = ExploreConfig {
+shatter-core/src/explorer.rs-1907-            file: "test.ts".into(), max_iterations: 3, seed: Some(42), mocks: vec![],
+shatter-core/src/explorer.rs-1908-            setup_file: None, setup_level: SetupLevel::Function,
+shatter-core/src/explorer.rs-1909-            value_sources: vec![], capabilities: FrontendCapabilities::default(),
+shatter-core/src/explorer.rs-1910-            user_seeds: vec![],
+shatter-core/src/explorer.rs-1911-            candidate_inputs: vec![],
+shatter-core/src/explorer.rs-1912-            pool_seeds: vec![],
+shatter-core/src/explorer.rs-1913-            project_root: None,
+shatter-core/src/explorer.rs-1914-            loop_buckets: LoopBuckets::default(),
+--
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1922-        frontend.shutdown().await.expect("shutdown failed");
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1923-    }
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1924-
+shatter-core/src/explorer.rs-1925-    #[tokio::test]
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1926-    async fn per_function_setup_teardown_lifecycle() {
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1927-        let mut frontend = spawn_noop_frontend().await;
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1928-        let analysis = stub_analysis();
+shatter-core/src/explorer.rs-1929-        let caps = FrontendCapabilities::from_raw(&capabilities_with(&["setup", "teardown"]));
+shatter-core/src/explorer.rs:1930:        let config = ExploreConfig {
+shatter-core/src/explorer.rs-1931-            file: "test.ts".into(), max_iterations: 2, seed: Some(42), mocks: vec![],
+shatter-core/src/explorer.rs-1932-            setup_file: Some("setup.ts".into()), setup_level: SetupLevel::Function,
+shatter-core/src/explorer.rs-1933-            value_sources: vec![], capabilities: caps,
+shatter-core/src/explorer.rs-1934-            user_seeds: vec![],
+shatter-core/src/explorer.rs-1935-            candidate_inputs: vec![],
+shatter-core/src/explorer.rs-1936-            pool_seeds: vec![],
+shatter-core/src/explorer.rs-1937-            project_root: None,
+shatter-core/src/explorer.rs-1938-            loop_buckets: LoopBuckets::default(),
+--
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1946-        frontend.shutdown().await.expect("shutdown failed");
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1947-    }
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1948-
+shatter-core/src/explorer.rs-1949-    #[tokio::test]
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1950-    async fn per_execution_setup_teardown_lifecycle() {
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1951-        let mut frontend = spawn_noop_frontend().await;
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1952-        let analysis = stub_analysis();
+shatter-core/src/explorer.rs-1953-        let caps = FrontendCapabilities::from_raw(&capabilities_with(&["setup", "teardown"]));
+shatter-core/src/explorer.rs:1954:        let config = ExploreConfig {
+shatter-core/src/explorer.rs-1955-            file: "test.ts".into(), max_iterations: 2, seed: Some(42), mocks: vec![],
+shatter-core/src/explorer.rs-1956-            setup_file: Some("setup.ts".into()), setup_level: SetupLevel::Execution,
+shatter-core/src/explorer.rs-1957-            value_sources: vec![], capabilities: caps,
+shatter-core/src/explorer.rs-1958-            user_seeds: vec![],
+shatter-core/src/explorer.rs-1959-            candidate_inputs: vec![],
+shatter-core/src/explorer.rs-1960-            pool_seeds: vec![],
+shatter-core/src/explorer.rs-1961-            project_root: None,
+shatter-core/src/explorer.rs-1962-            loop_buckets: LoopBuckets::default(),
+--
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1969-        frontend.shutdown().await.expect("shutdown failed");
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1970-    }
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1971-
+shatter-core/src/explorer.rs-1972-    #[tokio::test]
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1973-    async fn setup_skipped_when_frontend_lacks_capability() {
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1974-        let mut frontend = spawn_noop_frontend().await;
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1975-        let analysis = stub_analysis();
+shatter-core/src/explorer.rs-1976-        let caps = FrontendCapabilities::from_raw(&capabilities_with(&[]));
+shatter-core/src/explorer.rs:1977:        let config = ExploreConfig {
+shatter-core/src/explorer.rs-1978-            file: "test.ts".into(), max_iterations: 2, seed: Some(42), mocks: vec![],
+shatter-core/src/explorer.rs-1979-            setup_file: Some("setup.ts".into()), setup_level: SetupLevel::Function,
+shatter-core/src/explorer.rs-1980-            value_sources: vec![], capabilities: caps,
+shatter-core/src/explorer.rs-1981-            user_seeds: vec![],
+shatter-core/src/explorer.rs-1982-            candidate_inputs: vec![],
+shatter-core/src/explorer.rs-1983-            pool_seeds: vec![],
+shatter-core/src/explorer.rs-1984-            project_root: None,
+shatter-core/src/explorer.rs-1985-            loop_buckets: LoopBuckets::default(),
+--
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1991-        frontend.shutdown().await.expect("shutdown failed");
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1992-    }
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1993-
+shatter-core/src/explorer.rs-1994-    #[tokio::test]
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1995-    async fn generator_integration_uses_custom_values() {
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1996-        let mut frontend = spawn_noop_frontend().await;
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1997-        let analysis = stub_analysis();
+shatter-core/src/explorer.rs-1998-        let caps = FrontendCapabilities::from_raw(&capabilities_with(&["generate"]));
+shatter-core/src/explorer.rs:1999:        let config = ExploreConfig {
+shatter-core/src/explorer.rs-2000-            file: "test.ts".into(), max_iterations: 2, seed: Some(42), mocks: vec![],
+shatter-core/src/explorer.rs-2001-            setup_file: None, setup_level: SetupLevel::Function,
+shatter-core/src/explorer.rs-2002-            value_sources: vec![ValueSource::CustomGenerator {
+shatter-core/src/explorer.rs-2003-                generator_name: "x".into(), param_name: Some("x".into()),
+shatter-core/src/explorer.rs-2004-                generator_file: "gen.ts".into(),
+shatter-core/src/explorer.rs-2005-                kind: crate::protocol::GeneratorKind::ParamName,
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2006-            }],
+shatter-core/src/explorer.rs-2007-            capabilities: caps,
+--
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2019-        frontend.shutdown().await.expect("shutdown failed");
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2020-    }
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2021-
+shatter-core/src/explorer.rs-2022-    #[tokio::test]
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2023-    async fn fallback_to_builtin_when_no_generators_configured() {
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2024-        let mut frontend = spawn_noop_frontend().await;
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2025-        let analysis = stub_analysis();
+shatter-core/src/explorer.rs-2026-        let caps = FrontendCapabilities::from_raw(&capabilities_with(&["generate"]));
+shatter-core/src/explorer.rs:2027:        let config = ExploreConfig {
+shatter-core/src/explorer.rs-2028-            file: "test.ts".into(), max_iterations: 3, seed: Some(42), mocks: vec![],
+shatter-core/src/explorer.rs-2029-            setup_file: None, setup_level: SetupLevel::Function,
+shatter-core/src/explorer.rs-2030-            value_sources: vec![], capabilities: caps,
+shatter-core/src/explorer.rs-2031-            user_seeds: vec![],
+shatter-core/src/explorer.rs-2032-            candidate_inputs: vec![],
+shatter-core/src/explorer.rs-2033-            pool_seeds: vec![],
+shatter-core/src/explorer.rs-2034-            project_root: None,
+shatter-core/src/explorer.rs-2035-            loop_buckets: LoopBuckets::default(),
+--
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2041-        frontend.shutdown().await.expect("shutdown failed");
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2042-    }
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2043-
+shatter-core/src/explorer.rs-2044-    #[tokio::test]
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2045-    async fn user_seeds_consumed_before_literals() {
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2046-        let mut frontend = spawn_noop_frontend().await;
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2047-        let analysis = stub_analysis();
+shatter-core/src/explorer.rs-2048-        let user_seed_value = vec![serde_json::json!(999)];
+shatter-core/src/explorer.rs:2049:        let config = ExploreConfig {
+shatter-core/src/explorer.rs-2050-            file: "test.ts".into(), max_iterations: 5, seed: Some(42), mocks: vec![],
+shatter-core/src/explorer.rs-2051-            setup_file: None, setup_level: SetupLevel::Function,
+shatter-core/src/explorer.rs-2052-            value_sources: vec![], capabilities: FrontendCapabilities::default(),
+shatter-core/src/explorer.rs-2053-            user_seeds: vec![user_seed_value.clone()],
+shatter-core/src/explorer.rs-2054-            candidate_inputs: vec![],
+shatter-core/src/explorer.rs-2055-            pool_seeds: vec![],
+shatter-core/src/explorer.rs-2056-            project_root: None,
+shatter-core/src/explorer.rs-2057-            loop_buckets: LoopBuckets::default(),
+--
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2066-    }
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2067-
+shatter-core/src/explorer.rs-2068-    #[tokio::test]
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2069-    async fn candidate_inputs_consumed_between_literals_and_pool() {
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2070-        let mut frontend = spawn_noop_frontend().await;
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2071-        let analysis = stub_analysis();
+shatter-core/src/explorer.rs-2072-        let candidate_value = vec![serde_json::json!(777)];
+shatter-core/src/explorer.rs-2073-        let pool_value = vec![serde_json::json!(888)];
+shatter-core/src/explorer.rs:2074:        let config = ExploreConfig {
+shatter-core/src/explorer.rs-2075-            file: "test.ts".into(), max_iterations: 10, seed: Some(42), mocks: vec![],
+shatter-core/src/explorer.rs-2076-            setup_file: None, setup_level: SetupLevel::Function,
+shatter-core/src/explorer.rs-2077-            value_sources: vec![], capabilities: FrontendCapabilities::default(),
+shatter-core/src/explorer.rs-2078-            user_seeds: vec![],
+shatter-core/src/explorer.rs-2079-            candidate_inputs: vec![candidate_value.clone()],
+shatter-core/src/explorer.rs-2080-            pool_seeds: vec![pool_value.clone()],
+shatter-core/src/explorer.rs-2081-            project_root: None,
+shatter-core/src/explorer.rs-2082-            loop_buckets: LoopBuckets::default(),
+--
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2103-    /// Verifies that explore_function produces raw_results containing non-boundary
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2104-    /// values (from user seeds) that harvest_from_exploration can extract. This
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2105-    /// guards against the pre-str-ttu3 gap where only the concolic path harvested.
+shatter-core/src/explorer.rs-2106-    #[tokio::test]
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2107-    async fn random_explorer_raw_results_are_harvestable() {
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2108-        let mut frontend = spawn_noop_frontend().await;
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2109-        let analysis = stub_analysis();
+shatter-core/src/explorer.rs-2110-        let non_boundary_seed = vec![serde_json::json!(42)];
+shatter-core/src/explorer.rs:2111:        let config = ExploreConfig {
+shatter-core/src/explorer.rs-2112-            file: "test.ts".into(), max_iterations: 1, seed: Some(99), mocks: vec![],
+shatter-core/src/explorer.rs-2113-            setup_file: None, setup_level: SetupLevel::Function,
+shatter-core/src/explorer.rs-2114-            value_sources: vec![], capabilities: FrontendCapabilities::default(),
+shatter-core/src/explorer.rs-2115-            user_seeds: vec![non_boundary_seed],
+shatter-core/src/explorer.rs-2116-            candidate_inputs: vec![],
+shatter-core/src/explorer.rs-2117-            pool_seeds: vec![],
+shatter-core/src/explorer.rs-2118-            project_root: None,
+shatter-core/src/explorer.rs-2119-            loop_buckets: LoopBuckets::default(),
+--
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-82-    /// Check whether the frontend declared support for a specific complex type.
+shatter-core/src/orchestrator.rs-83-    pub fn supports_complex(&self, kind: ComplexKind) -> bool {
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-84-        self.complex_types.contains(&kind)
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-85-    }
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-86-}
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-87-
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-88-/// Configuration for a concolic exploration session.
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-89-#[derive(Debug, Clone)]
+shatter-core/src/orchestrator.rs:90:pub struct ExploreConfig {
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-91-    /// Maximum number of unique paths to explore before stopping.
+shatter-core/src/orchestrator.rs-92-    pub max_iterations: usize,
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-93-    /// Maximum total executions (including duplicated paths) before stopping.
+shatter-core/src/orchestrator.rs-94-    pub max_executions: usize,
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-95-    /// Stop after this many consecutive executions without discovering a new path.
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-96-    /// Set to 0 to disable plateau detection.
+shatter-core/src/orchestrator.rs-97-    pub plateau_threshold: usize,
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-98-    /// Mock configurations to pass through to Execute commands.
+--
+shatter-core/src/orchestrator.rs-111-const MUTATE_ROUNDS_PER_UNKNOWN: usize = 3;
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-112-
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-113-/// Mutation rate for type-aware fuzzing of unknown constraints (0.0–1.0).
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-114-///
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-115-/// Set high (1.0) because unknown constraints have no symbolic guidance,
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-116-/// so aggressive mutation is needed to explore the input space.
+shatter-core/src/orchestrator.rs-117-const MUTATE_RATE_UNKNOWN: f64 = 1.0;
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-118-
+shatter-core/src/orchestrator.rs:119:impl Default for ExploreConfig {
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-120-    fn default() -> Self {
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-121-        Self {
+shatter-core/src/orchestrator.rs-122-            max_iterations: 100,
+shatter-core/src/orchestrator.rs-123-            max_executions: DEFAULT_MAX_EXECUTIONS,
+shatter-core/src/orchestrator.rs-124-            plateau_threshold: 20,
+shatter-core/src/orchestrator.rs-125-            mocks: vec![],
+shatter-core/src/orchestrator.rs-126-            solver_timeout_ms: None,
+shatter-core/src/orchestrator.rs-127-            timeout_explore: None,
+--
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1798-
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1799-    /// Explore with the noop frontend returns a single unique path (empty branch path)
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1800-    /// and terminates when the worklist is exhausted.
+shatter-core/src/orchestrator.rs-1801-    #[tokio::test]
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1802-    async fn explore_noop_frontend_exhausts_worklist() {
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1803-        let config = config_for_script("noop-frontend.sh");
+shatter-core/src/orchestrator.rs-1804-        let mut frontend = Frontend::spawn(&config).await.expect("spawn failed");
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1805-
+shatter-core/src/orchestrator.rs:1806:        let explore_config = ExploreConfig {
+shatter-core/src/orchestrator.rs-1807-            max_iterations: 10,
+shatter-core/src/orchestrator.rs-1808-            max_executions: 50,
+shatter-core/src/orchestrator.rs-1809-            plateau_threshold: 5,
+shatter-core/src/orchestrator.rs-1810-            ..Default::default()
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1811-        };
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1812-
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1813-        let result = explore(
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1814-            &mut frontend,
+--
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1832-
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1833-    /// Explore with the concolic test frontend discovers multiple paths via Z3.
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1834-    /// The test frontend simulates f(x) with branches at x>10 and x==42.
+shatter-core/src/orchestrator.rs-1835-    #[tokio::test]
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1836-    async fn explore_concolic_frontend_discovers_paths_via_z3() {
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1837-        let config = config_for_script("concolic-test-frontend.sh");
+shatter-core/src/orchestrator.rs-1838-        let mut frontend = Frontend::spawn(&config).await.expect("spawn failed");
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1839-
+shatter-core/src/orchestrator.rs:1840:        let explore_config = ExploreConfig {
+shatter-core/src/orchestrator.rs-1841-            max_iterations: 20,
+shatter-core/src/orchestrator.rs-1842-            max_executions: 100,
+shatter-core/src/orchestrator.rs-1843-            plateau_threshold: 10,
+shatter-core/src/orchestrator.rs-1844-            ..Default::default()
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1845-        };
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1846-
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1847-        // Start with x=0 (hits the x<=10 path).
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1848-        let result = explore(
+--
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1871-    }
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1872-
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1873-    /// Plateau detection stops exploration when no new paths are found.
+shatter-core/src/orchestrator.rs-1874-    #[tokio::test]
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1875-    async fn explore_stops_on_coverage_plateau() {
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1876-        let config = config_for_script("noop-frontend.sh");
+shatter-core/src/orchestrator.rs-1877-        let mut frontend = Frontend::spawn(&config).await.expect("spawn failed");
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1878-
+shatter-core/src/orchestrator.rs:1879:        let explore_config = ExploreConfig {
+shatter-core/src/orchestrator.rs-1880-            max_iterations: 100,
+shatter-core/src/orchestrator.rs-1881-            max_executions: 100,
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1882-            // Low threshold so plateau triggers quickly.
+shatter-core/src/orchestrator.rs-1883-            plateau_threshold: 3,
+shatter-core/src/orchestrator.rs-1884-            ..Default::default()
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1885-        };
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1886-
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1887-        // Provide multiple identical seeds so the worklist doesn't empty first.
+--
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1911-    }
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1912-
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1913-    /// Max executions budget stops exploration.
+shatter-core/src/orchestrator.rs-1914-    #[tokio::test]
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1915-    async fn explore_stops_on_max_executions() {
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1916-        let config = config_for_script("noop-frontend.sh");
+shatter-core/src/orchestrator.rs-1917-        let mut frontend = Frontend::spawn(&config).await.expect("spawn failed");
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1918-
+shatter-core/src/orchestrator.rs:1919:        let explore_config = ExploreConfig {
+shatter-core/src/orchestrator.rs-1920-            max_iterations: 100,
+shatter-core/src/orchestrator.rs-1921-            max_executions: 3,
+shatter-core/src/orchestrator.rs-1922-            plateau_threshold: 0, // disable plateau
+shatter-core/src/orchestrator.rs-1923-            ..Default::default()
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1924-        };
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1925-
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1926-        let seeds = (0..10)
+shatter-core/src/orchestrator.rs-1927-            .map(|i| vec![serde_json::json!(i)])
+--
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1945-    }
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1946-
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1947-    /// Max iterations budget stops exploration.
+shatter-core/src/orchestrator.rs-1948-    #[tokio::test]
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1949-    async fn explore_stops_on_max_iterations() {
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1950-        let config = config_for_script("concolic-test-frontend.sh");
+shatter-core/src/orchestrator.rs-1951-        let mut frontend = Frontend::spawn(&config).await.expect("spawn failed");
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1952-
+shatter-core/src/orchestrator.rs:1953:        let explore_config = ExploreConfig {
+shatter-core/src/orchestrator.rs-1954-            max_iterations: 1,
+shatter-core/src/orchestrator.rs-1955-            max_executions: 100,
+shatter-core/src/orchestrator.rs-1956-            plateau_threshold: 0,
+shatter-core/src/orchestrator.rs-1957-            ..Default::default()
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1958-        };
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1959-
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1960-        // Provide seeds that will hit different paths.
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-1961-        let result = explore(
+--
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-2028-    }
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-2029-
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-2030-    /// A very short timeout_explore stops exploration before max_executions.
+shatter-core/src/orchestrator.rs-2031-    #[tokio::test]
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-2032-    async fn explore_stops_on_timeout_explore() {
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-2033-        let config = config_for_script("noop-frontend.sh");
+shatter-core/src/orchestrator.rs-2034-        let mut frontend = Frontend::spawn(&config).await.expect("spawn failed");
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-2035-
+shatter-core/src/orchestrator.rs:2036:        let explore_config = ExploreConfig {
+shatter-core/src/orchestrator.rs-2037-            max_iterations: 1000,
+shatter-core/src/orchestrator.rs-2038-            max_executions: 10000,
+shatter-core/src/orchestrator.rs-2039-            plateau_threshold: 0,
+shatter-core/src/orchestrator.rs-2040-            timeout_explore: Some(Duration::from_millis(1)),
+shatter-core/src/orchestrator.rs-2041-            ..Default::default()
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-2042-        };
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-2043-
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-2044-        let seeds = (0..100)
+--
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-2068-    /// Uses a fixed-branch frontend (always returns same single-branch path).
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-2069-    /// After the first seed discovers the path, triage predicts Skip for
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-2070-    /// all subsequent seeds with matching constraint evaluations.
+shatter-core/src/orchestrator.rs-2071-    #[tokio::test]
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-2072-    async fn explore_triage_skips_redundant_seeds() {
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-2073-        let config = config_for_script("fixed-branch-frontend.sh");
+shatter-core/src/orchestrator.rs-2074-        let mut frontend = Frontend::spawn(&config).await.expect("spawn failed");
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-2075-
+shatter-core/src/orchestrator.rs:2076:        let explore_config = ExploreConfig {
+shatter-core/src/orchestrator.rs-2077-            max_iterations: 50,
+shatter-core/src/orchestrator.rs-2078-            max_executions: 50,
+shatter-core/src/orchestrator.rs-2079-            plateau_threshold: 0, // disable plateau so we rely on worklist exhaustion
+shatter-core/src/orchestrator.rs-2080-            ..Default::default()
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-2081-        };
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-2082-
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-2083-        // All seeds have x=5, which evaluates x>0 to true (Taken) — matching
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-2084-        // the path discovered by the first execution. After the first seed
+--
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-424-
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-425-        let candidate_inputs = load_config_candidate_inputs(
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-426-            func_name,
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-427-            &config.config_dir,
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-428-            config.max_iterations_per_function,
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-429-            config.timeout_per_fn.as_secs(),
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-430-        );
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-431-
+shatter-core/src/scan_orchestrator.rs:432:        let explore_config = ExploreConfig {
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-433-            file,
+shatter-core/src/scan_orchestrator.rs-434-            max_iterations: config.max_iterations_per_function,
+shatter-core/src/scan_orchestrator.rs-435-            seed: config.seed,
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-436-            mocks,
+shatter-core/src/scan_orchestrator.rs-437-            setup_file: None,
+shatter-core/src/scan_orchestrator.rs-438-            setup_level: crate::protocol::SetupLevel::Function,
+shatter-core/src/scan_orchestrator.rs-439-            value_sources: vec![],
+shatter-core/src/scan_orchestrator.rs-440-            capabilities: crate::orchestrator::FrontendCapabilities::default(),
+--
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-818-
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-819-            let candidate_inputs = load_config_candidate_inputs(
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-820-                func_name,
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-821-                &config.config_dir,
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-822-                config.max_iterations_per_function,
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-823-                config.timeout_per_fn.as_secs(),
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-824-            );
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-825-
+shatter-core/src/scan_orchestrator.rs:826:            let explore_config = ExploreConfig {
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-827-                file,
+shatter-core/src/scan_orchestrator.rs-828-                max_iterations: config.max_iterations_per_function,
+shatter-core/src/scan_orchestrator.rs-829-                seed: config.seed,
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-830-                mocks,
+shatter-core/src/scan_orchestrator.rs-831-                setup_file: None,
+shatter-core/src/scan_orchestrator.rs-832-                setup_level: crate::protocol::SetupLevel::Function,
+shatter-core/src/scan_orchestrator.rs-833-                value_sources: vec![],
+shatter-core/src/scan_orchestrator.rs-834-                capabilities: crate::orchestrator::FrontendCapabilities::default(),
+--
+/home/ketan/project/shatter/shatter-core/src/observe.rs-522-
+shatter-core/src/observe.rs-523-        assert_eq!(all_lines, HashSet::from([10, 20, 30, 40, 50]));
+/home/ketan/project/shatter/shatter-core/src/observe.rs-524-    }
+/home/ketan/project/shatter/shatter-core/src/observe.rs-525-
+/home/ketan/project/shatter/shatter-core/src/observe.rs-526-    #[test]
+/home/ketan/project/shatter/shatter-core/src/observe.rs-527-    fn observe_config_from_explore_config() {
+shatter-core/src/observe.rs-528-        use crate::explorer::ExploreConfig;
+/home/ketan/project/shatter/shatter-core/src/observe.rs-529-
+shatter-core/src/observe.rs:530:        let explore_config = ExploreConfig {
+shatter-core/src/observe.rs-531-            file: "test.ts".to_string(),
+shatter-core/src/observe.rs-532-            max_iterations: 100,
+shatter-core/src/observe.rs-533-            seed: Some(42),
+shatter-core/src/observe.rs-534-            mocks: vec![],
+shatter-core/src/observe.rs-535-            setup_file: None,
+shatter-core/src/observe.rs-536-            setup_level: SetupLevel::Function,
+shatter-core/src/observe.rs-537-            value_sources: vec![],
+shatter-core/src/observe.rs-538-            capabilities: FrontendCapabilities {

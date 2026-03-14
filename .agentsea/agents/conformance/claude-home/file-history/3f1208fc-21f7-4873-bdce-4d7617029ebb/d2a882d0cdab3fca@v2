@@ -1,0 +1,24 @@
+---
+- name: Dropkick CI
+  hosts: localhost
+  become: true
+
+  vars_files:
+    - vault/secrets.yml
+
+  pre_tasks:
+    - name: Load repos configuration
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../config/repos.yaml"
+        name: repos_config
+
+    - name: Set repos list fact
+      ansible.builtin.set_fact:
+        repos: "{{ repos_config.repos }}"
+
+  roles:
+    - base
+    - laminar
+    - msmtp
+    - ci-poller
+    - netbird

@@ -1,0 +1,1120 @@
+     1→     1→use std::io::{self, BufRead, BufReader};
+     2→     2→
+     3→     3→use crate::generators::NativeRegistry;
+     4→     4→use crate::protocol::{
+     5→     5→    self, Request, Response, FRONTEND_LANGUAGE, FRONTEND_VERSION, PROTOCOL_VERSION,
+     6→     6→};
+     7→     7→use crate::wasm_generator::WasmCache;
+     8→     8→
+     9→     9→/// Log level for the frontend, controlled by SHATTER_LOG_LEVEL env var.
+    10→    10→#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    11→    11→enum FrontendLogLevel {
+    12→    12→    Error = 0,
+    13→    13→    Warn = 1,
+    14→    14→    Info = 2,
+    15→    15→    Debug = 3,
+    16→    16→    Trace = 4,
+    17→    17→}
+    18→    18→
+    19→    19→impl FrontendLogLevel {
+    20→    20→    fn from_env() -> Self {
+    21→    21→        match std::env::var("SHATTER_LOG_LEVEL")
+    22→    22→            .unwrap_or_default()
+    23→    23→            .to_lowercase()
+    24→    24→            .as_str()
+    25→    25→        {
+    26→    26→            "error" => FrontendLogLevel::Error,
+    27→    27→            "warn" => FrontendLogLevel::Warn,
+    28→    28→            "debug" => FrontendLogLevel::Debug,
+    29→    29→            "trace" => FrontendLogLevel::Trace,
+    30→    30→            _ => FrontendLogLevel::Info,
+    31→    31→        }
+    32→    32→    }
+    33→    33→}
+    34→    34→
+    35→    35→const DEFAULT_EXEC_TIMEOUT_MS: u64 = 5000;
+    36→    36→
+    37→    37→/// Read the execution timeout from `SHATTER_EXEC_TIMEOUT` env var (seconds).
+    38→    38→/// Returns milliseconds. Falls back to `DEFAULT_EXEC_TIMEOUT_MS` if unset, invalid, zero, or negative.
+    39→    39→fn exec_timeout_from_env() -> u64 {
+    40→    40→    match std::env::var("SHATTER_EXEC_TIMEOUT") {
+    41→    41→        Ok(val) => match val.parse::<f64>() {
+    42→    42→            Ok(secs) if secs > 0.0 => (secs * 1000.0) as u64,
+    43→    43→            _ => DEFAULT_EXEC_TIMEOUT_MS,
+    44→    44→        },
+    45→    45→        Err(_) => DEFAULT_EXEC_TIMEOUT_MS,
+    46→    46→    }
+    47→    47→}
+    48→    48→
+    49→    49→/// Write instrumented source to a temp directory and return the output path.
+    50→    50→fn write_instrumented_temp(filename: &str, source: &str) -> io::Result<String> {
+    51→    51→    let dir = std::env::temp_dir().join(format!(
+    52→    52→        "shatter-instrument-{}",
+    53→    53→        std::process::id()
+    54→    54→    ));
+    55→    55→    std::fs::create_dir_all(&dir)?;
+    56→    56→    let out_path = dir.join(filename);
+    57→    57→    std::fs::write(&out_path, source)?;
+    58→    58→    Ok(out_path.to_string_lossy().into_owned())
+    59→    59→}
+    60→    60→
+    61→    61→/// Processes protocol requests from stdin and writes responses to stdout.
+    62→    62→pub struct Handler<R, W, L> {
+    63→    63→    reader: BufReader<R>,
+    64→    64→    writer: W,
+    65→    65→    log: L,
+    66→    66→    log_level: FrontendLogLevel,
+    67→    67→    exec_timeout_ms: u64,
+    68→    68→    wasm_cache: WasmCache,
+    69→    69→    native_registry: Option<NativeRegistry>,
+    70→    70→    /// Remembered from the most recent Analyze or Instrument request so Execute
+    71→    71→    /// can fall back when the core omits the file field (which it always does).
+    72→    72→    last_file: Option<String>,
+    73→    73→}
+    74→    74→
+    75→    75→impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
+    76→    76→    pub fn new(reader: R, writer: W, log: L) -> Self {
+    77→    77→        Self {
+    78→    78→            reader: BufReader::new(reader),
+    79→    79→            writer,
+    80→    80→            log,
+    81→    81→            log_level: FrontendLogLevel::from_env(),
+    82→    82→            exec_timeout_ms: exec_timeout_from_env(),
+    83→    83→            wasm_cache: WasmCache::new(),
+    84→    84→            native_registry: None,
+    85→    85→            last_file: None,
+    86→    86→        }
+    87→    87→    }
+    88→    88→
+    89→    89→    /// Create a handler with a native generator registry for custom builds.
+    90→    90→    pub fn new_with_native_registry(
+    91→    91→        reader: R,
+    92→    92→        writer: W,
+    93→    93→        log: L,
+    94→    94→        registry: NativeRegistry,
+    95→    95→    ) -> Self {
+    96→    96→        Self {
+    97→    97→            reader: BufReader::new(reader),
+    98→    98→            writer,
+    99→    99→            log,
+   100→   100→            log_level: FrontendLogLevel::from_env(),
+   101→   101→            exec_timeout_ms: exec_timeout_from_env(),
+   102→   102→            wasm_cache: WasmCache::new(),
+   103→   103→            native_registry: Some(registry),
+   104→   104→            last_file: None,
+   105→   105→        }
+   106→   106→    }
+   107→   107→
+   108→   108→    /// Create a handler with an explicit log level (for testing).
+   109→   109→    #[cfg(test)]
+   110→   110→    fn with_log_level(reader: R, writer: W, log: L, level: FrontendLogLevel) -> Self {
+   111→   111→        Self {
+   112→   112→            reader: BufReader::new(reader),
+   113→   113→            writer,
+   114→   114→            log,
+   115→   115→            log_level: level,
+   116→   116→            exec_timeout_ms: exec_timeout_from_env(),
+   117→   117→            wasm_cache: WasmCache::new(),
+   118→   118→            native_registry: None,
+   119→   119→            last_file: None,
+   120→   120→        }
+   121→   121→    }
+   122→   122→
+   123→   123→    /// Process requests until shutdown or EOF. Returns Ok(()) on clean shutdown.
+   124→   124→    pub fn run(mut self) -> io::Result<()> {
+   125→   125→        self.log_at(FrontendLogLevel::Debug, &format!(
+   126→   126→            "Starting Rust frontend (protocol {PROTOCOL_VERSION})"
+   127→   127→        ));
+   128→   128→
+   129→   129→        let mut line = String::new();
+   130→   130→        loop {
+   131→   131→            line.clear();
+   132→   132→            let bytes_read = self.reader.read_line(&mut line)?;
+   133→   133→            if bytes_read == 0 {
+   134→   134→                // EOF
+   135→   135→                self.log_at(FrontendLogLevel::Debug, "Stdin closed, exiting");
+   136→   136→                return Ok(());
+   137→   137→            }
+   138→   138→
+   139→   139→            let trimmed = line.trim();
+   140→   140→            if trimmed.is_empty() {
+   141→   141→                continue;
+   142→   142→            }
+   143→   143→
+   144→   144→            self.logf(&format!("Received: {trimmed}"));
+   145→   145→
+   146→   146→            let req: Request = match serde_json::from_str(trimmed) {
+   147→   147→                Ok(r) => r,
+   148→   148→                Err(e) => {
+   149→   149→                    self.logf(&format!("Failed to parse request: {e}"));
+   150→   150→                    continue;
+   151→   151→                }
+   152→   152→            };
+   153→   153→
+   154→   154→            let (resp, shutdown) = self.dispatch(&req);
+   155→   155→            self.send(&resp)?;
+   156→   156→
+   157→   157→            if shutdown {
+   158→   158→                self.log_at(FrontendLogLevel::Debug, "Shutting down");
+   159→   159→                return Ok(());
+   160→   160→            }
+   161→   161→        }
+   162→   162→    }
+   163→   163→
+   164→   164→    fn dispatch(&mut self, req: &Request) -> (Response, bool) {
+   165→   165→        let mut resp = Response::base(req.id);
+   166→   166→
+   167→   167→        if req.protocol_version != protocol::PROTOCOL_VERSION {
+   168→   168→            resp.status = "error".to_string();
+   169→   169→            resp.code = Some("version_mismatch".to_string());
+   170→   170→            resp.message = Some(format!(
+   171→   171→                "unsupported protocol version {:?}, expected {:?}",
+   172→   172→                req.protocol_version,
+   173→   173→                protocol::PROTOCOL_VERSION,
+   174→   174→            ));
+   175→   175→            return (resp, false);
+   176→   176→        }
+   177→   177→
+   178→   178→        match req.command.as_str() {
+   179→   179→            "handshake" => (self.handle_handshake(resp), false),
+   180→   180→            "analyze" => (self.handle_analyze(resp, req), false),
+   181→   181→            "instrument" => (self.handle_instrument(resp, req), false),
+   182→   182→            "execute" => (self.handle_execute(resp, req), false),
+   183→   183→            "setup" => (self.handle_setup(resp, req), false),
+   184→   184→            "teardown" => (self.handle_teardown(resp, req), false),
+   185→   185→            "generate" => (self.handle_generate(resp, req), false),
+   186→   186→            "shutdown" => (self.handle_shutdown(resp), true),
+   187→   187→            _ => {
+   188→   188→                resp.status = "error".to_string();
+   189→   189→                resp.code = Some("invalid_request".to_string());
+   190→   190→                resp.message = Some(format!("unknown command: {}", req.command));
+   191→   191→                (resp, false)
+   192→   192→            }
+   193→   193→        }
+   194→   194→    }
+   195→   195→
+   196→   196→    fn handle_handshake(&self, mut resp: Response) -> Response {
+   197→   197→        resp.status = "handshake".to_string();
+   198→   198→        resp.frontend_version = Some(FRONTEND_VERSION.to_string());
+   199→   199→        resp.language = Some(FRONTEND_LANGUAGE.to_string());
+   200→   200→        resp.capabilities = Some(vec![
+   201→   201→            "analyze".to_string(),
+   202→   202→            "execute".to_string(),
+   203→   203→            "generate".to_string(),
+   204→   204→            "instrument".to_string(),
+   205→   205→        ]);
+   206→   206→        resp
+   207→   207→    }
+   208→   208→
+   209→   209→    fn handle_analyze(&mut self, mut resp: Response, req: &Request) -> Response {
+   210→   210→        let file_path = match &req.file {
+   211→   211→            Some(f) => f,
+   212→   212→            None => {
+   213→   213→                resp.status = "error".to_string();
+   214→   214→                resp.code = Some("invalid_request".to_string());
+   215→   215→                resp.message = Some("analyze command requires a file path".to_string());
+   216→   216→                return resp;
+   217→   217→            }
+   218→   218→        };
+   219→   219→
+   220→   220→        self.last_file = Some(file_path.clone());
+   221→   221→
+   222→   222→        let path = std::path::Path::new(file_path);
+   223→   223→        if !path.exists() {
+   224→   224→            resp.status = "error".to_string();
+   225→   225→            resp.code = Some("file_not_found".to_string());
+   226→   226→            resp.message = Some(format!("file not found: {file_path}"));
+   227→   227→            return resp;
+   228→   228→        }
+   229→   229→
+   230→   230→        match crate::analyzer::analyze_file(path, req.function.as_deref()) {
+   231→   231→            Ok(functions) => {
+   232→   232→                resp.status = "analyze".to_string();
+   233→   233→                resp.functions = Some(functions);
+   234→   234→                resp
+   235→   235→            }
+   236→   236→            Err(e) => {
+   237→   237→                resp.status = "error".to_string();
+   238→   238→                resp.code = Some(
+   239→   239→                    match &e {
+   240→   240→                        crate::analyzer::AnalyzeError::FileNotFound(_) => "file_not_found",
+   241→   241→                        crate::analyzer::AnalyzeError::ReadError(_) => "internal_error",
+   242→   242→                        crate::analyzer::AnalyzeError::ParseError(_) => "parse_error",
+   243→   243→                        crate::analyzer::AnalyzeError::FunctionNotFound(_) => "function_not_found",
+   244→   244→                    }
+   245→   245→                    .to_string(),
+   246→   246→                );
+   247→   247→                resp.message = Some(e.to_string());
+   248→   248→                resp
+   249→   249→            }
+   250→   250→        }
+   251→   251→    }
+   252→   252→
+   253→   253→    fn handle_instrument(&mut self, mut resp: Response, req: &Request) -> Response {
+   254→   254→        let file_path = match &req.file {
+   255→   255→            Some(f) => f,
+   256→   256→            None => {
+   257→   257→                resp.status = "error".to_string();
+   258→   258→                resp.code = Some("invalid_request".to_string());
+   259→   259→                resp.message = Some("instrument command requires a file path".to_string());
+   260→   260→                return resp;
+   261→   261→            }
+   262→   262→        };
+   263→   263→
+   264→   264→        self.last_file = Some(file_path.clone());
+   265→   265→
+   266→   266→        let path = std::path::Path::new(file_path);
+   267→   267→        if !path.exists() {
+   268→   268→            resp.status = "error".to_string();
+   269→   269→            resp.code = Some("file_not_found".to_string());
+   270→   270→            resp.message = Some(format!("file not found: {file_path}"));
+   271→   271→            return resp;
+   272→   272→        }
+   273→   273→
+   274→   274→        match crate::instrument::instrument_file(path, req.function.as_deref()) {
+   275→   275→            Ok(result) => {
+   276→   276→                // Write instrumented source to a temp file
+   277→   277→                let source_name = path
+   278→   278→                    .file_name()
+   279→   279→                    .and_then(|n| n.to_str())
+   280→   280→                    .unwrap_or("instrumented.rs");
+   281→   281→                match write_instrumented_temp(source_name, &result.source) {
+   282→   282→                    Ok(output_path) => {
+   283→   283→                        resp.status = "instrument".to_string();
+   284→   284→                        resp.instrumented = Some(true);
+   285→   285→                        resp.output_file = Some(output_path);
+   286→   286→                        resp.message = Some(format!(
+   287→   287→                            "instrumented {} branch points",
+   288→   288→                            result.branch_count
+   289→   289→                        ));
+   290→   290→                        resp
+   291→   291→                    }
+   292→   292→                    Err(e) => {
+   293→   293→                        resp.status = "error".to_string();
+   294→   294→                        resp.code = Some("internal_error".to_string());
+   295→   295→                        resp.message = Some(format!("failed to write instrumented output: {e}"));
+   296→   296→                        resp
+   297→   297→                    }
+   298→   298→                }
+   299→   299→            }
+   300→   300→            Err(e) => {
+   301→   301→                resp.status = "error".to_string();
+   302→   302→                resp.code = Some(match &e {
+   303→   303→                    crate::instrument::InstrumentError::FileNotFound(_) => "file_not_found",
+   304→   304→                    crate::instrument::InstrumentError::ReadError(_) => "internal_error",
+   305→   305→                    crate::instrument::InstrumentError::ParseError(_) => "parse_error",
+   306→   306→                }.to_string());
+   307→   307→                resp.message = Some(e.to_string());
+   308→   308→                resp
+   309→   309→            }
+   310→   310→        }
+   311→   311→    }
+   312→   312→
+   313→   313→    fn handle_execute(&self, mut resp: Response, req: &Request) -> Response {
+   314→   314→        let file_path = match req.file.as_ref().or(self.last_file.as_ref()) {
+   315→   315→            Some(f) => f,
+   316→   316→            None => {
+   317→   317→                resp.status = "error".to_string();
+   318→   318→                resp.code = Some("invalid_request".to_string());
+   319→   319→                resp.message = Some("execute command requires a file path (none provided and no prior analyze/instrument)".to_string());
+   320→   320→                return resp;
+   321→   321→            }
+   322→   322→        };
+   323→   323→        let function_name = match &req.function {
+   324→   324→            Some(f) => f,
+   325→   325→            None => {
+   326→   326→                resp.status = "error".to_string();
+   327→   327→                resp.code = Some("invalid_request".to_string());
+   328→   328→                resp.message = Some("execute command requires a function name".to_string());
+   329→   329→                return resp;
+   330→   330→            }
+   331→   331→        };
+   332→   332→
+   333→   333→        if self.log_level >= FrontendLogLevel::Debug {
+   334→   334→            eprintln!(
+   335→   335→                "[shatter-rust] Executing {function_name} in {file_path} with {} inputs",
+   336→   336→                req.inputs.len()
+   337→   337→            );
+   338→   338→        }
+   339→   339→
+   340→   340→        match crate::executor::execute_function(
+   341→   341→            file_path,
+   342→   342→            function_name,
+   343→   343→            &req.inputs,
+   344→   344→            &req.mocks,
+   345→   345→            self.exec_timeout_ms,
+   346→   346→        ) {
+   347→   347→            Ok(result) => {
+   348→   348→                resp.status = "execute".to_string();
+   349→   349→                resp.return_value = result.return_value;
+   350→   350→                resp.thrown_error = result.thrown_error;
+   351→   351→                resp.branch_path = Some(result.branch_path);
+   352→   352→                resp.lines_executed = Some(result.lines_executed);
+   353→   353→                resp.calls_to_external = Some(result.calls_to_external);
+   354→   354→                resp.path_constraints = Some(result.path_constraints);
+   355→   355→                resp.side_effects = Some(result.side_effects);
+   356→   356→                resp.performance = Some(result.performance);
+   357→   357→                resp
+   358→   358→            }
+   359→   359→            Err(crate::executor::ExecuteError::FileError(msg)) => {
+   360→   360→                resp.status = "error".to_string();
+   361→   361→                resp.code = Some("file_not_found".to_string());
+   362→   362→                resp.message = Some(msg);
+   363→   363→                resp
+   364→   364→            }
+   365→   365→            Err(crate::executor::ExecuteError::CompilationFailed(msg)) => {
+   366→   366→                resp.status = "error".to_string();
+   367→   367→                resp.code = Some("compilation_error".to_string());
+   368→   368→                resp.message = Some(msg);
+   369→   369→                resp
+   370→   370→            }
+   371→   371→            Err(e) => {
+   372→   372→                resp.status = "error".to_string();
+   373→   373→                resp.code = Some("internal_error".to_string());
+   374→   374→                resp.message = Some(e.to_string());
+   375→   375→                resp
+   376→   376→            }
+   377→   377→        }
+   378→   378→    }
+   379→   379→
+   380→   380→    fn handle_setup(&self, mut resp: Response, req: &Request) -> Response {
+   381→   381→        let file_path = match &req.file {
+   382→   382→            Some(f) => f,
+   383→   383→            None => {
+   384→   384→                resp.status = "error".to_string();
+   385→   385→                resp.code = Some("invalid_request".to_string());
+   386→   386→                resp.message = Some("setup command requires a file path".to_string());
+   387→   387→                return resp;
+   388→   388→            }
+   389→   389→        };
+   390→   390→        let level = match &req.level {
+   391→   391→            Some(l) => *l,
+   392→   392→            None => {
+   393→   393→                resp.status = "error".to_string();
+   394→   394→                resp.code = Some("invalid_request".to_string());
+   395→   395→                resp.message = Some("setup command requires a level".to_string());
+   396→   396→                return resp;
+   397→   397→            }
+   398→   398→        };
+   399→   399→        let scope = match &req.scope {
+   400→   400→            Some(s) => s.as_str(),
+   401→   401→            None => {
+   402→   402→                resp.status = "error".to_string();
+   403→   403→                resp.code = Some("invalid_request".to_string());
+   404→   404→                resp.message = Some("setup command requires a scope".to_string());
+   405→   405→                return resp;
+   406→   406→            }
+   407→   407→        };
+   408→   408→
+   409→   409→        let path = std::path::Path::new(file_path);
+   410→   410→        match crate::setup::run_setup(path, level, scope, req.parent_context.as_ref()) {
+   411→   411→            Ok(result) => {
+   412→   412→                resp.status = "setup".to_string();
+   413→   413→                resp.setup_context = Some(result.context);
+   414→   414→                resp
+   415→   415→            }
+   416→   416→            Err(crate::setup::SetupError::FileNotFound(_)) => {
+   417→   417→                resp.status = "error".to_string();
+   418→   418→                resp.code = Some("file_not_found".to_string());
+   419→   419→                resp.message = Some(format!("setup file not found: {file_path}"));
+   420→   420→                resp
+   421→   421→            }
+   422→   422→            Err(crate::setup::SetupError::CompilationFailed(msg)) => {
+   423→   423→                resp.status = "error".to_string();
+   424→   424→                resp.code = Some("compilation_error".to_string());
+   425→   425→                resp.message = Some(msg);
+   426→   426→                resp
+   427→   427→            }
+   428→   428→            Err(e) => {
+   429→   429→                resp.status = "error".to_string();
+   430→   430→                resp.code = Some("internal_error".to_string());
+   431→   431→                resp.message = Some(e.to_string());
+   432→   432→                resp
+   433→   433→            }
+   434→   434→        }
+   435→   435→    }
+   436→   436→
+   437→   437→    fn handle_teardown(&self, mut resp: Response, req: &Request) -> Response {
+   438→   438→        let level = match &req.level {
+   439→   439→            Some(l) => *l,
+   440→   440→            None => {
+   441→   441→                resp.status = "error".to_string();
+   442→   442→                resp.code = Some("invalid_request".to_string());
+   443→   443→                resp.message = Some("teardown command requires a level".to_string());
+   444→   444→                return resp;
+   445→   445→            }
+   446→   446→        };
+   447→   447→        let scope = match &req.scope {
+   448→   448→            Some(s) => s.as_str(),
+   449→   449→            None => {
+   450→   450→                resp.status = "error".to_string();
+   451→   451→                resp.code = Some("invalid_request".to_string());
+   452→   452→                resp.message = Some("teardown command requires a scope".to_string());
+   453→   453→                return resp;
+   454→   454→            }
+   455→   455→        };
+   456→   456→
+   457→   457→        match crate::setup::run_teardown(level, scope) {
+   458→   458→            Ok(()) => {
+   459→   459→                resp.status = "teardown".to_string();
+   460→   460→                resp
+   461→   461→            }
+   462→   462→            Err(e) => {
+   463→   463→                resp.status = "error".to_string();
+   464→   464→                resp.code = Some("internal_error".to_string());
+   465→   465→                resp.message = Some(e.to_string());
+   466→   466→                resp
+   467→   467→            }
+   468→   468→        }
+   469→   469→    }
+   470→   470→
+   471→   471→    fn handle_generate(&mut self, mut resp: Response, req: &Request) -> Response {
+   472→   472→        let file_path = match &req.file {
+   473→   473→            Some(f) => f,
+   474→   474→            None => {
+   475→   475→                resp.status = "error".to_string();
+   476→   476→                resp.code = Some("invalid_request".to_string());
+   477→   477→                resp.message = Some("generate command requires a file path".to_string());
+   478→   478→                return resp;
+   479→   479→            }
+   480→   480→        };
+   481→   481→        let func_name = match &req.name {
+   482→   482→            Some(n) => n.clone(),
+   483→   483→            None => {
+   484→   484→                resp.status = "error".to_string();
+   485→   485→                resp.code = Some("invalid_request".to_string());
+   486→   486→                resp.message = Some("generate command requires a name".to_string());
+   487→   487→                return resp;
+   488→   488→            }
+   489→   489→        };
+   490→   490→
+   491→   491→        let path = std::path::Path::new(file_path);
+   492→   492→        let ext = path.extension().and_then(|e| e.to_str());
+   493→   493→
+   494→   494→        match ext {
+   495→   495→            Some("wasm") => {
+   496→   496→                match self.wasm_cache.generate(path, &func_name, req.recipe.as_ref()) {
+   497→   497→                    Ok((value, generator_id, recipe)) => {
+   498→   498→                        resp.status = "generate".to_string();
+   499→   499→                        resp.value = Some(value);
+   500→   500→                        resp.generator_id = Some(generator_id);
+   501→   501→                        resp.recipe = recipe;
+   502→   502→                        resp
+   503→   503→                    }
+   504→   504→                    Err(e) => {
+   505→   505→                        resp.status = "error".to_string();
+   506→   506→                        resp.code = Some("internal_error".to_string());
+   507→   507→                        resp.message = Some(e);
+   508→   508→                        resp
+   509→   509→                    }
+   510→   510→                }
+   511→   511→            }
+   512→   512→            Some("rs") => {
+   513→   513→                if let Some(ref registry) = self.native_registry {
+   514→   514→                    match registry.generate(&func_name, req.recipe.clone()) {
+   515→   515→                        Ok((value, generator_id, recipe)) => {
+   516→   516→                            resp.status = "generate".to_string();
+   517→   517→                            resp.value = Some(value);
+   518→   518→                            resp.generator_id = Some(generator_id);
+   519→   519→                            resp.recipe = Some(recipe);
+   520→   520→                            resp
+   521→   521→                        }
+   522→   522→                        Err(e) => {
+   523→   523→                            resp.status = "error".to_string();
+   524→   524→                            resp.code = Some("internal_error".to_string());
+   525→   525→                            resp.message = Some(e);
+   526→   526→                            resp
+   527→   527→                        }
+   528→   528→                    }
+   529→   529→                } else {
+   530→   530→                    resp.status = "error".to_string();
+   531→   531→                    resp.code = Some("internal_error".to_string());
+   532→   532→                    resp.message = Some(format!(
+   533→   533→                        "native generator {func_name:?} requires a custom build (run `shatter build-frontend rust`)"
+   534→   534→                    ));
+   535→   535→                    resp
+   536→   536→                }
+   537→   537→            }
+   538→   538→            _ => {
+   539→   539→                resp.status = "error".to_string();
+   540→   540→                resp.code = Some("invalid_request".to_string());
+   541→   541→                resp.message = Some(format!(
+   542→   542→                    "unsupported generator file type: {}",
+   543→   543→                    file_path
+   544→   544→                ));
+   545→   545→                resp
+   546→   546→            }
+   547→   547→        }
+   548→   548→    }
+   549→   549→
+   550→   550→    fn handle_shutdown(&self, mut resp: Response) -> Response {
+   551→   551→        resp.status = "shutdown_ack".to_string();
+   552→   552→        resp
+   553→   553→    }
+   554→   554→
+   555→   555→    fn send(&mut self, resp: &Response) -> io::Result<()> {
+   556→   556→        let data = serde_json::to_string(resp)
+   557→   557→            .map_err(io::Error::other)?;
+   558→   558→        self.logf(&format!("Sent: {data}"));
+   559→   559→        writeln!(self.writer, "{data}")?;
+   560→   560→        self.writer.flush()
+   561→   561→    }
+   562→   562→
+   563→   563→    /// Log at TRACE level (protocol messages).
+   564→   564→    fn logf(&mut self, msg: &str) {
+   565→   565→        self.log_at(FrontendLogLevel::Trace, msg);
+   566→   566→    }
+   567→   567→
+   568→   568→    /// Log at a specific level.
+   569→   569→    fn log_at(&mut self, level: FrontendLogLevel, msg: &str) {
+   570→   570→        if self.log_level >= level {
+   571→   571→            let _ = writeln!(self.log, "[shatter-rust] {msg}");
+   572→   572→        }
+   573→   573→    }
+   574→   574→}
+   575→   575→
+   576→   576→#[cfg(test)]
+   577→   577→mod tests {
+   578→   578→    use super::*;
+   579→   579→
+   580→   580→    /// Send a single request and read the response.
+   581→   581→    fn send_recv(req_json: &str) -> Response {
+   582→   582→        let input = format!("{req_json}\n");
+   583→   583→        let mut output = Vec::new();
+   584→   584→        let handler = Handler::new(
+   585→   585→            input.as_bytes(),
+   586→   586→            &mut output,
+   587→   587→            io::sink(),
+   588→   588→        );
+   589→   589→        handler.run().expect("handler.run");
+   590→   590→        let output_str = String::from_utf8(output).expect("valid utf8");
+   591→   591→        let first_line = output_str.lines().next().expect("at least one response line");
+   592→   592→        serde_json::from_str(first_line).expect("valid JSON response")
+   593→   593→    }
+   594→   594→
+   595→   595→    /// Send multiple requests and return all responses.
+   596→   596→    fn conversation(requests: &[&str]) -> Vec<Response> {
+   597→   597→        let input = requests.join("\n") + "\n";
+   598→   598→        let mut output = Vec::new();
+   599→   599→        let handler = Handler::new(
+   600→   600→            input.as_bytes(),
+   601→   601→            &mut output,
+   602→   602→            io::sink(),
+   603→   603→        );
+   604→   604→        handler.run().expect("handler.run");
+   605→   605→        let output_str = String::from_utf8(output).expect("valid utf8");
+   606→   606→        output_str
+   607→   607→            .lines()
+   608→   608→            .filter(|l| !l.is_empty())
+   609→   609→            .map(|l| serde_json::from_str(l).expect("valid JSON response"))
+   610→   610→            .collect()
+   611→   611→    }
+   612→   612→
+   613→   613→    #[test]
+   614→   614→    fn handshake_returns_rust_language() {
+   615→   615→        let resp = send_recv(
+   616→   616→            r#"{"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze"]}"#,
+   617→   617→        );
+   618→   618→        assert_eq!(resp.status, "handshake");
+   619→   619→        assert_eq!(resp.language.as_deref(), Some("rust"));
+   620→   620→        assert_eq!(resp.frontend_version.as_deref(), Some(crate::protocol::FRONTEND_VERSION));
+   621→   621→    }
+   622→   622→
+   623→   623→    #[test]
+   624→   624→    fn handshake_returns_all_capabilities() {
+   625→   625→        let resp = send_recv(
+   626→   626→            r#"{"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze"]}"#,
+   627→   627→        );
+   628→   628→        let caps = resp.capabilities.expect("capabilities present");
+   629→   629→        assert!(caps.contains(&"analyze".to_string()));
+   630→   630→        assert!(caps.contains(&"execute".to_string()));
+   631→   631→        assert!(caps.contains(&"generate".to_string()));
+   632→   632→        assert!(caps.contains(&"instrument".to_string()));
+   633→   633→    }
+   634→   634→
+   635→   635→    #[test]
+   636→   636→    fn handshake_echoes_request_id() {
+   637→   637→        let resp = send_recv(
+   638→   638→            r#"{"protocol_version":"0.1.0","id":42,"command":"handshake","capabilities":[]}"#,
+   639→   639→        );
+   640→   640→        assert_eq!(resp.id, 42);
+   641→   641→    }
+   642→   642→
+   643→   643→    #[test]
+   644→   644→    fn handshake_includes_protocol_version() {
+   645→   645→        let resp = send_recv(
+   646→   646→            r#"{"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":[]}"#,
+   647→   647→        );
+   648→   648→        assert_eq!(resp.protocol_version, crate::protocol::PROTOCOL_VERSION);
+   649→   649→    }
+   650→   650→
+   651→   651→    #[test]
+   652→   652→    fn shutdown_returns_ack_and_stops() {
+   653→   653→        let resp = send_recv(
+   654→   654→            r#"{"protocol_version":"0.1.0","id":5,"command":"shutdown"}"#,
+   655→   655→        );
+   656→   656→        assert_eq!(resp.status, "shutdown_ack");
+   657→   657→        assert_eq!(resp.id, 5);
+   658→   658→    }
+   659→   659→
+   660→   660→    #[test]
+   661→   661→    fn version_mismatch_returns_error() {
+   662→   662→        let resp = send_recv(
+   663→   663→            r#"{"protocol_version":"99.0.0","id":1,"command":"handshake","capabilities":[]}"#,
+   664→   664→        );
+   665→   665→        assert_eq!(resp.status, "error");
+   666→   666→        assert_eq!(resp.code.as_deref(), Some("version_mismatch"));
+   667→   667→    }
+   668→   668→
+   669→   669→    #[test]
+   670→   670→    fn unknown_command_returns_error() {
+   671→   671→        let resp = send_recv(
+   672→   672→            r#"{"protocol_version":"0.1.0","id":1,"command":"foobar"}"#,
+   673→   673→        );
+   674→   674→        assert_eq!(resp.status, "error");
+   675→   675→        assert_eq!(resp.code.as_deref(), Some("invalid_request"));
+   676→   676→    }
+   677→   677→
+   678→   678→    #[test]
+   679→   679→    fn analyze_without_file_returns_error() {
+   680→   680→        let resp = send_recv(
+   681→   681→            r#"{"protocol_version":"0.1.0","id":2,"command":"analyze"}"#,
+   682→   682→        );
+   683→   683→        assert_eq!(resp.status, "error");
+   684→   684→        assert_eq!(resp.code.as_deref(), Some("invalid_request"));
+   685→   685→    }
+   686→   686→
+   687→   687→    #[test]
+   688→   688→    fn analyze_with_nonexistent_file_returns_file_not_found() {
+   689→   689→        let resp = send_recv(
+   690→   690→            r#"{"protocol_version":"0.1.0","id":2,"command":"analyze","file":"nonexistent.rs"}"#,
+   691→   691→        );
+   692→   692→        assert_eq!(resp.status, "error");
+   693→   693→        assert_eq!(resp.code.as_deref(), Some("file_not_found"));
+   694→   694→    }
+   695→   695→
+   696→   696→    #[test]
+   697→   697→    fn instrument_without_file_returns_error() {
+   698→   698→        let resp = send_recv(
+   699→   699→            r#"{"protocol_version":"0.1.0","id":3,"command":"instrument"}"#,
+   700→   700→        );
+   701→   701→        assert_eq!(resp.status, "error");
+   702→   702→        assert_eq!(resp.code.as_deref(), Some("invalid_request"));
+   703→   703→    }
+   704→   704→
+   705→   705→    #[test]
+   706→   706→    fn instrument_with_nonexistent_file_returns_file_not_found() {
+   707→   707→        let resp = send_recv(
+   708→   708→            r#"{"protocol_version":"0.1.0","id":3,"command":"instrument","file":"nonexistent.rs"}"#,
+   709→   709→        );
+   710→   710→        assert_eq!(resp.status, "error");
+   711→   711→        assert_eq!(resp.code.as_deref(), Some("file_not_found"));
+   712→   712→    }
+   713→   713→
+   714→   714→    #[test]
+   715→   715→    fn instrument_with_valid_file_returns_success() {
+   716→   716→        // Create a temp file with valid Rust source
+   717→   717→        let dir = std::env::temp_dir().join("shatter-test-instrument");
+   718→   718→        std::fs::create_dir_all(&dir).unwrap();
+   719→   719→        let file = dir.join("sample.rs");
+   720→   720→        std::fs::write(&file, "fn foo(x: i32) -> bool { if x > 0 { true } else { false } }").unwrap();
+   721→   721→
+   722→   722→        let file_path = file.to_string_lossy();
+   723→   723→        let req = format!(
+   724→   724→            r#"{{"protocol_version":"0.1.0","id":3,"command":"instrument","file":"{}"}}"#,
+   725→   725→            file_path.replace('\\', "\\\\")
+   726→   726→        );
+   727→   727→        let resp = send_recv(&req);
+   728→   728→        assert_eq!(resp.status, "instrument", "expected instrument status, got: {:?}", resp.message);
+   729→   729→        assert_eq!(resp.instrumented, Some(true));
+   730→   730→        assert!(resp.output_file.is_some());
+   731→   731→
+   732→   732→        // Clean up
+   733→   733→        let _ = std::fs::remove_dir_all(&dir);
+   734→   734→    }
+   735→   735→
+   736→   736→    #[test]
+   737→   737→    fn execute_without_file_returns_error() {
+   738→   738→        let resp = send_recv(
+   739→   739→            r#"{"protocol_version":"0.1.0","id":4,"command":"execute","function":"F","inputs":[],"mocks":[]}"#,
+   740→   740→        );
+   741→   741→        assert_eq!(resp.status, "error");
+   742→   742→        assert_eq!(resp.code.as_deref(), Some("invalid_request"));
+   743→   743→        assert!(resp.message.as_deref().unwrap_or("").contains("file"));
+   744→   744→    }
+   745→   745→
+   746→   746→    #[test]
+   747→   747→    fn execute_without_function_returns_error() {
+   748→   748→        let resp = send_recv(
+   749→   749→            r#"{"protocol_version":"0.1.0","id":4,"command":"execute","file":"test.rs","inputs":[],"mocks":[]}"#,
+   750→   750→        );
+   751→   751→        assert_eq!(resp.status, "error");
+   752→   752→        assert_eq!(resp.code.as_deref(), Some("invalid_request"));
+   753→   753→        assert!(resp.message.as_deref().unwrap_or("").contains("function"));
+   754→   754→    }
+   755→   755→
+   756→   756→    #[test]
+   757→   757→    fn execute_with_nonexistent_file_returns_error() {
+   758→   758→        let resp = send_recv(
+   759→   759→            r#"{"protocol_version":"0.1.0","id":4,"command":"execute","file":"/nonexistent/file.rs","function":"f","inputs":[],"mocks":[]}"#,
+   760→   760→        );
+   761→   761→        assert_eq!(resp.status, "error");
+   762→   762→        assert_eq!(resp.code.as_deref(), Some("file_not_found"));
+   763→   763→    }
+   764→   764→
+   765→   765→    #[test]
+   766→   766→    fn multiple_commands_in_sequence() {
+   767→   767→        let responses = conversation(&[
+   768→   768→            r#"{"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze"]}"#,
+   769→   769→            r#"{"protocol_version":"0.1.0","id":2,"command":"shutdown"}"#,
+   770→   770→        ]);
+   771→   771→        assert_eq!(responses.len(), 2);
+   772→   772→        assert_eq!(responses[0].status, "handshake");
+   773→   773→        assert_eq!(responses[1].status, "shutdown_ack");
+   774→   774→    }
+   775→   775→
+   776→   776→    #[test]
+   777→   777→    fn shutdown_stops_processing_further_commands() {
+   778→   778→        let responses = conversation(&[
+   779→   779→            r#"{"protocol_version":"0.1.0","id":1,"command":"shutdown"}"#,
+   780→   780→            r#"{"protocol_version":"0.1.0","id":2,"command":"handshake","capabilities":[]}"#,
+   781→   781→        ]);
+   782→   782→        assert_eq!(responses.len(), 1, "shutdown should stop processing");
+   783→   783→    }
+   784→   784→
+   785→   785→    #[test]
+   786→   786→    fn empty_lines_are_skipped() {
+   787→   787→        let input = "\n\n{\"protocol_version\":\"0.1.0\",\"id\":1,\"command\":\"shutdown\"}\n\n";
+   788→   788→        let mut output = Vec::new();
+   789→   789→        let handler = Handler::new(
+   790→   790→            input.as_bytes(),
+   791→   791→            &mut output,
+   792→   792→            io::sink(),
+   793→   793→        );
+   794→   794→        handler.run().expect("handler.run");
+   795→   795→        let output_str = String::from_utf8(output).expect("valid utf8");
+   796→   796→        let lines: Vec<&str> = output_str.lines().filter(|l| !l.is_empty()).collect();
+   797→   797→        assert_eq!(lines.len(), 1);
+   798→   798→    }
+   799→   799→
+   800→   800→    #[test]
+   801→   801→    fn debug_output_goes_to_log() {
+   802→   802→        let input = r#"{"protocol_version":"0.1.0","id":1,"command":"shutdown"}"#.to_string() + "\n";
+   803→   803→        let mut output = Vec::new();
+   804→   804→        let mut log = Vec::new();
+   805→   805→        let handler = Handler::with_log_level(
+   806→   806→            input.as_bytes(),
+   807→   807→            &mut output,
+   808→   808→            &mut log,
+   809→   809→            FrontendLogLevel::Trace,
+   810→   810→        );
+   811→   811→        handler.run().expect("handler.run");
+   812→   812→        let log_str = String::from_utf8(log).expect("valid utf8");
+   813→   813→        assert!(log_str.contains("[shatter-rust]"), "log missing prefix: {log_str}");
+   814→   814→        assert!(log_str.contains("Shutting down"), "log missing shutdown message: {log_str}");
+   815→   815→    }
+   816→   816→
+   817→   817→    #[test]
+   818→   818→    fn log_level_filtering_suppresses_trace_at_info() {
+   819→   819→        let input = r#"{"protocol_version":"0.1.0","id":1,"command":"shutdown"}"#.to_string() + "\n";
+   820→   820→        let mut output = Vec::new();
+   821→   821→        let mut log = Vec::new();
+   822→   822→        let handler = Handler::with_log_level(
+   823→   823→            input.as_bytes(),
+   824→   824→            &mut output,
+   825→   825→            &mut log,
+   826→   826→            FrontendLogLevel::Info,
+   827→   827→        );
+   828→   828→        handler.run().expect("handler.run");
+   829→   829→        let log_str = String::from_utf8(log).expect("valid utf8");
+   830→   830→        // At INFO level, protocol messages (Received/Sent/Shutting down) should be suppressed
+   831→   831→        assert!(!log_str.contains("Received:"), "trace messages should be suppressed at info: {log_str}");
+   832→   832→        assert!(!log_str.contains("Sent:"), "trace messages should be suppressed at info: {log_str}");
+   833→   833→    }
+   834→   834→
+   835→   835→    #[test]
+   836→   836→    fn log_level_filtering_shows_debug_at_debug() {
+   837→   837→        let input = r#"{"protocol_version":"0.1.0","id":1,"command":"shutdown"}"#.to_string() + "\n";
+   838→   838→        let mut output = Vec::new();
+   839→   839→        let mut log = Vec::new();
+   840→   840→        let handler = Handler::with_log_level(
+   841→   841→            input.as_bytes(),
+   842→   842→            &mut output,
+   843→   843→            &mut log,
+   844→   844→            FrontendLogLevel::Debug,
+   845→   845→        );
+   846→   846→        handler.run().expect("handler.run");
+   847→   847→        let log_str = String::from_utf8(log).expect("valid utf8");
+   848→   848→        // At DEBUG level, lifecycle messages should appear but not protocol details
+   849→   849→        assert!(log_str.contains("Starting Rust frontend"), "debug messages should appear at debug: {log_str}");
+   850→   850→        assert!(log_str.contains("Shutting down"), "debug messages should appear at debug: {log_str}");
+   851→   851→        assert!(!log_str.contains("Received:"), "trace messages should be suppressed at debug: {log_str}");
+   852→   852→    }
+   853→   853→
+   854→   854→    // -- Setup command tests --
+   855→   855→
+   856→   856→    #[test]
+   857→   857→    fn setup_without_file_returns_error() {
+   858→   858→        let resp = send_recv(
+   859→   859→            r#"{"protocol_version":"0.1.0","id":10,"command":"setup","scope":"myFunc","level":"function"}"#,
+   860→   860→        );
+   861→   861→        assert_eq!(resp.status, "error");
+   862→   862→        assert_eq!(resp.code.as_deref(), Some("invalid_request"));
+   863→   863→        assert!(resp.message.as_deref().unwrap_or("").contains("file"));
+   864→   864→    }
+   865→   865→
+   866→   866→    #[test]
+   867→   867→    fn setup_without_level_returns_error() {
+   868→   868→        let resp = send_recv(
+   869→   869→            r#"{"protocol_version":"0.1.0","id":10,"command":"setup","file":"./setup.rs","scope":"myFunc"}"#,
+   870→   870→        );
+   871→   871→        assert_eq!(resp.status, "error");
+   872→   872→        assert_eq!(resp.code.as_deref(), Some("invalid_request"));
+   873→   873→        assert!(resp.message.as_deref().unwrap_or("").contains("level"));
+   874→   874→    }
+   875→   875→
+   876→   876→    #[test]
+   877→   877→    fn setup_without_scope_returns_error() {
+   878→   878→        let resp = send_recv(
+   879→   879→            r#"{"protocol_version":"0.1.0","id":10,"command":"setup","file":"./setup.rs","level":"function"}"#,
+   880→   880→        );
+   881→   881→        assert_eq!(resp.status, "error");
+   882→   882→        assert_eq!(resp.code.as_deref(), Some("invalid_request"));
+   883→   883→        assert!(resp.message.as_deref().unwrap_or("").contains("scope"));
+   884→   884→    }
+   885→   885→
+   886→   886→    #[test]
+   887→   887→    fn setup_with_nonexistent_file_returns_file_not_found() {
+   888→   888→        let resp = send_recv(
+   889→   889→            r#"{"protocol_version":"0.1.0","id":10,"command":"setup","file":"./nonexistent_setup.rs","scope":"myFunc","level":"function"}"#,
+   890→   890→        );
+   891→   891→        assert_eq!(resp.status, "error");
+   892→   892→        assert_eq!(resp.code.as_deref(), Some("file_not_found"));
+   893→   893→    }
+   894→   894→
+   895→   895→    // -- Teardown command tests --
+   896→   896→
+   897→   897→    #[test]
+   898→   898→    fn teardown_without_level_returns_error() {
+   899→   899→        let resp = send_recv(
+   900→   900→            r#"{"protocol_version":"0.1.0","id":11,"command":"teardown","scope":"myFunc"}"#,
+   901→   901→        );
+   902→   902→        assert_eq!(resp.status, "error");
+   903→   903→        assert_eq!(resp.code.as_deref(), Some("invalid_request"));
+   904→   904→        assert!(resp.message.as_deref().unwrap_or("").contains("level"));
+   905→   905→    }
+   906→   906→
+   907→   907→    #[test]
+   908→   908→    fn teardown_without_scope_returns_error() {
+   909→   909→        let resp = send_recv(
+   910→   910→            r#"{"protocol_version":"0.1.0","id":11,"command":"teardown","level":"function"}"#,
+   911→   911→        );
+   912→   912→        assert_eq!(resp.status, "error");
+   913→   913→        assert_eq!(resp.code.as_deref(), Some("invalid_request"));
+   914→   914→        assert!(resp.message.as_deref().unwrap_or("").contains("scope"));
+   915→   915→    }
+   916→   916→
+   917→   917→    #[test]
+   918→   918→    fn teardown_with_valid_fields_returns_success() {
+   919→   919→        let resp = send_recv(
+   920→   920→            r#"{"protocol_version":"0.1.0","id":11,"command":"teardown","scope":"myFunc","level":"function"}"#,
+   921→   921→        );
+   922→   922→        assert_eq!(resp.status, "teardown");
+   923→   923→        assert_eq!(resp.id, 11);
+   924→   924→    }
+   925→   925→
+   926→   926→    // -- Generate command tests --
+   927→   927→
+   928→   928→    #[test]
+   929→   929→    fn generate_without_file_returns_error() {
+   930→   930→        let resp = send_recv(
+   931→   931→            r#"{"protocol_version":"0.1.0","id":13,"command":"generate","name":"User","kind":"type_name"}"#,
+   932→   932→        );
+   933→   933→        assert_eq!(resp.status, "error");
+   934→   934→        assert_eq!(resp.code.as_deref(), Some("invalid_request"));
+   935→   935→        assert!(resp.message.as_deref().unwrap_or("").contains("file"));
+   936→   936→    }
+   937→   937→
+   938→   938→    #[test]
+   939→   939→    fn generate_without_name_returns_error() {
+   940→   940→        let resp = send_recv(
+   941→   941→            r#"{"protocol_version":"0.1.0","id":13,"command":"generate","file":"./gen.ts","kind":"type_name"}"#,
+   942→   942→        );
+   943→   943→        assert_eq!(resp.status, "error");
+   944→   944→        assert_eq!(resp.code.as_deref(), Some("invalid_request"));
+   945→   945→        assert!(resp.message.as_deref().unwrap_or("").contains("name"));
+   946→   946→    }
+   947→   947→
+   948→   948→    #[test]
+   949→   949→    fn generate_non_wasm_file_returns_unsupported() {
+   950→   950→        let resp = send_recv(
+   951→   951→            r#"{"protocol_version":"0.1.0","id":14,"command":"generate","file":"./gen.ts","name":"User","kind":"type_name"}"#,
+   952→   952→        );
+   953→   953→        assert_eq!(resp.status, "error");
+   954→   954→        assert_eq!(resp.code.as_deref(), Some("invalid_request"));
+   955→   955→        assert!(resp.message.as_deref().unwrap_or("").contains("unsupported generator file type"));
+   956→   956→    }
+   957→   957→
+   958→   958→    #[test]
+   959→   959→    fn generate_wasm_missing_file_returns_error() {
+   960→   960→        let resp = send_recv(
+   961→   961→            r#"{"protocol_version":"0.1.0","id":15,"command":"generate","file":"/nonexistent/gen.wasm","name":"gen","kind":"type_name"}"#,
+   962→   962→        );
+   963→   963→        assert_eq!(resp.status, "error");
+   964→   964→        assert_eq!(resp.code.as_deref(), Some("internal_error"));
+   965→   965→        assert!(resp.message.as_deref().unwrap_or("").contains("not found"));
+   966→   966→    }
+   967→   967→
+   968→   968→    // -- Integration: new commands in conversation --
+   969→   969→
+   970→   970→    #[test]
+   971→   971→    fn setup_teardown_generate_in_conversation() {
+   972→   972→        let responses = conversation(&[
+   973→   973→            r#"{"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze"]}"#,
+   974→   974→            r#"{"protocol_version":"0.1.0","id":2,"command":"setup","file":"./nonexistent_setup.rs","scope":"fn1","level":"function"}"#,
+   975→   975→            r#"{"protocol_version":"0.1.0","id":3,"command":"teardown","scope":"fn1","level":"function"}"#,
+   976→   976→            r#"{"protocol_version":"0.1.0","id":4,"command":"generate","file":"./gen.ts","name":"User","kind":"type_name"}"#,
+   977→   977→            r#"{"protocol_version":"0.1.0","id":5,"command":"shutdown"}"#,
+   978→   978→        ]);
+   979→   979→        assert_eq!(responses.len(), 5);
+   980→   980→        assert_eq!(responses[0].status, "handshake");
+   981→   981→        assert_eq!(responses[0].id, 1);
+   982→   982→        // setup with nonexistent file returns file_not_found error
+   983→   983→        assert_eq!(responses[1].status, "error");
+   984→   984→        assert_eq!(responses[1].code.as_deref(), Some("file_not_found"));
+   985→   985→        // teardown succeeds (no-op for now)
+   986→   986→        assert_eq!(responses[2].status, "teardown");
+   987→   987→        assert_eq!(responses[2].id, 3);
+   988→   988→        // generate with non-wasm file returns "unsupported generator file type"
+   989→   989→        assert_eq!(responses[3].status, "error");
+   990→   990→        assert_eq!(responses[3].code.as_deref(), Some("invalid_request"));
+   991→   991→        assert_eq!(responses[4].status, "shutdown_ack");
+   992→   992→        assert_eq!(responses[4].id, 5);
+   993→   993→    }
+   994→   994→
+   995→   995→    #[test]
+   996→   996→    fn new_commands_echo_correct_request_ids() {
+   997→   997→        let responses = conversation(&[
+   998→   998→            r#"{"protocol_version":"0.1.0","id":100,"command":"setup","file":"./nonexistent.rs","scope":"f","level":"function"}"#,
+   999→   999→            r#"{"protocol_version":"0.1.0","id":200,"command":"teardown","scope":"f","level":"function"}"#,
+  1000→  1000→            r#"{"protocol_version":"0.1.0","id":300,"command":"generate","file":"./g.ts","name":"T","kind":"type_name"}"#,
+  1001→  1001→        ]);
+  1002→  1002→        assert_eq!(responses[0].id, 100);
+  1003→  1003→        assert_eq!(responses[1].id, 200);
+  1004→  1004→        assert_eq!(responses[2].id, 300);
+  1005→  1005→    }
+  1006→  1006→
+  1007→  1007→    // -- Execute file fallback tests (str-rv0k) --
+  1008→  1008→
+  1009→  1009→    #[test]
+  1010→  1010→    fn execute_without_file_falls_back_to_last_analyzed_file() {
+  1011→  1011→        // The core never sends `file` in Execute — the frontend must remember it
+  1012→  1012→        // from the prior Analyze request.
+  1013→  1013→        let dir = std::env::temp_dir().join("shatter-test-rv0k-analyze");
+  1014→  1014→        std::fs::create_dir_all(&dir).unwrap();
+  1015→  1015→        let file = dir.join("simple.rs");
+  1016→  1016→        std::fs::write(&file, "pub fn add(a: i32, b: i32) -> i32 { a + b }").unwrap();
+  1017→  1017→
+  1018→  1018→        let file_path = file.to_string_lossy().replace('\\', "\\\\");
+  1019→  1019→        let responses = conversation(&[
+  1020→  1020→            // 1. Analyze sets last_file
+  1021→  1021→            &format!(
+  1022→  1022→                r#"{{"protocol_version":"0.1.0","id":1,"command":"analyze","file":"{file_path}"}}"#
+  1023→  1023→            ),
+  1024→  1024→            // 2. Execute without file field — should use last_file, not return invalid_request
+  1025→  1025→            r#"{"protocol_version":"0.1.0","id":2,"command":"execute","function":"add","inputs":[1,2],"mocks":[]}"#,
+  1026→  1026→        ]);
+  1027→  1027→
+  1028→  1028→        assert_eq!(responses[0].status, "analyze", "analyze failed: {:?}", responses[0].message);
+  1029→  1029→        // The execute should NOT fail with "requires a file path"
+  1030→  1030→        assert_ne!(
+  1031→  1031→            responses[1].code.as_deref(),
+  1032→  1032→            Some("invalid_request"),
+  1033→  1033→            "execute should fall back to last_file from analyze, got: {:?}",
+  1034→  1034→            responses[1].message,
+  1035→  1035→        );
+  1036→  1036→
+  1037→  1037→        let _ = std::fs::remove_dir_all(&dir);
+  1038→  1038→    }
+  1039→  1039→
+  1040→  1040→    #[test]
+  1041→  1041→    fn execute_without_file_falls_back_to_last_instrumented_file() {
+  1042→  1042→        let dir = std::env::temp_dir().join("shatter-test-rv0k-instrument");
+  1043→  1043→        std::fs::create_dir_all(&dir).unwrap();
+  1044→  1044→        let file = dir.join("branchy.rs");
+  1045→  1045→        std::fs::write(&file, "pub fn check(x: i32) -> bool { if x > 0 { true } else { false } }").unwrap();
+  1046→  1046→
+  1047→  1047→        let file_path = file.to_string_lossy().replace('\\', "\\\\");
+  1048→  1048→        let responses = conversation(&[
+  1049→  1049→            &format!(
+  1050→  1050→                r#"{{"protocol_version":"0.1.0","id":1,"command":"instrument","file":"{file_path}"}}"#
+  1051→  1051→            ),
+  1052→  1052→            r#"{"protocol_version":"0.1.0","id":2,"command":"execute","function":"check","inputs":[42],"mocks":[]}"#,
+  1053→  1053→        ]);
+  1054→  1054→
+  1055→  1055→        assert_eq!(responses[0].status, "instrument", "instrument failed: {:?}", responses[0].message);
+  1056→  1056→        assert_ne!(
+  1057→  1057→            responses[1].code.as_deref(),
+  1058→  1058→            Some("invalid_request"),
+  1059→  1059→            "execute should fall back to last_file from instrument, got: {:?}",
+  1060→  1060→            responses[1].message,
+  1061→  1061→        );
+  1062→  1062→
+  1063→  1063→        let _ = std::fs::remove_dir_all(&dir);
+  1064→  1064→    }
+  1065→  1065→
+  1066→  1066→    #[test]
+  1067→  1067→    fn execute_without_file_and_no_prior_context_still_errors() {
+  1068→  1068→        // With no prior analyze/instrument, execute without file should still error
+  1069→  1069→        let resp = send_recv(
+  1070→  1070→            r#"{"protocol_version":"0.1.0","id":1,"command":"execute","function":"f","inputs":[],"mocks":[]}"#,
+  1071→  1071→        );
+  1072→  1072→        assert_eq!(resp.status, "error");
+  1073→  1073→        assert_eq!(resp.code.as_deref(), Some("invalid_request"));
+  1074→  1074→        assert!(resp.message.as_deref().unwrap_or("").contains("file"));
+  1075→  1075→    }
+  1076→  1076→
+  1077→  1077→    // -- Exec timeout tests --
+  1078→  1078→    // SAFETY: env var mutations in tests are inherently racy but acceptable for unit tests.
+  1079→  1079→    // These tests exercise exec_timeout_from_env() which only reads SHATTER_EXEC_TIMEOUT.
+  1080→  1080→
+  1081→  1081→    #[test]
+  1082→  1082→    fn exec_timeout_default_is_5000ms() {
+  1083→  1083→        unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
+  1084→  1084→        assert_eq!(exec_timeout_from_env(), DEFAULT_EXEC_TIMEOUT_MS);
+  1085→  1085→    }
+  1086→  1086→
+  1087→  1087→    #[test]
+  1088→  1088→    fn exec_timeout_reads_env_var() {
+  1089→  1089→        unsafe { std::env::set_var("SHATTER_EXEC_TIMEOUT", "3") };
+  1090→  1090→        let result = exec_timeout_from_env();
+  1091→  1091→        unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
+  1092→  1092→        assert_eq!(result, 3000);
+  1093→  1093→    }
+  1094→  1094→
+  1095→  1095→    #[test]
+  1096→  1096→    fn exec_timeout_reads_fractional_seconds() {
+  1097→  1097→        unsafe { std::env::set_var("SHATTER_EXEC_TIMEOUT", "2.5") };
+  1098→  1098→        let result = exec_timeout_from_env();
+  1099→  1099→        unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
+  1100→  1100→        assert_eq!(result, 2500);
+  1101→  1101→    }
+  1102→  1102→
+  1103→  1103→    #[test]
+  1104→  1104→    fn exec_timeout_ignores_invalid() {
+  1105→  1105→        unsafe { std::env::set_var("SHATTER_EXEC_TIMEOUT", "not-a-number") };
+  1106→  1106→        let result = exec_timeout_from_env();
+  1107→  1107→        unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
+  1108→  1108→        assert_eq!(result, DEFAULT_EXEC_TIMEOUT_MS);
+  1109→  1109→    }
+  1110→  1110→
+  1111→  1111→    #[test]
+  1112→  1112→    fn exec_timeout_ignores_zero() {
+  1113→  1113→        unsafe { std::env::set_var("SHATTER_EXEC_TIMEOUT", "0") };
+  1114→  1114→        let result = exec_timeout_from_env();
+  1115→  1115→        unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
+  1116→  1116→        assert_eq!(result, DEFAULT_EXEC_TIMEOUT_MS);
+  1117→  1117→    }
+  1118→  1118→
+  1119→  1119→}
+  1120→  1120→

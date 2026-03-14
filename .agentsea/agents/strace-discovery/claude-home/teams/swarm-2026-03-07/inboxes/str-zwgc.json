@@ -1,0 +1,75 @@
+[
+  {
+    "from": "team-lead",
+    "text": "You are working on beads issue str-zwgc: \"Test impact analysis: coverage-based selective test execution\"\n\n## Issue Details\nImplement test impact analysis (TIA) to accelerate local development by running only the tests affected by changed files. The system maintains a coverage map recording which tests touch which source files, then uses that map to select the minimal test set for a given set of changes.\n\n**Coverage map** stored at `.shatter/test-markers/coverage-map.yaml`:\n- Forward map: test → {file: blob_hash} (update direction)\n- Reverse map: file → [tests] (query direction, derived from forward)\n- Blob hashes via `git hash-object` for content-addressable comparison\n\n**Query flow**: `git diff --name-only` → changed files → reverse lookup → union of affected tests → format runner-specific filter\n\n**Update flow**: after test run with coverage instrumentation, parse coverage output → update forward map entries for tests that ran → rebuild reverse map. Atomic write via temp file + rename.\n\n**Staleness tracking**: each file entry records the blob hash at recording time. Changed hash = stale = must re-run.\n\n**Flags**:\n- `shatter test` — run only affected tests based on coverage map\n- `shatter test --all` — run all tests, bypassing TIA\n- `shatter test --record` — force coverage recording to refresh the map\n- `shatter test --tier=<quick|standard|full|e2e>` — run specified tier, write marker on success\n\n**Runner integration**: Rust (cargo-nextest), TypeScript (Vitest), Go (go test)\n\n## WORKTREE SETUP — RUN FIRST\nBefore doing anything else, create and enter an isolated worktree:\n```bash\nREPO_ROOT=\"$(git rev-parse --show-toplevel)\"\nBRANCH_NAME=\"str-zwgc\"\nWORKTREE_DIR=\"$REPO_ROOT/.claude/worktrees/$BRANCH_NAME\"\n\nif [ -d \"$WORKTREE_DIR\" ]; then\n  echo \"Worktree already exists, reusing\"\nelse\n  git worktree add \"$WORKTREE_DIR\" -b \"$BRANCH_NAME\"\nfi\n\ncd \"$WORKTREE_DIR\"\n```\nVerify you are in the right place:\n```bash\necho \"CWD: $(pwd)\"\necho \"Branch: $(git branch --show-current)\"\necho \"$(pwd)\" | grep -q '\\.claude/worktrees/' && echo \"WORKTREE VERIFIED\" || echo \"FATAL: NOT in a worktree\"\n```\nIf verification fails, STOP and report the error to the team lead.\n\nALL subsequent commands must run from this worktree directory.\nNEVER cd back to the main repo directory. Commit and push ONLY on your worktree branch — never touch main.\n\n## Instructions\n1. Follow CLAUDE.md and AGENTS.md conventions\n2. Read shatter-cli/src/main.rs to understand how CLI subcommands are structured\n3. Implement the `shatter test` subcommand with the flags described above\n4. Implement the coverage map data structures and YAML serialization\n5. Implement query flow (git diff → changed files → affected tests)\n6. Implement update flow (coverage output → map update)\n7. Implement runner integration for at least Rust (cargo-nextest or cargo test)\n8. Add the tiered test marker system\n9. Add tests\n10. Update demo/walkthrough.sh if applicable\n11. Run quality gates: `cargo test` and `cargo clippy -- -D warnings`\n12. Run `/pre-completion` before reporting done — include its output in your completion message\n13. Push your branch: `git push -u origin HEAD`\n\nWhen done, mark task #8 as completed via TaskUpdate and send a message to the team lead.",
+    "timestamp": "2026-03-07T23:20:51.392Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1772925689183-beef7fm\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"find /home/ketan/project/shatter/.shatter -type f -exec head -5 {} \\\\; | head -50\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-07T23:30:17.811Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1772926336927-jn7vllr\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"ls /home/ketan/project/shatter/.claude/worktrees/str-zwgc/shatter-core/src/ | grep -E \\\"test_impact|test_runner|tia\\\" 2>/dev/null; echo \\\"---\\\"; ls /home/ketan/project/shatter/.claude/worktrees/str-zwgc/shatter-cli/src/ 2>/dev/null\",\"description\":\"Check if TIA work already started in str-zwgc worktree\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-07T23:40:04.322Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"plan_approval_response\",\"requestId\":\"plan_approval-1772926982644@str-zwgc@swarm-2026-03-07\",\"approved\":true,\"timestamp\":\"2026-03-07T23:43:02.954Z\",\"permissionMode\":\"acceptEdits\"}",
+    "timestamp": "2026-03-07T23:43:02.954Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1772926990774-s9oms6x\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"REPO_ROOT=\\\"$(git rev-parse --show-toplevel)\\\" && BRANCH_NAME=\\\"str-zwgc\\\" && WORKTREE_DIR=\\\"$REPO_ROOT/.claude/worktrees/$BRANCH_NAME\\\" && if [ -d \\\"$WORKTREE_DIR\\\" ]; then echo \\\"Worktree already exists, reusing\\\"; else git worktree add \\\"$WORKTREE_DIR\\\" -b \\\"$BRANCH_NAME\\\"; fi && cd \\\"$WORKTREE_DIR\\\" && echo \\\"CWD: $(pwd)\\\" && echo \\\"Branch: $(git branch --show-current)\\\" && echo \\\"$(pwd)\\\" | grep -q '\\\\.claude/worktrees/' && echo \\\"WORKTREE VERIFIED\\\" || echo \\\"FATAL: NOT in a worktree\\\"\",\"description\":\"Set up worktree for str-zwgc branch\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-07T23:44:01.494Z",
+    "read": true
+  },
+  {
+    "from": "str-zwgc",
+    "text": "{\"type\":\"task_assignment\",\"taskId\":\"8\",\"subject\":\"str-zwgc: Test impact analysis: coverage-based selective test execution\",\"description\":\"Beads: str-zwgc. Implement test impact analysis (TIA) to accelerate local development by running only tests affected by changed files. Coverage map stored at .shatter/test-markers/coverage-map.yaml. Forward/reverse maps, blob hashes, staleness tracking, cold start fallback. CLI: shatter test [--all|--record|--tier=<tier>]. Runner integration for Rust (cargo-nextest), TypeScript (Vitest), Go (go test). Run /pre-completion before reporting done.\",\"assignedBy\":\"str-zwgc\",\"timestamp\":\"2026-03-07T23:44:05.504Z\"}",
+    "timestamp": "2026-03-07T23:44:05.504Z",
+    "color": "red",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"plan_approval_response\",\"requestId\":\"plan_approval-1772926982644@str-zwgc@swarm-2026-03-07\",\"approved\":true,\"timestamp\":\"2026-03-07T23:44:07.739Z\",\"permissionMode\":\"acceptEdits\"}",
+    "timestamp": "2026-03-07T23:44:07.739Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1772927528650-zk0whbj\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"git add shatter-core/src/test_impact.rs shatter-core/src/test_runner.rs shatter-core/src/lib.rs shatter-core/src/scm.rs shatter-cli/src/main.rs && git commit -m \\\"$(cat <<'EOF'\\nstr-zwgc: implement test impact analysis with coverage-based selective execution\\n\\nAdd `shatter test` CLI command with TIA (test impact analysis):\\n- Coverage map (test→files with blob hashes) stored in .shatter/test-markers/\\n- Query flow: git diff → changed files → reverse lookup → affected tests\\n- Update flow: coverage instrumentation → parse output → update map\\n- Runner integration: cargo test, vitest, go test\\n- Tier system: --tier=quick|standard|full|e2e with success markers\\n- Flags: --all, --record, --dry-run, --include-untracked, --base\\n\\nNew modules:\\n- shatter-core/src/test_impact.rs: coverage map data model, persistence, query\\n- shatter-core/src/test_runner.rs: runner trait, tier execution, coverage parsers\\n\\nTests: 22 unit + 4 property tests (YAML roundtrip, reverse index invariants,\\nquery monotonicity, deduplication)\\n\\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\\nEOF\\n)\\\"\",\"description\":\"Commit all changes\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-08T00:15:51.063Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1772928954909-w7zlgh2\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"git push -u origin HEAD 2>&1\",\"description\":\"Push branch to origin\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-08T00:15:55.849Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"shutdown_request\",\"requestId\":\"shutdown-1772941691501@str-zwgc\",\"from\":\"team-lead\",\"reason\":\"Merged and closed. Thank you.\",\"timestamp\":\"2026-03-08T03:48:11.501Z\"}",
+    "timestamp": "2026-03-08T03:48:11.501Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"shutdown_request\",\"requestId\":\"shutdown-1772946095202@str-zwgc\",\"from\":\"team-lead\",\"reason\":\"All done. Please shut down.\",\"timestamp\":\"2026-03-08T05:01:35.202Z\"}",
+    "timestamp": "2026-03-08T05:01:35.202Z",
+    "read": false
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"shutdown_request\",\"requestId\":\"shutdown-1772949846166@str-zwgc\",\"from\":\"team-lead\",\"reason\":\"Please shut down now.\",\"timestamp\":\"2026-03-08T06:04:06.166Z\"}",
+    "timestamp": "2026-03-08T06:04:06.166Z",
+    "read": false
+  }
+]

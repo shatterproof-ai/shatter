@@ -1,0 +1,630 @@
+157:    Explore {
+158-        / Targets to explore: <file>:<function> for a single function, or just
+159-        /// <file> to explore all exported functions.
+160-        /// The file extension determines the language frontend (.ts = TypeScript, .go = Go).
+161-        #[arg(required = true)]
+162-        targets: Vec<String>,
+163-
+164-        /// Maximum number of iterations for the concolic loop.
+165-        #[arg(long, default_value_t = 100)]
+166-        max_iterations: u32,
+167-
+168-        /// Timeout in seconds for the entire exploration.
+169-        #[arg(long, default_value_t = 60)]
+170-        timeout: u64,
+171-
+172-        /// Per-function exploration wall-clock timeout in seconds. If both
+173-        /// --max-iterations and --timeout-explore are set, whichever triggers
+174-        /// first stops exploration for that function.
+175-        #[arg(long)]
+176-        timeout_explore: Option<f64>,
+177-
+178-        /// Path to a scope configuration YAML file (shatter.scope.yaml).
+179-        #[arg(long)]
+180-        scope: Option<PathBuf>,
+181-
+182-        /// Only run the analyze phase (skip exploration).
+183-        #[arg(long)]
+184-        analyze_only: bool,
+185-
+186-        /// Show behavior clusters after exploration.
+187-        #[arg(long)]
+188-        show_clusters: bool,
+189-
+190-        /// Directory for caching behavior maps across runs.
+191-        /// Falls back to SHATTER_CACHE_DIR env var, then `.shatter/cache/`.
+192-        #[arg(long, env = "SHATTER_CACHE_DIR")]
+193-        cache_dir: Option<PathBuf>,
+194-
+195-        /// Disable behavior map caching entirely.
+196-        #[arg(long)]
+197-        no_cache: bool,
+--
+3349:        CliCommand::Explore {
+3350-            targets,
+3351-            max_iterations,
+3352-            timeout,
+3353-            scope,
+3354-            analyze_only,
+3355-            show_clusters,
+3356-            cache_dir,
+3357-            no_cache,
+3358-            request_timeout,
+3359-            exec_timeout,
+3360-            build_timeout,
+3361-            inputs,
+3362-            config_path,
+3363-            output,
+3364-            spec,
+3365-            spec_json,
+3366-            invariants,
+3367-            no_boundary_values: _,
+3368-            concolic,
+3369-            genetic: _,
+3370-            genetic_population: _,
+3371-            genetic_generations: _,
+3372-            genetic_timeout: _,
+3373-            solver_timeout,
+3374-            memory_limit,
+3375-            clean,
+3376-            dry_run,
+3377-            loop_buckets,
+3378-            timeout_explore,
+3379-            seeds_dir,
+3380-            no_seeds,
+3381-            setup_timeout,
+3382-            fail_on_setup_error: _,
+3383-        } => {
+3384-            // Set SHATTER_SETUP_TIMEOUT env var for frontends if --setup-timeout provided.
+3385-            if let Some(secs) = setup_timeout {
+3386-                / Safety: CLI is single-threaded at this point (before spawning frontends).
+3387-                unsafe {
+3388-                    std::env::set_var(
+3389-                        shatter_core::setup_manager::SETUP_TIMEOUT_ENV_VAR,
+--
+4488:            CliCommand::Explore {
+4489-                targets,
+4490-                max_iterations,
+4491-                timeout,
+4492-                scope,
+4493-                analyze_only,
+4494-                show_clusters,
+4495-                cache_dir,
+4496-                no_cache,
+4497-                request_timeout,
+4498-                inputs,
+4499-                config_path,
+4500-                ..
+4501-            } => {
+4502-                assert_eq!(targets, vec!["test.ts:myFunc"]);
+4503-                assert_eq!(max_iterations, 100);
+4504-                assert_eq!(timeout, 60);
+4505-                assert!(scope.is_none());
+4506-                assert!(!analyze_only);
+4507-                assert!(!show_clusters);
+4508-                assert!(cache_dir.is_none());
+4509-                assert!(!no_cache);
+4510-                assert_eq!(request_timeout, 30);
+4511-                assert!(inputs.is_none());
+4512-                assert!(config_path.is_none());
+4513-            }
+4514-            _ => panic!("expected Explore command"),
+4515-        }
+4516-    }
+4517-
+4518-    #[test]
+4519-    fn cli_parses_explore_with_scope_flag() {
+4520-        let cli = Cli::parse_from([
+4521-            "shatter",
+4522-            "explore",
+4523-            "--scope", "shatter.scope.yaml",
+4524-            "test.ts:myFunc",
+4525-        ]);
+4526-        match cli.command {
+4527:            CliCommand::Explore { scope, .. } => {
+4528-                assert_eq!(scope, Some(PathBuf::from("shatter.scope.yaml")));
+4529-            }
+4530-            _ => panic!("expected Explore command"),
+4531-        }
+4532-    }
+4533-
+4534-    #[test]
+4535-    fn cli_parses_explore_with_flags() {
+4536-        let cli = Cli::parse_from([
+4537-            "shatter",
+4538-            "explore",
+4539-            "--max-iterations", "50",
+4540-            "--timeout", "120",
+4541-            "--analyze-only",
+4542-            "a.ts:fn1",
+4543-            "b.go:Fn2",
+4544-        ]);
+4545-        match cli.command {
+4546:            CliCommand::Explore {
+4547-                targets,
+4548-                max_iterations,
+4549-                timeout,
+4550-                scope,
+4551-                analyze_only,
+4552-                show_clusters,
+4553-                cache_dir,
+4554-                no_cache,
+4555-                request_timeout,
+4556-                inputs,
+4557-                config_path,
+4558-                ..
+4559-            } => {
+4560-                assert_eq!(targets, vec!["a.ts:fn1", "b.go:Fn2"]);
+4561-                assert_eq!(max_iterations, 50);
+4562-                assert_eq!(timeout, 120);
+4563-                assert!(scope.is_none());
+4564-                assert!(analyze_only);
+4565-                assert!(!show_clusters);
+4566-                assert!(cache_dir.is_none());
+4567-                assert!(!no_cache);
+4568-                assert_eq!(request_timeout, 30);
+4569-                assert!(inputs.is_none());
+4570-                assert!(config_path.is_none());
+4571-            }
+4572-            _ => panic!("expected Explore command"),
+4573-        }
+4574-    }
+4575-
+4576-    #[test]
+4577-    fn cli_parses_cache_dir_flag() {
+4578-        let cli = Cli::parse_from([
+4579-            "shatter",
+4580-            "explore",
+4581-            "--cache-dir", "/tmp/foo",
+4582-            "test.ts:myFunc",
+4583-        ]);
+4584-        match cli.command {
+4585:            CliCommand::Explore { cache_dir, .. } => {
+4586-                assert_eq!(cache_dir, Some(PathBuf::from("/tmp/foo")));
+4587-            }
+4588-            _ => panic!("expected Explore command"),
+4589-        }
+4590-    }
+4591-
+4592-    #[test]
+4593-    fn cli_cache_dir_defaults_to_none() {
+4594-        let cli = Cli::parse_from([
+4595-            "shatter",
+4596-            "explore",
+4597-            "test.ts:myFunc",
+4598-        ]);
+4599-        match cli.command {
+4600:            CliCommand::Explore { cache_dir, .. } => {
+4601-                assert!(cache_dir.is_none());
+4602-            }
+4603-            _ => panic!("expected Explore command"),
+4604-        }
+4605-    }
+4606-
+4607-    #[test]
+4608-    fn cli_parses_explore_with_request_timeout() {
+4609-        let cli = Cli::parse_from([
+4610-            "shatter",
+4611-            "explore",
+4612-            "--request-timeout", "10",
+4613-            "test.ts:myFunc",
+4614-        ]);
+4615-        match cli.command {
+4616:            CliCommand::Explore { request_timeout, timeout, .. } => {
+4617-                assert_eq!(request_timeout, 10);
+4618-                assert_eq!(timeout, 60);
+4619-            }
+4620-            _ => panic!("expected Explore command"),
+4621-        }
+4622-    }
+4623-
+4624-    #[test]
+4625-    fn cli_parses_explore_with_inputs_flag() {
+4626-        let cli = Cli::parse_from([
+4627-            "shatter",
+4628-            "explore",
+4629-            "--inputs", "candidates.json",
+4630-            "test.ts:myFunc",
+4631-        ]);
+4632-        match cli.command {
+4633:            CliCommand::Explore { inputs, config_path, .. } => {
+4634-                assert_eq!(inputs, Some(PathBuf::from("candidates.json")));
+4635-                assert!(config_path.is_none());
+4636-            }
+4637-            _ => panic!("expected Explore command"),
+4638-        }
+4639-    }
+4640-
+4641-    #[test]
+4642-    fn cli_parses_explore_with_config_flag() {
+4643-        let cli = Cli::parse_from([
+4644-            "shatter",
+4645-            "explore",
+4646-            "--config", ".shatter/config.yaml",
+4647-            "test.ts:myFunc",
+4648-        ]);
+4649-        match cli.command {
+4650:            CliCommand::Explore { inputs, config_path, .. } => {
+4651-                assert!(inputs.is_none());
+4652-                assert_eq!(config_path, Some(PathBuf::from(".shatter/config.yaml")));
+4653-            }
+4654-            _ => panic!("expected Explore command"),
+4655-        }
+4656-    }
+4657-
+4658-    #[test]
+4659-    fn cli_parses_scan_with_request_timeout() {
+4660-        let cli = Cli::parse_from([
+4661-            "shatter",
+4662-            "scan",
+4663-            "--request-timeout", "15",
+4664-            "--timeout-total", "200",
+4665-            "test_dir",
+4666-        ]);
+4667-        match cli.command {
+4668-            CliCommand::Scan { request_timeout, timeout_total, .. } => {
+4669-                assert_eq!(request_timeout, 15);
+4670-                assert_eq!(timeout_total, 200);
+4671-            }
+4672-            _ => panic!("expected Scan command"),
+4673-        }
+4674-    }
+4675-
+4676-    #[test]
+4677-    fn cli_parses_export_tests_with_request_timeout() {
+4678-        let cli = Cli::parse_from([
+4679-            "shatter",
+4680-            "export-tests",
+4681-            "--request-timeout", "5",
+4682-            "test.ts:myFunc",
+4683-        ]);
+4684-        match cli.command {
+4685-            CliCommand::ExportTests { request_timeout, .. } => {
+4686-                assert_eq!(request_timeout, 5);
+4687-            }
+4688-            _ => panic!("expected ExportTests command"),
+4689-        }
+4690-    }
+--
+4719:            CliCommand::Explore { exec_timeout, build_timeout, .. } => {
+4720-                assert_eq!(exec_timeout, 20);
+4721-                assert_eq!(build_timeout, 45);
+4722-            }
+4723-            _ => panic!("expected Explore command"),
+4724-        }
+4725-    }
+4726-
+4727-    #[test]
+4728-    fn cli_explore_exec_timeout_defaults() {
+4729-        let cli = Cli::parse_from([
+4730-            "shatter",
+4731-            "explore",
+4732-            "test.go:myFunc",
+4733-        ]);
+4734-        match cli.command {
+4735:            CliCommand::Explore { exec_timeout, build_timeout, .. } => {
+4736-                assert_eq!(exec_timeout, 10);
+4737-                assert_eq!(build_timeout, 30);
+4738-            }
+4739-            _ => panic!("expected Explore command"),
+4740-        }
+4741-    }
+4742-
+4743-    #[test]
+4744-    fn cli_parses_explore_with_concolic_flag() {
+4745-        let cli = Cli::parse_from([
+4746-            "shatter",
+4747-            "explore",
+4748-            "--concolic",
+4749-            "test.ts:myFunc",
+4750-        ]);
+4751-        match cli.command {
+4752:            CliCommand::Explore { concolic, .. } => {
+4753-                assert!(concolic);
+4754-            }
+4755-            _ => panic!("expected Explore command"),
+4756-        }
+4757-    }
+4758-
+4759-    #[test]
+4760-    fn cli_concolic_defaults_to_false() {
+4761-        let cli = Cli::parse_from([
+4762-            "shatter",
+4763-            "explore",
+4764-            "test.ts:myFunc",
+4765-        ]);
+4766-        match cli.command {
+4767:            CliCommand::Explore { concolic, .. } => {
+4768-                assert!(!concolic);
+4769-            }
+4770-            _ => panic!("expected Explore command"),
+4771-        }
+4772-    }
+4773-
+4774-    #[test]
+4775-    fn cli_parses_scan_with_exec_timeout() {
+4776-        let cli = Cli::parse_from([
+4777-            "shatter",
+4778-            "scan",
+4779-            "--exec-timeout", "15",
+4780-            "test_dir",
+4781-        ]);
+4782-        match cli.command {
+4783-            CliCommand::Scan { exec_timeout, build_timeout, .. } => {
+4784-                assert_eq!(exec_timeout, 15);
+4785-                assert_eq!(build_timeout, 30);
+4786-            }
+4787-            _ => panic!("expected Scan command"),
+4788-        }
+4789-    }
+4790-
+4791-    #[test]
+4792-    fn frontend_config_passes_timeout_env_vars() {
+4793-        let mut config = FrontendConfig::new(PathBuf::from("dummy"));
+4794-        apply_frontend_env(&mut config, LogLevel::Info, 20, 45);
+4795-        let env_map: std::collections::HashMap<_, _> = config.env_vars.iter().cloned().collect();
+4796-        assert_eq!(env_map.get("SHATTER_EXEC_TIMEOUT").map(|s| s.as_str()), Some("20"));
+4797-        assert_eq!(env_map.get("SHATTER_BUILD_TIMEOUT").map(|s| s.as_str()), Some("45"));
+4798-    }
+4799-
+4800-    #[test]
+4801-    fn cli_explore_requires_at_least_one_target() {
+4802-        let result = Cli::try_parse_from(["shatter", "explore"]);
+4803-        assert!(result.is_err());
+4804-        let err = result.unwrap_err();
+4805-        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
+4806-    }
+4807-
+--
+4962:            CliCommand::Explore { no_cache, .. } => {
+4963-                assert!(no_cache);
+4964-            }
+4965-            _ => panic!("expected Explore command"),
+4966-        }
+4967-    }
+4968-
+4969-    #[test]
+4970-    fn cli_parses_scan_with_no_cache() {
+4971-        let cli = Cli::parse_from([
+4972-            "shatter",
+4973-            "scan",
+4974-            "--no-cache",
+4975-            "src/",
+4976-        ]);
+4977-        match cli.command {
+4978-            CliCommand::Scan { no_cache, .. } => {
+4979-                assert!(no_cache);
+4980-            }
+4981-            _ => panic!("expected Scan command"),
+4982-        }
+4983-    }
+4984-
+4985-    #[test]
+4986-    fn cli_no_cache_defaults_to_false_for_explore() {
+4987-        let cli = Cli::parse_from([
+4988-            "shatter",
+4989-            "explore",
+4990-            "test.ts:myFunc",
+4991-        ]);
+4992-        match cli.command {
+4993:            CliCommand::Explore { no_cache, .. } => {
+4994-                assert!(!no_cache);
+4995-            }
+4996-            _ => panic!("expected Explore command"),
+4997-        }
+4998-    }
+4999-
+5000-    #[test]
+5001-    fn cli_no_cache_defaults_to_false_for_scan() {
+5002-        let cli = Cli::parse_from([
+5003-            "shatter",
+5004-            "scan",
+5005-            "src/",
+5006-        ]);
+5007-        match cli.command {
+5008-            CliCommand::Scan { no_cache, .. } => {
+5009-                assert!(!no_cache);
+5010-            }
+5011-            _ => panic!("expected Scan command"),
+5012-        }
+5013-    }
+5014-
+5015-    #[test]
+5016-    fn cli_parses_export_tests_subcommand() {
+5017-        let cli = Cli::parse_from([
+5018-            "shatter",
+5019-            "export-tests",
+5020-            "--framework", "gotest",
+5021-            "--module-path", "examples",
+5022-            "test.go:Add",
+5023-        ]);
+5024-        match cli.command {
+5025-            CliCommand::ExportTests {
+5026-                targets,
+5027-                framework,
+5028-                module_path,
+5029-                output,
+5030-                max_iterations,
+5031-                timeout,
+5032-                scope,
+5033-                request_timeout,
+--
+5415:            CliCommand::Explore { output, .. } => {
+5416-                assert_eq!(output, Some(PathBuf::from("spec.json")));
+5417-            }
+5418-            _ => panic!("expected Explore command"),
+5419-        }
+5420-    }
+5421-
+5422-    #[test]
+5423-    fn cli_output_defaults_to_none() {
+5424-        let cli = Cli::parse_from(["shatter", "explore", "src/app.ts:foo"]);
+5425-        match cli.command {
+5426:            CliCommand::Explore { output, .. } => {
+5427-                assert!(output.is_none());
+5428-            }
+5429-            _ => panic!("expected Explore command"),
+5430-        }
+5431-    }
+5432-
+5433-    #[test]
+5434-    fn cli_parses_explore_with_genetic_flag() {
+5435-        let cli = Cli::parse_from([
+5436-            "shatter",
+5437-            "explore",
+5438-            "--genetic",
+5439-            "test.ts:myFunc",
+5440-        ]);
+5441-        match cli.command {
+5442:            CliCommand::Explore { genetic, genetic_population, genetic_generations, genetic_timeout, .. } => {
+5443-                assert!(genetic);
+5444-                assert!(genetic_population.is_none());
+5445-                assert!(genetic_generations.is_none());
+5446-                assert!(genetic_timeout.is_none());
+5447-            }
+5448-            _ => panic!("expected Explore command"),
+5449-        }
+5450-    }
+5451-
+5452-    #[test]
+5453-    fn cli_genetic_defaults_to_false() {
+5454-        let cli = Cli::parse_from([
+5455-            "shatter",
+5456-            "explore",
+5457-            "test.ts:myFunc",
+5458-        ]);
+5459-        match cli.command {
+5460:            CliCommand::Explore { genetic, .. } => {
+5461-                assert!(!genetic);
+5462-            }
+5463-            _ => panic!("expected Explore command"),
+5464-        }
+5465-    }
+5466-
+5467-    #[test]
+5468-    fn cli_parses_explore_with_genetic_options() {
+5469-        let cli = Cli::parse_from([
+5470-            "shatter",
+5471-            "explore",
+5472-            "--genetic",
+5473-            "--genetic-population", "200",
+5474-            "--genetic-generations", "500",
+5475-            "--genetic-timeout", "600",
+5476-            "test.ts:myFunc",
+5477-        ]);
+5478-        match cli.command {
+5479:            CliCommand::Explore { genetic, genetic_population, genetic_generations, genetic_timeout, .. } => {
+5480-                assert!(genetic);
+5481-                assert_eq!(genetic_population, Some(200));
+5482-                assert_eq!(genetic_generations, Some(500));
+5483-                assert_eq!(genetic_timeout, Some(600));
+5484-            }
+5485-            _ => panic!("expected Explore command"),
+5486-        }
+5487-    }
+5488-
+5489-    #[test]
+5490-    fn cli_parses_scan_with_genetic_flag() {
+5491-        let cli = Cli::parse_from([
+5492-            "shatter",
+5493-            "scan",
+5494-            "--genetic",
+5495-            "--genetic-population", "100",
+5496-            "test_dir",
+5497-        ]);
+5498-        match cli.command {
+5499-            CliCommand::Scan { genetic, genetic_population, genetic_generations, genetic_timeout, .. } => {
+5500-                assert!(genetic);
+5501-                assert_eq!(genetic_population, Some(100));
+5502-                assert!(genetic_generations.is_none());
+5503-                assert!(genetic_timeout.is_none());
+5504-            }
+5505-            _ => panic!("expected Scan command"),
+5506-        }
+5507-    }
+5508-
+5509-    #[test]
+5510-    fn cli_parses_explore_with_clean_flag() {
+5511-        let cli = Cli::parse_from([
+5512-            "shatter",
+5513-            "explore",
+5514-            "--clean",
+5515-            "test.ts:myFunc",
+5516-        ]);
+5517-        match cli.command {
+5518:            CliCommand::Explore { clean, dry_run, .. } => {
+5519-                assert!(clean);
+5520-                assert!(!dry_run);
+5521-            }
+5522-            _ => panic!("expected Explore command"),
+5523-        }
+5524-    }
+5525-
+5526-    #[test]
+5527-    fn cli_parses_explore_with_dry_run_flag() {
+5528-        let cli = Cli::parse_from([
+5529-            "shatter",
+5530-            "explore",
+5531-            "--dry-run",
+5532-            "--output", "spec.json",
+5533-            "test.ts:myFunc",
+5534-        ]);
+5535-        match cli.command {
+5536:            CliCommand::Explore { clean, dry_run, output, .. } => {
+5537-                assert!(!clean);
+5538-                assert!(dry_run);
+5539-                assert_eq!(output, Some(PathBuf::from("spec.json")));
+5540-            }
+5541-            _ => panic!("expected Explore command"),
+5542-        }
+5543-    }
+5544-
+5545-    #[test]
+5546-    fn cli_clean_and_dry_run_default_to_false() {
+5547-        let cli = Cli::parse_from([
+5548-            "shatter",
+5549-            "explore",
+5550-            "test.ts:myFunc",
+5551-        ]);
+5552-        match cli.command {
+5553:            CliCommand::Explore { clean, dry_run, .. } => {
+5554-                assert!(!clean);
+5555-                assert!(!dry_run);
+5556-            }
+5557-            _ => panic!("expected Explore command"),
+5558-        }
+5559-    }
+5560-
+5561-    #[test]
+5562-    fn cli_parses_stale_subcommand() {
+5563-        let cli = Cli::parse_from([
+5564-            "shatter",
+5565-            "stale",
+5566-            "src/math.ts",
+5567-            "spec.json",
+5568-        ]);
+5569-        match cli.command {
+5570-            CliCommand::Stale { source, spec, format, request_timeout, .. } => {
+5571-                assert_eq!(source, "src/math.ts");
+5572-                assert_eq!(spec, PathBuf::from("spec.json"));
+5573-                assert_eq!(format, "text");
+5574-                assert_eq!(request_timeout, 30);
+5575-            }
+5576-            _ => panic!("expected Stale command"),
+5577-        }
+5578-    }
+5579-
+5580-    #[test]
+5581-    fn cli_parses_stale_with_json_format() {
+5582-        let cli = Cli::parse_from([
+5583-            "shatter",
+5584-            "stale",
+5585-            "--format", "json",
+5586-            "src/math.ts",
+5587-            "spec.json",
+5588-        ]);
+5589-        match cli.command {
+5590-            CliCommand::Stale { format, .. } => {
+5591-                assert_eq!(format, "json");
+5592-            }
+5593-            _ => panic!("expected Stale command"),

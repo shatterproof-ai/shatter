@@ -1,0 +1,243 @@
+package integration
+
+import (
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/agentsea/agentsea/internal/flags"
+	"github.com/agentsea/agentsea/internal/gitops"
+	"github.com/agentsea/agentsea/internal/sandbox"
+	"github.com/agentsea/agentsea/internal/workspace"
+)
+
+// setupWorkspace creates a temp workspace with a bare repo, workspace.yaml, and
+// returns (baseDir, projectDir, workspaceDir).
+func setupWorkspace(t *testing.T, projectDir string) (baseDir, wsDir string) {
+	t.Helper()
+
+	baseDir = t.TempDir()
+	wsDir = filepath.Join(baseDir, "testproject")
+	if err := os.MkdirAll(wsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a bare canonical repo with one commit.
+	canonicalDir := filepath.Join(wsDir, "canonical")
+	runGit(t, "", "git", "init", "--bare", canonicalDir)
+
+	tmpClone := filepath.Join(t.TempDir(), "tmp-clone")
+	runGit(t, "", "git", "clone", canonicalDir, tmpClone)
+	runGit(t, tmpClone, "git", "config", "user.email", "test@test.com")
+	runGit(t, tmpClone, "git", "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(tmpClone, "README.md"), []byte("init"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, tmpClone, "git", "add", ".")
+	runGit(t, tmpClone, "git", "commit", "-m", "initial")
+	runGit(t, tmpClone, "git", "push", "origin", "HEAD")
+
+	yamlContent := "repo_url: git@github.com:org/repo.git\nproject_path: " + projectDir + "\ndefault_branch: main\n"
+	if err := os.WriteFile(filepath.Join(wsDir, "workspace.yaml"), []byte(yamlContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	return baseDir, wsDir
+}
+
+func runGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command(args[0], args[1:]...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s failed: %s: %v", strings.Join(args, " "), out, err)
+	}
+	return string(out)
+}
+
+func TestFlagsToWorkspaceFlow(t *testing.T) {
+	// Parse flags, then use the agent-name to construct workspace paths.
+	result, err := flags.Parse([]string{"--agent-name", "builder", "--team-name", "myteam"})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	ws := &workspace.Workspace{Dir: "/home/user/.agentsea/workspaces/myproject"}
+	repoPath := ws.AgentRepoPath(result.AgentName)
+	sshPath := ws.AgentSSHPath(result.AgentName)
+
+	if !strings.Contains(repoPath, "builder") {
+		t.Errorf("AgentRepoPath should contain agent name, got %q", repoPath)
+	}
+	if !strings.Contains(sshPath, "builder") {
+		t.Errorf("AgentSSHPath should contain agent name, got %q", sshPath)
+	}
+	if !strings.HasSuffix(repoPath, "/agents/builder/repo") {
+		t.Errorf("AgentRepoPath should end with /agents/builder/repo, got %q", repoPath)
+	}
+}
+
+func TestWorkspaceToGitopsFlow(t *testing.T) {
+	projectDir := t.TempDir()
+	baseDir, wsDir := setupWorkspace(t, projectDir)
+
+	// Load workspace.
+	origDir, _ := os.Getwd()
+	defer os.Chdir(origDir)
+	os.Chdir(projectDir)
+
+	ws, err := workspace.DetectWithBase(baseDir)
+	if err != nil {
+		t.Fatalf("DetectWithBase: %v", err)
+	}
+
+	// Clone agent using workspace paths.
+	agentName := "test-agent"
+	agentDir := filepath.Join(wsDir, "agents", agentName, "repo")
+	canonicalPath := ws.CanonicalPath()
+
+	if err := gitops.CloneAgent(canonicalPath, agentDir, agentName); err != nil {
+		t.Fatalf("CloneAgent: %v", err)
+	}
+
+	// Verify the clone is a working git repo on the right branch.
+	out := runGit(t, agentDir, "git", "branch", "--show-current")
+	branch := strings.TrimSpace(out)
+	if branch != agentName+"/work" {
+		t.Errorf("expected branch %s/work, got %q", agentName, branch)
+	}
+}
+
+func TestGitopsToSandboxFlow(t *testing.T) {
+	projectDir := t.TempDir()
+	_, wsDir := setupWorkspace(t, projectDir)
+
+	agentName := "sandbox-agent"
+	canonicalPath := filepath.Join(wsDir, "canonical")
+	agentDir := filepath.Join(wsDir, "agents", agentName, "repo")
+
+	if err := gitops.CloneAgent(canonicalPath, agentDir, agentName); err != nil {
+		t.Fatalf("CloneAgent: %v", err)
+	}
+
+	// Build sandbox config from the cloned repo paths.
+	cfg := sandbox.SandboxConfig{
+		AgentRepo:    agentDir,
+		TeamMailbox:  filepath.Join(wsDir, "mailbox"),
+		ClaudeHome:   filepath.Join(wsDir, "agents", agentName, "claude-home"),
+		ClaudeBinDir: "/usr/local/bin",
+		Home:         "/home/agent",
+		User:         "agent",
+		WorkDir:      agentDir,
+	}
+
+	args := cfg.Args()
+
+	// Verify sandbox args reference the cloned repo correctly.
+	found := false
+	for i := 0; i < len(args)-2; i++ {
+		if args[i] == "--bind" && args[i+1] == agentDir && args[i+2] == agentDir {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("sandbox args should bind the agent repo dir %s", agentDir)
+	}
+
+	// --chdir should point to the agent repo.
+	chdirIdx := -1
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "--chdir" && args[i+1] == agentDir {
+			chdirIdx = i
+			break
+		}
+	}
+	if chdirIdx < 0 {
+		t.Error("sandbox --chdir should point to agent repo dir")
+	}
+}
+
+func TestFullPipeline_HappyPath(t *testing.T) {
+	projectDir := t.TempDir()
+	baseDir, wsDir := setupWorkspace(t, projectDir)
+
+	// Step 1: Parse flags.
+	result, err := flags.Parse([]string{"--agent-name", "pipeline-agent", "--team-name", "myteam"})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// Step 2: Detect workspace.
+	origDir, _ := os.Getwd()
+	defer os.Chdir(origDir)
+	os.Chdir(projectDir)
+
+	ws, err := workspace.DetectWithBase(baseDir)
+	if err != nil {
+		t.Fatalf("DetectWithBase: %v", err)
+	}
+
+	// Step 3: Clone agent repo.
+	agentDir := filepath.Join(wsDir, "agents", result.AgentName, "repo")
+	if err := gitops.CloneAgent(ws.CanonicalPath(), agentDir, result.AgentName); err != nil {
+		t.Fatalf("CloneAgent: %v", err)
+	}
+
+	// Step 4: Build sandbox config.
+	cfg := sandbox.SandboxConfig{
+		AgentRepo:    agentDir,
+		TeamMailbox:  ws.TeamMailboxPath(result.TeamName),
+		ClaudeHome:   filepath.Join(wsDir, "agents", result.AgentName, "claude-home"),
+		ClaudeBinDir: "/usr/local/bin",
+		Home:         "/home/agent",
+		User:         "agent",
+		WorkDir:      agentDir,
+	}
+	args := cfg.Args()
+
+	// Verify consistency: all paths reference the same agent name.
+	agentSubstr := filepath.Join("agents", result.AgentName)
+	bindFound := false
+	for i := 0; i < len(args)-2; i++ {
+		if args[i] == "--bind" && strings.Contains(args[i+1], agentSubstr) {
+			bindFound = true
+			break
+		}
+	}
+	if !bindFound {
+		t.Error("sandbox args should reference the agent name from flags")
+	}
+
+	// Verify TeamMailbox contains the team name from flags.
+	if !strings.Contains(cfg.TeamMailbox, result.TeamName) {
+		t.Errorf("TeamMailbox should contain team name %q, got %q", result.TeamName, cfg.TeamMailbox)
+	}
+}
+
+func TestFullPipeline_PathTraversalBlocked(t *testing.T) {
+	// Path traversal in agent-name is now rejected by ValidateAgentName.
+	_, err := flags.Parse([]string{"--agent-name", "../admin", "--team-name", "t"})
+	if err == nil {
+		t.Fatal("expected error for path traversal in agent-name, got nil")
+	}
+	if !strings.Contains(err.Error(), "..") {
+		t.Errorf("error should mention '..', got: %v", err)
+	}
+}
+
+func TestFullPipeline_AgentNameWithSlash(t *testing.T) {
+	// Agent names with slashes are now rejected by ValidateAgentName.
+	_, err := flags.Parse([]string{"--agent-name", "team/subagent", "--team-name", "t"})
+	if err == nil {
+		t.Fatal("expected error for slash in agent-name, got nil")
+	}
+	if !strings.Contains(err.Error(), "path separator") {
+		t.Errorf("error should mention path separators, got: %v", err)
+	}
+}

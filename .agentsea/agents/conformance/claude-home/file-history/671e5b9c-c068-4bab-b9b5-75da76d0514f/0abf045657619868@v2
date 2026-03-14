@@ -1,0 +1,174 @@
+import { test, expect } from '@playwright/test'
+import { searchWith, waitForResults } from './helpers'
+
+// ── Critical ────────────────────────────────────────────────────────────────
+
+test.describe('Geographic Features — Critical', () => {
+  test('enter valid ZIP code resolves location and distance appears on result cards @critical @geo', async ({
+    page,
+  }) => {
+    await searchWith(page, {})
+    await waitForResults(page)
+
+    // Fill in a known ZIP code and submit
+    const zipInput = page.getByLabel('ZIP code')
+    await zipInput.fill('02134')
+    await page.getByRole('button', { name: 'Go' }).click()
+
+    // Wait for the location to resolve — Clear location button becomes visible
+    await expect(page.getByLabel('Clear location')).toBeVisible({
+      timeout: 15_000,
+    })
+
+    // URL should now contain userLat and userLng params
+    await expect(page).toHaveURL(/userLat=/)
+    await expect(page).toHaveURL(/userLng=/)
+
+    // Wait for results to reload with distance data
+    await waitForResults(page)
+
+    // Distance badges should appear on the institution cards
+    const distanceBadges = page.getByTestId('distance')
+    await expect(distanceBadges.first()).toBeVisible({ timeout: 10_000 })
+
+    // Verify the distance text matches expected format
+    const distanceText = await distanceBadges.first().textContent()
+    expect(distanceText).toMatch(/(<\s*1\s*mi|\d[\d,]*\s*mi|\u2014)/)
+  })
+})
+
+// ── Standard ────────────────────────────────────────────────────────────────
+
+test.describe('Geographic Features — Standard', () => {
+  test('sort by distance header appears when location is set @standard @geo', async ({
+    page,
+  }) => {
+    // Navigate with location already set via URL params (Boston area)
+    await searchWith(page, {
+      view: 'table',
+      userLat: '42.33',
+      userLng: '-71.11',
+      userState: 'MA',
+    })
+    await waitForResults(page)
+
+    // The sort-distance header should be visible in table view
+    const sortDistance = page.getByTestId('sort-distance')
+    await expect(sortDistance).toBeVisible()
+  })
+
+  test('clear location removes distance display from results @standard @geo', async ({
+    page,
+  }) => {
+    // Start with location set via URL params
+    await searchWith(page, {
+      userLat: '42.33',
+      userLng: '-71.11',
+      userState: 'MA',
+    })
+    await waitForResults(page)
+
+    // Distance badges should be visible initially
+    const distanceBadges = page.getByTestId('distance')
+    await expect(distanceBadges.first()).toBeVisible({ timeout: 10_000 })
+
+    // Clear the location
+    await page.getByLabel('Clear location').click()
+
+    // Wait for results to reload without distance data
+    await waitForResults(page)
+
+    // Distance badges should no longer be visible
+    await expect(distanceBadges).toHaveCount(0)
+
+    // URL should no longer contain location params
+    const url = page.url()
+    expect(url).not.toContain('userLat=')
+    expect(url).not.toContain('userLng=')
+  })
+
+  test('click sample search card on home page navigates to /search with filters @standard @geo', async ({
+    page,
+  }) => {
+    await page.goto('/')
+
+    // Wait for sample search cards to appear
+    const sampleCards = page.getByTestId('sample-search-card')
+    await expect(sampleCards.first()).toBeVisible({ timeout: 15_000 })
+
+    // Get the href from the first sample search card
+    const firstCard = sampleCards.first()
+    const href = await firstCard.getAttribute('href')
+    expect(href).toBeTruthy()
+    expect(href).toContain('/search?')
+
+    // Click the first sample search card
+    await firstCard.click()
+
+    // Should navigate to the search page with filter params
+    await expect(page).toHaveURL(/\/search\?/)
+
+    // Results should load successfully
+    await waitForResults(page)
+  })
+})
+
+// ── Comprehensive ───────────────────────────────────────────────────────────
+
+test.describe('Geographic Features — Comprehensive', () => {
+  test('invalid ZIP code handled gracefully without crash @comprehensive @geo', async ({
+    page,
+  }) => {
+    await searchWith(page, {})
+    await waitForResults(page)
+
+    // Try a non-5-digit input
+    const zipInput = page.getByLabel('ZIP code')
+    await zipInput.fill('abc')
+    await page.getByRole('button', { name: 'Go' }).click()
+
+    // Should show a validation error about the format
+    await expect(page.getByText(/5-digit ZIP/i)).toBeVisible()
+
+    // The page should not crash — results should still be visible
+    await expect(page.getByText(/institutions found|results/i)).toBeVisible()
+  })
+
+  test('distance values are reasonable numbers when location is set @comprehensive @geo', async ({
+    page,
+  }) => {
+    // Navigate to search in table view with a location set (Boston area)
+    await searchWith(page, {
+      userLat: '42.33',
+      userLng: '-71.11',
+      userState: 'MA',
+      view: 'table',
+    })
+    await waitForResults(page)
+
+    // Table should be visible
+    await expect(page.locator('table')).toBeVisible({ timeout: 10_000 })
+
+    // Get all distance cells
+    const distanceCells = page.getByTestId('distance')
+    const cellCount = await distanceCells.count()
+    expect(cellCount).toBeGreaterThan(0)
+
+    // Check each distance value is a reasonable number
+    for (let i = 0; i < Math.min(cellCount, 10); i++) {
+      const text = await distanceCells.nth(i).textContent()
+      expect(text).toBeTruthy()
+
+      // Should match "< 1 mi", "N mi", "N,NNN mi", or em dash for null
+      expect(text!.trim()).toMatch(/^(<\s*1\s*mi|\d[\d,]*\s*mi|\u2014)$/)
+
+      // If it's a numeric distance, verify it's reasonable (0-15000 miles)
+      const numMatch = text!.match(/^(\d[\d,]*)\s*mi$/)
+      if (numMatch) {
+        const miles = Number(numMatch[1].replace(/,/g, ''))
+        expect(miles).toBeGreaterThanOrEqual(0)
+        expect(miles).toBeLessThan(15_000)
+      }
+    }
+  })
+})

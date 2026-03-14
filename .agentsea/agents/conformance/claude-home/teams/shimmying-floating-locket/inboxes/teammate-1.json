@@ -1,0 +1,8 @@
+[
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"shutdown_request\",\"requestId\":\"shutdown-1772856836968@teammate-1\",\"from\":\"team-lead\",\"reason\":\"Please finish your checks, write smoke-results.txt, and then shut down.\",\"timestamp\":\"2026-03-07T04:13:56.968Z\"}",
+    "timestamp": "2026-03-07T04:13:56.968Z",
+    "read": true
+  }
+]

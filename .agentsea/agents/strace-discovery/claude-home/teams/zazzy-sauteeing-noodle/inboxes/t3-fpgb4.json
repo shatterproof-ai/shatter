@@ -1,0 +1,202 @@
+[
+  {
+    "from": "team-lead",
+    "text": "## WORKTREE SETUP — RUN FIRST\nBefore doing anything else, create and enter an isolated worktree:\n```bash\nREPO_ROOT=\"$(git rev-parse --show-toplevel)\"\nBRANCH_NAME=\"str-fpgb.4\"\nWORKTREE_DIR=\"$REPO_ROOT/.claude/worktrees/$BRANCH_NAME\"\n\nif [ -d \"$WORKTREE_DIR\" ]; then\n  echo \"Worktree already exists, reusing\"\nelse\n  git worktree add \"$WORKTREE_DIR\" -b \"$BRANCH_NAME\"\nfi\n\ncd \"$WORKTREE_DIR\"\n```\nVerify you are in the right place:\n```bash\necho \"CWD: $(pwd)\"\necho \"Branch: $(git branch --show-current)\"\necho \"$(pwd)\" | grep -q '\\.claude/worktrees/' && echo \"WORKTREE VERIFIED\" || echo \"FATAL: NOT in a worktree\"\n```\nIf verification fails, STOP and report the error to the team lead.\n\nALL subsequent commands must run from this worktree directory.\nNEVER cd back to the main repo directory. Commit and push ONLY on your worktree branch — never touch main.\n\nWhen done, push your branch:\n```bash\ngit push -u origin HEAD\n```\n\n## TASK: str-fpgb.4 — Protocol fixture corpus\n\n**Priority**: P1  \n**Labels**: protocol, test, tooling\n\n**Description**: Add shared valid and invalid protocol fixtures for requests and responses so schema checks and frontend conformance tests use the same corpus.\n\n**Acceptance Criteria**:\n- Fixtures exist for every command (handshake, analyze, instrument, execute, setup, teardown, generate, shutdown)\n- Fixtures exist for every lifecycle message and malformed request class\n- Fixtures include canonical error responses\n- Fixtures are organized for reuse by schema and conformance checks\n\n**Approach**:\n1. Read protocol.rs to understand all command types and message formats\n2. Read existing test fixtures if any\n3. Create a fixtures directory (e.g., protocol/fixtures/ or tests/fixtures/protocol/)\n4. Add valid request/response JSON fixtures for every command\n5. Add invalid/malformed request fixtures\n6. Add canonical error response fixtures\n7. Organize with clear naming for reuse\n\nFollow all conventions in CLAUDE.md and AGENTS.md. Before reporting done, run `/pre-completion` and include the output.",
+    "timestamp": "2026-03-11T13:54:41.553Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773237288448-m1746e2\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"REPO_ROOT=\\\"$(git rev-parse --show-toplevel)\\\" && BRANCH_NAME=\\\"str-fpgb.4\\\" && WORKTREE_DIR=\\\"$REPO_ROOT/.claude/worktrees/$BRANCH_NAME\\\" && if [ -d \\\"$WORKTREE_DIR\\\" ]; then echo \\\"Worktree already exists, reusing\\\"; else git worktree add \\\"$WORKTREE_DIR\\\" -b \\\"$BRANCH_NAME\\\"; fi && cd \\\"$WORKTREE_DIR\\\" && echo \\\"CWD: $(pwd)\\\" && echo \\\"Branch: $(git branch --show-current)\\\" && echo \\\"$(pwd)\\\" | grep -q '\\\\.claude/worktrees/' && echo \\\"WORKTREE VERIFIED\\\" || echo \\\"FATAL: NOT in a worktree\\\"\",\"description\":\"Create and enter worktree\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T13:58:39.935Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"plan_approval_response\",\"requestId\":\"plan_approval-1773237645187@t3-fpgb4@zazzy-sauteeing-noodle\",\"approved\":true,\"timestamp\":\"2026-03-11T14:00:45.867Z\",\"permissionMode\":\"default\"}",
+    "timestamp": "2026-03-11T14:00:45.867Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773237655342-qpx22im\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"mkdir -p protocol/fixtures/requests/valid protocol/fixtures/requests/invalid protocol/fixtures/responses/valid protocol/fixtures/responses/invalid protocol/fixtures/errors\",\"description\":\"Create fixture directory structure\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T14:01:17.977Z",
+    "read": true
+  },
+  {
+    "from": "t3-fpgb4",
+    "text": "{\"type\":\"task_assignment\",\"taskId\":\"3\",\"subject\":\"str-fpgb.4: Protocol fixture corpus\",\"description\":\"Add shared valid and invalid protocol fixtures for requests and responses for every command, lifecycle message, malformed request class, and canonical error response. Beads ID: str-fpgb.4\",\"assignedBy\":\"t3-fpgb4\",\"timestamp\":\"2026-03-11T14:01:26.083Z\"}",
+    "timestamp": "2026-03-11T14:01:26.083Z",
+    "color": "yellow",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"plan_approval_response\",\"requestId\":\"plan_approval-1773237645187@t3-fpgb4@zazzy-sauteeing-noodle\",\"approved\":true,\"timestamp\":\"2026-03-11T14:01:30.105Z\",\"permissionMode\":\"default\"}",
+    "timestamp": "2026-03-11T14:01:30.105Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773237691141-jj7v92v\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/shatter/.claude/worktrees/str-fpgb.4/protocol/fixtures/requests/valid/handshake.json\",\"content\":\"{\\n  \\\"protocol_version\\\": \\\"0.1.0\\\",\\n  \\\"id\\\": 1,\\n  \\\"command\\\": \\\"handshake\\\",\\n  \\\"capabilities\\\": [\\\"analyze\\\", \\\"instrument\\\", \\\"execute\\\", \\\"setup\\\", \\\"teardown\\\", \\\"generate\\\"]\\n}\\n\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T14:01:58.091Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773237718727-v0cxdtd\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/shatter/.claude/worktrees/str-fpgb.4/protocol/fixtures/requests/valid/analyze.json\",\"content\":\"{\\n  \\\"protocol_version\\\": \\\"0.1.0\\\",\\n  \\\"id\\\": 2,\\n  \\\"command\\\": \\\"analyze\\\",\\n  \\\"file\\\": \\\"src/example.ts\\\",\\n  \\\"function\\\": \\\"processOrder\\\",\\n  \\\"project_root\\\": \\\".\\\"\\n}\\n\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T14:01:59.827Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773237720692-58wj9l7\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/shatter/.claude/worktrees/str-fpgb.4/protocol/fixtures/requests/valid/instrument.json\",\"content\":\"{\\n  \\\"protocol_version\\\": \\\"0.1.0\\\",\\n  \\\"id\\\": 3,\\n  \\\"command\\\": \\\"instrument\\\",\\n  \\\"file\\\": \\\"src/example.ts\\\",\\n  \\\"function\\\": \\\"processOrder\\\",\\n  \\\"mocks\\\": [\\n    {\\n      \\\"module\\\": \\\"node:fs\\\",\\n      \\\"function\\\": \\\"readFileSync\\\",\\n      \\\"behavior\\\": \\\"return_generated\\\"\\n    }\\n  ],\\n  \\\"project_root\\\": \\\".\\\"\\n}\\n\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T14:02:05.417Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773237725746-4z0ygut\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/shatter/.claude/worktrees/str-fpgb.4/protocol/fixtures/requests/valid/execute.json\",\"content\":\"{\\n  \\\"protocol_version\\\": \\\"0.1.0\\\",\\n  \\\"id\\\": 4,\\n  \\\"command\\\": \\\"execute\\\",\\n  \\\"function\\\": \\\"src/example.ts::processOrder\\\",\\n  \\\"inputs\\\": [42, \\\"express\\\", true],\\n  \\\"mocks\\\": [\\n    {\\n      \\\"module\\\": \\\"node:fs\\\",\\n      \\\"function\\\": \\\"readFileSync\\\",\\n      \\\"behavior\\\": \\\"return_generated\\\"\\n    }\\n  ],\\n  \\\"setup_context\\\": {\\n    \\\"stack\\\": [\\n      {\\n        \\\"scope\\\": \\\"test-session\\\",\\n        \\\"level\\\": \\\"session\\\",\\n        \\\"context\\\": {\\\"db_url\\\": \\\"postgres://localhost/test\\\"}\\n      }\\n    ]\\n  }\\n}\\n\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T14:02:15.168Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773237735742-rdakks9\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/shatter/.claude/worktrees/str-fpgb.4/protocol/fixtures/requests/valid/setup.json\",\"content\":\"{\\n  \\\"protocol_version\\\": \\\"0.1.0\\\",\\n  \\\"id\\\": 5,\\n  \\\"command\\\": \\\"setup\\\",\\n  \\\"file\\\": \\\"src/setup.ts\\\",\\n  \\\"scope\\\": \\\"test-session\\\",\\n  \\\"level\\\": \\\"session\\\",\\n  \\\"project_root\\\": \\\".\\\",\\n  \\\"parent_context\\\": null\\n}\\n\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T14:02:18.052Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773237738732-p8rudhp\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/shatter/.claude/worktrees/str-fpgb.4/protocol/fixtures/requests/valid/teardown.json\",\"content\":\"{\\n  \\\"protocol_version\\\": \\\"0.1.0\\\",\\n  \\\"id\\\": 6,\\n  \\\"command\\\": \\\"teardown\\\",\\n  \\\"scope\\\": \\\"test-session\\\",\\n  \\\"level\\\": \\\"session\\\"\\n}\\n\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T14:02:21.220Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773237741744-67erzfw\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/shatter/.claude/worktrees/str-fpgb.4/protocol/fixtures/requests/valid/generate.json\",\"content\":\"{\\n  \\\"protocol_version\\\": \\\"0.1.0\\\",\\n  \\\"id\\\": 7,\\n  \\\"command\\\": \\\"generate\\\",\\n  \\\"file\\\": \\\"src/generators.ts\\\",\\n  \\\"name\\\": \\\"DatabaseConnection\\\",\\n  \\\"kind\\\": \\\"type_name\\\",\\n  \\\"recipe\\\": null,\\n  \\\"project_root\\\": \\\".\\\"\\n}\\n\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T14:02:24.798Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773237745765-ij2a9un\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/shatter/.claude/worktrees/str-fpgb.4/protocol/fixtures/requests/valid/shutdown.json\",\"content\":\"{\\n  \\\"protocol_version\\\": \\\"0.1.0\\\",\\n  \\\"id\\\": 8,\\n  \\\"command\\\": \\\"shutdown\\\"\\n}\\n\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T14:02:27.097Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773237752453-3gi8cvc\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/shatter/.claude/worktrees/str-fpgb.4/protocol/fixtures/responses/valid/handshake.json\",\"content\":\"{\\n  \\\"protocol_version\\\": \\\"0.1.0\\\",\\n  \\\"id\\\": 1,\\n  \\\"status\\\": \\\"handshake\\\",\\n  \\\"frontend_version\\\": \\\"0.1.0\\\",\\n  \\\"language\\\": \\\"typescript\\\",\\n  \\\"capabilities\\\": [\\\"analyze\\\", \\\"instrument\\\", \\\"execute\\\", \\\"setup\\\", \\\"teardown\\\", \\\"generate\\\"]\\n}\\n\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T14:02:34.758Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773237758334-5lelign\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/shatter/.claude/worktrees/str-fpgb.4/protocol/fixtures/responses/valid/analyze.json\",\"content\":\"{\\n  \\\"protocol_version\\\": \\\"0.1.0\\\",\\n  \\\"id\\\": 2,\\n  \\\"status\\\": \\\"analyze\\\",\\n  \\\"functions\\\": [\\n    {\\n      \\\"name\\\": \\\"processOrder\\\",\\n      \\\"params\\\": [\\n        {\\n          \\\"name\\\": \\\"quantity\\\",\\n          \\\"type\\\": { \\\"kind\\\": \\\"int\\\" }\\n        },\\n        {\\n          \\\"name\\\": \\\"shipping\\\",\\n          \\\"type\\\": { \\\"kind\\\": \\\"str\\\" }\\n        },\\n        {\\n          \\\"name\\\": \\\"rush\\\",\\n          \\\"type\\\": { \\\"kind\\\": \\\"bool\\\" }\\n        }\\n      ],\\n      \\\"branches\\\": [\\n        {\\n          \\\"id\\\": 0,\\n          \\\"line\\\": 3,\\n          \\\"condition_text\\\": \\\"quantity > 10\\\",\\n          \\\"condition\\\": {\\n            \\\"kind\\\": \\\"bin_op\\\",\\n            \\\"op\\\": \\\"gt\\\",\\n            \\\"left\\\": { \\\"kind\\\": \\\"param\\\", \\\"name\\\": \\\"quantity\\\", \\\"path\\\": [] },\\n            \\\"right\\\": { \\\"kind\\\": \\\"const\\\", \\\"type\\\": \\\"int\\\", \\\"value\\\": 10 }\\n          },\\n          \\\"branch_type\\\": \\\"if\\\"\\n        },\\n        {\\n          \\\"id\\\": 1,\\n          \\\"line\\\": 7,\\n          \\\"condition_text\\\": \\\"shipping === \\\\\\\"express\\\\\\\"\\\",\\n          \\\"condition\\\": {\\n            \\\"kind\\\": \\\"bin_op\\\",\\n            \\\"op\\\": \\\"eq\\\",\\n            \\\"left\\\": { \\\"kind\\\": \\\"param\\\", \\\"name\\\": \\\"shipping\\\", \\\"path\\\": [] },\\n            \\\"right\\\": { \\\"kind\\\": \\\"const\\\", \\\"type\\\": \\\"str\\\", \\\"value\\\": \\\"express\\\" }\\n          },\\n          \\\"branch_type\\\": \\\"if\\\"\\n        }\\n      ],\\n      \\\"dependencies\\\": [\\n        {\\n          \\\"module\\\": \\\"node:fs\\\",\\n          \\\"name\\\": \\\"readFileSync\\\",\\n          \\\"kind\\\": \\\"function_call\\\"\\n        }\\n      ],\\n      \\\"return_type\\\": { \\\"kind\\\": \\\"str\\\" },\\n      \\\"start_line\\\": 1,\\n      \\\"end_line\\\": 15\\n    }\\n  ]\\n}\\n\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T14:02:40.391Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773237760915-ibid4ao\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/shatter/.claude/worktrees/str-fpgb.4/protocol/fixtures/responses/valid/instrument.json\",\"content\":\"{\\n  \\\"protocol_version\\\": \\\"0.1.0\\\",\\n  \\\"id\\\": 3,\\n  \\\"status\\\": \\\"instrument\\\",\\n  \\\"instrumented\\\": true,\\n  \\\"output_file\\\": \\\".shatter/instrumented/example.ts\\\",\\n  \\\"instrumentable_line_count\\\": 42\\n}\\n\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T14:02:43.273Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773237769044-qx1508l\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/shatter/.claude/worktrees/str-fpgb.4/protocol/fixtures/responses/valid/execute.json\",\"content\":\"{\\n  \\\"protocol_version\\\": \\\"0.1.0\\\",\\n  \\\"id\\\": 4,\\n  \\\"status\\\": \\\"execute\\\",\\n  \\\"return_value\\\": \\\"order-confirmed\\\",\\n  \\\"thrown_error\\\": null,\\n  \\\"branch_path\\\": [\\n    {\\n      \\\"branch_id\\\": 0,\\n      \\\"line\\\": 3,\\n      \\\"taken\\\": true,\\n      \\\"constraint\\\": {\\n        \\\"kind\\\": \\\"expr\\\",\\n        \\\"expr\\\": {\\n          \\\"kind\\\": \\\"bin_op\\\",\\n          \\\"op\\\": \\\"gt\\\",\\n          \\\"left\\\": { \\\"kind\\\": \\\"param\\\", \\\"name\\\": \\\"quantity\\\", \\\"path\\\": [] },\\n          \\\"right\\\": { \\\"kind\\\": \\\"const\\\", \\\"type\\\": \\\"int\\\", \\\"value\\\": 10 }\\n        }\\n      }\\n    },\\n    {\\n      \\\"branch_id\\\": 1,\\n      \\\"line\\\": 7,\\n      \\\"taken\\\": false,\\n      \\\"constraint\\\": {\\n        \\\"kind\\\": \\\"expr\\\",\\n        \\\"expr\\\": {\\n          \\\"kind\\\": \\\"bin_op\\\",\\n          \\\"op\\\": \\\"eq\\\",\\n          \\\"left\\\": { \\\"kind\\\": \\\"param\\\", \\\"name\\\": \\\"shipping\\\", \\\"path\\\": [] },\\n          \\\"right\\\": { \\\"kind\\\": \\\"const\\\", \\\"type\\\": \\\"str\\\", \\\"value\\\": \\\"express\\\" }\\n        }\\n      }\\n    }\\n  ],\\n  \\\"lines_executed\\\": [1, 2, 3, 4, 5, 7, 10, 15],\\n  \\\"calls_to_external\\\": [\\n    {\\n      \\\"module\\\": \\\"node:fs\\\",\\n      \\\"function\\\": \\\"readFileSync\\\",\\n      \\\"args\\\": [\\\"config.json\\\", \\\"utf-8\\\"],\\n      \\\"return_value\\\": \\\"{\\\\\\\"tax_rate\\\\\\\": 0.08}\\\"\\n    }\\n  ],\\n  \\\"path_constraints\\\": [\\n    {\\n      \\\"kind\\\": \\\"expr\\\",\\n      \\\"expr\\\": {\\n        \\\"kind\\\": \\\"bin_op\\\",\\n        \\\"op\\\": \\\"gt\\\",\\n        \\\"left\\\": { \\\"kind\\\": \\\"param\\\", \\\"name\\\": \\\"quantity\\\", \\\"path\\\": [] },\\n        \\\"right\\\": { \\\"kind\\\": \\\"const\\\", \\\"type\\\": \\\"int\\\", \\\"value\\\": 10 }\\n      }\\n    }\\n  ],\\n  \\\"scope_events\\\": [\\n    {\\n      \\\"kind\\\": \\\"enter\\\",\\n      \\\"scope\\\": \\\"processOrder\\\",\\n      \\\"timestamp_us\\\": 100\\n    }\\n  ],\\n  \\\"side_effects\\\": [\\n    {\\n      \\\"kind\\\": \\\"console\\\",\\n      \\\"channel\\\": \\\"log\\\",\\n      \\\"args\\\": [\\\"Processing order for quantity:\\\", 42]\\n    }\\n  ],\\n  \\\"performance\\\": {\\n    \\\"wall_time_ms\\\": 12.5,\\n    \\\"cpu_time_us\\\": 8500,\\n    \\\"heap_used_bytes\\\": 65536,\\n    \\\"heap_allocated_bytes\\\": 131072\\n  },\\n  \\\"capture_truncation\\\": null\\n}\\n\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T14:03:14.325Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773237795269-nlgcf55\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/shatter/.claude/worktrees/str-fpgb.4/protocol/fixtures/responses/valid/setup.json\",\"content\":\"{\\n  \\\"protocol_version\\\": \\\"0.1.0\\\",\\n  \\\"id\\\": 5,\\n  \\\"status\\\": \\\"setup\\\",\\n  \\\"setup_context\\\": {\\n    \\\"db_url\\\": \\\"postgres://localhost:5432/test_db\\\",\\n    \\\"session_id\\\": \\\"sess-abc123\\\"\\n  }\\n}\\n\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T14:03:18.162Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773237799257-ly5scyn\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/shatter/.claude/worktrees/str-fpgb.4/protocol/fixtures/responses/valid/teardown-ack.json\",\"content\":\"{\\n  \\\"protocol_version\\\": \\\"0.1.0\\\",\\n  \\\"id\\\": 6,\\n  \\\"status\\\": \\\"teardown_ack\\\"\\n}\\n\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T14:03:47.548Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773237828525-pb3g0h2\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/shatter/.claude/worktrees/str-fpgb.4/protocol/fixtures/responses/valid/generate.json\",\"content\":\"{\\n  \\\"protocol_version\\\": \\\"0.1.0\\\",\\n  \\\"id\\\": 7,\\n  \\\"status\\\": \\\"generate\\\",\\n  \\\"value\\\": {\\n    \\\"host\\\": \\\"localhost\\\",\\n    \\\"port\\\": 5432,\\n    \\\"database\\\": \\\"test_db\\\",\\n    \\\"pool_size\\\": 5\\n  },\\n  \\\"generator_id\\\": \\\"postgres-test-db\\\",\\n  \\\"recipe\\\": {\\n    \\\"generator\\\": \\\"DatabaseConnection\\\",\\n    \\\"seed\\\": 42,\\n    \\\"config\\\": { \\\"host\\\": \\\"localhost\\\", \\\"port\\\": 5432 }\\n  }\\n}\\n\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T14:03:50.838Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773237831518-rii3t2p\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/shatter/.claude/worktrees/str-fpgb.4/protocol/fixtures/responses/valid/shutdown-ack.json\",\"content\":\"{\\n  \\\"protocol_version\\\": \\\"0.1.0\\\",\\n  \\\"id\\\": 8,\\n  \\\"status\\\": \\\"shutdown_ack\\\"\\n}\\n\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T14:03:59.034Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773237839535-8rsocc1\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/shatter/.claude/worktrees/str-fpgb.4/protocol/fixtures/responses/valid/error.json\",\"content\":\"{\\n  \\\"protocol_version\\\": \\\"0.1.0\\\",\\n  \\\"id\\\": 9,\\n  \\\"status\\\": \\\"error\\\",\\n  \\\"code\\\": \\\"file_not_found\\\",\\n  \\\"message\\\": \\\"File not found: src/missing.ts\\\",\\n  \\\"details\\\": {\\n    \\\"requested_path\\\": \\\"src/missing.ts\\\"\\n  }\\n}\\n\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T14:04:01.344Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "Your plan was approved. Please proceed with implementation.",
+    "summary": "Plan approved, proceed with implementation",
+    "timestamp": "2026-03-11T20:07:46.393Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773259910202-33tpyvc\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"echo \\\"CWD: $(pwd)\\\" && echo \\\"Branch: $(git branch --show-current)\\\"\",\"description\":\"Verify worktree location\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T20:11:53.664Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773259948705-ed2j2w7\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"cd /home/ketan/project/shatter/.claude/worktrees/str-fpgb.4\\n\\n# Invalid requests\\ncat > protocol/fixtures/requests/invalid/missing-protocol-version.json << 'FIXTURE'\\n{\\n  \\\"id\\\": 1,\\n  \\\"command\\\": \\\"handshake\\\",\\n  \\\"capabilities\\\": [\\\"analyze\\\"]\\n}\\nFIXTURE\\n\\ncat > protocol/fixtures/requests/invalid/missing-id.json << 'FIXTURE'\\n{\\n  \\\"protocol_version\\\": \\\"0.1.0\\\",\\n  \\\"command\\\": \\\"analyze\\\",\\n  \\\"file\\\": \\\"src/example.ts\\\"\\n}\\nFIXTURE\\n\\ncat > protocol/fixtures/requests/invalid/missing-command.json << 'FIXTURE'\\n{\\n  \\\"protocol_version\\\": \\\"0.1.0\\\",\\n  \\\"id\\\": 1\\n}\\nFIXTURE\\n\\ncat > protocol/fixtures/requests/invalid/unknown-command.json << 'FIXTURE'\\n{\\n  \\\"protocol_version\\\": \\\"0.1.0\\\",\\n  \\\"id\\\": 1,\\n  \\\"command\\\": \\\"foobar\\\"\\n}\\nFIXTURE\\n\\ncat > protocol/fixtures/requests/invalid/wrong-id-type.json << 'FIXTURE'\\n{\\n  \\\"protocol_version\\\": \\\"0.1.0\\\",\\n  \\\"id\\\": \\\"not-a-number\\\",\\n  \\\"command\\\": \\\"handshake\\\",\\n  \\\"capabilities\\\": [\\\"analyze\\\"]\\n}\\nFIXTURE\\n\\ncat > protocol/fixtures/requests/invalid/missing-required-field.json << 'FIXTURE'\\n{\\n  \\\"protocol_version\\\": \\\"0.1.0\\\",\\n  \\\"id\\\": 1,\\n  \\\"command\\\": \\\"analyze\\\"\\n}\\nFIXTURE\\n\\ncat > protocol/fixtures/requests/invalid/wrong-field-type.json << 'FIXTURE'\\n{\\n  \\\"protocol_version\\\": \\\"0.1.0\\\",\\n  \\\"id\\\": 1,\\n  \\\"command\\\": \\\"handshake\\\",\\n  \\\"capabilities\\\": \\\"not-an-array\\\"\\n}\\nFIXTURE\\n\\ncat > protocol/fixtures/requests/invalid/negative-id.json << 'FIXTURE'\\n{\\n  \\\"protocol_version\\\": \\\"0.1.0\\\",\\n  \\\"id\\\": -1,\\n  \\\"command\\\": \\\"shutdown\\\"\\n}\\nFIXTURE\\n\\necho \\\"Invalid requests created\\\"\\n\\n# Invalid responses\\ncat > protocol/fixtures/responses/invalid/missing-status.json << 'FIXTURE'\\n{\\n  \\\"protocol_version\\\": \\\"0.1.0\\\",\\n  \\\"id\\\": 1,\\n  \\\"frontend_version\\\": \\\"0.1.0\\\",\\n  \\\"language\\\": \\\"typescript\\\",\\n  \\\"capabilities\\\": [\\\"analyze\\\"]\\n}\\nFIXTURE\\n\\ncat > protocol/fixtures/responses/invalid/unknown-status.json << 'FIXTURE'\\n{\\n  \\\"protocol_version\\\": \\\"0.1.0\\\",\\n  \\\"id\\\": 1,\\n  \\\"status\\\": \\\"bogus\\\"\\n}\\nFIXTURE\\n\\ncat > protocol/fixtures/responses/invalid/missing-required-field.json << 'FIXTURE'\\n{\\n  \\\"protocol_version\\\": \\\"0.1.0\\\",\\n  \\\"id\\\": 4,\\n  \\\"status\\\": \\\"execute\\\",\\n  \\\"return_value\\\": 42,\\n  \\\"thrown_error\\\": null,\\n  \\\"lines_executed\\\": [1, 2, 3],\\n  \\\"calls_to_external\\\": [],\\n  \\\"path_constraints\\\": [],\\n  \\\"side_effects\\\": [],\\n  \\\"performance\\\": {\\n    \\\"wall_time_ms\\\": 1.0,\\n    \\\"cpu_time_us\\\": 500,\\n    \\\"heap_used_bytes\\\": 1024,\\n    \\\"heap_allocated_bytes\\\": 2048\\n  }\\n}\\nFIXTURE\\n\\ncat > protocol/fixtures/responses/invalid/wrong-error-code.json << 'FIXTURE'\\n{\\n  \\\"protocol_version\\\": \\\"0.1.0\\\",\\n  \\\"id\\\": 1,\\n  \\\"status\\\": \\\"error\\\",\\n  \\\"code\\\": \\\"not_a_real_code\\\",\\n  \\\"message\\\": \\\"Something went wrong\\\"\\n}\\nFIXTURE\\n\\necho \\\"Invalid responses created\\\"\",\"description\":\"Create all invalid request and response fixtures\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T20:14:27.263Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773260092740-bfny2r6\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"cd /home/ketan/project/shatter/.claude/worktrees/str-fpgb.4\\n\\n# Error response fixtures — one per ErrorCode\\ncat > protocol/fixtures/errors/file-not-found.json << 'FIXTURE'\\n{\\n  \\\"protocol_version\\\": \\\"0.1.0\\\",\\n  \\\"id\\\": 1,\\n  \\\"status\\\": \\\"error\\\",\\n  \\\"code\\\": \\\"file_not_found\\\",\\n  \\\"message\\\": \\\"File not found: src/missing.ts\\\",\\n  \\\"details\\\": {\\n    \\\"requested_path\\\": \\\"src/missing.ts\\\"\\n  }\\n}\\nFIXTURE\\n\\ncat > protocol/fixtures/errors/function-not-found.json << 'FIXTURE'\\n{\\n  \\\"protocol_version\\\": \\\"0.1.0\\\",\\n  \\\"id\\\": 2,\\n  \\\"status\\\": \\\"error\\\",\\n  \\\"code\\\": \\\"function_not_found\\\",\\n  \\\"message\\\": \\\"Function 'nonExistent' not found in src/example.ts\\\",\\n  \\\"details\\\": {\\n    \\\"file\\\": \\\"src/example.ts\\\",\\n    \\\"function\\\": \\\"nonExistent\\\",\\n    \\\"available_functions\\\": [\\\"processOrder\\\", \\\"calculateTotal\\\"]\\n  }\\n}\\nFIXTURE\\n\\ncat > protocol/fixtures/errors/parse-error.json << 'FIXTURE'\\n{\\n  \\\"protocol_version\\\": \\\"0.1.0\\\",\\n  \\\"id\\\": 3,\\n  \\\"status\\\": \\\"error\\\",\\n  \\\"code\\\": \\\"parse_error\\\",\\n  \\\"message\\\": \\\"Syntax error in src/broken.ts at line 42\\\",\\n  \\\"details\\\": {\\n    \\\"file\\\": \\\"src/broken.ts\\\",\\n    \\\"line\\\": 42,\\n    \\\"column\\\": 15,\\n    \\\"snippet\\\": \\\"const x = {;\\\"\\n  }\\n}\\nFIXTURE\\n\\ncat > protocol/fixtures/errors/instrumentation-failed.json << 'FIXTURE'\\n{\\n  \\\"protocol_version\\\": \\\"0.1.0\\\",\\n  \\\"id\\\": 4,\\n  \\\"status\\\": \\\"error\\\",\\n  \\\"code\\\": \\\"instrumentation_failed\\\",\\n  \\\"message\\\": \\\"Failed to instrument function 'processOrder': unsupported generator expression\\\",\\n  \\\"details\\\": {\\n    \\\"file\\\": \\\"src/example.ts\\\",\\n    \\\"function\\\": \\\"processOrder\\\",\\n    \\\"reason\\\": \\\"Generator functions are not supported for instrumentation\\\"\\n  }\\n}\\nFIXTURE\\n\\ncat > protocol/fixtures/errors/execution-timeout.json << 'FIXTURE'\\n{\\n  \\\"protocol_version\\\": \\\"0.1.0\\\",\\n  \\\"id\\\": 5,\\n  \\\"status\\\": \\\"error\\\",\\n  \\\"code\\\": \\\"execution_timeout\\\",\\n  \\\"message\\\": \\\"Execution of 'processOrder' timed out after 15000ms\\\",\\n  \\\"details\\\": {\\n    \\\"function\\\": \\\"processOrder\\\",\\n    \\\"timeout_ms\\\": 15000,\\n    \\\"partial_branch_path\\\": [\\n      { \\\"branch_id\\\": 0, \\\"line\\\": 3, \\\"taken\\\": true }\\n    ]\\n  }\\n}\\nFIXTURE\\n\\ncat > protocol/fixtures/errors/execution-crash.json << 'FIXTURE'\\n{\\n  \\\"protocol_version\\\": \\\"0.1.0\\\",\\n  \\\"id\\\": 6,\\n  \\\"status\\\": \\\"error\\\",\\n  \\\"code\\\": \\\"execution_crash\\\",\\n  \\\"message\\\": \\\"Execution of 'processOrder' crashed: heap out of memory\\\",\\n  \\\"details\\\": {\\n    \\\"function\\\": \\\"processOrder\\\",\\n    \\\"signal\\\": \\\"SIGKILL\\\",\\n    \\\"exit_code\\\": 137\\n  }\\n}\\nFIXTURE\\n\\ncat > protocol/fixtures/errors/version-mismatch.json << 'FIXTURE'\\n{\\n  \\\"protocol_version\\\": \\\"0.1.0\\\",\\n  \\\"id\\\": 7,\\n  \\\"status\\\": \\\"error\\\",\\n  \\\"code\\\": \\\"version_mismatch\\\",\\n  \\\"message\\\": \\\"Protocol version mismatch: core requires 0.2.0, frontend supports 0.1.0\\\",\\n  \\\"details\\\": {\\n    \\\"core_version\\\": \\\"0.2.0\\\",\\n    \\\"frontend_version\\\": \\\"0.1.0\\\"\\n  }\\n}\\nFIXTURE\\n\\ncat > protocol/fixtures/errors/invalid-request.json << 'FIXTURE'\\n{\\n  \\\"protocol_version\\\": \\\"0.1.0\\\",\\n  \\\"id\\\": 8,\\n  \\\"status\\\": \\\"error\\\",\\n  \\\"code\\\": \\\"invalid_request\\\",\\n  \\\"message\\\": \\\"Invalid request: missing required field 'file' for analyze command\\\",\\n  \\\"details\\\": {\\n    \\\"command\\\": \\\"analyze\\\",\\n    \\\"missing_fields\\\": [\\\"file\\\"]\\n  }\\n}\\nFIXTURE\\n\\ncat > protocol/fixtures/errors/compilation-error.json << 'FIXTURE'\\n{\\n  \\\"protocol_version\\\": \\\"0.1.0\\\",\\n  \\\"id\\\": 9,\\n  \\\"status\\\": \\\"error\\\",\\n  \\\"code\\\": \\\"compilation_error\\\",\\n  \\\"message\\\": \\\"Compilation failed for src/example.rs: unresolved import\\\",\\n  \\\"details\\\": {\\n    \\\"file\\\": \\\"src/example.rs\\\",\\n    \\\"compiler_output\\\": \\\"error[E0432]: unresolved import `foo::bar`\\\\n --> src/example.rs:3:5\\\\n  |\\\\n3 | use foo::bar;\\\\n  |     ^^^^^^^^ no `bar` in `foo`\\\",\\n    \\\"exit_code\\\": 1\\n  }\\n}\\nFIXTURE\\n\\ncat > protocol/fixtures/errors/internal-error.json << 'FIXTURE'\\n{\\n  \\\"protocol_version\\\": \\\"0.1.0\\\",\\n  \\\"id\\\": 10,\\n  \\\"status\\\": \\\"error\\\",\\n  \\\"code\\\": \\\"internal_error\\\",\\n  \\\"message\\\": \\\"Internal error: unexpected null reference in instrumentor\\\",\\n  \\\"details\\\": {\\n    \\\"stack_trace\\\": \\\"TypeError: Cannot read properties of null (reading 'kind')\\\\n    at buildSymExpr (instrumentor.ts:892:34)\\\\n    at visitBranch (instrumentor.ts:654:21)\\\\n    at Object.visit (instrumentor.ts:412:9)\\\",\\n    \\\"frontend\\\": \\\"typescript\\\",\\n    \\\"version\\\": \\\"0.1.0\\\"\\n  }\\n}\\nFIXTURE\\n\\necho \\\"Error fixtures created\\\"\",\"description\":\"Create all error response fixtures (one per ErrorCode)\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T20:15:29.230Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773260144929-4fwqsbp\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/shatter/.claude/worktrees/str-fpgb.4/protocol/fixtures/README.md\",\"content\":\"# Protocol Fixture Corpus\\n\\nShared JSON fixtures for schema validation and frontend conformance testing.\\n\\n## Structure\\n\\n```\\nfixtures/\\n  requests/\\n    valid/        8 files — one per command\\n    invalid/      8 files — malformed requests (missing fields, wrong types, unknown commands)\\n  responses/\\n    valid/        9 files — one per response status (including error)\\n    invalid/      4 files — malformed responses\\n  errors/        10 files — one per ErrorCode with realistic messages and details\\n```\\n\\n## Naming Convention\\n\\n- Valid fixtures: `{command}.json` (e.g., `handshake.json`, `execute.json`)\\n- Invalid fixtures: `{what-is-wrong}.json` (e.g., `missing-id.json`, `wrong-field-type.json`)\\n- Error fixtures: `{error-code-kebab}.json` (e.g., `file-not-found.json`, `execution-timeout.json`)\\n\\n## Usage\\n\\nAll fixtures use protocol version `0.1.0` and sequential `id` values.\\n\\n- **Schema validation tests**: validate `valid/` fixtures pass, `invalid/` fixtures fail\\n- **Frontend conformance tests**: parse `valid/` fixtures and verify field presence/types\\n- **Error handling tests**: verify frontends can produce each error code in `errors/`\\n- **Fuzz seed corpus**: use valid fixtures as seeds for mutation-based fuzzing\\n\\n## Coverage\\n\\n### Commands (requests/valid/)\\n\\nhandshake, analyze, instrument, execute, setup, teardown, generate, shutdown\\n\\n### Response statuses (responses/valid/)\\n\\nhandshake, analyze, instrument, execute, setup, teardown_ack, generate, shutdown_ack, error\\n\\n### Error codes (errors/)\\n\\nfile_not_found, function_not_found, parse_error, instrumentation_failed,\\nexecution_timeout, execution_crash, version_mismatch, invalid_request,\\ncompilation_error, internal_error\\n\\n### Malformed request classes (requests/invalid/)\\n\\nmissing-protocol-version, missing-id, missing-command, unknown-command,\\nwrong-id-type, missing-required-field, wrong-field-type, negative-id\\n\\n### Malformed response classes (responses/invalid/)\\n\\nmissing-status, unknown-status, missing-required-field, wrong-error-code\\n\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T20:17:52.244Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773260281121-l9zjtbq\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"find protocol/fixtures -name '*.json' | sort | while read f; do python3 -c \\\"import json,sys; json.load(open(sys.argv[1])); print('OK:', sys.argv[1])\\\" \\\"$f\\\" 2>&1; done\",\"description\":\"Validate all fixture files are valid JSON\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T20:23:20.796Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773260619539-lw2fhsc\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"echo \\\"Total fixtures: $(find protocol/fixtures -name '*.json' | wc -l)\\\" && echo \\\"Valid requests: $(ls protocol/fixtures/requests/valid/ | wc -l)\\\" && echo \\\"Invalid requests: $(ls protocol/fixtures/requests/invalid/ | wc -l)\\\" && echo \\\"Valid responses: $(ls protocol/fixtures/responses/valid/ | wc -l)\\\" && echo \\\"Invalid responses: $(ls protocol/fixtures/responses/invalid/ | wc -l)\\\" && echo \\\"Error responses: $(ls protocol/fixtures/errors/ | wc -l)\\\"\",\"description\":\"Count fixtures by category\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T20:24:01.281Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773260675509-ugdurhb\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"git commit -m \\\"$(cat <<'EOF'\\nstr-fpgb.4: Add shared protocol fixture corpus\\n\\n39 JSON fixtures covering all 8 commands, 9 response statuses, 10 error\\ncodes, and 12 malformed message variants. Organized for reuse by schema\\nvalidation, frontend conformance tests, and fuzz seed corpora.\\n\\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\\nEOF\\n)\\\"\",\"description\":\"Commit fixture corpus\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T20:25:14.385Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773260719991-omgs70m\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"git push -u origin HEAD\",\"description\":\"Push branch to remote\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T20:25:41.016Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"shutdown_request\",\"requestId\":\"shutdown-1773260818108@t3-fpgb4\",\"from\":\"team-lead\",\"reason\":\"Merged and closed. Thanks!\",\"timestamp\":\"2026-03-11T20:26:58.108Z\"}",
+    "timestamp": "2026-03-11T20:26:58.108Z",
+    "read": true
+  }
+]

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Configure git to use .githooks/ for this repository.
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+git config core.hooksPath "$repo_root/.githooks"
+echo "Git hooks configured: .githooks/"
+echo "  pre-commit → scripts/ci/run-changed.sh --staged"
+echo "  pre-push   → scripts/ci/run-full.sh"

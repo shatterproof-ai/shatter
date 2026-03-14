@@ -1,0 +1,411 @@
+## Demo: rename demo:test to demo:autopilot and add pause/backward/autopilot controls
+- Priority: 2
+- Labels: demo, enhancement
+
+Demo controller changes:
+- Rename `demo:test` to `demo:autopilot`
+- Overlay shows play/pause, back, and forward controls in all modes
+- In manual mode, add "Start Autopilot" button that continues from current step
+- Going backward shows the previous step's state without full replay
+- Each step gets a `setup()` function that can independently establish its precondition state (URL + key interactions), enabling non-sequential navigation
+- Add deviation detection: before advancing, verify page state matches expectations; if not, show warning with option to re-run setup or continue anyway
+
+---
+
+## Demo: step 14/16 mobile view fails on "site header"
+- Priority: 2
+- Labels: demo, bug
+
+Step 14/16 mobile view fails on "site header" assertion.
+
+---
+
+## Demo: mobile search window width doesn't match content width
+- Priority: 2
+- Labels: demo, bug
+
+Mobile search window size doesn't match width of content; there's a white bar visible.
+
+---
+
+## Demo: step 3/16 Add Filters fails on filter dropdown select
+- Priority: 2
+- Labels: demo, bug
+
+[3/16] Add Filters FAIL Filter dropdown (select)
+
+---
+
+## Demo: step 11/16 About Page fails on section heading h2
+- Priority: 2
+- Labels: demo, bug
+
+[11/16] About Page FAIL Section heading (h2)
+
+---
+
+## Demo: manual mode exits after timeout when pausing interaction
+- Priority: 2
+- Labels: demo, bug
+
+Pausing interaction in manual mode results in an exit after 30s timeout. The waitForAdvance function throws TimeoutError. Manual mode should wait indefinitely for user interaction.
+
+---
+
+## Map view: should be wider, toggled on any view, positioned above facets/results
+- Priority: 2
+- Labels: map, enhancement
+
+The default map view is very narrow. It should be wider. Also, it should be a toggle rather than a completely separate view, so it should be available on the card, list, and table views. It should be at the top above the facets and search results. Mobile needs a different treatment.
+
+---
+
+## Map view: pin click causes map to overlap institution card
+- Priority: 2
+- Labels: map, bug
+
+When clicking on a pin in the map view, the map is displayed overlapping the card for the institution.
+
+---
+
+## Demo: search term should match multiple universities, not just "Stanford"
+- Priority: 2
+- Labels: demo, enhancement
+
+Demo search should be by something that matches multiple universities not just one ("Stanford").
+
+---
+
+## Demo: clicking through initial manual step too fast causes incomplete typing
+- Priority: 2
+- Labels: demo, bug
+
+Clicking through initial manual step too fast results in incomplete typing of "Stanford" (or whatever the search term is).
+
+---
+
+## Search button on homepage nearly invisible
+- Priority: 1
+- Labels: ui, bug
+
+Search button on homepage is still nearly invisible (white text, gray background; black background on hover). Needs better contrast/visibility.
+
+---
+
+## Remove city from facet display
+- Priority: 2
+- Labels: search, enhancement
+
+Remove city from the facet display list.
+
+---
+
+## Remove latitude/longitude from facet list
+- Priority: 2
+- Labels: search, enhancement
+
+Remove latitude/longitude from the facet list.
+
+---
+
+## Radius facet should be below location and conditional on location value
+- Priority: 2
+- Labels: search, enhancement
+
+Radius facet entry should be right below zip code/browser location, and it should only be available if there is a value provided for location.
+
+---
+
+## Carousel cards: right border on third card is cut off
+- Priority: 2
+- Labels: ui, bug
+
+Carousel cards' width leads to the right border on the third card being cut off in the default display.
+
+---
+
+## Free text field: connect via WebMCP to browser chat or built-in Claude API
+- Priority: 3
+- Labels: feature, ai
+
+The free text field should connect via WebMCP to browser chat. If there's no browser chat, we should have a built-in Claude API integration that connects to the MCP server.
+
+---
+
+## List view: show more useful information (aim for 5 fields)
+- Priority: 2
+- Labels: ui, enhancement
+
+The list view should have a few more useful pieces of information on it. Aim for 5 fields. Need to propose candidates for user review.
+
+---
+
+## Card view: show more information (aim for 10 fields)
+- Priority: 2
+- Labels: ui, enhancement
+
+The default card view only shows the name and location. Need more — aim for about 10 useful pieces of information including the 5 from the list view. Need to propose candidates for user review.
+
+---
+
+## Search: default sort order needs design (distance if location available)
+- Priority: 2
+- Labels: search, enhancement
+
+The search sorts alphabetically by default (example: searching "state"). If we have a location for the user, we should sort by distance. Default sort order needs design thinking.
+
+---
+
+## Search: region facet should be multi-select
+- Priority: 2
+- Labels: search, enhancement
+
+"Region" should be multi-select in the faceted search.
+
+---
+
+## Search: multiple-choice facets should be sorted alphabetically by default
+- Priority: 2
+- Labels: search, enhancement
+
+All search facets that are multiple choice should be sorted alphabetically by default. Currently "region" is not sorted alphabetically.
+
+---
+
+## Search: region should not include "US Service Schools"
+- Priority: 2
+- Labels: search, data
+
+"Region" should not include "US Service Schools" — that is not a geographical region.
+
+---
+
+## Search: add ROTC programs field
+- Priority: 2
+- Labels: search, feature
+
+We should have a field to search by which ROTC programs a university has.
+
+---
+
+## Detail card: expanded result card shows no data
+- Priority: 1
+- Labels: ui, bug
+
+Clicking on a card in the card view pops up an expanded result card with no data in it. We want to show many more fields and have actual data in place.
+
+---
+
+## Similar schools: very slow performance
+- Priority: 2
+- Labels: performance, bug
+
+"Find similar schools" is very slow.
+
+---
+
+## Similar schools: add button to expand search via main search page
+- Priority: 2
+- Labels: ui, enhancement
+
+After seeing results for "find similar schools" the user should have an appropriately titled button that allows them to expand the search via the main search page.
+
+---
+
+## Similar schools: loads on other cards without activation
+- Priority: 2
+- Labels: ui, bug
+
+When clicking similar schools then viewing a different institution, the similar schools list loads on that card as well without showing the button or requiring a click. It should not be active until activated, but then stay active just for that school.
+
+---
+
+## Similar schools: no way to dismiss once visible
+- Priority: 2
+- Labels: ui, bug
+
+There's no way to get rid of similar schools once they've been made visible.
+
+---
+
+## Detail card: add next/previous result navigation
+- Priority: 2
+- Labels: ui, enhancement
+
+Each card should have navigation that allows going to the next or previous result (if available) without leaving the card view.
+
+---
+
+## Detail card: institution name shown twice at top
+- Priority: 2
+- Labels: ui, bug
+
+The card view shows the institution name twice at the top.
+
+---
+
+## Search: remove "graduate enrollment" facet
+- Priority: 2
+- Labels: search, enhancement
+
+"Graduate enrollment" shouldn't be a searchable facet. Remove it.
+
+---
+
+## Search: rename "gender" facet to "coeducational enrollment" or similar
+- Priority: 2
+- Labels: search, enhancement
+
+The "gender" facet should be labeled "coeducational enrollment" or something like that.
+
+---
+
+## Search: remove "room and board" facet
+- Priority: 2
+- Labels: search, enhancement
+
+"Room and board" shouldn't be a searchable facet. Remove it.
+
+---
+
+## Facets: consolidate description/citation tooltips
+- Priority: 2
+- Labels: ui, enhancement
+
+Every facet label has two tooltips next to it, one for a description and one for a citation. The description should be displayed when hovering over the label. The citation should be a tooltip but with a more informative icon than just the circle+i.
+
+---
+
+## Facets: remove NCES reference from tooltip descriptions
+- Priority: 2
+- Labels: ui, enhancement
+
+Some of the facet field tooltip descriptions include something like (NCES: x_y_z). Remove that.
+
+---
+
+## Search: "fields of study" facet has nothing to interact with
+- Priority: 1
+- Labels: search, bug
+
+The "fields of study" facet has nothing to interact with. It's non-functional.
+
+---
+
+## Facets: combine partisan direction and score into R-to-D color-coded slider
+- Priority: 2
+- Labels: ui, enhancement
+
+"Partisan direction" and "partisan score" should be combined into a single widget with a slider from R to D. Color coded red on R end and blue on D end. Two points on the slider for range top/bottom with default including the entire range.
+
+---
+
+## Search: expand application platforms to include UC, ApplyTexas, ApplySUNY, etc.
+- Priority: 2
+- Labels: search, data, enhancement
+
+Application platforms should be more extensive and include the University of California application, ApplyTexas, ApplySUNY, and other similar state-specific shared application methods.
+
+---
+
+## Facets: clean up Koppen climate field labels and make multiselect
+- Priority: 2
+- Labels: search, enhancement
+
+All Koppen fields should be multiselect. They should not have "Koppen" in the labels (okay in tooltip). "Climate Group" label should just be "Climate," and the other two fields should not have "Subtype" in the label.
+
+---
+
+## Facets: enrollment/cost min-max should be dropdowns with increment steps
+- Priority: 2
+- Labels: ui, enhancement
+
+"Total enrollment" min/max should be dropdowns rather than text fields. Allowed values: 1000 increments from 0 to 10,000 then 2500 increments above that, with "unlimited" at the high end. Apply the same to cost fields.
+
+---
+
+## Facets: move custom rankings blend widget to rankings group
+- Priority: 2
+- Labels: ui, enhancement
+
+The "custom rankings blend" widget should be with the rankings facet group.
+
+---
+
+## Facets: make every facet group collapsible with active indicator
+- Priority: 2
+- Labels: ui, enhancement
+
+Every facet group should be collapsible. If a facet within the group is active, the collapsed group should not completely disappear but have a small indicator of what is active.
+
+---
+
+## Search: show active filter pills at top of results with dismiss button
+- Priority: 2
+- Labels: ui, enhancement
+
+Every active search filter should have a pill at the top of the search results that can be X-ed out to turn off that filter.
+
+---
+
+## Custom ranking blend: summary display with modal editor
+- Priority: 2
+- Labels: ui, enhancement
+
+The custom ranking blend should not be editable directly on the search page; it should just be a summary display (with no summary if there isn't a custom ranking blend). The user should have an edit button/link to modify it that spawns a separate modal widget where they can edit the blend. This does not modify search results until the user indicates completion.
+
+---
+
+## Search: add sort options for list and card view
+- Priority: 2
+- Labels: ui, enhancement
+
+We need sort options on the list and card view. That needs a design.
+
+---
+
+## Table view: show many more columns by default with horizontal scroll
+- Priority: 2
+- Labels: ui, enhancement
+
+The table view needs to show many more columns by default. A horizontal scroll bar is acceptable.
+
+---
+
+## Table view: institution type shows as number instead of descriptive word
+- Priority: 2
+- Labels: ui, bug
+
+In the table view, "institution type" shows up as a number. It should be the descriptive word.
+
+---
+
+## Data: filter out non-real institution locations (e.g. ASU-Pima transfer paths)
+- Priority: 2
+- Labels: data, bug
+
+Many institutions don't have a total enrollment number e.g. Arizona State University - Pima. That appears not to be a real location but rather a transfer path from Pima Community College to ASU. These should not be shown. Probably marked as a community college; we don't want to show those. Needs investigation.
+
+---
+
+## PDF export: terrible formatting with squeezed columns and ugly colors
+- Priority: 2
+- Labels: export, bug
+
+The PDF export has all columns squeezed so narrow that text is stretched out vertically and unreadable. Also has white text on dark blue background that is ugly. If there are many columns, should split horizontally across successive pages; leftmost two columns should always be institution name and location.
+
+---
+
+## PDF export: Koppen temperature subtype shows letter code instead of label
+- Priority: 2
+- Labels: export, bug
+
+The "Koppen temperature subtype" in the PDF export seems to be a letter code rather than a useful label.
+
+---
+
+## csv export: clicking export gives "missing or malformed authorization header"
+- Priority: 1
+- Labels: export, bug
+
+Clicking the csv export just gives "missing or malformed authorization header" error. Export should work without authentication or handle auth properly.

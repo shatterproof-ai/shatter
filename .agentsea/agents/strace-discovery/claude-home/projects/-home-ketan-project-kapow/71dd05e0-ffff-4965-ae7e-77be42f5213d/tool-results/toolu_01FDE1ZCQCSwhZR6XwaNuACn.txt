@@ -1,0 +1,236 @@
+api/graph/resolver/search_fields.resolvers.go-20-	out := make([]model.SearchField, 0, len(descs))
+api/graph/resolver/search_fields.resolvers.go-21-	for _, d := range descs {
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields.resolvers.go-22-		if !search.IsFieldVisible(d, authenticated) {
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields.resolvers.go-23-			continue
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields.resolvers.go-24-		}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields.resolvers.go-25-		out = append(out, descriptorToSearchField(d))
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields.resolvers.go-26-	}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields.resolvers.go-27-	return out, nil
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields.resolvers.go-28-}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields.resolvers.go-29-
+api/graph/resolver/search_fields.resolvers.go:30:// SearchOutputFields is the resolver for the searchOutputFields field.
+api/graph/resolver/search_fields.resolvers.go:31:func (r *queryResolver) SearchOutputFields(ctx context.Context) ([]*model.SearchOutputField, error) {
+api/graph/resolver/search_fields.resolvers.go-32-	authenticated := auth.GetClaims(ctx) != nil
+api/graph/resolver/search_fields.resolvers.go-33-	descs := r.Resolver.Search.OutputDescriptors()
+api/graph/resolver/search_fields.resolvers.go-34-	out := make([]*model.SearchOutputField, 0, len(descs))
+api/graph/resolver/search_fields.resolvers.go-35-	for _, d := range descs {
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields.resolvers.go-36-		if !search.IsFieldVisible(d, authenticated) {
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields.resolvers.go-37-			continue
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields.resolvers.go-38-		}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields.resolvers.go-39-		out = append(out, descriptorToSearchOutputField(d))
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields.resolvers.go-40-	}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields.resolvers.go-41-	return out, nil
+--
+api/graph/resolver/search_fields_resolver_test.go-270-		case *model.GeoSearchField:
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-271-			name = v.Name
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-272-		}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-273-		if name == "unit_id" {
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-274-			t.Error("HIDDEN field unit_id should not appear in SearchFields results")
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-275-		}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-276-	}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-277-}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-278-
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-279-// ─────────────────────────────────────────────────────────────────────────────
+api/graph/resolver/search_fields_resolver_test.go:280:// SearchOutputFields resolver tests
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-281-// ─────────────────────────────────────────────────────────────────────────────
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-282-
+api/graph/resolver/search_fields_resolver_test.go:283:// TestSearchOutputFields_ReturnsSubset verifies that SearchOutputFields returns
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-284-// fewer items than SearchFields (some fields are input-only).
+api/graph/resolver/search_fields_resolver_test.go:285:func TestSearchOutputFields_ReturnsSubset(t *testing.T) {
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-286-	t.Parallel()
+api/graph/resolver/search_fields_resolver_test.go-287-	r := newTestSearchFieldsResolver()
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-288-
+api/graph/resolver/search_fields_resolver_test.go-289-	allFields, err := r.SearchFields(context.Background())
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-290-	if err != nil {
+api/graph/resolver/search_fields_resolver_test.go-291-		t.Fatalf("SearchFields error: %v", err)
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-292-	}
+api/graph/resolver/search_fields_resolver_test.go:293:	outFields, err := r.SearchOutputFields(context.Background())
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-294-	if err != nil {
+api/graph/resolver/search_fields_resolver_test.go:295:		t.Fatalf("SearchOutputFields error: %v", err)
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-296-	}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-297-
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-298-	if len(outFields) == 0 {
+api/graph/resolver/search_fields_resolver_test.go:299:		t.Fatal("SearchOutputFields returned empty slice")
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-300-	}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-301-	if len(outFields) >= len(allFields) {
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-302-		t.Errorf("output fields count %d >= all fields count %d; some should be input-only",
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-303-			len(outFields), len(allFields))
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-304-	}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-305-}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-306-
+api/graph/resolver/search_fields_resolver_test.go:307:// TestSearchOutputFields_DefaultVisibleFields verifies that known default-visible
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-308-// fields (name, city, state, enrollment, institution_type) are present and marked
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-309-// defaultVisible=true.
+api/graph/resolver/search_fields_resolver_test.go:310:func TestSearchOutputFields_DefaultVisibleFields(t *testing.T) {
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-311-	t.Parallel()
+api/graph/resolver/search_fields_resolver_test.go-312-	r := newTestSearchFieldsResolver()
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-313-
+api/graph/resolver/search_fields_resolver_test.go:314:	outFields, err := r.SearchOutputFields(context.Background())
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-315-	if err != nil {
+api/graph/resolver/search_fields_resolver_test.go:316:		t.Fatalf("SearchOutputFields error: %v", err)
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-317-	}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-318-
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-319-	// Index by name for easy lookup.
+api/graph/resolver/search_fields_resolver_test.go-320-	byName := make(map[string]*model.SearchOutputField, len(outFields))
+api/graph/resolver/search_fields_resolver_test.go-321-	for _, f := range outFields {
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-322-		byName[f.Name] = f
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-323-	}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-324-
+api/graph/resolver/search_fields_resolver_test.go-325-	for _, name := range []string{"name", "city", "state", "enrollment", "institution_type"} {
+api/graph/resolver/search_fields_resolver_test.go-326-		f, ok := byName[name]
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-327-		if !ok {
+api/graph/resolver/search_fields_resolver_test.go:328:			t.Errorf("field %q missing from SearchOutputFields", name)
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-329-			continue
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-330-		}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-331-		if !f.DefaultVisible {
+api/graph/resolver/search_fields_resolver_test.go-332-			t.Errorf("field %q: DefaultVisible = false, want true", name)
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-333-		}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-334-	}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-335-}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-336-
+api/graph/resolver/search_fields_resolver_test.go:337:// TestSearchOutputFields_InputOnlyExcluded verifies that input-only fields
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-338-// (location, carnegie_basic, congressional_district, fields_of_study) are absent.
+api/graph/resolver/search_fields_resolver_test.go:339:func TestSearchOutputFields_InputOnlyExcluded(t *testing.T) {
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-340-	t.Parallel()
+api/graph/resolver/search_fields_resolver_test.go-341-	r := newTestSearchFieldsResolver()
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-342-
+api/graph/resolver/search_fields_resolver_test.go:343:	outFields, err := r.SearchOutputFields(context.Background())
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-344-	if err != nil {
+api/graph/resolver/search_fields_resolver_test.go:345:		t.Fatalf("SearchOutputFields error: %v", err)
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-346-	}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-347-
+api/graph/resolver/search_fields_resolver_test.go-348-	byName := make(map[string]bool, len(outFields))
+api/graph/resolver/search_fields_resolver_test.go-349-	for _, f := range outFields {
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-350-		byName[f.Name] = true
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-351-	}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-352-
+api/graph/resolver/search_fields_resolver_test.go-353-	for _, name := range []string{"location", "carnegie_basic", "congressional_district", "fields_of_study"} {
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-354-		if byName[name] {
+api/graph/resolver/search_fields_resolver_test.go:355:			t.Errorf("input-only field %q should not appear in SearchOutputFields", name)
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-356-		}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-357-	}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-358-}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-359-
+api/graph/resolver/search_fields_resolver_test.go:360:// TestSearchOutputFields_SortableFields verifies that numeric fields like
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-361-// enrollment and admission_rate are sortable, while enum fields like state are not.
+api/graph/resolver/search_fields_resolver_test.go:362:func TestSearchOutputFields_SortableFields(t *testing.T) {
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-363-	t.Parallel()
+api/graph/resolver/search_fields_resolver_test.go-364-	r := newTestSearchFieldsResolver()
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-365-
+api/graph/resolver/search_fields_resolver_test.go:366:	outFields, err := r.SearchOutputFields(context.Background())
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-367-	if err != nil {
+api/graph/resolver/search_fields_resolver_test.go:368:		t.Fatalf("SearchOutputFields error: %v", err)
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-369-	}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-370-
+api/graph/resolver/search_fields_resolver_test.go-371-	byName := make(map[string]*model.SearchOutputField, len(outFields))
+api/graph/resolver/search_fields_resolver_test.go-372-	for _, f := range outFields {
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-373-		byName[f.Name] = f
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-374-	}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-375-
+api/graph/resolver/search_fields_resolver_test.go-376-	sortable := []string{"enrollment", "admission_rate", "tuition_in_state", "rank_us_news_national"}
+api/graph/resolver/search_fields_resolver_test.go-377-	for _, name := range sortable {
+api/graph/resolver/search_fields_resolver_test.go-378-		f, ok := byName[name]
+--
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-391-		if !ok {
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-392-			t.Errorf("field %q missing from output fields", name)
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-393-			continue
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-394-		}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-395-		if f.Sortable {
+api/graph/resolver/search_fields_resolver_test.go-396-			t.Errorf("field %q: Sortable = true, want false", name)
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-397-		}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-398-	}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-399-}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-400-
+api/graph/resolver/search_fields_resolver_test.go:401:// TestSearchOutputFields_UnitPropagated verifies that currency/percentage units
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-402-// propagate to SearchOutputField.Unit.
+api/graph/resolver/search_fields_resolver_test.go:403:func TestSearchOutputFields_UnitPropagated(t *testing.T) {
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-404-	t.Parallel()
+api/graph/resolver/search_fields_resolver_test.go-405-	r := newTestSearchFieldsResolver()
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-406-
+api/graph/resolver/search_fields_resolver_test.go:407:	outFields, err := r.SearchOutputFields(context.Background())
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-408-	if err != nil {
+api/graph/resolver/search_fields_resolver_test.go:409:		t.Fatalf("SearchOutputFields error: %v", err)
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-410-	}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-411-
+api/graph/resolver/search_fields_resolver_test.go-412-	byName := make(map[string]*model.SearchOutputField, len(outFields))
+api/graph/resolver/search_fields_resolver_test.go-413-	for _, f := range outFields {
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-414-		byName[f.Name] = f
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-415-	}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-416-
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-417-	// tuition_in_state → DOLLARS
+api/graph/resolver/search_fields_resolver_test.go-418-	if f, ok := byName["tuition_in_state"]; ok {
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-419-		if f.Unit == nil || *f.Unit != model.SearchFieldUnitDollars {
+--
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-426-	// admission_rate → PERCENTAGE (0.0–1.0 bounds)
+api/graph/resolver/search_fields_resolver_test.go-427-	if f, ok := byName["admission_rate"]; ok {
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-428-		if f.Unit == nil || *f.Unit != model.SearchFieldUnitPercentage {
+api/graph/resolver/search_fields_resolver_test.go-429-			t.Errorf("admission_rate: Unit = %v, want PERCENTAGE", f.Unit)
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-430-		}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-431-	} else {
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-432-		t.Error("admission_rate missing from output fields")
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-433-	}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-434-}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-435-
+api/graph/resolver/search_fields_resolver_test.go:436:// TestSearchOutputFields_SharedMetadata verifies that name/label/visibility/exportable
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-437-// match their counterparts in SearchFields for a representative field.
+api/graph/resolver/search_fields_resolver_test.go:438:func TestSearchOutputFields_SharedMetadata(t *testing.T) {
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-439-	t.Parallel()
+api/graph/resolver/search_fields_resolver_test.go-440-	r := newTestSearchFieldsResolver()
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-441-
+api/graph/resolver/search_fields_resolver_test.go-442-	allFields, err := r.SearchFields(context.Background())
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-443-	if err != nil {
+api/graph/resolver/search_fields_resolver_test.go-444-		t.Fatalf("SearchFields error: %v", err)
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-445-	}
+api/graph/resolver/search_fields_resolver_test.go:446:	outFields, err := r.SearchOutputFields(context.Background())
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-447-	if err != nil {
+api/graph/resolver/search_fields_resolver_test.go:448:		t.Fatalf("SearchOutputFields error: %v", err)
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-449-	}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-450-
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-451-	// Find "enrollment" in both slices.
+api/graph/resolver/search_fields_resolver_test.go-452-	inputEnrollment := findFieldByName(t, allFields, "enrollment")
+api/graph/resolver/search_fields_resolver_test.go-453-	nrf, ok := inputEnrollment.(*model.NumericalRangeSearchField)
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-454-	if !ok {
+api/graph/resolver/search_fields_resolver_test.go-455-		t.Fatalf("enrollment in SearchFields: got %T, want NumericalRangeSearchField", inputEnrollment)
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-456-	}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-457-
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-458-	var outputEnrollment *model.SearchOutputField
+api/graph/resolver/search_fields_resolver_test.go-459-	for _, f := range outFields {
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-460-		if f.Name == "enrollment" {
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-461-			outputEnrollment = f
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-462-			break
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-463-		}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-464-	}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-465-	if outputEnrollment == nil {
+api/graph/resolver/search_fields_resolver_test.go:466:		t.Fatal("enrollment missing from SearchOutputFields")
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-467-	}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-468-
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-469-	// Shared metadata must match.
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-470-	if outputEnrollment.Label != nrf.Label {
+api/graph/resolver/search_fields_resolver_test.go-471-		t.Errorf("enrollment label mismatch: input=%q output=%q", nrf.Label, outputEnrollment.Label)
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-472-	}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-473-	if outputEnrollment.Visibility != nrf.Visibility {
+api/graph/resolver/search_fields_resolver_test.go-474-		t.Errorf("enrollment visibility mismatch: input=%v output=%v", nrf.Visibility, outputEnrollment.Visibility)
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-475-	}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-476-	if outputEnrollment.Exportable != nrf.Exportable {
+--
+api/graph/resolver/search_fields_resolver_test.go-509-	allCount := len(reg.Descriptors())
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-510-	if len(anonFields) != allCount-hiddenCount {
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-511-		t.Errorf("anon field count = %d, want %d (all %d - hidden %d)",
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-512-			len(anonFields), allCount-hiddenCount, allCount, hiddenCount)
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-513-	}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-514-	if len(authFields) != allCount-hiddenCount {
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-515-		t.Errorf("auth field count = %d, want %d", len(authFields), allCount-hiddenCount)
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-516-	}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-517-}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-518-
+api/graph/resolver/search_fields_resolver_test.go:519:// TestSearchOutputFields_MultiEnum verifies a multi-enum field has no MaxSelections cap.
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-520-func TestSearchFields_MultiEnum(t *testing.T) {
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-521-	t.Parallel()
+api/graph/resolver/search_fields_resolver_test.go-522-	r := newTestSearchFieldsResolver()
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-523-
+api/graph/resolver/search_fields_resolver_test.go-524-	fields, err := r.SearchFields(context.Background())
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-525-	if err != nil {
+api/graph/resolver/search_fields_resolver_test.go-526-		t.Fatalf("SearchFields returned error: %v", err)
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-527-	}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-528-
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/graph/resolver/search_fields_resolver_test.go-529-	// application_platforms is a multi-enum field in the registry

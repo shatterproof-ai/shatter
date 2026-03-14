@@ -1,0 +1,47 @@
+import posthog from 'posthog-js'
+
+const posthogKey = import.meta.env.VITE_POSTHOG_KEY as string | undefined
+const posthogHost = import.meta.env.VITE_POSTHOG_HOST as string | undefined
+
+export const posthogEnabled = Boolean(posthogKey)
+
+if (!posthogEnabled) {
+  console.info('Missing VITE_POSTHOG_KEY — PostHog analytics is disabled.')
+} else {
+  posthog.init(posthogKey!, {
+    api_host: posthogHost || 'https://us.i.posthog.com',
+    capture_pageview: false,
+    capture_pageleave: true,
+    autocapture: false,
+    respect_dnt: true,
+    persistence: 'localStorage',
+    loaded: (ph) => {
+      if (import.meta.env.DEV) ph.debug()
+    },
+  })
+}
+
+if (posthogEnabled) {
+  window.onerror = (_message, _source, _lineno, _colno, error) => {
+    if (error) {
+      posthog.capture('$exception', {
+        $exception_message: error.message,
+        $exception_type: error.name,
+        $exception_stack_trace_raw: error.stack,
+        $exception_source: 'window_onerror',
+      })
+    }
+  }
+
+  window.onunhandledrejection = (event: PromiseRejectionEvent) => {
+    const error = event.reason instanceof Error ? event.reason : new Error(String(event.reason))
+    posthog.capture('$exception', {
+      $exception_message: error.message,
+      $exception_type: error.name,
+      $exception_stack_trace_raw: error.stack,
+      $exception_source: 'unhandled_rejection',
+    })
+  }
+}
+
+export { posthog }

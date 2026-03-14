@@ -1,0 +1,126 @@
+package workspace
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+)
+
+// AgentProfile configures model and effort level for a teammate.
+type AgentProfile struct {
+	Model  string `yaml:"model,omitempty"`
+	Effort string `yaml:"effort,omitempty"`
+}
+
+// Config represents the workspace.yaml configuration.
+type Config struct {
+	RepoURL       string                  `yaml:"repo_url"`
+	ProjectPath   string                  `yaml:"project_path"`
+	DefaultBranch string                  `yaml:"default_branch"`
+	ExtraROMounts []string                `yaml:"extra_ro_mounts"`
+	ExtraRWMounts []string                `yaml:"extra_rw_mounts"`
+	AgentEnv      map[string]string       `yaml:"agent_env"`
+	AgentProfiles map[string]AgentProfile `yaml:"agent_profiles"`
+}
+
+// Workspace represents a loaded workspace with its config and directory.
+type Workspace struct {
+	Config Config
+	Dir    string // absolute path to the workspace directory (e.g. ~/.agentsea/workspaces/<project>/)
+}
+
+// BaseDir returns the root directory for all workspaces (~/.agentsea/workspaces/).
+func BaseDir() string {
+	return filepath.Join(os.Getenv("HOME"), ".agentsea", "workspaces")
+}
+
+// Load reads workspace.yaml from the given directory and returns a Workspace.
+func Load(dir string) (*Workspace, error) {
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, fmt.Errorf("resolving workspace dir: %w", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(absDir, "workspace.yaml"))
+	if err != nil {
+		return nil, fmt.Errorf("reading workspace.yaml: %w", err)
+	}
+
+	var cfg Config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("parsing workspace.yaml: %w", err)
+	}
+
+	return &Workspace{Config: cfg, Dir: absDir}, nil
+}
+
+// Detect finds the workspace whose project_path matches the current working directory.
+// It scans all workspaces in BaseDir() and returns the first match.
+func Detect() (*Workspace, error) {
+	return DetectWithBase(BaseDir())
+}
+
+// DetectWithBase is like Detect but uses a custom base directory (for testing).
+func DetectWithBase(baseDir string) (*Workspace, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("getting cwd: %w", err)
+	}
+
+	entries, err := os.ReadDir(baseDir)
+	if err != nil {
+		return nil, fmt.Errorf("reading workspaces dir: %w", err)
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		wsDir := filepath.Join(baseDir, entry.Name())
+		ws, err := Load(wsDir)
+		if err != nil {
+			continue // skip unreadable workspaces
+		}
+
+		projPath := ws.Config.ProjectPath
+		if projPath == "" {
+			continue
+		}
+		// Normalize project_path to absolute
+		if !filepath.IsAbs(projPath) {
+			continue
+		}
+		// Clean both paths for consistent comparison
+		projPath = filepath.Clean(projPath)
+		cleanCwd := filepath.Clean(cwd)
+
+		if cleanCwd == projPath || strings.HasPrefix(cleanCwd, projPath+string(filepath.Separator)) {
+			return ws, nil
+		}
+	}
+
+	return nil, fmt.Errorf("no workspace found for cwd %s", cwd)
+}
+
+// AgentRepoPath returns the path to an agent's git repository clone.
+func (w *Workspace) AgentRepoPath(name string) string {
+	return filepath.Join(w.Dir, "agents", name, "repo")
+}
+
+// AgentSSHPath returns the path to an agent's SSH key directory.
+func (w *Workspace) AgentSSHPath(name string) string {
+	return filepath.Join(w.Dir, "agents", name, "ssh")
+}
+
+// CanonicalPath returns the path to the bare canonical clone.
+func (w *Workspace) CanonicalPath() string {
+	return filepath.Join(w.Dir, "canonical")
+}
+
+// TeamMailboxPath returns the path to the team mailbox directory.
+func (w *Workspace) TeamMailboxPath(teamName string) string {
+	return filepath.Join(os.Getenv("HOME"), ".claude", "teams", teamName)
+}

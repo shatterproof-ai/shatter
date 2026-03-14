@@ -1,0 +1,9 @@
+{
+  "id": "1",
+  "subject": "str-fpgb.6: Frontend conformance harness",
+  "description": "Build a black-box protocol conformance harness that runs the same NDJSON request/response cases against each frontend subprocess (TS, Go, Rust, noop) and reports behavioral drift. Shared conformance cases must run against all frontends; protocol field mismatches fail the harness; expected dynamic fields are normalized explicitly. This is P1 and blocks str-fpgb.7 and str-fpgb.9. See `bd show str-fpgb.6` for full details.",
+  "activeForm": "Building frontend conformance harness",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

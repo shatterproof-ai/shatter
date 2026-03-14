@@ -1,0 +1,304 @@
+package workspace
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestLoad(t *testing.T) {
+	dir := t.TempDir()
+	yaml := `repo_url: git@github.com:org/repo.git
+project_path: /home/user/project/myrepo
+default_branch: main
+extra_ro_mounts:
+  - /home/user/.cargo
+  - /home/user/.rustup
+extra_rw_mounts:
+  - /tmp/scratch
+agent_env:
+  DATABASE_URL: "postgres://localhost:5432/dev"
+  FOO: bar
+`
+	if err := os.WriteFile(filepath.Join(dir, "workspace.yaml"), []byte(yaml), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ws, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"RepoURL", ws.Config.RepoURL, "git@github.com:org/repo.git"},
+		{"ProjectPath", ws.Config.ProjectPath, "/home/user/project/myrepo"},
+		{"DefaultBranch", ws.Config.DefaultBranch, "main"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Errorf("got %q, want %q", tt.got, tt.want)
+			}
+		})
+	}
+
+	if len(ws.Config.ExtraROMounts) != 2 {
+		t.Errorf("ExtraROMounts: got %d items, want 2", len(ws.Config.ExtraROMounts))
+	}
+	if len(ws.Config.ExtraRWMounts) != 1 {
+		t.Errorf("ExtraRWMounts: got %d items, want 1", len(ws.Config.ExtraRWMounts))
+	}
+	if ws.Config.AgentEnv["DATABASE_URL"] != "postgres://localhost:5432/dev" {
+		t.Errorf("AgentEnv[DATABASE_URL] = %q", ws.Config.AgentEnv["DATABASE_URL"])
+	}
+	if ws.Config.AgentEnv["FOO"] != "bar" {
+		t.Errorf("AgentEnv[FOO] = %q", ws.Config.AgentEnv["FOO"])
+	}
+}
+
+func TestLoad_MissingFile(t *testing.T) {
+	dir := t.TempDir()
+	_, err := Load(dir)
+	if err == nil {
+		t.Fatal("Load() expected error for missing file, got nil")
+	}
+}
+
+func TestLoad_InvalidYAML(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "workspace.yaml"), []byte("{{invalid"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(dir)
+	if err == nil {
+		t.Fatal("Load() expected error for invalid YAML, got nil")
+	}
+}
+
+// setupProjectWithWorkspace creates a project directory with .agentsea/workspace.yaml
+// and returns the project root directory.
+func setupProjectWithWorkspace(t *testing.T, projectDir string, yamlContent string) {
+	t.Helper()
+	wsDir := filepath.Join(projectDir, DirName)
+	if err := os.MkdirAll(wsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wsDir, "workspace.yaml"), []byte(yamlContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDetect(t *testing.T) {
+	projectDir := t.TempDir()
+	yaml := "repo_url: git@github.com:org/repo.git\nproject_path: " + projectDir + "\ndefault_branch: main\n"
+	setupProjectWithWorkspace(t, projectDir, yaml)
+
+	origDir, _ := os.Getwd()
+	defer os.Chdir(origDir)
+	os.Chdir(projectDir)
+
+	ws, err := DetectFrom(projectDir)
+	if err != nil {
+		t.Fatalf("DetectFrom() error: %v", err)
+	}
+	if ws.Config.ProjectPath != projectDir {
+		t.Errorf("ProjectPath = %q, want %q", ws.Config.ProjectPath, projectDir)
+	}
+}
+
+func TestDetect_Subdirectory(t *testing.T) {
+	projectDir := t.TempDir()
+	subDir := filepath.Join(projectDir, "src", "pkg")
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	yaml := "repo_url: git@github.com:org/repo.git\nproject_path: " + projectDir + "\ndefault_branch: main\n"
+	setupProjectWithWorkspace(t, projectDir, yaml)
+
+	ws, err := DetectFrom(subDir)
+	if err != nil {
+		t.Fatalf("DetectFrom() from subdirectory error: %v", err)
+	}
+	if ws.Config.ProjectPath != projectDir {
+		t.Errorf("ProjectPath = %q, want %q", ws.Config.ProjectPath, projectDir)
+	}
+}
+
+func TestDetect_NoMatch(t *testing.T) {
+	noWsDir := t.TempDir()
+
+	_, err := DetectFrom(noWsDir)
+	if err == nil {
+		t.Fatal("DetectFrom() expected error when no workspace exists, got nil")
+	}
+}
+
+func TestPathHelpers(t *testing.T) {
+	ws := &Workspace{
+		Dir: "/home/user/project/.agentsea",
+	}
+
+	tests := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"AgentRepoPath", ws.AgentRepoPath("fix-auth"), "/home/user/project/.agentsea/agents/fix-auth/repo"},
+		{"AgentSSHPath", ws.AgentSSHPath("fix-auth"), "/home/user/project/.agentsea/agents/fix-auth/ssh"},
+		{"CanonicalPath", ws.CanonicalPath(), "/home/user/project/.agentsea/canonical"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Errorf("got %q, want %q", tt.got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTeamMailboxPath(t *testing.T) {
+	ws := &Workspace{}
+	home := os.Getenv("HOME")
+	got := ws.TeamMailboxPath("myteam")
+	want := filepath.Join(home, ".claude", "teams", "myteam")
+	if got != want {
+		t.Errorf("TeamMailboxPath() = %q, want %q", got, want)
+	}
+}
+
+func TestLoad_EmptyYAML(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "workspace.yaml"), []byte(""), 0644); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load() unexpected error for empty YAML: %v", err)
+	}
+	if ws.Config.RepoURL != "" || ws.Config.ProjectPath != "" || ws.Config.DefaultBranch != "" {
+		t.Errorf("expected zero-value Config, got %+v", ws.Config)
+	}
+}
+
+func TestLoad_WrongTypes(t *testing.T) {
+	dir := t.TempDir()
+	// Array where string is expected
+	if err := os.WriteFile(filepath.Join(dir, "workspace.yaml"), []byte("repo_url: [1, 2, 3]\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(dir)
+	if err == nil {
+		t.Fatal("Load() expected error for wrong types, got nil")
+	}
+}
+
+func TestLoad_BinaryGarbage(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "workspace.yaml"), []byte{0x00, 0xff, 0xfe, 0x80, 0x01}, 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(dir)
+	if err == nil {
+		t.Fatal("Load() expected error for binary garbage, got nil")
+	}
+}
+
+func TestDetect_NoWorkspaceAnywhere(t *testing.T) {
+	noWsDir := t.TempDir()
+
+	_, err := DetectFrom(noWsDir)
+	if err == nil {
+		t.Fatal("DetectFrom() expected error for dir with no workspace, got nil")
+	}
+	if !strings.Contains(err.Error(), "no workspace found") {
+		t.Errorf("expected 'no workspace found' error, got: %v", err)
+	}
+}
+
+func TestDetect_RelativeProjectPath(t *testing.T) {
+	projectDir := t.TempDir()
+	// Workspace exists but has relative project_path — should still load since
+	// DetectFrom walks up looking for .agentsea/workspace.yaml (it doesn't filter by project_path)
+	yaml := "repo_url: git@github.com:org/repo.git\nproject_path: relative/path\ndefault_branch: main\n"
+	setupProjectWithWorkspace(t, projectDir, yaml)
+
+	ws, err := DetectFrom(projectDir)
+	if err != nil {
+		t.Fatalf("DetectFrom() unexpected error: %v", err)
+	}
+	if ws.Config.ProjectPath != "relative/path" {
+		t.Errorf("ProjectPath = %q, want %q", ws.Config.ProjectPath, "relative/path")
+	}
+}
+
+func TestLoad_AgentProfiles(t *testing.T) {
+	dir := t.TempDir()
+	yamlContent := `repo_url: git@github.com:org/repo.git
+project_path: /home/user/project
+default_branch: main
+agent_profiles:
+  default:
+    model: claude-sonnet-4-6
+    effort: low
+  researcher:
+    model: claude-opus-4-6
+    effort: high
+  coder:
+    model: claude-sonnet-4-6
+`
+	if err := os.WriteFile(filepath.Join(dir, "workspace.yaml"), []byte(yamlContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ws, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if len(ws.Config.AgentProfiles) != 3 {
+		t.Fatalf("AgentProfiles: got %d entries, want 3", len(ws.Config.AgentProfiles))
+	}
+
+	tests := []struct {
+		name       string
+		wantModel  string
+		wantEffort string
+	}{
+		{"default", "claude-sonnet-4-6", "low"},
+		{"researcher", "claude-opus-4-6", "high"},
+		{"coder", "claude-sonnet-4-6", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := ws.Config.AgentProfiles[tt.name]
+			if p.Model != tt.wantModel {
+				t.Errorf("Model = %q, want %q", p.Model, tt.wantModel)
+			}
+			if p.Effort != tt.wantEffort {
+				t.Errorf("Effort = %q, want %q", p.Effort, tt.wantEffort)
+			}
+		})
+	}
+}
+
+func TestAgentRepoPath_PathTraversal(t *testing.T) {
+	ws := &Workspace{Dir: "/home/user/project/.agentsea"}
+	got := ws.AgentRepoPath("../../../admin")
+	if strings.HasPrefix(got, filepath.Join(ws.Dir, "agents")) {
+		t.Errorf("expected path traversal to escape agents dir, got %q", got)
+	}
+}
+
+func TestAgentSSHPath_PathTraversal(t *testing.T) {
+	ws := &Workspace{Dir: "/home/user/project/.agentsea"}
+	got := ws.AgentSSHPath("../../../admin")
+	if strings.HasPrefix(got, filepath.Join(ws.Dir, "agents")) {
+		t.Errorf("expected path traversal to escape agents dir, got %q", got)
+	}
+}

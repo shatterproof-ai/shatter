@@ -1,0 +1,112 @@
+<<<<<<< HEAD
+# TDD Guard Integration
+
+[TDD Guard](https://github.com/nizos/tdd-guard) monitors test results during
+development and feeds them back to AI coding assistants so they can see which
+tests pass and fail without needing to parse raw test output.
+
+Flotsam integrates TDD Guard for both Go and Vitest test runners.
+
+---
+
+## Make targets
+
+| Target | Description |
+|---|---|
+| `make api-test-tdd` | Go tests piped through `tdd-guard-go` (if installed) |
+| `make web-test-tdd` | Vitest with `tdd-guard-vitest` reporter (if installed) |
+
+Both targets fall back to normal test output when the reporter is not installed.
+
+---
+
+## Vitest reporter
+
+The `tdd-guard-vitest` package is included as a dev dependency. The reporter
+activates **only** when `TDD_GUARD_PROJECT_ROOT` is set (done automatically by
+`make web-test-tdd`).
+
+### How it works
+
+`web/vitest.config.ts` conditionally loads the reporter:
+
+- `TDD_GUARD_PROJECT_ROOT` unset → reporter skipped, normal Vitest output
+- `TDD_GUARD_PROJECT_ROOT` set → reporter loaded alongside the default reporter
+- `TDD_GUARD_REQUIRED=1` → error if the reporter package is missing (for CI)
+
+### Manual usage
+
+```bash
+cd web
+TDD_GUARD_PROJECT_ROOT="$(pwd)" pnpm test
+```
+
+---
+
+## Go reporter
+
+The Go integration uses `tdd-guard-go`, a standalone binary that reads `go test
+-json` output from stdin.
+=======
+# TDD Guard
+
+TDD Guard tools format test output for AI-assisted TDD workflows. They parse
+native test runner JSON/TAP output and produce structured summaries optimized
+for LLM consumption.
+
+## Go — `tdd-guard-go`
+>>>>>>> worktree/tdd-go
+
+### Install
+
+```bash
+<<<<<<< HEAD
+go install github.com/nizos/tdd-guard-go@latest
+```
+
+### Manual usage
+
+```bash
+cd api
+go test -json ./... 2>&1 | tdd-guard-go -project-root "$(pwd)"
+```
+
+---
+
+## Claude Code integration
+
+The `.claude/settings.json` hooks invoke `scripts/hooks/claude-tdd-guard.sh`,
+which runs TDD Guard automatically when Claude executes tests. No manual setup
+is needed beyond installing the reporter packages.
+=======
+go install github.com/ketang/tdd-guard-go@latest
+```
+
+Ensure `$(go env GOPATH)/bin` is in your `PATH`.
+
+### Usage
+
+```bash
+# Via make target (recommended — auto-detects installation)
+make api-test-tdd        # from project root
+make test-tdd            # from api/
+
+# Manual
+go test -json -short ./... 2>&1 | tdd-guard-go -project-root "$(pwd)"
+```
+
+The make target gracefully falls back to raw `go test -json` output when
+`tdd-guard-go` is not installed.
+
+### Design choices
+
+- **`-short` flag**: TDD loops run frequently, so only unit tests execute.
+  Use `make api-test` or `make api-test-unit` for the full suite with race
+  detection.
+- **No `-race` flag**: Omitted for speed in tight feedback loops. The `test`
+  and `test-unit` targets include `-race`.
+
+## Vitest — TDD Guard reporter
+
+See `web/CLAUDE.md` for the Vitest TDD Guard reporter configuration.
+>>>>>>> worktree/tdd-go

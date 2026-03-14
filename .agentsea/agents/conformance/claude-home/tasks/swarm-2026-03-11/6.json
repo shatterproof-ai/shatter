@@ -1,0 +1,8 @@
+{
+  "id": "6",
+  "subject": "kapow-3jr.2: Semgrep custom policy rules",
+  "description": "Add custom Semgrep rules for project-specific failure classes.",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

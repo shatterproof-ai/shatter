@@ -1,0 +1,8 @@
+{
+  "id": "9",
+  "subject": "kapow-j2l.10: Admissions importer orchestrator",
+  "description": "Create admissions.go implementing the Importer interface that orchestrates all platform extractors.",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

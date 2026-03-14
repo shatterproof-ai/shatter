@@ -1,0 +1,420 @@
+package cli
+
+import (
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
+
+	"github.com/agentsea/agentsea/internal/detect"
+	"github.com/agentsea/agentsea/internal/workspace"
+)
+
+func smokeCmd() *cobra.Command {
+	var timeout time.Duration
+
+	cmd := &cobra.Command{
+		Use:   "smoke",
+		Short: "End-to-end smoke test of teammate sandboxing",
+		Long: `Creates a temporary project, launches Claude Code with sandboxing via
+the stream-json protocol, and instructs it to spawn a teammate that verifies
+its bwrap sandbox environment.
+
+Requires no existing repos or network connection.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runSmoke(timeout)
+		},
+	}
+
+	cmd.Flags().DurationVar(&timeout, "timeout", 5*time.Minute, "Maximum time to wait for smoke test")
+	return cmd
+}
+
+// smokeConfig holds resolved paths for the smoke test environment.
+type smokeConfig struct {
+	TmpDir    string
+	ClaudeBin string
+	SeaBin    string
+}
+
+// smokePreflight validates the environment and creates the temp project.
+func smokePreflight() (*smokeConfig, error) {
+	claudeBin, err := detect.FindClaudeBinary()
+	if err != nil {
+		return nil, fmt.Errorf("finding claude binary: %w", err)
+	}
+
+	seaBin, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("resolving sea binary path: %w", err)
+	}
+
+	if _, err := exec.LookPath("bwrap"); err != nil {
+		return nil, fmt.Errorf("bwrap not found on PATH — install with: sudo apt install bubblewrap")
+	}
+
+	tmpDir, err := os.MkdirTemp("", "sea-smoke-*")
+	if err != nil {
+		return nil, fmt.Errorf("creating temp dir: %w", err)
+	}
+
+	return &smokeConfig{
+		TmpDir:    tmpDir,
+		ClaudeBin: claudeBin,
+		SeaBin:    seaBin,
+	}, nil
+}
+
+// smokeSetup initializes a self-contained git repo and workspace with no
+// network access or pre-existing repos required.
+func smokeSetup(cfg *smokeConfig) error {
+	for name, content := range map[string]string{
+		"CLAUDE.md": smokeClaudeMD,
+		"README.md": "# Smoke Test Project\n",
+	} {
+		if err := os.WriteFile(filepath.Join(cfg.TmpDir, name), []byte(content), 0644); err != nil {
+			return fmt.Errorf("writing %s: %w", name, err)
+		}
+	}
+
+	gitEnv := append(os.Environ(),
+		"GIT_AUTHOR_NAME=sea-smoke",
+		"GIT_AUTHOR_EMAIL=smoke@test",
+		"GIT_COMMITTER_NAME=sea-smoke",
+		"GIT_COMMITTER_EMAIL=smoke@test",
+	)
+	for _, args := range [][]string{
+		{"git", "init", "-q"},
+		{"git", "add", "."},
+		{"git", "commit", "-q", "-m", "smoke test init"},
+	} {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = cfg.TmpDir
+		cmd.Env = gitEnv
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("running %v: %s: %w", args, out, err)
+		}
+	}
+
+	wsDir := filepath.Join(cfg.TmpDir, workspace.DirName)
+	for _, dir := range []string{
+		wsDir,
+		filepath.Join(wsDir, "agents"),
+		filepath.Join(wsDir, "ssh"),
+	} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("creating %s: %w", dir, err)
+		}
+	}
+
+	canonicalPath := filepath.Join(wsDir, "canonical")
+	cmd := exec.Command("git", "clone", "--bare", cfg.TmpDir, canonicalPath)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git clone --bare: %s: %w", out, err)
+	}
+
+	wsCfg := workspace.Config{
+		RepoURL:       cfg.TmpDir,
+		ProjectPath:   cfg.TmpDir,
+		DefaultBranch: "main",
+	}
+	yamlData, err := yaml.Marshal(&wsCfg)
+	if err != nil {
+		return fmt.Errorf("marshaling workspace config: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(wsDir, "workspace.yaml"), yamlData, 0644); err != nil {
+		return fmt.Errorf("writing workspace.yaml: %w", err)
+	}
+
+	return nil
+}
+
+// stream-json message types
+
+type streamEvent struct {
+	Type    string          `json:"type"`
+	Subtype string          `json:"subtype,omitempty"`
+	Message json.RawMessage `json:"message,omitempty"`
+	Result  string          `json:"result,omitempty"`
+	IsError bool            `json:"is_error,omitempty"`
+}
+
+type streamMessage struct {
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"`
+}
+
+type contentBlock struct {
+	Type string `json:"type"`
+	Text string `json:"text,omitempty"`
+}
+
+type userInputMessage struct {
+	Type    string           `json:"type"`
+	Message userMessageInner `json:"message"`
+}
+
+type userMessageInner struct {
+	Role    string         `json:"role"`
+	Content []contentBlock `json:"content"`
+}
+
+func sendMessage(stdin io.Writer, text string) error {
+	msg := userInputMessage{
+		Type: "user",
+		Message: userMessageInner{
+			Role: "user",
+			Content: []contentBlock{
+				{Type: "text", Text: text},
+			},
+		},
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	_, err = stdin.Write(append(data, '\n'))
+	return err
+}
+
+func runSmoke(timeout time.Duration) error {
+	cfg, err := smokePreflight()
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Setting up smoke test in %s\n", cfg.TmpDir)
+
+	if err := smokeSetup(cfg); err != nil {
+		os.RemoveAll(cfg.TmpDir)
+		return err
+	}
+
+	fmt.Printf("  claude:  %s\n", cfg.ClaudeBin)
+	fmt.Printf("  wrapper: %s teammate-wrapper\n", cfg.SeaBin)
+	fmt.Printf("  project: %s\n", cfg.TmpDir)
+	fmt.Printf("  timeout: %s\n", timeout)
+	fmt.Println()
+	fmt.Println("Launching Claude Code via stream-json protocol...")
+	fmt.Printf("Clean up after: rm -rf %s\n", cfg.TmpDir)
+	fmt.Println()
+
+	cmd := exec.Command(cfg.ClaudeBin,
+		"--input-format", "stream-json",
+		"--output-format", "stream-json",
+		"--permission-mode", "bypassPermissions",
+		"--verbose",
+	)
+	cmd.Dir = cfg.TmpDir
+	cmd.Stderr = os.Stderr
+	cmd.Env = append(os.Environ(),
+		fmt.Sprintf("CLAUDE_CODE_TEAMMATE_COMMAND=%s teammate-wrapper", cfg.SeaBin),
+	)
+
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("creating stdin pipe: %w", err)
+	}
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("creating stdout pipe: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("starting claude: %w", err)
+	}
+
+	// Send the initial prompt
+	fmt.Fprintf(os.Stderr, "[sea] Sending initial prompt\n")
+	if err := sendMessage(stdin, smokePrompt); err != nil {
+		return fmt.Errorf("writing prompt: %w", err)
+	}
+
+	// Process output events with follow-up nudges
+	done := make(chan error, 1)
+	var resultText strings.Builder
+	var mu sync.Mutex
+	gotResults := false
+
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+
+		for scanner.Scan() {
+			line := scanner.Text()
+			if line == "" {
+				continue
+			}
+
+			var event streamEvent
+			if err := json.Unmarshal([]byte(line), &event); err != nil {
+				fmt.Fprintf(os.Stderr, "[sea] unparseable: %s\n", truncate(line, 200))
+				continue
+			}
+
+			switch event.Type {
+			case "assistant":
+				var msg streamMessage
+				if err := json.Unmarshal(event.Message, &msg); err == nil {
+					var blocks []contentBlock
+					if err := json.Unmarshal(msg.Content, &blocks); err == nil {
+						for _, b := range blocks {
+							if b.Type == "text" && b.Text != "" {
+								fmt.Fprintf(os.Stderr, "[sea] assistant: %s\n", truncate(b.Text, 200))
+								mu.Lock()
+								resultText.WriteString(b.Text)
+								resultText.WriteString("\n")
+								if strings.Contains(b.Text, "SMOKE TEST RESULTS") {
+									gotResults = true
+								}
+								mu.Unlock()
+							}
+						}
+					}
+				}
+
+			case "result":
+				fmt.Fprintf(os.Stderr, "[sea] result event (is_error=%v)\n", event.IsError)
+				mu.Lock()
+				if event.Result != "" {
+					resultText.WriteString(event.Result)
+					resultText.WriteString("\n")
+					if strings.Contains(event.Result, "SMOKE TEST RESULTS") {
+						gotResults = true
+					}
+				}
+				hasResults := gotResults
+				mu.Unlock()
+
+				if hasResults {
+					// We got the results — close stdin to exit
+					fmt.Fprintf(os.Stderr, "[sea] Got smoke test results, closing session\n")
+					stdin.Close()
+					done <- nil
+					return
+				}
+
+				// Lead stopped without results — nudge it to keep polling
+				fmt.Fprintf(os.Stderr, "[sea] Lead stopped without results, sending follow-up...\n")
+				nudge := `The teammate is still running. Check again for results:
+cat .agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET"
+If the file doesn't exist yet, wait 10 seconds and try again. Keep trying until you get results or 2 minutes have passed. Once you have results, print the SMOKE TEST RESULTS summary as instructed.`
+				if err := sendMessage(stdin, nudge); err != nil {
+					fmt.Fprintf(os.Stderr, "[sea] failed to send nudge: %v\n", err)
+					done <- err
+					return
+				}
+
+			case "user":
+				fmt.Fprintf(os.Stderr, "[sea] user event (tool result)\n")
+
+			default:
+				fmt.Fprintf(os.Stderr, "[sea] event: type=%s\n", event.Type)
+			}
+		}
+
+		if err := scanner.Err(); err != nil {
+			done <- fmt.Errorf("reading stdout: %w", err)
+		} else {
+			done <- io.EOF
+		}
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case err := <-done:
+		if err != nil && err != io.EOF {
+			fmt.Fprintf(os.Stderr, "[sea] stream error: %v\n", err)
+		}
+	case <-timer.C:
+		fmt.Fprintf(os.Stderr, "\n[sea] Timeout after %s — killing claude\n", timeout)
+		cmd.Process.Kill()
+	}
+
+	cmdErr := cmd.Wait()
+
+	fmt.Println()
+	fmt.Println("=== SMOKE TEST OUTPUT ===")
+	fmt.Println(resultText.String())
+
+	if gotResults {
+		fmt.Println("Smoke test completed — check results above.")
+	} else {
+		fmt.Println("Smoke test did not produce expected results summary.")
+		if cmdErr != nil {
+			return fmt.Errorf("claude exited with: %w", cmdErr)
+		}
+	}
+
+	fmt.Printf("\nInspect workspace: %s\n", cfg.TmpDir)
+	return nil
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
+}
+
+const smokePrompt = `You are running a smoke test for agentsea sandbox isolation. Follow these steps exactly:
+
+1. Use the Team tool to spawn exactly 1 teammate with these instructions:
+
+TEAMMATE INSTRUCTIONS:
+---
+You are a smoke test agent. Run ALL of these checks using the Bash tool and report results:
+
+CHECK 1 - BWRAP: Run: cat /proc/1/cmdline | tr '\0' ' '
+Report PASS if "bwrap" appears in the output, FAIL if not.
+
+CHECK 2 - WRITE ISOLATION: Run: touch /tmp/sea-smoke-escape-test 2>&1 && echo LEAKED || echo BLOCKED
+Report PASS if BLOCKED or permission denied, FAIL if LEAKED.
+
+CHECK 3 - HOME ISOLATION: Run: ls $HOME
+Report what you see. PASS if you see a restricted set of files (not the user's full home).
+
+CHECK 4 - WORKTREE: Run: git branch --show-current && pwd
+Report the branch and working directory. PASS if you are on a branch like smoke-agent/work.
+
+CHECK 5 - READ-ONLY ROOT: Run: touch /usr/local/sea-smoke-test 2>&1 || echo READONLY
+Report PASS if READONLY or "Read-only file system".
+
+After running all checks, write your results to smoke-results.txt in the current directory, one check per line:
+CHECK 1: PASS/FAIL - details
+CHECK 2: PASS/FAIL - details
+CHECK 3: PASS/FAIL - details
+CHECK 4: PASS/FAIL - details
+CHECK 5: PASS/FAIL - details
+---
+
+2. After spawning the teammate, poll for results every 15 seconds. The teammate writes smoke-results.txt in its worktree at .agentsea/agents/smoke-agent/repo/smoke-results.txt relative to the project root. Run:
+cat .agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET"
+Keep polling until the file exists and contains CHECK results. Do NOT stop until you have the results.
+
+3. Once you have the results, print:
+SMOKE TEST RESULTS
+==================
+(paste the contents of smoke-results.txt)
+Overall: PASS (if all checks pass) or FAIL (if any check failed)
+
+4. If any check fails, explain what went wrong.`
+
+const smokeClaudeMD = `# Smoke Test Project
+
+This is a temporary project created by ` + "`sea smoke`" + ` for end-to-end sandbox verification.
+
+Do NOT modify files outside this directory. Follow the prompt instructions exactly.
+`

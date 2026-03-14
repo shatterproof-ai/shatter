@@ -1,0 +1,285 @@
+# Agent Instructions
+
+This project uses **bd** (beads) for issue tracking. Run `bd onboard` to get started.
+
+## Quick Reference
+
+```bash
+bd ready              # Find available work
+bd show <id>          # View issue details
+bd update <id> --status in_progress  # Claim work
+bd close <id>         # Complete work
+bd sync               # Sync with git
+```
+
+## Issue Title Guidelines
+
+Titles appear in `bd list`, `bd ready`, and terminal window titles where space
+is limited. The **first ~20 characters** must be meaningfully descriptive:
+
+| Bad | Good |
+|---|---|
+| `Add support for filtering by SAT score` | `SAT score filter for search` |
+| `Update the search page to show result counts` | `Search result count display` |
+| `Fix bug where geographic radius is ignored` | `Geo radius filter ignored` |
+| `Implement new card component for institutions` | `Institution card component` |
+
+- **Lead with the noun or area** ("Search …", "Auth …", "GeoField …"), not filler verbs
+- **Under 50 characters** — put detail in `--description`
+- Avoid prefixes like "Add support for", "Update the", "Implement new"
+
+## Creating Issues
+
+Use the correct issue type:
+- `epic` — a grouping container for related features/tasks. Not directly workable.
+- `feature` — delivers new user-visible or agent-visible capability
+- `task` — scaffold, chore, or infrastructure work (e.g., project init, CI setup)
+- `bug` — something broken that needs fixing
+
+### Creating Epics
+
+Epics must use `--waits-for-gate` so they are blocked until their children complete, and do not appear in `bd ready`:
+
+```bash
+bd create "Epic: Feature Area" -t epic -p 2 -l label1,label2 \
+  -d "Description of the epic" \
+  --waits-for-gate all-children
+```
+
+This makes the epic resolve automatically when all children are closed. Never leave an epic as a bare open issue with no gate — it will pollute `bd ready`.
+
+### Creating Child Issues Under Epics
+
+Use `--parent` to place issues under an epic, and `--waits-for` to make the epic wait for the child:
+
+```bash
+bd create "Implement feature X" -t feature -p 1 -l search,go \
+  --parent kapow-abc \
+  --waits-for kapow-abc \
+  -d "Description" \
+  --acceptance "Acceptance criteria"
+```
+
+The `--parent` flag establishes the hierarchy. The `--waits-for kapow-abc` flag tells the epic to wait for this child before it can close.
+
+### Dependencies Between Issues
+
+Use `bd dep add` to express ordering constraints between issues:
+
+```bash
+bd dep add kapow-child kapow-dependency   # kapow-child is blocked by kapow-dependency
+```
+
+Only add dependencies where there is a real technical ordering constraint (e.g., "the migration must exist before the resolver can query the new column"). Do not add dependencies for soft preferences or nice-to-have ordering.
+
+## Implementation Plans
+
+Claude Code saves plans to `~/.claude/plans/` with random names (e.g.,
+`replicated-drifting-meerkat.md`). These are local to the machine and lost
+when switching devices. **After a plan is approved, copy it into the repo**
+so it persists across machines and sessions.
+
+### Saving a plan to the repo
+
+After exiting plan mode, copy the plan file from `~/.claude/plans/` into
+`docs/plans/`, renaming it to something meaningful:
+
+```bash
+cp ~/.claude/plans/<random-name>.md docs/plans/<issue-id>-<short-name>.md
+```
+
+Examples:
+- `docs/plans/kapow-a1b-geo-search.md`
+- `docs/plans/auth-refactor.md` (if no issue exists yet)
+
+Use lowercase kebab-case. Prefer `<issue-id>-<short-name>` when an issue exists.
+
+### Referencing from issues
+
+Add a note to the beads issue pointing to the plan:
+
+```bash
+bd update <id> --notes="Plan: docs/plans/<issue-id>-<short-name>.md"
+```
+
+### Resuming work from a plan
+
+When starting a new session, check `docs/plans/` for in-progress plans.
+If a beads issue references a plan file, read it before starting work.
+
+### Lifecycle
+
+- Commit and push plan files alongside the code they describe
+- Update plan files as the approach evolves during implementation
+- Delete plan files after the work is fully merged and closed
+
+## Completing an Issue
+
+An issue is not complete until:
+1. All code changes pass quality gates (tests, lint, build)
+2. Changes are committed
+3. The issue is closed with `bd close <id>`
+4. Changes are pushed to remote with `bd sync && git push`
+
+## Git Workflow
+
+When work is complete and verified (tests pass, build succeeds, lint is clean),
+merge directly into `main`. Only fall back to a pull request if there is an
+unresolvable problem merging from the command line (e.g. complex conflicts).
+
+### Commit messages and issue references
+
+When a commit includes changes to beads data (`.beads/` files), list all
+affected issue IDs in the commit message body. This makes it easy to trace
+which issues were created, updated, or closed in each push.
+
+Example:
+```
+Add geo search field and update filter UI
+
+Implements proximity-based search using PostGIS ST_DWithin.
+
+Issues: kapow-a1b, kapow-c2d, kapow-e3f
+```
+
+### Worktree workflow
+
+When working in a git worktree (e.g. started with `--worktree`), **always merge
+the branch back into `main` before ending the session.** Do not leave the
+worktree branch unmerged without asking.
+
+**Before merging a worktree branch:**
+- Preview conflicts first: `git merge --no-commit --no-ff <branch>` then `git merge --abort`
+- Rebase long-lived worktrees onto main before merging: `git rebase main` (from the worktree)
+
+**After merging a worktree that touches GraphQL schema files:**
+- Always regenerate: `make api-generate && make web-schema-sync`
+- `.gitattributes` marks generated files with `merge=ours` — conflicts auto-resolve to the current branch, but you must regenerate to get the correct content
+
+**Worktree cleanup — NEVER do it manually:**
+Claude Code manages worktree lifecycle automatically — both for `--worktree`
+sessions and for subagents using `isolation: "worktree"`. Worktrees are cleaned
+up on session/agent exit.
+
+**Banned commands on worktree directories:**
+- `rm -rf <worktree-path>` — corrupts git worktree bookkeeping
+- `git worktree remove` — races with automatic cleanup
+- Any manual deletion of `.claude/worktrees/` contents
+
+If a worktree needs removal, let the session end naturally or ask the user to
+handle it. Manually removing a worktree mid-session breaks the working directory
+and causes confusing errors.
+
+## Landing the Plane (Session Completion)
+
+**When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
+
+**MANDATORY WORKFLOW:**
+
+1. **File issues for remaining work** - Create issues for anything that needs follow-up
+2. **Run quality gates** (if code changed) - Tests, linters, builds
+3. **Update issue status** - Close finished work, update in-progress items
+4. **PUSH TO REMOTE** - This is MANDATORY:
+   ```bash
+   git pull --rebase
+   bd sync
+   git push
+   git status  # MUST show "up to date with origin"
+   ```
+5. **Clean up** - Clear stashes, prune remote branches
+6. **Verify** - All changes committed AND pushed
+7. **Hand off** - Provide context for next session
+
+**CRITICAL RULES:**
+- Work is NOT complete until `git push` succeeds
+- NEVER stop before pushing - that leaves work stranded locally
+- NEVER say "ready to push when you are" - YOU must push
+- If push fails, resolve and retry until it succeeds
+
+
+<!-- BEGIN BEADS INTEGRATION -->
+## Issue Tracking with bd (beads)
+
+**IMPORTANT**: This project uses **bd (beads)** for ALL issue tracking. Do NOT use markdown TODOs, task lists, or other tracking methods.
+
+### Why bd?
+
+- Dependency-aware: Track blockers and relationships between issues
+- Git-friendly: Auto-syncs to JSONL for version control
+- Agent-optimized: JSON output, ready work detection, discovered-from links
+- Prevents duplicate tracking systems and confusion
+
+### Quick Start
+
+**Check for ready work:**
+
+```bash
+bd ready --json
+```
+
+**Create new issues:**
+
+```bash
+bd create "Issue title" --description="Detailed context" -t bug|feature|task -p 0-4 --json
+bd create "Issue title" --description="What this issue is about" -p 1 --deps discovered-from:bd-123 --json
+```
+
+**Claim and update:**
+
+```bash
+bd update bd-42 --status in_progress --json
+bd update bd-42 --priority 1 --json
+```
+
+**Complete work:**
+
+```bash
+bd close bd-42 --reason "Completed" --json
+```
+
+### Issue Types
+
+- `bug` - Something broken
+- `feature` - New functionality
+- `task` - Work item (tests, docs, refactoring)
+- `epic` - Large feature with subtasks
+- `chore` - Maintenance (dependencies, tooling)
+
+### Priorities
+
+- `0` - Critical (security, data loss, broken builds)
+- `1` - High (major features, important bugs)
+- `2` - Medium (default, nice-to-have)
+- `3` - Low (polish, optimization)
+- `4` - Backlog (future ideas)
+
+### Workflow for AI Agents
+
+1. **Check ready work**: `bd ready` shows unblocked issues
+2. **Claim your task**: `bd update <id> --status in_progress`
+3. **Work on it**: Implement, test, document
+4. **Discover new work?** Create linked issue:
+   - `bd create "Found bug" --description="Details about what was found" -p 1 --deps discovered-from:<parent-id>`
+5. **Complete**: `bd close <id> --reason "Done"`
+
+### Auto-Sync
+
+bd automatically syncs with git:
+
+- Exports to `.beads/issues.jsonl` after changes (5s debounce)
+- Imports from JSONL when newer (e.g., after `git pull`)
+- No manual export/import needed!
+
+### Important Rules
+
+- ✅ Use bd for ALL task tracking
+- ✅ Always use `--json` flag for programmatic use
+- ✅ Link discovered work with `discovered-from` dependencies
+- ✅ Check `bd ready` before asking "what should I work on?"
+- ❌ Do NOT create markdown TODO lists
+- ❌ Do NOT use external issue trackers
+- ❌ Do NOT duplicate tracking systems
+
+For more details, see README.md and docs/QUICKSTART.md.
+
+<!-- END BEADS INTEGRATION -->

@@ -1,0 +1,250 @@
+api/internal/search/field.go-527-	d := f.baseField.Descriptor()
+api/internal/search/field.go-528-	d.Bounds = &NumericBounds{Max: ptr(f.MaxRadiusKm)}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/field.go-529-	return d
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/field.go-530-}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/field.go-531-
+api/internal/search/field.go:532:func (f *GeoField) BuildSQL(rawFilter json.RawMessage, argStart int) (string, []any, error) {
+api/internal/search/field.go:533:	var filter GeoFilterInput
+api/internal/search/field.go-534-	if err := json.Unmarshal(rawFilter, &filter); err != nil {
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/field.go-535-		return "", nil, err
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/field.go-536-	}
+api/internal/search/field.go-537-	col := f.source.Column
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/field.go-538-	switch filter.Kind {
+api/internal/search/field.go:539:	case GeoFilterKindRadius:
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/field.go-540-		if filter.Radius == nil {
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/field.go-541-			return "", nil, fmt.Errorf("radius filter requires radius object")
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/field.go-542-		}
+api/internal/search/field.go-543-		r := filter.Radius
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/field.go-544-		// ST_MakePoint(lng, lat); geography ST_DWithin uses metres → km*1000
+api/internal/search/field.go-545-		expr := fmt.Sprintf(
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/field.go-546-			"ST_DWithin(%s, ST_SetSRID(ST_MakePoint($%d, $%d), 4326), $%d * 1000)",
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/field.go-547-			col, argStart, argStart+1, argStart+2,
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/field.go-548-		)
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/field.go-549-		return expr, []any{r.Lng, r.Lat, r.RadiusKm}, nil
+api/internal/search/field.go:550:	case GeoFilterKindBBox:
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/field.go-551-		if filter.BBox == nil {
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/field.go-552-			return "", nil, fmt.Errorf("bbox filter requires bbox object")
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/field.go-553-		}
+api/internal/search/field.go-554-		b := filter.BBox
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/field.go-555-		// ST_MakeEnvelope(xmin, ymin, xmax, ymax, srid) = (minLng, minLat, maxLng, maxLat)
+--
+api/internal/search/search_integration_test.go-239-		/ Open-ended field (e.g. fields_of_study): use a plausible sentinel.
+api/internal/search/search_integration_test.go-240-		return mustMarshal(t, search.MultiEnumFilter{Values: []string{"52.0101"}})
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_integration_test.go-241-
+api/internal/search/search_integration_test.go-242-	case search.KindGeo:
+api/internal/search/search_integration_test.go-243-		/ Deterministic point: roughly centre of continental US.
+api/internal/search/search_integration_test.go:244:		return mustMarshal(t, search.GeoFilterInput{
+api/internal/search/search_integration_test.go:245:			Kind: search.GeoFilterKindRadius,
+api/internal/search/search_integration_test.go-246-			Radius: &search.GeoRadiusFilter{
+api/internal/search/search_integration_test.go-247-				Lat: 39.8283, Lng: -98.5795, RadiusKm: 100,
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_integration_test.go-248-			},
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_integration_test.go-249-		})
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_integration_test.go-250-
+--
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/filter.go-36-// MultiEnumFilter matches rows where the field contains any/all of the given values.
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/filter.go-37-type MultiEnumFilter struct {
+api/internal/search/filter.go-38-	Values []string `json:"values"`
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/filter.go-39-}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/filter.go-40-
+api/internal/search/filter.go:41:// GeoFilterKind discriminates between radius and bounding-box geo filters.
+api/internal/search/filter.go:42:type GeoFilterKind string
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/filter.go-43-
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/filter.go-44-const (
+api/internal/search/filter.go:45:	GeoFilterKindRadius GeoFilterKind = "radius"
+api/internal/search/filter.go:46:	GeoFilterKindBBox   GeoFilterKind = "bbox"
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/filter.go-47-)
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/filter.go-48-
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/filter.go-49-// GeoRadiusFilter specifies a centre point and search radius.
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/filter.go-50-type GeoRadiusFilter struct {
+api/internal/search/filter.go-51-	Lat      float64 `json:"lat"`
+--
+api/internal/search/filter.go-59-	MaxLat float64 `json:"max_lat"`
+api/internal/search/filter.go-60-	MinLng float64 `json:"min_lng"`
+api/internal/search/filter.go-61-	MaxLng float64 `json:"max_lng"`
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/filter.go-62-}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/filter.go-63-
+api/internal/search/filter.go:64:// GeoFilterInput is the top-level geo filter that wraps the specific kind.
+api/internal/search/filter.go:65:type GeoFilterInput struct {
+api/internal/search/filter.go:66:	Kind   GeoFilterKind        `json:"kind"`
+api/internal/search/filter.go-67-	Radius *GeoRadiusFilter     `json:"radius,omitempty"`
+api/internal/search/filter.go-68-	BBox   *GeoBoundingBoxFilter `json:"bbox,omitempty"`
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/filter.go-69-}
+--
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-129-	})
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-130-
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-131-	t.Run("geo radius over max", func(t *testing.T) {
+api/internal/search/search_test.go-132-		req := search.SearchRequest{
+api/internal/search/search_test.go-133-			Filters: []search.FilterInput{
+api/internal/search/search_test.go:134:				{Field: "location", Value: mustJSON(search.GeoFilterInput{
+api/internal/search/search_test.go:135:					Kind:   search.GeoFilterKindRadius,
+api/internal/search/search_test.go-136-					Radius: &search.GeoRadiusFilter{Lat: 40, Lng: -74, RadiusKm: 9999},
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-137-				})},
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-138-			},
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-139-		}
+api/internal/search/search_test.go-140-		errs := search.ValidateRequest(reg, req, true)
+--
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-147-	})
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-148-
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-149-	t.Run("geo radius not positive", func(t *testing.T) {
+api/internal/search/search_test.go-150-		req := search.SearchRequest{
+api/internal/search/search_test.go-151-			Filters: []search.FilterInput{
+api/internal/search/search_test.go:152:				{Field: "location", Value: mustJSON(search.GeoFilterInput{
+api/internal/search/search_test.go:153:					Kind:   search.GeoFilterKindRadius,
+api/internal/search/search_test.go-154-					Radius: &search.GeoRadiusFilter{Lat: 40, Lng: -74, RadiusKm: 0},
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-155-				})},
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-156-			},
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-157-		}
+api/internal/search/search_test.go-158-		errs := search.ValidateRequest(reg, req, true)
+--
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-165-	})
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-166-
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-167-	t.Run("geo radius missing object", func(t *testing.T) {
+api/internal/search/search_test.go-168-		req := search.SearchRequest{
+api/internal/search/search_test.go-169-			Filters: []search.FilterInput{
+api/internal/search/search_test.go:170:				{Field: "location", Value: mustJSON(search.GeoFilterInput{Kind: search.GeoFilterKindRadius})},
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-171-			},
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-172-		}
+api/internal/search/search_test.go-173-		errs := search.ValidateRequest(reg, req, true)
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-174-		if len(errs) != 1 {
+api/internal/search/search_test.go-175-			t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+--
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-180-	})
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-181-
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-182-	t.Run("geo bbox missing object", func(t *testing.T) {
+api/internal/search/search_test.go-183-		req := search.SearchRequest{
+api/internal/search/search_test.go-184-			Filters: []search.FilterInput{
+api/internal/search/search_test.go:185:				{Field: "location", Value: mustJSON(search.GeoFilterInput{Kind: search.GeoFilterKindBBox})},
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-186-			},
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-187-		}
+api/internal/search/search_test.go-188-		errs := search.ValidateRequest(reg, req, true)
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-189-		if len(errs) != 1 {
+api/internal/search/search_test.go-190-			t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+--
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-331-	})
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-332-
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-333-	t.Run("geo radius filter", func(t *testing.T) {
+api/internal/search/search_test.go-334-		req := search.SearchRequest{
+api/internal/search/search_test.go-335-			Filters: []search.FilterInput{
+api/internal/search/search_test.go:336:				{Field: "location", Value: mustJSON(search.GeoFilterInput{
+api/internal/search/search_test.go:337:					Kind:   search.GeoFilterKindRadius,
+api/internal/search/search_test.go-338-					Radius: &search.GeoRadiusFilter{Lat: 40.7, Lng: -74.0, RadiusKm: 50},
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-339-				})},
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-340-			},
+api/internal/search/search_test.go-341-			Limit: 20,
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-342-		}
+--
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-498-		if len(desc.Options) > 0 {
+api/internal/search/search_test.go-499-			return mustJSON(search.MultiEnumFilter{Values: []string{desc.Options[0].Value}})
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-500-		}
+api/internal/search/search_test.go-501-		return mustJSON(search.MultiEnumFilter{Values: []string{"52.0101"}})
+api/internal/search/search_test.go-502-	case search.KindGeo:
+api/internal/search/search_test.go:503:		return mustJSON(search.GeoFilterInput{
+api/internal/search/search_test.go:504:			Kind:   search.GeoFilterKindRadius,
+api/internal/search/search_test.go-505-			Radius: &search.GeoRadiusFilter{Lat: 40.7, Lng: -74.0, RadiusKm: 50},
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-506-		})
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-507-	}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-508-	return nil
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-509-}
+--
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-622-		}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-623-	})
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-624-
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-625-	t.Run("geo bbox uses ST_Intersects", func(t *testing.T) {
+api/internal/search/search_test.go-626-		f := lookup("location")
+api/internal/search/search_test.go:627:		expr, args, err := f.BuildSQL(mustJSON(search.GeoFilterInput{
+api/internal/search/search_test.go:628:			Kind: search.GeoFilterKindBBox,
+api/internal/search/search_test.go-629-			BBox: &search.GeoBoundingBoxFilter{MinLat: 40, MaxLat: 42, MinLng: -75, MaxLng: -72},
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-630-		}), 1)
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-631-		if err != nil {
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-632-			t.Fatal(err)
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-633-		}
+--
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-897-func TestValidateRequest_GeoUnknownKind(t *testing.T) {
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-898-	t.Parallel()
+api/internal/search/search_test.go-899-	reg := search.NewRegistry()
+api/internal/search/search_test.go-900-	req := search.SearchRequest{
+api/internal/search/search_test.go-901-		Filters: []search.FilterInput{
+api/internal/search/search_test.go:902:			{Field: "location", Value: mustJSON(search.GeoFilterInput{Kind: "polygon"})},
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-903-		},
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-904-	}
+api/internal/search/search_test.go-905-	errs := search.ValidateRequest(reg, req, true)
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-906-	if len(errs) != 1 {
+api/internal/search/search_test.go-907-		t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+--
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-914-func TestValidateRequest_GeoBBoxValid(t *testing.T) {
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-915-	t.Parallel()
+api/internal/search/search_test.go-916-	reg := search.NewRegistry()
+api/internal/search/search_test.go-917-	req := search.SearchRequest{
+api/internal/search/search_test.go-918-		Filters: []search.FilterInput{
+api/internal/search/search_test.go:919:			{Field: "location", Value: mustJSON(search.GeoFilterInput{
+api/internal/search/search_test.go:920:				Kind: search.GeoFilterKindBBox,
+api/internal/search/search_test.go-921-				BBox: &search.GeoBoundingBoxFilter{MinLat: 40, MaxLat: 42, MinLng: -75, MaxLng: -72},
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-922-			})},
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-923-		},
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-924-	}
+api/internal/search/search_test.go-925-	errs := search.ValidateRequest(reg, req, true)
+--
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-1078-
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-1079-func TestBuildSQL_GeoField_UnknownKind(t *testing.T) {
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-1080-	t.Parallel()
+api/internal/search/search_test.go-1081-	reg := search.NewRegistry()
+api/internal/search/search_test.go-1082-	f, _ := reg.Lookup("location")
+api/internal/search/search_test.go:1083:	_, _, err := f.BuildSQL(mustJSON(search.GeoFilterInput{Kind: "polygon"}), 1)
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-1084-	if err == nil {
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-1085-		t.Error("expected error for unknown kind")
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-1086-	}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-1087-	if !strings.Contains(err.Error(), "unknown geo filter kind") {
+api/internal/search/search_test.go-1088-		t.Errorf("unexpected error: %v", err)
+--
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-1091-
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-1092-func TestBuildSQL_GeoField_RadiusMissingObject(t *testing.T) {
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-1093-	t.Parallel()
+api/internal/search/search_test.go-1094-	reg := search.NewRegistry()
+api/internal/search/search_test.go-1095-	f, _ := reg.Lookup("location")
+api/internal/search/search_test.go:1096:	_, _, err := f.BuildSQL(mustJSON(search.GeoFilterInput{Kind: search.GeoFilterKindRadius}), 1)
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-1097-	if err == nil {
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-1098-		t.Error("expected error for missing radius")
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-1099-	}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-1100-}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-1101-
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-1102-func TestBuildSQL_GeoField_BBoxMissingObject(t *testing.T) {
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-1103-	t.Parallel()
+api/internal/search/search_test.go-1104-	reg := search.NewRegistry()
+api/internal/search/search_test.go-1105-	f, _ := reg.Lookup("location")
+api/internal/search/search_test.go:1106:	_, _, err := f.BuildSQL(mustJSON(search.GeoFilterInput{Kind: search.GeoFilterKindBBox}), 1)
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-1107-	if err == nil {
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-1108-		t.Error("expected error for missing bbox")
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-1109-	}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-1110-}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/search_test.go-1111-
+--
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/validate.go-144-					}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/validate.go-145-				}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/validate.go-146-			}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/validate.go-147-
+api/internal/search/validate.go-148-		case KindGeo:
+api/internal/search/validate.go:149:			var f GeoFilterInput
+api/internal/search/validate.go-150-			if err := json.Unmarshal(fi.Value, &f); err != nil {
+api/internal/search/validate.go-151-				errs = append(errs, ValidationError{Field: fi.Field,
+api/internal/search/validate.go-152-					Message: fmt.Sprintf("invalid filter JSON for kind %s", field.Kind())})
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/validate.go-153-				continue
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/validate.go-154-			}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/validate.go-155-			switch f.Kind {
+api/internal/search/validate.go:156:			case GeoFilterKindRadius:
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/validate.go-157-				if f.Radius == nil {
+api/internal/search/validate.go-158-					errs = append(errs, ValidationError{Field: fi.Field,
+api/internal/search/validate.go-159-						Message: "radius filter requires radius object"})
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/validate.go-160-				} else {
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/validate.go-161-					if f.Radius.RadiusKm <= 0 {
+--
+api/internal/search/validate.go-167-							errs = append(errs, ValidationError{Field: fi.Field,
+api/internal/search/validate.go-168-								Message: fmt.Sprintf("radius exceeds maximum of %g km", mr.maxRadiusKm())})
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/validate.go-169-						}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/validate.go-170-					}
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/validate.go-171-				}
+api/internal/search/validate.go:172:			case GeoFilterKindBBox:
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/validate.go-173-				if f.BBox == nil {
+api/internal/search/validate.go-174-					errs = append(errs, ValidationError{Field: fi.Field,
+api/internal/search/validate.go-175-						Message: "bbox filter requires bbox object"})
+/home/ketan/project/kapow/.claude/worktrees/worktree/hide-facets/api/internal/search/validate.go-176-				}
+api/internal/search/validate.go-177-			default:

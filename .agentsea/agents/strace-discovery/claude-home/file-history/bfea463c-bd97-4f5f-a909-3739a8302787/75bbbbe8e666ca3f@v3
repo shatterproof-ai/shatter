@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# Launch the full-stack test container and run the visible Playwright demo.
+# Usage:
+#   ./scripts/demo.sh              # auto-advance (3s pause)
+#   ./scripts/demo.sh --manual     # click to advance
+#   ./scripts/demo.sh --headless   # headless smoke test
+#
+# All arguments are forwarded to the demo runner (pnpm demo).
+# Logs are written to a temp directory printed at startup.
+
+set -euo pipefail
+
+CONTAINER_NAME="kapow-demo"
+HOST_PORT=8080
+MAX_WAIT=60  # seconds to wait for the container to become healthy
+
+LOGDIR=$(mktemp -d "${TMPDIR:-/tmp}/kapow-demo.XXXXXXXXXX")
+BUILD_LOG="$LOGDIR/build.log"
+CONTAINER_LOG="$LOGDIR/container.log"
+DEMO_LOG="$LOGDIR/demo.log"
+
+echo "Demo logs: $LOGDIR"
+
+cleanup() {
+  echo ""
+  # Capture container logs before stopping
+  docker logs "$CONTAINER_NAME" >"$CONTAINER_LOG" 2>&1 || true
+  echo "Stopping demo container..."
+  docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+  echo "Logs saved to: $LOGDIR"
+}
+trap cleanup EXIT
+
+cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
+
+# --- Build the test image ----------------------------------------------------
+
+echo -n "Building test image..."
+if ! make test-image-build >"$BUILD_LOG" 2>&1; then
+  echo " FAILED"
+  echo "Build failed. Last 20 lines:"
+  tail -20 "$BUILD_LOG"
+  echo "Full log: $BUILD_LOG"
+  exit 1
+fi
+echo " done"
+
+# --- Start the container -----------------------------------------------------
+
+# Remove any leftover container from a previous run
+docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+
+echo -n "Starting container on http://localhost:${HOST_PORT}..."
+docker run -d --rm --name "$CONTAINER_NAME" -p "${HOST_PORT}:80" kapow-test >/dev/null
+echo " started"
+
+# --- Wait for the app to be ready --------------------------------------------
+
+echo -n "Waiting for the app to be ready"
+elapsed=0
+while [ "$elapsed" -lt "$MAX_WAIT" ]; do
+  if curl -sf "http://localhost:${HOST_PORT}/" -o /dev/null 2>/dev/null; then
+    echo " ready! (${elapsed}s)"
+    break
+  fi
+  echo -n "."
+  sleep 1
+  elapsed=$((elapsed + 1))
+done
+
+if [ "$elapsed" -ge "$MAX_WAIT" ]; then
+  echo " timed out after ${MAX_WAIT}s"
+  docker logs "$CONTAINER_NAME" >"$CONTAINER_LOG" 2>&1 || true
+  echo "Container logs: $CONTAINER_LOG"
+  exit 1
+fi
+
+# --- Stream container logs to file in background ----------------------------
+
+docker logs -f "$CONTAINER_NAME" >"$CONTAINER_LOG" 2>&1 &
+
+# --- Run the demo ------------------------------------------------------------
+
+cd web
+pnpm demo "$@" 2>"$DEMO_LOG"

@@ -1,0 +1,3 @@
+BASHRC_EXTENSIONS="bashrc.dev-common.sh bashrc.ubuntu-common"
+
+alias claude='claude --dangerously-skip-permissions'

@@ -1,0 +1,158 @@
+export type FieldVisibility = 'VISIBLE' | 'RESTRICTED' | 'HIDDEN'
+export type FieldSearchability = 'SEARCHABLE' | 'RESTRICTED' | 'NOT_SEARCHABLE'
+
+export type Theme =
+  | 'CORE'
+  | 'LOCATION'
+  | 'ACADEMICS'
+  | 'COST'
+  | 'OUTCOMES'
+  | 'RANKING'
+  | 'ADMISSIONS'
+  | 'ATHLETICS'
+  | 'FIELDS_OF_STUDY'
+  | 'CULTURAL_ENVIRONMENT'
+  | 'WEATHER'
+  | 'PHYSICAL_ENVIRONMENT'
+  | 'DEMOGRAPHICS'
+  | 'REPUTATION'
+  | 'SAFETY'
+  | 'STUDENT_LIFE'
+  | 'METADATA'
+  | 'OTHER'
+
+export interface SearchFieldOption {
+  value: string
+  displayName: string
+}
+
+export interface SearchField {
+  __typename: string
+  name: string
+  label: string
+  description: string
+  theme: Theme
+  visibility: FieldVisibility
+  searchability: FieldSearchability
+  exportable: boolean
+  dataSourceID?: string | null
+  // ChoiceSearchField only — present when __typename === 'ChoiceSearchField'
+  options?: SearchFieldOption[]
+  minSelections?: number
+  maxSelections?: number | null
+  // NumericalSearchField / NumericalRangeSearchField metadata
+  min?: number | null
+  max?: number | null
+  step?: number | null
+  unit?: SearchFieldUnit | null
+  defaultValue?: number | null
+  defaultLower?: number | null
+  defaultUpper?: number | null
+  // GeoSearchField metadata
+  defaultLatitude?: number | null
+  defaultLongitude?: number | null
+  maxRadiusMiles?: number | null
+}
+
+export interface InstitutionLocation {
+  locale?: string | null
+  region?: string | null
+  metroArea?: string | null
+  metroDistance?: number | null
+}
+
+export interface InstitutionAcademics {
+  institutionType?: string | null
+  highestDegree?: string | null
+  enrollment?: number | null
+  gradEnrollment?: number | null
+  studentFacultyRatio?: number | null
+  fullTimeFacultyRate?: number | null
+  gender?: string | null
+  onlineOnly?: boolean | null
+}
+
+export interface InstitutionCost {
+  avgNetPrice?: number | null
+  tuitionInState?: number | null
+  tuitionOutOfState?: number | null
+  roomAndBoard?: number | null
+  avgNetPriceLowIncome?: number | null
+  pellGrantRate?: number | null
+  federalLoanRate?: number | null
+  endowment?: number | null
+}
+
+export interface InstitutionOutcomes {
+  admissionRate?: number | null
+  graduationRate?: number | null
+  retentionRate?: number | null
+  transferRate?: number | null
+}
+
+export interface InstitutionRankings {
+  usNewsNational?: number | null
+  usNewsLiberalArts?: number | null
+  forbes?: number | null
+  washingtonMonthlyNational?: number | null
+  washingtonMonthlyLiberalArts?: number | null
+  niche?: number | null
+  moneyScore?: number | null
+}
+
+export interface InstitutionAdmissions {
+  applicationPlatforms?: string[] | null
+}
+
+export interface InstitutionAthletics {
+  ncaaDivision?: string | null
+  ncaaConference?: string | null
+}
+
+export interface InstitutionClimate {
+  koppenClimate?: string | null
+  koppenTemperature?: string | null
+  koppenPrecipitation?: string | null
+}
+
+export interface InstitutionCulture {
+  partisanDirection?: string | null
+  partisanScore?: number | null
+}
+
+export interface SearchInstitution {
+  unitID: string
+  name: string
+  city: string
+  state: string
+  latitude?: number | null
+  longitude?: number | null
+  distance?: number | null
+  myPrice?: number | null
+  blendScore?: number | null
+  locationDetails?: InstitutionLocation | null
+  academics?: InstitutionAcademics | null
+  cost?: InstitutionCost | null
+  outcomes?: InstitutionOutcomes | null
+  rankings?: InstitutionRankings | null
+  admissions?: InstitutionAdmissions | null
+  athletics?: InstitutionAthletics | null
+  climate?: InstitutionClimate | null
+  culture?: InstitutionCulture | null
+}
+
+export type SearchFieldUnit = 'DOLLARS' | 'PERCENTAGE' | 'MILES' | 'HOURS' | 'MINUTES'
+
+export interface SearchOutputField {
+  name: string
+  label: string
+  description: string
+  theme: Theme
+  visibility: FieldVisibility
+  exportable: boolean
+  dataSourceID?: string | null
+  defaultVisible: boolean
+  sortable: boolean
+  unit?: SearchFieldUnit | null
+  outputKey?: string | null
+}

@@ -1,0 +1,47 @@
+import { useEffect } from 'react'
+import { Routes, Route } from 'react-router-dom'
+import { Header } from '@/components/layout/Header'
+import { Footer } from '@/components/layout/Footer'
+import { useWebMCP } from '@/hooks/useWebMCP'
+import { useAuthStore } from '@/stores/authStore'
+import { usePreferencesStore } from '@/stores/preferencesStore'
+import { FeedbackButton } from '@/components/feedback/FeedbackButton'
+import { About } from '@/pages/About'
+import { AuthCallback } from '@/pages/AuthCallback'
+import { Home } from '@/pages/Home'
+import { Search } from '@/pages/Search'
+
+export function App() {
+  useWebMCP()
+
+  const initialize = useAuthStore((s) => s.initialize)
+  const session = useAuthStore((s) => s.session)
+  const loadPreferences = usePreferencesStore((s) => s.load)
+  const clearPreferences = usePreferencesStore((s) => s.clear)
+
+  useEffect(() => {
+    initialize()
+  }, [initialize])
+
+  useEffect(() => {
+    if (session) {
+      loadPreferences()
+    } else {
+      clearPreferences()
+    }
+  }, [session, loadPreferences, clearPreferences])
+
+  return (
+    <div style={{ display: 'flex', minHeight: '100vh', flexDirection: 'column' }}>
+      <Header />
+      <Routes>
+        <Route path="/" element={<Home />} />
+        <Route path="/about" element={<About />} />
+        <Route path="/auth/callback" element={<AuthCallback />} />
+        <Route path="/search" element={<Search />} />
+      </Routes>
+      <Footer />
+      <FeedbackButton />
+    </div>
+  )
+}

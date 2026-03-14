@@ -1,0 +1,32 @@
+# Agentsea Project Memory
+
+## Project Overview
+Go CLI tool (`sea`) that wraps Claude Code teammates in bwrap sandboxes for isolation.
+
+## Key Architecture
+- `CLAUDE_CODE_TEAMMATE_COMMAND` env var intercepts teammate spawning (tmux pane mode ONLY)
+- `sea teammate-wrapper` parses flags, provisions git worktree, builds bwrap config, execs into bwrap
+- `sea-teammate-wrapper` is a shell shim: `exec sea teammate-wrapper "$@"`
+- Installed via `make install-user` to `~/.local/bin/`
+
+## Critical Discoveries (Claude Code v2.1.71)
+- See [claude-code-internals.md](../../docs/claude-code-internals.md) for details
+- **teammateMode**: `auto` (default) uses in-process/worktree when NOT in tmux. Must set `teammateMode: "tmux"` in `~/.claude.json` to force tmux pane mode.
+- **setsid + TTY**: `setsid` detaches controlling terminal. Claude sees `!process.stdout.isTTY` -> non-interactive. Fix: use `setsid` + inject `--print "start"` so teammate runs in print mode (reads task from mailbox).
+- **bwrap mount order**: `--tmpfs` MUST come before `--bind` for paths under those dirs
+- **Wrapper stdout**: Never redirect stdout/stderr globally in wrapper scripts that launch Claude. Claude needs stdout to be a TTY for interactive mode.
+- **SIGTTOU**: bwrap creates new process group. Without setsid, Bun gets SIGTTOU from kernel. With setsid, loses TTY. Solution: setsid + --print mode.
+
+## smoke test (`sea smoke`)
+- Creates temp project, launches Claude in tmux, spawns teammate via wrapper
+- Requires `teammateMode: "tmux"` in `~/.claude.json`
+- Teammate runs bwrap-sandboxed Claude in `--print "start"` mode
+- Polls for `smoke-results.txt` written by teammate agent
+
+## File Locations
+- `internal/cli/smoke.go` - smoke test
+- `internal/cli/wrapper.go` - teammate-wrapper (bwrap setup)
+- `internal/sandbox/bwrap.go` - bwrap arg builder
+- `internal/sandbox/setsid.go` - ExecBwrap / ExecSetsidBwrap
+- `internal/cli/claude.go` - `sea claude` command
+- `docs/claude-code-internals.md` - binary analysis notes

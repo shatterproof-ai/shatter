@@ -1,0 +1,1162 @@
+go build -o bin/sea ./cmd/sea/
+mkdir -p /home/ketan/.local/bin
+install -m 755 bin/sea /home/ketan/.local/bin/sea
+printf '#!/bin/sh\nexec %s/bin/sea teammate-wrapper "$@"\n' "/home/ketan/.local" > /home/ketan/.local/bin/sea-teammate-wrapper
+chmod 755 /home/ketan/.local/bin/sea-teammate-wrapper
+Setting up smoke test in /tmp/sea-smoke-3525973116
+  claude:  /home/ketan/.local/share/claude/versions/2.1.71
+  wrapper: /tmp/sea-smoke-3525973116/teammate-wrapper
+  project: /tmp/sea-smoke-3525973116
+  timeout: 5m0s
+
+Clean up after: rm -rf /tmp/sea-smoke-3525973116
+
+Launched Claude Code in tmux session "sea-smoke-329616", waiting for smoke test results...
+
+[sea] Polling for /tmp/sea-smoke-3525973116/smoke-results.txt...
+  [tmux] ▐▛███▜▌   Claude Code v2.1.71
+  [tmux] ▝▜█████▛▘  Opus 4.6 with high effort · Claude Max
+  [tmux] ▘▘ ▝▝    /tmp/sea-smoke-3525973116
+  [tmux] ❯ You are running a smoke test for agentsea sandbox isolation. Follow these steps exactly:
+  [tmux] 1. Use the Team tool to spawn exactly 1 teammate with these instructions:
+  [tmux] TEAMMATE INSTRUCTIONS:
+  [tmux] ---
+  [tmux] You are a smoke test agent. Run ALL of these checks using the Bash tool and report results:
+  [tmux] CHECK 1 - BWRAP: Run: cat /proc/1/cmdline | tr '\0' ' '
+  [tmux] Report PASS if "bwrap" appears in the output, FAIL if not.
+  [tmux] CHECK 2 - WRITE ISOLATION: Run: touch /tmp/sea-smoke-escape-test 2>&1 && echo LEAKED || echo BLOCKED
+  [tmux] Report PASS if BLOCKED or permission denied, FAIL if LEAKED.
+  [tmux] CHECK 3 - HOME ISOLATION: Run: ls $HOME
+  [tmux] Report what you see. PASS if you see a restricted set of files (not the user's full home).
+  [tmux] CHECK 4 - WORKTREE: Run: git branch --show-current && pwd
+  [tmux] Report the branch and working directory. PASS if you are on a branch like smoke-agent/work.
+  [tmux] CHECK 5 - READ-ONLY ROOT: Run: touch /usr/local/sea-smoke-test 2>&1 || echo READONLY
+  [tmux] Report PASS if READONLY or "Read-only file system".
+  [tmux] After running all checks, write your results to smoke-results.txt in the current directory, one check per line:
+  [tmux] CHECK 1: PASS/FAIL - details
+  [tmux] CHECK 2: PASS/FAIL - details
+  [tmux] CHECK 3: PASS/FAIL - details
+  [tmux] CHECK 4: PASS/FAIL - details
+  [tmux] CHECK 5: PASS/FAIL - details
+  [tmux] ---
+  [tmux] 2. After spawning the teammate, poll for results every 15 seconds. The teammate writes smoke-results.txt in its worktree at .agentsea/agents/smoke-agent/repo/smoke-results.txt relative to the project root. Run:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET"
+  [tmux] Keep polling until the file exists and contains CHECK results. Do NOT stop until you have the results.
+  [tmux] 3. Once you have the results, write them to smoke-results.txt in the PROJECT ROOT (not the agent repo). Use the Bash tool:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt > smoke-results.txt
+  [tmux] This file signals completion to the test harness.
+  [tmux] 4. If any check fails, explain what went wrong.
+  [tmux] * Accomplishing…
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ▪▪▪ High /model ─
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [tmux] ⏵⏵ bypass permissions on (shift+tab to cycle)                                                                                                                  You've used 88% of your weekly limit · resets Mar 9, 11pm (America/Chicago)
+[sea] Polling for /tmp/sea-smoke-3525973116/smoke-results.txt...
+  [tmux] ▐▛███▜▌   Claude Code v2.1.71
+  [tmux] ▝▜█████▛▘  Opus 4.6 with high effort · Claude Max
+  [tmux] ▘▘ ▝▝    /tmp/sea-smoke-3525973116
+  [tmux] ❯ You are running a smoke test for agentsea sandbox isolation. Follow these steps exactly:
+  [tmux] 1. Use the Team tool to spawn exactly 1 teammate with these instructions:
+  [tmux] TEAMMATE INSTRUCTIONS:
+  [tmux] ---
+  [tmux] You are a smoke test agent. Run ALL of these checks using the Bash tool and report results:
+  [tmux] CHECK 1 - BWRAP: Run: cat /proc/1/cmdline | tr '\0' ' '
+  [tmux] Report PASS if "bwrap" appears in the output, FAIL if not.
+  [tmux] CHECK 2 - WRITE ISOLATION: Run: touch /tmp/sea-smoke-escape-test 2>&1 && echo LEAKED || echo BLOCKED
+  [tmux] Report PASS if BLOCKED or permission denied, FAIL if LEAKED.
+  [tmux] CHECK 3 - HOME ISOLATION: Run: ls $HOME
+  [tmux] Report what you see. PASS if you see a restricted set of files (not the user's full home).
+  [tmux] CHECK 4 - WORKTREE: Run: git branch --show-current && pwd
+  [tmux] Report the branch and working directory. PASS if you are on a branch like smoke-agent/work.
+  [tmux] CHECK 5 - READ-ONLY ROOT: Run: touch /usr/local/sea-smoke-test 2>&1 || echo READONLY
+  [tmux] Report PASS if READONLY or "Read-only file system".
+  [tmux] After running all checks, write your results to smoke-results.txt in the current directory, one check per line:
+  [tmux] CHECK 1: PASS/FAIL - details
+  [tmux] CHECK 2: PASS/FAIL - details
+  [tmux] CHECK 3: PASS/FAIL - details
+  [tmux] CHECK 4: PASS/FAIL - details
+  [tmux] CHECK 5: PASS/FAIL - details
+  [tmux] ---
+  [tmux] 2. After spawning the teammate, poll for results every 15 seconds. The teammate writes smoke-results.txt in its worktree at .agentsea/agents/smoke-agent/repo/smoke-results.txt relative to the project root. Run:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET"
+  [tmux] Keep polling until the file exists and contains CHECK results. Do NOT stop until you have the results.
+  [tmux] 3. Once you have the results, write them to smoke-results.txt in the PROJECT ROOT (not the agent repo). Use the Bash tool:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt > smoke-results.txt
+  [tmux] This file signals completion to the test harness.
+  [tmux] 4. If any check fails, explain what went wrong.
+  [tmux] ● I'll spawn a teammate to run the sandbox isolation checks, then poll for results.
+  [tmux] ✶ Accomplishing…
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ▪▪▪ ─
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [tmux] 19:22 You are running a smoke test for agentsea sandbox isolation. Follow these…                                                                               You've used 88% of your weekly limit · resets Mar 9, 11pm (America/Chicago)
+  [tmux] ⏵⏵ bypass permissions on (shift+tab to cycle)
+[sea] Polling for /tmp/sea-smoke-3525973116/smoke-results.txt...
+  [tmux] ▝▜█████▛▘  Opus 4.6 with high effort · Claude Max
+  [tmux] ▘▘ ▝▝    /tmp/sea-smoke-3525973116
+  [tmux] ❯ You are running a smoke test for agentsea sandbox isolation. Follow these steps exactly:
+  [tmux] 1. Use the Team tool to spawn exactly 1 teammate with these instructions:
+  [tmux] TEAMMATE INSTRUCTIONS:
+  [tmux] ---
+  [tmux] You are a smoke test agent. Run ALL of these checks using the Bash tool and report results:
+  [tmux] CHECK 1 - BWRAP: Run: cat /proc/1/cmdline | tr '\0' ' '
+  [tmux] Report PASS if "bwrap" appears in the output, FAIL if not.
+  [tmux] CHECK 2 - WRITE ISOLATION: Run: touch /tmp/sea-smoke-escape-test 2>&1 && echo LEAKED || echo BLOCKED
+  [tmux] Report PASS if BLOCKED or permission denied, FAIL if LEAKED.
+  [tmux] CHECK 3 - HOME ISOLATION: Run: ls $HOME
+  [tmux] Report what you see. PASS if you see a restricted set of files (not the user's full home).
+  [tmux] CHECK 4 - WORKTREE: Run: git branch --show-current && pwd
+  [tmux] Report the branch and working directory. PASS if you are on a branch like smoke-agent/work.
+  [tmux] CHECK 5 - READ-ONLY ROOT: Run: touch /usr/local/sea-smoke-test 2>&1 || echo READONLY
+  [tmux] Report PASS if READONLY or "Read-only file system".
+  [tmux] After running all checks, write your results to smoke-results.txt in the current directory, one check per line:
+  [tmux] CHECK 1: PASS/FAIL - details
+  [tmux] CHECK 2: PASS/FAIL - details
+  [tmux] CHECK 3: PASS/FAIL - details
+  [tmux] CHECK 4: PASS/FAIL - details
+  [tmux] CHECK 5: PASS/FAIL - details
+  [tmux] ---
+  [tmux] 2. After spawning the teammate, poll for results every 15 seconds. The teammate writes smoke-results.txt in its worktree at .agentsea/agents/smoke-agent/repo/smoke-results.txt relative to the project root. Run:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET"
+  [tmux] Keep polling until the file exists and contains CHECK results. Do NOT stop until you have the results.
+  [tmux] 3. Once you have the results, write them to smoke-results.txt in the PROJECT ROOT (not the agent repo). Use the Bash tool:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt > smoke-results.txt
+  [tmux] This file signals completion to the test harness.
+  [tmux] 4. If any check fails, explain what went wrong.
+  [tmux] ● I'll spawn a teammate to run the sandbox isolation checks, then poll for results.
+  [tmux] ● Agent(Spawn smoke test teammate)
+  [tmux] ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+  [tmux] ✶ Accomplishing…
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ▪▪▪ ─
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [tmux] 19:22 You are running a smoke test for agentsea sandbox isolation. Follow these…
+  [tmux] 1 worktree
+  [tmux] ⏵⏵ bypass permissions on · Spawn smoke test teammate (running)
+[sea] Polling for /tmp/sea-smoke-3525973116/smoke-results.txt...
+  [tmux] 1. Use the Team tool to spawn exactly 1 teammate with these instructions:
+  [tmux] TEAMMATE INSTRUCTIONS:
+  [tmux] ---
+  [tmux] You are a smoke test agent. Run ALL of these checks using the Bash tool and report results:
+  [tmux] CHECK 1 - BWRAP: Run: cat /proc/1/cmdline | tr '\0' ' '
+  [tmux] Report PASS if "bwrap" appears in the output, FAIL if not.
+  [tmux] CHECK 2 - WRITE ISOLATION: Run: touch /tmp/sea-smoke-escape-test 2>&1 && echo LEAKED || echo BLOCKED
+  [tmux] Report PASS if BLOCKED or permission denied, FAIL if LEAKED.
+  [tmux] CHECK 3 - HOME ISOLATION: Run: ls $HOME
+  [tmux] Report what you see. PASS if you see a restricted set of files (not the user's full home).
+  [tmux] CHECK 4 - WORKTREE: Run: git branch --show-current && pwd
+  [tmux] Report the branch and working directory. PASS if you are on a branch like smoke-agent/work.
+  [tmux] CHECK 5 - READ-ONLY ROOT: Run: touch /usr/local/sea-smoke-test 2>&1 || echo READONLY
+  [tmux] Report PASS if READONLY or "Read-only file system".
+  [tmux] After running all checks, write your results to smoke-results.txt in the current directory, one check per line:
+  [tmux] CHECK 1: PASS/FAIL - details
+  [tmux] CHECK 2: PASS/FAIL - details
+  [tmux] CHECK 3: PASS/FAIL - details
+  [tmux] CHECK 4: PASS/FAIL - details
+  [tmux] CHECK 5: PASS/FAIL - details
+  [tmux] ---
+  [tmux] 2. After spawning the teammate, poll for results every 15 seconds. The teammate writes smoke-results.txt in its worktree at .agentsea/agents/smoke-agent/repo/smoke-results.txt relative to the project root. Run:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET"
+  [tmux] Keep polling until the file exists and contains CHECK results. Do NOT stop until you have the results.
+  [tmux] 3. Once you have the results, write them to smoke-results.txt in the PROJECT ROOT (not the agent repo). Use the Bash tool:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt > smoke-results.txt
+  [tmux] This file signals completion to the test harness.
+  [tmux] 4. If any check fails, explain what went wrong.
+  [tmux] ● I'll spawn a teammate to run the sandbox isolation checks, then poll for results.
+  [tmux] ● Agent(Spawn smoke test teammate)
+  [tmux] ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+  [tmux] ● Teammate spawned in a worktree. I'll start polling for results.
+  [tmux] Reading 1 file… (ctrl+o to expand)
+  [tmux] ⎿  cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agen…
+  [tmux] * Accomplishing…
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ▪▪▪ ─
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [tmux] 19:22 You are running a smoke test for agentsea sandbox isolation. Follow these…
+  [tmux] 1 worktree
+  [tmux] ⏵⏵ bypass permissions on · Spawn smoke test teammate (running)
+[sea] Polling for /tmp/sea-smoke-3525973116/smoke-results.txt...
+  [tmux] ---
+  [tmux] You are a smoke test agent. Run ALL of these checks using the Bash tool and report results:
+  [tmux] CHECK 1 - BWRAP: Run: cat /proc/1/cmdline | tr '\0' ' '
+  [tmux] Report PASS if "bwrap" appears in the output, FAIL if not.
+  [tmux] CHECK 2 - WRITE ISOLATION: Run: touch /tmp/sea-smoke-escape-test 2>&1 && echo LEAKED || echo BLOCKED
+  [tmux] Report PASS if BLOCKED or permission denied, FAIL if LEAKED.
+  [tmux] CHECK 3 - HOME ISOLATION: Run: ls $HOME
+  [tmux] Report what you see. PASS if you see a restricted set of files (not the user's full home).
+  [tmux] CHECK 4 - WORKTREE: Run: git branch --show-current && pwd
+  [tmux] Report the branch and working directory. PASS if you are on a branch like smoke-agent/work.
+  [tmux] CHECK 5 - READ-ONLY ROOT: Run: touch /usr/local/sea-smoke-test 2>&1 || echo READONLY
+  [tmux] Report PASS if READONLY or "Read-only file system".
+  [tmux] After running all checks, write your results to smoke-results.txt in the current directory, one check per line:
+  [tmux] CHECK 1: PASS/FAIL - details
+  [tmux] CHECK 2: PASS/FAIL - details
+  [tmux] CHECK 3: PASS/FAIL - details
+  [tmux] CHECK 4: PASS/FAIL - details
+  [tmux] CHECK 5: PASS/FAIL - details
+  [tmux] ---
+  [tmux] 2. After spawning the teammate, poll for results every 15 seconds. The teammate writes smoke-results.txt in its worktree at .agentsea/agents/smoke-agent/repo/smoke-results.txt relative to the project root. Run:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET"
+  [tmux] Keep polling until the file exists and contains CHECK results. Do NOT stop until you have the results.
+  [tmux] 3. Once you have the results, write them to smoke-results.txt in the PROJECT ROOT (not the agent repo). Use the Bash tool:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt > smoke-results.txt
+  [tmux] This file signals completion to the test harness.
+  [tmux] 4. If any check fails, explain what went wrong.
+  [tmux] ● I'll spawn a teammate to run the sandbox isolation checks, then poll for results.
+  [tmux] ● Agent(Spawn smoke test teammate)
+  [tmux] ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+  [tmux] ● Teammate spawned in a worktree. I'll start polling for results.
+  [tmux] ● Read 1 file (ctrl+o to expand)
+  [tmux] Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  Running… (4s)
+  [tmux] ctrl+b ctrl+b (twice) to run in background
+  [tmux] ✶ Accomplishing…
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ▪▪▪ ─
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [tmux] 19:22 You are running a smoke test for agentsea sandbox isolation. Follow these…
+  [tmux] 1 worktree
+  [tmux] ⏵⏵ bypass permissions on · Spawn smoke test teammate (running)
+[sea] Polling for /tmp/sea-smoke-3525973116/smoke-results.txt...
+  [tmux] ---
+  [tmux] You are a smoke test agent. Run ALL of these checks using the Bash tool and report results:
+  [tmux] CHECK 1 - BWRAP: Run: cat /proc/1/cmdline | tr '\0' ' '
+  [tmux] Report PASS if "bwrap" appears in the output, FAIL if not.
+  [tmux] CHECK 2 - WRITE ISOLATION: Run: touch /tmp/sea-smoke-escape-test 2>&1 && echo LEAKED || echo BLOCKED
+  [tmux] Report PASS if BLOCKED or permission denied, FAIL if LEAKED.
+  [tmux] CHECK 3 - HOME ISOLATION: Run: ls $HOME
+  [tmux] Report what you see. PASS if you see a restricted set of files (not the user's full home).
+  [tmux] CHECK 4 - WORKTREE: Run: git branch --show-current && pwd
+  [tmux] Report the branch and working directory. PASS if you are on a branch like smoke-agent/work.
+  [tmux] CHECK 5 - READ-ONLY ROOT: Run: touch /usr/local/sea-smoke-test 2>&1 || echo READONLY
+  [tmux] Report PASS if READONLY or "Read-only file system".
+  [tmux] After running all checks, write your results to smoke-results.txt in the current directory, one check per line:
+  [tmux] CHECK 1: PASS/FAIL - details
+  [tmux] CHECK 2: PASS/FAIL - details
+  [tmux] CHECK 3: PASS/FAIL - details
+  [tmux] CHECK 4: PASS/FAIL - details
+  [tmux] CHECK 5: PASS/FAIL - details
+  [tmux] ---
+  [tmux] 2. After spawning the teammate, poll for results every 15 seconds. The teammate writes smoke-results.txt in its worktree at .agentsea/agents/smoke-agent/repo/smoke-results.txt relative to the project root. Run:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET"
+  [tmux] Keep polling until the file exists and contains CHECK results. Do NOT stop until you have the results.
+  [tmux] 3. Once you have the results, write them to smoke-results.txt in the PROJECT ROOT (not the agent repo). Use the Bash tool:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt > smoke-results.txt
+  [tmux] This file signals completion to the test harness.
+  [tmux] 4. If any check fails, explain what went wrong.
+  [tmux] ● I'll spawn a teammate to run the sandbox isolation checks, then poll for results.
+  [tmux] ● Agent(Spawn smoke test teammate)
+  [tmux] ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+  [tmux] ● Teammate spawned in a worktree. I'll start polling for results.
+  [tmux] ● Read 1 file (ctrl+o to expand)
+  [tmux] Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  Running… (9s)
+  [tmux] ctrl+b ctrl+b (twice) to run in background
+  [tmux] * Accomplishing…
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ▪▪▪ ─
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [tmux] 19:22 You are running a smoke test for agentsea sandbox isolation. Follow these…
+  [tmux] 1 worktree
+  [tmux] ⏵⏵ bypass permissions on · Spawn smoke test teammate (running)
+[sea] Polling for /tmp/sea-smoke-3525973116/smoke-results.txt...
+  [tmux] ---
+  [tmux] You are a smoke test agent. Run ALL of these checks using the Bash tool and report results:
+  [tmux] CHECK 1 - BWRAP: Run: cat /proc/1/cmdline | tr '\0' ' '
+  [tmux] Report PASS if "bwrap" appears in the output, FAIL if not.
+  [tmux] CHECK 2 - WRITE ISOLATION: Run: touch /tmp/sea-smoke-escape-test 2>&1 && echo LEAKED || echo BLOCKED
+  [tmux] Report PASS if BLOCKED or permission denied, FAIL if LEAKED.
+  [tmux] CHECK 3 - HOME ISOLATION: Run: ls $HOME
+  [tmux] Report what you see. PASS if you see a restricted set of files (not the user's full home).
+  [tmux] CHECK 4 - WORKTREE: Run: git branch --show-current && pwd
+  [tmux] Report the branch and working directory. PASS if you are on a branch like smoke-agent/work.
+  [tmux] CHECK 5 - READ-ONLY ROOT: Run: touch /usr/local/sea-smoke-test 2>&1 || echo READONLY
+  [tmux] Report PASS if READONLY or "Read-only file system".
+  [tmux] After running all checks, write your results to smoke-results.txt in the current directory, one check per line:
+  [tmux] CHECK 1: PASS/FAIL - details
+  [tmux] CHECK 2: PASS/FAIL - details
+  [tmux] CHECK 3: PASS/FAIL - details
+  [tmux] CHECK 4: PASS/FAIL - details
+  [tmux] CHECK 5: PASS/FAIL - details
+  [tmux] ---
+  [tmux] 2. After spawning the teammate, poll for results every 15 seconds. The teammate writes smoke-results.txt in its worktree at .agentsea/agents/smoke-agent/repo/smoke-results.txt relative to the project root. Run:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET"
+  [tmux] Keep polling until the file exists and contains CHECK results. Do NOT stop until you have the results.
+  [tmux] 3. Once you have the results, write them to smoke-results.txt in the PROJECT ROOT (not the agent repo). Use the Bash tool:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt > smoke-results.txt
+  [tmux] This file signals completion to the test harness.
+  [tmux] 4. If any check fails, explain what went wrong.
+  [tmux] ● I'll spawn a teammate to run the sandbox isolation checks, then poll for results.
+  [tmux] ● Agent(Spawn smoke test teammate)
+  [tmux] ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+  [tmux] ● Teammate spawned in a worktree. I'll start polling for results.
+  [tmux] ● Read 1 file (ctrl+o to expand)
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  Running… (14s)
+  [tmux] ctrl+b ctrl+b (twice) to run in background
+  [tmux] ✻ Accomplishing… (32s · ↓ 442 tokens)
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ▪▪▪ ─
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [tmux] 19:22 You are running a smoke test for agentsea sandbox isolation. Follow these…
+  [tmux] 1 worktree
+  [tmux] ⏵⏵ bypass permissions on (shift+tab to cycle)
+[sea] Polling for /tmp/sea-smoke-3525973116/smoke-results.txt...
+  [tmux] CHECK 1 - BWRAP: Run: cat /proc/1/cmdline | tr '\0' ' '
+  [tmux] Report PASS if "bwrap" appears in the output, FAIL if not.
+  [tmux] CHECK 2 - WRITE ISOLATION: Run: touch /tmp/sea-smoke-escape-test 2>&1 && echo LEAKED || echo BLOCKED
+  [tmux] Report PASS if BLOCKED or permission denied, FAIL if LEAKED.
+  [tmux] CHECK 3 - HOME ISOLATION: Run: ls $HOME
+  [tmux] Report what you see. PASS if you see a restricted set of files (not the user's full home).
+  [tmux] CHECK 4 - WORKTREE: Run: git branch --show-current && pwd
+  [tmux] Report the branch and working directory. PASS if you are on a branch like smoke-agent/work.
+  [tmux] CHECK 5 - READ-ONLY ROOT: Run: touch /usr/local/sea-smoke-test 2>&1 || echo READONLY
+  [tmux] Report PASS if READONLY or "Read-only file system".
+  [tmux] After running all checks, write your results to smoke-results.txt in the current directory, one check per line:
+  [tmux] CHECK 1: PASS/FAIL - details
+  [tmux] CHECK 2: PASS/FAIL - details
+  [tmux] CHECK 3: PASS/FAIL - details
+  [tmux] CHECK 4: PASS/FAIL - details
+  [tmux] CHECK 5: PASS/FAIL - details
+  [tmux] ---
+  [tmux] 2. After spawning the teammate, poll for results every 15 seconds. The teammate writes smoke-results.txt in its worktree at .agentsea/agents/smoke-agent/repo/smoke-results.txt relative to the project root. Run:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET"
+  [tmux] Keep polling until the file exists and contains CHECK results. Do NOT stop until you have the results.
+  [tmux] 3. Once you have the results, write them to smoke-results.txt in the PROJECT ROOT (not the agent repo). Use the Bash tool:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt > smoke-results.txt
+  [tmux] This file signals completion to the test harness.
+  [tmux] 4. If any check fails, explain what went wrong.
+  [tmux] ● I'll spawn a teammate to run the sandbox isolation checks, then poll for results.
+  [tmux] ● Agent(Spawn smoke test teammate)
+  [tmux] ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+  [tmux] ● Teammate spawned in a worktree. I'll start polling for results.
+  [tmux] ● Read 1 file (ctrl+o to expand)
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  Running…
+  [tmux] ✢ Accomplishing… (37s · ↓ 492 tokens)
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ▪▪▪ ─
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [tmux] 19:22 You are running a smoke test for agentsea sandbox isolation. Follow these…
+  [tmux] 1 worktree
+  [tmux] ⏵⏵ bypass permissions on (shift+tab to cycle)
+[sea] Polling for /tmp/sea-smoke-3525973116/smoke-results.txt...
+  [tmux] CHECK 1 - BWRAP: Run: cat /proc/1/cmdline | tr '\0' ' '
+  [tmux] Report PASS if "bwrap" appears in the output, FAIL if not.
+  [tmux] CHECK 2 - WRITE ISOLATION: Run: touch /tmp/sea-smoke-escape-test 2>&1 && echo LEAKED || echo BLOCKED
+  [tmux] Report PASS if BLOCKED or permission denied, FAIL if LEAKED.
+  [tmux] CHECK 3 - HOME ISOLATION: Run: ls $HOME
+  [tmux] Report what you see. PASS if you see a restricted set of files (not the user's full home).
+  [tmux] CHECK 4 - WORKTREE: Run: git branch --show-current && pwd
+  [tmux] Report the branch and working directory. PASS if you are on a branch like smoke-agent/work.
+  [tmux] CHECK 5 - READ-ONLY ROOT: Run: touch /usr/local/sea-smoke-test 2>&1 || echo READONLY
+  [tmux] Report PASS if READONLY or "Read-only file system".
+  [tmux] After running all checks, write your results to smoke-results.txt in the current directory, one check per line:
+  [tmux] CHECK 1: PASS/FAIL - details
+  [tmux] CHECK 2: PASS/FAIL - details
+  [tmux] CHECK 3: PASS/FAIL - details
+  [tmux] CHECK 4: PASS/FAIL - details
+  [tmux] CHECK 5: PASS/FAIL - details
+  [tmux] ---
+  [tmux] 2. After spawning the teammate, poll for results every 15 seconds. The teammate writes smoke-results.txt in its worktree at .agentsea/agents/smoke-agent/repo/smoke-results.txt relative to the project root. Run:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET"
+  [tmux] Keep polling until the file exists and contains CHECK results. Do NOT stop until you have the results.
+  [tmux] 3. Once you have the results, write them to smoke-results.txt in the PROJECT ROOT (not the agent repo). Use the Bash tool:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt > smoke-results.txt
+  [tmux] This file signals completion to the test harness.
+  [tmux] 4. If any check fails, explain what went wrong.
+  [tmux] ● I'll spawn a teammate to run the sandbox isolation checks, then poll for results.
+  [tmux] ● Agent(Spawn smoke test teammate)
+  [tmux] ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+  [tmux] ● Teammate spawned in a worktree. I'll start polling for results.
+  [tmux] ● Read 1 file (ctrl+o to expand)
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  Running… (5s)
+  [tmux] ctrl+b ctrl+b (twice) to run in background
+  [tmux] ✻ Accomplishing… (43s · ↓ 492 tokens)
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ▪▪▪ ─
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [tmux] 19:22 You are running a smoke test for agentsea sandbox isolation. Follow these…
+  [tmux] 1 worktree
+  [tmux] ⏵⏵ bypass permissions on (shift+tab to cycle)
+[sea] Polling for /tmp/sea-smoke-3525973116/smoke-results.txt...
+  [tmux] CHECK 1 - BWRAP: Run: cat /proc/1/cmdline | tr '\0' ' '
+  [tmux] Report PASS if "bwrap" appears in the output, FAIL if not.
+  [tmux] CHECK 2 - WRITE ISOLATION: Run: touch /tmp/sea-smoke-escape-test 2>&1 && echo LEAKED || echo BLOCKED
+  [tmux] Report PASS if BLOCKED or permission denied, FAIL if LEAKED.
+  [tmux] CHECK 3 - HOME ISOLATION: Run: ls $HOME
+  [tmux] Report what you see. PASS if you see a restricted set of files (not the user's full home).
+  [tmux] CHECK 4 - WORKTREE: Run: git branch --show-current && pwd
+  [tmux] Report the branch and working directory. PASS if you are on a branch like smoke-agent/work.
+  [tmux] CHECK 5 - READ-ONLY ROOT: Run: touch /usr/local/sea-smoke-test 2>&1 || echo READONLY
+  [tmux] Report PASS if READONLY or "Read-only file system".
+  [tmux] After running all checks, write your results to smoke-results.txt in the current directory, one check per line:
+  [tmux] CHECK 1: PASS/FAIL - details
+  [tmux] CHECK 2: PASS/FAIL - details
+  [tmux] CHECK 3: PASS/FAIL - details
+  [tmux] CHECK 4: PASS/FAIL - details
+  [tmux] CHECK 5: PASS/FAIL - details
+  [tmux] ---
+  [tmux] 2. After spawning the teammate, poll for results every 15 seconds. The teammate writes smoke-results.txt in its worktree at .agentsea/agents/smoke-agent/repo/smoke-results.txt relative to the project root. Run:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET"
+  [tmux] Keep polling until the file exists and contains CHECK results. Do NOT stop until you have the results.
+  [tmux] 3. Once you have the results, write them to smoke-results.txt in the PROJECT ROOT (not the agent repo). Use the Bash tool:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt > smoke-results.txt
+  [tmux] This file signals completion to the test harness.
+  [tmux] 4. If any check fails, explain what went wrong.
+  [tmux] ● I'll spawn a teammate to run the sandbox isolation checks, then poll for results.
+  [tmux] ● Agent(Spawn smoke test teammate)
+  [tmux] ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+  [tmux] ● Teammate spawned in a worktree. I'll start polling for results.
+  [tmux] ● Read 1 file (ctrl+o to expand)
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  Running… (10s)
+  [tmux] ctrl+b ctrl+b (twice) to run in background
+  [tmux] · Accomplishing… (47s · ↓ 492 tokens)
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ▪▪▪ ─
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [tmux] 19:22 You are running a smoke test for agentsea sandbox isolation. Follow these…
+  [tmux] 1 worktree
+  [tmux] ⏵⏵ bypass permissions on (shift+tab to cycle)
+[sea] Polling for /tmp/sea-smoke-3525973116/smoke-results.txt...
+  [tmux] CHECK 1 - BWRAP: Run: cat /proc/1/cmdline | tr '\0' ' '
+  [tmux] Report PASS if "bwrap" appears in the output, FAIL if not.
+  [tmux] CHECK 2 - WRITE ISOLATION: Run: touch /tmp/sea-smoke-escape-test 2>&1 && echo LEAKED || echo BLOCKED
+  [tmux] Report PASS if BLOCKED or permission denied, FAIL if LEAKED.
+  [tmux] CHECK 3 - HOME ISOLATION: Run: ls $HOME
+  [tmux] Report what you see. PASS if you see a restricted set of files (not the user's full home).
+  [tmux] CHECK 4 - WORKTREE: Run: git branch --show-current && pwd
+  [tmux] Report the branch and working directory. PASS if you are on a branch like smoke-agent/work.
+  [tmux] CHECK 5 - READ-ONLY ROOT: Run: touch /usr/local/sea-smoke-test 2>&1 || echo READONLY
+  [tmux] Report PASS if READONLY or "Read-only file system".
+  [tmux] After running all checks, write your results to smoke-results.txt in the current directory, one check per line:
+  [tmux] CHECK 1: PASS/FAIL - details
+  [tmux] CHECK 2: PASS/FAIL - details
+  [tmux] CHECK 3: PASS/FAIL - details
+  [tmux] CHECK 4: PASS/FAIL - details
+  [tmux] CHECK 5: PASS/FAIL - details
+  [tmux] ---
+  [tmux] 2. After spawning the teammate, poll for results every 15 seconds. The teammate writes smoke-results.txt in its worktree at .agentsea/agents/smoke-agent/repo/smoke-results.txt relative to the project root. Run:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET"
+  [tmux] Keep polling until the file exists and contains CHECK results. Do NOT stop until you have the results.
+  [tmux] 3. Once you have the results, write them to smoke-results.txt in the PROJECT ROOT (not the agent repo). Use the Bash tool:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt > smoke-results.txt
+  [tmux] This file signals completion to the test harness.
+  [tmux] 4. If any check fails, explain what went wrong.
+  [tmux] ● I'll spawn a teammate to run the sandbox isolation checks, then poll for results.
+  [tmux] ● Agent(Spawn smoke test teammate)
+  [tmux] ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+  [tmux] ● Teammate spawned in a worktree. I'll start polling for results.
+  [tmux] ● Read 1 file (ctrl+o to expand)
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ✽ Accomplishing… (52s · ↑ 492 tokens)
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ▪▪▪ ─
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [tmux] 19:22 You are running a smoke test for agentsea sandbox isolation. Follow these…
+  [tmux] 1 worktree
+  [tmux] ⏵⏵ bypass permissions on (shift+tab to cycle)
+[sea] Polling for /tmp/sea-smoke-3525973116/smoke-results.txt...
+  [tmux] CHECK 2 - WRITE ISOLATION: Run: touch /tmp/sea-smoke-escape-test 2>&1 && echo LEAKED || echo BLOCKED
+  [tmux] Report PASS if BLOCKED or permission denied, FAIL if LEAKED.
+  [tmux] CHECK 3 - HOME ISOLATION: Run: ls $HOME
+  [tmux] Report what you see. PASS if you see a restricted set of files (not the user's full home).
+  [tmux] CHECK 4 - WORKTREE: Run: git branch --show-current && pwd
+  [tmux] Report the branch and working directory. PASS if you are on a branch like smoke-agent/work.
+  [tmux] CHECK 5 - READ-ONLY ROOT: Run: touch /usr/local/sea-smoke-test 2>&1 || echo READONLY
+  [tmux] Report PASS if READONLY or "Read-only file system".
+  [tmux] After running all checks, write your results to smoke-results.txt in the current directory, one check per line:
+  [tmux] CHECK 1: PASS/FAIL - details
+  [tmux] CHECK 2: PASS/FAIL - details
+  [tmux] CHECK 3: PASS/FAIL - details
+  [tmux] CHECK 4: PASS/FAIL - details
+  [tmux] CHECK 5: PASS/FAIL - details
+  [tmux] ---
+  [tmux] 2. After spawning the teammate, poll for results every 15 seconds. The teammate writes smoke-results.txt in its worktree at .agentsea/agents/smoke-agent/repo/smoke-results.txt relative to the project root. Run:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET"
+  [tmux] Keep polling until the file exists and contains CHECK results. Do NOT stop until you have the results.
+  [tmux] 3. Once you have the results, write them to smoke-results.txt in the PROJECT ROOT (not the agent repo). Use the Bash tool:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt > smoke-results.txt
+  [tmux] This file signals completion to the test harness.
+  [tmux] 4. If any check fails, explain what went wrong.
+  [tmux] ● I'll spawn a teammate to run the sandbox isolation checks, then poll for results.
+  [tmux] ● Agent(Spawn smoke test teammate)
+  [tmux] ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+  [tmux] ● Teammate spawned in a worktree. I'll start polling for results.
+  [tmux] ● Read 1 file (ctrl+o to expand)
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  Running…
+  [tmux] · Accomplishing… (58s · ↓ 543 tokens)
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ▪▪▪ ─
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [tmux] 19:22 You are running a smoke test for agentsea sandbox isolation. Follow these…
+  [tmux] 1 worktree
+  [tmux] ⏵⏵ bypass permissions on (shift+tab to cycle)
+[sea] Polling for /tmp/sea-smoke-3525973116/smoke-results.txt...
+  [tmux] CHECK 2 - WRITE ISOLATION: Run: touch /tmp/sea-smoke-escape-test 2>&1 && echo LEAKED || echo BLOCKED
+  [tmux] Report PASS if BLOCKED or permission denied, FAIL if LEAKED.
+  [tmux] CHECK 3 - HOME ISOLATION: Run: ls $HOME
+  [tmux] Report what you see. PASS if you see a restricted set of files (not the user's full home).
+  [tmux] CHECK 4 - WORKTREE: Run: git branch --show-current && pwd
+  [tmux] Report the branch and working directory. PASS if you are on a branch like smoke-agent/work.
+  [tmux] CHECK 5 - READ-ONLY ROOT: Run: touch /usr/local/sea-smoke-test 2>&1 || echo READONLY
+  [tmux] Report PASS if READONLY or "Read-only file system".
+  [tmux] After running all checks, write your results to smoke-results.txt in the current directory, one check per line:
+  [tmux] CHECK 1: PASS/FAIL - details
+  [tmux] CHECK 2: PASS/FAIL - details
+  [tmux] CHECK 3: PASS/FAIL - details
+  [tmux] CHECK 4: PASS/FAIL - details
+  [tmux] CHECK 5: PASS/FAIL - details
+  [tmux] ---
+  [tmux] 2. After spawning the teammate, poll for results every 15 seconds. The teammate writes smoke-results.txt in its worktree at .agentsea/agents/smoke-agent/repo/smoke-results.txt relative to the project root. Run:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET"
+  [tmux] Keep polling until the file exists and contains CHECK results. Do NOT stop until you have the results.
+  [tmux] 3. Once you have the results, write them to smoke-results.txt in the PROJECT ROOT (not the agent repo). Use the Bash tool:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt > smoke-results.txt
+  [tmux] This file signals completion to the test harness.
+  [tmux] 4. If any check fails, explain what went wrong.
+  [tmux] ● I'll spawn a teammate to run the sandbox isolation checks, then poll for results.
+  [tmux] ● Agent(Spawn smoke test teammate)
+  [tmux] ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+  [tmux] ● Teammate spawned in a worktree. I'll start polling for results.
+  [tmux] ● Read 1 file (ctrl+o to expand)
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  Running… (7s)
+  [tmux] ctrl+b ctrl+b (twice) to run in background
+  [tmux] ✽ Accomplishing… (1m 3s · ↓ 543 tokens)
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ▪▪▪ ─
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [tmux] 19:22 You are running a smoke test for agentsea sandbox isolation. Follow these…
+  [tmux] 1 worktree
+  [tmux] ⏵⏵ bypass permissions on (shift+tab to cycle)
+[sea] Polling for /tmp/sea-smoke-3525973116/smoke-results.txt...
+  [tmux] CHECK 2 - WRITE ISOLATION: Run: touch /tmp/sea-smoke-escape-test 2>&1 && echo LEAKED || echo BLOCKED
+  [tmux] Report PASS if BLOCKED or permission denied, FAIL if LEAKED.
+  [tmux] CHECK 3 - HOME ISOLATION: Run: ls $HOME
+  [tmux] Report what you see. PASS if you see a restricted set of files (not the user's full home).
+  [tmux] CHECK 4 - WORKTREE: Run: git branch --show-current && pwd
+  [tmux] Report the branch and working directory. PASS if you are on a branch like smoke-agent/work.
+  [tmux] CHECK 5 - READ-ONLY ROOT: Run: touch /usr/local/sea-smoke-test 2>&1 || echo READONLY
+  [tmux] Report PASS if READONLY or "Read-only file system".
+  [tmux] After running all checks, write your results to smoke-results.txt in the current directory, one check per line:
+  [tmux] CHECK 1: PASS/FAIL - details
+  [tmux] CHECK 2: PASS/FAIL - details
+  [tmux] CHECK 3: PASS/FAIL - details
+  [tmux] CHECK 4: PASS/FAIL - details
+  [tmux] CHECK 5: PASS/FAIL - details
+  [tmux] ---
+  [tmux] 2. After spawning the teammate, poll for results every 15 seconds. The teammate writes smoke-results.txt in its worktree at .agentsea/agents/smoke-agent/repo/smoke-results.txt relative to the project root. Run:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET"
+  [tmux] Keep polling until the file exists and contains CHECK results. Do NOT stop until you have the results.
+  [tmux] 3. Once you have the results, write them to smoke-results.txt in the PROJECT ROOT (not the agent repo). Use the Bash tool:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt > smoke-results.txt
+  [tmux] This file signals completion to the test harness.
+  [tmux] 4. If any check fails, explain what went wrong.
+  [tmux] ● I'll spawn a teammate to run the sandbox isolation checks, then poll for results.
+  [tmux] ● Agent(Spawn smoke test teammate)
+  [tmux] ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+  [tmux] ● Teammate spawned in a worktree. I'll start polling for results.
+  [tmux] ● Read 1 file (ctrl+o to expand)
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  Running… (12s)
+  [tmux] ctrl+b ctrl+b (twice) to run in background
+  [tmux] ✢ Accomplishing… (1m 7s · ↓ 543 tokens)
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ▪▪▪ ─
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [tmux] 19:22 You are running a smoke test for agentsea sandbox isolation. Follow these…
+  [tmux] 1 worktree
+  [tmux] ⏵⏵ bypass permissions on (shift+tab to cycle)
+[sea] Polling for /tmp/sea-smoke-3525973116/smoke-results.txt...
+  [tmux] CHECK 2 - WRITE ISOLATION: Run: touch /tmp/sea-smoke-escape-test 2>&1 && echo LEAKED || echo BLOCKED
+  [tmux] Report PASS if BLOCKED or permission denied, FAIL if LEAKED.
+  [tmux] CHECK 3 - HOME ISOLATION: Run: ls $HOME
+  [tmux] Report what you see. PASS if you see a restricted set of files (not the user's full home).
+  [tmux] CHECK 4 - WORKTREE: Run: git branch --show-current && pwd
+  [tmux] Report the branch and working directory. PASS if you are on a branch like smoke-agent/work.
+  [tmux] CHECK 5 - READ-ONLY ROOT: Run: touch /usr/local/sea-smoke-test 2>&1 || echo READONLY
+  [tmux] Report PASS if READONLY or "Read-only file system".
+  [tmux] After running all checks, write your results to smoke-results.txt in the current directory, one check per line:
+  [tmux] CHECK 1: PASS/FAIL - details
+  [tmux] CHECK 2: PASS/FAIL - details
+  [tmux] CHECK 3: PASS/FAIL - details
+  [tmux] CHECK 4: PASS/FAIL - details
+  [tmux] CHECK 5: PASS/FAIL - details
+  [tmux] ---
+  [tmux] 2. After spawning the teammate, poll for results every 15 seconds. The teammate writes smoke-results.txt in its worktree at .agentsea/agents/smoke-agent/repo/smoke-results.txt relative to the project root. Run:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET"
+  [tmux] Keep polling until the file exists and contains CHECK results. Do NOT stop until you have the results.
+  [tmux] 3. Once you have the results, write them to smoke-results.txt in the PROJECT ROOT (not the agent repo). Use the Bash tool:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt > smoke-results.txt
+  [tmux] This file signals completion to the test harness.
+  [tmux] 4. If any check fails, explain what went wrong.
+  [tmux] ● I'll spawn a teammate to run the sandbox isolation checks, then poll for results.
+  [tmux] ● Agent(Spawn smoke test teammate)
+  [tmux] ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+  [tmux] ● Teammate spawned in a worktree. I'll start polling for results.
+  [tmux] ● Read 1 file (ctrl+o to expand)
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ✽ Accomplishing… (1m 13s · ↑ 543 tokens)
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ▪▪▪ ─
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [tmux] 19:22 You are running a smoke test for agentsea sandbox isolation. Follow these…
+  [tmux] 1 worktree
+  [tmux] ⏵⏵ bypass permissions on (shift+tab to cycle)
+[sea] Polling for /tmp/sea-smoke-3525973116/smoke-results.txt...
+  [tmux] CHECK 3 - HOME ISOLATION: Run: ls $HOME
+  [tmux] Report what you see. PASS if you see a restricted set of files (not the user's full home).
+  [tmux] CHECK 4 - WORKTREE: Run: git branch --show-current && pwd
+  [tmux] Report the branch and working directory. PASS if you are on a branch like smoke-agent/work.
+  [tmux] CHECK 5 - READ-ONLY ROOT: Run: touch /usr/local/sea-smoke-test 2>&1 || echo READONLY
+  [tmux] Report PASS if READONLY or "Read-only file system".
+  [tmux] After running all checks, write your results to smoke-results.txt in the current directory, one check per line:
+  [tmux] CHECK 1: PASS/FAIL - details
+  [tmux] CHECK 2: PASS/FAIL - details
+  [tmux] CHECK 3: PASS/FAIL - details
+  [tmux] CHECK 4: PASS/FAIL - details
+  [tmux] CHECK 5: PASS/FAIL - details
+  [tmux] ---
+  [tmux] 2. After spawning the teammate, poll for results every 15 seconds. The teammate writes smoke-results.txt in its worktree at .agentsea/agents/smoke-agent/repo/smoke-results.txt relative to the project root. Run:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET"
+  [tmux] Keep polling until the file exists and contains CHECK results. Do NOT stop until you have the results.
+  [tmux] 3. Once you have the results, write them to smoke-results.txt in the PROJECT ROOT (not the agent repo). Use the Bash tool:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt > smoke-results.txt
+  [tmux] This file signals completion to the test harness.
+  [tmux] 4. If any check fails, explain what went wrong.
+  [tmux] ● I'll spawn a teammate to run the sandbox isolation checks, then poll for results.
+  [tmux] ● Agent(Spawn smoke test teammate)
+  [tmux] ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+  [tmux] ● Teammate spawned in a worktree. I'll start polling for results.
+  [tmux] ● Read 1 file (ctrl+o to expand)
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  Running… (4s)
+  [tmux] ctrl+b ctrl+b (twice) to run in background
+  [tmux] ✢ Accomplishing… (1m 18s · ↓ 593 tokens)
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ▪▪▪ ─
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [tmux] 19:22 You are running a smoke test for agentsea sandbox isolation. Follow these…
+  [tmux] 1 worktree
+  [tmux] ⏵⏵ bypass permissions on (shift+tab to cycle)
+[sea] Polling for /tmp/sea-smoke-3525973116/smoke-results.txt...
+  [tmux] CHECK 3 - HOME ISOLATION: Run: ls $HOME
+  [tmux] Report what you see. PASS if you see a restricted set of files (not the user's full home).
+  [tmux] CHECK 4 - WORKTREE: Run: git branch --show-current && pwd
+  [tmux] Report the branch and working directory. PASS if you are on a branch like smoke-agent/work.
+  [tmux] CHECK 5 - READ-ONLY ROOT: Run: touch /usr/local/sea-smoke-test 2>&1 || echo READONLY
+  [tmux] Report PASS if READONLY or "Read-only file system".
+  [tmux] After running all checks, write your results to smoke-results.txt in the current directory, one check per line:
+  [tmux] CHECK 1: PASS/FAIL - details
+  [tmux] CHECK 2: PASS/FAIL - details
+  [tmux] CHECK 3: PASS/FAIL - details
+  [tmux] CHECK 4: PASS/FAIL - details
+  [tmux] CHECK 5: PASS/FAIL - details
+  [tmux] ---
+  [tmux] 2. After spawning the teammate, poll for results every 15 seconds. The teammate writes smoke-results.txt in its worktree at .agentsea/agents/smoke-agent/repo/smoke-results.txt relative to the project root. Run:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET"
+  [tmux] Keep polling until the file exists and contains CHECK results. Do NOT stop until you have the results.
+  [tmux] 3. Once you have the results, write them to smoke-results.txt in the PROJECT ROOT (not the agent repo). Use the Bash tool:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt > smoke-results.txt
+  [tmux] This file signals completion to the test harness.
+  [tmux] 4. If any check fails, explain what went wrong.
+  [tmux] ● I'll spawn a teammate to run the sandbox isolation checks, then poll for results.
+  [tmux] ● Agent(Spawn smoke test teammate)
+  [tmux] ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+  [tmux] ● Teammate spawned in a worktree. I'll start polling for results.
+  [tmux] ● Read 1 file (ctrl+o to expand)
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  Running… (9s)
+  [tmux] ctrl+b ctrl+b (twice) to run in background
+  [tmux] ✻ Accomplishing… (1m 22s · ↓ 593 tokens)
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ▪▪▪ ─
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [tmux] 19:22 You are running a smoke test for agentsea sandbox isolation. Follow these…
+  [tmux] 1 worktree
+  [tmux] ⏵⏵ bypass permissions on (shift+tab to cycle)
+[sea] Polling for /tmp/sea-smoke-3525973116/smoke-results.txt...
+  [tmux] CHECK 3 - HOME ISOLATION: Run: ls $HOME
+  [tmux] Report what you see. PASS if you see a restricted set of files (not the user's full home).
+  [tmux] CHECK 4 - WORKTREE: Run: git branch --show-current && pwd
+  [tmux] Report the branch and working directory. PASS if you are on a branch like smoke-agent/work.
+  [tmux] CHECK 5 - READ-ONLY ROOT: Run: touch /usr/local/sea-smoke-test 2>&1 || echo READONLY
+  [tmux] Report PASS if READONLY or "Read-only file system".
+  [tmux] After running all checks, write your results to smoke-results.txt in the current directory, one check per line:
+  [tmux] CHECK 1: PASS/FAIL - details
+  [tmux] CHECK 2: PASS/FAIL - details
+  [tmux] CHECK 3: PASS/FAIL - details
+  [tmux] CHECK 4: PASS/FAIL - details
+  [tmux] CHECK 5: PASS/FAIL - details
+  [tmux] ---
+  [tmux] 2. After spawning the teammate, poll for results every 15 seconds. The teammate writes smoke-results.txt in its worktree at .agentsea/agents/smoke-agent/repo/smoke-results.txt relative to the project root. Run:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET"
+  [tmux] Keep polling until the file exists and contains CHECK results. Do NOT stop until you have the results.
+  [tmux] 3. Once you have the results, write them to smoke-results.txt in the PROJECT ROOT (not the agent repo). Use the Bash tool:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt > smoke-results.txt
+  [tmux] This file signals completion to the test harness.
+  [tmux] 4. If any check fails, explain what went wrong.
+  [tmux] ● I'll spawn a teammate to run the sandbox isolation checks, then poll for results.
+  [tmux] ● Agent(Spawn smoke test teammate)
+  [tmux] ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+  [tmux] ● Teammate spawned in a worktree. I'll start polling for results.
+  [tmux] ● Read 1 file (ctrl+o to expand)
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  Running… (14s)
+  [tmux] ctrl+b ctrl+b (twice) to run in background
+  [tmux] ✢ Accomplishing… (1m 28s · ↓ 593 tokens)
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ▪▪▪ ─
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [tmux] 19:22 You are running a smoke test for agentsea sandbox isolation. Follow these…
+  [tmux] 1 worktree
+  [tmux] ⏵⏵ bypass permissions on (shift+tab to cycle)
+[sea] Polling for /tmp/sea-smoke-3525973116/smoke-results.txt...
+  [tmux] CHECK 4 - WORKTREE: Run: git branch --show-current && pwd
+  [tmux] Report the branch and working directory. PASS if you are on a branch like smoke-agent/work.
+  [tmux] CHECK 5 - READ-ONLY ROOT: Run: touch /usr/local/sea-smoke-test 2>&1 || echo READONLY
+  [tmux] Report PASS if READONLY or "Read-only file system".
+  [tmux] After running all checks, write your results to smoke-results.txt in the current directory, one check per line:
+  [tmux] CHECK 1: PASS/FAIL - details
+  [tmux] CHECK 2: PASS/FAIL - details
+  [tmux] CHECK 3: PASS/FAIL - details
+  [tmux] CHECK 4: PASS/FAIL - details
+  [tmux] CHECK 5: PASS/FAIL - details
+  [tmux] ---
+  [tmux] 2. After spawning the teammate, poll for results every 15 seconds. The teammate writes smoke-results.txt in its worktree at .agentsea/agents/smoke-agent/repo/smoke-results.txt relative to the project root. Run:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET"
+  [tmux] Keep polling until the file exists and contains CHECK results. Do NOT stop until you have the results.
+  [tmux] 3. Once you have the results, write them to smoke-results.txt in the PROJECT ROOT (not the agent repo). Use the Bash tool:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt > smoke-results.txt
+  [tmux] This file signals completion to the test harness.
+  [tmux] 4. If any check fails, explain what went wrong.
+  [tmux] ● I'll spawn a teammate to run the sandbox isolation checks, then poll for results.
+  [tmux] ● Agent(Spawn smoke test teammate)
+  [tmux] ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+  [tmux] ● Teammate spawned in a worktree. I'll start polling for results.
+  [tmux] ● Read 1 file (ctrl+o to expand)
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  Running…
+  [tmux] ✶ Accomplishing… (1m 33s · ↓ 631 tokens)
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ▪▪▪ ─
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [tmux] 19:22 You are running a smoke test for agentsea sandbox isolation. Follow these…
+  [tmux] 1 worktree
+  [tmux] ⏵⏵ bypass permissions on (shift+tab to cycle)
+[sea] Polling for /tmp/sea-smoke-3525973116/smoke-results.txt...
+  [tmux] CHECK 4 - WORKTREE: Run: git branch --show-current && pwd
+  [tmux] Report the branch and working directory. PASS if you are on a branch like smoke-agent/work.
+  [tmux] CHECK 5 - READ-ONLY ROOT: Run: touch /usr/local/sea-smoke-test 2>&1 || echo READONLY
+  [tmux] Report PASS if READONLY or "Read-only file system".
+  [tmux] After running all checks, write your results to smoke-results.txt in the current directory, one check per line:
+  [tmux] CHECK 1: PASS/FAIL - details
+  [tmux] CHECK 2: PASS/FAIL - details
+  [tmux] CHECK 3: PASS/FAIL - details
+  [tmux] CHECK 4: PASS/FAIL - details
+  [tmux] CHECK 5: PASS/FAIL - details
+  [tmux] ---
+  [tmux] 2. After spawning the teammate, poll for results every 15 seconds. The teammate writes smoke-results.txt in its worktree at .agentsea/agents/smoke-agent/repo/smoke-results.txt relative to the project root. Run:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET"
+  [tmux] Keep polling until the file exists and contains CHECK results. Do NOT stop until you have the results.
+  [tmux] 3. Once you have the results, write them to smoke-results.txt in the PROJECT ROOT (not the agent repo). Use the Bash tool:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt > smoke-results.txt
+  [tmux] This file signals completion to the test harness.
+  [tmux] 4. If any check fails, explain what went wrong.
+  [tmux] ● I'll spawn a teammate to run the sandbox isolation checks, then poll for results.
+  [tmux] ● Agent(Spawn smoke test teammate)
+  [tmux] ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+  [tmux] ● Teammate spawned in a worktree. I'll start polling for results.
+  [tmux] ● Read 1 file (ctrl+o to expand)
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  Running… (5s)
+  [tmux] ctrl+b ctrl+b (twice) to run in background
+  [tmux] * Accomplishing… (1m 38s · ↓ 644 tokens)
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ▪▪▪ ─
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [tmux] 19:22 You are running a smoke test for agentsea sandbox isolation. Follow these…
+  [tmux] 1 worktree
+  [tmux] ⏵⏵ bypass permissions on (shift+tab to cycle)
+[sea] Polling for /tmp/sea-smoke-3525973116/smoke-results.txt...
+  [tmux] CHECK 4 - WORKTREE: Run: git branch --show-current && pwd
+  [tmux] Report the branch and working directory. PASS if you are on a branch like smoke-agent/work.
+  [tmux] CHECK 5 - READ-ONLY ROOT: Run: touch /usr/local/sea-smoke-test 2>&1 || echo READONLY
+  [tmux] Report PASS if READONLY or "Read-only file system".
+  [tmux] After running all checks, write your results to smoke-results.txt in the current directory, one check per line:
+  [tmux] CHECK 1: PASS/FAIL - details
+  [tmux] CHECK 2: PASS/FAIL - details
+  [tmux] CHECK 3: PASS/FAIL - details
+  [tmux] CHECK 4: PASS/FAIL - details
+  [tmux] CHECK 5: PASS/FAIL - details
+  [tmux] ---
+  [tmux] 2. After spawning the teammate, poll for results every 15 seconds. The teammate writes smoke-results.txt in its worktree at .agentsea/agents/smoke-agent/repo/smoke-results.txt relative to the project root. Run:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET"
+  [tmux] Keep polling until the file exists and contains CHECK results. Do NOT stop until you have the results.
+  [tmux] 3. Once you have the results, write them to smoke-results.txt in the PROJECT ROOT (not the agent repo). Use the Bash tool:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt > smoke-results.txt
+  [tmux] This file signals completion to the test harness.
+  [tmux] 4. If any check fails, explain what went wrong.
+  [tmux] ● I'll spawn a teammate to run the sandbox isolation checks, then poll for results.
+  [tmux] ● Agent(Spawn smoke test teammate)
+  [tmux] ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+  [tmux] ● Teammate spawned in a worktree. I'll start polling for results.
+  [tmux] ● Read 1 file (ctrl+o to expand)
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  Running… (9s)
+  [tmux] ctrl+b ctrl+b (twice) to run in background
+  [tmux] * Accomplishing… (1m 43s · ↓ 644 tokens)
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ▪▪▪ ─
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [tmux] 19:22 You are running a smoke test for agentsea sandbox isolation. Follow these…
+  [tmux] 1 worktree
+  [tmux] ⏵⏵ bypass permissions on (shift+tab to cycle)
+[sea] Polling for /tmp/sea-smoke-3525973116/smoke-results.txt...
+  [tmux] CHECK 4 - WORKTREE: Run: git branch --show-current && pwd
+  [tmux] Report the branch and working directory. PASS if you are on a branch like smoke-agent/work.
+  [tmux] CHECK 5 - READ-ONLY ROOT: Run: touch /usr/local/sea-smoke-test 2>&1 || echo READONLY
+  [tmux] Report PASS if READONLY or "Read-only file system".
+  [tmux] After running all checks, write your results to smoke-results.txt in the current directory, one check per line:
+  [tmux] CHECK 1: PASS/FAIL - details
+  [tmux] CHECK 2: PASS/FAIL - details
+  [tmux] CHECK 3: PASS/FAIL - details
+  [tmux] CHECK 4: PASS/FAIL - details
+  [tmux] CHECK 5: PASS/FAIL - details
+  [tmux] ---
+  [tmux] 2. After spawning the teammate, poll for results every 15 seconds. The teammate writes smoke-results.txt in its worktree at .agentsea/agents/smoke-agent/repo/smoke-results.txt relative to the project root. Run:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET"
+  [tmux] Keep polling until the file exists and contains CHECK results. Do NOT stop until you have the results.
+  [tmux] 3. Once you have the results, write them to smoke-results.txt in the PROJECT ROOT (not the agent repo). Use the Bash tool:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt > smoke-results.txt
+  [tmux] This file signals completion to the test harness.
+  [tmux] 4. If any check fails, explain what went wrong.
+  [tmux] ● I'll spawn a teammate to run the sandbox isolation checks, then poll for results.
+  [tmux] ● Agent(Spawn smoke test teammate)
+  [tmux] ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+  [tmux] ● Teammate spawned in a worktree. I'll start polling for results.
+  [tmux] ● Read 1 file (ctrl+o to expand)
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ✶ Accomplishing… (1m 48s · ↑ 644 tokens)
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ▪▪▪ ─
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [tmux] 19:22 You are running a smoke test for agentsea sandbox isolation. Follow these…
+  [tmux] 1 worktree
+  [tmux] ⏵⏵ bypass permissions on (shift+tab to cycle)
+[sea] Polling for /tmp/sea-smoke-3525973116/smoke-results.txt...
+  [tmux] CHECK 5 - READ-ONLY ROOT: Run: touch /usr/local/sea-smoke-test 2>&1 || echo READONLY
+  [tmux] Report PASS if READONLY or "Read-only file system".
+  [tmux] After running all checks, write your results to smoke-results.txt in the current directory, one check per line:
+  [tmux] CHECK 1: PASS/FAIL - details
+  [tmux] CHECK 2: PASS/FAIL - details
+  [tmux] CHECK 3: PASS/FAIL - details
+  [tmux] CHECK 4: PASS/FAIL - details
+  [tmux] CHECK 5: PASS/FAIL - details
+  [tmux] ---
+  [tmux] 2. After spawning the teammate, poll for results every 15 seconds. The teammate writes smoke-results.txt in its worktree at .agentsea/agents/smoke-agent/repo/smoke-results.txt relative to the project root. Run:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET"
+  [tmux] Keep polling until the file exists and contains CHECK results. Do NOT stop until you have the results.
+  [tmux] 3. Once you have the results, write them to smoke-results.txt in the PROJECT ROOT (not the agent repo). Use the Bash tool:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt > smoke-results.txt
+  [tmux] This file signals completion to the test harness.
+  [tmux] 4. If any check fails, explain what went wrong.
+  [tmux] ● I'll spawn a teammate to run the sandbox isolation checks, then poll for results.
+  [tmux] ● Agent(Spawn smoke test teammate)
+  [tmux] ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+  [tmux] ● Teammate spawned in a worktree. I'll start polling for results.
+  [tmux] ● Read 1 file (ctrl+o to expand)
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  Running…
+  [tmux] * Accomplishing… (1m 52s · ↓ 694 tokens)
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ▪▪▪ ─
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [tmux] 19:22 You are running a smoke test for agentsea sandbox isolation. Follow these…
+  [tmux] 1 worktree
+  [tmux] ⏵⏵ bypass permissions on (shift+tab to cycle)
+[sea] Polling for /tmp/sea-smoke-3525973116/smoke-results.txt...
+  [tmux] CHECK 5 - READ-ONLY ROOT: Run: touch /usr/local/sea-smoke-test 2>&1 || echo READONLY
+  [tmux] Report PASS if READONLY or "Read-only file system".
+  [tmux] After running all checks, write your results to smoke-results.txt in the current directory, one check per line:
+  [tmux] CHECK 1: PASS/FAIL - details
+  [tmux] CHECK 2: PASS/FAIL - details
+  [tmux] CHECK 3: PASS/FAIL - details
+  [tmux] CHECK 4: PASS/FAIL - details
+  [tmux] CHECK 5: PASS/FAIL - details
+  [tmux] ---
+  [tmux] 2. After spawning the teammate, poll for results every 15 seconds. The teammate writes smoke-results.txt in its worktree at .agentsea/agents/smoke-agent/repo/smoke-results.txt relative to the project root. Run:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET"
+  [tmux] Keep polling until the file exists and contains CHECK results. Do NOT stop until you have the results.
+  [tmux] 3. Once you have the results, write them to smoke-results.txt in the PROJECT ROOT (not the agent repo). Use the Bash tool:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt > smoke-results.txt
+  [tmux] This file signals completion to the test harness.
+  [tmux] 4. If any check fails, explain what went wrong.
+  [tmux] ● I'll spawn a teammate to run the sandbox isolation checks, then poll for results.
+  [tmux] ● Agent(Spawn smoke test teammate)
+  [tmux] ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+  [tmux] ● Teammate spawned in a worktree. I'll start polling for results.
+  [tmux] ● Read 1 file (ctrl+o to expand)
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  Running… (7s)
+  [tmux] ctrl+b ctrl+b (twice) to run in background
+  [tmux] ✻ Accomplishing… (1m 58s · ↓ 694 tokens)
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ▪▪▪ ─
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [tmux] 19:22 You are running a smoke test for agentsea sandbox isolation. Follow these…
+  [tmux] 1 worktree
+  [tmux] ⏵⏵ bypass permissions on (shift+tab to cycle)
+[sea] Polling for /tmp/sea-smoke-3525973116/smoke-results.txt...
+  [tmux] CHECK 5 - READ-ONLY ROOT: Run: touch /usr/local/sea-smoke-test 2>&1 || echo READONLY
+  [tmux] Report PASS if READONLY or "Read-only file system".
+  [tmux] After running all checks, write your results to smoke-results.txt in the current directory, one check per line:
+  [tmux] CHECK 1: PASS/FAIL - details
+  [tmux] CHECK 2: PASS/FAIL - details
+  [tmux] CHECK 3: PASS/FAIL - details
+  [tmux] CHECK 4: PASS/FAIL - details
+  [tmux] CHECK 5: PASS/FAIL - details
+  [tmux] ---
+  [tmux] 2. After spawning the teammate, poll for results every 15 seconds. The teammate writes smoke-results.txt in its worktree at .agentsea/agents/smoke-agent/repo/smoke-results.txt relative to the project root. Run:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET"
+  [tmux] Keep polling until the file exists and contains CHECK results. Do NOT stop until you have the results.
+  [tmux] 3. Once you have the results, write them to smoke-results.txt in the PROJECT ROOT (not the agent repo). Use the Bash tool:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt > smoke-results.txt
+  [tmux] This file signals completion to the test harness.
+  [tmux] 4. If any check fails, explain what went wrong.
+  [tmux] ● I'll spawn a teammate to run the sandbox isolation checks, then poll for results.
+  [tmux] ● Agent(Spawn smoke test teammate)
+  [tmux] ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+  [tmux] ● Teammate spawned in a worktree. I'll start polling for results.
+  [tmux] ● Read 1 file (ctrl+o to expand)
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  Running… (12s)
+  [tmux] ctrl+b ctrl+b (twice) to run in background
+  [tmux] ✢ Accomplishing… (2m 3s · ↓ 694 tokens)
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ▪▪▪ ─
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [tmux] 19:22 You are running a smoke test for agentsea sandbox isolation. Follow these…
+  [tmux] 1 worktree
+  [tmux] ⏵⏵ bypass permissions on (shift+tab to cycle)
+[sea] Polling for /tmp/sea-smoke-3525973116/smoke-results.txt...
+  [tmux] CHECK 5 - READ-ONLY ROOT: Run: touch /usr/local/sea-smoke-test 2>&1 || echo READONLY
+  [tmux] Report PASS if READONLY or "Read-only file system".
+  [tmux] After running all checks, write your results to smoke-results.txt in the current directory, one check per line:
+  [tmux] CHECK 1: PASS/FAIL - details
+  [tmux] CHECK 2: PASS/FAIL - details
+  [tmux] CHECK 3: PASS/FAIL - details
+  [tmux] CHECK 4: PASS/FAIL - details
+  [tmux] CHECK 5: PASS/FAIL - details
+  [tmux] ---
+  [tmux] 2. After spawning the teammate, poll for results every 15 seconds. The teammate writes smoke-results.txt in its worktree at .agentsea/agents/smoke-agent/repo/smoke-results.txt relative to the project root. Run:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET"
+  [tmux] Keep polling until the file exists and contains CHECK results. Do NOT stop until you have the results.
+  [tmux] 3. Once you have the results, write them to smoke-results.txt in the PROJECT ROOT (not the agent repo). Use the Bash tool:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt > smoke-results.txt
+  [tmux] This file signals completion to the test harness.
+  [tmux] 4. If any check fails, explain what went wrong.
+  [tmux] ● I'll spawn a teammate to run the sandbox isolation checks, then poll for results.
+  [tmux] ● Agent(Spawn smoke test teammate)
+  [tmux] ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+  [tmux] ● Teammate spawned in a worktree. I'll start polling for results.
+  [tmux] ● Read 1 file (ctrl+o to expand)
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ✻ Accomplishing… (2m 8s · ↑ 694 tokens)
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ▪▪▪ ─
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [tmux] 19:22 You are running a smoke test for agentsea sandbox isolation. Follow these…
+  [tmux] 1 worktree
+  [tmux] ⏵⏵ bypass permissions on (shift+tab to cycle)
+[sea] Polling for /tmp/sea-smoke-3525973116/smoke-results.txt...
+  [tmux] Report PASS if READONLY or "Read-only file system".
+  [tmux] After running all checks, write your results to smoke-results.txt in the current directory, one check per line:
+  [tmux] CHECK 1: PASS/FAIL - details
+  [tmux] CHECK 2: PASS/FAIL - details
+  [tmux] CHECK 3: PASS/FAIL - details
+  [tmux] CHECK 4: PASS/FAIL - details
+  [tmux] CHECK 5: PASS/FAIL - details
+  [tmux] ---
+  [tmux] 2. After spawning the teammate, poll for results every 15 seconds. The teammate writes smoke-results.txt in its worktree at .agentsea/agents/smoke-agent/repo/smoke-results.txt relative to the project root. Run:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET"
+  [tmux] Keep polling until the file exists and contains CHECK results. Do NOT stop until you have the results.
+  [tmux] 3. Once you have the results, write them to smoke-results.txt in the PROJECT ROOT (not the agent repo). Use the Bash tool:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt > smoke-results.txt
+  [tmux] This file signals completion to the test harness.
+  [tmux] 4. If any check fails, explain what went wrong.
+  [tmux] ● I'll spawn a teammate to run the sandbox isolation checks, then poll for results.
+  [tmux] ● Agent(Spawn smoke test teammate)
+  [tmux] ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+  [tmux] ● Teammate spawned in a worktree. I'll start polling for results.
+  [tmux] ● Read 1 file (ctrl+o to expand)
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Searching for 1 pattern… (ctrl+o to expand)
+  [tmux] · Accomplishing… (2m 12s · ↓ 789 tokens · thinking with high effort)
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ▪▪▪ ─
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [tmux] 19:22 You are running a smoke test for agentsea sandbox isolation. Follow these…
+  [tmux] 1 worktree
+  [tmux] ⏵⏵ bypass permissions on (shift+tab to cycle)
+[sea] Polling for /tmp/sea-smoke-3525973116/smoke-results.txt...
+  [tmux] CHECK 3: PASS/FAIL - details
+  [tmux] CHECK 4: PASS/FAIL - details
+  [tmux] CHECK 5: PASS/FAIL - details
+  [tmux] ---
+  [tmux] 2. After spawning the teammate, poll for results every 15 seconds. The teammate writes smoke-results.txt in its worktree at .agentsea/agents/smoke-agent/repo/smoke-results.txt relative to the project root. Run:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET"
+  [tmux] Keep polling until the file exists and contains CHECK results. Do NOT stop until you have the results.
+  [tmux] 3. Once you have the results, write them to smoke-results.txt in the PROJECT ROOT (not the agent repo). Use the Bash tool:
+  [tmux] cat .agentsea/agents/smoke-agent/repo/smoke-results.txt > smoke-results.txt
+  [tmux] This file signals completion to the test harness.
+  [tmux] 4. If any check fails, explain what went wrong.
+  [tmux] ● I'll spawn a teammate to run the sandbox isolation checks, then poll for results.
+  [tmux] ● Agent(Spawn smoke test teammate)
+  [tmux] ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+  [tmux] ● Teammate spawned in a worktree. I'll start polling for results.
+  [tmux] ● Read 1 file (ctrl+o to expand)
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Bash(sleep 15 && cat /tmp/sea-smoke-3525973116/.agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET")
+  [tmux] ⎿  NOT READY YET
+  [tmux] ● Searched for 1 pattern (ctrl+o to expand)
+  [tmux] ● The agent worktree isn't at the expected path. Let me check the agent's output and find where the worktree actually is.
+  [tmux] ● Searching for 1 pattern, reading 1 file… (ctrl+o to expand)
+  [tmux] ⎿  tail -100 /tmp/claude-1000/-tmp-sea-smoke-3525973116/task…
+  [tmux] ✽ Accomplishing… (2m 17s · ↑ 950 tokens · thinking with high effort)
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ▪▪▪ ─
+  [tmux] ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [tmux] 19:22 You are running a smoke test for agentsea sandbox isolation. Follow these…
+  [tmux] 1 worktree
+  [tmux] ⏵⏵ bypass permissions on (shift+tab to cycle)
+CHECK 1: FAIL - PID 1 cmdline is "/sbin/init", bwrap does not appear
+CHECK 2: FAIL - LEAKED; touch /tmp/sea-smoke-escape-test succeeded without error
+CHECK 3: FAIL - Home directory shows user's real contents (dependencies, dev-setup, dotfiles, go, project, snap), not a restricted set
+CHECK 4: PASS - Branch is "worktree-agent-a2d788a3" and working directory is /tmp/sea-smoke-3525973116/.claude/worktrees/agent-a2d788a3
+CHECK 5: PASS - Got "Permission denied" and READONLY when attempting to write to /usr/local/
+
+
+Smoke test completed.
+Inspect workspace: /tmp/sea-smoke-3525973116
+
+── Launcher Log ──
+CLAUDE_CODE_TEAMMATE_COMMAND=/tmp/sea-smoke-3525973116/teammate-wrapper
+PATH=/home/ketan/.local/go/bin:/home/ketan/go/bin:/home/ketan/.local/bin:/Users/ketan/.rd/bin:/usr/local/go/bin:/home/ketan/go/bin:/home/ketan/.local/go/bin:/home/ketan/go/bin:/home/ketan/.local/bin:/Users/ketan/.rd/bin:/home/ketan/.cargo/bin:/usr/local/go/bin:/home/ketan/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/snap/bin:/home/ketan/project/utilscripts:/home/ketan/project/wkflw/bin:/snap/bin:/home/ketan/project/utilscripts:/home/ketan/project/wkflw/bin
+-rwxr-xr-x 1 ketan ketan 181 Mar  8 19:22 /tmp/sea-smoke-3525973116/teammate-wrapper
+
+Wrapper Log not found

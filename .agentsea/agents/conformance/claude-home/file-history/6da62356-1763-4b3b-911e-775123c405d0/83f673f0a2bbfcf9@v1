@@ -1,0 +1,290 @@
+package sandbox
+
+import (
+	"slices"
+	"testing"
+)
+
+func baseConfig() SandboxConfig {
+	return SandboxConfig{
+		AgentRepo:    "/workspace/agents/fix-auth/repo",
+		TeamMailbox:  "/home/user/.claude/teams/myteam",
+		ClaudeHome:   "/workspace/agents/fix-auth/claude-home",
+		ClaudeBinDir: "/home/user/.local/share/claude/versions",
+		Home:         "/home/user",
+		User:         "user",
+		WorkDir:      "/workspace/agents/fix-auth/repo",
+	}
+}
+
+// findPair returns the index of a flag-value pair in args, or -1.
+func findPair(args []string, flag, value string) int {
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == flag && args[i+1] == value {
+			return i
+		}
+	}
+	return -1
+}
+
+// findTriple returns the index of a flag with two values in args, or -1.
+func findTriple(args []string, flag, v1, v2 string) int {
+	for i := 0; i < len(args)-2; i++ {
+		if args[i] == flag && args[i+1] == v1 && args[i+2] == v2 {
+			return i
+		}
+	}
+	return -1
+}
+
+func TestArgsRequiredFlags(t *testing.T) {
+	cfg := baseConfig()
+	args := cfg.Args()
+
+	checks := []struct {
+		name string
+		ok   bool
+	}{
+		{"ro-bind root", findPair(args, "--ro-bind", "/") >= 0},
+		{"tmpfs home", findPair(args, "--tmpfs", "/home/user") >= 0},
+		{"bind claude home", findTriple(args, "--bind", cfg.ClaudeHome, "/home/user/.claude") >= 0},
+		{"bind agent repo", findTriple(args, "--bind", cfg.AgentRepo, cfg.AgentRepo) >= 0},
+		{"bind team mailbox", findTriple(args, "--bind", cfg.TeamMailbox, cfg.TeamMailbox) >= 0},
+		{"ro-bind claude bin", findTriple(args, "--ro-bind", cfg.ClaudeBinDir, cfg.ClaudeBinDir) >= 0},
+		{"tmpfs /tmp", findPair(args, "--tmpfs", "/tmp") >= 0},
+		{"proc /proc", findPair(args, "--proc", "/proc") >= 0},
+		{"dev /dev", findPair(args, "--dev", "/dev") >= 0},
+		{"setenv HOME", findTriple(args, "--setenv", "HOME", "/home/user") >= 0},
+		{"setenv USER", findTriple(args, "--setenv", "USER", "user") >= 0},
+		{"setenv SSH_AUTH_SOCK", findTriple(args, "--setenv", "SSH_AUTH_SOCK", "") >= 0},
+		{"chdir", findPair(args, "--chdir", cfg.WorkDir) >= 0},
+	}
+
+	for _, c := range checks {
+		if !c.ok {
+			t.Errorf("missing required flag: %s", c.name)
+		}
+	}
+}
+
+func TestArgsMountOrder(t *testing.T) {
+	cfg := baseConfig()
+	args := cfg.Args()
+
+	roBindRoot := findPair(args, "--ro-bind", "/")
+	tmpfsHome := findPair(args, "--tmpfs", "/home/user")
+	bindClaude := findTriple(args, "--bind", cfg.ClaudeHome, "/home/user/.claude")
+
+	if roBindRoot >= tmpfsHome {
+		t.Error("--ro-bind / must come before --tmpfs $HOME")
+	}
+	if tmpfsHome >= bindClaude {
+		t.Error("--tmpfs $HOME must come before --bind .claude")
+	}
+}
+
+func TestArgsChdirIsLast(t *testing.T) {
+	cfg := baseConfig()
+	args := cfg.Args()
+
+	idx := findPair(args, "--chdir", cfg.WorkDir)
+	if idx < 0 {
+		t.Fatal("--chdir not found")
+	}
+	if idx != len(args)-2 {
+		t.Errorf("--chdir should be last flag pair, but found at index %d of %d", idx, len(args))
+	}
+}
+
+func TestArgsOptionalClaudeJSON(t *testing.T) {
+	t.Run("present", func(t *testing.T) {
+		cfg := baseConfig()
+		cfg.ClaudeJSON = "/home/user/.claude.json"
+		args := cfg.Args()
+
+		if findTriple(args, "--ro-bind", "/home/user/.claude.json", "/home/user/.claude.json") < 0 {
+			t.Error("--ro-bind for .claude.json not found")
+		}
+	})
+
+	t.Run("absent", func(t *testing.T) {
+		cfg := baseConfig()
+		args := cfg.Args()
+
+		if slices.Contains(args, ".claude.json") {
+			t.Error(".claude.json should not appear when ClaudeJSON is empty")
+		}
+	})
+}
+
+func TestArgsOptionalSSH(t *testing.T) {
+	t.Run("present", func(t *testing.T) {
+		cfg := baseConfig()
+		cfg.AgentSSHDir = "/workspace/agents/fix-auth/ssh"
+		args := cfg.Args()
+
+		if findTriple(args, "--ro-bind", cfg.AgentSSHDir, "/home/user/.ssh") < 0 {
+			t.Error("--ro-bind for .ssh not found")
+		}
+	})
+
+	t.Run("absent", func(t *testing.T) {
+		cfg := baseConfig()
+		args := cfg.Args()
+
+		if slices.Contains(args, ".ssh") {
+			t.Error(".ssh should not appear when AgentSSHDir is empty")
+		}
+	})
+}
+
+func TestArgsExtraMounts(t *testing.T) {
+	cfg := baseConfig()
+	cfg.ExtraRO = []string{"/opt/tools", "/usr/share/data"}
+	cfg.ExtraRW = []string{"/var/cache/builds"}
+	args := cfg.Args()
+
+	for _, p := range cfg.ExtraRO {
+		if findTriple(args, "--ro-bind", p, p) < 0 {
+			t.Errorf("extra RO mount %s not found", p)
+		}
+	}
+	for _, p := range cfg.ExtraRW {
+		if findTriple(args, "--bind", p, p) < 0 {
+			t.Errorf("extra RW mount %s not found", p)
+		}
+	}
+
+	// Extra mounts should come before --chdir
+	chdirIdx := findPair(args, "--chdir", cfg.WorkDir)
+	for _, p := range cfg.ExtraRO {
+		if idx := findTriple(args, "--ro-bind", p, p); idx > chdirIdx {
+			t.Errorf("extra RO mount %s should come before --chdir", p)
+		}
+	}
+}
+
+// TestArgsEmptyHome documents that path.Join("", ".claude") produces ".claude"
+// (a relative path), which is a bug. This test locks in the current behavior.
+func TestArgsEmptyHome(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Home = ""
+	args := cfg.Args()
+
+	// path.Join("", ".claude") => ".claude" (relative, not absolute)
+	if findTriple(args, "--bind", cfg.ClaudeHome, ".claude") < 0 {
+		t.Error("expected .claude as mount target when Home is empty (documents bug)")
+	}
+
+	// --tmpfs "" is also produced
+	if findPair(args, "--tmpfs", "") < 0 {
+		t.Error("expected --tmpfs with empty string when Home is empty")
+	}
+}
+
+// TestArgsEmptyRequiredFields documents that a zero-value SandboxConfig
+// doesn't panic and produces args with empty strings throughout.
+func TestArgsEmptyRequiredFields(t *testing.T) {
+	cfg := SandboxConfig{}
+	args := cfg.Args()
+
+	if args == nil {
+		t.Fatal("Args() returned nil for zero-value config")
+	}
+	if len(args) == 0 {
+		t.Fatal("Args() returned empty slice for zero-value config")
+	}
+
+	// Should still have the structural flags
+	if findPair(args, "--ro-bind", "/") < 0 {
+		t.Error("missing --ro-bind / even with zero-value config")
+	}
+	if findPair(args, "--proc", "/proc") < 0 {
+		t.Error("missing --proc /proc even with zero-value config")
+	}
+}
+
+// TestArgsPathsWithSpaces verifies that paths with spaces remain as separate
+// slice elements, which is correct for exec.Command (no shell quoting needed).
+func TestArgsPathsWithSpaces(t *testing.T) {
+	cfg := baseConfig()
+	cfg.AgentRepo = "/home/my user/repo"
+	cfg.WorkDir = "/home/my user/repo"
+	args := cfg.Args()
+
+	// The path must appear as a single element, not split on spaces
+	if findTriple(args, "--bind", "/home/my user/repo", "/home/my user/repo") < 0 {
+		t.Error("path with spaces should be a single slice element")
+	}
+	if findPair(args, "--chdir", "/home/my user/repo") < 0 {
+		t.Error("--chdir path with spaces should be a single slice element")
+	}
+}
+
+// TestArgsRelativePaths documents that relative paths pass through unchanged.
+// It is the caller's responsibility to provide absolute paths.
+func TestArgsRelativePaths(t *testing.T) {
+	cfg := baseConfig()
+	cfg.AgentRepo = "agents/fix-auth/repo"
+	cfg.WorkDir = "agents/fix-auth/repo"
+	args := cfg.Args()
+
+	if findTriple(args, "--bind", "agents/fix-auth/repo", "agents/fix-auth/repo") < 0 {
+		t.Error("relative path should pass through unchanged in AgentRepo bind")
+	}
+	if findPair(args, "--chdir", "agents/fix-auth/repo") < 0 {
+		t.Error("relative path should pass through unchanged in --chdir")
+	}
+}
+
+// TestArgsEmptyExtraMounts documents that an empty string in ExtraRO
+// produces --ro-bind "" "" in the args (caller's responsibility to validate).
+func TestArgsEmptyExtraMounts(t *testing.T) {
+	cfg := baseConfig()
+	cfg.ExtraRO = []string{""}
+	args := cfg.Args()
+
+	if findTriple(args, "--ro-bind", "", "") < 0 {
+		t.Error("empty string in ExtraRO should produce --ro-bind with empty strings")
+	}
+}
+
+func TestValidate(t *testing.T) {
+	t.Run("valid config", func(t *testing.T) {
+		cfg := baseConfig()
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("Validate() unexpected error: %v", err)
+		}
+	})
+
+	t.Run("empty Home", func(t *testing.T) {
+		cfg := baseConfig()
+		cfg.Home = ""
+		if err := cfg.Validate(); err == nil {
+			t.Error("Validate() expected error for empty Home")
+		}
+	})
+
+	t.Run("relative Home", func(t *testing.T) {
+		cfg := baseConfig()
+		cfg.Home = "relative/path"
+		if err := cfg.Validate(); err == nil {
+			t.Error("Validate() expected error for relative Home")
+		}
+	})
+
+	t.Run("empty AgentRepo", func(t *testing.T) {
+		cfg := baseConfig()
+		cfg.AgentRepo = ""
+		if err := cfg.Validate(); err == nil {
+			t.Error("Validate() expected error for empty AgentRepo")
+		}
+	})
+
+	t.Run("zero-value config", func(t *testing.T) {
+		cfg := SandboxConfig{}
+		if err := cfg.Validate(); err == nil {
+			t.Error("Validate() expected error for zero-value config")
+		}
+	})
+}

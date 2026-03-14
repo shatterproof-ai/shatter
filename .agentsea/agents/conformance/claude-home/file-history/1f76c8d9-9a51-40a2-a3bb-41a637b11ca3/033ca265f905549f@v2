@@ -1,0 +1,172 @@
+# Web Frontend — Claude Instructions
+
+React 18 + TypeScript + Vite frontend. All paths below are relative to `web/`
+unless noted. Dev server runs on `:8080` and proxies `/graphql` and `/api` to
+the API at `localhost:8081`.
+
+---
+
+## Mantine theme
+
+The Mantine theme is configured in `src/theme.ts` and applied via `MantineProvider`
+in `main.tsx`. Brand colors are defined as 10-shade tuples:
+
+- **`brand`** — deep blue (`#0e1f40` at shade 9), used as `primaryColor`
+- **`accent`** — gold (`#c9a227` at shade 5)
+
+### Using brand colors
+
+Use Mantine's color system to reference brand colors:
+
+```tsx
+<Title c="brand.9">Deep blue heading</Title>
+<Button color="accent">Gold button</Button>
+<Box bg="brand.0">Light blue background</Box>
+```
+
+CSS custom properties are also available in `src/assets/styles/index.css`:
+`--color-primary` (`#0e1f40`) and `--color-accent` (`#c9a227`).
+
+**Never hardcode hex values** — use Mantine color references or CSS variables.
+
+---
+
+## UI components (`src/components/ui/`)
+
+Thin wrappers around Mantine primitives that map app-specific variants to
+Mantine's variant/color props.
+
+**Adding a component**:
+1. Create `src/components/ui/<name>.tsx` — named export (not default)
+2. Map app-specific variants to Mantine props
+3. Add a `<component>.test.tsx` alongside it
+
+---
+
+## Styling approach
+
+Use Mantine style props (`bg`, `c`, `p`, `m`, `fz`, `fw`, etc.) and layout
+components (`Container`, `Group`, `Stack`, `SimpleGrid`, `Box`). For one-off
+styles, use the `style` prop. Do **not** use Tailwind utility classes.
+
+PostCSS is configured with `postcss-preset-mantine` and `postcss-simple-vars`
+(required for Mantine's CSS).
+
+---
+
+## Adding a page
+
+1. Create `src/pages/NewPage.tsx` — use a named export (`export function NewPage`)
+2. Add the route in `src/App.tsx`:
+   ```tsx
+   <Route path="/new-path" element={<NewPage />} />
+   ```
+
+---
+
+## GraphQL queries (gql.tada) — MANDATORY
+
+**Every GraphQL query and mutation MUST use `graphql()` from `gql.tada`.** Raw
+template-string queries (`const q = \`query ...\``) are **forbidden** — they
+bypass compile-time schema validation and have caused production bugs (fields
+that don't exist in the API schema silently pass `tsc` and break at runtime).
+
+Three enforcement layers exist:
+
+1. **Type system**: Import `useQuery`/`useMutation` from `@/lib/graphql` (not
+   from `urql`). These wrappers require a parsed `DocumentNode`, which
+   `graphql()` returns but raw strings do not satisfy.
+2. **ESLint rule**: `kapow/no-raw-graphql-strings` flags raw GraphQL strings.
+   Currently `off` while legacy queries are migrated (see `kapow-mfp`); will
+   be set to `error` once migration is complete.
+3. **Code review**: Any new `useQuery`/`useMutation` call using a raw string
+   must be rejected.
+
+### Correct pattern
+
+```tsx
+import { graphql } from 'gql.tada'
+import { useQuery } from '@/lib/graphql'
+
+const MyQuery = graphql(`query MyQuery { field1 field2 }`)
+const [result] = useQuery({ query: MyQuery })  // types inferred from schema
+```
+
+### Wrong pattern (DO NOT USE)
+
+```tsx
+// WRONG — raw string bypasses schema validation
+const MyQuery = `query MyQuery { field1 field2 }`
+const [result] = useQuery<{ myQuery: Result }>({ query: MyQuery })
+```
+
+Use `ResultOf<typeof MyQuery>` to extract result types when needed.
+
+### Schema sync
+
+After any change to `api/graph/schema/*.graphql`, regenerate:
+
+```bash
+make web-schema-sync
+```
+
+Both `web/schema.graphql` and `web/src/graphql-env.d.ts` are committed.
+
+### Testing with mocked useQuery
+
+When `useQuery` is mocked via `vi.mock('urql', ...)`, the `args.query` argument is a
+`TypedDocumentNode` (not a string). Dispatch on the operation name from the AST:
+
+```ts
+function getOperationName(query: unknown): string {
+  const doc = query as { definitions?: Array<{ name?: { value?: string } }> }
+  return doc.definitions?.[0]?.name?.value ?? ''
+}
+// then: if (getOperationName(args.query) === 'MyQuery') { ... }
+```
+
+---
+
+## Testing (Vitest)
+
+Unit tests use Vitest with `happy-dom` environment. Coverage thresholds enforced
+at 80%. New `ui/` components require a `<component>.test.tsx` alongside them.
+
+Use `renderWithMantine()` from `src/test/render.tsx` when testing components
+that use Mantine.
+
+### Build verification (mandatory)
+
+**Every change to frontend code must be verified with a full build before it is
+considered done.** Run:
+
+```bash
+pnpm build   # tsc -b && vite build — must finish with zero errors
+pnpm lint    # eslint --max-warnings 0 — must finish with zero warnings
+```
+
+A clean `pnpm build` is the only reliable gate — it catches missing/removed
+imports, type errors, and broken module resolution that per-file checks miss.
+
+---
+
+## Linting
+
+**Zero warnings policy** — `pnpm lint` runs `eslint . --max-warnings 0`.
+`react-refresh/only-export-components` is disabled for `src/components/ui/**`
+and `*.stories.tsx` files. Path alias `@/` maps to `src/`.
+
+---
+
+## Interactive demo (`demo/`)
+
+Playwright-driven browser walkthrough. Lives in `demo/` (outside `src/`).
+
+```bash
+pnpm demo              # auto-advance with 3s pause
+pnpm demo:manual       # click "Next Step ›" to advance
+pnpm demo:test         # headless smoke test
+```
+
+**Update `demo/steps.ts` whenever UI changes break selectors** or when
+substantial new features are added.

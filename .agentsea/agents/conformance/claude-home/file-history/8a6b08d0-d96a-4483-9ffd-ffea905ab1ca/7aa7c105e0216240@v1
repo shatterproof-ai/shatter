@@ -1,0 +1,52 @@
+#!/bin/bash
+
+DOTFILES_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+FILES="bashrc vimrc screenrc tmux.conf gitconfig psqlrc bash_profile"
+
+BACKUP_DIR="$HOME/.dotfiles-backup"
+TIMESTAMP=$(date '+%Y%m%d-%H%M%S')
+
+for FILE in $FILES; do
+    if [ -f "${FILE}" ]; then
+        if [ -e "$HOME/.$FILE" ] && [ ! -L "$HOME/.$FILE" ]; then
+            mkdir -p "$BACKUP_DIR"
+            mv "$HOME/.$FILE" "$BACKUP_DIR/$FILE.$TIMESTAMP"
+        fi
+        ln -sf "$DOTFILES_DIR/$FILE" "$HOME/.$FILE"
+    fi
+done
+
+
+# Clean up legacy .bash_login (superseded by .bash_profile)
+if [ -L "$HOME/.bash_login" ]; then
+    rm -f "$HOME/.bash_login"
+fi
+
+LOCAL=`echo "bashrc.$HOSTNAME" | tr '[:upper:]' '[:lower:]'`
+if [ -f "$LOCAL" ]; then
+    ln -s "$DOTFILES_DIR/$LOCAL" "$HOME/.bashrc.local" 2> /dev/null || true
+elif [ "$CODESPACES" = "true" ] && [ -f "bashrc.codespaces" ]; then
+    ln -s "$DOTFILES_DIR/bashrc.codespaces" "$HOME/.bashrc.local" 2> /dev/null || true
+fi
+
+# VS Code — symlink settings into ~/.config/Code/User/
+if [ -f "vscode/settings.json" ]; then
+    mkdir -p "$HOME/.config/Code/User"
+    ln -s "$DOTFILES_DIR/vscode/settings.json" "$HOME/.config/Code/User/settings.json" 2> /dev/null || true
+fi
+
+# Claude Code — symlink portable files into ~/.claude/
+CLAUDE_FILES="settings.json statusline.sh CLAUDE.md"
+if [ -d "claude" ]; then
+    mkdir -p "$HOME/.claude"
+    for FILE in $CLAUDE_FILES; do
+        if [ -f "claude/$FILE" ]; then
+            ln -s "$DOTFILES_DIR/claude/$FILE" "$HOME/.claude/$FILE" 2> /dev/null || true
+        fi
+    done
+    # Symlink skills directory
+    if [ -d "claude/skills" ]; then
+        ln -s "$DOTFILES_DIR/claude/skills" "$HOME/.claude/skills" 2> /dev/null || true
+    fi
+fi

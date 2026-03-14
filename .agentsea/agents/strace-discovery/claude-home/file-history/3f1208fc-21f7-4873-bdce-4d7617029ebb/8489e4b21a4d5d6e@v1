@@ -1,0 +1,5 @@
+[defaults]
+inventory = inventory.yml
+roles_path = roles
+vault_password_file = /run/dropkick/vault-pass
+host_key_checking = False

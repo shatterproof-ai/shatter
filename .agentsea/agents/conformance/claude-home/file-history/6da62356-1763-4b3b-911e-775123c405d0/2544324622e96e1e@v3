@@ -1,0 +1,266 @@
+package cli
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
+
+	"github.com/agentsea/agentsea/internal/detect"
+	"github.com/agentsea/agentsea/internal/workspace"
+)
+
+func diagCmd() *cobra.Command {
+	var timeout time.Duration
+
+	cmd := &cobra.Command{
+		Use:   "diag",
+		Short: "Diagnostic test of bwrap sandbox with real Claude binary",
+		Long: `Runs the real Claude binary inside a bwrap sandbox in a tmux pane,
+bypassing the lead agent entirely. Tests whether Claude starts correctly
+and runs in interactive mode (has a TTY, no SIGTTOU).
+
+The test creates a temp workspace, runs teammate-wrapper in a tmux pane,
+and checks the process tree to verify both bwrap and Claude are running
+in the foreground group. Claude's TUI uses the alternate screen buffer,
+so pane content capture is unreliable; process state is the definitive test.
+
+No API key needed — Claude failing to start is itself diagnostic.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runDiag(timeout)
+		},
+	}
+
+	cmd.Flags().DurationVar(&timeout, "timeout", 30*time.Second, "Maximum wait time")
+	return cmd
+}
+
+func runDiag(timeout time.Duration) error {
+	claudeBin, err := detect.FindClaudeBinary()
+	if err != nil {
+		return fmt.Errorf("finding claude binary: %w", err)
+	}
+
+	seaBin, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolving sea binary: %w", err)
+	}
+
+	if _, err := exec.LookPath("bwrap"); err != nil {
+		return fmt.Errorf("bwrap not found: install with sudo apt install bubblewrap")
+	}
+
+	if _, err := exec.LookPath("tmux"); err != nil {
+		return fmt.Errorf("tmux not found")
+	}
+
+	// Create temp workspace
+	tmpDir, err := os.MkdirTemp("", "sea-diag-*")
+	if err != nil {
+		return fmt.Errorf("creating temp dir: %w", err)
+	}
+
+	fmt.Printf("=== sea diag ===\n")
+	fmt.Printf("  claude:  %s\n", claudeBin)
+	fmt.Printf("  sea:     %s\n", seaBin)
+	fmt.Printf("  tmpdir:  %s\n", tmpDir)
+	fmt.Printf("  timeout: %s\n", timeout)
+	fmt.Println()
+
+	// Set up minimal workspace
+	if err := diagSetup(tmpDir, seaBin); err != nil {
+		os.RemoveAll(tmpDir)
+		return fmt.Errorf("setup: %w", err)
+	}
+
+	// Run teammate-wrapper in a tmux pane
+	sessionName := fmt.Sprintf("sea-diag-%d", os.Getpid())
+	launcherPath := filepath.Join(tmpDir, "launch.sh")
+
+	tmuxCmd := exec.Command("tmux", "new-session", "-d", "-s", sessionName,
+		"-x", "200", "-y", "50",
+		launcherPath,
+	)
+	if out, err := tmuxCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("creating tmux session: %s: %w", out, err)
+	}
+	defer exec.Command("tmux", "kill-session", "-t", sessionName).Run()
+
+	fmt.Printf("Running in tmux session %q\n\n", sessionName)
+
+	// Poll for Claude process inside bwrap
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	claudeRunning := false
+
+	for !claudeRunning {
+		select {
+		case <-ticker.C:
+			alive := exec.Command("tmux", "has-session", "-t", sessionName).Run() == nil
+			if !alive {
+				break
+			}
+
+			// Get pane PID
+			panePID, err := exec.Command("tmux", "display-message", "-t", sessionName, "-p", "#{pane_pid}").Output()
+			if err != nil {
+				continue
+			}
+			pid := strings.TrimSpace(string(panePID))
+
+			// Check process tree: look for bwrap and claude processes
+			psOut, err := exec.Command("ps", "--forest", "-o", "pid,stat,args", "-g", pid).Output()
+			if err != nil {
+				continue
+			}
+
+			lines := string(psOut)
+			hasBwrap := strings.Contains(lines, "bwrap")
+			hasClaude := strings.Contains(lines, claudeBin)
+			// "+" in STAT means foreground process group
+			isForeground := false
+			for _, line := range strings.Split(lines, "\n") {
+				if strings.Contains(line, claudeBin) {
+					fields := strings.Fields(line)
+					if len(fields) >= 2 && strings.Contains(fields[1], "+") {
+						isForeground = true
+					}
+				}
+			}
+
+			fmt.Printf("  bwrap=%v claude=%v foreground=%v\n", hasBwrap, hasClaude, isForeground)
+
+			if hasBwrap && hasClaude && isForeground {
+				claudeRunning = true
+			}
+
+			if !alive {
+				fmt.Println("\nTmux session died.")
+				goto done
+			}
+
+		case <-timer.C:
+			fmt.Fprintf(os.Stderr, "\nTimeout after %s\n", timeout)
+			goto done
+		}
+	}
+
+done:
+	fmt.Println()
+	if claudeRunning {
+		fmt.Println("PASS: Claude is running in interactive mode inside bwrap sandbox.")
+		fmt.Println("  - bwrap process present")
+		fmt.Println("  - Claude binary running as child")
+		fmt.Println("  - Process is in foreground group (no SIGTTOU)")
+	} else {
+		fmt.Println("FAIL: Claude did not start correctly inside bwrap.")
+
+		// Try to capture any error output
+		if out, err := exec.Command("tmux", "capture-pane", "-t", sessionName, "-p").Output(); err == nil {
+			stripped := stripANSI(string(out))
+			trimmed := strings.TrimSpace(stripped)
+			if trimmed != "" {
+				fmt.Printf("\nPane output:\n%s\n", trimmed)
+			}
+			if strings.Contains(stripped, "Input must be provided") {
+				fmt.Println("\nDIAGNOSIS: Claude entered non-interactive mode (no TTY).")
+			} else if strings.Contains(stripped, "cannot launch inside another") {
+				fmt.Println("\nDIAGNOSIS: CLAUDECODE env var not unset.")
+			} else if trimmed == "" {
+				fmt.Println("\nDIAGNOSIS: No output — possible SIGTTOU or crash.")
+			}
+		}
+	}
+
+	exec.Command("tmux", "kill-session", "-t", sessionName).Run()
+	fmt.Printf("\nInspect: %s\n", tmpDir)
+	return nil
+}
+
+// diagSetup creates a minimal workspace and launcher script.
+func diagSetup(tmpDir, seaBin string) error {
+	// Create git repo
+	for name, content := range map[string]string{
+		"CLAUDE.md": "# Diagnostic test\n",
+		"README.md": "# Diagnostic test\n",
+	} {
+		if err := os.WriteFile(filepath.Join(tmpDir, name), []byte(content), 0644); err != nil {
+			return err
+		}
+	}
+
+	gitEnv := append(os.Environ(),
+		"GIT_AUTHOR_NAME=sea-diag",
+		"GIT_AUTHOR_EMAIL=diag@test",
+		"GIT_COMMITTER_NAME=sea-diag",
+		"GIT_COMMITTER_EMAIL=diag@test",
+	)
+	for _, args := range [][]string{
+		{"git", "init", "-q"},
+		{"git", "add", "."},
+		{"git", "commit", "-q", "-m", "diag init"},
+	} {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = tmpDir
+		cmd.Env = gitEnv
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("%v: %s: %w", args, out, err)
+		}
+	}
+
+	// Create workspace structure
+	wsDir := filepath.Join(tmpDir, workspace.DirName)
+	for _, dir := range []string{
+		wsDir,
+		filepath.Join(wsDir, "agents"),
+		filepath.Join(wsDir, "ssh"),
+	} {
+		os.MkdirAll(dir, 0755)
+	}
+
+	canonicalPath := filepath.Join(wsDir, "canonical")
+	if out, err := exec.Command("git", "clone", "--bare", tmpDir, canonicalPath).CombinedOutput(); err != nil {
+		return fmt.Errorf("git clone --bare: %s: %w", out, err)
+	}
+
+	wsCfg := workspace.Config{
+		RepoURL:       tmpDir,
+		ProjectPath:   tmpDir,
+		DefaultBranch: "main",
+	}
+	yamlData, _ := yaml.Marshal(&wsCfg)
+	os.WriteFile(filepath.Join(wsDir, "workspace.yaml"), yamlData, 0644)
+
+	// Build launcher script
+	agentName := "diag-agent"
+	teamName := "diag-team"
+
+	var launcherLines []string
+	launcherLines = append(launcherLines, "#!/bin/sh")
+	launcherLines = append(launcherLines, fmt.Sprintf("cd %q", tmpDir))
+
+	// Unset env vars that block nested Claude sessions
+	launcherLines = append(launcherLines, "unset CLAUDECODE")
+	launcherLines = append(launcherLines, "unset CLAUDE_CODE_ENTRYPOINT")
+	launcherLines = append(launcherLines, "unset CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS")
+
+	args := fmt.Sprintf("--agent-name %s --team-name %s --agent-id %s@%s",
+		agentName, teamName, agentName, teamName)
+	launcherLines = append(launcherLines,
+		fmt.Sprintf("exec %q teammate-wrapper %s", seaBin, args))
+
+	launcherPath := filepath.Join(tmpDir, "launch.sh")
+	os.WriteFile(launcherPath, []byte(strings.Join(launcherLines, "\n")+"\n"), 0755)
+
+	return nil
+}
+
+// stripANSI is defined in smoke.go

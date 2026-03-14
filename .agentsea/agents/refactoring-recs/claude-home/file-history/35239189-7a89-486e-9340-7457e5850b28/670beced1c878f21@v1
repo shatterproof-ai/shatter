@@ -1,0 +1,52 @@
+import { describe, it, expect, vi } from 'vitest'
+import { screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { renderWithMantine } from '@/test/render'
+import { FeedbackModal } from './FeedbackModal'
+
+vi.mock('urql', async () => {
+  const actual = await vi.importActual('urql')
+  return {
+    ...actual,
+    useMutation: () => [{ fetching: false, error: null }, vi.fn()],
+  }
+})
+
+vi.mock('@/stores/authStore', () => ({
+  useAuthStore: (selector: (s: { session: null }) => unknown) =>
+    selector({ session: null }),
+}))
+
+describe('FeedbackModal', () => {
+  it('renders form fields when opened', () => {
+    renderWithMantine(<FeedbackModal opened={true} onClose={vi.fn()} />)
+
+    expect(screen.getByText('Send Feedback')).toBeInTheDocument()
+    expect(screen.getByLabelText(/category/i)).toBeInTheDocument()
+    expect(screen.getByLabelText(/subject/i)).toBeInTheDocument()
+    expect(screen.getByLabelText(/description/i)).toBeInTheDocument()
+  })
+
+  it('shows email field when user is not authenticated', () => {
+    renderWithMantine(<FeedbackModal opened={true} onClose={vi.fn()} />)
+
+    expect(screen.getByLabelText(/email/i)).toBeInTheDocument()
+  })
+
+  it('does not render when closed', () => {
+    renderWithMantine(<FeedbackModal opened={false} onClose={vi.fn()} />)
+
+    expect(screen.queryByText('Send Feedback')).not.toBeInTheDocument()
+  })
+
+  it('shows validation errors when submitting empty form', async () => {
+    const user = userEvent.setup()
+    renderWithMantine(<FeedbackModal opened={true} onClose={vi.fn()} />)
+
+    await user.click(screen.getByRole('button', { name: 'Send Feedback' }))
+
+    expect(screen.getByText('Category is required')).toBeInTheDocument()
+    expect(screen.getByText('Subject is required')).toBeInTheDocument()
+    expect(screen.getByText('Description is required')).toBeInTheDocument()
+  })
+})

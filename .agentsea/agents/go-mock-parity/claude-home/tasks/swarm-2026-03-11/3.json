@@ -1,0 +1,8 @@
+{
+  "id": "3",
+  "subject": "kapow-j2l.6: Common App scraper",
+  "description": "Implement platform/commonapp.go scraper for commonapp.org/explore.",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

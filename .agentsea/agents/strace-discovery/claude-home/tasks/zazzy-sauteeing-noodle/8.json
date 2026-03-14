@@ -1,0 +1,9 @@
+{
+  "id": "8",
+  "subject": "str-28vd.4: Docs quality tool configs",
+  "description": "Add repo config for markdownlint-cli2, Vale, lychee; update scripts/quality/check-docs.sh. Beads ID: str-28vd.4",
+  "owner": "t7-28vd4",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

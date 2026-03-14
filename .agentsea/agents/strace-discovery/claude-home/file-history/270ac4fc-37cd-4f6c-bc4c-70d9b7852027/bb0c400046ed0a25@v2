@@ -1,0 +1,64 @@
+# ─── Flotsam — Environment Variables ──────────────────────────────────────────
+# Copy this file to .env and fill in real values.
+# NEVER commit .env to version control.
+
+# ─── Server ───────────────────────────────────────────────────────────────────
+HOST=0.0.0.0
+PORT=8081
+
+# ─── Database ─────────────────────────────────────────────────────────────────
+# PostgreSQL connection string (pgx format)
+# Required — server will not start without this.
+DATABASE_URL=postgres://postgres:postgres@localhost:5433/flotsam?sslmode=disable
+
+# ─── Authentication (JWT) ─────────────────────────────────────────────────────
+# HS256 shared secret — used for signing/verifying JWTs
+JWT_SECRET=change-me-to-a-long-random-secret
+
+# ─── S3-Compatible Object Storage ─────────────────────────────────────────────
+# Development: MinIO in Docker (see compose/db.yml)
+# Production: Cloudflare R2 or AWS S3
+S3_ENDPOINT=http://localhost:9000
+S3_BUCKET=flotsam-dev
+S3_ACCESS_KEY=minioadmin
+S3_SECRET_KEY=minioadmin
+S3_REGION=us-east-1
+# Set to true for MinIO/local development
+S3_FORCE_PATH_STYLE=true
+
+# ─── AI Providers ─────────────────────────────────────────────────────────────
+# OpenAI — used for embeddings, transcription, classification
+OPENAI_API_KEY=sk-...
+
+# Local AI (Ollama) — used for sensitive content processing
+# OLLAMA_URL=http://localhost:11434
+
+# ─── Logging ──────────────────────────────────────────────────────────────────
+LOG_LEVEL=info          # trace | debug | info | warn | error
+LOG_FORMAT=text         # json (default/prod) | text (dev)
+
+# ─── Environment ──────────────────────────────────────────────────────────────
+ENV=development         # development | staging | production
+
+# ─── CORS ─────────────────────────────────────────────────────────────────────
+# Comma-separated allowed origins (empty = no CORS headers set)
+CORS_ORIGINS=http://localhost:8080
+
+# ─── GraphQL ──────────────────────────────────────────────────────────────────
+GRAPHQL_PLAYGROUND=true     # Enable Playground UI (dev only — disable in prod)
+GRAPHQL_INTROSPECTION=true  # Enable schema introspection
+
+# ─── MCP (Model Context Protocol) ─────────────────────────────────────────────
+MCP_ENABLED=true               # Enable MCP server endpoint at /mcp
+
+# ─── Rate Limiting ───────────────────────────────────────────────────────────
+RATE_LIMIT_ENABLED=true            # Master switch for all rate limits
+RATE_LIMIT_GRAPHQL=60              # /graphql requests per minute (anonymous)
+RATE_LIMIT_GRAPHQL_AUTH=120        # /graphql requests per minute (authenticated)
+RATE_LIMIT_MCP=120                 # /mcp/* requests per minute (per user)
+
+# ─── Shutdown ─────────────────────────────────────────────────────────────────
+SHUTDOWN_TIMEOUT=15s
+
+# ─── Frontend (Vite) ─────────────────────────────────────────────────────────
+# VITE_API_URL=http://localhost:8081  # Override API URL for frontend (default: proxy)

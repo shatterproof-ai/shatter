@@ -1,0 +1,101 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"log/slog"
+	"os"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/joho/godotenv"
+
+	"github.com/ketang/flotsam/api/internal/auth"
+	"github.com/ketang/flotsam/api/internal/db"
+)
+
+func main() {
+	email := flag.String("email", "", "user email (default: first user in database)")
+	expiry := flag.Duration("expiry", 30*24*time.Hour, "token expiry duration")
+	flag.Parse()
+
+	// Load .env (no-op if absent)
+	_ = godotenv.Load()
+
+	if err := checkEnvGate(os.Getenv("ENV")); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	jwtSecret := os.Getenv("JWT_SECRET")
+	if jwtSecret == "" {
+		fmt.Fprintln(os.Stderr, "JWT_SECRET is required")
+		os.Exit(1)
+	}
+
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		fmt.Fprintln(os.Stderr, "DATABASE_URL is required")
+		os.Exit(1)
+	}
+
+	ctx := context.Background()
+	pool, err := db.Connect(ctx, databaseURL)
+	if err != nil {
+		slog.Error("failed to connect to database", "error", err)
+		os.Exit(1)
+	}
+	defer pool.Close()
+
+	userID, userEmail, err := lookupUser(ctx, pool, *email)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to find user: %v\n", err)
+		os.Exit(1)
+	}
+
+	issuer := auth.NewIssuer(jwtSecret, *expiry)
+	token, err := issuer.Issue(userID, userEmail, "cli")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to issue token: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Fprintf(os.Stderr, "Token issued for %s (expires in %s)\n", userEmail, expiry)
+	fmt.Fprintf(os.Stderr, "Usage: curl -H 'Authorization: Bearer <token>' http://localhost:8081/graphql\n")
+	fmt.Println(token)
+}
+
+// checkEnvGate ensures this tool only runs in development mode.
+func checkEnvGate(env string) error {
+	if env != "development" {
+		return errors.New("devtoken: refusing to run — ENV must be \"development\" (got " + fmt.Sprintf("%q", env) + ")")
+	}
+	return nil
+}
+
+// lookupUser finds a user by email, or returns the first user if email is empty.
+func lookupUser(ctx context.Context, pool *pgxpool.Pool, email string) (uuid.UUID, string, error) {
+	var userID uuid.UUID
+	var userEmail string
+
+	if email != "" {
+		err := pool.QueryRow(ctx,
+			"SELECT id, email FROM users WHERE email = $1", email,
+		).Scan(&userID, &userEmail)
+		if err != nil {
+			return uuid.Nil, "", fmt.Errorf("devtoken: user %q not found: %w", email, err)
+		}
+	} else {
+		err := pool.QueryRow(ctx,
+			"SELECT id, email FROM users ORDER BY created_at LIMIT 1",
+		).Scan(&userID, &userEmail)
+		if err != nil {
+			return uuid.Nil, "", fmt.Errorf("devtoken: no users found: %w", err)
+		}
+	}
+
+	return userID, userEmail, nil
+}

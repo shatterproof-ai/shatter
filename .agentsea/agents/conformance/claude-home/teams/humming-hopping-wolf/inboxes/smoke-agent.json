@@ -1,0 +1,8 @@
+[
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"shutdown_request\",\"requestId\":\"shutdown-1772862506903@smoke-agent\",\"from\":\"team-lead\",\"reason\":\"Tests complete, shutting down.\",\"timestamp\":\"2026-03-07T05:48:26.903Z\"}",
+    "timestamp": "2026-03-07T05:48:26.903Z",
+    "read": true
+  }
+]

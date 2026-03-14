@@ -1,0 +1,10 @@
+{
+  "id": "1",
+  "subject": "flt-ncn: Coverage debt reduction",
+  "description": "Raise coverage on failing Go packages and web app to meet 80% threshold. Key gaps: graph/resolver (16%), internal/item (22%), internal/user (11%), internal/audit (7%), internal/mcpclient (16%), internal/worker (49%), internal/storage (57%), internal/db (70%), internal/provider (72%). Web: global 71% (pages like ItemDetail 52%, Capture 57%, Browse 61%). Add meaningful tests for real behavior, not wiring-only coverage. Beads ID: flt-ncn.",
+  "activeForm": "Writing coverage tests for Go packages and web components",
+  "status": "in_progress",
+  "blocks": [],
+  "blockedBy": [],
+  "owner": "coverage-worker"
+}

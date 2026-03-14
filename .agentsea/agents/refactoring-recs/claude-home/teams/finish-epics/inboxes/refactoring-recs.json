@@ -1,0 +1,8 @@
+[
+  {
+    "from": "team-lead",
+    "text": "You are working on issue str-3ky9.15: Refactoring recs for hard-to-mock deps.\n\n**Goal**: Detect hard-to-mock calls (dynamic dispatch, closures, subprocess spawning, multi-layer indirection) and produce refactoring recommendations in scan output: extract to parameter, wrap in named function, move behind interface.\n\n**Acceptance criteria**:\n- Hard-to-mock calls detected\n- Recommendations appear in scan report\n- Suggestions are actionable (extract, wrap, interface)\n\n**Context**: This depends on str-3ky9.12 (Execution-time dep gap detection, done). The project has existing mock infrastructure in shatter-core. Study the scan output format and existing mock detection before planning.\n\nRun `bd show str-3ky9.15` for full issue details.\n\n**Your task**: Task #2 in the team task list. Claim it, plan your approach, implement, test, commit, and mark done. Follow all project conventions in CLAUDE.md. Run the relevant test tier before committing.",
+    "timestamp": "2026-03-12T04:41:42.215Z",
+    "read": false
+  }
+]

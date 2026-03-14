@@ -1,0 +1,86 @@
+[
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"task_assignment\",\"taskId\":\"20\",\"subject\":\"kapow-8e8: WebMCP typed filter payloads\",\"description\":\"Fix the WebMCP integration so tool schemas and request payloads match the backend's typed filter contract. The current client-side MCP registration treats filter values as plain strings, but the GraphQL search API expects typed JSON shapes per field kind. AC: WebMCP search works for text, enum, numeric-range, and geo filters.\",\"assignedBy\":\"team-lead\",\"timestamp\":\"2026-03-11T02:58:23.588Z\"}",
+    "timestamp": "2026-03-11T02:58:23.588Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "You are working on beads issue kapow-8e8: WebMCP typed filter payloads (bug fix).\n\n## WORKTREE SETUP — RUN FIRST\n```bash\nREPO_ROOT=\"$(git rev-parse --show-toplevel)\"\nBRANCH_NAME=\"worktree/webmcp-filters\"\nWORKTREE_DIR=\"$REPO_ROOT/.claude/worktrees/$BRANCH_NAME\"\nif [ -d \"$WORKTREE_DIR\" ]; then echo \"Worktree already exists, reusing\"; else git worktree add \"$WORKTREE_DIR\" -b \"$BRANCH_NAME\"; fi\ncd \"$WORKTREE_DIR\"\necho \"CWD: $(pwd)\"; echo \"Branch: $(git branch --show-current)\"\necho \"$(pwd)\" | grep -q '\\.claude/worktrees/' && echo \"WORKTREE VERIFIED\" || echo \"FATAL: NOT in a worktree\"\n```\nALL subsequent commands must run from this worktree directory.\n\n## Issue Details\n**kapow-8e8 [BUG]: WebMCP typed filter payloads**\n\nFix the WebMCP integration so tool schemas and request payloads match the backend's typed filter contract. The current client-side MCP registration treats filter values as plain strings, but the GraphQL search API expects typed JSON shapes per field kind.\n\n**AC**: WebMCP search works for representative text, enum, numeric-range, and geo filters. Tool schemas describe expected payload shapes clearly. Invalid MCP calls fail with actionable errors. Tests cover multiple filter kinds.\n\n## Instructions\n1. Read CLAUDE.md, api/CLAUDE.md, web/CLAUDE.md for conventions\n2. Read the MCP implementation:\n   - `api/internal/mcp/` — server-side MCP handler\n   - Look for MCP tool registration and how filters are processed\n3. Read the search engine:\n   - `api/internal/search/` — field types and validation\n   - `api/internal/search/contract.go` — contract test cases showing expected filter shapes\n4. Read the web MCP client if it exists in `web/src/`\n5. Identify the mismatch: where are filter values treated as plain strings vs typed JSON?\n6. Fix the MCP tool schema registration to describe typed payloads per field kind:\n   - Text/substring fields: `{\"value\": \"string\"}`\n   - Enum fields: `{\"values\": [\"array\", \"of\", \"strings\"]}`\n   - Numeric range fields: `{\"min\": number, \"max\": number}`\n   - Geo fields: `{\"lat\": number, \"lng\": number, \"radiusMiles\": number}`\n7. Fix the MCP request handler to properly parse typed payloads\n8. Add/update tests covering multiple filter kinds\n9. Ensure contract tests still pass\n\n## Quality Gate\nThis touches both API and potentially web. Run: `make test-standard`\nIf only Go changed: `make api-test-unit && make api-lint`\n\n## When Done\nCommit and push:\n```bash\ngit add -A\ngit commit -m \"fix: use typed filter payloads in WebMCP tool schemas\n\nUpdates MCP tool schema registration and request handling to use typed\nJSON shapes per field kind instead of plain strings. Adds tests for\ntext, enum, numeric-range, and geo filter kinds.\n\nCloses kapow-8e8\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\"\ngit push -u origin HEAD\n```\nReport completion to team lead with test results.",
+    "timestamp": "2026-03-11T02:58:55.719Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773197943695-lw4xjuf\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"REPO_ROOT=\\\"$(git rev-parse --show-toplevel)\\\" && BRANCH_NAME=\\\"worktree/webmcp-filters\\\" && WORKTREE_DIR=\\\"$REPO_ROOT/.claude/worktrees/$BRANCH_NAME\\\" && if [ -d \\\"$WORKTREE_DIR\\\" ]; then echo \\\"Worktree already exists, reusing\\\"; else git worktree add \\\"$WORKTREE_DIR\\\" -b \\\"$BRANCH_NAME\\\"; fi && cd \\\"$WORKTREE_DIR\\\" && echo \\\"CWD: $(pwd)\\\" && echo \\\"Branch: $(git branch --show-current)\\\" && echo \\\"$(pwd)\\\" | grep -q '\\\\.claude/worktrees/' && echo \\\"WORKTREE VERIFIED\\\" || echo \\\"FATAL: NOT in a worktree\\\"\",\"description\":\"Set up worktree for webmcp-filters branch\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T02:59:28.680Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"plan_approval_response\",\"requestId\":\"plan_approval-1773198117597@webmcp-filters@joyful-frolicking-teapot\",\"approved\":true,\"timestamp\":\"2026-03-11T03:01:57.770Z\",\"permissionMode\":\"default\"}",
+    "timestamp": "2026-03-11T03:01:57.770Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"plan_approval_response\",\"requestId\":\"plan_approval-1773198117597@webmcp-filters@joyful-frolicking-teapot\",\"approved\":true,\"timestamp\":\"2026-03-11T03:02:05.992Z\",\"permissionMode\":\"default\"}",
+    "timestamp": "2026-03-11T03:02:05.992Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773198130106-mooc9qi\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"cp /home/ketan/.claude/plans/refactored-chasing-pizza.md /home/ketan/project/kapow/.claude/worktrees/worktree/webmcp-filters/docs/plans/kapow-8e8-webmcp-filters.md\",\"description\":\"Copy plan to repo docs/plans/\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T03:02:24.373Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773198161766-b9yfnfn\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/kapow/.claude/worktrees/worktree/webmcp-filters/web/src/hooks/useWebMCP.ts\",\"old_string\":\"    mcp.registerTool(\\n      'search_colleges',\\n      'Search for colleges using filters like name, state, type, etc. Returns matching institutions.',\\n      {\\n        type: 'object',\\n        properties: {\\n          filters: {\\n            type: 'array',\\n            description: 'Array of filter objects with { field, value } pairs',\\n            items: {\\n              type: 'object',\\n              properties: {\\n                field: { type: 'string', description: 'Filter field name (e.g. \\\"name\\\", \\\"state\\\")' },\\n                value: { type: 'string', description: 'Filter value' },\\n              },\\n              required: ['field', 'value'],\\n            },\\n          },\\n          limit: { type: 'number', description: 'Max results to return (default 25)' },\\n          offset: { type: 'number', description: 'Number of results to skip (default 0)' },\\n        },\\n      },\\n      async (args: Record<string, unknown>) => {\\n        const filters = (args.filters as Array<{ field: string; value: string }>) ?? []\\n        const limit = (args.limit as number) ?? 25\\n        const offset = (args.offset as number) ?? 0\\n        const data = await gqlFetch(SEARCH_QUERY, {\\n          filters: filters.map((f) => ({ field: f.field, value: f.value })),\\n          limit,\\n          offset,\\n        })\\n        return JSON.stringify(data.search)\\n      },\\n    )\",\"new_string\":\"    mcp.registerTool(\\n      'search_colleges',\\n      'Search for colleges using filters like name, state, type, etc. Returns matching institutions.',\\n      {\\n        type: 'object',\\n        properties: {\\n          filters: {\\n            type: 'array',\\n            description: 'Array of filter objects. Use get_search_fields to discover field names and kinds.',\\n            items: {\\n              type: 'object',\\n              properties: {\\n                field: { type: 'string', description: 'Filter field name (e.g. \\\"name\\\", \\\"state\\\")' },\\n                value: {\\n                  description:\\n                    'Typed filter value — shape depends on field kind. ' +\\n                    'Text/substring/exact-string: {\\\"value\\\": \\\"...\\\"}. ' +\\n                    'Full-text: {\\\"query\\\": \\\"...\\\"}. ' +\\n                    'Single enum: {\\\"value\\\": \\\"option\\\"}. ' +\\n                    'Multi enum: {\\\"values\\\": [\\\"a\\\", \\\"b\\\"]}. ' +\\n                    'Numeric range: {\\\"min\\\": N, \\\"max\\\": N} (at least one required). ' +\\n                    'Exact numeric: {\\\"value\\\": N}. ' +\\n                    'Geo radius: {\\\"kind\\\": \\\"radius\\\", \\\"radius\\\": {\\\"lat\\\": N, \\\"lng\\\": N, \\\"radius_km\\\": N}}. ' +\\n                    'Geo bbox: {\\\"kind\\\": \\\"bbox\\\", \\\"bbox\\\": {\\\"min_lat\\\": N, \\\"max_lat\\\": N, \\\"min_lng\\\": N, \\\"max_lng\\\": N}}.',\\n                  oneOf: [\\n                    {\\n                      type: 'object',\\n                      description: 'Text, substring, exact string, or single enum filter',\\n                      properties: { value: { type: 'string' } },\\n                      required: ['value'],\\n                    },\\n                    {\\n                      type: 'object',\\n                      description: 'Full-text search filter',\\n                      properties: { query: { type: 'string' } },\\n                      required: ['query'],\\n                    },\\n                    {\\n                      type: 'object',\\n                      description: 'Multi-enum filter',\\n                      properties: { values: { type: 'array', items: { type: 'string' } } },\\n                      required: ['values'],\\n                    },\\n                    {\\n                      type: 'object',\\n                      description: 'Numeric range filter (at least one of min/max required)',\\n                      properties: { min: { type: 'number' }, max: { type: 'number' } },\\n                    },\\n                    {\\n                      type: 'object',\\n                      description: 'Exact numeric filter',\\n                      properties: { value: { type: 'number' } },\\n                      required: ['value'],\\n                    },\\n                    {\\n                      type: 'object',\\n                      description: 'Geo filter (radius or bounding box)',\\n                      properties: { kind: { type: 'string', enum: ['radius', 'bbox'] } },\\n                      required: ['kind'],\\n                    },\\n                  ],\\n                },\\n              },\\n              required: ['field', 'value'],\\n            },\\n          },\\n          limit: { type: 'number', description: 'Max results to return (default 25)' },\\n          offset: { type: 'number', description: 'Number of results to skip (default 0)' },\\n        },\\n      },\\n      async (args: Record<string, unknown>) => {\\n        const filters = (args.filters as Array<{ field: string; value: unknown }>) ?? []\\n        const limit = (args.limit as number) ?? 25\\n        const offset = (args.offset as number) ?? 0\\n        const data = await gqlFetch(SEARCH_QUERY, {\\n          filters: filters.map((f) => ({ field: f.field, value: f.value })),\\n          limit,\\n          offset,\\n        })\\n        return JSON.stringify(data.search)\\n      },\\n    )\",\"replace_all\":false},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T03:02:54.504Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773198175435-f369tk3\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/kapow/.claude/worktrees/worktree/webmcp-filters/api/internal/mcp/tools_test.go\",\"old_string\":\"\\t\\tFilters: []search.FilterInput{\\n\\t\\t\\t{Field: \\\"state\\\", Value: json.RawMessage(`[\\\"CA\\\"]`)},\\n\\t\\t},\",\"new_string\":\"\\t\\tFilters: []search.FilterInput{\\n\\t\\t\\t{Field: \\\"state\\\", Value: json.RawMessage(`{\\\"values\\\":[\\\"CA\\\"]}`)},\\n\\t\\t},\",\"replace_all\":false},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T03:02:57.067Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773198187924-xfu3oxe\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/kapow/.claude/worktrees/worktree/webmcp-filters/web/src/hooks/useWebMCP.test.ts\",\"old_string\":\"  it('registers search_colleges with correct schema shape', () => {\\n    renderHook(() => useWebMCP())\\n\\n    const searchCall = registerToolSpy.mock.calls.find(\\n      (call: unknown[]) => call[0] === 'search_colleges',\\n    )\\n    expect(searchCall).toBeDefined()\\n\\n    const schema = searchCall![2] as Record<string, unknown>\\n    expect(schema.type).toBe('object')\\n    expect(schema.properties).toHaveProperty('filters')\\n    expect(schema.properties).toHaveProperty('limit')\\n    expect(schema.properties).toHaveProperty('offset')\\n  })\",\"new_string\":\"  it('registers search_colleges with correct schema shape', () => {\\n    renderHook(() => useWebMCP())\\n\\n    const searchCall = registerToolSpy.mock.calls.find(\\n      (call: unknown[]) => call[0] === 'search_colleges',\\n    )\\n    expect(searchCall).toBeDefined()\\n\\n    const schema = searchCall![2] as Record<string, unknown>\\n    expect(schema.type).toBe('object')\\n    expect(schema.properties).toHaveProperty('filters')\\n    expect(schema.properties).toHaveProperty('limit')\\n    expect(schema.properties).toHaveProperty('offset')\\n\\n    // Verify filter items describe typed value shapes (not plain string)\\n    const filters = (schema.properties as Record<string, Record<string, unknown>>).filters\\n    const items = filters.items as Record<string, unknown>\\n    const valueSchema = (items.properties as Record<string, Record<string, unknown>>).value\\n    expect(valueSchema).toHaveProperty('oneOf')\\n    expect(valueSchema).toHaveProperty('description')\\n    expect(valueSchema.description).toContain('Typed filter value')\\n  })\",\"replace_all\":false},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T03:03:15.500Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773198243750-41bmu9i\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"cd /home/ketan/project/kapow/.claude/worktrees/worktree/webmcp-filters && cd api && go test -short -count=1 -race ./internal/mcp/... ./internal/search/... 2>&1\",\"description\":\"Run Go tests with race detector\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T03:06:23.065Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773198404874-djbo8t7\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"cd /home/ketan/project/kapow/.claude/worktrees/worktree/webmcp-filters && git add -A && git status\",\"description\":\"Stage changes and check status\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T03:07:03.652Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773198432684-lmhy7lb\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"git commit -m \\\"$(cat <<'EOF'\\nfix: use typed filter payloads in WebMCP tool schemas\\n\\nUpdates MCP tool schema registration and request handling to use typed\\nJSON shapes per field kind instead of plain strings. Adds tests for\\ntext, enum, numeric-range, and geo filter kinds.\\n\\nCloses kapow-8e8\\n\\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\\nEOF\\n)\\\"\",\"description\":\"Commit changes\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T03:07:29.897Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773198453863-vqwc5kn\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"git push -u origin HEAD 2>&1\",\"description\":\"Push branch to origin\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T03:09:27.997Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"shutdown_request\",\"requestId\":\"shutdown-1773198600325@webmcp-filters\",\"from\":\"team-lead\",\"reason\":\"Merged and closed. Shutting down.\",\"timestamp\":\"2026-03-11T03:10:00.325Z\"}",
+    "timestamp": "2026-03-11T03:10:00.325Z",
+    "read": true
+  }
+]

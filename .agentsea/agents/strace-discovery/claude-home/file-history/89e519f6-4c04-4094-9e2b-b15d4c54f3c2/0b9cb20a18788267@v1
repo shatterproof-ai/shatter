@@ -1,0 +1,79 @@
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"log/slog"
+	"os"
+	"os/signal"
+	"strings"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/joho/godotenv"
+	"github.com/google/go-github/v69/github"
+)
+
+func main() {
+	// Load .env if present (no-op if missing)
+	_ = godotenv.Load()
+
+	var (
+		databaseURL string
+		githubToken string
+		repo        string
+		dryRun      bool
+		batchSize   int
+	)
+
+	flag.StringVar(&databaseURL, "database-url", "", "PostgreSQL connection string (or DATABASE_URL env var)")
+	flag.StringVar(&githubToken, "github-token", "", "GitHub PAT with repo scope (or GITHUB_TOKEN env var)")
+	flag.StringVar(&repo, "repo", "ketang/kapow", "GitHub owner/repo")
+	flag.BoolVar(&dryRun, "dry-run", false, "Print what would be created without API calls")
+	flag.IntVar(&batchSize, "batch-size", 50, "Max issues per run")
+	flag.Parse()
+
+	// Fall back to env vars when flags aren't provided
+	if databaseURL == "" {
+		databaseURL = os.Getenv("DATABASE_URL")
+	}
+	if githubToken == "" {
+		githubToken = os.Getenv("GITHUB_TOKEN")
+	}
+
+	if databaseURL == "" {
+		fmt.Fprintln(os.Stderr, "feedbacksync: --database-url or DATABASE_URL is required")
+		os.Exit(1)
+	}
+	if githubToken == "" && !dryRun {
+		fmt.Fprintln(os.Stderr, "feedbacksync: --github-token or GITHUB_TOKEN is required (unless --dry-run)")
+		os.Exit(1)
+	}
+
+	parts := strings.SplitN(repo, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		fmt.Fprintf(os.Stderr, "feedbacksync: invalid --repo format %q, expected owner/repo\n", repo)
+		os.Exit(1)
+	}
+	owner, repoName := parts[0], parts[1]
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	pool, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		slog.Error("feedbacksync: failed to connect to database", "error", err)
+		os.Exit(1)
+	}
+	defer pool.Close()
+
+	var ghClient *github.Client
+	if githubToken != "" {
+		ghClient = github.NewClient(nil).WithAuthToken(githubToken)
+	}
+
+	if err := Sync(ctx, pool, ghClient, owner, repoName, dryRun, batchSize); err != nil {
+		slog.Error("feedbacksync: sync failed", "error", err)
+		os.Exit(1)
+	}
+}

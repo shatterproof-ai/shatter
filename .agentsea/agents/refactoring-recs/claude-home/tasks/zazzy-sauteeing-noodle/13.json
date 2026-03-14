@@ -1,0 +1,8 @@
+{
+  "id": "13",
+  "subject": "str-28vd.2: Semgrep CE starter rules",
+  "description": "Add initial .semgrep config with rules for protocol/frontend parity and duplicated config boundaries; update scripts/quality/check-meta.sh. Beads ID: str-28vd.2",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

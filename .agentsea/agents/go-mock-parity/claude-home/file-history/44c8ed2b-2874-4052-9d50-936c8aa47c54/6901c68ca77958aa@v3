@@ -1,0 +1,155 @@
+package main
+
+import (
+	"context"
+	"flag"
+	"log/slog"
+	"os"
+	"os/exec"
+	"os/signal"
+	"syscall"
+
+	"github.com/joho/godotenv"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+
+	"github.com/ketang/flotsam/api/internal/auth"
+	"github.com/ketang/flotsam/api/internal/config"
+	"github.com/ketang/flotsam/api/internal/db"
+	"github.com/ketang/flotsam/api/internal/item"
+	"github.com/ketang/flotsam/api/internal/router"
+	"github.com/ketang/flotsam/api/internal/server"
+	"github.com/ketang/flotsam/api/internal/storage"
+	"github.com/ketang/flotsam/api/internal/user"
+	"github.com/ketang/flotsam/api/internal/version"
+)
+
+func main() {
+	withWorker := flag.Bool("with-worker", false, "fork flotsam-worker --watch as a child process")
+	flag.Parse()
+
+	// 1. Load .env (no-op if file is absent — dev convenience only)
+	_ = godotenv.Load()
+
+	// 2. Parse and validate configuration
+	cfg, err := config.Load()
+	if err != nil {
+		slog.Error("failed to load config", "error", err)
+		os.Exit(1)
+	}
+
+	// 3. Configure structured logger
+	slog.SetDefault(slog.New(cfg.LogHandler()))
+	slog.Info("starting flotsam api",
+		"version", version.Version,
+		"build_time", version.BuildTime,
+		"env", cfg.Env,
+	)
+
+	// 4. Connect to database
+	ctx := context.Background()
+	pool, err := db.Connect(ctx, cfg.DatabaseURL)
+	if err != nil {
+		slog.Error("failed to connect to database", "error", err)
+		os.Exit(1) //nolint:gocritic // fatal startup error
+	}
+	defer pool.Close()
+
+	// 5. Initialize S3 storage client (optional)
+	var store *storage.Client
+	if cfg.S3Endpoint != "" {
+		store, err = storage.New(storage.Config{
+			Endpoint:       cfg.S3Endpoint,
+			Bucket:         cfg.S3Bucket,
+			AccessKey:      cfg.S3AccessKey,
+			SecretKey:      cfg.S3SecretKey,
+			Region:         cfg.S3Region,
+			ForcePathStyle: cfg.S3ForcePathStyle,
+		})
+		if err != nil {
+			slog.Error("failed to initialize storage", "error", err)
+			os.Exit(1) //nolint:gocritic // fatal startup error
+		}
+		slog.Info("storage: S3 client initialized", "endpoint", cfg.S3Endpoint, "bucket", cfg.S3Bucket)
+	} else {
+		slog.Warn("storage: S3_ENDPOINT not set, object storage disabled")
+	}
+
+	// 6. Initialize River client (insert-only — no workers, no queues)
+	riverClient, err := river.NewClient(riverpgxv5.New(pool), &river.Config{})
+	if err != nil {
+		slog.Error("failed to create river client", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("river: insert-only client initialized")
+
+	// 7. Initialize auth validator
+	validator := auth.NewHMACValidator(cfg.JWTSecret)
+	slog.Info("auth: using HS256 JWT validator")
+
+	// 8. Initialize services
+	itemService := item.New(pool)
+	userService := user.New(pool)
+	issuer := auth.NewIssuer(cfg.JWTSecret, cfg.JWTExpiry)
+
+	// 9. Build router
+	r := router.New(router.Deps{
+		Config:      cfg,
+		Pool:        pool,
+		Validator:   validator,
+		Storage:     store,
+		RiverClient: riverClient,
+		Items:       itemService,
+		Users:       userService,
+		Issuer:      issuer,
+	})
+
+	// 9. Optionally fork worker as child process
+	var workerCmd *exec.Cmd
+	if *withWorker {
+		workerCmd = exec.Command("flotsam-worker", "--watch")
+		workerCmd.Stdout = os.Stdout
+		workerCmd.Stderr = os.Stderr
+		if err := workerCmd.Start(); err != nil {
+			slog.Error("failed to start worker", "error", err)
+		} else {
+			slog.Info("worker: started as child process", "pid", workerCmd.Process.Pid)
+		}
+	}
+
+	// 10. Start HTTP server
+	srv := server.New(cfg.Addr(), r)
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		slog.Info("server: listening", "addr", cfg.Addr())
+		if err := srv.Start(); err != nil {
+			slog.Info("server: stopped", "reason", err)
+		}
+	}()
+
+	// 11. Block until signal received
+	sig := <-sigCh
+	slog.Info("signal received", "signal", sig)
+
+	// 12. Graceful shutdown
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+	defer cancel()
+
+	slog.Info("server: shutting down", "timeout", cfg.ShutdownTimeout)
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		slog.Error("server: shutdown error", "error", err)
+		os.Exit(1)
+	}
+
+	// Kill worker child process if running
+	if workerCmd != nil && workerCmd.Process != nil {
+		slog.Info("worker: stopping child process", "pid", workerCmd.Process.Pid)
+		_ = workerCmd.Process.Signal(syscall.SIGTERM)
+		_ = workerCmd.Wait()
+	}
+
+	slog.Info("server: shutdown complete")
+}

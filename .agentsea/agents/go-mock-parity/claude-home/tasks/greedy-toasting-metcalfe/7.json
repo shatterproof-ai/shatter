@@ -1,0 +1,8 @@
+{
+  "id": "7",
+  "subject": "kapow-j2l.11: Match reporting + fuzzy suggestions",
+  "description": "Produce structured match report after running platform extractors with fuzzy matching suggestions. Quality gate: make kapow-test-unit",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

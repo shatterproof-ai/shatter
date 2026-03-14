@@ -1,0 +1,157 @@
+package router
+
+import (
+	"encoding/json"
+	"log/slog"
+	"net/http"
+	"strings"
+
+	"github.com/99designs/gqlgen/graphql/handler"
+	"github.com/99designs/gqlgen/graphql/handler/extension"
+	"github.com/99designs/gqlgen/graphql/handler/transport"
+	"github.com/99designs/gqlgen/graphql/playground"
+	"github.com/go-chi/chi/v5"
+	chimiddleware "github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/cors"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/riverqueue/river"
+
+	"github.com/ketang/flotsam/api/graph/generated"
+	"github.com/ketang/flotsam/api/graph/resolver"
+	"github.com/ketang/flotsam/api/internal/auth"
+	"github.com/ketang/flotsam/api/internal/config"
+	"github.com/ketang/flotsam/api/internal/item"
+	flotsammiddleware "github.com/ketang/flotsam/api/internal/middleware"
+	"github.com/ketang/flotsam/api/internal/storage"
+	"github.com/ketang/flotsam/api/internal/user"
+	"github.com/ketang/flotsam/api/internal/version"
+)
+
+// Deps holds the dependencies needed to construct the router.
+type Deps struct {
+	Config      *config.Config
+	Pool        *pgxpool.Pool
+	Validator   auth.Validator
+	Storage     *storage.Client // nil if S3 not configured
+	RiverClient *river.Client[pgx.Tx]
+	Items       *item.Service
+	Users       *user.Service
+	Issuer      *auth.Issuer
+}
+
+// New constructs the chi router with all middleware, routes, and handlers.
+func New(deps Deps) http.Handler {
+	r := chi.NewRouter()
+
+	// Global middleware (applied to every request)
+	r.Use(flotsammiddleware.RequestID)
+	r.Use(flotsammiddleware.Logging)
+	r.Use(flotsammiddleware.Recovery)
+	r.Use(chimiddleware.RealIP)
+	r.Use(chimiddleware.StripSlashes)
+
+	// CORS (if configured)
+	if deps.Config.CORSOrigins != "" {
+		origins := parseCORSOrigins(deps.Config.CORSOrigins)
+		r.Use(cors.Handler(cors.Options{
+			AllowedOrigins:   origins,
+			AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+			AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
+			AllowCredentials: true,
+			MaxAge:           300,
+		}))
+	}
+
+	// Health endpoint — no auth
+	r.Get("/health", healthHandler)
+
+	// GraphQL handler
+	gqlSrv := handler.New(generated.NewExecutableSchema(generated.Config{
+		Resolvers: &resolver.Resolver{
+			ItemService: deps.Items,
+			UserService: deps.Users,
+			Issuer:      deps.Issuer,
+			RiverClient: deps.RiverClient,
+<<<<<<< HEAD
+=======
+			Storage:     deps.Storage,
+>>>>>>> worktree/voice
+		},
+	}))
+	gqlSrv.AddTransport(transport.POST{})
+	gqlSrv.AddTransport(transport.GET{})
+	if deps.Config.GQLIntrospection {
+		gqlSrv.Use(extension.Introspection{})
+	}
+
+	// GraphQL endpoint — optional auth + rate limit
+	r.Route("/graphql", func(r chi.Router) {
+		r.Use(flotsammiddleware.OptionalAuth(deps.Validator))
+		if deps.Config.RateLimitEnabled {
+			rl := flotsammiddleware.NewRateLimiter(deps.Config.RateLimitGraphQL)
+			r.Use(rl.Limit)
+		}
+		r.Post("/", gqlSrv.ServeHTTP)
+		r.Get("/", gqlSrv.ServeHTTP)
+	})
+
+	// GraphQL playground (dev only)
+	if deps.Config.GQLPlayground {
+		r.Get("/playground", playground.Handler("Flotsam API", "/graphql"))
+		slog.Info("router: GraphQL playground enabled at /playground")
+	}
+
+	// MCP endpoint — mandatory auth + rate limit
+	if deps.Config.MCPEnabled {
+		r.Route("/mcp", func(r chi.Router) {
+			r.Use(flotsammiddleware.Auth(deps.Validator))
+			if deps.Config.RateLimitEnabled {
+				rl := flotsammiddleware.NewRateLimiter(deps.Config.RateLimitMCP)
+				r.Use(rl.Limit)
+			}
+			r.Handle("/*", placeholderHandler("mcp"))
+		})
+		slog.Info("router: MCP endpoint enabled at /mcp")
+	}
+
+	// Upload endpoint — mandatory auth
+	r.Route("/upload", func(r chi.Router) {
+		r.Use(flotsammiddleware.Auth(deps.Validator))
+		r.Post("/", uploadHandler(deps.Storage, deps.Config.MaxUploadSize))
+	})
+
+	slog.Info("router: initialized",
+		"cors_origins", deps.Config.CORSOrigins,
+		"mcp_enabled", deps.Config.MCPEnabled,
+		"rate_limit_enabled", deps.Config.RateLimitEnabled,
+	)
+
+	return r
+}
+
+func healthHandler(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"status":  "ok",
+		"version": version.Version,
+	})
+}
+
+func placeholderHandler(name string) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, name+" endpoint not yet implemented", http.StatusNotImplemented)
+	}
+}
+
+func parseCORSOrigins(s string) []string {
+	parts := strings.Split(s, ",")
+	origins := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			origins = append(origins, p)
+		}
+	}
+	return origins
+}

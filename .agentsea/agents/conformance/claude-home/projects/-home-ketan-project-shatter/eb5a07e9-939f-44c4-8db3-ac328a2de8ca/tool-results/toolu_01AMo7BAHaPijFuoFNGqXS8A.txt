@@ -1,0 +1,653 @@
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-322-    ///
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-323-    /// Each behavior's return value becomes an entry in `return_values`. Behaviors
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-324-    /// that threw an error (and have no return value) are skipped.
+/home/ketan/project/shatter/shatter-core/src/behavior.rs:325:    pub fn to_mock_config(&self) -> MockConfig {
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-326-        let return_values: Vec<serde_json::Value> = self
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-327-            .behaviors
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-328-            .iter()
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-329-            .filter_map(|b| b.return_value.clone())
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-330-            .collect();
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-331-
+/home/ketan/project/shatter/shatter-core/src/behavior.rs:332:        MockConfig {
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-333-            symbol: self.function_id.clone(),
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-334-            return_values,
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-335-            should_track_calls: true,
+--
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-758-    }
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-759-
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-760-    #[test]
+/home/ketan/project/shatter/shatter-core/src/behavior.rs:761:    fn behavior_map_to_mock_config() {
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-762-        let records = vec![
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-763-            make_record("calc", 1, vec![json!("gold")], Some(json!(0.2))),
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-764-            make_record("calc", 2, vec![json!("silver")], Some(json!(0.1))),
+--
+/home/ketan/project/shatter/shatter-core/src/scope.rs-240-    }
+/home/ketan/project/shatter/shatter-core/src/scope.rs-241-
+/home/ketan/project/shatter/shatter-core/src/scope.rs-242-    #[test]
+/home/ketan/project/shatter/shatter-core/src/scope.rs:243:    fn classify_dependency_mock() {
+/home/ketan/project/shatter/shatter-core/src/scope.rs-244-        let config = ScopeConfig {
+/home/ketan/project/shatter/shatter-core/src/scope.rs-245-            include: vec![],
+/home/ketan/project/shatter/shatter-core/src/scope.rs-246-            exclude: vec![],
+--
+/home/ketan/project/shatter/shatter-core/src/scope.rs-288-    }
+/home/ketan/project/shatter/shatter-core/src/scope.rs-289-
+/home/ketan/project/shatter/shatter-core/src/scope.rs-290-    #[test]
+/home/ketan/project/shatter/shatter-core/src/scope.rs:291:    fn passthrough_takes_precedence_over_mock() {
+/home/ketan/project/shatter/shatter-core/src/scope.rs-292-        let config = ScopeConfig {
+/home/ketan/project/shatter/shatter-core/src/scope.rs-293-            include: vec![],
+/home/ketan/project/shatter/shatter-core/src/scope.rs-294-            exclude: vec![],
+--
+/home/ketan/project/shatter/shatter-core/src/scope.rs-308-    }
+/home/ketan/project/shatter/shatter-core/src/scope.rs-309-
+/home/ketan/project/shatter/shatter-core/src/scope.rs-310-    #[test]
+/home/ketan/project/shatter/shatter-core/src/scope.rs:311:    fn acceptance_test_node_modules_mocked_lodash_passthrough() {
+/home/ketan/project/shatter/shatter-core/src/scope.rs-312-        let config = ScopeConfig {
+/home/ketan/project/shatter/shatter-core/src/scope.rs-313-            include: vec!["src/**/*.ts".to_string()],
+/home/ketan/project/shatter/shatter-core/src/scope.rs-314-            exclude: vec!["**/*.test.ts".to_string()],
+--
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-78-/// are skipped.
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-79-///
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-80-/// Returns `None` if the behavior map has no usable behaviors.
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs:81:pub fn build_mock_from_behavior_map(behavior_map: &BehaviorMap) -> Option<MockDecisionTree> {
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-82-    let mut conditions: Vec<MockCondition> = Vec::new();
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-83-    let mut last_return = serde_json::Value::Null;
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-84-
+--
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-105-/// Convert a single [`Behavior`] into a [`MockCondition`].
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-106-///
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-107-/// Returns `None` if the behavior has no return value and no thrown error.
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs:108:fn behavior_to_condition(behavior: &Behavior) -> Option<MockCondition> {
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-109-    let has_return = behavior.return_value.is_some();
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-110-    let has_error = behavior.thrown_error.is_some();
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-111-
+--
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-143-}
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-144-
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-145-/// Check whether a set of arguments matches all input patterns in a condition.
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs:146:pub fn matches_condition(args: &[serde_json::Value], condition: &MockCondition) -> bool {
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-147-    condition.input_patterns.iter().all(|pattern| {
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-148-        args.get(pattern.arg_index)
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-149-            .is_some_and(|arg| matches_pattern(arg, &pattern.matcher))
+--
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-188-/// This is a lossy conversion — the flat format cannot fully represent
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-189-/// input-conditional logic. For frontends that support conditional mocks,
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-190-/// the tree should be sent directly (future protocol extension).
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs:191:pub fn to_enhanced_mock_config(tree: &MockDecisionTree) -> MockConfig {
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-192-    let return_values: Vec<serde_json::Value> = tree
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-193-        .conditions
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-194-        .iter()
+--
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-196-        .map(|c| c.return_value.clone())
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-197-        .collect();
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-198-
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs:199:    MockConfig {
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-200-        symbol: tree.symbol.clone(),
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-201-        return_values,
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-202-        should_track_calls: true,
+--
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-206-
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-207-/// Build a [`MockConfig`] from a [`BehaviorMap`], using the decision tree
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-208-/// when possible and falling back to the flat conversion otherwise.
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs:209:pub fn mock_config_from_behavior_map(behavior_map: &BehaviorMap) -> MockConfig {
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-210-    match build_mock_from_behavior_map(behavior_map) {
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-211-        Some(tree) => to_enhanced_mock_config(&tree),
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-212-        None => behavior_map.to_mock_config(),
+--
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-385-    // -- to_enhanced_mock_config produces valid MockConfig --
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-386-
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-387-    #[test]
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs:388:    fn enhanced_mock_config_from_decision_tree() {
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-389-        let map = make_behavior_map(
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-390-            "lookup",
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-391-            vec![
+--
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-424-    // -- mock_config_from_behavior_map fallback --
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-425-
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-426-    #[test]
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs:427:    fn fallback_to_flat_mock_when_no_tree() {
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-428-        let map = make_behavior_map("noop", vec![]);
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-429-        let config = mock_config_from_behavior_map(&map);
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-430-        assert_eq!(config.symbol, "noop");
+--
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-432-    }
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-433-
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-434-    #[test]
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs:435:    fn mock_config_from_behavior_map_uses_tree_when_possible() {
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-436-        let map = make_behavior_map(
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-437-            "fn1",
+/home/ketan/project/shatter/shatter-core/src/mock_gen.rs-438-            vec![
+--
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-200-        .prop_map(|contexts| SetupContextStack { contexts })
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-201-}
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-202-
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs:203:pub fn arb_mock_behavior() -> impl Strategy<Value = MockBehavior> {
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-204-    prop_oneof![
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-205-        Just(MockBehavior::ReturnGenerated),
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-206-        Just(MockBehavior::RepeatLast),
+--
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-541-// Protocol message strategies
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-542-// ---------------------------------------------------------------------------
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-543-
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs:544:pub fn arb_mock_config() -> impl Strategy<Value = MockConfig> {
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-545-    (
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-546-        arb_ident(),
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-547-        prop::collection::vec(arb_json_value(), 0..=3),
+--
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-549-        arb_mock_behavior(),
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-550-    )
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-551-        .prop_map(
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs:552:            |(symbol, return_values, should_track_calls, default_behavior)| MockConfig {
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-553-                symbol,
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-554-                return_values,
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-555-                should_track_calls,
+--
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-1045-    ]
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-1046-}
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-1047-
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs:1048:pub fn arb_mock_param() -> impl Strategy<Value = MockParam> {
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-1049-    (
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-1050-        arb_ident(),
+/home/ketan/project/shatter/shatter-core/src/test_arbitraries.rs-1051-        arb_type_info(2),
+--
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-161-
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-162-/// Configuration for mocking an external dependency during execution.
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-163-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:164:pub struct MockConfig {
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-165-    /// Fully qualified symbol name of the dependency to mock.
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-166-    pub symbol: String,
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-167-    /// Pre-configured return values to cycle through.
+--
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-605-            Command::Instrument {
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-606-                file: "src/main.ts".into(),
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-607-                function: "calculateShipping".into(),
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:608:                mocks: vec![MockConfig {
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-609-                    symbol: "rateService.getExpressRate".into(),
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-610-                    return_values: vec![serde_json::json!(12.99)],
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-611-                    should_track_calls: true,
+--
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-848-    // -- Component type round-trips --
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-849-
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-850-    #[test]
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:851:    fn mock_config_round_trips() {
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:852:        round_trip(&MockConfig {
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-853-            symbol: "db.query".into(),
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-854-            return_values: vec![
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-855-                serde_json::json!({"id": 1, "name": "Alice"}),
+--
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-861-    }
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-862-
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-863-    #[test]
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:864:    fn all_mock_behaviors_round_trip() {
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-865-        round_trip(&MockBehavior::ReturnGenerated);
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-866-        round_trip(&MockBehavior::RepeatLast);
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-867-        round_trip(&MockBehavior::ThrowError);
+--
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1054-    }
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1055-
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1056-    #[test]
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:1057:    fn execute_request_with_mocks_round_trips() {
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1058-        round_trip(&Request::new(
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1059-            10,
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1060-            Command::Execute {
+--
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1064-                    serde_json::json!("express"),
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1065-                ],
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1066-                mocks: vec![
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:1067:                    MockConfig {
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1068-                        symbol: "db.save".into(),
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1069-                        return_values: vec![serde_json::json!(true)],
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1070-                        should_track_calls: true,
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1071-                        default_behavior: MockBehavior::RepeatLast,
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1072-                    },
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:1073:                    MockConfig {
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1074-                        symbol: "emailService.send".into(),
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1075-                        return_values: vec![],
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1076-                        should_track_calls: false,
+--
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1083-    }
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1084-
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1085-    #[test]
+/home/ketan/project/shatter/shatter-core/src/protocol.rs:1086:    fn instrument_request_empty_mocks_round_trips() {
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1087-        round_trip(&Request::new(
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1088-            11,
+/home/ketan/project/shatter/shatter-core/src/protocol.rs-1089-            Command::Instrument {
+--
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-1112-}
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-1113-
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-1114-/// Format mock usages as a human-readable string with source attribution.
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs:1115:fn format_mocks_used(mocks: &[MockUsage]) -> String {
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-1116-    let cached: Vec<&str> = mocks
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-1117-        .iter()
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-1118-        .filter(|m| m.source == MockSource::CachedBehaviorMap)
+--
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-2967-    /// Verify stratum-excluded mock source is correctly assigned when
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-2968-    /// scanning a middle layer whose callees are outside the selected stratum.
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-2969-    #[test]
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs:2970:    fn stratum_excluded_mock_source_attribution() {
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-2971-        use crate::call_graph::CallGraph as CgCallGraph;
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-2972-        use crate::batch_analyze::FunctionEntry;
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-2973-        use crate::types::TypeInfo;
+--
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-3085-
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-3086-    /// Verify format_mocks_used includes stratum-excluded mocks.
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-3087-    #[test]
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs:3088:    fn format_mocks_used_includes_stratum_excluded() {
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-3089-        let mocks = vec![
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-3090-            MockUsage { name: "dep_a".into(), source: MockSource::CachedBehaviorMap },
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-3091-            MockUsage { name: "dep_b".into(), source: MockSource::TypeAwareStub },
+--
+/home/ketan/project/shatter/shatter-core/src/recursive.rs-211-    for d in 1..=config.max_depth {
+/home/ketan/project/shatter/shatter-core/src/recursive.rs-212-        depth = d;
+/home/ketan/project/shatter/shatter-core/src/recursive.rs-213-        let current_map = BehaviorMap::from_records(&analysis.name, &all_records);
+/home/ketan/project/shatter/shatter-core/src/recursive.rs:214:        let mock = MockConfig {
+/home/ketan/project/shatter/shatter-core/src/recursive.rs-215-            symbol: analysis.name.clone(),
+/home/ketan/project/shatter/shatter-core/src/recursive.rs-216-            return_values: current_map
+/home/ketan/project/shatter/shatter-core/src/recursive.rs-217-                .behaviors
+--
+/home/ketan/project/shatter/shatter-core/src/recursive.rs-416-                continue;
+/home/ketan/project/shatter/shatter-core/src/recursive.rs-417-            }
+/home/ketan/project/shatter/shatter-core/src/recursive.rs-418-            let bmap = BehaviorMap::from_records(func_id, records);
+/home/ketan/project/shatter/shatter-core/src/recursive.rs:419:            mocks.push(MockConfig {
+/home/ketan/project/shatter/shatter-core/src/recursive.rs-420-                symbol: func_id.clone(),
+/home/ketan/project/shatter/shatter-core/src/recursive.rs-421-                return_values: bmap
+/home/ketan/project/shatter/shatter-core/src/recursive.rs-422-                    .behaviors
+--
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-72-}
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-73-
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-74-/// Generate a default [`MockConfig`] for a dependency based on its category.
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs:75:pub fn generate_default_mock(dep: &ExternalDependency, category: IoCategory) -> MockConfig {
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-76-    match category {
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs:77:        IoCategory::FileSystem => MockConfig {
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-78-            symbol: dep.symbol.clone(),
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-79-            return_values: vec![default_for_fs(&dep.symbol)],
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-80-            should_track_calls: true,
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-81-            default_behavior: MockBehavior::RepeatLast,
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-82-        },
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs:83:        IoCategory::Network => MockConfig {
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-84-            symbol: dep.symbol.clone(),
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-85-            return_values: vec![json!({"status": 200, "data": {}})],
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-86-            should_track_calls: true,
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-87-            default_behavior: MockBehavior::RepeatLast,
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-88-        },
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs:89:        IoCategory::Database => MockConfig {
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-90-            symbol: dep.symbol.clone(),
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-91-            return_values: vec![default_for_db(&dep.symbol)],
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-92-            should_track_calls: true,
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-93-            default_behavior: MockBehavior::RepeatLast,
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-94-        },
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs:95:        IoCategory::PureUtility => MockConfig {
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-96-            symbol: dep.symbol.clone(),
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-97-            return_values: vec![],
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-98-            should_track_calls: false,
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-99-            default_behavior: MockBehavior::Passthrough,
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-100-        },
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs:101:        IoCategory::ExternalOther => MockConfig {
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-102-            symbol: dep.symbol.clone(),
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-103-            return_values: vec![default_for_type(&dep.return_type)],
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-104-            should_track_calls: true,
+--
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-183-/// 2. Are classified as Mock (not Passthrough or Analyze) by the scope matcher
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-184-///
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-185-/// User overrides from config take precedence over auto-generated defaults.
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs:186:pub fn generate_auto_mocks(
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-187-    deps: &[ExternalDependency],
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-188-    scope: Option<&ScopeMatcher>,
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-189-    overrides: &HashMap<String, MockOverride>,
+--
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-268-/// unless a matching config explicitly overrides them. Dependencies with
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-269-/// a matching config get [`ValueSource::UserOverride`]; those without get
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-270-/// [`ValueSource::AutoGenerated`].
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs:271:pub fn build_mock_params(
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-272-    deps: &[ExternalDependency],
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-273-    configs: &[MockConfig],
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-274-) -> Vec<MockParam> {
+--
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-368-    }
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-369-
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-370-    #[test]
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs:371:    fn default_mock_for_fs_read() {
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-372-        let dep = make_dep("readFile", "fs", TypeInfo::Str);
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-373-        let mock = generate_default_mock(&dep, IoCategory::FileSystem);
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-374-        assert_eq!(mock.symbol, "readFile");
+--
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-378-    }
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-379-
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-380-    #[test]
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs:381:    fn default_mock_for_fs_exists() {
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-382-        let dep = make_dep("existsSync", "fs", TypeInfo::Bool);
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-383-        let mock = generate_default_mock(&dep, IoCategory::FileSystem);
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-384-        assert_eq!(mock.return_values, vec![json!(true)]);
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-385-    }
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-386-
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-387-    #[test]
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs:388:    fn default_mock_for_network() {
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-389-        let dep = make_dep("get", "axios", TypeInfo::Unknown);
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-390-        let mock = generate_default_mock(&dep, IoCategory::Network);
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-391-        assert_eq!(mock.return_values, vec![json!({"status": 200, "data": {}})]);
+--
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-393-    }
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-394-
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-395-    #[test]
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs:396:    fn default_mock_for_db_query() {
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-397-        let dep = make_dep("query", "pg", TypeInfo::Unknown);
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-398-        let mock = generate_default_mock(&dep, IoCategory::Database);
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-399-        assert_eq!(mock.return_values, vec![json!({"rows": []})]);
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-400-    }
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-401-
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-402-    #[test]
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs:403:    fn default_mock_for_db_insert() {
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-404-        let dep = make_dep("insert", "pg", TypeInfo::Unknown);
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-405-        let mock = generate_default_mock(&dep, IoCategory::Database);
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-406-        assert_eq!(mock.return_values, vec![json!({"rowCount": 1})]);
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-407-    }
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-408-
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-409-    #[test]
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs:410:    fn default_mock_for_pure_utility_is_passthrough() {
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-411-        let dep = make_dep("map", "lodash", TypeInfo::Unknown);
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-412-        let mock = generate_default_mock(&dep, IoCategory::PureUtility);
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-413-        assert_eq!(mock.default_behavior, MockBehavior::Passthrough);
+--
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-416-    }
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-417-
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-418-    #[test]
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs:419:    fn default_mock_for_external_other_uses_type() {
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-420-        let dep = make_dep("compute", "my-lib", TypeInfo::Int);
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-421-        let mock = generate_default_mock(&dep, IoCategory::ExternalOther);
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-422-        assert_eq!(mock.return_values, vec![json!(0)]);
+--
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-435-    }
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-436-
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-437-    #[test]
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs:438:    fn generate_auto_mocks_skips_existing() {
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-439-        let deps = vec![make_dep("query", "pg", TypeInfo::Unknown)];
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs:440:        let existing = vec![MockConfig {
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-441-            symbol: "query".to_string(),
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-442-            return_values: vec![json!({"rows": [1, 2, 3]})],
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-443-            should_track_calls: true,
+--
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-449-    }
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-450-
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-451-    #[test]
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs:452:    fn generate_auto_mocks_skips_pure_utilities() {
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-453-        let deps = vec![make_dep("map", "lodash", TypeInfo::Unknown)];
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-454-        let result = generate_auto_mocks(&deps, None, &HashMap::new(), &[]);
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-455-        assert!(result.is_empty());
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-456-    }
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-457-
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-458-    #[test]
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs:459:    fn generate_auto_mocks_applies_overrides() {
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-460-        let deps = vec![make_dep("query", "pg", TypeInfo::Unknown)];
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-461-        let mut overrides = HashMap::new();
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-462-        overrides.insert(
+--
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-473-    }
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-474-
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-475-    #[test]
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs:476:    fn generate_auto_mocks_respects_scope_passthrough() {
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-477-        let deps = vec![make_dep("map", "lodash", TypeInfo::Unknown)];
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-478-        let scope_config = crate::scope::ScopeConfig {
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-479-            include: vec![],
+--
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-491-    /// Validates that dependencies are classified, mocks are generated with correct
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-492-    /// return values, pure utilities are skipped, and user overrides are applied.
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-493-    #[test]
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs:494:    fn auto_mock_pipeline_mixed_dependencies() {
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-495-        // Simulate a function that depends on fs.readFileSync, axios.get,
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-496-        // pg.query, lodash.map, and a custom library.
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-497-        let deps = vec![
+--
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-552-    /// Integration test: auto-mocks are compatible with the Instrument command format.
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-553-    /// Verifies that generated MockConfig values serialize correctly for the protocol.
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-554-    #[test]
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs:555:    fn auto_mock_configs_serialize_for_protocol() {
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-556-        let deps = vec![
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-557-            make_dep("existsSync", "fs", TypeInfo::Bool),
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-558-            make_dep("query", "pg", TypeInfo::Unknown),
+--
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-574-    /// Integration test: auto-mocks respect scope configuration.
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-575-    /// Dependencies marked as passthrough in scope config are excluded from mocking.
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-576-    #[test]
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs:577:    fn auto_mock_pipeline_with_scope_rules() {
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-578-        let deps = vec![
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-579-            make_dep("readFile", "fs", TypeInfo::Str),
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-580-            make_dep("get", "axios", TypeInfo::Unknown),
+--
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-629-    }
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-630-
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-631-    #[test]
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs:632:    fn generate_auto_mocks_for_multiple_deps() {
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-633-        let deps = vec![
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-634-            make_dep("readFile", "fs", TypeInfo::Str),
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-635-            make_dep("get", "axios", TypeInfo::Unknown),
+--
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-649-    // --- build_mock_params tests ---
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-650-
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-651-    #[test]
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs:652:    fn build_mock_params_empty_deps() {
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-653-        let result = build_mock_params(&[], &[]);
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-654-        assert!(result.is_empty());
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-655-    }
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-656-
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-657-    #[test]
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs:658:    fn build_mock_params_skips_pure_utility_without_config() {
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-659-        let deps = vec![
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-660-            make_dep("map", "lodash", TypeInfo::Unknown),
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-661-            make_dep("format", "date-fns", TypeInfo::Str),
+--
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-665-    }
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-666-
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-667-    #[test]
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs:668:    fn build_mock_params_includes_pure_utility_with_config() {
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-669-        let deps = vec![make_dep("map", "lodash", TypeInfo::Unknown)];
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs:670:        let configs = vec![MockConfig {
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-671-            symbol: "map".to_string(),
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-672-            return_values: vec![json!([1, 2, 3])],
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-673-            should_track_calls: true,
+--
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-682-    }
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-683-
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-684-    #[test]
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs:685:    fn build_mock_params_auto_generated_without_config() {
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-686-        let deps = vec![make_dep("readFile", "fs", TypeInfo::Str)];
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-687-        let result = build_mock_params(&deps, &[]);
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-688-
+--
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-694-    }
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-695-
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-696-    #[test]
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs:697:    fn build_mock_params_user_override_with_config() {
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-698-        let deps = vec![make_dep("query", "pg", TypeInfo::Unknown)];
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs:699:        let configs = vec![MockConfig {
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-700-            symbol: "query".to_string(),
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-701-            return_values: vec![json!({"rows": [{"id": 1}]})],
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-702-            should_track_calls: true,
+--
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-710-    }
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-711-
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-712-    #[test]
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs:713:    fn build_mock_params_call_count_from_call_sites() {
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-714-        let mut dep = make_dep("get", "axios", TypeInfo::Unknown);
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-715-        dep.call_sites = vec![10, 25, 42];
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-716-
+--
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-722-    /// Mixed dependencies: fs, network, db, pure utility, and custom lib.
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-723-    /// Validates correct classification, filtering, and value source assignment.
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-724-    #[test]
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs:725:    fn build_mock_params_mixed_deps() {
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-726-        let deps = vec![
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-727-            make_dep("readFile", "fs", TypeInfo::Str),
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-728-            make_dep("get", "axios", TypeInfo::Unknown),
+--
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-730-            make_dep("map", "lodash", TypeInfo::Unknown),
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-731-            make_dep("compute", "my-lib", TypeInfo::Int),
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-732-        ];
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs:733:        let configs = vec![MockConfig {
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-734-            symbol: "query".to_string(),
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-735-            return_values: vec![json!({"rows": []})],
+/home/ketan/project/shatter/shatter-core/src/auto_mock.rs-736-            should_track_calls: true,
+--
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1931-/// - Uses category-aware shaping when `return_type` is `Unknown`
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1932-/// - Produces both success and error variants for declared error types
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1933-///   (`Complex { kind: Result, .. }` or unions containing `Complex { kind: Error, .. }`)
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:1934:pub fn generate_mock_values(
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1935-    mock_params: &[MockParam],
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1936-    rng: &mut impl Rng,
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1937-    caps: Option<&FrontendCapabilities>,
+--
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1943-            let (return_values, behavior) =
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1944-                generate_mock_return_values(&mp.return_type, mp.category, count, rng, caps);
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1945-
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:1946:            MockConfig {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1947-                symbol: mp.symbol.clone(),
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1948-                return_values,
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1949-                should_track_calls: true,
+--
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1955-
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1956-/// Generate return values for a single mock, dispatching to error-aware or
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1957-/// category-shaped generators as needed.
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:1958:fn generate_mock_return_values(
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1959-    return_type: &TypeInfo,
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1960-    category: IoCategory,
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-1961-    count: usize,
+--
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2057-/// For each MockConfig/MockParam pair, applies [`mutate_value`] to each
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2058-/// return value with probability `mutation_rate`. Output always has the
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2059-/// same number of configs with the same symbols and vector lengths.
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:2060:pub fn mutate_mock_values(
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2061-    configs: &[MockConfig],
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2062-    mock_params: &[MockParam],
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2063-    mutation_rate: f64,
+--
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2080-                })
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2081-                .collect();
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2082-
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:2083:            MockConfig {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2084-                symbol: config.symbol.clone(),
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2085-                return_values,
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2086-                should_track_calls: config.should_track_calls,
+--
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2095-/// With probability `crossover_rate`, performs per-value crossover between
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2096-/// matching return values. Both children have the same number of configs
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2097-/// with the same symbols as the parents.
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:2098:pub fn crossover_mock_values(
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2099-    parent_a: &[MockConfig],
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2100-    parent_b: &[MockConfig],
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2101-    mock_params: &[MockParam],
+--
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2119-            rng,
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2120-        );
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2121-
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:2122:        child1.push(MockConfig {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2123-            symbol: parent_a[i].symbol.clone(),
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2124-            return_values: rv1,
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2125-            should_track_calls: parent_a[i].should_track_calls,
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2126-            default_behavior: parent_a[i].default_behavior.clone(),
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2127-        });
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:2128:        child2.push(MockConfig {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2129-            symbol: parent_b[i].symbol.clone(),
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2130-            return_values: rv2,
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-2131-            should_track_calls: parent_b[i].should_track_calls,
+--
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-3982-            // -----------------------------------------------------------------
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-3983-
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-3984-            #[test]
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:3985:            fn generate_mock_values_count_matches_params(
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-3986-                params in prop::collection::vec(crate::test_arbitraries::arb_mock_param(), 1..=4),
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-3987-                seed in 0..10000u64,
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-3988-            ) {
+--
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4004-            // -----------------------------------------------------------------
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4005-
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4006-            #[test]
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:4007:            fn generate_mock_values_type_valid(
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4008-                seed in 0..10000u64,
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4009-                typ in prop_oneof![
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4010-                    Just(TypeInfo::Int),
+--
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4040-            #[test]
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4041-            // Uses non-recursive leaf types to avoid a pre-existing panic
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4042-            // in string_mutation::mutate_structure_aware (unrelated to mock values).
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:4043:            fn mutate_mock_values_preserves_structure(
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4044-                seed in 0..10000u64,
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4045-                typs in prop::collection::vec(
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4046-                    prop_oneof![
+--
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4081-            // -----------------------------------------------------------------
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4082-
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4083-            #[test]
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:4084:            fn crossover_mock_values_preserves_structure(
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4085-                params in prop::collection::vec(crate::test_arbitraries::arb_mock_param(), 1..=4),
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4086-                seed in 0..10000u64,
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4087-            ) {
+--
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4116-    // -----------------------------------------------------------------------
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4117-
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4118-    #[test]
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:4119:    fn generate_mock_values_typed_param() {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4120-        let mut rng = seeded_rng();
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4121-        let params = vec![MockParam {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4122-            symbol: "readFile".to_string(),
+--
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4136-    }
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4137-
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4138-    #[test]
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:4139:    fn generate_mock_values_unknown_uses_category_shaping() {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4140-        let mut rng = seeded_rng();
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4141-        let params = vec![MockParam {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4142-            symbol: "query".to_string(),
+--
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4154-    }
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4155-
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4156-    #[test]
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:4157:    fn generate_mock_values_result_type_produces_ok_and_err() {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4158-        let mut rng = seeded_rng();
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4159-        let params = vec![MockParam {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4160-            symbol: "tryConnect".to_string(),
+--
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4186-    }
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4187-
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4188-    #[test]
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:4189:    fn generate_mock_values_union_with_error_produces_both() {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4190-        let mut rng = seeded_rng();
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4191-        let params = vec![MockParam {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4192-            symbol: "fetchData".to_string(),
+--
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4217-    }
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4218-
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4219-    #[test]
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:4220:    fn generate_mock_values_zero_call_count_produces_at_least_one() {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4221-        let mut rng = seeded_rng();
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4222-        let params = vec![MockParam {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4223-            symbol: "unused".to_string(),
+--
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4232-    }
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4233-
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4234-    #[test]
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:4235:    fn mutate_mock_values_preserves_symbol_and_count() {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4236-        let mut rng = seeded_rng();
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4237-        let params = vec![MockParam {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4238-            symbol: "query".to_string(),
+--
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4249-    }
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4250-
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4251-    #[test]
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:4252:    fn crossover_mock_values_preserves_length() {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4253-        let mut rng = seeded_rng();
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4254-        let params = vec![
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4255-            MockParam {
+--
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4276-    }
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4277-
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4278-    #[test]
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs:4279:    fn generate_mock_values_network_unknown_produces_http_shape() {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4280-        let mut rng = seeded_rng();
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4281-        let params = vec![MockParam {
+/home/ketan/project/shatter/shatter-core/src/input_gen.rs-4282-            symbol: "get".to_string(),
+--
+/home/ketan/project/shatter/shatter-core/src/report.rs-1239-    }
+/home/ketan/project/shatter/shatter-core/src/report.rs-1240-
+/home/ketan/project/shatter/shatter-core/src/report.rs-1241-    #[test]
+/home/ketan/project/shatter/shatter-core/src/report.rs:1242:    fn markdown_report_shows_mocks() {
+/home/ketan/project/shatter/shatter-core/src/report.rs-1243-        let report = make_report_with_functions();
+/home/ketan/project/shatter/shatter-core/src/report.rs-1244-        let md = format_markdown_report(&report);
+/home/ketan/project/shatter/shatter-core/src/report.rs-1245-

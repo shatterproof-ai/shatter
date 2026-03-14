@@ -1,0 +1,134 @@
+[
+  {
+    "from": "team-lead",
+    "text": "## Issue: kapow-amiy — Table view: institution type shows as number instead of descriptive word\n\nInstitution type displays as a numeric code instead of a human-readable label. Fix this with a reusable code→label mapping layer that applies everywhere (table view, card view, detail card, export, API responses). Audit all fields for the same problem (e.g., Carnegie Basic, locale, region — any field stored as a code). Implement a single shared mapping utility so all display contexts use it consistently.\n\n## WORKTREE SETUP — RUN FIRST\nBefore doing anything else, create and enter an isolated worktree:\n```bash\nREPO_ROOT=\"$(git rev-parse --show-toplevel)\"\nBRANCH_NAME=\"worktree/type-label-fix\"\nWORKTREE_DIR=\"$REPO_ROOT/.claude/worktrees/$BRANCH_NAME\"\n\nif [ -d \"$WORKTREE_DIR\" ]; then\n  echo \"Worktree already exists, reusing\"\nelse\n  git worktree add \"$WORKTREE_DIR\" -b \"$BRANCH_NAME\"\nfi\n\ncd \"$WORKTREE_DIR\"\n```\nVerify you are in the right place:\n```bash\necho \"CWD: $(pwd)\"\necho \"Branch: $(git branch --show-current)\"\necho \"$(pwd)\" | grep -q '\\.claude/worktrees/' && echo \"WORKTREE VERIFIED\" || echo \"FATAL: NOT in a worktree\"\n```\nIf verification fails, STOP and report the error to the team lead.\n\nALL subsequent commands must run from this worktree directory.\nNEVER cd back to the main repo directory. Commit and push ONLY on\nyour worktree branch — never touch main.\n\nWhen done, push your branch:\n```bash\ngit push -u origin HEAD\n```\n\n## Approach\n\n1. First, understand how institution data flows: API → GraphQL → Frontend rendering\n2. Find where institution_type is returned — likely from the JSONB data field in the search results\n3. Check `api/internal/search/registry.go` for enum field definitions — they may already have label mappings\n4. The fix could be:\n   - **API-side**: Map codes to labels in the GraphQL resolver or search result processing\n   - **Frontend-side**: Create a shared mapping utility in the frontend\n   - **Best approach**: Wherever the enum options are already defined (likely in the search field metadata), use those labels consistently\n5. Audit for similar issues: Carnegie Basic classification, locale, region, degree of urbanization, etc.\n\n## Quality Gate (must pass before reporting done)\n\nSince this may touch both Go and Web:\n```bash\n# From worktree root:\nmake test-standard\n```\n\n## Instructions\n- Follow CLAUDE.md and web/CLAUDE.md conventions\n- Create a SINGLE shared utility for code→label mapping, not per-field hacks\n- Use Mantine style props, not Tailwind\n- Write tests for the mapping utility\n- Commit your work on the worktree branch with a descriptive message\n- Report back with quality gate results when done\n",
+    "timestamp": "2026-03-10T15:19:00.730Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773155948795-6yzrncf\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"REPO_ROOT=\\\"$(git rev-parse --show-toplevel)\\\"\\nBRANCH_NAME=\\\"worktree/type-label-fix\\\"\\nWORKTREE_DIR=\\\"$REPO_ROOT/.claude/worktrees/$BRANCH_NAME\\\"\\n\\nif [ -d \\\"$WORKTREE_DIR\\\" ]; then\\n  echo \\\"Worktree already exists, reusing\\\"\\nelse\\n  git worktree add \\\"$WORKTREE_DIR\\\" -b \\\"$BRANCH_NAME\\\"\\nfi\\n\\ncd \\\"$WORKTREE_DIR\\\"\\necho \\\"CWD: $(pwd)\\\"\\necho \\\"Branch: $(git branch --show-current)\\\"\\necho \\\"$(pwd)\\\" | grep -q '\\\\.claude/worktrees/' && echo \\\"WORKTREE VERIFIED\\\" || echo \\\"FATAL: NOT in a worktree\\\"\",\"description\":\"Set up worktree for type-label-fix branch\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-10T15:24:38.541Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773156316587-0psvw30\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"find /home/ketan/project/kapow/.claude/worktrees/worktree/type-label-fix/web/src -name \\\"*.tsx\\\" -type f -exec grep -l \\\"query.*{\\\" {} \\\\; | head -5\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-10T15:26:14.146Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"plan_approval_response\",\"requestId\":\"plan_approval-1773156521445@type-label-fix@swarm-2026-03-10\",\"approved\":true,\"timestamp\":\"2026-03-10T15:28:42.255Z\",\"permissionMode\":\"default\"}",
+    "timestamp": "2026-03-10T15:28:42.255Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773156547894-9rr9wq9\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/kapow/.claude/worktrees/worktree/type-label-fix/web/src/lib/enumLabels.ts\",\"content\":\"/**\\n * Shared code→label mappings for enum search fields.\\n * Keyed by search field name (matches registry.go field names).\\n */\\nexport const ENUM_LABELS: Record<string, Record<string, string>> = {\\n  institution_type: {\\n    '1': 'Public',\\n    '2': 'Private nonprofit',\\n    '3': 'Private for-profit',\\n  },\\n  highest_degree: {\\n    '1': 'Certificate',\\n    '2': \\\"Associate's\\\",\\n    '3': \\\"Bachelor's\\\",\\n    '4': \\\"Master's\\\",\\n    '5': 'Doctorate',\\n  },\\n  locale: {\\n    '11': 'City: Large',\\n    '12': 'City: Midsize',\\n    '13': 'City: Small',\\n    '21': 'Suburb: Large',\\n    '22': 'Suburb: Midsize',\\n    '23': 'Suburb: Small',\\n    '31': 'Town: Fringe',\\n    '32': 'Town: Distant',\\n    '33': 'Town: Remote',\\n    '41': 'Rural: Fringe',\\n    '42': 'Rural: Distant',\\n    '43': 'Rural: Remote',\\n  },\\n  region: {\\n    '0': 'U.S. Service Schools',\\n    '1': 'New England',\\n    '2': 'Mid East',\\n    '3': 'Great Lakes',\\n    '4': 'Plains',\\n    '5': 'Southeast',\\n    '6': 'Southwest',\\n    '7': 'Rocky Mountains',\\n    '8': 'Far West',\\n    '9': 'Outlying Areas',\\n  },\\n  ncaa_division: {\\n    '1': 'Division I',\\n    '2': 'Division II',\\n    '3': 'Division III',\\n  },\\n  koppen_climate: {\\n    A: 'Tropical',\\n    B: 'Dry',\\n    C: 'Temperate',\\n    D: 'Continental',\\n    E: 'Polar',\\n  },\\n  partisan_direction: {\\n    D: 'Democrat',\\n    R: 'Republican',\\n  },\\n}\\n\\n/**\\n * Look up a human-readable label for an enum code.\\n * Returns null if the field name is not an enum field or the code is unknown.\\n * Callers should fall back to the raw value when null is returned.\\n */\\nexport function lookupEnumLabel(\\n  fieldName: string,\\n  code: string | null | undefined,\\n): string | null {\\n  if (code == null) return null\\n  return ENUM_LABELS[fieldName]?.[code] ?? null\\n}\\n\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-10T15:30:30.212Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"plan_approval_response\",\"requestId\":\"plan_approval-1773156521445@type-label-fix@swarm-2026-03-10\",\"approved\":true,\"timestamp\":\"2026-03-10T15:30:39.478Z\",\"permissionMode\":\"default\"}",
+    "timestamp": "2026-03-10T15:30:39.478Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773156642962-j7gkdmc\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/kapow/.claude/worktrees/worktree/type-label-fix/web/src/lib/enumLabels.test.ts\",\"content\":\"import { describe, it, expect } from 'vitest'\\nimport { lookupEnumLabel, ENUM_LABELS } from './enumLabels'\\n\\ndescribe('ENUM_LABELS', () => {\\n  it('has entries for all expected field names', () => {\\n    const expectedFields = [\\n      'institution_type',\\n      'highest_degree',\\n      'locale',\\n      'region',\\n      'ncaa_division',\\n      'koppen_climate',\\n      'partisan_direction',\\n    ]\\n    for (const field of expectedFields) {\\n      expect(ENUM_LABELS[field]).toBeDefined()\\n    }\\n  })\\n})\\n\\ndescribe('lookupEnumLabel', () => {\\n  it('maps institution_type codes to labels', () => {\\n    expect(lookupEnumLabel('institution_type', '1')).toBe('Public')\\n    expect(lookupEnumLabel('institution_type', '2')).toBe('Private nonprofit')\\n    expect(lookupEnumLabel('institution_type', '3')).toBe('Private for-profit')\\n  })\\n\\n  it('maps highest_degree codes to labels', () => {\\n    expect(lookupEnumLabel('highest_degree', '1')).toBe('Certificate')\\n    expect(lookupEnumLabel('highest_degree', '2')).toBe(\\\"Associate's\\\")\\n    expect(lookupEnumLabel('highest_degree', '3')).toBe(\\\"Bachelor's\\\")\\n    expect(lookupEnumLabel('highest_degree', '4')).toBe(\\\"Master's\\\")\\n    expect(lookupEnumLabel('highest_degree', '5')).toBe('Doctorate')\\n  })\\n\\n  it('maps locale codes to labels', () => {\\n    expect(lookupEnumLabel('locale', '11')).toBe('City: Large')\\n    expect(lookupEnumLabel('locale', '12')).toBe('City: Midsize')\\n    expect(lookupEnumLabel('locale', '43')).toBe('Rural: Remote')\\n  })\\n\\n  it('maps region codes to labels', () => {\\n    expect(lookupEnumLabel('region', '0')).toBe('U.S. Service Schools')\\n    expect(lookupEnumLabel('region', '1')).toBe('New England')\\n    expect(lookupEnumLabel('region', '9')).toBe('Outlying Areas')\\n  })\\n\\n  it('maps ncaa_division codes to labels', () => {\\n    expect(lookupEnumLabel('ncaa_division', '1')).toBe('Division I')\\n    expect(lookupEnumLabel('ncaa_division', '2')).toBe('Division II')\\n    expect(lookupEnumLabel('ncaa_division', '3')).toBe('Division III')\\n  })\\n\\n  it('maps koppen_climate codes to labels', () => {\\n    expect(lookupEnumLabel('koppen_climate', 'A')).toBe('Tropical')\\n    expect(lookupEnumLabel('koppen_climate', 'E')).toBe('Polar')\\n  })\\n\\n  it('maps partisan_direction codes to labels', () => {\\n    expect(lookupEnumLabel('partisan_direction', 'D')).toBe('Democrat')\\n    expect(lookupEnumLabel('partisan_direction', 'R')).toBe('Republican')\\n  })\\n\\n  it('returns null for unknown field name', () => {\\n    expect(lookupEnumLabel('unknown_field', '1')).toBeNull()\\n  })\\n\\n  it('returns null for null code', () => {\\n    expect(lookupEnumLabel('institution_type', null)).toBeNull()\\n  })\\n\\n  it('returns null for undefined code', () => {\\n    expect(lookupEnumLabel('institution_type', undefined)).toBeNull()\\n  })\\n\\n  it('returns null for unknown code (caller falls back to raw value)', () => {\\n    expect(lookupEnumLabel('institution_type', '99')).toBeNull()\\n    expect(lookupEnumLabel('locale', '99')).toBeNull()\\n  })\\n})\\n\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-10T15:31:56.764Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773156724787-rx18nxu\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/kapow/.claude/worktrees/worktree/type-label-fix/web/src/components/search/helpers.ts\",\"old_string\":\"import type { SearchField, SearchFieldUnit, SearchInstitution, SearchOutputField, Theme } from './types'\",\"new_string\":\"import type { SearchField, SearchFieldUnit, SearchInstitution, SearchOutputField, Theme } from './types'\\nimport { lookupEnumLabel } from '@/lib/enumLabels'\",\"replace_all\":false},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-10T16:49:19.777Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773161369519-z3iglrf\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/kapow/.claude/worktrees/worktree/type-label-fix/web/src/components/search/helpers.ts\",\"old_string\":\"export function formatCellValue(value: unknown, unit?: SearchFieldUnit | null): string {\\n  if (value === null || value === undefined || value === '') return '—'\\n  const num = Number(value)\\n  if (unit === 'DOLLARS' && !isNaN(num)) {\\n    return `$${Math.round(num).toLocaleString()}`\\n  }\\n  if (unit === 'PERCENTAGE' && !isNaN(num)) {\\n    return `${(num * 100).toFixed(1)}%`\\n  }\\n  if (unit === 'MILES' && !isNaN(num)) {\\n    return `${num.toLocaleString()} mi`\\n  }\\n  return String(value)\\n}\",\"new_string\":\"export function formatCellValue(\\n  value: unknown,\\n  unit?: SearchFieldUnit | null,\\n  fieldName?: string,\\n): string {\\n  if (value === null || value === undefined || value === '') return '—'\\n  if (fieldName) {\\n    const label = lookupEnumLabel(fieldName, String(value))\\n    if (label !== null) return label\\n  }\\n  const num = Number(value)\\n  if (unit === 'DOLLARS' && !isNaN(num)) {\\n    return `$${Math.round(num).toLocaleString()}`\\n  }\\n  if (unit === 'PERCENTAGE' && !isNaN(num)) {\\n    return `${(num * 100).toFixed(1)}%`\\n  }\\n  if (unit === 'MILES' && !isNaN(num)) {\\n    return `${num.toLocaleString()} mi`\\n  }\\n  return String(value)\\n}\",\"replace_all\":false},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-10T16:56:13.220Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773161778531-270evip\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/kapow/.claude/worktrees/worktree/type-label-fix/web/src/components/search/ResultsTable.tsx\",\"old_string\":\"                  {formatCellValue(getFieldValue(inst, field.outputKey), field.unit)}\",\"new_string\":\"                  {formatCellValue(getFieldValue(inst, field.outputKey), field.unit, field.name)}\",\"replace_all\":false},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-10T16:57:39.050Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773161865071-tcvrncc\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/kapow/.claude/worktrees/worktree/type-label-fix/web/src/components/search/pdfExport.ts\",\"old_string\":\"  return formatCellValue(raw, field.unit)\",\"new_string\":\"  return formatCellValue(raw, field.unit, field.name)\",\"replace_all\":false},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-10T17:18:46.782Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773163140160-jec7epq\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/kapow/.claude/worktrees/worktree/type-label-fix/web/src/components/search/InstitutionDetail.tsx\",\"old_string\":\"import type { SearchInstitution } from './types'\\nimport { SimilarInstitutions } from './SimilarInstitutions'\\n\\n// ── Code-to-label mappings ──────────────────────────────────────────────────\\n\\nconst INSTITUTION_TYPES: Record<string, string> = {\\n  '1': 'Public',\\n  '2': 'Private nonprofit',\\n  '3': 'Private for-profit',\\n}\\n\\nconst HIGHEST_DEGREES: Record<string, string> = {\\n  '1': 'Certificate',\\n  '2': \\\"Associate's\\\",\\n  '3': \\\"Bachelor's\\\",\\n  '4': \\\"Master's\\\",\\n  '5': 'Doctorate',\\n}\\n\\nconst LOCALE_LABELS: Record<string, string> = {\\n  '11': 'City: Large',\\n  '12': 'City: Midsize',\\n  '13': 'City: Small',\\n  '21': 'Suburb: Large',\\n  '22': 'Suburb: Midsize',\\n  '23': 'Suburb: Small',\\n  '31': 'Town: Fringe',\\n  '32': 'Town: Distant',\\n  '33': 'Town: Remote',\\n  '41': 'Rural: Fringe',\\n  '42': 'Rural: Distant',\\n  '43': 'Rural: Remote',\\n}\\n\\nconst REGION_LABELS: Record<string, string> = {\\n  '0': 'U.S. Service Schools',\\n  '1': 'New England',\\n  '2': 'Mid East',\\n  '3': 'Great Lakes',\\n  '4': 'Plains',\\n  '5': 'Southeast',\\n  '6': 'Southwest',\\n  '7': 'Rocky Mountains',\\n  '8': 'Far West',\\n  '9': 'Outlying Areas',\\n}\\n\\nconst NCAA_DIVISIONS: Record<string, string> = {\\n  '1': 'Division I',\\n  '2': 'Division II',\\n  '3': 'Division III',\\n}\\n\\nconst KOPPEN_CLIMATE: Record<string, string> = {\\n  A: 'Tropical',\\n  B: 'Dry',\\n  C: 'Temperate',\\n  D: 'Continental',\\n  E: 'Polar',\\n}\\n\\nconst PARTISAN_LABELS: Record<string, string> = {\\n  D: 'Democrat',\\n  R: 'Republican',\\n}\",\"new_string\":\"import type { SearchInstitution } from './types'\\nimport { SimilarInstitutions } from './SimilarInstitutions'\\nimport { ENUM_LABELS } from '@/lib/enumLabels'\",\"replace_all\":false},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-10T17:19:12.870Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773163172686-ddpdqha\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/kapow/.claude/worktrees/worktree/type-label-fix/web/src/components/search/InstitutionDetail.tsx\",\"old_string\":\"                value={mapLabel(inst.academics?.institutionType, INSTITUTION_TYPES)}\",\"new_string\":\"                value={mapLabel(inst.academics?.institutionType, ENUM_LABELS.institution_type)}\",\"replace_all\":false},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-10T17:24:38.882Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773163485360-1sun17m\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/kapow/.claude/worktrees/worktree/type-label-fix/web/src/components/search/InstitutionDetail.tsx\",\"old_string\":\"                value={mapLabel(inst.academics?.highestDegree, HIGHEST_DEGREES)}\",\"new_string\":\"                value={mapLabel(inst.academics?.highestDegree, ENUM_LABELS.highest_degree)}\",\"replace_all\":false},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-10T17:24:57.505Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773163503341-gcd18gu\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/kapow/.claude/worktrees/worktree/type-label-fix/web/src/components/search/InstitutionDetail.tsx\",\"old_string\":\"                value={mapLabel(inst.locationDetails?.locale, LOCALE_LABELS)}\",\"new_string\":\"                value={mapLabel(inst.locationDetails?.locale, ENUM_LABELS.locale)}\",\"replace_all\":false},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-10T17:25:12.868Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773163519546-wn7ak02\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/kapow/.claude/worktrees/worktree/type-label-fix/web/src/components/search/InstitutionDetail.tsx\",\"old_string\":\"                value={mapLabel(inst.locationDetails?.region, REGION_LABELS)}\",\"new_string\":\"                value={mapLabel(inst.locationDetails?.region, ENUM_LABELS.region)}\",\"replace_all\":false},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-10T17:25:28.180Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773163533736-ubuh4xn\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/kapow/.claude/worktrees/worktree/type-label-fix/web/src/components/search/InstitutionDetail.tsx\",\"old_string\":\"                  value={mapLabel(inst.athletics.ncaaDivision, NCAA_DIVISIONS)}\",\"new_string\":\"                  value={mapLabel(inst.athletics.ncaaDivision, ENUM_LABELS.ncaa_division)}\",\"replace_all\":false},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-10T17:25:52.207Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773163557400-qx57y4t\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/kapow/.claude/worktrees/worktree/type-label-fix/web/src/components/search/InstitutionDetail.tsx\",\"old_string\":\"                      ? `${mapLabel(inst.culture.partisanDirection, PARTISAN_LABELS)} +${inst.culture.partisanScore.toFixed(1)}`\",\"new_string\":\"                      ? `${mapLabel(inst.culture.partisanDirection, ENUM_LABELS.partisan_direction)} +${inst.culture.partisanScore.toFixed(1)}`\",\"replace_all\":false},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-10T17:26:07.346Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773163573349-c9nzsen\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/kapow/.claude/worktrees/worktree/type-label-fix/web/src/components/search/InstitutionDetail.tsx\",\"old_string\":\"                  value={mapLabel(inst.climate.koppenClimate, KOPPEN_CLIMATE)}\",\"new_string\":\"                  value={mapLabel(inst.climate.koppenClimate, ENUM_LABELS.koppen_climate)}\",\"replace_all\":false},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-10T17:37:02.825Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773164327330-5jj1pkj\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"git commit -m \\\"$(cat <<'EOF'\\nfix: display enum labels instead of numeric codes in all views\\n\\nExtracted all code→label mappings (institution type, locale, region,\\nhighest degree, NCAA division, Köppen climate, partisan direction) into a\\nsingle shared utility `web/src/lib/enumLabels.ts`. Extended `formatCellValue`\\nwith an optional `fieldName` parameter so table view and PDF export now\\ndisplay human-readable labels (e.g. \\\"Public\\\" instead of \\\"1\\\") without\\nper-field hacks. Refactored InstitutionDetail to import from the shared\\nutility rather than maintaining local duplicates.\\n\\nCo-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>\\nEOF\\n)\\\"\",\"description\":\"Commit the fix\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-10T17:38:48.384Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773164337119-74zae8i\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"git push -u origin HEAD 2>&1\",\"description\":\"Push worktree branch to origin\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-10T17:38:59.871Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"shutdown_request\",\"requestId\":\"shutdown-1773164502212@type-label-fix\",\"from\":\"team-lead\",\"reason\":\"Work merged to main, issue closed. Thanks!\",\"timestamp\":\"2026-03-10T17:41:42.212Z\"}",
+    "timestamp": "2026-03-10T17:41:42.213Z",
+    "read": true
+  }
+]

@@ -1,0 +1,8 @@
+[
+  {
+    "from": "team-lead",
+    "text": "You are working on issue str-3ky9.16: Go frontend mock parity.\n\n**Goal**: Extend Go generateMockFile for per-execution mock variation, ThrowError support (panic or error return), discovered_dependencies reporting, and custom generator integration.\n\n**Acceptance criteria**:\n- Go frontend varies mocks per execution\n- ThrowError produces panic/error\n- Discovered deps reported\n- E2E test with Go function and dynamic mocks\n\n**Context**: Go already receives mocks per Execute call so no architectural change needed. This depends on str-3ky9.13 (Error case mock generation, done) and str-3ky9.8 (E2E test: dynamic mock branch discovery, done).\n\nRun `bd show str-3ky9.16` for full issue details. Study the existing Go frontend mock infrastructure in shatter-go/.\n\n**Your task**: Task #3 in the team task list. Claim it, plan your approach, implement, test, commit, and mark done. Follow all project conventions in CLAUDE.md (especially shatter-go/CLAUDE.md). Run `go test ./...` and `go vet` before committing.",
+    "timestamp": "2026-03-12T04:41:46.283Z",
+    "read": false
+  }
+]

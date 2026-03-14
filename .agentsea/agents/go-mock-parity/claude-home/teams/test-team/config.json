@@ -1,0 +1,29 @@
+{
+    "name": "test-team",
+    "description": "Manual test team",
+    "createdAt": 1773173948741,
+    "leadAgentId": "team-lead@test-team",
+    "leadSessionId": "fake-session-id",
+    "members": [
+        {
+            "agentId": "team-lead@test-team",
+            "name": "team-lead",
+            "agentType": "team-lead",
+            "model": "claude-opus-4-6",
+            "joinedAt": 1773173948741,
+            "tmuxPaneId": "",
+            "cwd": "/tmp/test",
+            "subscriptions": []
+        },
+        {
+            "agentId": "test-agent@test-team",
+            "name": "test-agent",
+            "agentType": "teammate",
+            "model": "claude-opus-4-6",
+            "joinedAt": 1773173949000,
+            "tmuxPaneId": "",
+            "cwd": "/tmp/sea-clean-WdScjUI/.agentsea/agents/test-agent/repo",
+            "subscriptions": []
+        }
+    ]
+}

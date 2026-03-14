@@ -1,0 +1,164 @@
+import { test, expect } from '@playwright/test'
+import { searchWith, waitForResults, getResultCount } from './helpers'
+
+// ── Critical ────────────────────────────────────────────────────────────────
+
+test.describe('Navigation & Deep Links', () => {
+  test('navigate directly to /search?state=CA pre-populates filter and shows results @critical @nav', async ({
+    page,
+  }) => {
+    await searchWith(page, { state: 'CA' })
+    await waitForResults(page)
+
+    // State filter should be pre-populated
+    const stateSelect = page
+      .locator('label', { has: page.getByText('State') })
+      .locator('select')
+    await expect(stateSelect).toHaveValue('CA')
+
+    // Results should be showing
+    const count = await getResultCount(page)
+    expect(count).toBeGreaterThan(0)
+  })
+
+  // ── Standard ──────────────────────────────────────────────────────────────
+
+  test('header nav: Home to About to Home via nav links @standard @nav', async ({
+    page,
+  }) => {
+    await page.goto('/')
+
+    // Click About link
+    await page.getByRole('link', { name: 'About' }).click()
+    await expect(page).toHaveURL('/about')
+
+    // Click Home link
+    await page.getByRole('link', { name: 'Home' }).click()
+    await expect(page).toHaveURL('/')
+  })
+
+  test('logo click returns to home from any page @standard @nav', async ({
+    page,
+  }) => {
+    // Navigate to the about page
+    await page.goto('/about')
+    await expect(page).toHaveURL('/about')
+
+    // Click the logo/wordmark link
+    await page
+      .getByRole('link', { name: /College Power Search/i })
+      .first()
+      .click()
+    await expect(page).toHaveURL('/')
+  })
+
+  // ── Comprehensive ─────────────────────────────────────────────────────────
+
+  test('all filters round-trip through URL @comprehensive @nav', async ({
+    page,
+  }) => {
+    // Set multiple filters
+    await searchWith(page, { state: 'NY', enrollment: '1000,10000' })
+    await waitForResults(page)
+    const count1 = await getResultCount(page)
+
+    // Copy the current URL
+    const currentUrl = page.url()
+
+    // Navigate away
+    await page.goto('/')
+    await expect(page).toHaveURL('/')
+
+    // Navigate back to the saved URL
+    await page.goto(currentUrl)
+    await waitForResults(page)
+
+    // Filters should be restored — same result count
+    const count2 = await getResultCount(page)
+    expect(count2).toBe(count1)
+
+    // URL should contain the same params
+    await expect(page).toHaveURL(/state=NY/)
+    await expect(page).toHaveURL(/enrollment=1000,10000/)
+  })
+})
+
+// ── Responsive ──────────────────────────────────────────────────────────────
+
+test.describe('Responsive Layout', () => {
+  test('mobile viewport: hamburger menu appears, desktop nav hidden @standard @responsive', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 375, height: 812 })
+    await page.goto('/')
+
+    // Burger menu should be visible
+    const burger = page.getByRole('button', { name: 'Toggle navigation' })
+    await expect(burger).toBeVisible()
+
+    // Desktop nav links should be hidden
+    await expect(page.getByRole('link', { name: 'About' })).toBeHidden()
+
+    // Click burger to open drawer
+    await burger.click()
+
+    // Drawer should open with nav links
+    const drawer = page.locator('[role="dialog"]')
+    await expect(drawer).toBeVisible()
+    await expect(drawer.getByRole('link', { name: 'Home' })).toBeVisible()
+    await expect(drawer.getByRole('link', { name: 'About' })).toBeVisible()
+  })
+
+  test('mobile: filter toggle works on search page @comprehensive @responsive', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 375, height: 812 })
+    await searchWith(page, {})
+    await waitForResults(page)
+
+    // Look for a filter toggle button
+    const filterToggle = page.getByRole('button', {
+      name: /Filters|Show Filters|Hide Filters/i,
+    })
+
+    // If the filter toggle exists on mobile, test it
+    if ((await filterToggle.count()) > 0) {
+      await expect(filterToggle).toBeVisible()
+
+      // Click to toggle filter visibility
+      await filterToggle.click()
+
+      // Verify the State filter label is visible (filters are shown)
+      const stateLabel = page.getByText('State')
+      const isVisible = await stateLabel.isVisible()
+
+      // Toggle again
+      await filterToggle.click()
+
+      // State should toggle visibility
+      if (isVisible) {
+        await expect(stateLabel).toBeHidden()
+      } else {
+        await expect(stateLabel).toBeVisible()
+      }
+    }
+  })
+
+  test('tablet viewport: layout adapts with results visible @comprehensive @responsive', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 768, height: 1024 })
+    await searchWith(page, {})
+    await waitForResults(page)
+
+    // Results should be visible at tablet width
+    const count = await getResultCount(page)
+    expect(count).toBeGreaterThan(0)
+
+    // The page should not show horizontal scrollbar (no overflow)
+    const hasHorizontalScroll = await page.evaluate(
+      () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
+    )
+    expect(hasHorizontalScroll).toBe(false)
+  })
+})

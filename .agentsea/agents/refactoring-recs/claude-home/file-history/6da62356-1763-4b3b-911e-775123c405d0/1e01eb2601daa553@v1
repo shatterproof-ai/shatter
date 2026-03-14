@@ -1,0 +1,60 @@
+#!/bin/bash
+# verify_init.sh — Test sea init and sea doctor
+#
+# Creates a throwaway repo, runs sea init, then sea doctor.
+# Cleans up on exit.
+#
+# Usage: bash tests/e2e/verify_init.sh
+
+set -uo pipefail
+
+echo "Command: $0 $*"
+ERRORS=0
+
+# Create throwaway test project
+TEST_DIR=$(mktemp -d "$HOME/sea-verify-init-XXXXXX")
+trap 'rm -rf "$TEST_DIR"; sea cleanup --force 2>/dev/null || true' EXIT
+
+cd "$TEST_DIR"
+git init -q
+echo 'print("hello")' > main.py
+git add . && git commit -q -m "initial commit"
+echo "Test project: $TEST_DIR"
+
+# Run sea init
+echo ""
+echo "--- sea init ---"
+if sea init 2>&1; then
+  echo "  OK: sea init succeeded"
+else
+  echo "  FAIL: sea init failed"
+  ERRORS=$((ERRORS + 1))
+fi
+
+# Verify workspace was created
+echo ""
+echo "--- Workspace check ---"
+if ls "$HOME/.agentsea/workspaces/" 2>/dev/null | grep -q .; then
+  echo "  OK: workspace directory exists"
+else
+  echo "  FAIL: no workspace directory found"
+  ERRORS=$((ERRORS + 1))
+fi
+
+# Run sea doctor
+echo ""
+echo "--- sea doctor ---"
+if sea doctor 2>&1; then
+  echo "  OK: sea doctor passed"
+else
+  echo "  FAIL: sea doctor reported issues"
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo ""
+if [ $ERRORS -gt 0 ]; then
+  echo "Init/doctor verification failed: $ERRORS error(s)"
+  exit 1
+fi
+echo "Init and doctor checks passed."
+exit 0

@@ -1,0 +1,42 @@
+# Running the Kapow Demo
+
+An interactive Playwright-driven walkthrough of College Power Search.
+
+## Prerequisites
+
+- **Docker** — to build and run the all-in-one test image
+- **Node.js 22+** with **pnpm 9+** — to run the demo script
+
+## 1. Build and start the test image
+
+```bash
+make test-image-run
+```
+
+This builds a single Docker container with PostgreSQL, the API server, and the
+web frontend pre-loaded with fixture data. The UI is served at
+**http://localhost:8080**.
+
+Wait until you see log output indicating the services are ready before
+proceeding.
+
+## 2. Run the demo
+
+In a separate terminal:
+
+```bash
+cd web
+pnpm demo              # auto-advance (3s pause between steps)
+```
+
+Other modes:
+
+```bash
+pnpm demo:manual       # click "Next Step" to advance each step
+pnpm demo:test         # headless smoke test (no browser window)
+```
+
+## 3. Tear down
+
+Press `Ctrl+C` in the terminal running `make test-image-run` to stop the
+container.

@@ -1,0 +1,206 @@
+## Flotsam Monorepo Makefile — delegates to component Makefiles
+## Usage: make <target>
+
+# Load .env if present — makes vars available to shell commands in recipes
+-include .env
+
+.PHONY: api-build api-run api-generate api-test api-test-unit api-test-tdd \
+        api-lint api-security api-migrate-up api-migrate-down api-clean \
+        web-install web-dev web-build web-lint web-clean web-test web-test-tdd web-schema-sync \
+        android-lint \
+        lint \
+        dev dev-db-up dev-db-down \
+        demo demo-manual demo-headless demo-api demo-install \
+        test-quick test-standard test-full \
+        ci-changed ci-full hooks-install \
+        scan-secrets scan-deps \
+        coverage \
+        help
+
+## api-build: Build all API binaries (flotsamd, flotsam-worker, flotsam)
+api-build:
+	$(MAKE) -C api build
+
+## api-run: Run the API server (flotsamd)
+api-run:
+	$(MAKE) -C api run
+
+## api-run-worker: Run the job worker (flotsam-worker --watch)
+api-run-worker:
+	$(MAKE) -C api run-worker
+
+## api-generate: Run GraphQL code generation
+api-generate:
+	$(MAKE) -C api generate
+
+## api-test: Run all API tests
+api-test:
+	$(MAKE) -C api test
+
+## api-test-unit: Run API unit tests
+api-test-unit:
+	$(MAKE) -C api test-unit
+
+## api-test-tdd: Run API tests with tdd-guard-go when installed
+api-test-tdd:
+	$(MAKE) -C api test-tdd
+
+## api-lint: Run linter on the API
+api-lint:
+	$(MAKE) -C api lint
+
+## api-migrate-up: Apply database migrations
+api-migrate-up:
+	$(MAKE) -C api migrate-up
+
+## api-migrate-down: Roll back last database migration
+api-migrate-down:
+	$(MAKE) -C api migrate-down
+
+## api-seed: Populate dev database with sample data
+api-seed:
+	$(MAKE) -C api seed
+
+## api-dev-token: Mint a dev JWT for local testing
+api-dev-token:
+	$(MAKE) -C api dev-token
+
+## api-security: Run Go security analyzers (gosec + govulncheck)
+api-security:
+	$(MAKE) -C api security
+
+## api-clean: Remove API build artifacts
+api-clean:
+	$(MAKE) -C api clean
+
+## web-install: Install web frontend dependencies
+web-install:
+	$(MAKE) -C web install
+
+## web-dev: Start Vite dev server (port 8080, proxies /graphql → :8081)
+web-dev:
+	$(MAKE) -C web dev
+
+## web-build: Type-check and build web frontend for production
+web-build:
+	$(MAKE) -C web build
+
+## web-lint: Run ESLint on web frontend
+web-lint:
+	$(MAKE) -C web lint
+
+## web-clean: Remove web build artifacts and node_modules
+web-clean:
+	$(MAKE) -C web clean
+
+## web-test: Run web unit tests
+web-test:
+	$(MAKE) -C web test
+
+## web-test-tdd: Run web tests with TDD Guard reporter when configured
+web-test-tdd:
+	$(MAKE) -C web test-tdd
+
+## web-schema-sync: Regenerate web/schema.graphql and graphql-env.d.ts from API SDL files
+web-schema-sync:
+	cat api/graph/schema/*.graphql > web/schema.graphql
+	cd web && pnpm exec gql-tada generate-output --tsconfig tsconfig.app.json
+
+## android-lint: Run Android lint and detekt (skips if no Gradle wrapper)
+android-lint:
+	@if [ -x android/gradlew ]; then \
+		cd android && ./gradlew :app:lint :app:detekt; \
+	else \
+		echo "android/gradlew not found — skipping Android lint"; \
+	fi
+
+## lint: Run all linters (Go + web)
+lint: api-lint web-lint
+
+## dev: Start full-stack dev environment (Docker PG + air + Vite) with hot reload
+dev:
+	bash scripts/dev.sh
+
+## dev-db-up: Start standalone dev database (PG 16 + pgvector + MinIO on port 5433)
+dev-db-up:
+	docker compose -f compose/db.yml up -d --wait
+	@echo ""
+	@echo "Dev database starting on port 5433. Use:"
+	@echo "  DATABASE_URL=postgres://postgres:postgres@localhost:5433/flotsam?sslmode=disable"
+	@echo ""
+	@echo "MinIO console: http://localhost:9001 (minioadmin/minioadmin)"
+
+## dev-db-down: Stop and remove the standalone dev database container
+dev-db-down:
+	docker compose -f compose/db.yml down
+
+## demo: Run demo walkthrough (visible browser, auto mode)
+demo:
+	bash scripts/demo.sh auto
+
+## demo-manual: Run demo walkthrough with manual pauses at each step
+demo-manual:
+	bash scripts/demo.sh manual
+
+## demo-headless: Run demo walkthrough headless (CI-friendly, exits non-zero on failure)
+demo-headless:
+	bash scripts/demo.sh headless
+
+## demo-api: Run headless GraphQL CRUD walkthrough (no browser needed)
+demo-api:
+	bash scripts/demo-api.sh
+
+## demo-install: Install demo dependencies and Playwright browsers
+demo-install:
+	cd demo && pnpm install && pnpm exec playwright install --with-deps chromium
+
+## test-quick: Fast checks — Go unit tests, TS type-check + build, ESLint (~10-20s, no DB)
+test-quick: api-test-unit web-build web-lint
+
+## test-standard: Full local validation — quick + web unit tests + Go lint (~30-60s, no DB)
+test-standard: test-quick web-test api-lint
+
+## test-full: Complete validation — standard + integration tests (requires DB + running services)
+test-full: test-standard api-test
+
+## coverage: Run coverage checks for Go and web
+coverage:
+	bash scripts/ci/check-coverage.sh
+
+## ci-changed: Run risk-aware checks on changed files (vs origin/main)
+ci-changed:
+	bash scripts/ci/run-changed.sh
+
+## ci-full: Run full-repo policy and analyzer checks
+ci-full:
+	bash scripts/ci/run-full.sh
+
+## scan-secrets: Run gitleaks secret scanning on the repo
+scan-secrets:
+	@if command -v gitleaks &>/dev/null; then \
+		gitleaks detect --source . --no-banner; \
+	else \
+		echo "gitleaks not installed — see docs/ci/scanning.md"; \
+	fi
+
+## scan-deps: Run osv-scanner dependency vulnerability scanning
+scan-deps:
+	@if command -v osv-scanner &>/dev/null; then \
+		osv-scanner scan --lockfile=api/go.sum --lockfile=web/pnpm-lock.yaml; \
+	else \
+		echo "osv-scanner not installed — see docs/ci/scanning.md"; \
+	fi
+
+## hooks-install: Configure git to use .githooks/ for pre-commit and pre-push
+hooks-install:
+	bash scripts/install-hooks.sh
+
+## help: List all available targets
+help:
+	@echo ""
+	@echo "Usage: make <target>"
+	@echo ""
+	@grep -hE '^## [a-z]' $(MAKEFILE_LIST) | sed 's/## //' | sort -t: -k1,1 | \
+		while IFS=: read -r target desc; do \
+			printf "  %-24s %s\n" "$$target" "$$desc"; \
+		done

@@ -1,0 +1,366 @@
+package cli
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
+
+	"github.com/agentsea/agentsea/internal/detect"
+	"github.com/agentsea/agentsea/internal/workspace"
+)
+
+func smokeCmd() *cobra.Command {
+	var timeout time.Duration
+
+	cmd := &cobra.Command{
+		Use:   "smoke",
+		Short: "End-to-end smoke test of teammate sandboxing",
+		Long: `Creates a temporary project, launches Claude Code interactively in a PTY
+with sandboxing enabled, and instructs it to spawn a teammate that verifies
+its bwrap sandbox environment.
+
+The lead agent spawns a real teammate via CLAUDE_CODE_TEAMMATE_COMMAND,
+which goes through the full teammate-wrapper → bwrap pipeline.
+
+Requires no existing repos or network connection.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runSmoke(timeout)
+		},
+	}
+
+	cmd.Flags().DurationVar(&timeout, "timeout", 5*time.Minute, "Maximum time to wait for smoke test")
+	return cmd
+}
+
+// smokeConfig holds resolved paths for the smoke test environment.
+type smokeConfig struct {
+	TmpDir     string
+	ClaudeBin  string
+	SeaBin     string
+	WrapperBin string // path to the teammate-wrapper shell script
+}
+
+// smokePreflight validates the environment and creates the temp project.
+func smokePreflight() (*smokeConfig, error) {
+	claudeBin, err := detect.FindClaudeBinary()
+	if err != nil {
+		return nil, fmt.Errorf("finding claude binary: %w", err)
+	}
+
+	seaBin, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("resolving sea binary path: %w", err)
+	}
+
+	if _, err := exec.LookPath("bwrap"); err != nil {
+		return nil, fmt.Errorf("bwrap not found on PATH — install with: sudo apt install bubblewrap")
+	}
+
+	tmpDir, err := os.MkdirTemp("", "sea-smoke-*")
+	if err != nil {
+		return nil, fmt.Errorf("creating temp dir: %w", err)
+	}
+
+	return &smokeConfig{
+		TmpDir:    tmpDir,
+		ClaudeBin: claudeBin,
+		SeaBin:    seaBin,
+	}, nil
+}
+
+// smokeSetup initializes a self-contained git repo and workspace with no
+// network access or pre-existing repos required.
+func smokeSetup(cfg *smokeConfig) error {
+	for name, content := range map[string]string{
+		"CLAUDE.md": smokeClaudeMD,
+		"README.md": "# Smoke Test Project\n",
+	} {
+		if err := os.WriteFile(filepath.Join(cfg.TmpDir, name), []byte(content), 0644); err != nil {
+			return fmt.Errorf("writing %s: %w", name, err)
+		}
+	}
+
+	gitEnv := append(os.Environ(),
+		"GIT_AUTHOR_NAME=sea-smoke",
+		"GIT_AUTHOR_EMAIL=smoke@test",
+		"GIT_COMMITTER_NAME=sea-smoke",
+		"GIT_COMMITTER_EMAIL=smoke@test",
+	)
+	for _, args := range [][]string{
+		{"git", "init", "-q"},
+		{"git", "add", "."},
+		{"git", "commit", "-q", "-m", "smoke test init"},
+	} {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = cfg.TmpDir
+		cmd.Env = gitEnv
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("running %v: %s: %w", args, out, err)
+		}
+	}
+
+	wsDir := filepath.Join(cfg.TmpDir, workspace.DirName)
+	for _, dir := range []string{
+		wsDir,
+		filepath.Join(wsDir, "agents"),
+		filepath.Join(wsDir, "ssh"),
+	} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("creating %s: %w", dir, err)
+		}
+	}
+
+	canonicalPath := filepath.Join(wsDir, "canonical")
+	cmd := exec.Command("git", "clone", "--bare", cfg.TmpDir, canonicalPath)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git clone --bare: %s: %w", out, err)
+	}
+
+	wsCfg := workspace.Config{
+		RepoURL:       cfg.TmpDir,
+		ProjectPath:   cfg.TmpDir,
+		DefaultBranch: "main",
+	}
+	yamlData, err := yaml.Marshal(&wsCfg)
+	if err != nil {
+		return fmt.Errorf("marshaling workspace config: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(wsDir, "workspace.yaml"), yamlData, 0644); err != nil {
+		return fmt.Errorf("writing workspace.yaml: %w", err)
+	}
+
+	// Create a wrapper script for CLAUDE_CODE_TEAMMATE_COMMAND.
+	// The env var must be a single executable path, not "sea teammate-wrapper".
+	cfg.WrapperBin = filepath.Join(cfg.TmpDir, "teammate-wrapper")
+	logFile := filepath.Join(cfg.TmpDir, "wrapper.log")
+	// Log diagnostics to file WITHOUT redirecting stdout/stderr globally.
+	// Claude inside bwrap needs stdout to be a TTY for interactive mode.
+	wrapperContent := fmt.Sprintf("#!/bin/sh\necho \"[wrapper] invoked at $(date)\" >> %q\necho \"[wrapper] args: $@\" >> %q\nexec %q teammate-wrapper \"$@\"\n",
+		logFile, logFile, cfg.SeaBin)
+	if err := os.WriteFile(cfg.WrapperBin, []byte(wrapperContent), 0755); err != nil {
+		return fmt.Errorf("writing teammate-wrapper script: %w", err)
+	}
+
+	return nil
+}
+
+func runSmoke(timeout time.Duration) error {
+	cfg, err := smokePreflight()
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Setting up smoke test in %s\n", cfg.TmpDir)
+
+	if err := smokeSetup(cfg); err != nil {
+		os.RemoveAll(cfg.TmpDir)
+		return err
+	}
+
+	fmt.Printf("  claude:  %s\n", cfg.ClaudeBin)
+	fmt.Printf("  wrapper: %s\n", cfg.WrapperBin)
+	fmt.Printf("  project: %s\n", cfg.TmpDir)
+	fmt.Printf("  timeout: %s\n", timeout)
+	fmt.Println()
+	fmt.Printf("Clean up after: rm -rf %s\n", cfg.TmpDir)
+	fmt.Println()
+
+	// Launch claude inside a real tmux session so the Agent tool is
+	// available and teammate mode "auto" reliably resolves to "tmux"
+	// (spawning teammates via CLAUDE_CODE_TEAMMATE_COMMAND).
+	//
+	// A PTY alone isn't sufficient — Claude Code checks for a real tmux
+	// session, not just a TTY.
+	sessionName := fmt.Sprintf("sea-smoke-%d", os.Getpid())
+
+	// Write the prompt to a file, then a launcher script that reads it.
+	// Using %q would escape newlines as literal \n in the shell.
+	promptPath := filepath.Join(cfg.TmpDir, "smoke-prompt.txt")
+	if err := os.WriteFile(promptPath, []byte(smokePrompt), 0644); err != nil {
+		return fmt.Errorf("writing smoke prompt: %w", err)
+	}
+
+	launcherPath := filepath.Join(cfg.TmpDir, "launch-claude.sh")
+	logFile := filepath.Join(cfg.TmpDir, "launcher.log")
+	launcherContent := fmt.Sprintf(
+		"#!/bin/sh\nexport CLAUDE_CODE_TEAMMATE_COMMAND=%q\ncd %q\necho \"CLAUDE_CODE_TEAMMATE_COMMAND=$CLAUDE_CODE_TEAMMATE_COMMAND\" > %q\necho \"PATH=$PATH\" >> %q\necho \"TMUX=$TMUX\" >> %q\nls -la \"$CLAUDE_CODE_TEAMMATE_COMMAND\" >> %q 2>&1\nexec %q --dangerously-skip-permissions --teammate-mode tmux \"$(cat %q)\"\n",
+		cfg.WrapperBin, cfg.TmpDir, logFile, logFile, logFile, logFile, cfg.ClaudeBin, promptPath,
+	)
+	if err := os.WriteFile(launcherPath, []byte(launcherContent), 0755); err != nil {
+		return fmt.Errorf("writing launcher script: %w", err)
+	}
+
+	// Create a detached tmux session running the launcher
+	tmuxCmd := exec.Command("tmux", "new-session", "-d", "-s", sessionName,
+		"-x", "200", "-y", "50",
+		launcherPath,
+	)
+	if out, err := tmuxCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("creating tmux session: %s: %w", out, err)
+	}
+	defer func() {
+		exec.Command("tmux", "kill-session", "-t", sessionName).Run()
+	}()
+
+	fmt.Printf("Launched Claude Code in tmux session %q, waiting for smoke test results...\n", sessionName)
+	fmt.Println()
+
+	// Auto-dismiss interactive dialogs (trust dialog, etc.) by sending
+	// Enter keys to the tmux session. The trust dialog has "Yes, I trust
+	// this folder" pre-selected, so Enter confirms it.
+	go func() {
+		for i := 0; i < 10; i++ {
+			time.Sleep(2 * time.Second)
+			exec.Command("tmux", "send-keys", "-t", sessionName, "Enter").Run()
+		}
+	}()
+
+	// Poll for the results file.
+	resultsFile := filepath.Join(cfg.TmpDir, "smoke-results.txt")
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	gotResults := false
+	for !gotResults {
+		select {
+		case <-ticker.C:
+			// Check if tmux session is still alive
+			if err := exec.Command("tmux", "has-session", "-t", sessionName).Run(); err != nil {
+				// Session died — check for results one last time
+				if data, err := os.ReadFile(resultsFile); err == nil && len(data) > 0 {
+					gotResults = true
+					fmt.Println(string(data))
+				}
+				goto done
+			}
+			if data, err := os.ReadFile(resultsFile); err == nil && len(data) > 0 {
+				gotResults = true
+				fmt.Println(string(data))
+			} else {
+				fmt.Fprintf(os.Stderr, "[sea] Polling for %s...\n", resultsFile)
+				// Capture tmux pane content for diagnostics
+				if out, err := exec.Command("tmux", "capture-pane", "-t", sessionName, "-p").Output(); err == nil {
+					// Only print non-empty, interesting lines
+					lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+					for _, line := range lines {
+						line = strings.TrimSpace(line)
+						if line != "" && line != "❯" {
+							fmt.Fprintf(os.Stderr, "  [tmux] %s\n", line)
+						}
+					}
+				}
+			}
+		case <-timer.C:
+			fmt.Fprintf(os.Stderr, "\n[sea] Timeout after %s — killing tmux session\n", timeout)
+			goto done
+		}
+	}
+
+done:
+	// Kill the tmux session (defer will also try, but be explicit)
+	exec.Command("tmux", "kill-session", "-t", sessionName).Run()
+
+	fmt.Println()
+	if gotResults {
+		fmt.Println("Smoke test completed.")
+	} else {
+		fmt.Println("Smoke test did not produce smoke-results.txt.")
+	}
+	fmt.Printf("Inspect workspace: %s\n", cfg.TmpDir)
+
+	// Print diagnostic logs
+	for _, lf := range []struct{ name, path string }{
+		{"Launcher Log", filepath.Join(cfg.TmpDir, "launcher.log")},
+		{"Wrapper Log", filepath.Join(cfg.TmpDir, "wrapper.log")},
+	} {
+		if data, err := os.ReadFile(lf.path); err == nil {
+			fmt.Printf("\n── %s ──\n", lf.name)
+			fmt.Print(string(data))
+		} else {
+			fmt.Printf("\n%s not found\n", lf.name)
+		}
+	}
+
+	return nil
+}
+
+// stripANSI removes ANSI escape sequences from a string.
+func stripANSI(s string) string {
+	var out strings.Builder
+	i := 0
+	for i < len(s) {
+		if s[i] == '\x1b' {
+			// Skip ESC [ ... (letter)
+			i++
+			if i < len(s) && s[i] == '[' {
+				i++
+				for i < len(s) && !((s[i] >= 'A' && s[i] <= 'Z') || (s[i] >= 'a' && s[i] <= 'z')) {
+					i++
+				}
+				if i < len(s) {
+					i++ // skip the final letter
+				}
+			}
+		} else {
+			out.WriteByte(s[i])
+			i++
+		}
+	}
+	return out.String()
+}
+
+const smokePrompt = `You are running a smoke test for agentsea sandbox isolation. Follow these steps exactly:
+
+1. Use the Team tool to spawn exactly 1 teammate with these instructions:
+
+TEAMMATE INSTRUCTIONS:
+---
+You are a smoke test agent. Run ALL of these checks using the Bash tool and report results:
+
+CHECK 1 - BWRAP: Run: cat /proc/1/cmdline | tr '\0' ' '
+Report PASS if "bwrap" appears in the output, FAIL if not.
+
+CHECK 2 - WRITE ISOLATION: Run: touch /tmp/sea-smoke-escape-test 2>&1 && echo LEAKED || echo BLOCKED
+Report PASS if BLOCKED or permission denied, FAIL if LEAKED.
+
+CHECK 3 - HOME ISOLATION: Run: ls $HOME
+Report what you see. PASS if you see a restricted set of files (not the user's full home).
+
+CHECK 4 - WORKTREE: Run: git branch --show-current && pwd
+Report the branch and working directory. PASS if you are on a branch like smoke-agent/work.
+
+CHECK 5 - READ-ONLY ROOT: Run: touch /usr/local/sea-smoke-test 2>&1 || echo READONLY
+Report PASS if READONLY or "Read-only file system".
+
+After running all checks, write your results to smoke-results.txt in the current directory, one check per line:
+CHECK 1: PASS/FAIL - details
+CHECK 2: PASS/FAIL - details
+CHECK 3: PASS/FAIL - details
+CHECK 4: PASS/FAIL - details
+CHECK 5: PASS/FAIL - details
+---
+
+2. After spawning the teammate, poll for results every 15 seconds. The teammate writes smoke-results.txt in its worktree at .agentsea/agents/smoke-agent/repo/smoke-results.txt relative to the project root. Run:
+cat .agentsea/agents/smoke-agent/repo/smoke-results.txt 2>/dev/null || echo "NOT READY YET"
+Keep polling until the file exists and contains CHECK results. Do NOT stop until you have the results.
+
+3. Once you have the results, write them to smoke-results.txt in the PROJECT ROOT (not the agent repo). Use the Bash tool:
+cat .agentsea/agents/smoke-agent/repo/smoke-results.txt > smoke-results.txt
+This file signals completion to the test harness.
+
+4. If any check fails, explain what went wrong.`
+
+const smokeClaudeMD = `# Smoke Test Project
+
+This is a temporary project created by ` + "`sea smoke`" + ` for end-to-end sandbox verification.
+
+Do NOT modify files outside this directory. Follow the prompt instructions exactly.
+`

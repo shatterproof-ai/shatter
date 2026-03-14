@@ -1,0 +1,10 @@
+{
+  "id": "6",
+  "subject": "[str-28vd.8] Agent bugfix workflow skill",
+  "description": "Add project-local Claude agent workflow/skill for bug fixes. Enforces: failing test first, verify failure, implement fix, run pre-completion checks (scripts/quality/pre-completion.sh). Branch: str-28vd.8. See `bd show str-28vd.8`.",
+  "activeForm": "Planning bugfix workflow skill",
+  "owner": "agent-skills",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

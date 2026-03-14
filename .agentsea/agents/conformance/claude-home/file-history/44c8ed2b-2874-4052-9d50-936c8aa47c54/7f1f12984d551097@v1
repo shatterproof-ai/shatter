@@ -1,0 +1,292 @@
+package item
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+const maxLimit = 100
+
+// itemColumns is the canonical SELECT column list for the items table.
+const itemColumns = `id, owner_id, type, status, sensitivity, title, content_text,
+	content_url, tags, metadata, auto_metadata, source, source_url,
+	created_at, updated_at, captured_at`
+
+// Service provides item CRUD and search operations.
+type Service struct {
+	pool *pgxpool.Pool
+}
+
+// New creates a new item Service.
+func New(pool *pgxpool.Pool) *Service {
+	return &Service{pool: pool}
+}
+
+// GetByID returns a single item by ID and owner. Returns nil, nil if not found.
+func (s *Service) GetByID(ctx context.Context, ownerID, itemID uuid.UUID) (*Item, error) {
+	query := fmt.Sprintf(`SELECT %s FROM items WHERE owner_id = $1 AND id = $2`, itemColumns)
+	row := s.pool.QueryRow(ctx, query, ownerID, itemID)
+	it, err := scanItem(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("item: get by id: %w", err)
+	}
+	return it, nil
+}
+
+// List returns a page of items matching the given filter, sorted and paginated.
+func (s *Service) List(ctx context.Context, ownerID uuid.UUID, filter *Filter, limit, offset int, sort *Sort) (*SearchResult, error) {
+	limit = clampLimit(limit, maxLimit)
+	offset = clampOffset(offset)
+
+	qb := &queryBuilder{}
+	qb.add("owner_id = $%d", ownerID)
+	applyFilter(qb, filter)
+	whereClause := qb.where()
+
+	// Count total
+	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM items %s", whereClause)
+	var total int
+	if err := s.pool.QueryRow(ctx, countQuery, qb.args...).Scan(&total); err != nil {
+		return nil, fmt.Errorf("item: list count: %w", err)
+	}
+
+	// Determine sort
+	orderCol := "created_at"
+	orderDir := "DESC"
+	if sort != nil {
+		if col, ok := sortFieldToColumn(sort.Field); ok {
+			orderCol = col
+		}
+		orderDir = sortDirectionSQL(sort.Direction)
+	}
+
+	dataQuery := fmt.Sprintf(`SELECT %s FROM items %s ORDER BY %s %s LIMIT $%d OFFSET $%d`,
+		itemColumns, whereClause, orderCol, orderDir, qb.nextParam(), qb.nextParam()+1)
+	qb.args = append(qb.args, limit, offset)
+
+	rows, err := s.pool.Query(ctx, dataQuery, qb.args...)
+	if err != nil {
+		return nil, fmt.Errorf("item: list query: %w", err)
+	}
+	defer rows.Close()
+
+	items, err := scanItems(rows)
+	if err != nil {
+		return nil, fmt.Errorf("item: list scan: %w", err)
+	}
+
+	return &SearchResult{
+		Items:   items,
+		Total:   total,
+		HasMore: offset+len(items) < total,
+	}, nil
+}
+
+// Search performs full-text search over items using the search_vector column.
+func (s *Service) Search(ctx context.Context, ownerID uuid.UUID, query string, filter *Filter, limit int, threshold float64) (*SearchResult, error) {
+	if query == "" {
+		return &SearchResult{Items: []*Item{}}, nil
+	}
+	limit = clampLimit(limit, maxLimit)
+
+	qb := &queryBuilder{}
+	qb.add("owner_id = $%d", ownerID)
+	qb.add("search_vector @@ plainto_tsquery('english', $%d)", query)
+	applyFilter(qb, filter)
+	whereClause := qb.where()
+
+	// Count total matches
+	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM items %s", whereClause)
+	var total int
+	if err := s.pool.QueryRow(ctx, countQuery, qb.args...).Scan(&total); err != nil {
+		return nil, fmt.Errorf("item: search count: %w", err)
+	}
+
+	dataQuery := fmt.Sprintf(
+		`SELECT %s FROM items %s ORDER BY ts_rank(search_vector, plainto_tsquery('english', $2)) DESC LIMIT $%d`,
+		itemColumns, whereClause, qb.nextParam())
+	qb.args = append(qb.args, limit)
+
+	rows, err := s.pool.Query(ctx, dataQuery, qb.args...)
+	if err != nil {
+		return nil, fmt.Errorf("item: search query: %w", err)
+	}
+	defer rows.Close()
+
+	items, err := scanItems(rows)
+	if err != nil {
+		return nil, fmt.Errorf("item: search scan: %w", err)
+	}
+
+	return &SearchResult{
+		Items:   items,
+		Total:   total,
+		HasMore: len(items) < total,
+	}, nil
+}
+
+// CaptureBookmark creates a new bookmark item.
+func (s *Service) CaptureBookmark(ctx context.Context, ownerID uuid.UUID, input BookmarkInput) (*Item, error) {
+	if input.URL == "" {
+		return nil, fmt.Errorf("item: capture bookmark: url is required")
+	}
+	if input.Source == "" {
+		input.Source = "api"
+	}
+	if input.Sensitivity == "" {
+		input.Sensitivity = "normal"
+	}
+
+	tags := input.Tags
+	if tags == nil {
+		tags = []string{}
+	}
+
+	query := fmt.Sprintf(`INSERT INTO items (owner_id, type, status, sensitivity, title, content_url, tags, source, metadata, auto_metadata)
+		VALUES ($1, 'bookmark', 'pending', $2, $3, $4, $5, $6, '{}', '{}')
+		RETURNING %s`, itemColumns)
+
+	row := s.pool.QueryRow(ctx, query,
+		ownerID, input.Sensitivity, input.Title, input.URL, tags, input.Source)
+
+	it, err := scanItem(row)
+	if err != nil {
+		return nil, fmt.Errorf("item: capture bookmark: %w", err)
+	}
+	return it, nil
+}
+
+// CaptureNote creates a new text note item.
+func (s *Service) CaptureNote(ctx context.Context, ownerID uuid.UUID, input NoteInput) (*Item, error) {
+	if input.Content == "" {
+		return nil, fmt.Errorf("item: capture note: content is required")
+	}
+	if input.Source == "" {
+		input.Source = "api"
+	}
+	if input.Sensitivity == "" {
+		input.Sensitivity = "normal"
+	}
+
+	tags := input.Tags
+	if tags == nil {
+		tags = []string{}
+	}
+
+	query := fmt.Sprintf(`INSERT INTO items (owner_id, type, status, sensitivity, title, content_text, tags, source, metadata, auto_metadata)
+		VALUES ($1, 'text_note', 'ready', $2, $3, $4, $5, $6, '{}', '{}')
+		RETURNING %s`, itemColumns)
+
+	row := s.pool.QueryRow(ctx, query,
+		ownerID, input.Sensitivity, input.Title, input.Content, tags, input.Source)
+
+	it, err := scanItem(row)
+	if err != nil {
+		return nil, fmt.Errorf("item: capture note: %w", err)
+	}
+	return it, nil
+}
+
+// Update partially updates an item. Only non-nil fields in input are changed.
+func (s *Service) Update(ctx context.Context, ownerID, itemID uuid.UUID, input UpdateInput) (*Item, error) {
+	sets := []string{}
+	args := []any{ownerID, itemID}
+	paramIdx := 3
+
+	if input.Title != nil {
+		sets = append(sets, fmt.Sprintf("title = $%d", paramIdx))
+		args = append(args, *input.Title)
+		paramIdx++
+	}
+	if input.Tags != nil {
+		sets = append(sets, fmt.Sprintf("tags = $%d", paramIdx))
+		args = append(args, input.Tags)
+		paramIdx++
+	}
+	if input.Sensitivity != nil {
+		sets = append(sets, fmt.Sprintf("sensitivity = $%d", paramIdx))
+		args = append(args, *input.Sensitivity)
+		paramIdx++
+	}
+
+	if len(sets) == 0 {
+		return s.GetByID(ctx, ownerID, itemID)
+	}
+
+	query := fmt.Sprintf(`UPDATE items SET %s WHERE owner_id = $1 AND id = $2 RETURNING %s`,
+		joinSets(sets), itemColumns)
+
+	row := s.pool.QueryRow(ctx, query, args...)
+	it, err := scanItem(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("item: update: not found")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("item: update: %w", err)
+	}
+	return it, nil
+}
+
+// Delete removes an item by ID and owner. Returns an error if not found.
+func (s *Service) Delete(ctx context.Context, ownerID, itemID uuid.UUID) error {
+	tag, err := s.pool.Exec(ctx,
+		"DELETE FROM items WHERE owner_id = $1 AND id = $2",
+		ownerID, itemID)
+	if err != nil {
+		return fmt.Errorf("item: delete: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("item: delete: not found")
+	}
+	return nil
+}
+
+// UpdateSensitivity changes an item's sensitivity level.
+func (s *Service) UpdateSensitivity(ctx context.Context, ownerID, itemID uuid.UUID, sensitivity string) (*Item, error) {
+	query := fmt.Sprintf(`UPDATE items SET sensitivity = $3 WHERE owner_id = $1 AND id = $2 RETURNING %s`, itemColumns)
+	row := s.pool.QueryRow(ctx, query, ownerID, itemID, sensitivity)
+	it, err := scanItem(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("item: update sensitivity: not found")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("item: update sensitivity: %w", err)
+	}
+	return it, nil
+}
+
+// Tag replaces an item's tags.
+func (s *Service) Tag(ctx context.Context, ownerID, itemID uuid.UUID, tags []string) (*Item, error) {
+	if tags == nil {
+		tags = []string{}
+	}
+	query := fmt.Sprintf(`UPDATE items SET tags = $3 WHERE owner_id = $1 AND id = $2 RETURNING %s`, itemColumns)
+	row := s.pool.QueryRow(ctx, query, ownerID, itemID, tags)
+	it, err := scanItem(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("item: tag: not found")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("item: tag: %w", err)
+	}
+	return it, nil
+}
+
+func joinSets(sets []string) string {
+	result := ""
+	for i, s := range sets {
+		if i > 0 {
+			result += ", "
+		}
+		result += s
+	}
+	return result
+}

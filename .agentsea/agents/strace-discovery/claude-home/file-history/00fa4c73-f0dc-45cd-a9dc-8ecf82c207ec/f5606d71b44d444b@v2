@@ -1,0 +1,20 @@
+package resolver
+
+import (
+	"github.com/jackc/pgx/v5"
+	"github.com/riverqueue/river"
+
+	"github.com/ketang/flotsam/api/internal/auth"
+	"github.com/ketang/flotsam/api/internal/item"
+	"github.com/ketang/flotsam/api/internal/storage"
+	"github.com/ketang/flotsam/api/internal/user"
+)
+
+// Resolver is the root resolver for the GraphQL schema.
+type Resolver struct {
+	ItemService *item.Service
+	UserService *user.Service
+	Issuer      *auth.Issuer
+	RiverClient *river.Client[pgx.Tx]
+	Storage     *storage.Client
+}

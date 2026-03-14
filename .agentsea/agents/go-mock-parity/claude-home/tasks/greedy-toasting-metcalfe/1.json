@@ -1,0 +1,10 @@
+{
+  "id": "1",
+  "subject": "kapow-d1i.6: PostHog provider wiring",
+  "description": "Wire PostHogProvider into main.tsx provider hierarchy. Web only quality gate: cd web && pnpm build && pnpm lint && pnpm test",
+  "status": "pending",
+  "blocks": [
+    "9"
+  ],
+  "blockedBy": []
+}

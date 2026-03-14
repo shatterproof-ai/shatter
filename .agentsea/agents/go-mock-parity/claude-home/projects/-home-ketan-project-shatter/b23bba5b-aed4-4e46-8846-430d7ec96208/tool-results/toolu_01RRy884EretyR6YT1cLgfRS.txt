@@ -1,0 +1,1427 @@
+     1→//! JSON report generation for scan results.
+     2→//!
+     3→//! Produces machine-readable JSON output after a scan completes. Contains
+     4→//! per-function data (branch coverage, discovered inputs, behavior clusters,
+     5→//! constraint stats) and codebase-level aggregates (total functions, overall
+     6→//! coverage, unreachable branches, dependency graph summary).
+     7→
+     8→use std::fmt::Write;
+     9→use std::path::{Path, PathBuf};
+    10→
+    11→use serde::{Deserialize, Serialize};
+    12→
+    13→use crate::batch_state::BatchState;
+    14→use crate::coverage_metrics::CoverageMetrics;
+    15→use crate::scan_orchestrator::{FunctionResult, ParallelScanResult, ScanResult};
+    16→
+    17→// ---------------------------------------------------------------------------
+    18→// Per-function report
+    19→// ---------------------------------------------------------------------------
+    20→
+    21→/// A single discovered input and the path it triggered.
+    22→#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    23→pub struct DiscoveredInput {
+    24→    /// The input values sent to the function.
+    25→    pub inputs: Vec<serde_json::Value>,
+    26→    /// Return value, if the function returned normally.
+    27→    pub return_value: Option<serde_json::Value>,
+    28→    /// Error message, if the function threw.
+    29→    pub thrown_error: Option<String>,
+    30→    /// Lines executed during this call.
+    31→    pub lines_executed: Vec<u32>,
+    32→}
+    33→
+    34→/// Constraint solving statistics for a function.
+    35→#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    36→pub struct ConstraintStats {
+    37→    /// Total number of path constraints collected.
+    38→    pub total_constraints: usize,
+    39→    /// Number of solver-guided inputs generated (currently 0 for random-only).
+    40→    pub solver_guided_inputs: usize,
+    41→}
+    42→
+    43→/// A behavior cluster summary for the report.
+    44→#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    45→pub struct BehaviorClusterSummary {
+    46→    /// Cluster identifier.
+    47→    pub id: u32,
+    48→    /// Representative input args.
+    49→    pub representative_inputs: Vec<serde_json::Value>,
+    50→    /// Representative return value.
+    51→    pub return_value: Option<serde_json::Value>,
+    52→    /// Error, if this cluster represents a throwing path.
+    53→    pub thrown_error: Option<String>,
+    54→}
+    55→
+    56→/// Report data for a single function.
+    57→#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    58→pub struct FunctionReport {
+    59→    /// Name of the function.
+    60→    pub function_name: String,
+    61→    /// Source file path.
+    62→    pub file_path: String,
+    63→    /// Total branch points in the function.
+    64→    pub branch_count: usize,
+    65→    /// Number of branches covered (unique paths discovered).
+    66→    pub branches_covered: usize,
+    67→    /// Coverage percentage (0.0-100.0).
+    68→    pub coverage_pct: f64,
+    69→    /// Inputs that discovered new execution paths.
+    70→    pub discovered_inputs: Vec<DiscoveredInput>,
+    71→    /// Behavior cluster summaries.
+    72→    pub behavior_clusters: Vec<BehaviorClusterSummary>,
+    73→    /// Constraint solving statistics.
+    74→    pub constraint_stats: ConstraintStats,
+    75→    /// Total iterations attempted.
+    76→    pub iterations: u32,
+    77→    /// Number of unique source lines covered.
+    78→    pub lines_covered: usize,
+    79→    /// Total source lines in the function.
+    80→    pub total_lines: u32,
+    81→    /// Functions mocked during exploration.
+    82→    pub mocks_used: Vec<String>,
+    83→}
+    84→
+    85→// ---------------------------------------------------------------------------
+    86→// Codebase-level report
+    87→// ---------------------------------------------------------------------------
+    88→
+    89→/// A dependency edge in the codebase-level summary.
+    90→#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    91→pub struct DependencyEdge {
+    92→    pub caller: String,
+    93→    pub callee: String,
+    94→}
+    95→
+    96→/// Codebase-level aggregate statistics.
+    97→#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    98→pub struct CodebaseReport {
+    99→    /// Total functions explored.
+   100→    pub total_functions: usize,
+   101→    /// Total branch points across all functions.
+   102→    pub total_branches: usize,
+   103→    /// Overall branch coverage percentage (0.0-100.0).
+   104→    pub overall_coverage: f64,
+   105→    /// Functions that were skipped (timeout, error, etc.).
+   106→    pub skipped_functions: Vec<SkippedFunctionReport>,
+   107→    /// Dependency graph edges.
+   108→    pub dependency_graph: Vec<DependencyEdge>,
+   109→}
+   110→
+   111→/// A function that was skipped during the scan.
+   112→#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+   113→pub struct SkippedFunctionReport {
+   114→    pub function_name: String,
+   115→    pub reason: String,
+   116→    pub category: String,
+   117→}
+   118→
+   119→// ---------------------------------------------------------------------------
+   120→// Top-level report
+   121→// ---------------------------------------------------------------------------
+   122→
+   123→/// Cumulative progress across progressive batch runs.
+   124→#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+   125→pub struct CumulativeReport {
+   126→    /// Batch indices that have been completed.
+   127→    pub completed_batches: Vec<usize>,
+   128→    /// Total functions explored across all batches.
+   129→    pub total_functions_explored: usize,
+   130→    /// Total functions in the scan scope.
+   131→    pub total_scope_functions: usize,
+   132→    /// Cumulative coverage metrics merged across all batches.
+   133→    pub metrics: CoverageMetrics,
+   134→    /// Overall cumulative coverage percentage.
+   135→    pub cumulative_coverage_pct: f64,
+   136→}
+   137→
+   138→/// The complete JSON scan report.
+   139→#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+   140→pub struct ScanReport {
+   141→    /// Schema version for forward compatibility.
+   142→    pub version: u32,
+   143→    /// Per-function reports.
+   144→    pub functions: Vec<FunctionReport>,
+   145→    /// Codebase-level aggregates.
+   146→    pub codebase: CodebaseReport,
+   147→    /// Test order used during the scan.
+   148→    pub test_order: Vec<String>,
+   149→    /// Cumulative stats across all batches (present only in batch mode).
+   150→    #[serde(skip_serializing_if = "Option::is_none", default)]
+   151→    pub cumulative: Option<CumulativeReport>,
+   152→}
+   153→
+   154→// ---------------------------------------------------------------------------
+   155→// Report generation
+   156→// ---------------------------------------------------------------------------
+   157→
+   158→/// Build a [`FunctionReport`] from a scan's [`FunctionResult`].
+   159→fn build_function_report(result: &FunctionResult, file_path: &str) -> FunctionReport {
+   160→    let exploration = &result.exploration;
+   161→
+   162→    let discovered_inputs: Vec<DiscoveredInput> = exploration
+   163→        .new_path_executions
+   164→        .iter()
+   165→        .map(|exec| DiscoveredInput {
+   166→            inputs: exec.inputs.clone(),
+   167→            return_value: exec.return_value.clone(),
+   168→            thrown_error: exec.thrown_error.clone(),
+   169→            lines_executed: exec.lines_executed.clone(),
+   170→        })
+   171→        .collect();
+   172→
+   173→    let behavior_clusters: Vec<BehaviorClusterSummary> = result
+   174→        .behavior_map
+   175→        .behaviors
+   176→        .iter()
+   177→        .map(|b| {
+   178→            let thrown_error = b.thrown_error.as_ref().map(|e| {
+   179→                format!("{}: {}", e.error_type, e.message)
+   180→            });
+   181→            BehaviorClusterSummary {
+   182→                id: b.id,
+   183→                representative_inputs: b.input_args.clone(),
+   184→                return_value: b.return_value.clone(),
+   185→                thrown_error,
+   186→            }
+   187→        })
+   188→        .collect();
+   189→
+   190→    let total_constraints: usize = exploration
+   191→        .raw_results
+   192→        .iter()
+   193→        .map(|(_, _mocks, r)| r.path_constraints.len())
+   194→        .sum();
+   195→
+   196→    let coverage_pct = if exploration.total_lines > 0 {
+   197→        (exploration.lines_covered as f64 / exploration.total_lines as f64 * 100.0).min(100.0)
+   198→    } else {
+   199→        0.0
+   200→    };
+   201→
+   202→    FunctionReport {
+   203→        function_name: result.function_name.clone(),
+   204→        file_path: file_path.to_string(),
+   205→        branch_count: exploration.unique_paths,
+   206→        branches_covered: exploration.unique_paths,
+   207→        coverage_pct,
+   208→        discovered_inputs,
+   209→        behavior_clusters,
+   210→        constraint_stats: ConstraintStats {
+   211→            total_constraints,
+   212→            solver_guided_inputs: 0,
+   213→        },
+   214→        iterations: exploration.iterations,
+   215→        lines_covered: exploration.lines_covered,
+   216→        total_lines: exploration.total_lines,
+   217→        mocks_used: result.mocks_used.iter().map(|m| m.name.clone()).collect(),
+   218→    }
+   219→}
+   220→
+   221→/// Build dependency edges from the function results (caller -> mocked callee).
+   222→fn build_dependency_edges(function_results: &[FunctionResult]) -> Vec<DependencyEdge> {
+   223→    let mut edges = Vec::new();
+   224→    for result in function_results {
+   225→        for mock in &result.mocks_used {
+   226→            edges.push(DependencyEdge {
+   227→                caller: result.function_name.clone(),
+   228→                callee: mock.name.clone(),
+   229→            });
+   230→        }
+   231→    }
+   232→    edges
+   233→}
+   234→
+   235→/// Build a [`CumulativeReport`] from batch state.
+   236→fn build_cumulative_report(state: &BatchState) -> CumulativeReport {
+   237→    CumulativeReport {
+   238→        completed_batches: state.completed_batches(),
+   239→        total_functions_explored: state.total_functions_explored(),
+   240→        total_scope_functions: state.total_scope_functions,
+   241→        metrics: state.cumulative_metrics.clone(),
+   242→        cumulative_coverage_pct: state.cumulative_coverage_pct(),
+   243→    }
+   244→}
+   245→
+   246→/// Generate a [`ScanReport`] from a [`ParallelScanResult`].
+   247→///
+   248→/// The `file_map` maps function names to their source file paths.
+   249→/// When `batch_state` is provided, the report includes cumulative progress
+   250→/// across all completed batches.
+   251→pub fn generate_report(
+   252→    result: &ParallelScanResult,
+   253→    file_map: &std::collections::HashMap<String, String>,
+   254→    batch_state: Option<&BatchState>,
+   255→) -> ScanReport {
+   256→    let functions: Vec<FunctionReport> = result
+   257→        .function_results
+   258→        .iter()
+   259→        .map(|fr| {
+   260→            let file_path = file_map
+   261→                .get(&fr.function_name)
+   262→                .map(|s| s.as_str())
+   263→                .unwrap_or("");
+   264→            build_function_report(fr, file_path)
+   265→        })
+   266→        .collect();
+   267→
+   268→    let total_branches: usize = functions.iter().map(|f| f.branch_count).sum();
+   269→    let total_covered: usize = functions.iter().map(|f| f.branches_covered).sum();
+   270→    let overall_coverage = if total_branches > 0 {
+   271→        total_covered as f64 / total_branches as f64 * 100.0
+   272→    } else {
+   273→        0.0
+   274→    };
+   275→
+   276→    let skipped_functions: Vec<SkippedFunctionReport> = result
+   277→        .skipped
+   278→        .iter()
+   279→        .map(|s| SkippedFunctionReport {
+   280→            function_name: s.function_name.clone(),
+   281→            reason: s.reason.clone(),
+   282→            category: match s.category {
+   283→                crate::scan_orchestrator::SkipCategory::Expected => "expected".into(),
+   284→                crate::scan_orchestrator::SkipCategory::Error => "error".into(),
+   285→            },
+   286→        })
+   287→        .collect();
+   288→
+   289→    let dependency_graph = build_dependency_edges(&result.function_results);
+   290→
+   291→    let cumulative = batch_state.map(build_cumulative_report);
+   292→
+   293→    ScanReport {
+   294→        version: 1,
+   295→        functions,
+   296→        codebase: CodebaseReport {
+   297→            total_functions: result.function_results.len(),
+   298→            total_branches,
+   299→            overall_coverage,
+   300→            skipped_functions,
+   301→            dependency_graph,
+   302→        },
+   303→        test_order: result.test_order.clone(),
+   304→        cumulative,
+   305→    }
+   306→}
+   307→
+   308→/// Generate a [`ScanReport`] from a sequential [`ScanResult`].
+   309→///
+   310→/// The `file_map` maps function names to their source file paths.
+   311→pub fn generate_report_from_scan(
+   312→    result: &ScanResult,
+   313→    file_map: &std::collections::HashMap<String, String>,
+   314→) -> ScanReport {
+   315→    let functions: Vec<FunctionReport> = result
+   316→        .function_results
+   317→        .iter()
+   318→        .map(|fr| {
+   319→            let file_path = file_map
+   320→                .get(&fr.function_name)
+   321→                .map(|s| s.as_str())
+   322→                .unwrap_or("");
+   323→            build_function_report(fr, file_path)
+   324→        })
+   325→        .collect();
+   326→
+   327→    let total_branches: usize = functions.iter().map(|f| f.branch_count).sum();
+   328→    let total_covered: usize = functions.iter().map(|f| f.branches_covered).sum();
+   329→    let overall_coverage = if total_branches > 0 {
+   330→        total_covered as f64 / total_branches as f64 * 100.0
+   331→    } else {
+   332→        0.0
+   333→    };
+   334→
+   335→    let dependency_graph = build_dependency_edges(&result.function_results);
+   336→
+   337→    let skipped_functions: Vec<SkippedFunctionReport> = result
+   338→        .skipped_functions
+   339→        .iter()
+   340→        .map(|s| SkippedFunctionReport {
+   341→            function_name: s.function_name.clone(),
+   342→            reason: s.reason.clone(),
+   343→            category: match s.category {
+   344→                crate::scan_orchestrator::SkipCategory::Expected => "expected".into(),
+   345→                crate::scan_orchestrator::SkipCategory::Error => "error".into(),
+   346→            },
+   347→        })
+   348→        .collect();
+   349→
+   350→    ScanReport {
+   351→        version: 1,
+   352→        functions,
+   353→        codebase: CodebaseReport {
+   354→            total_functions: result.function_results.len(),
+   355→            total_branches,
+   356→            overall_coverage,
+   357→            skipped_functions,
+   358→            dependency_graph,
+   359→        },
+   360→        test_order: result.test_order.clone(),
+   361→        cumulative: None,
+   362→    }
+   363→}
+   364→
+   365→/// Write a [`ScanReport`] as pretty-printed JSON to a directory.
+   366→///
+   367→/// Creates the output directory if it does not exist. Writes to
+   368→/// `<output_dir>/scan-report.json`.
+   369→pub fn write_report(report: &ScanReport, output_dir: &Path) -> Result<PathBuf, ReportError> {
+   370→    std::fs::create_dir_all(output_dir).map_err(|e| ReportError::Io {
+   371→        path: output_dir.to_path_buf(),
+   372→        source: e,
+   373→    })?;
+   374→
+   375→    let report_path = output_dir.join("scan-report.json");
+   376→    let json = serde_json::to_string_pretty(report).map_err(ReportError::Serialize)?;
+   377→    std::fs::write(&report_path, json).map_err(|e| ReportError::Io {
+   378→        path: report_path.clone(),
+   379→        source: e,
+   380→    })?;
+   381→
+   382→    Ok(report_path)
+   383→}
+   384→
+   385→/// Write a [`ScanReport`] as a markdown file to a directory.
+   386→///
+   387→/// Creates the output directory if it does not exist. Writes to
+   388→/// `<output_dir>/scan-report.md`.
+   389→pub fn write_markdown_report(report: &ScanReport, output_dir: &Path) -> Result<PathBuf, ReportError> {
+   390→    std::fs::create_dir_all(output_dir).map_err(|e| ReportError::Io {
+   391→        path: output_dir.to_path_buf(),
+   392→        source: e,
+   393→    })?;
+   394→
+   395→    let report_path = output_dir.join("scan-report.md");
+   396→    let markdown = format_markdown_report(report);
+   397→    std::fs::write(&report_path, markdown).map_err(|e| ReportError::Io {
+   398→        path: report_path.clone(),
+   399→        source: e,
+   400→    })?;
+   401→
+   402→    Ok(report_path)
+   403→}
+   404→
+   405→// ---------------------------------------------------------------------------
+   406→// Markdown report generation
+   407→// ---------------------------------------------------------------------------
+   408→
+   409→/// Format a [`ScanReport`] as a human-readable markdown string.
+   410→#[must_use]
+   411→pub fn format_markdown_report(report: &ScanReport) -> String {
+   412→    let mut out = String::new();
+   413→
+   414→    write_md_header(&mut out, report);
+   415→    write_md_cumulative(&mut out, &report.cumulative);
+   416→    write_md_summary_table(&mut out, report);
+   417→    write_md_function_details(&mut out, &report.functions);
+   418→    write_md_uncovered_branches(&mut out, &report.functions);
+   419→    write_md_interesting_inputs(&mut out, &report.functions);
+   420→    write_md_skipped_functions(&mut out, &report.codebase.skipped_functions);
+   421→
+   422→    out
+   423→}
+   424→
+   425→fn write_md_header(out: &mut String, report: &ScanReport) {
+   426→    let _ = writeln!(out, "# Shatter Scan Report\n");
+   427→
+   428→    let total_covered: usize = report.functions.iter().map(|f| f.branches_covered).sum();
+   429→    let total_branches = report.codebase.total_branches;
+   430→    let coverage = report.codebase.overall_coverage;
+   431→
+   432→    let _ = writeln!(out, "- **Functions explored:** {}", report.codebase.total_functions);
+   433→    let _ = writeln!(out, "- **Total branches:** {total_branches}");
+   434→    let _ = writeln!(out, "- **Branches covered:** {total_covered}");
+   435→    let _ = writeln!(out, "- **Overall coverage:** {coverage:.1}%");
+   436→
+   437→    if !report.codebase.skipped_functions.is_empty() {
+   438→        let _ = writeln!(
+   439→            out,
+   440→            "- **Skipped functions:** {}",
+   441→            report.codebase.skipped_functions.len()
+   442→        );
+   443→    }
+   444→
+   445→    out.push('\n');
+   446→}
+   447→
+   448→fn write_md_cumulative(out: &mut String, cumulative: &Option<CumulativeReport>) {
+   449→    let Some(cum) = cumulative else {
+   450→        return;
+   451→    };
+   452→
+   453→    let _ = writeln!(out, "## Cumulative Progress\n");
+   454→    let batches_str = cum
+   455→        .completed_batches
+   456→        .iter()
+   457→        .map(|i| i.to_string())
+   458→        .collect::<Vec<_>>()
+   459→        .join(", ");
+   460→    let _ = writeln!(
+   461→        out,
+   462→        "- **Batches completed:** {} ({})",
+   463→        cum.completed_batches.len(),
+   464→        batches_str,
+   465→    );
+   466→    let _ = writeln!(
+   467→        out,
+   468→        "- **Functions explored:** {}/{}",
+   469→        cum.total_functions_explored, cum.total_scope_functions,
+   470→    );
+   471→    let covered = cum.metrics.z3_solved + cum.metrics.random_found + cum.metrics.user_provided;
+   472→    let _ = writeln!(
+   473→        out,
+   474→        "- **Branches covered:** {}/{}",
+   475→        covered, cum.metrics.total_branches,
+   476→    );
+   477→    let _ = writeln!(
+   478→        out,
+   479→        "- **Cumulative coverage:** {:.1}%",
+   480→        cum.cumulative_coverage_pct,
+   481→    );
+   482→    out.push('\n');
+   483→}
+   484→
+   485→fn write_md_summary_table(out: &mut String, report: &ScanReport) {
+   486→    if report.functions.is_empty() {
+   487→        let _ = writeln!(out, "*No functions were explored.*\n");
+   488→        return;
+   489→    }
+   490→
+   491→    let _ = writeln!(out, "## Function Summary\n");
+   492→    let _ = writeln!(out, "| Status | Function | File | Coverage | Branches | Lines | Iterations |");
+   493→    let _ = writeln!(out, "|--------|----------|------|----------|----------|-------|------------|");
+   494→
+   495→    for func in &report.functions {
+   496→        let status = if func.coverage_pct >= 100.0 {
+   497→            "PASS"
+   498→        } else if func.coverage_pct >= 50.0 {
+   499→            "WARN"
+   500→        } else {
+   501→            "FAIL"
+   502→        };
+   503→
+   504→        let _ = writeln!(
+   505→            out,
+   506→            "| {status} | `{name}` | {file} | {cov:.1}% | {covered}/{total} | {lc}/{tl} | {iter} |",
+   507→            name = func.function_name,
+   508→            file = if func.file_path.is_empty() { "-" } else { &func.file_path },
+   509→            cov = func.coverage_pct,
+   510→            covered = func.branches_covered,
+   511→            total = func.branch_count,
+   512→            lc = func.lines_covered,
+   513→            tl = func.total_lines,
+   514→            iter = func.iterations,
+   515→        );
+   516→    }
+   517→
+   518→    out.push('\n');
+   519→}
+   520→
+   521→fn write_md_function_details(out: &mut String, functions: &[FunctionReport]) {
+   522→    if functions.is_empty() {
+   523→        return;
+   524→    }
+   525→
+   526→    let _ = writeln!(out, "## Function Details\n");
+   527→
+   528→    for func in functions {
+   529→        let _ = writeln!(out, "### `{}`\n", func.function_name);
+   530→
+   531→        if !func.file_path.is_empty() {
+   532→            let _ = writeln!(out, "- **File:** {}", func.file_path);
+   533→        }
+   534→        let _ = writeln!(out, "- **Coverage:** {:.1}%", func.coverage_pct);
+   535→        let _ = writeln!(
+   536→            out,
+   537→            "- **Branches:** {}/{}",
+   538→            func.branches_covered, func.branch_count
+   539→        );
+   540→        let _ = writeln!(out, "- **Lines:** {}/{}", func.lines_covered, func.total_lines);
+   541→        let _ = writeln!(out, "- **Iterations:** {}", func.iterations);
+   542→        let _ = writeln!(
+   543→            out,
+   544→            "- **Constraints collected:** {}",
+   545→            func.constraint_stats.total_constraints
+   546→        );
+   547→
+   548→        if !func.mocks_used.is_empty() {
+   549→            let _ = writeln!(out, "- **Mocks:** {}", func.mocks_used.join(", "));
+   550→        }
+   551→
+   552→        if !func.behavior_clusters.is_empty() {
+   553→            let _ = writeln!(out, "\n**Behaviors:**\n");
+   554→            for cluster in &func.behavior_clusters {
+   555→                let outcome = if let Some(ref err) = cluster.thrown_error {
+   556→                    format!("throws {err}")
+   557→                } else if let Some(ref val) = cluster.return_value {
+   558→                    format!("returns {}", format_json_compact(val))
+   559→                } else {
+   560→                    "returns void".to_string()
+   561→                };
+   562→                let inputs = format_json_compact_list(&cluster.representative_inputs);
+   563→                let _ = writeln!(out, "- Cluster {}: {outcome} (inputs: {inputs})", cluster.id);
+   564→            }
+   565→        }
+   566→
+   567→        out.push('\n');
+   568→    }
+   569→}
+   570→
+   571→fn write_md_uncovered_branches(out: &mut String, functions: &[FunctionReport]) {
+   572→    let low_coverage: Vec<&FunctionReport> = functions
+   573→        .iter()
+   574→        .filter(|f| f.coverage_pct < 100.0 && f.branch_count > 0)
+   575→        .collect();
+   576→
+   577→    if low_coverage.is_empty() {
+   578→        return;
+   579→    }
+   580→
+   581→    let _ = writeln!(out, "## Uncovered Branches\n");
+   582→
+   583→    for func in &low_coverage {
+   584→        let uncovered = func.branch_count.saturating_sub(func.branches_covered);
+   585→        let _ = writeln!(
+   586→            out,
+   587→            "- `{}`: {uncovered} uncovered branch(es) ({:.1}% coverage)",
+   588→            func.function_name, func.coverage_pct
+   589→        );
+   590→    }
+   591→
+   592→    out.push('\n');
+   593→}
+   594→
+   595→fn write_md_interesting_inputs(out: &mut String, functions: &[FunctionReport]) {
+   596→    let has_interesting = functions.iter().any(|f| {
+   597→        f.discovered_inputs
+   598→            .iter()
+   599→            .any(|d| d.thrown_error.is_some() || is_boundary_value(&d.inputs))
+   600→    });
+   601→
+   602→    if !has_interesting {
+   603→        return;
+   604→    }
+   605→
+   606→    let _ = writeln!(out, "## Interesting Inputs\n");
+   607→
+   608→    for func in functions {
+   609→        let interesting: Vec<&DiscoveredInput> = func
+   610→            .discovered_inputs
+   611→            .iter()
+   612→            .filter(|d| d.thrown_error.is_some() || is_boundary_value(&d.inputs))
+   613→            .collect();
+   614→
+   615→        if interesting.is_empty() {
+   616→            continue;
+   617→        }
+   618→
+   619→        let _ = writeln!(out, "### `{}`\n", func.function_name);
+   620→
+   621→        for input in &interesting {
+   622→            let inputs_str = format_json_compact_list(&input.inputs);
+   623→            if let Some(ref err) = input.thrown_error {
+   624→                let _ = writeln!(out, "- {inputs_str} -> **error:** {err}");
+   625→            } else if let Some(ref val) = input.return_value {
+   626→                let _ = writeln!(out, "- {inputs_str} -> {}", format_json_compact(val));
+   627→            } else {
+   628→                let _ = writeln!(out, "- {inputs_str} -> void");
+   629→            }
+   630→        }
+   631→
+   632→        out.push('\n');
+   633→    }
+   634→}
+   635→
+   636→fn write_md_skipped_functions(out: &mut String, skipped: &[SkippedFunctionReport]) {
+   637→    if skipped.is_empty() {
+   638→        return;
+   639→    }
+   640→
+   641→    let expected: Vec<_> = skipped.iter().filter(|s| s.category == "expected").collect();
+   642→    let errors: Vec<_> = skipped.iter().filter(|s| s.category == "error").collect();
+   643→
+   644→    if !expected.is_empty() {
+   645→        let _ = writeln!(out, "## Skipped (Expected)\n");
+   646→        for s in &expected {
+   647→            let _ = writeln!(out, "- `{}`: {}", s.function_name, s.reason);
+   648→        }
+   649→        out.push('\n');
+   650→    }
+   651→
+   652→    if !errors.is_empty() {
+   653→        let _ = writeln!(out, "## Errors\n");
+   654→        for s in &errors {
+   655→            let _ = writeln!(out, "- `{}`: {}", s.function_name, s.reason);
+   656→        }
+   657→        out.push('\n');
+   658→    }
+   659→}
+   660→
+   661→fn is_boundary_value(inputs: &[serde_json::Value]) -> bool {
+   662→    inputs.iter().any(|v| match v {
+   663→        serde_json::Value::Number(n) => {
+   664→            if let Some(f) = n.as_f64() {
+   665→                f == 0.0 || f == -1.0
+   666→            } else {
+   667→                false
+   668→            }
+   669→        }
+   670→        serde_json::Value::String(s) => s.is_empty(),
+   671→        serde_json::Value::Null => true,
+   672→        serde_json::Value::Array(a) => a.is_empty(),
+   673→        _ => false,
+   674→    })
+   675→}
+   676→
+   677→fn format_json_compact(value: &serde_json::Value) -> String {
+   678→    let s = value.to_string();
+   679→    if s.len() > 60 {
+   680→        format!("{}...", &s[..57])
+   681→    } else {
+   682→        s
+   683→    }
+   684→}
+   685→
+   686→fn format_json_compact_list(values: &[serde_json::Value]) -> String {
+   687→    let parts: Vec<String> = values.iter().map(format_json_compact).collect();
+   688→    parts.join(", ")
+   689→}
+   690→
+   691→// ---------------------------------------------------------------------------
+   692→// Progress reporting
+   693→// ---------------------------------------------------------------------------
+   694→
+   695→/// A structured progress event for machine-readable output.
+   696→#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+   697→pub struct ProgressEvent {
+   698→    /// Event type — always "progress".
+   699→    #[serde(rename = "type")]
+   700→    pub event_type: String,
+   701→    /// Name of the function currently being processed.
+   702→    pub function: String,
+   703→    /// 1-based index of the current function.
+   704→    pub current: usize,
+   705→    /// Total number of functions to process.
+   706→    pub total: usize,
+   707→    /// Milliseconds elapsed since the scan started.
+   708→    pub elapsed_ms: u64,
+   709→}
+   710→
+   711→impl ProgressEvent {
+   712→    /// Create a new progress event.
+   713→    #[must_use]
+   714→    pub fn new(function: &str, current: usize, total: usize, elapsed_ms: u64) -> Self {
+   715→        Self {
+   716→            event_type: "progress".to_string(),
+   717→            function: function.to_string(),
+   718→            current,
+   719→            total,
+   720→            elapsed_ms,
+   721→        }
+   722→    }
+   723→
+   724→    /// Serialize this event as a JSON string.
+   725→    ///
+   726→    /// Returns `None` if serialization fails (should not happen for valid data).
+   727→    #[must_use]
+   728→    pub fn to_json(&self) -> Option<String> {
+   729→        serde_json::to_string(self).ok()
+   730→    }
+   731→}
+   732→
+   733→/// Report format for scan output.
+   734→#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+   735→pub enum ReportFormat {
+   736→    /// JSON only (default).
+   737→    Json,
+   738→    /// Markdown only.
+   739→    Markdown,
+   740→    /// Both JSON and Markdown.
+   741→    Both,
+   742→}
+   743→
+   744→impl std::str::FromStr for ReportFormat {
+   745→    type Err = String;
+   746→
+   747→    fn from_str(s: &str) -> Result<Self, Self::Err> {
+   748→        match s.to_lowercase().as_str() {
+   749→            "json" => Ok(Self::Json),
+   750→            "markdown" | "md" => Ok(Self::Markdown),
+   751→            "both" => Ok(Self::Both),
+   752→            _ => Err(format!(
+   753→                "unknown report format '{s}': expected 'json', 'markdown', or 'both'"
+   754→            )),
+   755→        }
+   756→    }
+   757→}
+   758→
+   759→/// Errors that can occur during report generation or writing.
+   760→#[derive(Debug, thiserror::Error)]
+   761→pub enum ReportError {
+   762→    #[error("failed to write to {path}: {source}")]
+   763→    Io {
+   764→        path: PathBuf,
+   765→        source: std::io::Error,
+   766→    },
+   767→    #[error("JSON serialization error: {0}")]
+   768→    Serialize(#[from] serde_json::Error),
+   769→}
+   770→
+   771→// ---------------------------------------------------------------------------
+   772→// Tests
+   773→// ---------------------------------------------------------------------------
+   774→
+   775→#[cfg(test)]
+   776→mod tests {
+   777→    use super::*;
+   778→    use crate::behavior::{Behavior, BehaviorMap};
+   779→    use crate::execution_record::ErrorInfo;
+   780→    use crate::explorer::{ExecutionSummary, ObservationOutput};
+   781→    use crate::scan_orchestrator::{FunctionResult, ParallelScanResult, SkippedFunction};
+   782→    use std::collections::HashMap;
+   783→
+   784→    fn make_function_result(
+   785→        name: &str,
+   786→        iterations: u32,
+   787→        unique_paths: usize,
+   788→        lines_covered: usize,
+   789→        total_lines: u32,
+   790→        mocks: Vec<String>,
+   791→    ) -> FunctionResult {
+   792→        use crate::scan_orchestrator::{MockSource, MockUsage};
+   793→        let mocks: Vec<MockUsage> = mocks
+   794→            .into_iter()
+   795→            .map(|name| MockUsage { name, source: MockSource::CachedBehaviorMap })
+   796→            .collect();
+   797→        let new_path_executions: Vec<ExecutionSummary> = (0..unique_paths)
+   798→            .map(|i| ExecutionSummary {
+   799→                inputs: vec![serde_json::json!(i)],
+   800→                return_value: Some(serde_json::json!(i * 10)),
+   801→                thrown_error: None,
+   802→                lines_executed: vec![1, 2, 3],
+   803→                is_new_path: true, error_intent: None })
+   804→            .collect();
+   805→
+   806→        let behaviors: Vec<Behavior> = (0..unique_paths)
+   807→            .map(|i| Behavior {
+   808→                id: i as u32,
+   809→                input_args: vec![serde_json::json!(i)],
+   810→                return_value: Some(serde_json::json!(i * 10)),
+   811→                thrown_error: None,
+   812→                branch_path: vec![],
+   813→                side_effects: vec![],
+   814→                dependency_trace: None,
+   815→                mock_values: vec![],
+   816→            })
+   817→            .collect();
+   818→
+   819→        FunctionResult {
+   820→            function_name: name.to_string(),
+   821→            exploration: ObservationOutput {
+   822→                function_name: name.to_string(),
+   823→                iterations,
+   824→                unique_paths,
+   825→                lines_covered,
+   826→                total_lines,
+   827→                new_path_executions,
+   828→                raw_results: vec![],
+   829→                discoveries: vec![],
+   830→                nondeterministic_fields: vec![], float_probe_results: vec![],
+   831→            },
+   832→            behavior_map: BehaviorMap {
+   833→                function_id: name.to_string(),
+   834→                behaviors,
+   835→                fingerprint: None,
+   836→                nondeterministic_fields: vec![],
+   837→            },
+   838→            behavior_coverage: vec![],
+   839→            mocks_used: mocks,
+   840→            coverage_metrics: Default::default(),
+   841→        }
+   842→    }
+   843→
+   844→    #[test]
+   845→    fn generate_report_from_parallel_scan() {
+   846→        let parallel_result = ParallelScanResult {
+   847→            function_results: vec![
+   848→                make_function_result("leaf", 10, 2, 5, 10, vec![]),
+   849→                make_function_result("caller", 20, 3, 8, 10, vec!["leaf".to_string()]),
+   850→            ],
+   851→            test_order: vec!["leaf".into(), "caller".into()],
+   852→            skipped: vec![],
+   853→            workers_used: 2, sampling: None,
+   854→        };
+   855→
+   856→        let mut file_map = HashMap::new();
+   857→        file_map.insert("leaf".to_string(), "src/math.ts".to_string());
+   858→        file_map.insert("caller".to_string(), "src/app.ts".to_string());
+   859→
+   860→        let report = generate_report(&parallel_result, &file_map, None);
+   861→
+   862→        assert_eq!(report.version, 1);
+   863→        assert_eq!(report.functions.len(), 2);
+   864→        assert_eq!(report.test_order, vec!["leaf", "caller"]);
+   865→
+   866→        // Check leaf function report
+   867→        let leaf = &report.functions[0];
+   868→        assert_eq!(leaf.function_name, "leaf");
+   869→        assert_eq!(leaf.file_path, "src/math.ts");
+   870→        assert_eq!(leaf.branches_covered, 2);
+   871→        assert_eq!(leaf.iterations, 10);
+   872→        assert_eq!(leaf.lines_covered, 5);
+   873→        assert_eq!(leaf.total_lines, 10);
+   874→        assert_eq!(leaf.discovered_inputs.len(), 2);
+   875→        assert_eq!(leaf.behavior_clusters.len(), 2);
+   876→        assert!(leaf.mocks_used.is_empty());
+   877→
+   878→        // Check caller function report
+   879→        let caller = &report.functions[1];
+   880→        assert_eq!(caller.function_name, "caller");
+   881→        assert_eq!(caller.file_path, "src/app.ts");
+   882→        assert_eq!(caller.mocks_used, vec!["leaf"]);
+   883→
+   884→        // Check codebase report
+   885→        assert_eq!(report.codebase.total_functions, 2);
+   886→        assert_eq!(report.codebase.total_branches, 5); // 2 + 3
+   887→        assert!(report.codebase.skipped_functions.is_empty());
+   888→
+   889→        // Check dependency graph
+   890→        assert_eq!(report.codebase.dependency_graph.len(), 1);
+   891→        assert_eq!(report.codebase.dependency_graph[0].caller, "caller");
+   892→        assert_eq!(report.codebase.dependency_graph[0].callee, "leaf");
+   893→    }
+   894→
+   895→    #[test]
+   896→    fn generate_report_with_skipped_functions() {
+   897→        let parallel_result = ParallelScanResult {
+   898→            function_results: vec![make_function_result("good", 5, 1, 3, 5, vec![])],
+   899→            test_order: vec!["good".into(), "slow".into()],
+   900→            skipped: vec![SkippedFunction {
+   901→                function_name: "slow".to_string(),
+   902→                reason: "timed out after 30s".to_string(),
+   903→                category: crate::scan_orchestrator::SkipCategory::Error,
+   904→            }],
+   905→            workers_used: 1, sampling: None,
+   906→        };
+   907→
+   908→        let file_map = HashMap::new();
+   909→        let report = generate_report(&parallel_result, &file_map, None);
+   910→
+   911→        assert_eq!(report.codebase.skipped_functions.len(), 1);
+   912→        assert_eq!(report.codebase.skipped_functions[0].function_name, "slow");
+   913→        assert_eq!(
+   914→            report.codebase.skipped_functions[0].reason,
+   915→            "timed out after 30s"
+   916→        );
+   917→    }
+   918→
+   919→    #[test]
+   920→    fn empty_scan_produces_valid_report() {
+   921→        let parallel_result = ParallelScanResult {
+   922→            function_results: vec![],
+   923→            test_order: vec![],
+   924→            skipped: vec![],
+   925→            workers_used: 1, sampling: None,
+   926→        };
+   927→
+   928→        let file_map = HashMap::new();
+   929→        let report = generate_report(&parallel_result, &file_map, None);
+   930→
+   931→        assert_eq!(report.version, 1);
+   932→        assert!(report.functions.is_empty());
+   933→        assert_eq!(report.codebase.total_functions, 0);
+   934→        assert_eq!(report.codebase.total_branches, 0);
+   935→        assert_eq!(report.codebase.overall_coverage, 0.0);
+   936→        assert!(report.codebase.skipped_functions.is_empty());
+   937→        assert!(report.codebase.dependency_graph.is_empty());
+   938→        assert!(report.test_order.is_empty());
+   939→    }
+   940→
+   941→    #[test]
+   942→    fn coverage_percentage_calculation() {
+   943→        let parallel_result = ParallelScanResult {
+   944→            function_results: vec![make_function_result("f", 10, 2, 7, 10, vec![])],
+   945→            test_order: vec!["f".into()],
+   946→            skipped: vec![],
+   947→            workers_used: 1, sampling: None,
+   948→        };
+   949→
+   950→        let file_map = HashMap::new();
+   951→        let report = generate_report(&parallel_result, &file_map, None);
+   952→
+   953→        let func = &report.functions[0];
+   954→        assert!((func.coverage_pct - 70.0).abs() < 0.01);
+   955→    }
+   956→
+   957→    #[test]
+   958→    fn coverage_percentage_zero_total_lines() {
+   959→        let parallel_result = ParallelScanResult {
+   960→            function_results: vec![make_function_result("f", 10, 1, 0, 0, vec![])],
+   961→            test_order: vec!["f".into()],
+   962→            skipped: vec![],
+   963→            workers_used: 1, sampling: None,
+   964→        };
+   965→
+   966→        let file_map = HashMap::new();
+   967→        let report = generate_report(&parallel_result, &file_map, None);
+   968→
+   969→        assert_eq!(report.functions[0].coverage_pct, 0.0);
+   970→    }
+   971→
+   972→    #[test]
+   973→    fn json_serialization_round_trip() {
+   974→        let parallel_result = ParallelScanResult {
+   975→            function_results: vec![
+   976→                make_function_result("f1", 10, 2, 5, 10, vec![]),
+   977→                make_function_result("f2", 5, 1, 3, 5, vec!["f1".to_string()]),
+   978→            ],
+   979→            test_order: vec!["f1".into(), "f2".into()],
+   980→            skipped: vec![SkippedFunction {
+   981→                function_name: "f3".to_string(),
+   982→                reason: "error: boom".to_string(),
+   983→                category: crate::scan_orchestrator::SkipCategory::Error,
+   984→            }],
+   985→            workers_used: 2, sampling: None,
+   986→        };
+   987→
+   988→        let mut file_map = HashMap::new();
+   989→        file_map.insert("f1".to_string(), "src/a.ts".to_string());
+   990→        file_map.insert("f2".to_string(), "src/b.ts".to_string());
+   991→
+   992→        let report = generate_report(&parallel_result, &file_map, None);
+   993→        let json = serde_json::to_string_pretty(&report).expect("serialize");
+   994→        let deserialized: ScanReport = serde_json::from_str(&json).expect("deserialize");
+   995→        assert_eq!(report, deserialized);
+   996→    }
+   997→
+   998→    #[test]
+   999→    fn report_contains_all_required_fields() {
+  1000→        let parallel_result = ParallelScanResult {
+  1001→            function_results: vec![make_function_result("f", 10, 2, 5, 10, vec![])],
+  1002→            test_order: vec!["f".into()],
+  1003→            skipped: vec![],
+  1004→            workers_used: 1, sampling: None,
+  1005→        };
+  1006→
+  1007→        let file_map = HashMap::new();
+  1008→        let report = generate_report(&parallel_result, &file_map, None);
+  1009→        let json = serde_json::to_string(&report).expect("serialize");
+  1010→
+  1011→        // Top-level fields
+  1012→        assert!(json.contains("\"version\""));
+  1013→        assert!(json.contains("\"functions\""));
+  1014→        assert!(json.contains("\"codebase\""));
+  1015→        assert!(json.contains("\"test_order\""));
+  1016→
+  1017→        // Function-level fields
+  1018→        assert!(json.contains("\"function_name\""));
+  1019→        assert!(json.contains("\"file_path\""));
+  1020→        assert!(json.contains("\"branch_count\""));
+  1021→        assert!(json.contains("\"branches_covered\""));
+  1022→        assert!(json.contains("\"coverage_pct\""));
+  1023→        assert!(json.contains("\"discovered_inputs\""));
+  1024→        assert!(json.contains("\"behavior_clusters\""));
+  1025→        assert!(json.contains("\"constraint_stats\""));
+  1026→        assert!(json.contains("\"iterations\""));
+  1027→        assert!(json.contains("\"lines_covered\""));
+  1028→        assert!(json.contains("\"total_lines\""));
+  1029→        assert!(json.contains("\"mocks_used\""));
+  1030→
+  1031→        // Codebase-level fields
+  1032→        assert!(json.contains("\"total_functions\""));
+  1033→        assert!(json.contains("\"total_branches\""));
+  1034→        assert!(json.contains("\"overall_coverage\""));
+  1035→        assert!(json.contains("\"skipped_functions\""));
+  1036→        assert!(json.contains("\"dependency_graph\""));
+  1037→    }
+  1038→
+  1039→    #[test]
+  1040→    fn write_report_creates_directory_and_file() {
+  1041→        let report = ScanReport {
+  1042→            version: 1,
+  1043→            functions: vec![],
+  1044→            codebase: CodebaseReport {
+  1045→                total_functions: 0,
+  1046→                total_branches: 0,
+  1047→                overall_coverage: 0.0,
+  1048→                skipped_functions: vec![],
+  1049→                dependency_graph: vec![],
+  1050→            },
+  1051→            test_order: vec![],
+  1052→            cumulative: None,
+  1053→        };
+  1054→
+  1055→        let dir = std::env::temp_dir().join("shatter-report-test");
+  1056→        // Clean up from previous runs
+  1057→        let _ = std::fs::remove_dir_all(&dir);
+  1058→
+  1059→        let path = write_report(&report, &dir).expect("write_report should succeed");
+  1060→        assert!(path.exists());
+  1061→        assert_eq!(path.file_name().unwrap(), "scan-report.json");
+  1062→
+  1063→        // Read back and verify
+  1064→        let contents = std::fs::read_to_string(&path).expect("read file");
+  1065→        let deserialized: ScanReport =
+  1066→            serde_json::from_str(&contents).expect("parse json");
+  1067→        assert_eq!(deserialized.version, 1);
+  1068→
+  1069→        // Clean up
+  1070→        let _ = std::fs::remove_dir_all(&dir);
+  1071→    }
+  1072→
+  1073→    #[test]
+  1074→    fn function_report_with_errors() {
+  1075→        let mut func_result = make_function_result("risky", 5, 1, 3, 5, vec![]);
+  1076→        // Add an error behavior
+  1077→        func_result.behavior_map.behaviors.push(Behavior {
+  1078→            id: 1,
+  1079→            input_args: vec![serde_json::json!(null)],
+  1080→            return_value: None,
+  1081→            thrown_error: Some(ErrorInfo {
+  1082→                error_type: "TypeError".to_string(),
+  1083→                message: "cannot read null".to_string(),
+  1084→                stack: None, error_category: None }),
+  1085→            branch_path: vec![],
+  1086→            side_effects: vec![],
+  1087→            dependency_trace: None,
+  1088→            mock_values: vec![],
+  1089→        });
+  1090→        func_result
+  1091→            .exploration
+  1092→            .new_path_executions
+  1093→            .push(ExecutionSummary {
+  1094→                inputs: vec![serde_json::json!(null)],
+  1095→                return_value: None,
+  1096→                thrown_error: Some("TypeError: cannot read null".to_string()),
+  1097→                lines_executed: vec![1],
+  1098→                is_new_path: true, error_intent: None });
+  1099→
+  1100→        let parallel_result = ParallelScanResult {
+  1101→            function_results: vec![func_result],
+  1102→            test_order: vec!["risky".into()],
+  1103→            skipped: vec![],
+  1104→            workers_used: 1, sampling: None,
+  1105→        };
+  1106→
+  1107→        let file_map = HashMap::new();
+  1108→        let report = generate_report(&parallel_result, &file_map, None);
+  1109→
+  1110→        let func = &report.functions[0];
+  1111→        assert_eq!(func.behavior_clusters.len(), 2);
+  1112→
+  1113→        let error_cluster = &func.behavior_clusters[1];
+  1114→        assert!(error_cluster.thrown_error.is_some());
+  1115→        assert!(error_cluster
+  1116→            .thrown_error
+  1117→            .as_ref()
+  1118→            .unwrap()
+  1119→            .contains("TypeError"));
+  1120→
+  1121→        let error_input = func
+  1122→            .discovered_inputs
+  1123→            .iter()
+  1124→            .find(|d| d.thrown_error.is_some());
+  1125→        assert!(error_input.is_some());
+  1126→    }
+  1127→
+  1128→    #[test]
+  1129→    fn generate_report_from_sequential_scan() {
+  1130→        let scan_result = ScanResult {
+  1131→            function_results: vec![
+  1132→                make_function_result("a", 5, 1, 3, 5, vec![]),
+  1133→                make_function_result("b", 10, 2, 7, 10, vec!["a".to_string()]),
+  1134→            ],
+  1135→            test_order: vec!["a".into(), "b".into()],
+  1136→            skipped_functions: vec![],
+  1137→            sampling: None,
+  1138→        };
+  1139→
+  1140→        let mut file_map = HashMap::new();
+  1141→        file_map.insert("a".to_string(), "src/a.ts".to_string());
+  1142→
+  1143→        let report = generate_report_from_scan(&scan_result, &file_map);
+  1144→
+  1145→        assert_eq!(report.version, 1);
+  1146→        assert_eq!(report.functions.len(), 2);
+  1147→        assert_eq!(report.functions[0].file_path, "src/a.ts");
+  1148→        assert_eq!(report.functions[1].file_path, ""); // not in file_map
+  1149→        assert!(report.codebase.skipped_functions.is_empty());
+  1150→        assert_eq!(report.codebase.dependency_graph.len(), 1);
+  1151→    }
+  1152→
+  1153→    #[test]
+  1154→    fn overall_coverage_computed_correctly() {
+  1155→        // Two functions: one with 2 branches, one with 3 branches = 5 total
+  1156→        // Both fully covered => 100%
+  1157→        let parallel_result = ParallelScanResult {
+  1158→            function_results: vec![
+  1159→                make_function_result("a", 10, 2, 5, 10, vec![]),
+  1160→                make_function_result("b", 10, 3, 8, 10, vec![]),
+  1161→            ],
+  1162→            test_order: vec!["a".into(), "b".into()],
+  1163→            skipped: vec![],
+  1164→            workers_used: 1, sampling: None,
+  1165→        };
+  1166→
+  1167→        let file_map = HashMap::new();
+  1168→        let report = generate_report(&parallel_result, &file_map, None);
+  1169→
+  1170→        // branches = 2 + 3 = 5, covered = 2 + 3 = 5 => 100%
+  1171→        assert!((report.codebase.overall_coverage - 100.0).abs() < 0.01);
+  1172→    }
+  1173→
+  1174→    // -----------------------------------------------------------------------
+  1175→    // Markdown report tests
+  1176→    // -----------------------------------------------------------------------
+  1177→
+  1178→    fn make_report_with_functions() -> ScanReport {
+  1179→        let parallel_result = ParallelScanResult {
+  1180→            function_results: vec![
+  1181→                make_function_result("leaf", 10, 2, 5, 10, vec![]),
+  1182→                make_function_result("caller", 20, 3, 8, 10, vec!["leaf".to_string()]),
+  1183→            ],
+  1184→            test_order: vec!["leaf".into(), "caller".into()],
+  1185→            skipped: vec![],
+  1186→            workers_used: 2, sampling: None,
+  1187→        };
+  1188→
+  1189→        let mut file_map = HashMap::new();
+  1190→        file_map.insert("leaf".to_string(), "src/math.ts".to_string());
+  1191→        file_map.insert("caller".to_string(), "src/app.ts".to_string());
+  1192→
+  1193→        generate_report(&parallel_result, &file_map, None)
+  1194→    }
+  1195→
+  1196→    #[test]
+  1197→    fn markdown_report_contains_all_sections() {
+  1198→        let report = make_report_with_functions();
+  1199→        let md = format_markdown_report(&report);
+  1200→
+  1201→        assert!(md.contains("# Shatter Scan Report"), "missing heading");
+  1202→        assert!(md.contains("## Function Summary"), "missing summary table");
+  1203→        assert!(md.contains("## Function Details"), "missing details");
+  1204→        assert!(md.contains("### `leaf`"), "missing leaf details");
+  1205→        assert!(md.contains("### `caller`"), "missing caller details");
+  1206→    }
+  1207→
+  1208→    #[test]
+  1209→    fn markdown_report_has_correct_statistics() {
+  1210→        let report = make_report_with_functions();
+  1211→        let md = format_markdown_report(&report);
+  1212→
+  1213→        assert!(md.contains("**Functions explored:** 2"), "bad function count: {md}");
+  1214→        assert!(md.contains("**Total branches:** 5"), "bad branch count: {md}");
+  1215→    }
+  1216→
+  1217→    #[test]
+  1218→    fn markdown_report_summary_table_has_headers() {
+  1219→        let report = make_report_with_functions();
+  1220→        let md = format_markdown_report(&report);
+  1221→
+  1222→        assert!(
+  1223→            md.contains("| Status | Function | File | Coverage | Branches | Lines | Iterations |"),
+  1224→            "missing table header"
+  1225→        );
+  1226→        assert!(
+  1227→            md.contains("|--------|----------|------|----------|----------|-------|------------|"),
+  1228→            "missing table separator"
+  1229→        );
+  1230→    }
+  1231→
+  1232→    #[test]
+  1233→    fn markdown_report_coverage_indicators() {
+  1234→        let report = make_report_with_functions();
+  1235→        let md = format_markdown_report(&report);
+  1236→
+  1237→        // leaf: 5/10 lines = 50% -> WARN, caller: 8/10 = 80% -> WARN
+  1238→        assert!(md.contains("WARN"), "should contain WARN status for partial coverage");
+  1239→    }
+  1240→
+  1241→    #[test]
+  1242→    fn markdown_report_shows_mocks() {
+  1243→        let report = make_report_with_functions();
+  1244→        let md = format_markdown_report(&report);
+  1245→
+  1246→        assert!(md.contains("**Mocks:** leaf"), "missing mock info: {md}");
+  1247→    }
+  1248→
+  1249→    #[test]
+  1250→    fn markdown_empty_report_produces_sensible_output() {
+  1251→        let report = ScanReport {
+  1252→            version: 1,
+  1253→            functions: vec![],
+  1254→            codebase: CodebaseReport {
+  1255→                total_functions: 0,
+  1256→                total_branches: 0,
+  1257→                overall_coverage: 0.0,
+  1258→                skipped_functions: vec![],
+  1259→                dependency_graph: vec![],
+  1260→            },
+  1261→            test_order: vec![],
+  1262→            cumulative: None,
+  1263→        };
+  1264→
+  1265→        let md = format_markdown_report(&report);
+  1266→
+  1267→        assert!(md.contains("# Shatter Scan Report"), "missing heading");
+  1268→        assert!(md.contains("**Functions explored:** 0"), "missing zero functions");
+  1269→        assert!(md.contains("*No functions were explored.*"), "missing empty message");
+  1270→        assert!(!md.contains("## Function Details"), "should not have details section");
+  1271→        assert!(
+  1272→            !md.contains("## Uncovered Branches"),
+  1273→            "should not have uncovered section"
+  1274→        );
+  1275→    }
+  1276→
+  1277→    #[test]
+  1278→    fn markdown_report_with_skipped_functions() {
+  1279→        let report = ScanReport {
+  1280→            version: 1,
+  1281→            functions: vec![],
+  1282→            codebase: CodebaseReport {
+  1283→                total_functions: 0,
+  1284→                total_branches: 0,
+  1285→                overall_coverage: 0.0,
+  1286→                skipped_functions: vec![SkippedFunctionReport {
+  1287→                    function_name: "slow".to_string(),
+  1288→                    reason: "timed out after 30s".to_string(),
+  1289→                    category: "error".to_string(),
+  1290→                }],
+  1291→                dependency_graph: vec![],
+  1292→            },
+  1293→            test_order: vec![],
+  1294→            cumulative: None,
+  1295→        };
+  1296→
+  1297→        let md = format_markdown_report(&report);
+  1298→
+  1299→        assert!(md.contains("## Errors"), "missing errors section: {md}");
+  1300→        assert!(
+  1301→            md.contains("`slow`: timed out after 30s"),
+  1302→            "missing skip detail: {md}"
+  1303→        );
+  1304→    }
+  1305→
+  1306→    #[test]
+  1307→    fn markdown_table_formatting_is_valid() {
+  1308→        let report = make_report_with_functions();
+  1309→        let md = format_markdown_report(&report);
+  1310→
+  1311→        let in_table: Vec<&str> = md
+  1312→            .lines()
+  1313→            .skip_while(|l| !l.starts_with("| Status"))
+  1314→            .take_while(|l| l.starts_with('|'))
+  1315→            .collect();
+  1316→
+  1317→        // header + separator + 2 data rows = 4 lines
+  1318→        assert_eq!(in_table.len(), 4, "table should have 4 rows, got: {in_table:?}");
+  1319→
+  1320→        for line in &in_table {
+  1321→            assert!(line.starts_with('|'), "row should start with |: {line}");
+  1322→            assert!(line.ends_with('|'), "row should end with |: {line}");
+  1323→        }
+  1324→    }
+  1325→
+  1326→    #[test]
+  1327→    fn write_markdown_report_creates_file() {
+  1328→        let report = make_report_with_functions();
+  1329→        let dir = std::env::temp_dir().join("shatter-md-report-test");
+  1330→        let _ = std::fs::remove_dir_all(&dir);
+  1331→
+  1332→        let path = write_markdown_report(&report, &dir).expect("write should succeed");
+  1333→        assert!(path.exists());
+  1334→        assert_eq!(path.file_name().unwrap(), "scan-report.md");
+  1335→
+  1336→        let contents = std::fs::read_to_string(&path).expect("read file");
+  1337→        assert!(contents.contains("# Shatter Scan Report"));
+  1338→
+  1339→        let _ = std::fs::remove_dir_all(&dir);
+  1340→    }
+  1341→
+  1342→    // -----------------------------------------------------------------------
+  1343→    // Progress event tests
+  1344→    // -----------------------------------------------------------------------
+  1345→
+  1346→    #[test]
+  1347→    fn progress_event_has_correct_structure() {
+  1348→        let event = ProgressEvent::new("classifyNumber", 1, 5, 1234);
+  1349→
+  1350→        assert_eq!(event.event_type, "progress");
+  1351→        assert_eq!(event.function, "classifyNumber");
+  1352→        assert_eq!(event.current, 1);
+  1353→        assert_eq!(event.total, 5);
+  1354→        assert_eq!(event.elapsed_ms, 1234);
+  1355→    }
+  1356→
+  1357→    #[test]
+  1358→    fn progress_event_serializes_to_json() {
+  1359→        let event = ProgressEvent::new("f", 2, 10, 500);
+  1360→        let json = event.to_json().expect("should serialize");
+  1361→
+  1362→        assert!(json.contains("\"type\":\"progress\""), "missing type: {json}");
+  1363→        assert!(json.contains("\"function\":\"f\""), "missing function: {json}");
+  1364→        assert!(json.contains("\"current\":2"), "missing current: {json}");
+  1365→        assert!(json.contains("\"total\":10"), "missing total: {json}");
+  1366→        assert!(json.contains("\"elapsed_ms\":500"), "missing elapsed: {json}");
+  1367→    }
+  1368→
+  1369→    #[test]
+  1370→    fn progress_event_round_trips() {
+  1371→        let event = ProgressEvent::new("test", 3, 7, 999);
+  1372→        let json = serde_json::to_string(&event).expect("serialize");
+  1373→        let deserialized: ProgressEvent = serde_json::from_str(&json).expect("deserialize");
+  1374→        assert_eq!(event, deserialized);
+  1375→    }
+  1376→
+  1377→    #[test]
+  1378→    fn report_format_from_str() {
+  1379→        assert_eq!("json".parse::<ReportFormat>().unwrap(), ReportFormat::Json);
+  1380→        assert_eq!(
+  1381→            "markdown".parse::<ReportFormat>().unwrap(),
+  1382→            ReportFormat::Markdown
+  1383→        );
+  1384→        assert_eq!("md".parse::<ReportFormat>().unwrap(), ReportFormat::Markdown);
+  1385→        assert_eq!("both".parse::<ReportFormat>().unwrap(), ReportFormat::Both);
+  1386→        assert!("invalid".parse::<ReportFormat>().is_err());
+  1387→    }
+  1388→
+  1389→    /// Regression guard for str-u40f: report file_path values must be relative.
+  1390→    /// The CLI is responsible for relativizing paths before passing them in file_map;
+  1391→    /// generate_report passes them through verbatim.
+  1392→    #[test]
+  1393→    fn report_file_paths_are_relative_when_file_map_is_relative() {
+  1394→        let parallel_result = ParallelScanResult {
+  1395→            function_results: vec![make_function_result("f1", 10, 2, 5, 10, vec![])],
+  1396→            test_order: vec!["f1".into()],
+  1397→            skipped: vec![],
+  1398→            workers_used: 1,
+  1399→            sampling: None,
+  1400→        };
+  1401→
+  1402→        let mut file_map = HashMap::new();
+  1403→        file_map.insert("f1".to_string(), "src/a.ts".to_string());
+  1404→
+  1405→        let report = generate_report(&parallel_result, &file_map, None);
+  1406→
+  1407→        for func in &report.functions {
+  1408→            assert!(
+  1409→                !func.file_path.starts_with('/'),
+  1410→                "file_path should be relative, got: {}",
+  1411→                func.file_path
+  1412→            );
+  1413→            assert_eq!(func.file_path, "src/a.ts");
+  1414→        }
+  1415→    }
+  1416→
+  1417→    #[test]
+  1418→    fn boundary_values_detected() {
+  1419→        assert!(is_boundary_value(&[serde_json::json!(0)]));
+  1420→        assert!(is_boundary_value(&[serde_json::json!(null)]));
+  1421→        assert!(is_boundary_value(&[serde_json::json!("")]));
+  1422→        assert!(is_boundary_value(&[serde_json::json!([])]));
+  1423→        assert!(!is_boundary_value(&[serde_json::json!(42)]));
+  1424→        assert!(!is_boundary_value(&[serde_json::json!("hello")]));
+  1425→    }
+  1426→}
+  1427→

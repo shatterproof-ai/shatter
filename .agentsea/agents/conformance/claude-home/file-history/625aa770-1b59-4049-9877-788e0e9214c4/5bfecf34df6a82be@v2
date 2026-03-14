@@ -1,0 +1,1 @@
+- [feedback_swarm_teamcreate.md](feedback_swarm_teamcreate.md) — Swarm skill MUST use TeamCreate, not standalone background agents (permission failure 2026-03-11)

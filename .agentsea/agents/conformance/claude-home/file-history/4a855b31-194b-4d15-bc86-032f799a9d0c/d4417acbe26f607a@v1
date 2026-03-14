@@ -1,0 +1,143 @@
+package config
+
+import (
+	"log/slog"
+	"os"
+	"testing"
+)
+
+func TestLoad_RequiresDatabaseURL(t *testing.T) {
+	// Unset DATABASE_URL to test that it's required.
+	// t.Setenv records the current value and restores it after the test.
+	t.Setenv("DATABASE_URL", "")
+	os.Unsetenv("DATABASE_URL")
+	t.Setenv("JWT_SECRET", "test-secret")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error when DATABASE_URL is unset")
+	}
+}
+
+func TestLoad_RequiresJWTSecret(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://localhost/test")
+	t.Setenv("JWT_SECRET", "")
+	os.Unsetenv("JWT_SECRET")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error when JWT_SECRET is unset")
+	}
+}
+
+func TestLoad_Success(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://localhost/test")
+	t.Setenv("JWT_SECRET", "my-secret")
+	t.Setenv("PORT", "9090")
+	t.Setenv("LOG_LEVEL", "debug")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if cfg.DatabaseURL != "postgres://localhost/test" {
+		t.Errorf("DatabaseURL = %q, want %q", cfg.DatabaseURL, "postgres://localhost/test")
+	}
+	if cfg.JWTSecret != "my-secret" {
+		t.Errorf("JWTSecret = %q, want %q", cfg.JWTSecret, "my-secret")
+	}
+	if cfg.Port != 9090 {
+		t.Errorf("Port = %d, want %d", cfg.Port, 9090)
+	}
+	if cfg.LogLevel != "debug" {
+		t.Errorf("LogLevel = %q, want %q", cfg.LogLevel, "debug")
+	}
+}
+
+func TestLoad_Defaults(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://localhost/test")
+	t.Setenv("JWT_SECRET", "my-secret")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if cfg.Host != "0.0.0.0" {
+		t.Errorf("Host = %q, want %q", cfg.Host, "0.0.0.0")
+	}
+	if cfg.Port != 8081 {
+		t.Errorf("Port = %d, want %d", cfg.Port, 8081)
+	}
+	if cfg.LogLevel != "info" {
+		t.Errorf("LogLevel = %q, want %q", cfg.LogLevel, "info")
+	}
+	if cfg.LogFormat != "json" {
+		t.Errorf("LogFormat = %q, want %q", cfg.LogFormat, "json")
+	}
+	if cfg.Env != "development" {
+		t.Errorf("Env = %q, want %q", cfg.Env, "development")
+	}
+	if cfg.S3Bucket != "flotsam-dev" {
+		t.Errorf("S3Bucket = %q, want %q", cfg.S3Bucket, "flotsam-dev")
+	}
+	if cfg.MCPEnabled != true {
+		t.Error("MCPEnabled should default to true")
+	}
+	if cfg.RateLimitEnabled != true {
+		t.Error("RateLimitEnabled should default to true")
+	}
+	if cfg.RateLimitGraphQL != 60 {
+		t.Errorf("RateLimitGraphQL = %d, want %d", cfg.RateLimitGraphQL, 60)
+	}
+	if cfg.ShutdownTimeout.Seconds() != 15 {
+		t.Errorf("ShutdownTimeout = %v, want 15s", cfg.ShutdownTimeout)
+	}
+}
+
+func TestAddr(t *testing.T) {
+	cfg := &Config{Host: "127.0.0.1", Port: 3000}
+	if got := cfg.Addr(); got != "127.0.0.1:3000" {
+		t.Errorf("Addr() = %q, want %q", got, "127.0.0.1:3000")
+	}
+}
+
+func TestParseLogLevel(t *testing.T) {
+	tests := []struct {
+		input string
+		want  slog.Level
+	}{
+		{"trace", slog.Level(-8)},
+		{"debug", slog.LevelDebug},
+		{"info", slog.LevelInfo},
+		{"warn", slog.LevelWarn},
+		{"error", slog.LevelError},
+		{"unknown", slog.LevelInfo},
+		{"", slog.LevelInfo},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			if got := ParseLogLevel(tt.input); got != tt.want {
+				t.Errorf("ParseLogLevel(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLogHandler_JSONDefault(t *testing.T) {
+	cfg := &Config{LogLevel: "info", LogFormat: "json", Env: "production"}
+	h := cfg.LogHandler()
+	if h == nil {
+		t.Fatal("LogHandler() returned nil")
+	}
+}
+
+func TestLogHandler_TextFormat(t *testing.T) {
+	cfg := &Config{LogLevel: "debug", LogFormat: "text", Env: "development"}
+	h := cfg.LogHandler()
+	if h == nil {
+		t.Fatal("LogHandler() returned nil")
+	}
+}

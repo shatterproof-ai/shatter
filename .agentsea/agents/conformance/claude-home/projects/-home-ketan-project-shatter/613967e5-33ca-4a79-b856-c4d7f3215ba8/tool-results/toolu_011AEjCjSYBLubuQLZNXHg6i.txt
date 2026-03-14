@@ -1,0 +1,695 @@
+shatter-ts/src/instrumentor.test.ts:4:import type { SymExpr, BranchDecision, SymConstraint, MockConfig, TraceEvent, ScopeEvent } from "./protocol";
+shatter-ts/src/instrumentor.test.ts:72:  it("returns error when function is not found", () => {
+shatter-ts/src/instrumentor.test.ts:74:    expect(result).toEqual({ error: "Function 'missing' not found" });
+shatter-ts/src/instrumentor.test.ts:83:    expect("error" in result).toBe(false);
+shatter-ts/src/instrumentor.test.ts:84:    if ("error" in result) return;
+shatter-ts/src/instrumentor.test.ts:100:    expect("error" in result).toBe(false);
+shatter-ts/src/instrumentor.test.ts:101:    if ("error" in result) return;
+shatter-ts/src/instrumentor.test.ts:120:    expect("error" in result).toBe(false);
+shatter-ts/src/instrumentor.test.ts:121:    if ("error" in result) return;
+shatter-ts/src/instrumentor.test.ts:141:    expect("error" in result).toBe(false);
+shatter-ts/src/instrumentor.test.ts:142:    if ("error" in result) return;
+shatter-ts/src/instrumentor.test.ts:164:    expect("error" in result).toBe(false);
+shatter-ts/src/instrumentor.test.ts:165:    if ("error" in result) return;
+shatter-ts/src/instrumentor.test.ts:180:    expect("error" in result).toBe(false);
+shatter-ts/src/instrumentor.test.ts:181:    if ("error" in result) return;
+shatter-ts/src/instrumentor.test.ts:199:    expect("error" in result).toBe(false);
+shatter-ts/src/instrumentor.test.ts:200:    if ("error" in result) return;
+shatter-ts/src/instrumentor.test.ts:221:    expect("error" in result).toBe(false);
+shatter-ts/src/instrumentor.test.ts:222:    if ("error" in result) return;
+shatter-ts/src/instrumentor.test.ts:234:    expect("error" in result).toBe(false);
+shatter-ts/src/instrumentor.test.ts:235:    if ("error" in result) return;
+shatter-ts/src/instrumentor.test.ts:242:    expect("error" in result).toBe(false);
+shatter-ts/src/instrumentor.test.ts:243:    if ("error" in result) return;
+shatter-ts/src/instrumentor.test.ts:258:    expect("error" in result).toBe(false);
+shatter-ts/src/instrumentor.test.ts:259:    if ("error" in result) return;
+shatter-ts/src/instrumentor.test.ts:282:    expect("error" in result).toBe(false);
+shatter-ts/src/instrumentor.test.ts:283:    if ("error" in result) return;
+shatter-ts/src/instrumentor.test.ts:298:    expect("error" in result).toBe(false);
+shatter-ts/src/instrumentor.test.ts:299:    if ("error" in result) return;
+shatter-ts/src/instrumentor.test.ts:312:    if ("error" in result) throw new Error(result.error);
+shatter-ts/src/instrumentor.test.ts:338:    if ("error" in result) throw new Error(result.error);
+shatter-ts/src/instrumentor.test.ts:357:    if ("error" in result) throw new Error(result.error);
+shatter-ts/src/instrumentor.test.ts:394:    if ("error" in result) throw new Error(result.error);
+shatter-ts/src/instrumentor.test.ts:416:    if ("error" in result) throw new Error(result.error);
+shatter-ts/src/instrumentor.test.ts:437:    if ("error" in result) throw new Error(result.error);
+shatter-ts/src/instrumentor.test.ts:454:    if ("error" in result) throw new Error(result.error);
+shatter-ts/src/instrumentor.test.ts:477:    if ("error" in result) throw new Error(result.error);
+shatter-ts/src/instrumentor.test.ts:499:    if ("error" in result) throw new Error(result.error);
+shatter-ts/src/instrumentor.test.ts:520:    if ("error" in result) throw new Error(result.error);
+shatter-ts/src/instrumentor.test.ts:542:    if ("error" in result) throw new Error(result.error);
+shatter-ts/src/instrumentor.test.ts:569:    if ("error" in result) throw new Error(result.error);
+shatter-ts/src/instrumentor.test.ts:597:    if ("error" in result) throw new Error(result.error);
+shatter-ts/src/instrumentor.test.ts:629:    if ("error" in result) throw new Error(result.error);
+shatter-ts/src/instrumentor.test.ts:661:    if ("error" in result) throw new Error(result.error);
+shatter-ts/src/instrumentor.test.ts:677:    if ("error" in result) throw new Error(result.error);
+shatter-ts/src/instrumentor.test.ts:899:    if ("error" in result) throw new Error(result.error);
+shatter-ts/src/instrumentor.test.ts:928:    if ("error" in result) throw new Error(result.error);
+shatter-ts/src/instrumentor.test.ts:962:    if ("error" in result) throw new Error(result.error);
+shatter-ts/src/instrumentor.test.ts:986:    if ("error" in result) throw new Error(result.error);
+shatter-ts/src/instrumentor.test.ts:1008:    if ("error" in result) throw new Error(result.error);
+shatter-ts/src/instrumentor.test.ts:1036:    if ("error" in result) throw new Error(result.error);
+shatter-ts/src/instrumentor.test.ts:1064:    if ("error" in result) throw new Error(result.error);
+shatter-ts/src/instrumentor.test.ts:1091:    if ("error" in result) throw new Error(result.error);
+shatter-ts/src/instrumentor.test.ts:1121:    if ("error" in result) throw new Error(result.error);
+shatter-ts/src/instrumentor.test.ts:1144:    if ("error" in result) throw new Error(result.error);
+shatter-ts/src/instrumentor.test.ts:1167:    if ("error" in result) throw new Error(result.error);
+shatter-ts/src/instrumentor.test.ts:1190:    if ("error" in result) throw new Error(result.error);
+shatter-ts/src/instrumentor.test.ts:1213:    if ("error" in result) throw new Error(result.error);
+shatter-ts/src/instrumentor.test.ts:1237:    if ("error" in result) throw new Error(result.error);
+shatter-ts/src/instrumentor.test.ts:1260:    if ("error" in result) throw new Error(result.error);
+shatter-ts/src/instrumentor.test.ts:1289:    if ("error" in result) throw new Error(result.error);
+shatter-ts/src/instrumentor.test.ts:1309:    if ("error" in result) throw new Error(result.error);
+shatter-ts/src/instrumentor.test.ts:1331:    if ("error" in result) throw new Error(result.error);
+shatter-ts/src/instrumentor.test.ts:1344:    if ("error" in result) throw new Error(result.error);
+shatter-ts/src/instrumentor.test.ts:1362:    if ("error" in result) throw new Error(result.error);
+shatter-ts/src/instrumentor.test.ts:1407:      expect("error" in result).toBe(false);
+shatter-ts/src/instrumentor.test.ts:1408:      if (!("error" in result)) {
+shatter-ts/src/instrumentor.test.ts:1424:      expect("error" in result).toBe(false);
+shatter-ts/src/instrumentor.test.ts:1425:      if (!("error" in result)) {
+shatter-ts/src/instrumentor.test.ts:1441:      expect("error" in resultTs).toBe(false);
+shatter-ts/src/instrumentor.test.ts:1442:      expect("error" in resultTsx).toBe(false);
+shatter-ts/src/instrumentor.test.ts:1443:      if (!("error" in resultTs) && !("error" in resultTsx)) {
+shatter-ts/src/instrumentor.test.ts:1461:    expect("error" in result).toBe(false);
+shatter-ts/src/instrumentor.test.ts:1462:    if ("error" in result) return;
+shatter-ts/src/instrumentor.test.ts:1484:    expect("error" in result).toBe(false);
+shatter-ts/src/instrumentor.test.ts:1485:    if ("error" in result) return;
+shatter-ts/src/instrumentor.test.ts:1507:    expect("error" in result).toBe(false);
+shatter-ts/src/instrumentor.test.ts:1508:    if ("error" in result) return;
+shatter-ts/src/instrumentor.test.ts:1524:    expect("error" in result).toBe(false);
+shatter-ts/src/instrumentor.test.ts:1525:    if ("error" in result) return;
+shatter-ts/src/instrumentor.test.ts:1547:    expect("error" in result).toBe(false);
+shatter-ts/src/instrumentor.test.ts:1548:    if ("error" in result) return;
+shatter-ts/src/instrumentor.test.ts:1571:    expect("error" in result).toBe(false);
+shatter-ts/src/instrumentor.test.ts:1572:    if ("error" in result) return;
+shatter-ts/src/setup-loader.ts:13:import type { SetupLevel, SetupContextStack, GeneratorKind } from "./protocol.js";
+shatter-ts/src/setup-loader.ts:112:    throw new Error(
+shatter-ts/src/setup-loader.ts:129:        setTimeout(() => reject(new Error(`Setup timed out after ${timeoutMs}ms`)), timeoutMs),
+shatter-ts/src/setup-loader.ts:149:    throw new Error(
+shatter-ts/src/setup-loader.ts:162:        setTimeout(() => reject(new Error(`Teardown timed out after ${timeoutMs}ms`)), timeoutMs),
+shatter-ts/src/setup-loader.ts:192:    throw new Error(
+shatter-ts/src/logger.ts:4:  error: "error",
+shatter-ts/src/property.test.ts:2: * Property-based tests using fast-check for protocol types and SymExpr.
+shatter-ts/src/property.test.ts:19:  ErrorCode,
+shatter-ts/src/property.test.ts:36:  ErrorResponse,
+shatter-ts/src/property.test.ts:41:  ErrorInfo,
+shatter-ts/src/property.test.ts:42:} from "./protocol.js";
+shatter-ts/src/property.test.ts:43:import { PROTOCOL_VERSION } from "./protocol.js";
+shatter-ts/src/property.test.ts:70:  "error", "option", "result",
+shatter-ts/src/property.test.ts:83:const arbErrorCode: fc.Arbitrary<ErrorCode> = fc.constantFrom(
+shatter-ts/src/property.test.ts:84:  "file_not_found", "function_not_found", "parse_error",
+shatter-ts/src/property.test.ts:86:  "version_mismatch", "invalid_request", "compilation_error", "internal_error",
+shatter-ts/src/property.test.ts:152:// Arbitraries — protocol records
+shatter-ts/src/property.test.ts:186:const arbErrorInfo: fc.Arbitrary<ErrorInfo> = fc.record({
+shatter-ts/src/property.test.ts:187:  error_type: arbIdent,
+shatter-ts/src/property.test.ts:196:    kind: fc.constant("thrown_error" as const),
+shatter-ts/src/property.test.ts:197:    error_type: arbIdent,
+shatter-ts/src/property.test.ts:245:// Arbitraries — full protocol messages
+shatter-ts/src/property.test.ts:250:    protocol_version: fc.constant(PROTOCOL_VERSION),
+shatter-ts/src/property.test.ts:252:    command: fc.constant("handshake" as const),
+shatter-ts/src/property.test.ts:256:    protocol_version: fc.constant(PROTOCOL_VERSION),
+shatter-ts/src/property.test.ts:258:    command: fc.constant("analyze" as const),
+shatter-ts/src/property.test.ts:262:    protocol_version: fc.constant(PROTOCOL_VERSION),
+shatter-ts/src/property.test.ts:264:    command: fc.constant("execute" as const),
+shatter-ts/src/property.test.ts:270:    protocol_version: fc.constant(PROTOCOL_VERSION),
+shatter-ts/src/property.test.ts:272:    command: fc.constant("setup" as const),
+shatter-ts/src/property.test.ts:278:    protocol_version: fc.constant(PROTOCOL_VERSION),
+shatter-ts/src/property.test.ts:280:    command: fc.constant("teardown" as const),
+shatter-ts/src/property.test.ts:285:    protocol_version: fc.constant(PROTOCOL_VERSION),
+shatter-ts/src/property.test.ts:287:    command: fc.constant("shutdown" as const),
+shatter-ts/src/property.test.ts:293:    protocol_version: fc.constant(PROTOCOL_VERSION),
+shatter-ts/src/property.test.ts:295:    status: fc.constant("handshake" as const),
+shatter-ts/src/property.test.ts:296:    frontend_version: fc.constant(PROTOCOL_VERSION),
+shatter-ts/src/property.test.ts:301:    protocol_version: fc.constant(PROTOCOL_VERSION),
+shatter-ts/src/property.test.ts:303:    status: fc.constant("analyze" as const),
+shatter-ts/src/property.test.ts:307:    protocol_version: fc.constant(PROTOCOL_VERSION),
+shatter-ts/src/property.test.ts:309:    status: fc.constant("error" as const),
+shatter-ts/src/property.test.ts:310:    code: arbErrorCode,
+shatter-ts/src/property.test.ts:312:  }) as fc.Arbitrary<ErrorResponse>,
+shatter-ts/src/property.test.ts:319:describe("property: protocol message round-trips", () => {
+shatter-ts/src/property.test.ts:355:          protocol_version: fc.constant(PROTOCOL_VERSION),
+shatter-ts/src/property.test.ts:357:          command: fc.constant("setup" as const),
+shatter-ts/src/property.test.ts:366:          expect(decoded.command).toBe("setup");
+shatter-ts/src/property.test.ts:378:          protocol_version: fc.constant(PROTOCOL_VERSION),
+shatter-ts/src/property.test.ts:380:          command: fc.constant("teardown" as const),
+shatter-ts/src/property.test.ts:654:        throw new Error(`buildSymExpr returned unknown for ${label}: ${source}`);
+shatter-ts/src/property.test.ts:657:        throw new Error(`buildSymExprWithFlow returned unknown for ${label}: ${source}`);
+shatter-ts/src/property.test.ts:686:        throw new Error(`buildSymExpr returned unknown for: ${source}`);
+shatter-ts/src/property.test.ts:689:        throw new Error(`buildSymExprWithFlow returned unknown for: ${source}`);
+shatter-ts/src/protocol.ts:2: * Protocol types for communication between the Rust core and TypeScript frontend.
+shatter-ts/src/protocol.ts:6: * a protocol version for compatibility checking.
+shatter-ts/src/protocol.ts:9:export const PROTOCOL_VERSION = "0.1.0";
+shatter-ts/src/protocol.ts:31:export type Command =
+shatter-ts/src/protocol.ts:45:  default_behavior: "return_generated" | "repeat_last" | "throw_error" | "passthrough";
+shatter-ts/src/protocol.ts:49:  protocol_version: string;
+shatter-ts/src/protocol.ts:51:  command: Command;
+shatter-ts/src/protocol.ts:55:  command: "handshake";
+shatter-ts/src/protocol.ts:60:  command: "analyze";
+shatter-ts/src/protocol.ts:67:  command: "instrument";
+shatter-ts/src/protocol.ts:75:  command: "execute";
+shatter-ts/src/protocol.ts:83:  command: "setup";
+shatter-ts/src/protocol.ts:92:  command: "teardown";
+shatter-ts/src/protocol.ts:98:  command: "generate";
+shatter-ts/src/protocol.ts:107:  command: "shutdown";
+shatter-ts/src/protocol.ts:124:export type ResponseStatus =
+shatter-ts/src/protocol.ts:133:  | "error";
+shatter-ts/src/protocol.ts:135:export type ErrorCode =
+shatter-ts/src/protocol.ts:138:  | "parse_error"
+shatter-ts/src/protocol.ts:142:  | "version_mismatch"
+shatter-ts/src/protocol.ts:144:  | "compilation_error"
+shatter-ts/src/protocol.ts:145:  | "internal_error";
+shatter-ts/src/protocol.ts:148:  protocol_version: string;
+shatter-ts/src/protocol.ts:150:  status: ResponseStatus;
+shatter-ts/src/protocol.ts:154:  status: "handshake";
+shatter-ts/src/protocol.ts:155:  frontend_version: string;
+shatter-ts/src/protocol.ts:161:  status: "analyze";
+shatter-ts/src/protocol.ts:166:  status: "instrument";
+shatter-ts/src/protocol.ts:173:  status: "execute";
+shatter-ts/src/protocol.ts:175:  thrown_error: ErrorInfo | null;
+shatter-ts/src/protocol.ts:187:  status: "setup";
+shatter-ts/src/protocol.ts:192:  status: "teardown_ack";
+shatter-ts/src/protocol.ts:196:  status: "generate";
+shatter-ts/src/protocol.ts:203:  status: "shutdown_ack";
+shatter-ts/src/protocol.ts:206:export interface ErrorResponse extends BaseResponse {
+shatter-ts/src/protocol.ts:207:  status: "error";
+shatter-ts/src/protocol.ts:208:  code: ErrorCode;
+shatter-ts/src/protocol.ts:222:  | ErrorResponse;
+shatter-ts/src/protocol.ts:270:  | "error" | "option" | "result"
+shatter-ts/src/protocol.ts:384:  | { kind: "thrown_error"; error_type: string; message: string; stack: string | null }
+shatter-ts/src/protocol.ts:387:export type ErrorCategory = "validation" | "runtime" | "infrastructure" | "unknown";
+shatter-ts/src/protocol.ts:389:export interface ErrorInfo {
+shatter-ts/src/protocol.ts:390:  error_type: string;
+shatter-ts/src/protocol.ts:393:  error_category?: ErrorCategory;
+shatter-ts/src/executor.test.ts:14:import { PROTOCOL_VERSION } from "./protocol.js";
+shatter-ts/src/executor.test.ts:15:import type { SideEffect, TraceEvent } from "./protocol.js";
+shatter-ts/src/executor.test.ts:85:    if ("error" in instrumentResult) {
+shatter-ts/src/executor.test.ts:86:      throw new Error(`Instrumentation failed: ${instrumentResult.error}`);
+shatter-ts/src/executor.test.ts:113:    const response = buildExecuteResponse(1, PROTOCOL_VERSION, rawResult);
+shatter-ts/src/executor.test.ts:115:    expect(response.status).toBe("execute");
+shatter-ts/src/executor.test.ts:132:    expect(result.thrown_error).toBeNull();
+shatter-ts/src/executor.test.ts:150:  it("captures thrown error as both thrown_error and side effect", async () => {
+shatter-ts/src/executor.test.ts:151:    const result = await executeFunction(SIDE_EFFECTS_FIXTURE, "throwsError", ["boom"]);
+shatter-ts/src/executor.test.ts:153:    expect(result.thrown_error).not.toBeNull();
+shatter-ts/src/executor.test.ts:154:    expect(result.thrown_error!.error_type).toBe("Error");
+shatter-ts/src/executor.test.ts:155:    expect(result.thrown_error!.message).toBe("boom");
+shatter-ts/src/executor.test.ts:157:    const errorSideEffects = result.side_effects.filter(
+shatter-ts/src/executor.test.ts:158:      (se: SideEffect) => se.kind === "thrown_error",
+shatter-ts/src/executor.test.ts:160:    expect(errorSideEffects).toHaveLength(1);
+shatter-ts/src/executor.test.ts:161:    expect(errorSideEffects[0]).toMatchObject({
+shatter-ts/src/executor.test.ts:162:      kind: "thrown_error",
+shatter-ts/src/executor.test.ts:163:      error_type: "Error",
+shatter-ts/src/executor.test.ts:167:    // Also captures the console.error before the throw
+shatter-ts/src/executor.test.ts:174:      level: "error",
+shatter-ts/src/executor.test.ts:191:    expect(levels).toEqual(["log", "warn", "error", "info", "debug"]);
+shatter-ts/src/executor.test.ts:194:  it("captures custom error types", async () => {
+shatter-ts/src/executor.test.ts:195:    const result = await executeFunction(SIDE_EFFECTS_FIXTURE, "throwsCustomError", []);
+shatter-ts/src/executor.test.ts:197:    expect(result.thrown_error!.error_type).toBe("TypeError");
+shatter-ts/src/executor.test.ts:198:    expect(result.thrown_error!.message).toBe("custom type error");
+shatter-ts/src/executor.test.ts:200:    const errorSideEffects = result.side_effects.filter(
+shatter-ts/src/executor.test.ts:201:      (se: SideEffect) => se.kind === "thrown_error",
+shatter-ts/src/executor.test.ts:203:    expect(errorSideEffects).toHaveLength(1);
+shatter-ts/src/executor.test.ts:204:    expect(errorSideEffects[0]).toMatchObject({
+shatter-ts/src/executor.test.ts:205:      kind: "thrown_error",
+shatter-ts/src/executor.test.ts:206:      error_type: "TypeError",
+shatter-ts/src/executor.test.ts:207:      message: "custom type error",
+shatter-ts/src/executor.test.ts:215:    expect(result.thrown_error).toBeNull();
+shatter-ts/src/executor.test.ts:227:    await executeFunction(SIDE_EFFECTS_FIXTURE, "throwsError", ["test"]);
+shatter-ts/src/executor.test.ts:236:    if ("error" in result) {
+shatter-ts/src/executor.test.ts:237:      throw new Error(result.error);
+shatter-ts/src/executor.test.ts:263:  it("captures thrown error and console output in instrumented execution", async () => {
+shatter-ts/src/executor.test.ts:264:    const instrumentedSource = getInstrumentedSource("throwsError");
+shatter-ts/src/executor.test.ts:265:    const result = await executeInstrumented(instrumentedSource, "throwsError", ["instrumented boom"]);
+shatter-ts/src/executor.test.ts:267:    expect(result.thrown_error).not.toBeNull();
+shatter-ts/src/executor.test.ts:268:    expect(result.thrown_error!.message).toBe("instrumented boom");
+shatter-ts/src/executor.test.ts:270:    const errorSideEffects = result.side_effects.filter(
+shatter-ts/src/executor.test.ts:271:      (se: SideEffect) => se.kind === "thrown_error",
+shatter-ts/src/executor.test.ts:273:    expect(errorSideEffects).toHaveLength(1);
+shatter-ts/src/executor.test.ts:304:    expect(result.thrown_error).toBeNull();
+shatter-ts/src/executor.test.ts:313:    if ("error" in instrumentResult) {
+shatter-ts/src/executor.test.ts:314:      throw new Error(`Instrumentation failed: ${instrumentResult.error}`);
+shatter-ts/src/executor.test.ts:324:    expect(result.thrown_error).toBeNull();
+shatter-ts/src/executor.test.ts:332:    const response = buildExecuteResponse(1, PROTOCOL_VERSION, result);
+shatter-ts/src/executor.test.ts:338:  it("acceptance: function with console.log and thrown error has both recorded", async () => {
+shatter-ts/src/executor.test.ts:339:    const result = await executeFunction(SIDE_EFFECTS_FIXTURE, "throwsError", ["fail"]);
+shatter-ts/src/executor.test.ts:340:    const response = buildExecuteResponse(1, PROTOCOL_VERSION, result);
+shatter-ts/src/executor.test.ts:345:    const hasThrownError = response.side_effects.some(
+shatter-ts/src/executor.test.ts:346:      (se: SideEffect) => se.kind === "thrown_error",
+shatter-ts/src/executor.test.ts:350:    expect(hasThrownError).toBe(true);
+shatter-ts/src/executor.test.ts:510:    if ("error" in instrumentResult) {
+shatter-ts/src/executor.test.ts:511:      throw new Error(`Instrumentation failed: ${instrumentResult.error}`);
+shatter-ts/src/executor.test.ts:543:    expect(result.thrown_error).toBeNull();
+shatter-ts/src/executor.test.ts:546:  it("captures rejection from async function as thrown_error", async () => {
+shatter-ts/src/executor.test.ts:548:    expect(result.thrown_error).not.toBeNull();
+shatter-ts/src/executor.test.ts:549:    expect(result.thrown_error!.error_type).toBe("Error");
+shatter-ts/src/executor.test.ts:550:    expect(result.thrown_error!.message).toBe("async boom");
+shatter-ts/src/executor.test.ts:551:    expect(result.thrown_error!.error_category).toBe("unknown");
+shatter-ts/src/executor.test.ts:558:    expect(result.thrown_error).not.toBeNull();
+shatter-ts/src/executor.test.ts:559:    expect(result.thrown_error!.message).toContain("async execution timed out");
+shatter-ts/src/executor.test.ts:560:    expect(result.thrown_error!.error_category).toBe("infrastructure");
+shatter-ts/src/executor.test.ts:568:    const result = await executeFunction(REACT_FIXTURE, "StatusCard", [
+shatter-ts/src/executor.test.ts:569:      { status: "active", count: 15 },
+shatter-ts/src/executor.test.ts:571:    expect(result.thrown_error).toBeNull();
+shatter-ts/src/executor.test.ts:577:  it("hits the inactive branch for non-active status", async () => {
+shatter-ts/src/executor.test.ts:578:    const result = await executeFunction(REACT_FIXTURE, "StatusCard", [
+shatter-ts/src/executor.test.ts:579:      { status: "disabled", count: 1 },
+shatter-ts/src/executor.test.ts:581:    expect(result.thrown_error).toBeNull();
+shatter-ts/src/executor.test.ts:589:    const resultHigh = await executeFunction(REACT_FIXTURE, "StatusCard", [
+shatter-ts/src/executor.test.ts:590:      { status: "active", count: 20 },
+shatter-ts/src/executor.test.ts:592:    const resultLow = await executeFunction(REACT_FIXTURE, "StatusCard", [
+shatter-ts/src/executor.test.ts:593:      { status: "active", count: 2 },
+shatter-ts/src/executor.test.ts:595:    expect(resultHigh.thrown_error).toBeNull();
+shatter-ts/src/executor.test.ts:596:    expect(resultLow.thrown_error).toBeNull();
+shatter-ts/src/executor.test.ts:610:    expect(result.thrown_error).toBeNull();
+shatter-ts/src/executor.test.ts:623:    expect(result.thrown_error).toBeNull();
+shatter-ts/src/executor.test.ts:632:    const instrumentResult = instrumentFunction(source, "StatusCard", REACT_FIXTURE);
+shatter-ts/src/executor.test.ts:634:    if ("error" in instrumentResult) {
+shatter-ts/src/executor.test.ts:635:      throw new Error(`Instrumentation failed: ${instrumentResult.error}`);
+shatter-ts/src/executor.test.ts:640:      "StatusCard",
+shatter-ts/src/executor.test.ts:641:      [{ status: "active", count: 15 }],
+shatter-ts/src/executor.test.ts:646:    expect(result.thrown_error).toBeNull();
+shatter-ts/src/executor.test.ts:657:    expect(result.thrown_error).toBeNull();
+shatter-ts/src/executor.test.ts:672:    if ("error" in instrumentResult) throw new Error(instrumentResult.error);
+shatter-ts/src/executor.test.ts:699:    if ("error" in instrumentResult) throw new Error(instrumentResult.error);
+shatter-ts/src/executor.test.ts:715:      thrown_error: null,
+shatter-ts/src/__fixtures__/side-effects.ts:1:// Test fixture for side effect capture: console output, thrown errors, and global state.
+shatter-ts/src/__fixtures__/side-effects.ts:9:export function throwsError(msg: string): never {
+shatter-ts/src/__fixtures__/side-effects.ts:10:  console.error("about to throw");
+shatter-ts/src/__fixtures__/side-effects.ts:11:  throw new Error(msg);
+shatter-ts/src/__fixtures__/side-effects.ts:17:  console.error("error message");
+shatter-ts/src/__fixtures__/side-effects.ts:22:export function throwsCustomError(): never {
+shatter-ts/src/__fixtures__/side-effects.ts:23:  throw new TypeError("custom type error");
+shatter-ts/src/reconstruct.ts:69:    case "error": {
+shatter-ts/src/reconstruct.ts:70:      const className = (obj["class"] as string) ?? "Error";
+shatter-ts/src/reconstruct.ts:73:        case "TypeError": return new TypeError(message);
+shatter-ts/src/reconstruct.ts:74:        case "RangeError": return new RangeError(message);
+shatter-ts/src/reconstruct.ts:75:        case "SyntaxError": return new SyntaxError(message);
+shatter-ts/src/reconstruct.ts:76:        case "ReferenceError": return new ReferenceError(message);
+shatter-ts/src/reconstruct.ts:77:        case "URIError": return new URIError(message);
+shatter-ts/src/reconstruct.ts:78:        case "EvalError": return new EvalError(message);
+shatter-ts/src/reconstruct.ts:79:        default: return new Error(message);
+shatter-ts/src/__fixtures__/literals.ts:52:export function checkStatus(obj: { status: string }): boolean {
+shatter-ts/src/__fixtures__/literals.ts:53:  return obj.status === "active";
+shatter-ts/src/__fixtures__/async-functions.ts:5: * asyncThrows — rejects: throws Error("async boom")
+shatter-ts/src/__fixtures__/async-functions.ts:14:  throw new Error("async boom");
+shatter-ts/src/executor.ts:17:  ErrorInfo,
+shatter-ts/src/executor.ts:18:  ErrorCategory,
+shatter-ts/src/executor.ts:27:} from "./protocol.js";
+shatter-ts/src/executor.ts:29:import type { MockConfig, ExternalCall } from "./protocol.js";
+shatter-ts/src/executor.ts:58:const VALIDATION_ERROR_PATTERNS = /Validation|Invalid|BadRequest|Forbidden|Unauthorized|NotFound/i;
+shatter-ts/src/executor.ts:59:const RUNTIME_ERROR_TYPES = new Set(["TypeError", "ReferenceError", "SyntaxError", "RangeError", "URIError"]);
+shatter-ts/src/executor.ts:62: * Classify an error into a structured category using language-level signals.
+shatter-ts/src/executor.ts:63: * - validation: custom error subclasses or names suggesting deliberate input rejection
+shatter-ts/src/executor.ts:64: * - runtime: JS built-in error types indicating accidental failures
+shatter-ts/src/executor.ts:67:export function classifyError(errorType: string, message: string): ErrorCategory {
+shatter-ts/src/executor.ts:68:  if (/timed?\s*out/i.test(message) || errorType === "ERR_SCRIPT_EXECUTION_TIMEOUT") {
+shatter-ts/src/executor.ts:71:  if (VALIDATION_ERROR_PATTERNS.test(errorType) || VALIDATION_ERROR_PATTERNS.test(message)) {
+shatter-ts/src/executor.ts:74:  if (RUNTIME_ERROR_TYPES.has(errorType)) {
+shatter-ts/src/executor.ts:213:    throw new Error(
+shatter-ts/src/executor.ts:235:  thrownError: ErrorInfo | null;
+shatter-ts/src/executor.ts:254:  let thrownError: ErrorInfo | null = null;
+shatter-ts/src/executor.ts:264:          setTimeout(() => reject(new Error("async execution timed out")), timeoutMs)
+shatter-ts/src/executor.ts:272:    const errorType = err.constructor?.name ?? "Error";
+shatter-ts/src/executor.ts:273:    const errorMessage = String(err.message ?? e);
+shatter-ts/src/executor.ts:274:    thrownError = {
+shatter-ts/src/executor.ts:275:      error_type: errorType,
+shatter-ts/src/executor.ts:276:      message: errorMessage,
+shatter-ts/src/executor.ts:278:      error_category: classifyError(errorType, errorMessage),
+shatter-ts/src/executor.ts:292:    thrownError,
+shatter-ts/src/executor.ts:302:/** Execution result before being wrapped in a protocol response. */
+shatter-ts/src/executor.ts:305:  thrown_error: ErrorInfo | null;
+shatter-ts/src/executor.ts:409: * Captures: log, warn, error, info, debug (level mapped 1:1),
+shatter-ts/src/executor.ts:434:    error: makeLogger("error"),
+shatter-ts/src/executor.ts:537:  if (metrics.thrownError) {
+shatter-ts/src/executor.ts:539:      kind: "thrown_error",
+shatter-ts/src/executor.ts:540:      error_type: metrics.thrownError.error_type,
+shatter-ts/src/executor.ts:541:      message: metrics.thrownError.message,
+shatter-ts/src/executor.ts:542:      stack: metrics.thrownError.stack,
+shatter-ts/src/executor.ts:548:    thrown_error: metrics.thrownError,
+shatter-ts/src/executor.ts:703:    throw new Error(
+shatter-ts/src/executor.ts:714:  if (metrics.thrownError) {
+shatter-ts/src/executor.ts:716:      kind: "thrown_error",
+shatter-ts/src/executor.ts:717:      error_type: metrics.thrownError.error_type,
+shatter-ts/src/executor.ts:718:      message: metrics.thrownError.message,
+shatter-ts/src/executor.ts:719:      stack: metrics.thrownError.stack,
+shatter-ts/src/executor.ts:742:    thrown_error: metrics.thrownError,
+shatter-ts/src/executor.ts:759:  protocolVersion: string,
+shatter-ts/src/executor.ts:765:    protocol_version: protocolVersion,
+shatter-ts/src/executor.ts:767:    status: "execute",
+shatter-ts/src/executor.ts:769:    thrown_error: rawResult.thrown_error,
+shatter-ts/src/wasm-generator.test.ts:35:      // Just verify the function runs without error on an empty cache
+shatter-ts/src/__fixtures__/component.tsx:5: * statusBadge: 3 branches via ternary chain (active → "green", pending → "yellow", default → "gray").
+shatter-ts/src/__fixtures__/component.tsx:18:export function statusBadge(status: string): string {
+shatter-ts/src/__fixtures__/component.tsx:19:  const color = status === "active"
+shatter-ts/src/__fixtures__/component.tsx:21:    : status === "pending"
+shatter-ts/src/__fixtures__/component.tsx:24:  return `<span class="${color}">${status}</span>`;
+shatter-ts/src/wasm-generator.ts:51:    throw new Error(
+shatter-ts/src/wasm-generator.ts:64:    throw new Error(
+shatter-ts/src/__fixtures__/react-component.tsx:5: * StatusCard: 4 branches via conditional rendering.
+shatter-ts/src/__fixtures__/react-component.tsx:6: *   - status === "active" && count > 10 → "high" label in active div
+shatter-ts/src/__fixtures__/react-component.tsx:7: *   - status === "active" && count > 5  → "medium" label in active div
+shatter-ts/src/__fixtures__/react-component.tsx:8: *   - status === "active" && count <= 5 → "low" label in active div
+shatter-ts/src/__fixtures__/react-component.tsx:9: *   - status !== "active"               → inactive div
+shatter-ts/src/__fixtures__/react-component.tsx:18:export function StatusCard(props: { status: string; count: number }) {
+shatter-ts/src/__fixtures__/react-component.tsx:27:  if (props.status === "active") {
+shatter-ts/src/analyzer.test.ts:3:import type { TypeInfo } from "./protocol.js";
+shatter-ts/src/analyzer.test.ts:530:      const results = analyzeFile(path.join(fixtures, "literals.ts"), "checkStatus");
+shatter-ts/src/analyzer.test.ts:535:      expect(strs).toContain("status");
+shatter-ts/src/analyzer.test.ts:617:      expect(names).toContain("statusBadge");
+shatter-ts/src/analyzer.test.ts:636:      const results = analyzeFile(path.join(fixtures, "component.tsx"), "statusBadge");
+shatter-ts/src/analyzer.test.ts:638:      expect(results[0]!.name).toBe("statusBadge");
+shatter-ts/src/instrumentor.ts:15:import type { SymExpr, BinOpKind, UnOpKind, MockConfig } from "./protocol.js";
+shatter-ts/src/instrumentor.ts:83: * @returns The instrumented source, or an error message.
+shatter-ts/src/instrumentor.ts:90:): InstrumentResult | { error: string } {
+shatter-ts/src/instrumentor.ts:102:    return { error: `Function '${functionName}' not found` };
+shatter-ts/src/__fixtures__/setup-module.ts:23:    throw new Error("Missing db in context");
+shatter-ts/src/main.ts:6: * Reads newline-delimited JSON protocol messages from stdin and writes
+shatter-ts/src/main.ts:13:import { PROTOCOL_VERSION, type Response } from "./protocol.js";
+shatter-ts/src/main.ts:22:  logger.debug("Starting TypeScript frontend (protocol 0.1.0)");
+shatter-ts/src/main.ts:37:    if ("error" in result) {
+shatter-ts/src/main.ts:38:      sendResponse(result.error);
+shatter-ts/src/main.ts:51:      const msg = err instanceof Error ? err.message : String(err);
+shatter-ts/src/main.ts:52:      logger.error("Unhandled error processing request %s: %s", requestId, msg);
+shatter-ts/src/main.ts:54:        protocol_version: PROTOCOL_VERSION,
+shatter-ts/src/main.ts:56:        status: "error",
+shatter-ts/src/main.ts:57:        code: "internal_error",
+shatter-ts/src/main.ts:58:        message: `Unhandled error: ${msg}`,
+shatter-ts/src/analyzer.ts:22:} from "./protocol.js";
+shatter-ts/src/analyzer.ts:41: * falling back to hardcoded defaults on any error or when no root is given.
+shatter-ts/src/analyzer.ts:50:  if (readResult.error) {
+shatter-ts/src/analyzer.ts:60:  if (parsed.errors.length > 0) {
+shatter-ts/src/analyzer.ts:351: * Convert a TypeScript compiler type to our protocol TypeInfo.
+shatter-ts/src/analyzer.ts:842:import type { ComplexKind } from "./protocol.js";
+shatter-ts/src/analyzer.ts:850:    case "Error":
+shatter-ts/src/analyzer.ts:851:    case "TypeError":
+shatter-ts/src/analyzer.ts:852:    case "RangeError":
+shatter-ts/src/analyzer.ts:853:    case "SyntaxError":
+shatter-ts/src/analyzer.ts:854:    case "ReferenceError":
+shatter-ts/src/analyzer.ts:855:    case "URIError":
+shatter-ts/src/analyzer.ts:856:    case "EvalError":
+shatter-ts/src/analyzer.ts:857:      return "error";
+shatter-ts/src/analyzer.ts:873:// Object type conversion
+shatter-ts/src/analyzer.ts:909: * Convert a TypeScript AST expression into a SymExpr matching the protocol
+shatter-ts/src/handlers.ts:2: * Command handlers for the Shatter protocol.
+shatter-ts/src/handlers.ts:12:  PROTOCOL_VERSION,
+shatter-ts/src/handlers.ts:16:  type ErrorResponse,
+shatter-ts/src/handlers.ts:18:} from "./protocol.js";
+shatter-ts/src/handlers.ts:47:  "complex_type:buffer", "complex_type:error", "complex_type:symbol",
+shatter-ts/src/handlers.ts:84:  if (!isVersionCompatible(request.protocol_version)) {
+shatter-ts/src/handlers.ts:86:      response: errorResponse(request.id, "version_mismatch",
+shatter-ts/src/handlers.ts:87:        `Unsupported protocol version: ${request.protocol_version} (expected ${PROTOCOL_VERSION})`),
+shatter-ts/src/handlers.ts:92:  switch (request.command) {
+shatter-ts/src/handlers.ts:96:          protocol_version: PROTOCOL_VERSION,
+shatter-ts/src/handlers.ts:98:          status: "handshake",
+shatter-ts/src/handlers.ts:99:          frontend_version: PROTOCOL_VERSION,
+shatter-ts/src/handlers.ts:109:          response: errorResponse(request.id, "file_not_found", `File not found: ${request.file}`),
+shatter-ts/src/handlers.ts:120:          response: errorResponse(
+shatter-ts/src/handlers.ts:131:          protocol_version: PROTOCOL_VERSION,
+shatter-ts/src/handlers.ts:133:          status: "analyze",
+shatter-ts/src/handlers.ts:143:          response: errorResponse(request.id, "file_not_found", `File not found: ${request.file}`),
+shatter-ts/src/handlers.ts:151:      if ("error" in result) {
+shatter-ts/src/handlers.ts:153:          response: errorResponse(request.id, "instrumentation_failed", result.error),
+shatter-ts/src/handlers.ts:166:          protocol_version: PROTOCOL_VERSION,
+shatter-ts/src/handlers.ts:168:          status: "instrument",
+shatter-ts/src/handlers.ts:183:          response: errorResponse(
+shatter-ts/src/handlers.ts:206:          response: buildExecuteResponse(request.id, PROTOCOL_VERSION, rawResult),
+shatter-ts/src/handlers.ts:210:        const msg = e instanceof Error ? e.message : String(e);
+shatter-ts/src/handlers.ts:212:          response: errorResponse(request.id, "internal_error", `Execute failed: ${msg}`),
+shatter-ts/src/handlers.ts:221:          response: errorResponse(request.id, "file_not_found", `File not found: ${request.file}`),
+shatter-ts/src/handlers.ts:241:            protocol_version: PROTOCOL_VERSION,
+shatter-ts/src/handlers.ts:243:            status: "setup",
+shatter-ts/src/handlers.ts:249:        const msg = e instanceof Error ? e.message : String(e);
+shatter-ts/src/handlers.ts:251:          response: errorResponse(request.id, "internal_error", `Setup failed: ${msg}`),
+shatter-ts/src/handlers.ts:263:            response: errorResponse(
+shatter-ts/src/handlers.ts:265:              "internal_error",
+shatter-ts/src/handlers.ts:279:            protocol_version: PROTOCOL_VERSION,
+shatter-ts/src/handlers.ts:281:            status: "teardown_ack",
+shatter-ts/src/handlers.ts:286:        const msg = e instanceof Error ? e.message : String(e);
+shatter-ts/src/handlers.ts:288:          response: errorResponse(request.id, "internal_error", `Teardown failed: ${msg}`),
+shatter-ts/src/handlers.ts:297:          response: errorResponse(request.id, "file_not_found", `File not found: ${request.file}`),
+shatter-ts/src/handlers.ts:309:              protocol_version: PROTOCOL_VERSION,
+shatter-ts/src/handlers.ts:311:              status: "generate",
+shatter-ts/src/handlers.ts:325:            protocol_version: PROTOCOL_VERSION,
+shatter-ts/src/handlers.ts:327:            status: "generate",
+shatter-ts/src/handlers.ts:334:        const msg = e instanceof Error ? e.message : String(e);
+shatter-ts/src/handlers.ts:336:          response: errorResponse(request.id, "internal_error", `Generate failed: ${msg}`),
+shatter-ts/src/handlers.ts:348:          protocol_version: PROTOCOL_VERSION,
+shatter-ts/src/handlers.ts:350:          status: "shutdown_ack",
+shatter-ts/src/handlers.ts:377:function isVersionCompatible(version: string): boolean {
+shatter-ts/src/handlers.ts:379:  const [reqMajor, reqMinor] = version.split(".").map(Number);
+shatter-ts/src/handlers.ts:380:  const [ourMajor, ourMinor] = PROTOCOL_VERSION.split(".").map(Number);
+shatter-ts/src/handlers.ts:384:function errorResponse(id: number, code: ErrorResponse["code"], message: string): ErrorResponse {
+shatter-ts/src/handlers.ts:386:    protocol_version: PROTOCOL_VERSION,
+shatter-ts/src/handlers.ts:388:    status: "error",
+shatter-ts/src/handlers.ts:395: * Parse a JSON string into a Request, returning an error response if invalid.
+shatter-ts/src/handlers.ts:397:export function parseRequest(line: string): { request: Request } | { error: ErrorResponse } {
+shatter-ts/src/handlers.ts:403:      error: errorResponse(0, "invalid_request", `Invalid JSON: ${line.slice(0, 100)}`),
+shatter-ts/src/handlers.ts:409:      error: errorResponse(0, "invalid_request", "Request must be a JSON object"),
+shatter-ts/src/handlers.ts:417:      error: errorResponse(0, "invalid_request", "Request must have a numeric 'id' field"),
+shatter-ts/src/handlers.ts:423:  if (typeof obj["protocol_version"] !== "string") {
+shatter-ts/src/handlers.ts:425:      error: errorResponse(id, "invalid_request", "Request must have a 'protocol_version' string field"),
+shatter-ts/src/handlers.ts:429:  if (typeof obj["command"] !== "string") {
+shatter-ts/src/handlers.ts:431:      error: errorResponse(id, "invalid_request", "Request must have a 'command' string field"),
+shatter-ts/src/handlers.ts:435:  const validCommands = ["handshake", "analyze", "instrument", "execute", "setup", "teardown", "generate", "shutdown"];
+shatter-ts/src/handlers.ts:436:  if (!validCommands.includes(obj["command"] as string)) {
+shatter-ts/src/handlers.ts:438:      error: errorResponse(id, "invalid_request", `Unknown command: ${String(obj["command"])}`),
+shatter-ts/src/handlers.test.ts:5:  PROTOCOL_VERSION,
+shatter-ts/src/handlers.test.ts:16:} from "./protocol.js";
+shatter-ts/src/handlers.test.ts:21:    expect("error" in result).toBe(true);
+shatter-ts/src/handlers.test.ts:22:    if ("error" in result) {
+shatter-ts/src/handlers.test.ts:23:      expect(result.error.code).toBe("invalid_request");
+shatter-ts/src/handlers.test.ts:29:    expect("error" in result).toBe(true);
+shatter-ts/src/handlers.test.ts:30:    if ("error" in result) {
+shatter-ts/src/handlers.test.ts:31:      expect(result.error.code).toBe("invalid_request");
+shatter-ts/src/handlers.test.ts:36:    const result = parseRequest(`{"command":"handshake","protocol_version":"${PROTOCOL_VERSION}"}`);
+shatter-ts/src/handlers.test.ts:37:    expect("error" in result).toBe(true);
+shatter-ts/src/handlers.test.ts:38:    if ("error" in result) {
+shatter-ts/src/handlers.test.ts:39:      expect(result.error.code).toBe("invalid_request");
+shatter-ts/src/handlers.test.ts:40:      expect(result.error.message).toContain("id");
+shatter-ts/src/handlers.test.ts:44:  it("rejects request without protocol_version", () => {
+shatter-ts/src/handlers.test.ts:45:    const result = parseRequest('{"id":1,"command":"handshake"}');
+shatter-ts/src/handlers.test.ts:46:    expect("error" in result).toBe(true);
+shatter-ts/src/handlers.test.ts:47:    if ("error" in result) {
+shatter-ts/src/handlers.test.ts:48:      expect(result.error.code).toBe("invalid_request");
+shatter-ts/src/handlers.test.ts:52:  it("rejects request without command", () => {
+shatter-ts/src/handlers.test.ts:53:    const result = parseRequest(`{"id":1,"protocol_version":"${PROTOCOL_VERSION}"}`);
+shatter-ts/src/handlers.test.ts:54:    expect("error" in result).toBe(true);
+shatter-ts/src/handlers.test.ts:55:    if ("error" in result) {
+shatter-ts/src/handlers.test.ts:56:      expect(result.error.code).toBe("invalid_request");
+shatter-ts/src/handlers.test.ts:60:  it("rejects unknown command", () => {
+shatter-ts/src/handlers.test.ts:61:    const result = parseRequest(`{"id":1,"protocol_version":"${PROTOCOL_VERSION}","command":"bogus"}`);
+shatter-ts/src/handlers.test.ts:62:    expect("error" in result).toBe(true);
+shatter-ts/src/handlers.test.ts:63:    if ("error" in result) {
+shatter-ts/src/handlers.test.ts:64:      expect(result.error.code).toBe("invalid_request");
+shatter-ts/src/handlers.test.ts:65:      expect(result.error.message).toContain("bogus");
+shatter-ts/src/handlers.test.ts:71:      `{"id":1,"protocol_version":"${PROTOCOL_VERSION}","command":"handshake","capabilities":["analyze"]}`
+shatter-ts/src/handlers.test.ts:75:      expect(result.request.command).toBe("handshake");
+shatter-ts/src/handlers.test.ts:82:      `{"id":5,"protocol_version":"${PROTOCOL_VERSION}","command":"shutdown"}`
+shatter-ts/src/handlers.test.ts:86:      expect(result.request.command).toBe("shutdown");
+shatter-ts/src/handlers.test.ts:92:      `{"id":1,"protocol_version":"${PROTOCOL_VERSION}","command":"setup","file":"s.ts","scope":"fn","level":"function"}`
+shatter-ts/src/handlers.test.ts:96:      expect(result.request.command).toBe("setup");
+shatter-ts/src/handlers.test.ts:97:      if (result.request.command === "setup") {
+shatter-ts/src/handlers.test.ts:106:      `{"id":2,"protocol_version":"${PROTOCOL_VERSION}","command":"teardown","scope":"fn","level":"function"}`
+shatter-ts/src/handlers.test.ts:110:      expect(result.request.command).toBe("teardown");
+shatter-ts/src/handlers.test.ts:111:      if (result.request.command === "teardown") {
+shatter-ts/src/handlers.test.ts:120:      `{"id":3,"protocol_version":"${PROTOCOL_VERSION}","command":"generate","file":"g.ts","name":"User","kind":"type_name"}`
+shatter-ts/src/handlers.test.ts:124:      expect(result.request.command).toBe("generate");
+shatter-ts/src/handlers.test.ts:135:  function makeRequest(overrides: Partial<Request> & { command: Request["command"] }): Request {
+shatter-ts/src/handlers.test.ts:137:      protocol_version: PROTOCOL_VERSION,
+shatter-ts/src/handlers.test.ts:144:    it("responds with frontend version and capabilities", async () => {
+shatter-ts/src/handlers.test.ts:146:        makeRequest({ command: "handshake", capabilities: ["analyze", "execute"] })
+shatter-ts/src/handlers.test.ts:149:      expect(response.status).toBe("handshake");
+shatter-ts/src/handlers.test.ts:151:      expect(response.protocol_version).toBe(PROTOCOL_VERSION);
+shatter-ts/src/handlers.test.ts:152:      if (response.status === "handshake") {
+shatter-ts/src/handlers.test.ts:153:        expect(response.frontend_version).toBe(PROTOCOL_VERSION);
+shatter-ts/src/handlers.test.ts:162:  describe("version mismatch", () => {
+shatter-ts/src/handlers.test.ts:163:    it("returns error for incompatible protocol version", async () => {
+shatter-ts/src/handlers.test.ts:165:        makeRequest({ command: "handshake", capabilities: [], protocol_version: "1.0.0" })
+shatter-ts/src/handlers.test.ts:168:      expect(response.status).toBe("error");
+shatter-ts/src/handlers.test.ts:169:      if (response.status === "error") {
+shatter-ts/src/handlers.test.ts:170:        expect(response.code).toBe("version_mismatch");
+shatter-ts/src/handlers.test.ts:176:        makeRequest({ command: "handshake", capabilities: [], protocol_version: "0.1.99" })
+shatter-ts/src/handlers.test.ts:178:      expect(response.status).toBe("handshake");
+shatter-ts/src/handlers.test.ts:183:    it("returns file_not_found error for missing file", async () => {
+shatter-ts/src/handlers.test.ts:185:        makeRequest({ command: "analyze", file: "nonexistent.ts" })
+shatter-ts/src/handlers.test.ts:188:      expect(response.status).toBe("error");
+shatter-ts/src/handlers.test.ts:189:      if (response.status === "error") {
+shatter-ts/src/handlers.test.ts:194:    it("returns function_not_found error for missing function in existing file", async () => {
+shatter-ts/src/handlers.test.ts:197:        makeRequest({ command: "analyze", file: fixtureFile, function: "nonexistent" })
+shatter-ts/src/handlers.test.ts:200:      expect(response.status).toBe("error");
+shatter-ts/src/handlers.test.ts:201:      if (response.status === "error") {
+shatter-ts/src/handlers.test.ts:209:        makeRequest({ command: "analyze", file: fixtureFile, function: "add" })
+shatter-ts/src/handlers.test.ts:212:      expect(response.status).toBe("analyze");
+shatter-ts/src/handlers.test.ts:213:      if (response.status === "analyze") {
+shatter-ts/src/handlers.test.ts:223:        makeRequest({ command: "analyze", file: fixtureFile })
+shatter-ts/src/handlers.test.ts:225:      expect(response.status).toBe("analyze");
+shatter-ts/src/handlers.test.ts:226:      if (response.status === "analyze") {
+shatter-ts/src/handlers.test.ts:233:    it("returns file_not_found error for missing file", async () => {
+shatter-ts/src/handlers.test.ts:235:        makeRequest({ command: "instrument", file: "nonexistent.ts", function: "foo", mocks: [] })
+shatter-ts/src/handlers.test.ts:238:      expect(response.status).toBe("error");
+shatter-ts/src/handlers.test.ts:239:      if (response.status === "error") {
+shatter-ts/src/handlers.test.ts:247:        makeRequest({ command: "instrument", file: fixtureFile, function: "nonexistent", mocks: [] })
+shatter-ts/src/handlers.test.ts:250:      expect(response.status).toBe("error");
+shatter-ts/src/handlers.test.ts:251:      if (response.status === "error") {
+shatter-ts/src/handlers.test.ts:259:        makeRequest({ command: "instrument", file: exampleFile, function: "classifyNumber", mocks: [] })
+shatter-ts/src/handlers.test.ts:262:      expect(response.status).toBe("instrument");
+shatter-ts/src/handlers.test.ts:263:      if (response.status === "instrument") {
+shatter-ts/src/handlers.test.ts:271:    it("returns error when function cannot be resolved", async () => {
+shatter-ts/src/handlers.test.ts:273:        makeRequest({ command: "execute", function: "foo", inputs: [], mocks: [] })
+shatter-ts/src/handlers.test.ts:276:      expect(response.status).toBe("error");
+shatter-ts/src/handlers.test.ts:285:          command: "analyze",
+shatter-ts/src/handlers.test.ts:293:          command: "execute",
+shatter-ts/src/handlers.test.ts:300:      expect(response.status).toBe("execute");
+shatter-ts/src/handlers.test.ts:301:      if (response.status === "execute") {
+shatter-ts/src/handlers.test.ts:303:        expect(response.thrown_error).toBeNull();
+shatter-ts/src/handlers.test.ts:316:          command: "execute",
+shatter-ts/src/handlers.test.ts:322:      expect(response.status).toBe("execute");
+shatter-ts/src/handlers.test.ts:323:      if (response.status === "execute") {
+shatter-ts/src/handlers.test.ts:334:          command: "analyze",
+shatter-ts/src/handlers.test.ts:342:          command: "execute",
+shatter-ts/src/handlers.test.ts:348:      expect(response.status).toBe("execute");
+shatter-ts/src/handlers.test.ts:349:      if (response.status === "execute") {
+shatter-ts/src/handlers.test.ts:360:          command: "instrument",
+shatter-ts/src/handlers.test.ts:369:          command: "execute",
+shatter-ts/src/handlers.test.ts:375:      expect(response.status).toBe("execute");
+shatter-ts/src/handlers.test.ts:376:      if (response.status === "execute") {
+shatter-ts/src/handlers.test.ts:389:          command: "analyze",
+shatter-ts/src/handlers.test.ts:397:          command: "execute",
+shatter-ts/src/handlers.test.ts:403:      expect(response.status).toBe("execute");
+shatter-ts/src/handlers.test.ts:404:      if (response.status === "execute") {
+shatter-ts/src/handlers.test.ts:406:        expect(response.thrown_error).toBeNull();
+shatter-ts/src/handlers.test.ts:410:    it("executes async function that rejects and captures thrown_error", async () => {
+shatter-ts/src/handlers.test.ts:415:          command: "analyze",
+shatter-ts/src/handlers.test.ts:423:          command: "execute",
+shatter-ts/src/handlers.test.ts:429:      expect(response.status).toBe("execute");
+shatter-ts/src/handlers.test.ts:430:      if (response.status === "execute") {
+shatter-ts/src/handlers.test.ts:431:        expect(response.thrown_error).not.toBeNull();
+shatter-ts/src/handlers.test.ts:432:        expect(response.thrown_error!.message).toBe("async boom");
+shatter-ts/src/handlers.test.ts:440:        makeRequest({ command: "shutdown" })
+shatter-ts/src/handlers.test.ts:443:      expect(response.status).toBe("shutdown_ack");
+shatter-ts/src/handlers.test.ts:452:        makeRequest({ command: "setup", file: setupFile, scope: "myFunc", level: "function" })
+shatter-ts/src/handlers.test.ts:455:      expect(response.status).toBe("setup");
+shatter-ts/src/handlers.test.ts:456:      if (response.status === "setup") {
+shatter-ts/src/handlers.test.ts:468:        makeRequest({ command: "setup", file: setupFile, scope: "auth", level: "execution" })
+shatter-ts/src/handlers.test.ts:470:      expect(response.status).toBe("setup");
+shatter-ts/src/handlers.test.ts:471:      if (response.status === "setup") {
+shatter-ts/src/handlers.test.ts:483:        makeRequest({ command: "setup", file: setupFile, scope: "global", level: "session" })
+shatter-ts/src/handlers.test.ts:485:      expect(response.status).toBe("setup");
+shatter-ts/src/handlers.test.ts:486:      if (response.status === "setup") {
+shatter-ts/src/handlers.test.ts:503:        makeRequest({ command: "setup", file: setupFile, scope: "myFile.ts", level: "file", parent_context: parentContext })
+shatter-ts/src/handlers.test.ts:505:      expect(response.status).toBe("setup");
+shatter-ts/src/handlers.test.ts:506:      if (response.status === "setup") {
+shatter-ts/src/handlers.test.ts:518:        makeRequest({ command: "setup", file: setupFile, scope: "global", level: "session" })
+shatter-ts/src/handlers.test.ts:521:        makeRequest({ command: "setup", file: setupFile, scope: "global", level: "function" })
+shatter-ts/src/handlers.test.ts:526:        makeRequest({ command: "teardown", scope: "global", level: "function" })
+shatter-ts/src/handlers.test.ts:531:        makeRequest({ command: "teardown", scope: "global", level: "session" })
+shatter-ts/src/handlers.test.ts:538:        makeRequest({ command: "setup", file: "/nonexistent/setup.ts", scope: "f", level: "function" })
+shatter-ts/src/handlers.test.ts:540:      expect(response.status).toBe("error");
+shatter-ts/src/handlers.test.ts:541:      if (response.status === "error") {
+shatter-ts/src/handlers.test.ts:546:    it("returns error when setup export is missing", async () => {
+shatter-ts/src/handlers.test.ts:549:        makeRequest({ command: "setup", file: fixtureFile, scope: "f", level: "function" })
+shatter-ts/src/handlers.test.ts:551:      expect(response.status).toBe("error");
+shatter-ts/src/handlers.test.ts:552:      if (response.status === "error") {
+shatter-ts/src/handlers.test.ts:553:        expect(response.code).toBe("internal_error");
+shatter-ts/src/handlers.test.ts:563:        makeRequest({ command: "setup", file: setupFile, scope: "myFunc", level: "function" })
+shatter-ts/src/handlers.test.ts:566:        makeRequest({ command: "teardown", scope: "myFunc", level: "function" })
+shatter-ts/src/handlers.test.ts:569:      expect(response.status).toBe("teardown_ack");
+shatter-ts/src/handlers.test.ts:572:    it("returns error when no setup context exists", async () => {
+shatter-ts/src/handlers.test.ts:574:        makeRequest({ command: "teardown", scope: "neverSetUp", level: "function" })
+shatter-ts/src/handlers.test.ts:576:      expect(response.status).toBe("error");
+shatter-ts/src/handlers.test.ts:577:      if (response.status === "error") {
+shatter-ts/src/handlers.test.ts:578:        expect(response.code).toBe("internal_error");
+shatter-ts/src/handlers.test.ts:583:    it("returns error when setup file has no teardown export", async () => {
+shatter-ts/src/handlers.test.ts:586:        makeRequest({ command: "setup", file: setupFile, scope: "fn", level: "function" })
+shatter-ts/src/handlers.test.ts:588:      expect(setupResp.status).toBe("setup");
+shatter-ts/src/handlers.test.ts:591:        makeRequest({ command: "teardown", scope: "fn", level: "function" })
+shatter-ts/src/handlers.test.ts:593:      expect(response.status).toBe("error");
+shatter-ts/src/handlers.test.ts:594:      if (response.status === "error") {
+shatter-ts/src/handlers.test.ts:595:        expect(response.code).toBe("internal_error");
+shatter-ts/src/handlers.test.ts:605:        makeRequest({ command: "generate", file: genFile, name: "User", kind: "type_name" })
+shatter-ts/src/handlers.test.ts:608:      expect(response.status).toBe("generate");
+shatter-ts/src/handlers.test.ts:609:      if (response.status === "generate") {
+shatter-ts/src/handlers.test.ts:618:        makeRequest({ command: "generate", file: genFile, name: "authToken", kind: "param_name" })
+shatter-ts/src/handlers.test.ts:620:      expect(response.status).toBe("generate");
+shatter-ts/src/handlers.test.ts:621:      if (response.status === "generate") {
+shatter-ts/src/handlers.test.ts:630:        makeRequest({ command: "generate", file: genFile, name: "count", kind: "param_name" })
+shatter-ts/src/handlers.test.ts:632:      expect(response.status).toBe("generate");
+shatter-ts/src/handlers.test.ts:633:      if (response.status === "generate") {
+shatter-ts/src/handlers.test.ts:641:        makeRequest({ command: "generate", file: "/nonexistent/gen.ts", name: "T", kind: "type_name" })
+shatter-ts/src/handlers.test.ts:643:      expect(response.status).toBe("error");
+shatter-ts/src/handlers.test.ts:644:      if (response.status === "error") {
+shatter-ts/src/handlers.test.ts:649:    it("returns error when generator export is missing", async () => {
+shatter-ts/src/handlers.test.ts:652:        makeRequest({ command: "generate", file: fixtureFile, name: "NonExistent", kind: "type_name" })
+shatter-ts/src/handlers.test.ts:654:      expect(response.status).toBe("error");
+shatter-ts/src/handlers.test.ts:655:      if (response.status === "error") {
+shatter-ts/src/handlers.test.ts:656:        expect(response.code).toBe("internal_error");
+shatter-ts/src/handlers.test.ts:665:        makeRequest({ command: "handshake", capabilities: [] })
+shatter-ts/src/handlers.test.ts:667:      if (response.status === "handshake") {
+shatter-ts/src/handlers.test.ts:682:        makeRequest({ command: "instrument", file: exampleFile, function: "classifyNumber", mocks: [] })
+shatter-ts/src/handlers.test.ts:688:        makeRequest({ command: "analyze", file: fixtureFile })
+shatter-ts/src/handlers.test.ts:691:        makeRequest({ command: "execute", function: `${fixtureFile}:add`, inputs: [1, 2], mocks: [] })
+shatter-ts/src/handlers.test.ts:697:        makeRequest({ command: "setup", file: setupFile, scope: "testFn", level: "function" })
+shatter-ts/src/handlers.test.ts:700:        makeRequest({ command: "teardown", scope: "testFn", level: "function" })
+shatter-ts/src/handlers.test.ts:712:        makeRequest({ command: "instrument", file: exampleFile, function: "classifyNumber", mocks: [] })
+shatter-ts/src/handlers.test.ts:717:      await handleRequest(makeRequest({ command: "shutdown" }));
+shatter-ts/src/handlers.test.ts:725:    it("all responses include protocol_version and id", async () => {
+shatter-ts/src/handlers.test.ts:726:      const commands: Request["command"][] = [
+shatter-ts/src/handlers.test.ts:731:      for (const command of commands) {
+shatter-ts/src/handlers.test.ts:733:          command === "handshake" ? { command, capabilities: [] } :
+shatter-ts/src/handlers.test.ts:734:          command === "analyze" ? { command, file: "t.ts" } :
+shatter-ts/src/handlers.test.ts:735:          command === "instrument" ? { command, file: "t.ts", function: "f", mocks: [] } :
+shatter-ts/src/handlers.test.ts:736:          command === "execute" ? { command, function: "f", inputs: [], mocks: [] } :
+shatter-ts/src/handlers.test.ts:737:          command === "setup" ? { command, file: "s.ts", scope: "f", level: "function" as SetupLevel } :
+shatter-ts/src/handlers.test.ts:738:          command === "teardown" ? { command, scope: "f", level: "function" as SetupLevel } :
+shatter-ts/src/handlers.test.ts:739:          command === "generate" ? { command, file: "g.ts", name: "T", kind: "type_name" as const } :
+shatter-ts/src/handlers.test.ts:740:          { command }
+shatter-ts/src/handlers.test.ts:743:        expect(response.protocol_version).toBe(PROTOCOL_VERSION);
+shatter-ts/src/handlers.test.ts:750:describe("protocol round-trip", () => {
+shatter-ts/src/handlers.test.ts:752:    const json = `{"protocol_version":"${PROTOCOL_VERSION}","id":1,"status":"handshake","frontend_version":"${PROTOCOL_VERSION}","language":"typescript","capabilities":["analyze","execute","instrument"]}`;
+shatter-ts/src/handlers.test.ts:754:    expect(response.status).toBe("handshake");
+shatter-ts/src/handlers.test.ts:756:    if (response.status === "handshake") {
+shatter-ts/src/handlers.test.ts:763:      protocol_version: PROTOCOL_VERSION,
+shatter-ts/src/handlers.test.ts:765:      command: "handshake",
+shatter-ts/src/handlers.test.ts:770:    expect(parsed.protocol_version).toBe(PROTOCOL_VERSION);
+shatter-ts/src/handlers.test.ts:772:    expect(parsed.status).toBe("handshake");
+shatter-ts/src/handlers.test.ts:775:  it("error response matches protocol schema", async () => {
+shatter-ts/src/handlers.test.ts:777:      protocol_version: "9.9.9",
+shatter-ts/src/handlers.test.ts:779:      command: "handshake",
+shatter-ts/src/handlers.test.ts:784:    expect(parsed.status).toBe("error");
+shatter-ts/src/handlers.test.ts:785:    if (parsed.status === "error") {
+shatter-ts/src/handlers.test.ts:786:      expect(parsed.code).toBe("version_mismatch");
+shatter-ts/src/handlers.test.ts:791:  it("shutdown_ack response matches protocol schema", async () => {
+shatter-ts/src/handlers.test.ts:793:      protocol_version: PROTOCOL_VERSION,
+shatter-ts/src/handlers.test.ts:795:      command: "shutdown",
+shatter-ts/src/handlers.test.ts:799:    expect(parsed.status).toBe("shutdown_ack");
+shatter-ts/src/handlers.test.ts:801:    expect(parsed.protocol_version).toBe(PROTOCOL_VERSION);
+shatter-ts/src/handlers.test.ts:806:      protocol_version: PROTOCOL_VERSION,
+shatter-ts/src/handlers.test.ts:808:      status: "setup",
+shatter-ts/src/handlers.test.ts:813:    expect(parsed.status).toBe("setup");
+shatter-ts/src/handlers.test.ts:815:    if (parsed.status === "setup") {
+shatter-ts/src/handlers.test.ts:822:      protocol_version: PROTOCOL_VERSION,
+shatter-ts/src/handlers.test.ts:824:      status: "teardown_ack",
+shatter-ts/src/handlers.test.ts:828:    expect(parsed.status).toBe("teardown_ack");
+shatter-ts/src/handlers.test.ts:830:    expect(parsed.protocol_version).toBe(PROTOCOL_VERSION);
+shatter-ts/src/handlers.test.ts:835:      protocol_version: PROTOCOL_VERSION,
+shatter-ts/src/handlers.test.ts:837:      status: "generate",
+shatter-ts/src/handlers.test.ts:843:    expect(parsed.status).toBe("generate");
+shatter-ts/src/handlers.test.ts:845:    if (parsed.status === "generate") {
+shatter-ts/src/handlers.test.ts:853:      protocol_version: PROTOCOL_VERSION,
+shatter-ts/src/handlers.test.ts:855:      status: "generate",
+shatter-ts/src/handlers.test.ts:861:    expect(parsed.status).toBe("generate");
+shatter-ts/src/handlers.test.ts:862:    if (parsed.status === "generate") {
+shatter-ts/src/handlers.test.ts:869:      protocol_version: PROTOCOL_VERSION,
+shatter-ts/src/handlers.test.ts:871:      status: "generate",
+shatter-ts/src/handlers.test.ts:878:    expect(parsed.status).toBe("generate");
+shatter-ts/src/handlers.test.ts:879:    if (parsed.status === "generate") {
+shatter-ts/src/handlers.test.ts:887:      protocol_version: PROTOCOL_VERSION,
+shatter-ts/src/handlers.test.ts:889:      command: "setup",
+shatter-ts/src/handlers.test.ts:902:    expect(parsed.command).toBe("setup");
+shatter-ts/src/handlers.test.ts:913:      protocol_version: PROTOCOL_VERSION,
+shatter-ts/src/handlers.test.ts:915:      command: "teardown",
+shatter-ts/src/handlers.test.ts:921:    expect(parsed.command).toBe("teardown");
+shatter-ts/src/handlers.test.ts:947:      protocol_version: PROTOCOL_VERSION,
+shatter-ts/src/handlers.test.ts:949:      status: "execute",
+shatter-ts/src/handlers.test.ts:951:      thrown_error: null,
+shatter-ts/src/handlers.test.ts:968:    expect(parsed.status).toBe("execute");
+shatter-ts/src/handlers.test.ts:969:    if (parsed.status === "execute") {

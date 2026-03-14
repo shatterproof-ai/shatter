@@ -1,0 +1,63 @@
+[
+  {
+    "from": "team-lead",
+    "text": "You are a teammate on the swarm-wave team. You have three tasks:\n\n**Task #9: [str-3ky9.15] Refactoring recs for hard-to-mock deps** (P3)\nDetect hard-to-mock calls (dynamic dispatch, closures, subprocess spawning, multi-layer indirection). Produce refactoring recommendations in scan output.\n\n**Task #10: [str-3ky9.16] Go frontend mock parity** (P3)\nExtend Go generateMockFile for per-execution mock variation, ThrowError support (panic or error return), discovered_dependencies reporting, and custom generator integration. E2E test with Go function and dynamic mocks.\n\n**Task #11: [str-3ky9.17] strace-based dep discovery tool** (P3)\nAdd `shatter discover-deps --strace` command using strace to catalog network syscalls. One-shot diagnostic, Linux only.\n\n**Workflow:**\n1. Start with task #10 (Go mock parity) as it has the clearest scope\n   - `bd start str-3ky9.16` to create branch\n   - Research existing Go mock generation in shatter-go/instrument/\n   - Look at how TS frontend handles per-execution mocks, ThrowError, discovered_dependencies\n   - Implement parity in Go frontend\n   - Add E2E test\n   - Run `cd shatter-go && go test ./...` and `go vet ./...`\n   - Commit, mark task #10 as completed\n2. Then task #9 (refactoring recs) on branch str-3ky9.15\n3. Then task #11 (strace discovery) on branch str-3ky9.17\n4. Send a message to team-lead with results after each task\n\nNote: Separate issues, separate branches.",
+    "timestamp": "2026-03-12T01:22:34.378Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773278584264-qhuwkix\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"bd show str-3ky9.16 && echo \\\"---\\\" && bd show str-3ky9.15 && echo \\\"---\\\" && bd show str-3ky9.17\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-12T01:27:36.291Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773278605172-cy5y8gs\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"find /home/ketan/project/shatter -type f \\\\( -name \\\"*.ts\\\" -o -name \\\"*.js\\\" -o -name \\\"*.rs\\\" -o -name \\\"*.go\\\" \\\\) -exec grep -l \\\"generateMockFile\\\\|generate.*mock\\\" {} \\\\;\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-12T01:27:37.135Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773278926322-sdozkvq\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"find /home/ketan/project/shatter/shatter-go -name \\\"*.go\\\" -exec grep -l \\\"type Response struct\\\" {} \\\\;\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-12T01:29:46.296Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"plan_approval_response\",\"requestId\":\"plan_approval-1773279293511@mock-parity@swarm-wave\",\"approved\":true,\"timestamp\":\"2026-03-12T01:34:53.790Z\",\"permissionMode\":\"default\"}",
+    "timestamp": "2026-03-12T01:34:53.790Z",
+    "read": true
+  },
+  {
+    "from": "mock-parity",
+    "text": "{\"type\":\"task_assignment\",\"taskId\":\"10\",\"subject\":\"[str-3ky9.16] Go frontend mock parity\",\"description\":\"Extend Go generateMockFile for per-execution mock variation, ThrowError support (panic or error return), discovered_dependencies reporting, and custom generator integration. E2E test with Go function and dynamic mocks. Branch: str-3ky9.16. See `bd show str-3ky9.16`.\",\"assignedBy\":\"mock-parity\",\"timestamp\":\"2026-03-12T01:35:05.273Z\"}",
+    "timestamp": "2026-03-12T01:35:05.273Z",
+    "color": "pink",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"plan_approval_response\",\"requestId\":\"plan_approval-1773279293511@mock-parity@swarm-wave\",\"approved\":true,\"timestamp\":\"2026-03-12T01:35:44.176Z\",\"permissionMode\":\"default\"}",
+    "timestamp": "2026-03-12T01:35:44.177Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773279646062-58l0jm3\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"cd /home/ketan/project/shatter && git add shatter-go/instrument/executor.go shatter-go/instrument/executor_test.go shatter-go/instrument/property_test.go shatter-go/protocol/types.go shatter-go/protocol/handler.go\",\"description\":\"Stage Go mock parity changes\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-12T01:41:10.408Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773279840938-x9e2mhi\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"grep -c \\\"FAIL\\\\|ERROR\\\\|error\\\" /home/ketan/.claude/projects/-home-ketan-project-shatter/da0fb628-14db-4d09-992c-80e699ee8c6b/tool-results/b4h8f22zg.txt | head -5; echo \\\"---\\\"; tail -5 /home/ketan/.claude/projects/-home-ketan-project-shatter/da0fb628-14db-4d09-992c-80e699ee8c6b/tool-results/b4h8f22zg.txt\",\"description\":\"Check for errors in hook output\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-12T01:44:13.746Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773280205865-gfsoj2q\",\"subtype\":\"error\",\"error\":\"Permission denied\"}",
+    "timestamp": "2026-03-12T01:50:24.247Z",
+    "read": true
+  }
+]

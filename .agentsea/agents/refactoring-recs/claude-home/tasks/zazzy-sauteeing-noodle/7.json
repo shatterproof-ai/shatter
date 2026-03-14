@@ -1,0 +1,9 @@
+{
+  "id": "7",
+  "subject": "str-28vd.5: Go analysis tool rollout",
+  "description": "Adopt golangci-lint, staticcheck, govulncheck into scripts/quality/check-go.sh; update CI docs. Beads ID: str-28vd.5",
+  "owner": "t6-28vd5",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

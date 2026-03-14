@@ -1,0 +1,788 @@
+error[rejected]: failed to satisfy license requirements
+   ┌─ /home/ketan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/contracts-0.6.7/Cargo.toml:37:12
+   │
+37 │ license = "MPL-2.0"
+   │            ━━━━━━━
+   │            │
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MPL-2.0 - Mozilla Public License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├   - Copyleft
+   ├ contracts v0.6.7
+     └── shatter-core v0.1.0
+         └── shatter-cli v0.1.0
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /home/ketan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libbz2-rs-sys-0.2.2/Cargo.toml:27:12
+   │
+27 │ license = "bzip2-1.0.6"
+   │            ━━━━━━━━━━━
+   │            │
+   │            rejected: license is not explicitly allowed
+   │
+   ├ bzip2-1.0.6 - bzip2 and libbzip2 License v1.0.6:
+   ├   - No additional metadata available for license
+   ├ libbz2-rs-sys v0.2.2
+     └── bzip2 v0.6.1
+         └── zip v4.6.1
+             └── (build) z3-sys v0.10.7
+                 ├── shatter-core v0.1.0
+                 │   └── shatter-cli v0.1.0
+                 └── z3 v0.19.10
+                     └── shatter-core v0.1.0 (*)
+
+warning[no-license-field]: license expression was not specified in manifest for crate 'shatter-cli = 0.1.0'
+ ├ shatter-cli v0.1.0
+
+warning[unlicensed]: a valid license expression could not be retrieved for the crate
+  ┌─ path+file:///home/ketan/project/shatter/.claude/worktrees/str-28vd.7/shatter-cli#0.1.0-synthesized.toml:2:9
+  │
+2 │ name = "shatter-cli"
+  │         ━━━━━━━━━━━
+  │
+  ├ shatter-cli v0.1.0 (*)
+
+error[unlicensed]: shatter-cli = 0.1.0 is unlicensed
+ ├ shatter-cli v0.1.0 (*)
+
+warning[no-license-field]: license expression was not specified in manifest for crate 'shatter-core = 0.1.0'
+ ├ shatter-core v0.1.0
+   └── shatter-cli v0.1.0
+
+warning[unlicensed]: a valid license expression could not be retrieved for the crate
+  ┌─ path+file:///home/ketan/project/shatter/.claude/worktrees/str-28vd.7/shatter-core#0.1.0-synthesized.toml:2:9
+  │
+2 │ name = "shatter-core"
+  │         ━━━━━━━━━━━━
+  │
+  ├ shatter-core v0.1.0 (*)
+
+error[unlicensed]: shatter-core = 0.1.0 is unlicensed
+ ├ shatter-core v0.1.0 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /home/ketan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/webpki-roots-1.0.6/Cargo.toml:26:12
+   │
+26 │ license = "CDLA-Permissive-2.0"
+   │            ━━━━━━━━━━━━━━━━━━━
+   │            │
+   │            rejected: license is not explicitly allowed
+   │
+   ├ CDLA-Permissive-2.0 - Community Data License Agreement Permissive 2.0:
+   ├   - No additional metadata available for license
+   ├ webpki-roots v1.0.6
+     ├── hyper-rustls v0.27.7
+     │   └── reqwest v0.12.28
+     │       └── z3-sys v0.10.7
+     │           ├── shatter-core v0.1.0
+     │           │   └── shatter-cli v0.1.0
+     │           └── z3 v0.19.10
+     │               └── shatter-core v0.1.0 (*)
+     └── reqwest v0.12.28 (*)
+
+warning[duplicate]: found 3 duplicate entries for crate 'getrandom'
+   ┌─ /home/ketan/project/shatter/.claude/worktrees/str-28vd.7/Cargo.lock:73:1
+   │  
+73 │ ╭ getrandom 0.2.17 registry+https://github.com/rust-lang/crates.io-index
+74 │ │ getrandom 0.3.4 registry+https://github.com/rust-lang/crates.io-index
+75 │ │ getrandom 0.4.1 registry+https://github.com/rust-lang/crates.io-index
+   │ ╰─────────────────────────────────────────────────────────────────────┘ lock entries
+   │  
+   ├ getrandom v0.2.17
+     └── ring v0.17.14
+         ├── rustls v0.23.37
+         │   ├── hyper-rustls v0.27.7
+         │   │   └── reqwest v0.12.28
+         │   │       └── z3-sys v0.10.7
+         │   │           ├── shatter-core v0.1.0
+         │   │           │   └── shatter-cli v0.1.0
+         │   │           └── z3 v0.19.10
+         │   │               └── shatter-core v0.1.0 (*)
+         │   ├── reqwest v0.12.28 (*)
+         │   └── tokio-rustls v0.26.4
+         │       ├── hyper-rustls v0.27.7 (*)
+         │       └── reqwest v0.12.28 (*)
+         └── rustls-webpki v0.103.9
+             └── rustls v0.23.37 (*)
+   ├ getrandom v0.3.4
+     ├── jobserver v0.1.34
+     │   └── cc v1.2.56
+     │       ├── (build) liblzma-sys v0.4.5
+     │       │   └── liblzma v0.4.6
+     │       │       └── zip v4.6.1
+     │       │           └── (build) z3-sys v0.10.7
+     │       │               ├── shatter-core v0.1.0
+     │       │               │   └── shatter-cli v0.1.0
+     │       │               └── z3 v0.19.10
+     │       │                   └── shatter-core v0.1.0 (*)
+     │       ├── (build) ring v0.17.14
+     │       │   ├── rustls v0.23.37
+     │       │   │   ├── hyper-rustls v0.27.7
+     │       │   │   │   └── reqwest v0.12.28
+     │       │   │   │       └── z3-sys v0.10.7 (*)
+     │       │   │   ├── reqwest v0.12.28 (*)
+     │       │   │   └── tokio-rustls v0.26.4
+     │       │   │       ├── hyper-rustls v0.27.7 (*)
+     │       │   │       └── reqwest v0.12.28 (*)
+     │       │   └── rustls-webpki v0.103.9
+     │       │       └── rustls v0.23.37 (*)
+     │       └── (build) zstd-sys v2.0.16+zstd.1.5.7
+     │           └── zstd-safe v7.2.4
+     │               └── zstd v0.13.3
+     │                   └── zip v4.6.1 (*)
+     ├── rand_core v0.9.5
+     │   ├── rand v0.9.2
+     │   │   ├── proptest v1.10.0
+     │   │   │   └── (dev) shatter-core v0.1.0 (*)
+     │   │   └── shatter-core v0.1.0 (*)
+     │   ├── rand_chacha v0.9.0
+     │   │   ├── proptest v1.10.0 (*)
+     │   │   └── rand v0.9.2 (*)
+     │   └── rand_xorshift v0.4.0
+     │       └── proptest v1.10.0 (*)
+     └── zip v4.6.1 (*)
+   ├ getrandom v0.4.1
+     └── tempfile v3.26.0
+         ├── proptest v1.10.0
+         │   └── (dev) shatter-core v0.1.0
+         │       └── shatter-cli v0.1.0
+         ├── rusty-fork v0.3.1
+         │   └── proptest v1.10.0 (*)
+         ├── shatter-cli v0.1.0 (*)
+         └── (dev) shatter-core v0.1.0 (*)
+
+warning[duplicate]: found 3 duplicate entries for crate 'windows-sys'
+    ┌─ /home/ketan/project/shatter/.claude/worktrees/str-28vd.7/Cargo.lock:254:1
+    │  
+254 │ ╭ windows-sys 0.52.0 registry+https://github.com/rust-lang/crates.io-index
+255 │ │ windows-sys 0.60.2 registry+https://github.com/rust-lang/crates.io-index
+256 │ │ windows-sys 0.61.2 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰────────────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ windows-sys v0.52.0
+      └── ring v0.17.14
+          ├── rustls v0.23.37
+          │   ├── hyper-rustls v0.27.7
+          │   │   └── reqwest v0.12.28
+          │   │       └── z3-sys v0.10.7
+          │   │           ├── shatter-core v0.1.0
+          │   │           │   └── shatter-cli v0.1.0
+          │   │           └── z3 v0.19.10
+          │   │               └── shatter-core v0.1.0 (*)
+          │   ├── reqwest v0.12.28 (*)
+          │   └── tokio-rustls v0.26.4
+          │       ├── hyper-rustls v0.27.7 (*)
+          │       └── reqwest v0.12.28 (*)
+          └── rustls-webpki v0.103.9
+              └── rustls v0.23.37 (*)
+    ├ windows-sys v0.60.2
+      └── socket2 v0.6.2
+          ├── hyper-util v0.1.20
+          │   ├── hyper-rustls v0.27.7
+          │   │   └── reqwest v0.12.28
+          │   │       └── z3-sys v0.10.7
+          │   │           ├── shatter-core v0.1.0
+          │   │           │   └── shatter-cli v0.1.0
+          │   │           └── z3 v0.19.10
+          │   │               └── shatter-core v0.1.0 (*)
+          │   └── reqwest v0.12.28 (*)
+          └── tokio v1.49.0
+              ├── hyper v1.8.1
+              │   ├── hyper-rustls v0.27.7 (*)
+              │   ├── hyper-util v0.1.20 (*)
+              │   └── reqwest v0.12.28 (*)
+              ├── hyper-rustls v0.27.7 (*)
+              ├── hyper-util v0.1.20 (*)
+              ├── reqwest v0.12.28 (*)
+              ├── shatter-cli v0.1.0 (*)
+              ├── shatter-core v0.1.0 (*)
+              ├── tokio-rustls v0.26.4
+              │   ├── hyper-rustls v0.27.7 (*)
+              │   └── reqwest v0.12.28 (*)
+              └── tower v0.5.3
+                  ├── reqwest v0.12.28 (*)
+                  └── tower-http v0.6.8
+                      └── reqwest v0.12.28 (*)
+    ├ windows-sys v0.61.2
+      ├── anstyle-query v1.1.5
+      │   └── anstream v0.6.21
+      │       ├── clap_builder v4.5.60
+      │       │   └── clap v4.5.60
+      │       │       └── shatter-cli v0.1.0
+      │       └── env_logger v0.11.9
+      │           └── shatter-cli v0.1.0 (*)
+      ├── anstyle-wincon v3.0.11
+      │   └── anstream v0.6.21 (*)
+      ├── errno v0.3.14
+      │   ├── rustix v1.1.4
+      │   │   ├── crossterm v0.29.0
+      │   │   │   ├── coolor v1.1.0
+      │   │   │   │   └── termimad v0.34.1
+      │   │   │   │       └── shatter-cli v0.1.0 (*)
+      │   │   │   ├── crokey v1.4.0
+      │   │   │   │   └── termimad v0.34.1 (*)
+      │   │   │   └── crokey-proc_macros v1.4.0
+      │   │   │       └── crokey v1.4.0 (*)
+      │   │   └── tempfile v3.26.0
+      │   │       ├── proptest v1.10.0
+      │   │       │   └── (dev) shatter-core v0.1.0
+      │   │       │       └── shatter-cli v0.1.0 (*)
+      │   │       ├── rusty-fork v0.3.1
+      │   │       │   └── proptest v1.10.0 (*)
+      │   │       ├── shatter-cli v0.1.0 (*)
+      │   │       └── (dev) shatter-core v0.1.0 (*)
+      │   └── signal-hook-registry v1.4.8
+      │       ├── signal-hook v0.3.18
+      │       │   ├── crossterm v0.29.0 (*)
+      │       │   └── signal-hook-mio v0.2.5
+      │       │       └── crossterm v0.29.0 (*)
+      │       └── tokio v1.49.0
+      │           ├── hyper v1.8.1
+      │           │   ├── hyper-rustls v0.27.7
+      │           │   │   └── reqwest v0.12.28
+      │           │   │       └── z3-sys v0.10.7
+      │           │   │           ├── shatter-core v0.1.0 (*)
+      │           │   │           └── z3 v0.19.10
+      │           │   │               └── shatter-core v0.1.0 (*)
+      │           │   ├── hyper-util v0.1.20
+      │           │   │   ├── hyper-rustls v0.27.7 (*)
+      │           │   │   └── reqwest v0.12.28 (*)
+      │           │   └── reqwest v0.12.28 (*)
+      │           ├── hyper-rustls v0.27.7 (*)
+      │           ├── hyper-util v0.1.20 (*)
+      │           ├── reqwest v0.12.28 (*)
+      │           ├── shatter-cli v0.1.0 (*)
+      │           ├── shatter-core v0.1.0 (*)
+      │           ├── tokio-rustls v0.26.4
+      │           │   ├── hyper-rustls v0.27.7 (*)
+      │           │   └── reqwest v0.12.28 (*)
+      │           └── tower v0.5.3
+      │               ├── reqwest v0.12.28 (*)
+      │               └── tower-http v0.6.8
+      │                   └── reqwest v0.12.28 (*)
+      ├── mio v1.1.1
+      │   ├── crossterm v0.29.0 (*)
+      │   ├── signal-hook-mio v0.2.5 (*)
+      │   └── tokio v1.49.0 (*)
+      ├── rustix v1.1.4 (*)
+      ├── tempfile v3.26.0 (*)
+      └── tokio v1.49.0 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'windows-targets'
+    ┌─ /home/ketan/project/shatter/.claude/worktrees/str-28vd.7/Cargo.lock:257:1
+    │  
+257 │ ╭ windows-targets 0.52.6 registry+https://github.com/rust-lang/crates.io-index
+258 │ │ windows-targets 0.53.5 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰────────────────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ windows-targets v0.52.6
+      └── windows-sys v0.52.0
+          └── ring v0.17.14
+              ├── rustls v0.23.37
+              │   ├── hyper-rustls v0.27.7
+              │   │   └── reqwest v0.12.28
+              │   │       └── z3-sys v0.10.7
+              │   │           ├── shatter-core v0.1.0
+              │   │           │   └── shatter-cli v0.1.0
+              │   │           └── z3 v0.19.10
+              │   │               └── shatter-core v0.1.0 (*)
+              │   ├── reqwest v0.12.28 (*)
+              │   └── tokio-rustls v0.26.4
+              │       ├── hyper-rustls v0.27.7 (*)
+              │       └── reqwest v0.12.28 (*)
+              └── rustls-webpki v0.103.9
+                  └── rustls v0.23.37 (*)
+    ├ windows-targets v0.53.5
+      └── windows-sys v0.60.2
+          └── socket2 v0.6.2
+              ├── hyper-util v0.1.20
+              │   ├── hyper-rustls v0.27.7
+              │   │   └── reqwest v0.12.28
+              │   │       └── z3-sys v0.10.7
+              │   │           ├── shatter-core v0.1.0
+              │   │           │   └── shatter-cli v0.1.0
+              │   │           └── z3 v0.19.10
+              │   │               └── shatter-core v0.1.0 (*)
+              │   └── reqwest v0.12.28 (*)
+              └── tokio v1.49.0
+                  ├── hyper v1.8.1
+                  │   ├── hyper-rustls v0.27.7 (*)
+                  │   ├── hyper-util v0.1.20 (*)
+                  │   └── reqwest v0.12.28 (*)
+                  ├── hyper-rustls v0.27.7 (*)
+                  ├── hyper-util v0.1.20 (*)
+                  ├── reqwest v0.12.28 (*)
+                  ├── shatter-cli v0.1.0 (*)
+                  ├── shatter-core v0.1.0 (*)
+                  ├── tokio-rustls v0.26.4
+                  │   ├── hyper-rustls v0.27.7 (*)
+                  │   └── reqwest v0.12.28 (*)
+                  └── tower v0.5.3
+                      ├── reqwest v0.12.28 (*)
+                      └── tower-http v0.6.8
+                          └── reqwest v0.12.28 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'windows_aarch64_gnullvm'
+    ┌─ /home/ketan/project/shatter/.claude/worktrees/str-28vd.7/Cargo.lock:259:1
+    │  
+259 │ ╭ windows_aarch64_gnullvm 0.52.6 registry+https://github.com/rust-lang/crates.io-index
+260 │ │ windows_aarch64_gnullvm 0.53.1 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰────────────────────────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ windows_aarch64_gnullvm v0.52.6
+      └── windows-targets v0.52.6
+          └── windows-sys v0.52.0
+              └── ring v0.17.14
+                  ├── rustls v0.23.37
+                  │   ├── hyper-rustls v0.27.7
+                  │   │   └── reqwest v0.12.28
+                  │   │       └── z3-sys v0.10.7
+                  │   │           ├── shatter-core v0.1.0
+                  │   │           │   └── shatter-cli v0.1.0
+                  │   │           └── z3 v0.19.10
+                  │   │               └── shatter-core v0.1.0 (*)
+                  │   ├── reqwest v0.12.28 (*)
+                  │   └── tokio-rustls v0.26.4
+                  │       ├── hyper-rustls v0.27.7 (*)
+                  │       └── reqwest v0.12.28 (*)
+                  └── rustls-webpki v0.103.9
+                      └── rustls v0.23.37 (*)
+    ├ windows_aarch64_gnullvm v0.53.1
+      └── windows-targets v0.53.5
+          └── windows-sys v0.60.2
+              └── socket2 v0.6.2
+                  ├── hyper-util v0.1.20
+                  │   ├── hyper-rustls v0.27.7
+                  │   │   └── reqwest v0.12.28
+                  │   │       └── z3-sys v0.10.7
+                  │   │           ├── shatter-core v0.1.0
+                  │   │           │   └── shatter-cli v0.1.0
+                  │   │           └── z3 v0.19.10
+                  │   │               └── shatter-core v0.1.0 (*)
+                  │   └── reqwest v0.12.28 (*)
+                  └── tokio v1.49.0
+                      ├── hyper v1.8.1
+                      │   ├── hyper-rustls v0.27.7 (*)
+                      │   ├── hyper-util v0.1.20 (*)
+                      │   └── reqwest v0.12.28 (*)
+                      ├── hyper-rustls v0.27.7 (*)
+                      ├── hyper-util v0.1.20 (*)
+                      ├── reqwest v0.12.28 (*)
+                      ├── shatter-cli v0.1.0 (*)
+                      ├── shatter-core v0.1.0 (*)
+                      ├── tokio-rustls v0.26.4
+                      │   ├── hyper-rustls v0.27.7 (*)
+                      │   └── reqwest v0.12.28 (*)
+                      └── tower v0.5.3
+                          ├── reqwest v0.12.28 (*)
+                          └── tower-http v0.6.8
+                              └── reqwest v0.12.28 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'windows_aarch64_msvc'
+    ┌─ /home/ketan/project/shatter/.claude/worktrees/str-28vd.7/Cargo.lock:261:1
+    │  
+261 │ ╭ windows_aarch64_msvc 0.52.6 registry+https://github.com/rust-lang/crates.io-index
+262 │ │ windows_aarch64_msvc 0.53.1 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰─────────────────────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ windows_aarch64_msvc v0.52.6
+      └── windows-targets v0.52.6
+          └── windows-sys v0.52.0
+              └── ring v0.17.14
+                  ├── rustls v0.23.37
+                  │   ├── hyper-rustls v0.27.7
+                  │   │   └── reqwest v0.12.28
+                  │   │       └── z3-sys v0.10.7
+                  │   │           ├── shatter-core v0.1.0
+                  │   │           │   └── shatter-cli v0.1.0
+                  │   │           └── z3 v0.19.10
+                  │   │               └── shatter-core v0.1.0 (*)
+                  │   ├── reqwest v0.12.28 (*)
+                  │   └── tokio-rustls v0.26.4
+                  │       ├── hyper-rustls v0.27.7 (*)
+                  │       └── reqwest v0.12.28 (*)
+                  └── rustls-webpki v0.103.9
+                      └── rustls v0.23.37 (*)
+    ├ windows_aarch64_msvc v0.53.1
+      └── windows-targets v0.53.5
+          └── windows-sys v0.60.2
+              └── socket2 v0.6.2
+                  ├── hyper-util v0.1.20
+                  │   ├── hyper-rustls v0.27.7
+                  │   │   └── reqwest v0.12.28
+                  │   │       └── z3-sys v0.10.7
+                  │   │           ├── shatter-core v0.1.0
+                  │   │           │   └── shatter-cli v0.1.0
+                  │   │           └── z3 v0.19.10
+                  │   │               └── shatter-core v0.1.0 (*)
+                  │   └── reqwest v0.12.28 (*)
+                  └── tokio v1.49.0
+                      ├── hyper v1.8.1
+                      │   ├── hyper-rustls v0.27.7 (*)
+                      │   ├── hyper-util v0.1.20 (*)
+                      │   └── reqwest v0.12.28 (*)
+                      ├── hyper-rustls v0.27.7 (*)
+                      ├── hyper-util v0.1.20 (*)
+                      ├── reqwest v0.12.28 (*)
+                      ├── shatter-cli v0.1.0 (*)
+                      ├── shatter-core v0.1.0 (*)
+                      ├── tokio-rustls v0.26.4
+                      │   ├── hyper-rustls v0.27.7 (*)
+                      │   └── reqwest v0.12.28 (*)
+                      └── tower v0.5.3
+                          ├── reqwest v0.12.28 (*)
+                          └── tower-http v0.6.8
+                              └── reqwest v0.12.28 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'windows_i686_gnu'
+    ┌─ /home/ketan/project/shatter/.claude/worktrees/str-28vd.7/Cargo.lock:263:1
+    │  
+263 │ ╭ windows_i686_gnu 0.52.6 registry+https://github.com/rust-lang/crates.io-index
+264 │ │ windows_i686_gnu 0.53.1 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰─────────────────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ windows_i686_gnu v0.52.6
+      └── windows-targets v0.52.6
+          └── windows-sys v0.52.0
+              └── ring v0.17.14
+                  ├── rustls v0.23.37
+                  │   ├── hyper-rustls v0.27.7
+                  │   │   └── reqwest v0.12.28
+                  │   │       └── z3-sys v0.10.7
+                  │   │           ├── shatter-core v0.1.0
+                  │   │           │   └── shatter-cli v0.1.0
+                  │   │           └── z3 v0.19.10
+                  │   │               └── shatter-core v0.1.0 (*)
+                  │   ├── reqwest v0.12.28 (*)
+                  │   └── tokio-rustls v0.26.4
+                  │       ├── hyper-rustls v0.27.7 (*)
+                  │       └── reqwest v0.12.28 (*)
+                  └── rustls-webpki v0.103.9
+                      └── rustls v0.23.37 (*)
+    ├ windows_i686_gnu v0.53.1
+      └── windows-targets v0.53.5
+          └── windows-sys v0.60.2
+              └── socket2 v0.6.2
+                  ├── hyper-util v0.1.20
+                  │   ├── hyper-rustls v0.27.7
+                  │   │   └── reqwest v0.12.28
+                  │   │       └── z3-sys v0.10.7
+                  │   │           ├── shatter-core v0.1.0
+                  │   │           │   └── shatter-cli v0.1.0
+                  │   │           └── z3 v0.19.10
+                  │   │               └── shatter-core v0.1.0 (*)
+                  │   └── reqwest v0.12.28 (*)
+                  └── tokio v1.49.0
+                      ├── hyper v1.8.1
+                      │   ├── hyper-rustls v0.27.7 (*)
+                      │   ├── hyper-util v0.1.20 (*)
+                      │   └── reqwest v0.12.28 (*)
+                      ├── hyper-rustls v0.27.7 (*)
+                      ├── hyper-util v0.1.20 (*)
+                      ├── reqwest v0.12.28 (*)
+                      ├── shatter-cli v0.1.0 (*)
+                      ├── shatter-core v0.1.0 (*)
+                      ├── tokio-rustls v0.26.4
+                      │   ├── hyper-rustls v0.27.7 (*)
+                      │   └── reqwest v0.12.28 (*)
+                      └── tower v0.5.3
+                          ├── reqwest v0.12.28 (*)
+                          └── tower-http v0.6.8
+                              └── reqwest v0.12.28 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'windows_i686_gnullvm'
+    ┌─ /home/ketan/project/shatter/.claude/worktrees/str-28vd.7/Cargo.lock:265:1
+    │  
+265 │ ╭ windows_i686_gnullvm 0.52.6 registry+https://github.com/rust-lang/crates.io-index
+266 │ │ windows_i686_gnullvm 0.53.1 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰─────────────────────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ windows_i686_gnullvm v0.52.6
+      └── windows-targets v0.52.6
+          └── windows-sys v0.52.0
+              └── ring v0.17.14
+                  ├── rustls v0.23.37
+                  │   ├── hyper-rustls v0.27.7
+                  │   │   └── reqwest v0.12.28
+                  │   │       └── z3-sys v0.10.7
+                  │   │           ├── shatter-core v0.1.0
+                  │   │           │   └── shatter-cli v0.1.0
+                  │   │           └── z3 v0.19.10
+                  │   │               └── shatter-core v0.1.0 (*)
+                  │   ├── reqwest v0.12.28 (*)
+                  │   └── tokio-rustls v0.26.4
+                  │       ├── hyper-rustls v0.27.7 (*)
+                  │       └── reqwest v0.12.28 (*)
+                  └── rustls-webpki v0.103.9
+                      └── rustls v0.23.37 (*)
+    ├ windows_i686_gnullvm v0.53.1
+      └── windows-targets v0.53.5
+          └── windows-sys v0.60.2
+              └── socket2 v0.6.2
+                  ├── hyper-util v0.1.20
+                  │   ├── hyper-rustls v0.27.7
+                  │   │   └── reqwest v0.12.28
+                  │   │       └── z3-sys v0.10.7
+                  │   │           ├── shatter-core v0.1.0
+                  │   │           │   └── shatter-cli v0.1.0
+                  │   │           └── z3 v0.19.10
+                  │   │               └── shatter-core v0.1.0 (*)
+                  │   └── reqwest v0.12.28 (*)
+                  └── tokio v1.49.0
+                      ├── hyper v1.8.1
+                      │   ├── hyper-rustls v0.27.7 (*)
+                      │   ├── hyper-util v0.1.20 (*)
+                      │   └── reqwest v0.12.28 (*)
+                      ├── hyper-rustls v0.27.7 (*)
+                      ├── hyper-util v0.1.20 (*)
+                      ├── reqwest v0.12.28 (*)
+                      ├── shatter-cli v0.1.0 (*)
+                      ├── shatter-core v0.1.0 (*)
+                      ├── tokio-rustls v0.26.4
+                      │   ├── hyper-rustls v0.27.7 (*)
+                      │   └── reqwest v0.12.28 (*)
+                      └── tower v0.5.3
+                          ├── reqwest v0.12.28 (*)
+                          └── tower-http v0.6.8
+                              └── reqwest v0.12.28 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'windows_i686_msvc'
+    ┌─ /home/ketan/project/shatter/.claude/worktrees/str-28vd.7/Cargo.lock:267:1
+    │  
+267 │ ╭ windows_i686_msvc 0.52.6 registry+https://github.com/rust-lang/crates.io-index
+268 │ │ windows_i686_msvc 0.53.1 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰──────────────────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ windows_i686_msvc v0.52.6
+      └── windows-targets v0.52.6
+          └── windows-sys v0.52.0
+              └── ring v0.17.14
+                  ├── rustls v0.23.37
+                  │   ├── hyper-rustls v0.27.7
+                  │   │   └── reqwest v0.12.28
+                  │   │       └── z3-sys v0.10.7
+                  │   │           ├── shatter-core v0.1.0
+                  │   │           │   └── shatter-cli v0.1.0
+                  │   │           └── z3 v0.19.10
+                  │   │               └── shatter-core v0.1.0 (*)
+                  │   ├── reqwest v0.12.28 (*)
+                  │   └── tokio-rustls v0.26.4
+                  │       ├── hyper-rustls v0.27.7 (*)
+                  │       └── reqwest v0.12.28 (*)
+                  └── rustls-webpki v0.103.9
+                      └── rustls v0.23.37 (*)
+    ├ windows_i686_msvc v0.53.1
+      └── windows-targets v0.53.5
+          └── windows-sys v0.60.2
+              └── socket2 v0.6.2
+                  ├── hyper-util v0.1.20
+                  │   ├── hyper-rustls v0.27.7
+                  │   │   └── reqwest v0.12.28
+                  │   │       └── z3-sys v0.10.7
+                  │   │           ├── shatter-core v0.1.0
+                  │   │           │   └── shatter-cli v0.1.0
+                  │   │           └── z3 v0.19.10
+                  │   │               └── shatter-core v0.1.0 (*)
+                  │   └── reqwest v0.12.28 (*)
+                  └── tokio v1.49.0
+                      ├── hyper v1.8.1
+                      │   ├── hyper-rustls v0.27.7 (*)
+                      │   ├── hyper-util v0.1.20 (*)
+                      │   └── reqwest v0.12.28 (*)
+                      ├── hyper-rustls v0.27.7 (*)
+                      ├── hyper-util v0.1.20 (*)
+                      ├── reqwest v0.12.28 (*)
+                      ├── shatter-cli v0.1.0 (*)
+                      ├── shatter-core v0.1.0 (*)
+                      ├── tokio-rustls v0.26.4
+                      │   ├── hyper-rustls v0.27.7 (*)
+                      │   └── reqwest v0.12.28 (*)
+                      └── tower v0.5.3
+                          ├── reqwest v0.12.28 (*)
+                          └── tower-http v0.6.8
+                              └── reqwest v0.12.28 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'windows_x86_64_gnu'
+    ┌─ /home/ketan/project/shatter/.claude/worktrees/str-28vd.7/Cargo.lock:269:1
+    │  
+269 │ ╭ windows_x86_64_gnu 0.52.6 registry+https://github.com/rust-lang/crates.io-index
+270 │ │ windows_x86_64_gnu 0.53.1 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰───────────────────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ windows_x86_64_gnu v0.52.6
+      └── windows-targets v0.52.6
+          └── windows-sys v0.52.0
+              └── ring v0.17.14
+                  ├── rustls v0.23.37
+                  │   ├── hyper-rustls v0.27.7
+                  │   │   └── reqwest v0.12.28
+                  │   │       └── z3-sys v0.10.7
+                  │   │           ├── shatter-core v0.1.0
+                  │   │           │   └── shatter-cli v0.1.0
+                  │   │           └── z3 v0.19.10
+                  │   │               └── shatter-core v0.1.0 (*)
+                  │   ├── reqwest v0.12.28 (*)
+                  │   └── tokio-rustls v0.26.4
+                  │       ├── hyper-rustls v0.27.7 (*)
+                  │       └── reqwest v0.12.28 (*)
+                  └── rustls-webpki v0.103.9
+                      └── rustls v0.23.37 (*)
+    ├ windows_x86_64_gnu v0.53.1
+      └── windows-targets v0.53.5
+          └── windows-sys v0.60.2
+              └── socket2 v0.6.2
+                  ├── hyper-util v0.1.20
+                  │   ├── hyper-rustls v0.27.7
+                  │   │   └── reqwest v0.12.28
+                  │   │       └── z3-sys v0.10.7
+                  │   │           ├── shatter-core v0.1.0
+                  │   │           │   └── shatter-cli v0.1.0
+                  │   │           └── z3 v0.19.10
+                  │   │               └── shatter-core v0.1.0 (*)
+                  │   └── reqwest v0.12.28 (*)
+                  └── tokio v1.49.0
+                      ├── hyper v1.8.1
+                      │   ├── hyper-rustls v0.27.7 (*)
+                      │   ├── hyper-util v0.1.20 (*)
+                      │   └── reqwest v0.12.28 (*)
+                      ├── hyper-rustls v0.27.7 (*)
+                      ├── hyper-util v0.1.20 (*)
+                      ├── reqwest v0.12.28 (*)
+                      ├── shatter-cli v0.1.0 (*)
+                      ├── shatter-core v0.1.0 (*)
+                      ├── tokio-rustls v0.26.4
+                      │   ├── hyper-rustls v0.27.7 (*)
+                      │   └── reqwest v0.12.28 (*)
+                      └── tower v0.5.3
+                          ├── reqwest v0.12.28 (*)
+                          └── tower-http v0.6.8
+                              └── reqwest v0.12.28 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'windows_x86_64_gnullvm'
+    ┌─ /home/ketan/project/shatter/.claude/worktrees/str-28vd.7/Cargo.lock:271:1
+    │  
+271 │ ╭ windows_x86_64_gnullvm 0.52.6 registry+https://github.com/rust-lang/crates.io-index
+272 │ │ windows_x86_64_gnullvm 0.53.1 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰───────────────────────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ windows_x86_64_gnullvm v0.52.6
+      └── windows-targets v0.52.6
+          └── windows-sys v0.52.0
+              └── ring v0.17.14
+                  ├── rustls v0.23.37
+                  │   ├── hyper-rustls v0.27.7
+                  │   │   └── reqwest v0.12.28
+                  │   │       └── z3-sys v0.10.7
+                  │   │           ├── shatter-core v0.1.0
+                  │   │           │   └── shatter-cli v0.1.0
+                  │   │           └── z3 v0.19.10
+                  │   │               └── shatter-core v0.1.0 (*)
+                  │   ├── reqwest v0.12.28 (*)
+                  │   └── tokio-rustls v0.26.4
+                  │       ├── hyper-rustls v0.27.7 (*)
+                  │       └── reqwest v0.12.28 (*)
+                  └── rustls-webpki v0.103.9
+                      └── rustls v0.23.37 (*)
+    ├ windows_x86_64_gnullvm v0.53.1
+      └── windows-targets v0.53.5
+          └── windows-sys v0.60.2
+              └── socket2 v0.6.2
+                  ├── hyper-util v0.1.20
+                  │   ├── hyper-rustls v0.27.7
+                  │   │   └── reqwest v0.12.28
+                  │   │       └── z3-sys v0.10.7
+                  │   │           ├── shatter-core v0.1.0
+                  │   │           │   └── shatter-cli v0.1.0
+                  │   │           └── z3 v0.19.10
+                  │   │               └── shatter-core v0.1.0 (*)
+                  │   └── reqwest v0.12.28 (*)
+                  └── tokio v1.49.0
+                      ├── hyper v1.8.1
+                      │   ├── hyper-rustls v0.27.7 (*)
+                      │   ├── hyper-util v0.1.20 (*)
+                      │   └── reqwest v0.12.28 (*)
+                      ├── hyper-rustls v0.27.7 (*)
+                      ├── hyper-util v0.1.20 (*)
+                      ├── reqwest v0.12.28 (*)
+                      ├── shatter-cli v0.1.0 (*)
+                      ├── shatter-core v0.1.0 (*)
+                      ├── tokio-rustls v0.26.4
+                      │   ├── hyper-rustls v0.27.7 (*)
+                      │   └── reqwest v0.12.28 (*)
+                      └── tower v0.5.3
+                          ├── reqwest v0.12.28 (*)
+                          └── tower-http v0.6.8
+                              └── reqwest v0.12.28 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'windows_x86_64_msvc'
+    ┌─ /home/ketan/project/shatter/.claude/worktrees/str-28vd.7/Cargo.lock:273:1
+    │  
+273 │ ╭ windows_x86_64_msvc 0.52.6 registry+https://github.com/rust-lang/crates.io-index
+274 │ │ windows_x86_64_msvc 0.53.1 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰────────────────────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ windows_x86_64_msvc v0.52.6
+      └── windows-targets v0.52.6
+          └── windows-sys v0.52.0
+              └── ring v0.17.14
+                  ├── rustls v0.23.37
+                  │   ├── hyper-rustls v0.27.7
+                  │   │   └── reqwest v0.12.28
+                  │   │       └── z3-sys v0.10.7
+                  │   │           ├── shatter-core v0.1.0
+                  │   │           │   └── shatter-cli v0.1.0
+                  │   │           └── z3 v0.19.10
+                  │   │               └── shatter-core v0.1.0 (*)
+                  │   ├── reqwest v0.12.28 (*)
+                  │   └── tokio-rustls v0.26.4
+                  │       ├── hyper-rustls v0.27.7 (*)
+                  │       └── reqwest v0.12.28 (*)
+                  └── rustls-webpki v0.103.9
+                      └── rustls v0.23.37 (*)
+    ├ windows_x86_64_msvc v0.53.1
+      └── windows-targets v0.53.5
+          └── windows-sys v0.60.2
+              └── socket2 v0.6.2
+                  ├── hyper-util v0.1.20
+                  │   ├── hyper-rustls v0.27.7
+                  │   │   └── reqwest v0.12.28
+                  │   │       └── z3-sys v0.10.7
+                  │   │           ├── shatter-core v0.1.0
+                  │   │           │   └── shatter-cli v0.1.0
+                  │   │           └── z3 v0.19.10
+                  │   │               └── shatter-core v0.1.0 (*)
+                  │   └── reqwest v0.12.28 (*)
+                  └── tokio v1.49.0
+                      ├── hyper v1.8.1
+                      │   ├── hyper-rustls v0.27.7 (*)
+                      │   ├── hyper-util v0.1.20 (*)
+                      │   └── reqwest v0.12.28 (*)
+                      ├── hyper-rustls v0.27.7 (*)
+                      ├── hyper-util v0.1.20 (*)
+                      ├── reqwest v0.12.28 (*)
+                      ├── shatter-cli v0.1.0 (*)
+                      ├── shatter-core v0.1.0 (*)
+                      ├── tokio-rustls v0.26.4
+                      │   ├── hyper-rustls v0.27.7 (*)
+                      │   └── reqwest v0.12.28 (*)
+                      └── tower v0.5.3
+                          ├── reqwest v0.12.28 (*)
+                          └── tower-http v0.6.8
+                              └── reqwest v0.12.28 (*)
+
+warning[license-not-encountered]: license was not encountered
+   ┌─ /home/ketan/project/shatter/.claude/worktrees/str-28vd.7/deny.toml:24:4
+   │
+24 │   "OpenSSL",
+   │    ━━━━━━━ unmatched license allowance
+
+warning[license-not-encountered]: license was not encountered
+   ┌─ /home/ketan/project/shatter/.claude/worktrees/str-28vd.7/deny.toml:21:4
+   │
+21 │   "Unicode-DFS-2016",
+   │    ━━━━━━━━━━━━━━━━ unmatched license allowance
+
+advisories ok, bans ok, licenses FAILED, sources ok
+EXIT: 4

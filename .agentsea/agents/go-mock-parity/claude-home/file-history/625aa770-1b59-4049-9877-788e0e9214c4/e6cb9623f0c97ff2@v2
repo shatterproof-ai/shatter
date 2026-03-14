@@ -1,0 +1,223 @@
+package main
+
+import (
+	"bufio"
+	"context"
+	"crypto/sha256"
+	"flag"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/ketang/kapow/tools/kapow/internal/config"
+	"github.com/ketang/kapow/tools/kapow/internal/deadlines"
+	"github.com/ketang/kapow/tools/kapow/internal/fetch"
+	"github.com/ketang/kapow/tools/kapow/internal/namematch"
+)
+
+func init() {
+	Register(&bigfutureImporter{})
+}
+
+type bigfutureImporter struct {
+	year        int
+	concurrency int
+	rateLimit   time.Duration
+	slugFile    string
+	dryRun      bool
+}
+
+func (b *bigfutureImporter) Name() string         { return "deadlines-bigfuture" }
+func (b *bigfutureImporter) Description() string   { return "Import admissions deadlines from BigFuture" }
+func (b *bigfutureImporter) Dependencies() []string { return []string{"nces"} }
+
+func (b *bigfutureImporter) RegisterFlags(fs *flag.FlagSet) {
+	fs.IntVar(&b.year, "year", time.Now().Year()+1, "admission cycle year (e.g. 2026 for Fall 2026)")
+	fs.IntVar(&b.concurrency, "concurrency", 3, "max concurrent fetches")
+	fs.DurationVar(&b.rateLimit, "rate-limit", 500*time.Millisecond, "minimum delay between requests")
+	fs.StringVar(&b.slugFile, "slug-file", "", "file with one slug per line (default: generate from DB names)")
+	fs.BoolVar(&b.dryRun, "dry-run", false, "fetch and parse but do not write to database")
+}
+
+func (b *bigfutureImporter) Run(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, fetcher *fetch.Fetcher) error {
+	// Load name matcher for linking BigFuture pages to unit IDs.
+	matcher, err := namematch.Load(ctx, pool)
+	if err != nil {
+		return fmt.Errorf("deadlines-bigfuture: load matcher: %w", err)
+	}
+
+	// Build slug list.
+	slugs, err := b.buildSlugList(matcher)
+	if err != nil {
+		return fmt.Errorf("deadlines-bigfuture: build slug list: %w", err)
+	}
+	slog.Info("deadlines-bigfuture: starting", "slugs", len(slugs), "year", b.year, "dry_run", b.dryRun)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	var stats importStats
+
+	for _, slug := range slugs {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		b.processSlug(ctx, client, pool, matcher, slug, &stats)
+
+		// Rate limit.
+		time.Sleep(b.rateLimit)
+	}
+
+	slog.Info("deadlines-bigfuture: complete",
+		"total", stats.total,
+		"matched", stats.matched,
+		"unmatched", stats.unmatched,
+		"errors", stats.errors,
+		"stored", stats.stored,
+	)
+	return nil
+}
+
+type importStats struct {
+	total     int
+	matched   int
+	unmatched int
+	errors    int
+	stored    int
+}
+
+func (b *bigfutureImporter) processSlug(ctx context.Context, client *http.Client, pool *pgxpool.Pool, matcher *namematch.Matcher, slug string, stats *importStats) {
+	stats.total++
+
+	// Fetch page.
+	html, statusCode, err := deadlines.FetchPage(ctx, client, slug)
+	if err != nil {
+		slog.Warn("deadlines-bigfuture: fetch failed", "slug", slug, "error", err)
+		stats.errors++
+		return
+	}
+
+	// Parse __NEXT_DATA__.
+	bfData, err := deadlines.ParseNextData(html)
+	if err != nil {
+		slog.Warn("deadlines-bigfuture: parse failed", "slug", slug, "error", err)
+		stats.errors++
+		return
+	}
+
+	// Match to unit ID via IPEDS ID or name.
+	unitID, matched := b.matchInstitution(bfData, slug, matcher)
+	if !matched {
+		slog.Debug("deadlines-bigfuture: no match", "slug", slug, "ipeds_id", bfData.IPEDSId)
+		stats.unmatched++
+		return
+	}
+	stats.matched++
+
+	if b.dryRun {
+		dd := deadlines.ToDeadlineData(bfData, b.year)
+		slog.Info("deadlines-bigfuture: dry-run",
+			"slug", slug,
+			"unit_id", unitID,
+			"plans", len(dd.Plans),
+		)
+		return
+	}
+
+	// Store scraped page.
+	hash := fmt.Sprintf("%x", sha256.Sum256(html))
+	status := int16(statusCode)
+	htmlStr := string(html)
+	if _, err := deadlines.StoreScrapedPage(ctx, pool, &deadlines.ScrapedPageParams{
+		UnitID:      unitID,
+		PageType:    "bigfuture",
+		URL:         deadlines.BigFutureURL(slug),
+		ContentHTML: &htmlStr,
+		HTTPStatus:  &status,
+		ContentHash: &hash,
+	}); err != nil {
+		slog.Warn("deadlines-bigfuture: store page failed", "slug", slug, "error", err)
+		stats.errors++
+		return
+	}
+
+	// Convert and upsert deadline data.
+	dd := deadlines.ToDeadlineData(bfData, b.year)
+	if err := deadlines.UpsertDeadlines(ctx, pool, unitID, b.year, dd); err != nil {
+		slog.Warn("deadlines-bigfuture: upsert failed", "slug", slug, "error", err)
+		stats.errors++
+		return
+	}
+
+	stats.stored++
+	slog.Debug("deadlines-bigfuture: stored", "slug", slug, "unit_id", unitID, "plans", len(dd.Plans))
+}
+
+// matchInstitution attempts to match BigFuture data to a unit ID. It first
+// tries the IPEDS ID, then falls back to slug-based name matching.
+func (b *bigfutureImporter) matchInstitution(bfData *deadlines.BigFutureData, slug string, matcher *namematch.Matcher) (string, bool) {
+	// Try IPEDS ID first (most reliable).
+	if bfData.IPEDSId != "" {
+		if unitID, ok := matcher.MatchByIPEDS(bfData.IPEDSId); ok {
+			return unitID, true
+		}
+	}
+
+	// Fall back to name matching using the slug (converted back to a name-like string).
+	name := strings.ReplaceAll(slug, "-", " ")
+	if unitID, ok := matcher.Match(name); ok {
+		return unitID, true
+	}
+
+	return "", false
+}
+
+// buildSlugList returns the list of BigFuture slugs to process. If a slug file
+// is provided, it reads from that file; otherwise, it generates slugs from all
+// institution names in the matcher.
+func (b *bigfutureImporter) buildSlugList(matcher *namematch.Matcher) ([]string, error) {
+	if b.slugFile != "" {
+		return readSlugFile(b.slugFile)
+	}
+
+	names := matcher.AllNames()
+	slugs := make([]string, 0, len(names))
+	seen := make(map[string]bool, len(names))
+	for _, name := range names {
+		slug := deadlines.SlugFromName(name)
+		if slug != "" && !seen[slug] {
+			seen[slug] = true
+			slugs = append(slugs, slug)
+		}
+	}
+	return slugs, nil
+}
+
+// readSlugFile reads slugs from a file, one per line. Blank lines and lines
+// starting with # are skipped.
+func readSlugFile(path string) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("deadlines-bigfuture: open slug file: %w", err)
+	}
+	defer f.Close()
+
+	var slugs []string
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		slugs = append(slugs, line)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("deadlines-bigfuture: read slug file: %w", err)
+	}
+	return slugs, nil
+}

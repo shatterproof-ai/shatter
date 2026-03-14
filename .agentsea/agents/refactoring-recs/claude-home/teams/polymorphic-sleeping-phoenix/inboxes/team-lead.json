@@ -1,0 +1,10 @@
+[
+  {
+    "from": "smoke-agent",
+    "text": "Smoke test checks complete. Results committed to `smoke-results.txt` on branch `smoke-agent/work`.\n\nSummary:\n- CHECK 1: FAIL - /proc/1/cmdline shows \"/sbin/init\", no \"bwrap\" detected\n- CHECK 2: FAIL - touch /tmp/sea-smoke-escape-test succeeded (LEAKED), write isolation not enforced\n- CHECK 3: PASS - $HOME appears empty/restricted\n- CHECK 4: PASS - on branch smoke-agent/work, correct working directory\n- CHECK 5: PASS - Read-only file system error on /usr/local\n\n3 PASS, 2 FAIL. Ready for further instructions.",
+    "summary": "Smoke tests done: 3 PASS, 2 FAIL",
+    "timestamp": "2026-03-09T14:30:24.104Z",
+    "color": "blue",
+    "read": true
+  }
+]

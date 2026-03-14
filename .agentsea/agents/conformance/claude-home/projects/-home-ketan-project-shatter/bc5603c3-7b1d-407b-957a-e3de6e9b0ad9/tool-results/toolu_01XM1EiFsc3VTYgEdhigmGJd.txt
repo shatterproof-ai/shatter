@@ -1,0 +1,680 @@
+/home/ketan/project/shatter/shatter-core/src/interesting_pool.rs-398-/// Returns the number of pool entries inserted or merged.
+/home/ketan/project/shatter/shatter-core/src/interesting_pool.rs-399-pub fn harvest_from_exploration(
+shatter-core/src/interesting_pool.rs-400-    pool: &mut InterestingPool,
+shatter-core/src/interesting_pool.rs:401:    raw_results: &[(Vec<serde_json::Value>, ExecuteResult)],
+shatter-core/src/interesting_pool.rs-402-    params: &[ParamInfo],
+shatter-core/src/interesting_pool.rs-403-    function_name: &str,
+/home/ketan/project/shatter/shatter-core/src/interesting_pool.rs-404-) -> usize {
+shatter-core/src/interesting_pool.rs:405:    if raw_results.is_empty() || params.is_empty() {
+/home/ketan/project/shatter/shatter-core/src/interesting_pool.rs-406-        return 0;
+/home/ketan/project/shatter/shatter-core/src/interesting_pool.rs-407-    }
+/home/ketan/project/shatter/shatter-core/src/interesting_pool.rs-408-
+/home/ketan/project/shatter/shatter-core/src/interesting_pool.rs-409-    // Build path frequency map for rarity classification.
+shatter-core/src/interesting_pool.rs-410-    let mut path_counts: HashMap<u64, u32> = HashMap::new();
+shatter-core/src/interesting_pool.rs:411:    let hashes: Vec<u64> = raw_results
+/home/ketan/project/shatter/shatter-core/src/interesting_pool.rs-412-        .iter()
+/home/ketan/project/shatter/shatter-core/src/interesting_pool.rs-413-        .map(|(_, result)| {
+shatter-core/src/interesting_pool.rs-414-            let h = explorer::path_hash(result, &explorer::LoopBuckets::default());
+--
+/home/ketan/project/shatter/shatter-core/src/interesting_pool.rs-431-    let epoch = pool.epoch;
+/home/ketan/project/shatter/shatter-core/src/interesting_pool.rs-432-    let mut inserted = 0;
+/home/ketan/project/shatter/shatter-core/src/interesting_pool.rs-433-
+shatter-core/src/interesting_pool.rs:434:    for (idx, (inputs, exec_result)) in raw_results.iter().enumerate() {
+/home/ketan/project/shatter/shatter-core/src/interesting_pool.rs-435-        let severity = classify_severity(exec_result.thrown_error.as_ref(), false);
+/home/ketan/project/shatter/shatter-core/src/interesting_pool.rs-436-
+/home/ketan/project/shatter/shatter-core/src/interesting_pool.rs-437-        // For RarePath, only harvest if the path is actually rare.
+--
+shatter-core/src/coverage_metrics.rs-267-    analysis: &FunctionAnalysis,
+shatter-core/src/coverage_metrics.rs-268-    result: &ObservationOutput,
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-269-) -> Vec<TargetBranch> {
+shatter-core/src/coverage_metrics.rs:270:    extract_targets_inner(&analysis.branches, &result.discoveries, &result.raw_results)
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-271-}
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-272-
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-273-/// Extract unsolved branch targets from a concolic exploration result.
+--
+shatter-core/src/coverage_metrics.rs-277-    analysis: &FunctionAnalysis,
+shatter-core/src/coverage_metrics.rs-278-    result: &ExploreResult,
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-279-) -> Vec<TargetBranch> {
+shatter-core/src/coverage_metrics.rs:280:    extract_targets_inner(&analysis.branches, &result.discoveries, &result.raw_results)
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-281-}
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-282-
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-283-/// Core target extraction logic operating on slices.
+--
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-288-fn extract_targets_inner(
+shatter-core/src/coverage_metrics.rs-289-    branches: &[BranchInfo],
+shatter-core/src/coverage_metrics.rs-290-    discoveries: &[(u32, DiscoveryMethod)],
+shatter-core/src/coverage_metrics.rs:291:    raw_results: &[(Vec<serde_json::Value>, ExecuteResult)],
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-292-) -> Vec<TargetBranch> {
+shatter-core/src/coverage_metrics.rs-293-    let discovered: HashSet<u32> = discoveries.iter().map(|(id, _)| *id).collect();
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-294-
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-295-    // Collect opaque constraint hints from runtime branch decisions.
+shatter-core/src/coverage_metrics.rs-296-    let mut opaque_hints: HashMap<u32, String> = HashMap::new();
+shatter-core/src/coverage_metrics.rs:297:    for (_, exec) in raw_results {
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-298-        for decision in &exec.branch_path {
+shatter-core/src/coverage_metrics.rs-299-            if let SymConstraint::Unknown { hint } = &decision.constraint {
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-300-                opaque_hints
+--
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-624-            make_branch(2, 15, "x == 42"),
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-625-        ]);
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-626-        let discoveries = vec![];
+shatter-core/src/coverage_metrics.rs:627:        let raw_results = vec![];
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-628-
+shatter-core/src/coverage_metrics.rs:629:        let targets = extract_targets_inner(&analysis.branches, &discoveries, &raw_results);
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-630-
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-631-        assert_eq!(targets.len(), 3);
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-632-        for target in &targets {
+--
+shatter-core/src/coverage_metrics.rs-664-                constraint: SymConstraint::Expr { expr },
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-665-            },
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-666-        ]);
+shatter-core/src/coverage_metrics.rs:667:        let raw_results = vec![(vec![serde_json::json!(5)], exec)];
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-668-
+shatter-core/src/coverage_metrics.rs:669:        let targets = extract_targets_inner(&analysis.branches, &discoveries, &raw_results);
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-670-        assert!(targets.is_empty());
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-671-    }
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-672-
+--
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-696-                },
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-697-            },
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-698-        ]);
+shatter-core/src/coverage_metrics.rs:699:        let raw_results = vec![(vec![serde_json::json!(10)], exec)];
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-700-
+shatter-core/src/coverage_metrics.rs:701:        let targets = extract_targets_inner(&analysis.branches, &discoveries, &raw_results);
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-702-
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-703-        assert_eq!(targets.len(), 3);
+shatter-core/src/coverage_metrics.rs-704-        / Branch 2: OpaqueConstraint
+--
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-718-    fn extract_targets_empty_branches() {
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-719-        let analysis = make_analysis(vec![]);
+shatter-core/src/coverage_metrics.rs-720-        let discoveries = vec![(0, DiscoveryMethod::Z3)];
+shatter-core/src/coverage_metrics.rs:721:        let raw_results = vec![];
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-722-
+shatter-core/src/coverage_metrics.rs:723:        let targets = extract_targets_inner(&analysis.branches, &discoveries, &raw_results);
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-724-        assert!(targets.is_empty());
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-725-    }
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-726-
+--
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-740-                },
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-741-            },
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-742-        ]);
+shatter-core/src/coverage_metrics.rs:743:        let raw_results = vec![(vec![serde_json::json!(1)], exec)];
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-744-
+shatter-core/src/coverage_metrics.rs:745:        let targets = extract_targets_inner(&analysis.branches, &discoveries, &raw_results);
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-746-
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-747-        assert_eq!(targets.len(), 1);
+shatter-core/src/coverage_metrics.rs-748-        assert_eq!(targets[0].reason, TargetReason::OpaqueConstraint);
+--
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-756-            make_branch(0, 5, "x > threshold"),
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-757-        ]);
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-758-        let discoveries = vec![];
+shatter-core/src/coverage_metrics.rs:759:        let raw_results = vec![];
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-760-
+shatter-core/src/coverage_metrics.rs:761:        let targets = extract_targets_inner(&analysis.branches, &discoveries, &raw_results);
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-762-
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-763-        assert_eq!(targets.len(), 1);
+shatter-core/src/coverage_metrics.rs-764-        assert_eq!(targets[0].reason, TargetReason::Uncovered);
+--
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-773-            make_branch(3, 30, "c"),
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-774-        ]);
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-775-        let discoveries = vec![];
+shatter-core/src/coverage_metrics.rs:776:        let raw_results = vec![];
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-777-
+shatter-core/src/coverage_metrics.rs:778:        let targets = extract_targets_inner(&analysis.branches, &discoveries, &raw_results);
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-779-
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-780-        assert_eq!(targets.len(), 3);
+/home/ketan/project/shatter/shatter-core/src/coverage_metrics.rs-781-        assert_eq!(targets[0].branch_id, 1);
+--
+shatter-core/src/spec.rs-302-    eq_classes: &[EquivalenceClass],
+/home/ketan/project/shatter/shatter-core/src/spec.rs-303-) {
+shatter-core/src/spec.rs-304-    use crate::invariants::{
+shatter-core/src/spec.rs:305:        detect_classified_invariants, records_from_raw_results, InvariantTarget,
+/home/ketan/project/shatter/shatter-core/src/spec.rs-306-    };
+/home/ketan/project/shatter/shatter-core/src/spec.rs-307-
+shatter-core/src/spec.rs:308:    let all_records = records_from_raw_results(&result.function_name, &result.raw_results);
+/home/ketan/project/shatter/shatter-core/src/spec.rs-309-
+/home/ketan/project/shatter/shatter-core/src/spec.rs-310-    // Function-wide invariants (across all executions)
+/home/ketan/project/shatter/shatter-core/src/spec.rs-311-    let mut function_invariants =
+--
+shatter-core/src/spec.rs-862-            lines_covered: 8,
+shatter-core/src/spec.rs-863-            total_lines: 10,
+shatter-core/src/spec.rs-864-            new_path_executions: vec![],
+shatter-core/src/spec.rs:865:            raw_results: vec![],
+shatter-core/src/spec.rs-866-            discoveries: vec![],
+shatter-core/src/spec.rs-867-            nondeterministic_fields: vec![], float_probe_results: vec![],
+/home/ketan/project/shatter/shatter-core/src/spec.rs-868-        }
+--
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-280-                // Try to find the matching raw result for this execution to
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-281-                // extract the dependency trace.
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-282-                let dependency_trace = result
+shatter-core/src/behavior.rs:283:                    .raw_results
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-284-                    .iter()
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-285-                    .find(|(inputs, _)| *inputs == exec.inputs)
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-286-                    .filter(|(_, res)| {
+--
+shatter-core/src/behavior.rs-711-                    lines_executed: vec![1, 3],
+shatter-core/src/behavior.rs-712-                    is_new_path: true, error_intent: None },
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-713-            ],
+shatter-core/src/behavior.rs:714:            raw_results: vec![],
+shatter-core/src/behavior.rs-715-            discoveries: vec![],
+shatter-core/src/behavior.rs-716-            nondeterministic_fields: vec![], float_probe_results: vec![],
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-717-       
+--
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1293-    }
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1294-
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1295-    #[test]
+shatter-core/src/behavior.rs:1296:    fn from_exploration_result_populates_trace_from_raw_results() {
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1297-        let raw_result = ExecuteResult {
+shatter-core/src/behavior.rs-1298-            return_value: Some(json!("positive")),
+shatter-core/src/behavior.rs-1299-            thrown_error: None,
+--
+shatter-core/src/behavior.rs-1328-                thrown_error: None,
+shatter-core/src/behavior.rs-1329-                lines_executed: vec![1, 2],
+shatter-core/src/behavior.rs-1330-                is_new_path: true, error_intent: None }],
+shatter-core/src/behavior.rs:1331:            raw_results: vec![(vec![json!(5)], raw_result)],
+shatter-core/src/behavior.rs-1332-            discoveries: vec![],
+shatter-core/src/behavior.rs-1333-            nondeterministic_fields: vec![], float_probe_results: vec![],
+/home/ketan/project/shatter/shatter-core/src/behavior.rs-1334-       
+--
+shatter-core/src/behavior.rs-1380-            lines_covered: 5,
+shatter-core/src/behavior.rs-1381-            total_lines: 10,
+shatter-core/src/behavior.rs-1382-            new_path_executions: vec![],
+shatter-core/src/behavior.rs:1383:            raw_results: vec![],
+shatter-core/src/behavior.rs-1384-            discoveries: vec![],
+shatter-core/src/behavior.rs-1385-            nondeterministic_fields: vec![NondeterministicField {
+shatter-core/src/behavior.rs-1386-                field_path: "return.id".to_string(),
+--
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-79-
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-80-/// Configuration for a concolic exploration session.
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-81-#[derive(Debug, Clone)]
+shatter-core/src/orchestrator.rs:82:pub struct ExploreConfig {
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-83-    /// Maximum number of unique paths to explore before stopping.
+shatter-core/src/orchestrator.rs-84-    pub max_iterations: usize,
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-85-    /// Maximum total executions (including duplicated paths) before stopping.
+--
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-88-    /// Set to 0 to disable plateau detection.
+shatter-core/src/orchestrator.rs-89-    pub plateau_threshold: usize,
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-90-    /// Mock configurations to pass through to Execute commands.
+shatter-core/src/orchestrator.rs:91:    pub mocks: Vec<crate::protocol::MockConfig>,
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-92-    /// Z3 solver timeout in milliseconds per query. None means no limit.
+shatter-core/src/orchestrator.rs-93-    pub solver_timeout_ms: Option<u64>,
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-94-    /// Per-function exploration wall-clock timeout. Whichever of this or
+--
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-129-
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-130-/// An entry in the exploration worklist.
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-131-#[derive(Debug, Clone)]
+shatter-core/src/orchestrator.rs:132:pub struct WorklistEntry {
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-133-    /// Input values to pass to the function.
+shatter-core/src/orchestrator.rs-134-    pub inputs: Vec<serde_json::Value>,
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-135-    /// How these inputs were generated.
+--
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-193-    /// Why the exploration loop stopped.
+shatter-core/src/orchestrator.rs-194-    pub termination_reason: TerminationReason,
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-195-    /// Raw execution results paired with inputs for pipeline composability.
+shatter-core/src/orchestrator.rs:196:    pub raw_results: Vec<(Vec<serde_json::Value>, ExecuteResult)>,
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-197-    /// Per-branch discovery attribution with method (Z3, Random, UserProvided).
+shatter-core/src/orchestrator.rs-198-    pub discoveries: Vec<(u32, DiscoveryMethod)>,
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-199-    /// Number of inputs skipped by triage prediction.
+--
+shatter-core/src/orchestrator.rs-338-    let mut worklist = BinaryHeap::new();
+shatter-core/src/orchestrator.rs-339-    let mut covered_paths: HashSet<u64> = HashSet::new();
+shatter-core/src/orchestrator.rs-340-    let mut executions = Vec::new();
+shatter-core/src/orchestrator.rs:341:    let mut raw_results: Vec<(Vec<serde_json::Value>, ExecuteResult)> = Vec::new();
+shatter-core/src/orchestrator.rs-342-    let mut seen_branch_ids: HashSet<u32> = HashSet::new();
+shatter-core/src/orchestrator.rs-343-    let mut discoveries: Vec<(u32, DiscoveryMethod)> = Vec::new();
+shatter-core/src/orchestrator.rs-344-    let mut total_executions: usize = 0;
+--
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-501-        };
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-502-
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-503-        // Record raw result for pipeline composability.
+shatter-core/src/orchestrator.rs:504:        raw_results.push((entry.inputs.clone(), exec_result.clone()));
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-505-
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-506-        let path_id = hash_branch_path(&exec_result.branch_path);
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-507-
+--
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-674-        fuzz_generated,
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-675-        drill_generated,
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-676-        termination_reason,
+shatter-core/src/orchestrator.rs:677:        raw_results,
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-678-        discoveries,
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-679-        triage_skipped,
+/home/ketan/project/shatter/shatter-core/src/orchestrator.rs-680-        triage_mispredictions,
+--
+/home/ketan/project/shatter/shatter-core/src/config.rs-157-
+shatter-core/src/config.rs-158-    / Per-symbol mock overrides for auto-mocking (e.g. `"db.query": { return_values: [...] }`).
+/home/ketan/project/shatter/shatter-core/src/config.rs-159-    #[serde(default)]
+shatter-core/src/config.rs:160:    pub mocks: Option<HashMap<String, crate::auto_mock::MockOverride>>,
+/home/ketan/project/shatter/shatter-core/src/config.rs-161-
+/home/ketan/project/shatter/shatter-core/src/config.rs-162-    /// Genetic algorithm explorer settings.
+/home/ketan/project/shatter/shatter-core/src/config.rs-163-    #[serde(default)]
+--
+/home/ketan/project/shatter/shatter-core/src/config.rs-202-
+/home/ketan/project/shatter/shatter-core/src/config.rs-203-    /// Per-symbol mock overrides, overriding defaults.
+/home/ketan/project/shatter/shatter-core/src/config.rs-204-    #[serde(default)]
+shatter-core/src/config.rs:205:    pub mocks: Option<HashMap<String, crate::auto_mock::MockOverride>>,
+/home/ketan/project/shatter/shatter-core/src/config.rs-206-
+/home/ketan/project/shatter/shatter-core/src/config.rs-207-    /// Genetic algorithm explorer settings, overriding defaults.
+/home/ketan/project/shatter/shatter-core/src/config.rs-208-    #[serde(default)]
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-743-}
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-744-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-745-/// Convert raw exploration results (inputs, ExecuteResult pairs) into ExecutionRecords.
+shatter-core/src/invariants.rs:746:pub fn records_from_raw_results(
+shatter-core/src/invariants.rs-747-    function_id: &str,
+shatter-core/src/invariants.rs:748:    raw_results: &[(Vec<serde_json::Value>, crate::protocol::ExecuteResult)],
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-749-) -> Vec<ExecutionRecord> {
+shatter-core/src/invariants.rs-750-    use std::hash::{Hash, Hasher};
+shatter-core/src/invariants.rs:751:    raw_results
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-752-        .iter()
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-753-        .map(|(inputs, result)| {
+shatter-core/src/invariants.rs-754-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1331-    }
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1332-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1333-    #[test]
+shatter-core/src/invariants.rs:1334:    fn records_from_raw_results_converts_correctly() {
+shatter-core/src/invariants.rs-1335-        use crate::protocol::{ExecuteResult, PerformanceMetrics};
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1336-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1337-        let raw = vec![(
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1355-            },
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1356-        )];
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1357-
+shatter-core/src/invariants.rs:1358:        let records = records_from_raw_results("test_fn", &raw);
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1359-        assert_eq!(records.len(), 1);
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1360-        assert_eq!(records[0].function_id, "test_fn");
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1361-        assert_eq!(records[0].parameters, vec![json!(42)]);
+--
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1364-    }
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1365-
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1366-    #[test]
+shatter-core/src/invariants.rs:1367:    fn records_from_raw_results_empty_input() {
+shatter-core/src/invariants.rs:1368:        let records = records_from_raw_results("empty_fn", &[]);
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1369-        assert!(records.is_empty());
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1370-    }
+/home/ketan/project/shatter/shatter-core/src/invariants.rs-1371-}
+--
+/home/ketan/project/shatter/shatter-core/src/pipeline.rs-31-/// then produces equivalence classes, a behavior map, and coverage metrics.
+shatter-core/src/pipeline.rs-32-pub fn analyze(observe: &ObservationOutput, analysis: &FunctionAnalysis) -> AnalyzeOutput {
+/home/ketan/project/shatter/shatter-core/src/pipeline.rs-33-    // Build equivalence classes from raw results.
+shatter-core/src/pipeline.rs:34:    let eq_classes = equivalence::group_into_classes(&observe.raw_results);
+/home/ketan/project/shatter/shatter-core/src/pipeline.rs-35-
+/home/ketan/project/shatter/shatter-core/src/pipeline.rs-36-    // Build execution records for BehaviorMap construction.
+shatter-core/src/pipeline.rs-37-    let records: Vec<ExecutionRecord> = observe
+shatter-core/src/pipeline.rs:38:        .raw_results
+/home/ketan/project/shatter/shatter-core/src/pipeline.rs-39-        .iter()
+/home/ketan/project/shatter/shatter-core/src/pipeline.rs-40-        .map(|(inputs, result)| execution_record_from_result(&observe.function_name, inputs, result))
+/home/ketan/project/shatter/shatter-core/src/pipeline.rs-41-        .collect();
+--
+/home/ketan/project/shatter/shatter-core/src/pipeline.rs-45-
+/home/ketan/project/shatter/shatter-core/src/pipeline.rs-46-    // Deduplicate constraints by branch_id so each branch contributes exactly one classification.
+shatter-core/src/pipeline.rs-47-    let unique_constraints: HashMap<u32, SymConstraint> = observe
+shatter-core/src/pipeline.rs:48:        .raw_results
+/home/ketan/project/shatter/shatter-core/src/pipeline.rs-49-        .iter()
+/home/ketan/project/shatter/shatter-core/src/pipeline.rs-50-        .flat_map(|(_, result)| {
+/home/ketan/project/shatter/shatter-core/src/pipeline.rs-51-            result
+--
+/home/ketan/project/shatter/shatter-core/src/pipeline.rs-120-            })
+/home/ketan/project/shatter/shatter-core/src/pipeline.rs-121-            .collect();
+/home/ketan/project/shatter/shatter-core/src/pipeline.rs-122-
+shatter-core/src/pipeline.rs:123:        // Compute lines covered from raw_results.
+shatter-core/src/pipeline.rs-124-        let mut all_lines: std::collections::HashSet<u32> = std::collections::HashSet::new();
+shatter-core/src/pipeline.rs:125:        for (_, result) in &r.raw_results {
+/home/ketan/project/shatter/shatter-core/src/pipeline.rs-126-            for &line in &result.lines_executed {
+/home/ketan/project/shatter/shatter-core/src/pipeline.rs-127-                all_lines.insert(line);
+/home/ketan/project/shatter/shatter-core/src/pipeline.rs-128-            }
+--
+shatter-core/src/pipeline.rs-135-            lines_covered: all_lines.len(),
+shatter-core/src/pipeline.rs-136-            total_lines: r.total_lines,
+/home/ketan/project/shatter/shatter-core/src/pipeline.rs-137-            new_path_executions,
+shatter-core/src/pipeline.rs:138:            raw_results: r.raw_results,
+shatter-core/src/pipeline.rs-139-            discoveries: r.discoveries,
+shatter-core/src/pipeline.rs-140-            nondeterministic_fields: r.nondeterministic_fields,
+shatter-core/src/pipeline.rs-141-            float_probe_results: r.float_probe_results,
+--
+shatter-core/src/pipeline.rs-219-            lines_covered: 3,
+shatter-core/src/pipeline.rs-220-            total_lines: 5,
+shatter-core/src/pipeline.rs-221-            new_path_executions: vec![],
+shatter-core/src/pipeline.rs:222:            raw_results: vec![(vec![json!(5)], exec_result)],
+shatter-core/src/pipeline.rs-223-            discoveries: vec![(0, DiscoveryMethod::Random)],
+shatter-core/src/pipeline.rs-224-            nondeterministic_fields: vec![], float_probe_results: vec![],
+/home/ketan/project/shatter/shatter-core/src/pipeline.rs-225-        };
+--
+shatter-core/src/pipeline.rs-244-            lines_covered: 0,
+shatter-core/src/pipeline.rs-245-            total_lines: 5,
+shatter-core/src/pipeline.rs-246-            new_path_executions: vec![],
+shatter-core/src/pipeline.rs:247:            raw_results: vec![],
+shatter-core/src/pipeline.rs-248-            discoveries: vec![],
+shatter-core/src/pipeline.rs-249-            nondeterministic_fields: vec![], float_probe_results: vec![],
+/home/ketan/project/shatter/shatter-core/src/pipeline.rs-250-        };
+--
+shatter-core/src/pipeline.rs-306-            lines_covered: 3,
+shatter-core/src/pipeline.rs-307-            total_lines: 5,
+shatter-core/src/pipeline.rs-308-            new_path_executions: vec![],
+shatter-core/src/pipeline.rs:309:            raw_results: vec![
+/home/ketan/project/shatter/shatter-core/src/pipeline.rs-310-                (vec![json!(1)], make_result(json!("a"))),
+/home/ketan/project/shatter/shatter-core/src/pipeline.rs-311-                (vec![json!(2)], make_result(json!("b"))),
+/home/ketan/project/shatter/shatter-core/src/pipeline.rs-312-                (vec![json!(3)], make_result(json!("c"))),
+--
+shatter-core/src/pipeline.rs-337-            lines_covered: 0,
+shatter-core/src/pipeline.rs-338-            total_lines: 5,
+shatter-core/src/pipeline.rs-339-            new_path_executions: vec![],
+shatter-core/src/pipeline.rs:340:            raw_results: vec![],
+shatter-core/src/pipeline.rs-341-            discoveries: vec![],
+shatter-core/src/pipeline.rs-342-            nondeterministic_fields: vec![NondeterministicField {
+shatter-core/src/pipeline.rs-343-                field_path: "return.timestamp".into(),
+--
+shatter-core/src/pipeline.rs-369-            fuzz_generated: 1,
+shatter-core/src/pipeline.rs-370-            drill_generated: 0,
+shatter-core/src/pipeline.rs-371-            termination_reason: crate::orchestrator::TerminationReason::WorklistExhausted,
+shatter-core/src/pipeline.rs:372:            raw_results: vec![],
+shatter-core/src/pipeline.rs-373-            discoveries: vec![(0, DiscoveryMethod::Random)],
+shatter-core/src/pipeline.rs-374-            triage_skipped: 0,
+shatter-core/src/pipeline.rs-375-            triage_mispredictions: 0,
+--
+/home/ketan/project/shatter/shatter-core/src/report.rs-79-    /// Total source lines in the function.
+shatter-core/src/report.rs-80-    pub total_lines: u32,
+/home/ketan/project/shatter/shatter-core/src/report.rs-81-    /// Functions mocked during exploration.
+shatter-core/src/report.rs:82:    pub mocks_used: Vec<String>,
+/home/ketan/project/shatter/shatter-core/src/report.rs-83-}
+/home/ketan/project/shatter/shatter-core/src/report.rs-84-
+/home/ketan/project/shatter/shatter-core/src/report.rs-85-// ---------------------------------------------------------------------------
+--
+/home/ketan/project/shatter/shatter-core/src/report.rs-188-        .collect();
+/home/ketan/project/shatter/shatter-core/src/report.rs-189-
+shatter-core/src/report.rs-190-    let total_constraints: usize = exploration
+shatter-core/src/report.rs:191:        .raw_results
+/home/ketan/project/shatter/shatter-core/src/report.rs-192-        .iter()
+/home/ketan/project/shatter/shatter-core/src/report.rs-193-        .map(|(_, r)| r.path_constraints.len())
+/home/ketan/project/shatter/shatter-core/src/report.rs-194-        .sum();
+--
+/home/ketan/project/shatter/shatter-core/src/report.rs-824-                lines_covered,
+/home/ketan/project/shatter/shatter-core/src/report.rs-825-                total_lines,
+/home/ketan/project/shatter/shatter-core/src/report.rs-826-                new_path_executions,
+shatter-core/src/report.rs:827:                raw_results: vec![],
+shatter-core/src/report.rs-828-                discoveries: vec![],
+shatter-core/src/report.rs-829-                nondeterministic_fields: vec![], float_probe_results: vec![],
+/home/ketan/project/shatter/shatter-core/src/report.rs-830-            },
+--
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-122-    /// Coverage of callee behaviors exercised by this function.
+shatter-core/src/scan_orchestrator.rs-123-    pub behavior_coverage: Vec<BehaviorCoverage>,
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-124-    /// Mocks used during exploration, with source attribution.
+shatter-core/src/scan_orchestrator.rs:125:    pub mocks_used: Vec<MockUsage>,
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-126-    /// Branch coverage metrics from the analyze stage.
+shatter-core/src/scan_orchestrator.rs-127-    pub coverage_metrics: crate::coverage_metrics::CoverageMetrics,
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-128-}
+--
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-438-        // Harvest interesting inputs into the cross-function pool.
+shatter-core/src/scan_orchestrator.rs-439-        interesting_pool::harvest_from_exploration(
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-440-            &mut input_pool,
+shatter-core/src/scan_orchestrator.rs:441:            &exploration.raw_results,
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-442-            &analysis.params,
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-443-            func_name,
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-444-        );
+--
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-465-
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-466-        // Compute behavior coverage for each callee (cross-function concern).
+shatter-core/src/scan_orchestrator.rs-467-        let records: Vec<ExecutionRecord> = exploration
+shatter-core/src/scan_orchestrator.rs:468:            .raw_results
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-469-            .iter()
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-470-            .map(|(inputs, result)| execution_record_from_result(func_name, inputs, result))
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-471-            .collect();
+--
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-1042-        let mut pool_guard = input_pool.lock().await;
+shatter-core/src/scan_orchestrator.rs-1043-        interesting_pool::harvest_from_exploration(
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-1044-            &mut pool_guard,
+shatter-core/src/scan_orchestrator.rs:1045:            &exploration.raw_results,
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-1046-            &analysis.params,
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-1047-            func_name,
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-1048-        );
+--
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-1054-
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-1055-    // Compute behavior coverage for each callee (cross-function concern).
+shatter-core/src/scan_orchestrator.rs-1056-    let records: Vec<ExecutionRecord> = exploration
+shatter-core/src/scan_orchestrator.rs:1057:        .raw_results
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-1058-        .iter()
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-1059-        .map(|(inputs, result)| execution_record_from_result(func_name, inputs, result))
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-1060-        .collect();
+--
+shatter-core/src/scan_orchestrator.rs-1604-                        lines_covered: 3,
+shatter-core/src/scan_orchestrator.rs-1605-                        total_lines: 5,
+shatter-core/src/scan_orchestrator.rs-1606-                        new_path_executions: vec![],
+shatter-core/src/scan_orchestrator.rs:1607:                        raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![],
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-1608-                    },
+shatter-core/src/scan_orchestrator.rs-1609-                    behavior_map: BehaviorMap {
+shatter-core/src/scan_orchestrator.rs-1610-                        function_id: "leaf".into(),
+--
+shatter-core/src/scan_orchestrator.rs-1625-                        lines_covered: 8,
+shatter-core/src/scan_orchestrator.rs-1626-                        total_lines: 10,
+shatter-core/src/scan_orchestrator.rs-1627-                        new_path_executions: vec![],
+shatter-core/src/scan_orchestrator.rs:1628:                        raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![],
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-1629-                    },
+shatter-core/src/scan_orchestrator.rs-1630-                    behavior_map: BehaviorMap {
+shatter-core/src/scan_orchestrator.rs-1631-                        function_id: "caller".into(),
+--
+shatter-core/src/scan_orchestrator.rs-1667-                    lines_covered: 5,
+shatter-core/src/scan_orchestrator.rs-1668-                    total_lines: 5,
+shatter-core/src/scan_orchestrator.rs-1669-                    new_path_executions: vec![],
+shatter-core/src/scan_orchestrator.rs:1670:                    raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![],
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-1671-                },
+shatter-core/src/scan_orchestrator.rs-1672-                behavior_map: BehaviorMap {
+shatter-core/src/scan_orchestrator.rs-1673-                    function_id: "standalone".into(),
+--
+shatter-core/src/scan_orchestrator.rs-1702-                    lines_covered: 3,
+shatter-core/src/scan_orchestrator.rs-1703-                    total_lines: 5,
+shatter-core/src/scan_orchestrator.rs-1704-                    new_path_executions: vec![],
+shatter-core/src/scan_orchestrator.rs:1705:                    raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![],
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-1706-                },
+shatter-core/src/scan_orchestrator.rs-1707-                behavior_map: BehaviorMap {
+shatter-core/src/scan_orchestrator.rs-1708-                    function_id: "good_func".into(),
+--
+shatter-core/src/scan_orchestrator.rs-1750-                    lines_covered: 3,
+shatter-core/src/scan_orchestrator.rs-1751-                    total_lines: 5,
+shatter-core/src/scan_orchestrator.rs-1752-                    new_path_executions: vec![],
+shatter-core/src/scan_orchestrator.rs:1753:                    raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![],
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-1754-                },
+shatter-core/src/scan_orchestrator.rs-1755-                behavior_map: BehaviorMap {
+shatter-core/src/scan_orchestrator.rs-1756-                    function_id: "good_func".into(),
+--
+shatter-core/src/scan_orchestrator.rs-1797-                    lines_covered: 1,
+shatter-core/src/scan_orchestrator.rs-1798-                    total_lines: 1,
+shatter-core/src/scan_orchestrator.rs-1799-                    new_path_executions: vec![],
+shatter-core/src/scan_orchestrator.rs:1800:                    raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![],
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-1801-                },
+shatter-core/src/scan_orchestrator.rs-1802-                behavior_map: BehaviorMap {
+shatter-core/src/scan_orchestrator.rs-1803-                    function_id: "func".into(),
+--
+shatter-core/src/scan_orchestrator.rs-1831-                    lines_covered: 1,
+shatter-core/src/scan_orchestrator.rs-1832-                    total_lines: 1,
+shatter-core/src/scan_orchestrator.rs-1833-                    new_path_executions: vec![],
+shatter-core/src/scan_orchestrator.rs:1834:                    raw_results: vec![],
+shatter-core/src/scan_orchestrator.rs-1835-                    discoveries: vec![],
+shatter-core/src/scan_orchestrator.rs-1836-                    nondeterministic_fields: vec![], float_probe_results: vec![],
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-1837-                },
+--
+shatter-core/src/scan_orchestrator.rs-1874-                    lines_covered: 1,
+shatter-core/src/scan_orchestrator.rs-1875-                    total_lines: 1,
+shatter-core/src/scan_orchestrator.rs-1876-                    new_path_executions: vec![],
+shatter-core/src/scan_orchestrator.rs:1877:                    raw_results: vec![],
+shatter-core/src/scan_orchestrator.rs-1878-                    discoveries: vec![],
+shatter-core/src/scan_orchestrator.rs-1879-                    nondeterministic_fields: vec![], float_probe_results: vec![],
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-1880-                },
+--
+shatter-core/src/scan_orchestrator.rs-1981-                    lines_covered: 3,
+shatter-core/src/scan_orchestrator.rs-1982-                    total_lines: 5,
+shatter-core/src/scan_orchestrator.rs-1983-                    new_path_executions: vec![],
+shatter-core/src/scan_orchestrator.rs:1984:                    raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![],
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-1985-                },
+shatter-core/src/scan_orchestrator.rs-1986-                behavior_map: BehaviorMap {
+shatter-core/src/scan_orchestrator.rs-1987-                    function_id: "f1".into(),
+--
+shatter-core/src/scan_orchestrator.rs-2026-                    lines_covered: 5,
+shatter-core/src/scan_orchestrator.rs-2027-                    total_lines: 5,
+shatter-core/src/scan_orchestrator.rs-2028-                    new_path_executions: vec![],
+shatter-core/src/scan_orchestrator.rs:2029:                    raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![],
+/home/ketan/project/shatter/shatter-core/src/scan_orchestrator.rs-2030-                },
+shatter-core/src/scan_orchestrator.rs-2031-                behavior_map: BehaviorMap {
+shatter-core/src/scan_orchestrator.rs-2032-                    function_id: "f1".into(),
+--
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-74-
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-75-/// Configuration for an exploration run.
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-76-#[derive(Debug, Clone)]
+shatter-core/src/explorer.rs:77:pub struct ExploreConfig {
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-78-    /// Path to the source file being explored (needed for instrumentation).
+shatter-core/src/explorer.rs-79-    pub file: String,
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-80-    /// Maximum number of iterations (execute calls) per function.
+--
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-82-    /// Random seed for reproducibility. If None, uses entropy.
+shatter-core/src/explorer.rs-83-    pub seed: Option<u64>,
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-84-    /// Mock configurations to pass to Execute commands.
+shatter-core/src/explorer.rs:85:    pub mocks: Vec<MockConfig>,
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-86-    /// Path to the setup file, if configured.
+shatter-core/src/explorer.rs-87-    pub setup_file: Option<String>,
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-88-    /// When to run setup relative to executions.
+--
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-146-    /// Summary of each execution that discovered a new path.
+shatter-core/src/explorer.rs-147-    pub new_path_executions: Vec<ExecutionSummary>,
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-148-    /// Raw execution results paired with their inputs, for building BehaviorMaps.
+shatter-core/src/explorer.rs:149:    pub raw_results: Vec<(Vec<serde_json::Value>, ExecuteResult)>,
+shatter-core/src/explorer.rs-150-    / Per-branch discovery attribution: which branch_id was first found by which method.
+shatter-core/src/explorer.rs-151-    pub discoveries: Vec<(u32, DiscoveryMethod)>,
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-152-    /// Fields detected as nondeterministic via within-run re-execution sampling.
+--
+shatter-core/src/explorer.rs-589-    let mut seen_paths: HashSet<u64> = HashSet::new();
+shatter-core/src/explorer.rs-590-    let mut all_lines: HashSet<u32> = HashSet::new();
+shatter-core/src/explorer.rs-591-    let mut new_path_executions: Vec<ExecutionSummary> = Vec::new();
+shatter-core/src/explorer.rs:592:    let mut raw_results: Vec<(Vec<serde_json::Value>, ExecuteResult)> = Vec::new();
+shatter-core/src/explorer.rs-593-    let mut iterations: u32 = 0;
+shatter-core/src/explorer.rs-594-    let mut path_counts: HashMap<u64, u32> = HashMap::new();
+shatter-core/src/explorer.rs-595-    let mut seen_branch_ids: HashSet<u32> = HashSet::new();
+shatter-core/src/explorer.rs-596-    let mut discoveries: Vec<(u32, DiscoveryMethod)> = Vec::new();
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-597-
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-598-    // --- Float probe phase ---
+shatter-core/src/explorer.rs:599:    // Probes consume from the iteration budget, contributing to seen_paths and raw_results.
+shatter-core/src/explorer.rs-600-    let float_indices = crate::float_probe::float_param_indices(&analysis.params);
+shatter-core/src/explorer.rs-601-    let mut float_probe_results: Vec<crate::float_probe::FloatProbeResult> = Vec::new();
+shatter-core/src/explorer.rs-602-    let probe_budget = float_indices.len() * crate::float_probe::PROBE_COUNT * 2;
+--
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-654-                        divergent_values.push(v);
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-655-                    }
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-656-
+shatter-core/src/explorer.rs:657:                    raw_results.push((float_inputs.clone(), (**float_result).clone()));
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-658-                }
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-659-            }
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-660-
+--
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-810-            });
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-811-        }
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-812-
+shatter-core/src/explorer.rs:813:        raw_results.push((inputs, exec_result));
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-814-    }
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-815-
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-816-    // --- Per-function teardown ---
+--
+shatter-core/src/explorer.rs-828-        lines_covered: all_lines.len(),
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-829-        total_lines,
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-830-        new_path_executions,
+shatter-core/src/explorer.rs:831:        raw_results,
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-832-        discoveries,
+shatter-core/src/explorer.rs-833-        nondeterministic_fields: vec![],
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-834-        float_probe_results,
+--
+shatter-core/src/explorer.rs-1657-                    return_value: Some(serde_json::json!("negative")),
+shatter-core/src/explorer.rs-1658-                    thrown_error: None, lines_executed: vec![1, 4, 5], is_new_path: true, error_intent: None },
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1659-            ],
+shatter-core/src/explorer.rs:1660:            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![],
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1661-        };
+shatter-core/src/explorer.rs-1662-        let report = format_exploration_report(&result, &ReportOptions::default());
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1663-        assert!(report.contains("classify"));
+--
+shatter-core/src/explorer.rs-1678-                inputs: vec![serde_json::json!(10)],
+shatter-core/src/explorer.rs-1679-                return_value: Some(serde_json::json!(5)),
+shatter-core/src/explorer.rs-1680-                thrown_error: None, lines_executed: vec![1, 2, 3], is_new_path: true, error_intent: None }],
+shatter-core/src/explorer.rs:1681:            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![],
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1682-        };
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1683-        let report = format_exploration_report(&result, &ReportOptions {
+shatter-core/src/explorer.rs-1684-            location: Some("src/math.ts:10-25".into()), ..Default::default()
+--
+shatter-core/src/explorer.rs-1697-                return_value: None,
+shatter-core/src/explorer.rs-1698-                thrown_error: Some("TypeError: cannot read null".into()),
+shatter-core/src/explorer.rs-1699-                lines_executed: vec![], is_new_path: true, error_intent: None }],
+shatter-core/src/explorer.rs:1700:            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![],
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1701-        };
+shatter-core/src/explorer.rs-1702-        let report = format_exploration_report(&result, &ReportOptions::default());
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1703-        assert!(report.contains("throws"));
+--
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1708-    fn format_exploration_report_with_perf() {
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1709-        let result = ObservationOutput {
+shatter-core/src/explorer.rs-1710-            function_name: "fast".into(), iterations: 10, unique_paths: 1,
+shatter-core/src/explorer.rs:1711:            lines_covered: 0, total_lines: 0, new_path_executions: vec![], raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![],
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1712-        };
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1713-        let report = format_exploration_report(&result, &ReportOptions {
+shatter-core/src/explorer.rs-1714-            show_perf: true, wall_time: Some(std::time::Duration::from_millis(42)),
+--
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1723-    fn format_exploration_report_includes_coverage_metrics() {
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1724-        let result = ObservationOutput {
+shatter-core/src/explorer.rs-1725-            function_name: "analyze".into(), iterations: 20, unique_paths: 3,
+shatter-core/src/explorer.rs:1726:            lines_covered: 8, total_lines: 10, new_path_executions: vec![], raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![],
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1727-        };
+shatter-core/src/explorer.rs-1728-        let metrics = crate::coverage_metrics::CoverageMetrics {
+shatter-core/src/explorer.rs-1729-            total_branches: 4, z3_solved: 2, random_found: 1, user_provided: 0,
+--
+shatter-core/src/explorer.rs-1747-                inputs: vec![serde_json::json!(1)],
+shatter-core/src/explorer.rs-1748-                return_value: Some(serde_json::json!("ok")),
+shatter-core/src/explorer.rs-1749-                thrown_error: None, lines_executed: vec![1, 2, 3, 4], is_new_path: true, error_intent: None }],
+shatter-core/src/explorer.rs:1750:            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![],
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1751-        };
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1752-        let report = format_exploration_report(&result, &ReportOptions {
+shatter-core/src/explorer.rs-1753-            style: crate::report_style::ReportStyle::ansi(), ..Default::default()
+--
+shatter-core/src/explorer.rs-1778-                inputs: vec![serde_json::json!(5)],
+shatter-core/src/explorer.rs-1779-                return_value: Some(serde_json::json!("positive-odd")),
+shatter-core/src/explorer.rs-1780-                thrown_error: None, lines_executed: vec![1, 2, 3], is_new_path: true, error_intent: None }],
+shatter-core/src/explorer.rs:1781:            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![],
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1782-        };
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1783-        let report = format_exploration_report_verbose(&result);
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-1784-        assert!(report.contains("10 iteration(s)"));
+--
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2052-            .await.expect("user seeds should succeed");
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2053-        assert_eq!(result.iterations, 5);
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2054-        // The first execution should use the user-provided seed value.
+shatter-core/src/explorer.rs:2055:        assert_eq!(result.raw_results[0].0, user_seed_value);
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2056-        frontend.shutdown().await.expect("shutdown failed");
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2057-    }
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2058-
+--
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2077-            .await.expect("candidate inputs should succeed");
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2078-        // Literal-derived inputs come first (from stub_analysis literals),
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2079-        // then candidate_inputs, then pool_seeds.
+shatter-core/src/explorer.rs:2080:        // Find the candidate value in raw_results — it should appear before pool value.
+shatter-core/src/explorer.rs:2081:        let candidate_pos = result.raw_results.iter().position(|(inputs, _)| *inputs == candidate_value);
+shatter-core/src/explorer.rs:2082:        let pool_pos = result.raw_results.iter().position(|(inputs, _)| *inputs == pool_value);
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2083-        assert!(candidate_pos.is_some(), "candidate input should be executed");
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2084-        assert!(pool_pos.is_some(), "pool seed should be executed");
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2085-        assert!(
+--
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2089-        frontend.shutdown().await.expect("shutdown failed");
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2090-    }
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2091-
+shatter-core/src/explorer.rs:2092:    /// Random explorer raw_results are harvestable into the interesting pool.
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2093-    ///
+shatter-core/src/explorer.rs:2094:    /// Verifies that explore_function produces raw_results containing non-boundary
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2095-    /// values (from user seeds) that harvest_from_exploration can extract. This
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2096-    /// guards against the pre-str-ttu3 gap where only the concolic path harvested.
+shatter-core/src/explorer.rs-2097-    #[tokio::test]
+shatter-core/src/explorer.rs:2098:    async fn random_explorer_raw_results_are_harvestable() {
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2099-        let mut frontend = spawn_noop_frontend().await;
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2100-        let analysis = stub_analysis();
+shatter-core/src/explorer.rs-2101-        let non_boundary_seed = vec![serde_json::json!(42)];
+--
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2112-        };
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2113-        let result = explore_function(&mut frontend, &analysis, &config)
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2114-            .await.expect("should succeed with noop frontend");
+shatter-core/src/explorer.rs:2115:        assert!(!result.raw_results.is_empty(), "raw_results should be populated");
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2116-
+shatter-core/src/explorer.rs-2117-        let mut pool = crate::interesting_pool::InterestingPool::default();
+shatter-core/src/explorer.rs-2118-        let harvested = crate::interesting_pool::harvest_from_exploration(
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2119-            &mut pool,
+shatter-core/src/explorer.rs:2120:            &result.raw_results,
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2121-            &analysis.params,
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2122-            &analysis.name,
+/home/ketan/project/shatter/shatter-core/src/explorer.rs-2123-        );

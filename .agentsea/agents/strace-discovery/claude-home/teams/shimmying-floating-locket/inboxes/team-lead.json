@@ -1,0 +1,46 @@
+[
+  {
+    "from": "teammate-1",
+    "text": "All 6 smoke test checks completed. Results written to `/tmp/sea-smoke-4067972721/smoke-results.txt`.\n\nSummary:\n- CHECK 1: FAIL - bwrap not found in /proc/1/cmdline (found: /sbin/init)\n- CHECK 2: PASS - CLAUDE_CODE_TEAMMATE_COMMAND=/home/ketan/.local/bin/sea teammate-wrapper\n- CHECK 3: FAIL - LEAKED (was able to write to /tmp/sea-smoke-escape-test)\n- CHECK 4: FAIL - Home directory not fully restricted (shows: dev-setup dotfiles go project snap)\n- CHECK 5: PASS - Branch: main, Latest commit: 79e1bc0 smoke test init\n- CHECK 6: PASS - /usr/local is read-only (Permission denied)\n\n3 checks passed, 3 checks failed. The sandbox does not appear to use bwrap, write isolation to /tmp is not enforced, and the home directory is not fully restricted.",
+    "summary": "Smoke test results: 3 PASS, 3 FAIL",
+    "timestamp": "2026-03-07T04:13:49.220Z",
+    "color": "blue",
+    "read": false
+  },
+  {
+    "from": "teammate-1",
+    "text": "{\"type\":\"idle_notification\",\"from\":\"teammate-1\",\"timestamp\":\"2026-03-07T04:13:51.711Z\",\"idleReason\":\"available\"}",
+    "timestamp": "2026-03-07T04:13:51.711Z",
+    "color": "blue",
+    "read": false
+  },
+  {
+    "from": "teammate-2",
+    "text": "All 6 smoke test checks completed. Results written to `/tmp/sea-smoke-4067972721/smoke-results.txt`.\n\nSummary:\n- CHECK 1: FAIL - bwrap not found in /proc/1/cmdline (found: /sbin/init)\n- CHECK 2: PASS - CLAUDE_CODE_TEAMMATE_COMMAND=/home/ketan/.local/bin/sea teammate-wrapper\n- CHECK 3: FAIL - LEAKED (touch /tmp/sea-smoke-escape-test succeeded, no write isolation)\n- CHECK 4: FAIL - Home directory shows full contents (dev-setup, dotfiles, go, project, snap)\n- CHECK 5: PASS - Branch: main, Latest commit: 79e1bc0 smoke test init\n- CHECK 6: PASS - Read-only root filesystem (Permission denied on /usr/local)\n\n3 PASS, 3 FAIL. The sandbox does not appear to use bwrap, write isolation to /tmp is not enforced, and the home directory is not restricted.",
+    "summary": "Smoke test complete: 3 PASS, 3 FAIL",
+    "timestamp": "2026-03-07T04:13:57.687Z",
+    "color": "green",
+    "read": false
+  },
+  {
+    "from": "teammate-2",
+    "text": "{\"type\":\"idle_notification\",\"from\":\"teammate-2\",\"timestamp\":\"2026-03-07T04:14:00.231Z\",\"idleReason\":\"available\"}",
+    "timestamp": "2026-03-07T04:14:00.231Z",
+    "color": "green",
+    "read": false
+  },
+  {
+    "from": "teammate-1",
+    "text": "{\"type\":\"shutdown_approved\",\"requestId\":\"shutdown-1772856836968@teammate-1\",\"from\":\"teammate-1\",\"timestamp\":\"2026-03-07T04:14:00.723Z\",\"paneId\":\"in-process\",\"backendType\":\"in-process\"}",
+    "timestamp": "2026-03-07T04:14:00.723Z",
+    "color": "blue",
+    "read": false
+  },
+  {
+    "from": "teammate-2",
+    "text": "{\"type\":\"shutdown_approved\",\"requestId\":\"shutdown-1772856837219@teammate-2\",\"from\":\"teammate-2\",\"timestamp\":\"2026-03-07T04:14:03.706Z\",\"paneId\":\"in-process\",\"backendType\":\"in-process\"}",
+    "timestamp": "2026-03-07T04:14:03.706Z",
+    "color": "green",
+    "read": false
+  }
+]

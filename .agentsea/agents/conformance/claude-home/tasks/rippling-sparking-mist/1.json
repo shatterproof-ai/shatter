@@ -1,0 +1,8 @@
+{
+  "id": "1",
+  "subject": "Run sandbox isolation checks",
+  "description": "Run 5 sandbox isolation checks (bwrap, write isolation, home isolation, worktree, read-only root) and write results to smoke-results.txt",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

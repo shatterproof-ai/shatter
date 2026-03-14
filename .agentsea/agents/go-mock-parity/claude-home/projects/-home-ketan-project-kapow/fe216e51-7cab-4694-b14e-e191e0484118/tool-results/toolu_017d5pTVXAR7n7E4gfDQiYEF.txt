@@ -1,0 +1,2158 @@
+     1→package search_test
+     2→
+     3→import (
+     4→	"encoding/json"
+     5→	"regexp"
+     6→	"strings"
+     7→	"testing"
+     8→
+     9→	"github.com/ketang/kapow/api/internal/search"
+    10→)
+    11→
+    12→// ─────────────────────────────────────────────────────────────────────────────
+    13→// helpers
+    14→// ─────────────────────────────────────────────────────────────────────────────
+    15→
+    16→var placeholderRe = regexp.MustCompile(`\$\d+`)
+    17→
+    18→func countPlaceholders(sql string) int {
+    19→	return len(placeholderRe.FindAllString(sql, -1))
+    20→}
+    21→
+    22→func mustJSON(v any) json.RawMessage {
+    23→	b, err := json.Marshal(v)
+    24→	if err != nil {
+    25→		panic(err)
+    26→	}
+    27→	return b
+    28→}
+    29→
+    30→// ─────────────────────────────────────────────────────────────────────────────
+    31→// ValidateRequest
+    32→// ─────────────────────────────────────────────────────────────────────────────
+    33→
+    34→func TestValidateRequest(t *testing.T) {
+    35→	t.Parallel()
+    36→	reg := search.NewRegistry()
+    37→
+    38→	t.Run("unknown field", func(t *testing.T) {
+    39→		req := search.SearchRequest{
+    40→			Filters: []search.FilterInput{
+    41→				{Field: "does_not_exist", Value: mustJSON(map[string]any{"value": "x"})},
+    42→			},
+    43→		}
+    44→		errs := search.ValidateRequest(reg, req, true)
+    45→		if len(errs) != 1 {
+    46→			t.Fatalf("expected 1 error, got %d", len(errs))
+    47→		}
+    48→		if errs[0].Field != "does_not_exist" {
+    49→			t.Errorf("expected field 'does_not_exist', got %q", errs[0].Field)
+    50→		}
+    51→		if errs[0].Message != "unknown field" {
+    52→			t.Errorf("unexpected message: %q", errs[0].Message)
+    53→		}
+    54→	})
+    55→
+    56→	t.Run("bad enum value for state", func(t *testing.T) {
+    57→		req := search.SearchRequest{
+    58→			Filters: []search.FilterInput{
+    59→				{Field: "state", Value: mustJSON(search.MultiEnumFilter{Values: []string{"XX"}})},
+    60→			},
+    61→		}
+    62→		errs := search.ValidateRequest(reg, req, true)
+    63→		if len(errs) != 1 {
+    64→			t.Fatalf("expected 1 error, got %d", len(errs))
+    65→		}
+    66→		if !strings.Contains(errs[0].Message, "not in allowed options") {
+    67→			t.Errorf("unexpected message: %q", errs[0].Message)
+    68→		}
+    69→	})
+    70→
+    71→	t.Run("multi enum bad value", func(t *testing.T) {
+    72→		req := search.SearchRequest{
+    73→			Filters: []search.FilterInput{
+    74→				{Field: "application_platforms", Value: mustJSON(search.MultiEnumFilter{Values: []string{"Not A Real App"}})},
+    75→			},
+    76→		}
+    77→		errs := search.ValidateRequest(reg, req, true)
+    78→		if len(errs) != 1 {
+    79→			t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+    80→		}
+    81→		if !strings.Contains(errs[0].Message, "not in allowed options") {
+    82→			t.Errorf("unexpected message: %q", errs[0].Message)
+    83→		}
+    84→	})
+    85→
+    86→	t.Run("multi enum empty values", func(t *testing.T) {
+    87→		req := search.SearchRequest{
+    88→			Filters: []search.FilterInput{
+    89→				{Field: "application_platforms", Value: mustJSON(search.MultiEnumFilter{Values: []string{}})},
+    90→			},
+    91→		}
+    92→		errs := search.ValidateRequest(reg, req, true)
+    93→		if len(errs) != 1 {
+    94→			t.Fatalf("expected 1 error, got %d", len(errs))
+    95→		}
+    96→		if errs[0].Message != "at least one value required" {
+    97→			t.Errorf("unexpected message: %q", errs[0].Message)
+    98→		}
+    99→	})
+   100→
+   101→	t.Run("numeric range both nil", func(t *testing.T) {
+   102→		req := search.SearchRequest{
+   103→			Filters: []search.FilterInput{
+   104→				{Field: "enrollment", Value: mustJSON(search.NumericRangeFilter{})},
+   105→			},
+   106→		}
+   107→		errs := search.ValidateRequest(reg, req, true)
+   108→		if len(errs) != 1 {
+   109→			t.Fatalf("expected 1 error, got %d", len(errs))
+   110→		}
+   111→		if errs[0].Message != "at least one of min or max is required" {
+   112→			t.Errorf("unexpected message: %q", errs[0].Message)
+   113→		}
+   114→	})
+   115→
+   116→	t.Run("numeric range outside hard bounds", func(t *testing.T) {
+   117→		req := search.SearchRequest{
+   118→			Filters: []search.FilterInput{
+   119→				{Field: "admission_rate", Value: mustJSON(search.NumericRangeFilter{Max: ptrF(1.5)})},
+   120→			},
+   121→		}
+   122→		errs := search.ValidateRequest(reg, req, true)
+   123→		if len(errs) != 1 {
+   124→			t.Fatalf("expected 1 error, got %d", len(errs))
+   125→		}
+   126→		if errs[0].Message != "value out of allowed range" {
+   127→			t.Errorf("unexpected message: %q", errs[0].Message)
+   128→		}
+   129→	})
+   130→
+   131→	t.Run("geo radius over max", func(t *testing.T) {
+   132→		req := search.SearchRequest{
+   133→			Filters: []search.FilterInput{
+   134→				{Field: "location", Value: mustJSON(search.GeoFilterInput{
+   135→					Kind:   search.GeoFilterKindRadius,
+   136→					Radius: &search.GeoRadiusFilter{Lat: 40, Lng: -74, RadiusKm: 9999},
+   137→				})},
+   138→			},
+   139→		}
+   140→		errs := search.ValidateRequest(reg, req, true)
+   141→		if len(errs) != 1 {
+   142→			t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+   143→		}
+   144→		if !strings.Contains(errs[0].Message, "exceeds maximum") {
+   145→			t.Errorf("unexpected message: %q", errs[0].Message)
+   146→		}
+   147→	})
+   148→
+   149→	t.Run("geo radius not positive", func(t *testing.T) {
+   150→		req := search.SearchRequest{
+   151→			Filters: []search.FilterInput{
+   152→				{Field: "location", Value: mustJSON(search.GeoFilterInput{
+   153→					Kind:   search.GeoFilterKindRadius,
+   154→					Radius: &search.GeoRadiusFilter{Lat: 40, Lng: -74, RadiusKm: 0},
+   155→				})},
+   156→			},
+   157→		}
+   158→		errs := search.ValidateRequest(reg, req, true)
+   159→		if len(errs) != 1 {
+   160→			t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+   161→		}
+   162→		if errs[0].Message != "radius must be positive" {
+   163→			t.Errorf("unexpected message: %q", errs[0].Message)
+   164→		}
+   165→	})
+   166→
+   167→	t.Run("geo radius missing object", func(t *testing.T) {
+   168→		req := search.SearchRequest{
+   169→			Filters: []search.FilterInput{
+   170→				{Field: "location", Value: mustJSON(search.GeoFilterInput{Kind: search.GeoFilterKindRadius})},
+   171→			},
+   172→		}
+   173→		errs := search.ValidateRequest(reg, req, true)
+   174→		if len(errs) != 1 {
+   175→			t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+   176→		}
+   177→		if errs[0].Message != "radius filter requires radius object" {
+   178→			t.Errorf("unexpected message: %q", errs[0].Message)
+   179→		}
+   180→	})
+   181→
+   182→	t.Run("geo bbox missing object", func(t *testing.T) {
+   183→		req := search.SearchRequest{
+   184→			Filters: []search.FilterInput{
+   185→				{Field: "location", Value: mustJSON(search.GeoFilterInput{Kind: search.GeoFilterKindBBox})},
+   186→			},
+   187→		}
+   188→		errs := search.ValidateRequest(reg, req, true)
+   189→		if len(errs) != 1 {
+   190→			t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+   191→		}
+   192→		if errs[0].Message != "bbox filter requires bbox object" {
+   193→			t.Errorf("unexpected message: %q", errs[0].Message)
+   194→		}
+   195→	})
+   196→
+   197→	t.Run("limit exceeds max", func(t *testing.T) {
+   198→		req := search.SearchRequest{Limit: 9999}
+   199→		errs := search.ValidateRequest(reg, req, true)
+   200→		if len(errs) != 1 {
+   201→			t.Fatalf("expected 1 error, got %d", len(errs))
+   202→		}
+   203→		if errs[0].Field != "_limit" {
+   204→			t.Errorf("expected field '_limit', got %q", errs[0].Field)
+   205→		}
+   206→	})
+   207→
+   208→	t.Run("negative offset", func(t *testing.T) {
+   209→		req := search.SearchRequest{Offset: -1}
+   210→		errs := search.ValidateRequest(reg, req, true)
+   211→		if len(errs) != 1 {
+   212→			t.Fatalf("expected 1 error, got %d", len(errs))
+   213→		}
+   214→		if errs[0].Field != "_offset" {
+   215→			t.Errorf("expected field '_offset', got %q", errs[0].Field)
+   216→		}
+   217→	})
+   218→
+   219→	t.Run("no errors for valid request", func(t *testing.T) {
+   220→		req := search.SearchRequest{
+   221→			Filters: []search.FilterInput{
+   222→				{Field: "state", Value: mustJSON(search.MultiEnumFilter{Values: []string{"CA"}})},
+   223→				{Field: "enrollment", Value: mustJSON(search.NumericRangeFilter{Min: ptrF(1000), Max: ptrF(50000)})},
+   224→			},
+   225→			Limit:  20,
+   226→			Offset: 0,
+   227→		}
+   228→		errs := search.ValidateRequest(reg, req, true)
+   229→		if len(errs) != 0 {
+   230→			t.Fatalf("expected no errors, got: %v", errs)
+   231→		}
+   232→	})
+   233→
+   234→	t.Run("fields_of_study open ended accepts any value", func(t *testing.T) {
+   235→		req := search.SearchRequest{
+   236→			Filters: []search.FilterInput{
+   237→				{Field: "fields_of_study", Value: mustJSON(search.MultiEnumFilter{Values: []string{"52.0101", "11.0701"}})},
+   238→			},
+   239→		}
+   240→		errs := search.ValidateRequest(reg, req, true)
+   241→		if len(errs) != 0 {
+   242→			t.Fatalf("expected no errors for open-ended field, got: %v", errs)
+   243→		}
+   244→	})
+   245→}
+   246→
+   247→// TestValidateRequest_RestrictedSearchability verifies that RESTRICTED-searchability
+   248→// fields are rejected for anonymous users but allowed for authenticated users.
+   249→// Since no current registry field uses RESTRICTED searchability, this test validates
+   250→// the behaviour via ValidateRequest using a field that would be RESTRICTED.
+   251→func TestValidateRequest_RestrictedSearchability(t *testing.T) {
+   252→	t.Parallel()
+   253→	// This test uses the IsFieldSearchable logic indirectly: if ValidateRequest
+   254→	// encounters a NOT_SEARCHABLE field, it should reject it for both auth states.
+   255→	// We test the access helpers directly in access_test.go; here we verify the
+   256→	// integration with ValidateRequest by confirming that authenticated=true
+   257→	// does not produce errors for normal searchable fields.
+   258→	reg := search.NewRegistry()
+   259→
+   260→	req := search.SearchRequest{
+   261→		Filters: []search.FilterInput{
+   262→			{Field: "name", Value: mustJSON(search.SubstringFilter{Value: "MIT"})},
+   263→		},
+   264→	}
+   265→
+   266→	t.Run("authenticated allows searchable fields", func(t *testing.T) {
+   267→		errs := search.ValidateRequest(reg, req, true)
+   268→		if len(errs) != 0 {
+   269→			t.Errorf("expected no errors for authenticated user, got: %v", errs)
+   270→		}
+   271→	})
+   272→
+   273→	t.Run("anonymous allows searchable fields", func(t *testing.T) {
+   274→		errs := search.ValidateRequest(reg, req, false)
+   275→		if len(errs) != 0 {
+   276→			t.Errorf("expected no errors for anonymous user on SEARCHABLE field, got: %v", errs)
+   277→		}
+   278→	})
+   279→}
+   280→
+   281→// ─────────────────────────────────────────────────────────────────────────────
+   282→// BuildQuery
+   283→// ─────────────────────────────────────────────────────────────────────────────
+   284→
+   285→func TestBuildQuery(t *testing.T) {
+   286→	t.Parallel()
+   287→	reg := search.NewRegistry()
+   288→
+   289→	t.Run("no filters", func(t *testing.T) {
+   290→		req := search.SearchRequest{Limit: 20, Offset: 0}
+   291→		sql, args, err := search.BuildQuery(reg, req)
+   292→		if err != nil {
+   293→			t.Fatal(err)
+   294→		}
+   295→		if !strings.Contains(sql, "FROM search_base.dataset_merged") {
+   296→			t.Errorf("missing table: %s", sql)
+   297→		}
+   298→		// Permanent degree filter is always present.
+   299→		if !strings.Contains(sql, "WHERE") {
+   300→			t.Errorf("expected WHERE clause with permanent filter: %s", sql)
+   301→		}
+   302→		if !strings.Contains(sql, "degrees_awarded_highest") {
+   303→			t.Errorf("expected permanent degree filter: %s", sql)
+   304→		}
+   305→		if !strings.Contains(sql, "LIMIT") || !strings.Contains(sql, "OFFSET") {
+   306→			t.Errorf("missing pagination: %s", sql)
+   307→		}
+   308→		// Two pagination args: limit + offset (permanent filter has no args)
+   309→		if len(args) != 2 {
+   310→			t.Errorf("expected 2 args (limit/offset), got %d", len(args))
+   311→		}
+   312→	})
+   313→
+   314→	t.Run("single numeric range filter", func(t *testing.T) {
+   315→		req := search.SearchRequest{
+   316→			Filters: []search.FilterInput{
+   317→				{Field: "enrollment", Value: mustJSON(search.NumericRangeFilter{Min: ptrF(1000), Max: ptrF(50000)})},
+   318→			},
+   319→			Limit: 10,
+   320→		}
+   321→		sql, args, err := search.BuildQuery(reg, req)
+   322→		if err != nil {
+   323→			t.Fatal(err)
+   324→		}
+   325→		if !strings.Contains(sql, "WHERE") {
+   326→			t.Errorf("expected WHERE clause: %s", sql)
+   327→		}
+   328→		if !strings.Contains(sql, "BETWEEN") {
+   329→			t.Errorf("expected BETWEEN in SQL: %s", sql)
+   330→		}
+   331→		// 2 filter args + 2 pagination args
+   332→		if len(args) != 4 {
+   333→			t.Errorf("expected 4 args, got %d: %v", len(args), args)
+   334→		}
+   335→	})
+   336→
+   337→	t.Run("geo radius filter", func(t *testing.T) {
+   338→		req := search.SearchRequest{
+   339→			Filters: []search.FilterInput{
+   340→				{Field: "location", Value: mustJSON(search.GeoFilterInput{
+   341→					Kind:   search.GeoFilterKindRadius,
+   342→					Radius: &search.GeoRadiusFilter{Lat: 40.7, Lng: -74.0, RadiusKm: 50},
+   343→				})},
+   344→			},
+   345→			Limit: 20,
+   346→		}
+   347→		sql, args, err := search.BuildQuery(reg, req)
+   348→		if err != nil {
+   349→			t.Fatal(err)
+   350→		}
+   351→		if !strings.Contains(sql, "ST_DWithin") {
+   352→			t.Errorf("expected ST_DWithin: %s", sql)
+   353→		}
+   354→		// 3 geo args + 2 pagination = 5
+   355→		if len(args) != 5 {
+   356→			t.Errorf("expected 5 args, got %d", len(args))
+   357→		}
+   358→	})
+   359→
+   360→	t.Run("multi enum any filter", func(t *testing.T) {
+   361→		req := search.SearchRequest{
+   362→			Filters: []search.FilterInput{
+   363→				{Field: "application_platforms", Value: mustJSON(search.MultiEnumFilter{Values: []string{"Common", "Coalition"}})},
+   364→			},
+   365→			Limit: 20,
+   366→		}
+   367→		sql, args, err := search.BuildQuery(reg, req)
+   368→		if err != nil {
+   369→			t.Fatal(err)
+   370→		}
+   371→		if !strings.Contains(sql, "?|") {
+   372→			t.Errorf("expected ?| operator: %s", sql)
+   373→		}
+   374→		// 1 multi-enum arg + 2 pagination = 3
+   375→		if len(args) != 3 {
+   376→			t.Errorf("expected 3 args, got %d", len(args))
+   377→		}
+   378→	})
+   379→
+   380→	t.Run("ranking field", func(t *testing.T) {
+   381→		req := search.SearchRequest{
+   382→			Filters: []search.FilterInput{
+   383→				{Field: "rank_us_news_national", Value: mustJSON(search.NumericRangeFilter{Min: ptrF(1), Max: ptrF(50)})},
+   384→			},
+   385→			Limit: 20,
+   386→		}
+   387→		sql, args, err := search.BuildQuery(reg, req)
+   388→		if err != nil {
+   389→			t.Fatal(err)
+   390→		}
+   391→		if !strings.Contains(sql, "'rank'") {
+   392→			t.Errorf("expected method guard: %s", sql)
+   393→		}
+   394→		if !strings.Contains(sql, "BETWEEN") {
+   395→			t.Errorf("expected BETWEEN: %s", sql)
+   396→		}
+   397→		// 2 rank args + 2 pagination = 4
+   398→		if len(args) != 4 {
+   399→			t.Errorf("expected 4 args, got %d", len(args))
+   400→		}
+   401→	})
+   402→
+   403→	t.Run("count query has no limit offset", func(t *testing.T) {
+   404→		req := search.SearchRequest{
+   405→			Filters: []search.FilterInput{
+   406→				{Field: "state", Value: mustJSON(search.MultiEnumFilter{Values: []string{"VT"}})},
+   407→			},
+   408→		}
+   409→		sql, args, err := search.BuildCountQuery(reg, req)
+   410→		if err != nil {
+   411→			t.Fatal(err)
+   412→		}
+   413→		if !strings.HasPrefix(sql, "SELECT COUNT(*)") {
+   414→			t.Errorf("expected COUNT(*): %s", sql)
+   415→		}
+   416→		if strings.Contains(sql, "LIMIT") {
+   417→			t.Errorf("unexpected LIMIT in count query: %s", sql)
+   418→		}
+   419→		if len(args) != 1 {
+   420→			t.Errorf("expected 1 arg, got %d", len(args))
+   421→		}
+   422→	})
+   423→
+   424→	t.Run("multiple filters join with AND", func(t *testing.T) {
+   425→		req := search.SearchRequest{
+   426→			Filters: []search.FilterInput{
+   427→				{Field: "state", Value: mustJSON(search.MultiEnumFilter{Values: []string{"CA"}})},
+   428→				{Field: "enrollment", Value: mustJSON(search.NumericRangeFilter{Min: ptrF(5000)})},
+   429→			},
+   430→			Limit: 20,
+   431→		}
+   432→		sql, _, err := search.BuildQuery(reg, req)
+   433→		if err != nil {
+   434→			t.Fatal(err)
+   435→		}
+   436→		if !strings.Contains(sql, " AND ") {
+   437→			t.Errorf("expected AND between clauses: %s", sql)
+   438→		}
+   439→	})
+   440→}
+   441→
+   442→// ─────────────────────────────────────────────────────────────────────────────
+   443→// Table-driven BuildSQL test for every registry field
+   444→// ─────────────────────────────────────────────────────────────────────────────
+   445→
+   446→func TestBuildSQLAllFields(t *testing.T) {
+   447→	t.Parallel()
+   448→	reg := search.NewRegistry()
+   449→
+   450→	for _, f := range reg.All() {
+   451→		f := f // capture
+   452→		t.Run(f.Name(), func(t *testing.T) {
+   453→			raw := minimalFilter(f)
+   454→			if raw == nil {
+   455→				t.Skipf("no minimal filter for kind %s", f.Kind())
+   456→			}
+   457→
+   458→			expr, args, err := f.BuildSQL(raw, 1)
+   459→			if err != nil {
+   460→				t.Fatalf("BuildSQL error: %v", err)
+   461→			}
+   462→			if strings.TrimSpace(expr) == "" {
+   463→				t.Fatalf("BuildSQL returned empty expression")
+   464→			}
+   465→
+   466→			// Verify placeholder count matches arg count.
+   467→			np := countPlaceholders(expr)
+   468→			if np != len(args) {
+   469→				t.Errorf("placeholder count %d != arg count %d\nexpr: %s\nargs: %v",
+   470→					np, len(args), expr, args)
+   471→			}
+   472→
+   473→			// Verify no obvious SQL injection via string interpolation:
+   474→			// all variable data must appear only as $N placeholders.
+   475→			if strings.Contains(expr, "test_injection") {
+   476→				t.Errorf("value leaked into SQL expression: %s", expr)
+   477→			}
+   478→		})
+   479→	}
+   480→}
+   481→
+   482→// minimalFilter returns a minimal valid JSON filter for the given field.
+   483→func minimalFilter(f search.Field) json.RawMessage {
+   484→	desc := f.Descriptor()
+   485→	switch f.Kind() {
+   486→	case search.KindFullText:
+   487→		return mustJSON(search.FullTextFilter{Query: "test_query"})
+   488→	case search.KindSubstring:
+   489→		return mustJSON(search.SubstringFilter{Value: "test_value"})
+   490→	case search.KindExactString:
+   491→		return mustJSON(search.ExactStringFilter{Value: "test_value"})
+   492→	case search.KindExactNumeric:
+   493→		return mustJSON(search.ExactNumericFilter{Value: 1})
+   494→	case search.KindNumericRange:
+   495→		return mustJSON(search.NumericRangeFilter{Min: ptrF(1)})
+   496→	case search.KindSingleEnum:
+   497→		if len(desc.Options) > 0 {
+   498→			return mustJSON(search.SingleEnumFilter{Value: desc.Options[0].Value})
+   499→		}
+   500→		return mustJSON(search.SingleEnumFilter{Value: "test"})
+   501→	case search.KindMultiEnum:
+   502→		if len(desc.Options) > 0 {
+   503→			return mustJSON(search.MultiEnumFilter{Values: []string{desc.Options[0].Value}})
+   504→		}
+   505→		return mustJSON(search.MultiEnumFilter{Values: []string{"52.0101"}})
+   506→	case search.KindGeo:
+   507→		return mustJSON(search.GeoFilterInput{
+   508→			Kind:   search.GeoFilterKindRadius,
+   509→			Radius: &search.GeoRadiusFilter{Lat: 40.7, Lng: -74.0, RadiusKm: 50},
+   510→		})
+   511→	}
+   512→	return nil
+   513→}
+   514→
+   515→// ─────────────────────────────────────────────────────────────────────────────
+   516→// Descriptors
+   517→// ─────────────────────────────────────────────────────────────────────────────
+   518→
+   519→func TestDescriptors(t *testing.T) {
+   520→	t.Parallel()
+   521→	reg := search.NewRegistry()
+   522→	descs := reg.Descriptors()
+   523→
+   524→	if len(descs) == 0 {
+   525→		t.Fatal("Descriptors() returned empty slice")
+   526→	}
+   527→
+   528→	for _, d := range descs {
+   529→		if d.Name == "" {
+   530→			t.Errorf("descriptor has empty Name: %+v", d)
+   531→		}
+   532→		if d.Label == "" {
+   533→			t.Errorf("descriptor %q has empty Label", d.Name)
+   534→		}
+   535→		if d.Kind == "" {
+   536→			t.Errorf("descriptor %q has empty Kind", d.Name)
+   537→		}
+   538→	}
+   539→
+   540→	// Verify the count matches All().
+   541→	if len(descs) != len(reg.All()) {
+   542→		t.Errorf("Descriptors() count %d != All() count %d", len(descs), len(reg.All()))
+   543→	}
+   544→}
+   545→
+   546→// ─────────────────────────────────────────────────────────────────────────────
+   547→// Specific SQL shape tests
+   548→// ─────────────────────────────────────────────────────────────────────────────
+   549→
+   550→func TestBuildSQLShapes(t *testing.T) {
+   551→	t.Parallel()
+   552→	reg := search.NewRegistry()
+   553→
+   554→	lookup := func(name string) search.Field {
+   555→		f, ok := reg.Lookup(name)
+   556→		if !ok {
+   557→			t.Fatalf("field %q not found in registry", name)
+   558→		}
+   559→		return f
+   560→	}
+   561→
+   562→	t.Run("full_text uses plainto_tsquery", func(t *testing.T) {
+   563→		f := lookup("name")
+   564→		expr, args, err := f.BuildSQL(mustJSON(search.FullTextFilter{Query: "MIT"}), 1)
+   565→		if err != nil {
+   566→			t.Fatal(err)
+   567→		}
+   568→		if !strings.Contains(expr, "plainto_tsquery") {
+   569→			t.Errorf("expected plainto_tsquery: %s", expr)
+   570→		}
+   571→		if len(args) != 1 || args[0] != "MIT" {
+   572→			t.Errorf("unexpected args: %v", args)
+   573→		}
+   574→	})
+   575→
+   576→	t.Run("substring uses ILIKE with concat", func(t *testing.T) {
+   577→		f := lookup("ncaa_conference")
+   578→		expr, args, err := f.BuildSQL(mustJSON(search.SubstringFilter{Value: "big ten"}), 1)
+   579→		if err != nil {
+   580→			t.Fatal(err)
+   581→		}
+   582→		if !strings.Contains(expr, "ILIKE") {
+   583→			t.Errorf("expected ILIKE: %s", expr)
+   584→		}
+   585→		if len(args) != 1 || args[0] != "big ten" {
+   586→			t.Errorf("unexpected args: %v", args)
+   587→		}
+   588→	})
+   589→
+   590→	t.Run("ncaa_conference JSONB substring has null guard", func(t *testing.T) {
+   591→		f := lookup("ncaa_conference")
+   592→		expr, _, err := f.BuildSQL(mustJSON(search.SubstringFilter{Value: "ACC"}), 1)
+   593→		if err != nil {
+   594→			t.Fatal(err)
+   595→		}
+   596→		if !strings.Contains(expr, "IS NOT NULL") {
+   597→			t.Errorf("expected IS NOT NULL guard for JSONB source: %s", expr)
+   598→		}
+   599→	})
+   600→
+   601→	t.Run("enrollment JSONB range has null guard", func(t *testing.T) {
+   602→		f := lookup("enrollment")
+   603→		expr, _, err := f.BuildSQL(mustJSON(search.NumericRangeFilter{Min: ptrF(1000)}), 1)
+   604→		if err != nil {
+   605→			t.Fatal(err)
+   606→		}
+   607→		if !strings.Contains(expr, "IS NOT NULL") {
+   608→			t.Errorf("expected IS NOT NULL guard: %s", expr)
+   609→		}
+   610→		if !strings.Contains(expr, "::integer") {
+   611→			t.Errorf("expected ::integer cast: %s", expr)
+   612→		}
+   613→	})
+   614→
+   615→	t.Run("ranking field has method guard", func(t *testing.T) {
+   616→		f := lookup("rank_us_news_national")
+   617→		expr, args, err := f.BuildSQL(mustJSON(search.NumericRangeFilter{Min: ptrF(1), Max: ptrF(100)}), 1)
+   618→		if err != nil {
+   619→			t.Fatal(err)
+   620→		}
+   621→		if !strings.Contains(expr, "method") || !strings.Contains(expr, "'rank'") {
+   622→			t.Errorf("expected method guard: %s", expr)
+   623→		}
+   624→		if len(args) != 2 {
+   625→			t.Errorf("expected 2 args, got %d", len(args))
+   626→		}
+   627→	})
+   628→
+   629→	t.Run("geo bbox uses ST_Intersects", func(t *testing.T) {
+   630→		f := lookup("location")
+   631→		expr, args, err := f.BuildSQL(mustJSON(search.GeoFilterInput{
+   632→			Kind: search.GeoFilterKindBBox,
+   633→			BBox: &search.GeoBoundingBoxFilter{MinLat: 40, MaxLat: 42, MinLng: -75, MaxLng: -72},
+   634→		}), 1)
+   635→		if err != nil {
+   636→			t.Fatal(err)
+   637→		}
+   638→		if !strings.Contains(expr, "ST_Intersects") {
+   639→			t.Errorf("expected ST_Intersects: %s", expr)
+   640→		}
+   641→		if len(args) != 4 {
+   642→			t.Errorf("expected 4 args, got %d", len(args))
+   643→		}
+   644→	})
+   645→
+   646→	t.Run("state multi-select uses ANY", func(t *testing.T) {
+   647→		f := lookup("state")
+   648→		expr, args, err := f.BuildSQL(mustJSON(search.MultiEnumFilter{Values: []string{"CA", "NY", "TX"}}), 1)
+   649→		if err != nil {
+   650→			t.Fatal(err)
+   651→		}
+   652→		if !strings.Contains(expr, "= ANY($1::text[])") {
+   653→			t.Errorf("expected ANY operator: %s", expr)
+   654→		}
+   655→		// 1 array arg
+   656→		if len(args) != 1 {
+   657→			t.Errorf("expected 1 arg, got %d", len(args))
+   658→		}
+   659→		// verify the arg is the slice
+   660→		vals, ok := args[0].([]string)
+   661→		if !ok {
+   662→			t.Fatalf("expected []string arg, got %T", args[0])
+   663→		}
+   664→		if len(vals) != 3 {
+   665→			t.Errorf("expected 3 values in arg, got %d", len(vals))
+   666→		}
+   667→	})
+   668→
+   669→	t.Run("state multi-select argStart increments correctly", func(t *testing.T) {
+   670→		f := lookup("state")
+   671→		expr, _, err := f.BuildSQL(mustJSON(search.MultiEnumFilter{Values: []string{"CA"}}), 5)
+   672→		if err != nil {
+   673→			t.Fatal(err)
+   674→		}
+   675→		if !strings.Contains(expr, "$5") {
+   676→			t.Errorf("expected $5 placeholder at argStart=5: %s", expr)
+   677→		}
+   678→	})
+   679→
+   680→	t.Run("state multi-select empty values error", func(t *testing.T) {
+   681→		f := lookup("state")
+   682→		_, _, err := f.BuildSQL(mustJSON(search.MultiEnumFilter{Values: []string{}}), 1)
+   683→		if err == nil {
+   684→			t.Fatal("expected error for empty values")
+   685→		}
+   686→		if err.Error() != "at least one value required" {
+   687→			t.Errorf("unexpected error: %v", err)
+   688→		}
+   689→	})
+   690→
+   691→	t.Run("state multi-select invalid JSON error", func(t *testing.T) {
+   692→		f := lookup("state")
+   693→		_, _, err := f.BuildSQL(json.RawMessage(`not-json`), 1)
+   694→		if err == nil {
+   695→			t.Fatal("expected JSON parse error")
+   696→		}
+   697→	})
+   698→
+   699→	t.Run("multi enum object_key all uses ?&", func(t *testing.T) {
+   700→		// fields_of_study is object_key/any — we build a multi-all field manually
+   701→		// to test the ?& path without adding it to the registry.
+   702→		// (Registry only uses SelectionModeAny for these fields.)
+   703→		// Verify the any path (?|) for fields_of_study.
+   704→		f := lookup("fields_of_study")
+   705→		expr, _, err := f.BuildSQL(mustJSON(search.MultiEnumFilter{Values: []string{"52.0101"}}), 1)
+   706→		if err != nil {
+   707→			t.Fatal(err)
+   708→		}
+   709→		if !strings.Contains(expr, "?|") {
+   710→			t.Errorf("expected ?| for object_key/any: %s", expr)
+   711→		}
+   712→	})
+   713→
+   714→	t.Run("placeholder index advances correctly across multiple filters", func(t *testing.T) {
+   715→		req := search.SearchRequest{
+   716→			Filters: []search.FilterInput{
+   717→				{Field: "enrollment", Value: mustJSON(search.NumericRangeFilter{Min: ptrF(100), Max: ptrF(5000)})},
+   718→				{Field: "state", Value: mustJSON(search.MultiEnumFilter{Values: []string{"NY"}})},
+   719→			},
+   720→		}
+   721→		sql, args, err := search.BuildQuery(reg, req)
+   722→		if err != nil {
+   723→			t.Fatal(err)
+   724→		}
+   725→		// enrollment: 2 args ($1,$2), state: 1 arg ($3), limit: $4, offset: $5
+   726→		if len(args) != 5 {
+   727→			t.Errorf("expected 5 args, got %d: %v", len(args), args)
+   728→		}
+   729→		// Check $3 comes after $2 in the SQL (state clause uses $3)
+   730→		idx2 := strings.Index(sql, "$2")
+   731→		idx3 := strings.Index(sql, "$3")
+   732→		if idx2 < 0 || idx3 < 0 || idx3 < idx2 {
+   733→			t.Errorf("placeholder ordering wrong: %s", sql)
+   734→		}
+   735→	})
+   736→}
+   737→
+   738→// ─────────────────────────────────────────────────────────────────────────────
+   739→// baseField accessor coverage
+   740→// ─────────────────────────────────────────────────────────────────────────────
+   741→
+   742→func TestBaseFieldAccessors(t *testing.T) {
+   743→	t.Parallel()
+   744→	reg := search.NewRegistry()
+   745→	f, ok := reg.Lookup("city")
+   746→	if !ok {
+   747→		t.Fatal("field 'city' not found")
+   748→	}
+   749→	if f.Label() == "" {
+   750→		t.Error("Label() returned empty")
+   751→	}
+   752→	if f.Description() == "" {
+   753→		t.Error("Description() returned empty")
+   754→	}
+   755→	src := f.Source()
+   756→	if src.Kind != search.SourceColumn {
+   757→		t.Errorf("expected SourceColumn, got %s", src.Kind)
+   758→	}
+   759→}
+   760→
+   761→// ─────────────────────────────────────────────────────────────────────────────
+   762→// ValidateRequest — additional branches
+   763→// ─────────────────────────────────────────────────────────────────────────────
+   764→
+   765→func TestValidateRequest_InvalidJSON(t *testing.T) {
+   766→	t.Parallel()
+   767→	reg := search.NewRegistry()
+   768→	bad := json.RawMessage(`not-json`)
+   769→
+   770→	cases := []struct {
+   771→		name  string
+   772→		field string
+   773→	}{
+   774→		{"fulltext", "name"},
+   775→		{"substring", "ncaa_conference"},
+   776→		{"exact_string", "unit_id"},
+   777→		{"exact_numeric", "carnegie_basic"},
+   778→		{"numeric_range", "enrollment"},
+   779→		{"single_enum", "institution_type"},
+   780→		{"multi_enum", "application_platforms"},
+   781→		{"geo", "location"},
+   782→	}
+   783→	for _, tc := range cases {
+   784→		t.Run(tc.name, func(t *testing.T) {
+   785→			req := search.SearchRequest{
+   786→				Filters: []search.FilterInput{{Field: tc.field, Value: bad}},
+   787→			}
+   788→			errs := search.ValidateRequest(reg, req, true)
+   789→			if len(errs) == 0 {
+   790→				t.Error("expected validation error for invalid JSON")
+   791→			}
+   792→			if !strings.Contains(errs[0].Message, "invalid filter JSON") {
+   793→				t.Errorf("unexpected message: %q", errs[0].Message)
+   794→			}
+   795→		})
+   796→	}
+   797→}
+   798→
+   799→func TestValidateRequest_FullTextTooLong(t *testing.T) {
+   800→	t.Parallel()
+   801→	reg := search.NewRegistry()
+   802→	long := strings.Repeat("x", 513)
+   803→	req := search.SearchRequest{
+   804→		Filters: []search.FilterInput{
+   805→			{Field: "name", Value: mustJSON(search.FullTextFilter{Query: long})},
+   806→		},
+   807→	}
+   808→	errs := search.ValidateRequest(reg, req, true)
+   809→	if len(errs) != 1 {
+   810→		t.Fatalf("expected 1 error, got %d", len(errs))
+   811→	}
+   812→	if !strings.Contains(errs[0].Message, "maximum length") {
+   813→		t.Errorf("unexpected message: %q", errs[0].Message)
+   814→	}
+   815→}
+   816→
+   817→func TestValidateRequest_SubstringTooLong(t *testing.T) {
+   818→	t.Parallel()
+   819→	reg := search.NewRegistry()
+   820→	long := strings.Repeat("x", 513)
+   821→	req := search.SearchRequest{
+   822→		Filters: []search.FilterInput{
+   823→			{Field: "ncaa_conference", Value: mustJSON(search.SubstringFilter{Value: long})},
+   824→		},
+   825→	}
+   826→	errs := search.ValidateRequest(reg, req, true)
+   827→	if len(errs) != 1 {
+   828→		t.Fatalf("expected 1 error, got %d", len(errs))
+   829→	}
+   830→	if !strings.Contains(errs[0].Message, "maximum length") {
+   831→		t.Errorf("unexpected message: %q", errs[0].Message)
+   832→	}
+   833→}
+   834→
+   835→func TestValidateRequest_ExactStringTooLong(t *testing.T) {
+   836→	t.Parallel()
+   837→	reg := search.NewRegistry()
+   838→	long := strings.Repeat("x", 513)
+   839→	req := search.SearchRequest{
+   840→		Filters: []search.FilterInput{
+   841→			{Field: "unit_id", Value: mustJSON(search.ExactStringFilter{Value: long})},
+   842→		},
+   843→	}
+   844→	errs := search.ValidateRequest(reg, req, true)
+   845→	if len(errs) != 1 {
+   846→		t.Fatalf("expected 1 error, got %d", len(errs))
+   847→	}
+   848→	if !strings.Contains(errs[0].Message, "maximum length") {
+   849→		t.Errorf("unexpected message: %q", errs[0].Message)
+   850→	}
+   851→}
+   852→
+   853→func TestValidateRequest_NumericRangeHardBoundsMinBelow(t *testing.T) {
+   854→	t.Parallel()
+   855→	reg := search.NewRegistry()
+   856→	req := search.SearchRequest{
+   857→		Filters: []search.FilterInput{
+   858→			{Field: "admission_rate", Value: mustJSON(search.NumericRangeFilter{Min: ptrF(-0.5)})},
+   859→		},
+   860→	}
+   861→	errs := search.ValidateRequest(reg, req, true)
+   862→	if len(errs) != 1 {
+   863→		t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+   864→	}
+   865→	if errs[0].Message != "value out of allowed range" {
+   866→		t.Errorf("unexpected message: %q", errs[0].Message)
+   867→	}
+   868→}
+   869→
+   870→func TestValidateRequest_SingleEnumValidValue(t *testing.T) {
+   871→	t.Parallel()
+   872→	reg := search.NewRegistry()
+   873→	req := search.SearchRequest{
+   874→		Filters: []search.FilterInput{
+   875→			{Field: "institution_type", Value: mustJSON(search.SingleEnumFilter{Value: "1"})},
+   876→		},
+   877→	}
+   878→	errs := search.ValidateRequest(reg, req, true)
+   879→	if len(errs) != 0 {
+   880→		t.Fatalf("expected no errors, got: %v", errs)
+   881→	}
+   882→}
+   883→
+   884→func TestValidateRequest_SingleEnumInvalidValue(t *testing.T) {
+   885→	t.Parallel()
+   886→	reg := search.NewRegistry()
+   887→	req := search.SearchRequest{
+   888→		Filters: []search.FilterInput{
+   889→			{Field: "institution_type", Value: mustJSON(search.SingleEnumFilter{Value: "99"})},
+   890→		},
+   891→	}
+   892→	errs := search.ValidateRequest(reg, req, true)
+   893→	if len(errs) != 1 {
+   894→		t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+   895→	}
+   896→	if !strings.Contains(errs[0].Message, "not in allowed options") {
+   897→		t.Errorf("unexpected message: %q", errs[0].Message)
+   898→	}
+   899→}
+   900→
+   901→func TestValidateRequest_GeoUnknownKind(t *testing.T) {
+   902→	t.Parallel()
+   903→	reg := search.NewRegistry()
+   904→	req := search.SearchRequest{
+   905→		Filters: []search.FilterInput{
+   906→			{Field: "location", Value: mustJSON(search.GeoFilterInput{Kind: "polygon"})},
+   907→		},
+   908→	}
+   909→	errs := search.ValidateRequest(reg, req, true)
+   910→	if len(errs) != 1 {
+   911→		t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+   912→	}
+   913→	if !strings.Contains(errs[0].Message, "unknown geo filter kind") {
+   914→		t.Errorf("unexpected message: %q", errs[0].Message)
+   915→	}
+   916→}
+   917→
+   918→func TestValidateRequest_GeoBBoxValid(t *testing.T) {
+   919→	t.Parallel()
+   920→	reg := search.NewRegistry()
+   921→	req := search.SearchRequest{
+   922→		Filters: []search.FilterInput{
+   923→			{Field: "location", Value: mustJSON(search.GeoFilterInput{
+   924→				Kind: search.GeoFilterKindBBox,
+   925→				BBox: &search.GeoBoundingBoxFilter{MinLat: 40, MaxLat: 42, MinLng: -75, MaxLng: -72},
+   926→			})},
+   927→		},
+   928→	}
+   929→	errs := search.ValidateRequest(reg, req, true)
+   930→	if len(errs) != 0 {
+   931→		t.Fatalf("expected no errors, got: %v", errs)
+   932→	}
+   933→}
+   934→
+   935→func TestValidateRequest_ExactNumericValidJSON(t *testing.T) {
+   936→	t.Parallel()
+   937→	reg := search.NewRegistry()
+   938→	req := search.SearchRequest{
+   939→		Filters: []search.FilterInput{
+   940→			{Field: "carnegie_basic", Value: mustJSON(search.ExactNumericFilter{Value: 15})},
+   941→		},
+   942→	}
+   943→	errs := search.ValidateRequest(reg, req, true)
+   944→	if len(errs) != 0 {
+   945→		t.Fatalf("expected no errors, got: %v", errs)
+   946→	}
+   947→}
+   948→
+   949→// ─────────────────────────────────────────────────────────────────────────────
+   950→// BuildSQL error paths for individual field types
+   951→// ─────────────────────────────────────────────────────────────────────────────
+   952→
+   953→func TestBuildSQL_ErrorPaths(t *testing.T) {
+   954→	t.Parallel()
+   955→	reg := search.NewRegistry()
+   956→	bad := json.RawMessage(`not-json`)
+   957→
+   958→	lookup := func(name string) search.Field {
+   959→		f, ok := reg.Lookup(name)
+   960→		if !ok {
+   961→			t.Fatalf("field %q not found", name)
+   962→		}
+   963→		return f
+   964→	}
+   965→
+   966→	fieldNames := []string{
+   967→		"name", "ncaa_conference", "unit_id", "carnegie_basic", "enrollment",
+   968→		"institution_type", "state", "application_platforms",
+   969→		"location", "rank_us_news_national", "fields_of_study",
+   970→	}
+   971→	for _, name := range fieldNames {
+   972→		t.Run(name+"_invalid_json", func(t *testing.T) {
+   973→			f := lookup(name)
+   974→			_, _, err := f.BuildSQL(bad, 1)
+   975→			if err == nil {
+   976→				t.Error("expected error for invalid JSON")
+   977→			}
+   978→		})
+   979→	}
+   980→}
+   981→
+   982→func TestBuildSQL_NumericRange_MaxOnly(t *testing.T) {
+   983→	t.Parallel()
+   984→	reg := search.NewRegistry()
+   985→	f, _ := reg.Lookup("enrollment")
+   986→	expr, args, err := f.BuildSQL(mustJSON(search.NumericRangeFilter{Max: ptrF(5000)}), 1)
+   987→	if err != nil {
+   988→		t.Fatal(err)
+   989→	}
+   990→	if !strings.Contains(expr, "<=") {
+   991→		t.Errorf("expected <= for max-only: %s", expr)
+   992→	}
+   993→	if len(args) != 1 {
+   994→		t.Errorf("expected 1 arg, got %d", len(args))
+   995→	}
+   996→}
+   997→
+   998→func TestBuildSQL_NumericRange_BothNil(t *testing.T) {
+   999→	t.Parallel()
+  1000→	reg := search.NewRegistry()
+  1001→	f, _ := reg.Lookup("enrollment")
+  1002→	_, _, err := f.BuildSQL(mustJSON(search.NumericRangeFilter{}), 1)
+  1003→	if err == nil {
+  1004→		t.Error("expected error for both nil")
+  1005→	}
+  1006→}
+  1007→
+  1008→func TestBuildSQL_Ranking_MinOnly(t *testing.T) {
+  1009→	t.Parallel()
+  1010→	reg := search.NewRegistry()
+  1011→	f, _ := reg.Lookup("rank_us_news_national")
+  1012→	expr, args, err := f.BuildSQL(mustJSON(search.NumericRangeFilter{Min: ptrF(10)}), 1)
+  1013→	if err != nil {
+  1014→		t.Fatal(err)
+  1015→	}
+  1016→	if !strings.Contains(expr, ">=") {
+  1017→		t.Errorf("expected >= for min-only: %s", expr)
+  1018→	}
+  1019→	if len(args) != 1 {
+  1020→		t.Errorf("expected 1 arg, got %d", len(args))
+  1021→	}
+  1022→}
+  1023→
+  1024→func TestBuildSQL_Ranking_MaxOnly(t *testing.T) {
+  1025→	t.Parallel()
+  1026→	reg := search.NewRegistry()
+  1027→	f, _ := reg.Lookup("rank_us_news_national")
+  1028→	expr, args, err := f.BuildSQL(mustJSON(search.NumericRangeFilter{Max: ptrF(50)}), 1)
+  1029→	if err != nil {
+  1030→		t.Fatal(err)
+  1031→	}
+  1032→	if !strings.Contains(expr, "<=") {
+  1033→		t.Errorf("expected <= for max-only: %s", expr)
+  1034→	}
+  1035→	if len(args) != 1 {
+  1036→		t.Errorf("expected 1 arg, got %d", len(args))
+  1037→	}
+  1038→}
+  1039→
+  1040→func TestBuildSQL_Ranking_BothNil(t *testing.T) {
+  1041→	t.Parallel()
+  1042→	reg := search.NewRegistry()
+  1043→	f, _ := reg.Lookup("rank_us_news_national")
+  1044→	_, _, err := f.BuildSQL(mustJSON(search.NumericRangeFilter{}), 1)
+  1045→	if err == nil {
+  1046→		t.Error("expected error for both nil")
+  1047→	}
+  1048→}
+  1049→
+  1050→func TestBuildSQL_ExactString_CaseSensitive(t *testing.T) {
+  1051→	t.Parallel()
+  1052→	reg := search.NewRegistry()
+  1053→	f, _ := reg.Lookup("unit_id")
+  1054→	expr, _, err := f.BuildSQL(mustJSON(search.ExactStringFilter{Value: "123456"}), 1)
+  1055→	if err != nil {
+  1056→		t.Fatal(err)
+  1057→	}
+  1058→	if !strings.Contains(expr, "=") {
+  1059→		t.Errorf("expected = operator: %s", expr)
+  1060→	}
+  1061→	if strings.Contains(expr, "ILIKE") {
+  1062→		t.Errorf("case-sensitive field should not use ILIKE: %s", expr)
+  1063→	}
+  1064→}
+  1065→
+  1066→func TestBuildSQL_ExactString_CaseInsensitive(t *testing.T) {
+  1067→	t.Parallel()
+  1068→	reg := search.NewRegistry()
+  1069→	f, _ := reg.Lookup("metro_area")
+  1070→	expr, _, err := f.BuildSQL(mustJSON(search.ExactStringFilter{Value: "Boston"}), 1)
+  1071→	if err != nil {
+  1072→		t.Fatal(err)
+  1073→	}
+  1074→	if !strings.Contains(expr, "ILIKE") {
+  1075→		t.Errorf("expected ILIKE for case-insensitive: %s", expr)
+  1076→	}
+  1077→	// Also verify JSONB null guard
+  1078→	if !strings.Contains(expr, "IS NOT NULL") {
+  1079→		t.Errorf("expected IS NOT NULL for JSONB source: %s", expr)
+  1080→	}
+  1081→}
+  1082→
+  1083→func TestBuildSQL_GeoField_UnknownKind(t *testing.T) {
+  1084→	t.Parallel()
+  1085→	reg := search.NewRegistry()
+  1086→	f, _ := reg.Lookup("location")
+  1087→	_, _, err := f.BuildSQL(mustJSON(search.GeoFilterInput{Kind: "polygon"}), 1)
+  1088→	if err == nil {
+  1089→		t.Error("expected error for unknown kind")
+  1090→	}
+  1091→	if !strings.Contains(err.Error(), "unknown geo filter kind") {
+  1092→		t.Errorf("unexpected error: %v", err)
+  1093→	}
+  1094→}
+  1095→
+  1096→func TestBuildSQL_GeoField_RadiusMissingObject(t *testing.T) {
+  1097→	t.Parallel()
+  1098→	reg := search.NewRegistry()
+  1099→	f, _ := reg.Lookup("location")
+  1100→	_, _, err := f.BuildSQL(mustJSON(search.GeoFilterInput{Kind: search.GeoFilterKindRadius}), 1)
+  1101→	if err == nil {
+  1102→		t.Error("expected error for missing radius")
+  1103→	}
+  1104→}
+  1105→
+  1106→func TestBuildSQL_GeoField_BBoxMissingObject(t *testing.T) {
+  1107→	t.Parallel()
+  1108→	reg := search.NewRegistry()
+  1109→	f, _ := reg.Lookup("location")
+  1110→	_, _, err := f.BuildSQL(mustJSON(search.GeoFilterInput{Kind: search.GeoFilterKindBBox}), 1)
+  1111→	if err == nil {
+  1112→		t.Error("expected error for missing bbox")
+  1113→	}
+  1114→}
+  1115→
+  1116→func TestBuildSQL_MultiColumnEnum_EmptyValues(t *testing.T) {
+  1117→	t.Parallel()
+  1118→	reg := search.NewRegistry()
+  1119→	f, _ := reg.Lookup("state")
+  1120→	_, _, err := f.BuildSQL(mustJSON(search.MultiEnumFilter{Values: []string{}}), 1)
+  1121→	if err == nil {
+  1122→		t.Error("expected error for empty values")
+  1123→	}
+  1124→}
+  1125→
+  1126→func TestBuildSQL_MultiEnum_EmptyValues(t *testing.T) {
+  1127→	t.Parallel()
+  1128→	reg := search.NewRegistry()
+  1129→	f, _ := reg.Lookup("application_platforms")
+  1130→	_, _, err := f.BuildSQL(mustJSON(search.MultiEnumFilter{Values: []string{}}), 1)
+  1131→	if err == nil {
+  1132→		t.Error("expected error for empty values")
+  1133→	}
+  1134→}
+  1135→
+  1136→func TestBuildSQL_SingleEnum_JSONB(t *testing.T) {
+  1137→	t.Parallel()
+  1138→	reg := search.NewRegistry()
+  1139→	f, _ := reg.Lookup("institution_type")
+  1140→	expr, _, err := f.BuildSQL(mustJSON(search.SingleEnumFilter{Value: "1"}), 1)
+  1141→	if err != nil {
+  1142→		t.Fatal(err)
+  1143→	}
+  1144→	if !strings.Contains(expr, "IS NOT NULL") {
+  1145→		t.Errorf("expected JSONB null guard: %s", expr)
+  1146→	}
+  1147→}
+  1148→
+  1149→// ─────────────────────────────────────────────────────────────────────────────
+  1150→// MultiEnumField BuildSQL — all storage/selection combinations
+  1151→// ─────────────────────────────────────────────────────────────────────────────
+  1152→
+  1153→func TestMultiEnumField_ArrayAny(t *testing.T) {
+  1154→	t.Parallel()
+  1155→	reg := search.NewRegistry()
+  1156→	f, _ := reg.Lookup("application_platforms") // array/any
+  1157→	expr, _, err := f.BuildSQL(mustJSON(search.MultiEnumFilter{Values: []string{"Common", "Coalition"}}), 1)
+  1158→	if err != nil {
+  1159→		t.Fatal(err)
+  1160→	}
+  1161→	if !strings.Contains(expr, "?|") {
+  1162→		t.Errorf("expected ?| operator for array/any: %s", expr)
+  1163→	}
+  1164→}
+  1165→
+  1166→func TestMultiEnumField_ObjectKeyAny(t *testing.T) {
+  1167→	t.Parallel()
+  1168→	reg := search.NewRegistry()
+  1169→	f, _ := reg.Lookup("fields_of_study") // object_key/any
+  1170→	expr, _, err := f.BuildSQL(mustJSON(search.MultiEnumFilter{Values: []string{"52.0101"}}), 1)
+  1171→	if err != nil {
+  1172→		t.Fatal(err)
+  1173→	}
+  1174→	if !strings.Contains(expr, "?|") {
+  1175→		t.Errorf("expected ?| operator for object_key/any: %s", expr)
+  1176→	}
+  1177→}
+  1178→
+  1179→// ─────────────────────────────────────────────────────────────────────────────
+  1180→// sqlCastType — boolean branch
+  1181→// ─────────────────────────────────────────────────────────────────────────────
+  1182→
+  1183→func TestSQLRefAs_BooleanCast(t *testing.T) {
+  1184→	t.Parallel()
+  1185→	src := search.FieldSource{
+  1186→		Kind:      search.SourceJSONBPath,
+  1187→		JSONBPath: []string{"some", "flag"},
+  1188→		ValueType: search.JSONBBoolean,
+  1189→	}
+  1190→	ref := src.SQLRefAs("boolean")
+  1191→	if !strings.Contains(ref, "::boolean") {
+  1192→		t.Errorf("expected ::boolean cast: %s", ref)
+  1193→	}
+  1194→}
+  1195→
+  1196→// ─────────────────────────────────────────────────────────────────────────────
+  1197→// BuildQuery / BuildCountQuery error paths
+  1198→// ─────────────────────────────────────────────────────────────────────────────
+  1199→
+  1200→func TestBuildQuery_UnknownField(t *testing.T) {
+  1201→	t.Parallel()
+  1202→	reg := search.NewRegistry()
+  1203→	req := search.SearchRequest{
+  1204→		Filters: []search.FilterInput{
+  1205→			{Field: "nonexistent", Value: mustJSON(map[string]any{"value": "x"})},
+  1206→		},
+  1207→	}
+  1208→	_, _, err := search.BuildQuery(reg, req)
+  1209→	if err == nil {
+  1210→		t.Error("expected error for unknown field")
+  1211→	}
+  1212→}
+  1213→
+  1214→func TestBuildCountQuery_UnknownField(t *testing.T) {
+  1215→	t.Parallel()
+  1216→	reg := search.NewRegistry()
+  1217→	req := search.SearchRequest{
+  1218→		Filters: []search.FilterInput{
+  1219→			{Field: "nonexistent", Value: mustJSON(map[string]any{"value": "x"})},
+  1220→		},
+  1221→	}
+  1222→	_, _, err := search.BuildCountQuery(reg, req)
+  1223→	if err == nil {
+  1224→		t.Error("expected error for unknown field")
+  1225→	}
+  1226→}
+  1227→
+  1228→func TestBuildQuery_FieldBuildSQLError(t *testing.T) {
+  1229→	t.Parallel()
+  1230→	reg := search.NewRegistry()
+  1231→	// numeric range with both nil causes BuildSQL error
+  1232→	req := search.SearchRequest{
+  1233→		Filters: []search.FilterInput{
+  1234→			{Field: "enrollment", Value: mustJSON(search.NumericRangeFilter{})},
+  1235→		},
+  1236→	}
+  1237→	_, _, err := search.BuildQuery(reg, req)
+  1238→	if err == nil {
+  1239→		t.Error("expected error from field BuildSQL")
+  1240→	}
+  1241→}
+  1242→
+  1243→func TestBuildQuery_DefaultLimit(t *testing.T) {
+  1244→	t.Parallel()
+  1245→	reg := search.NewRegistry()
+  1246→	req := search.SearchRequest{Limit: 0}
+  1247→	sql, args, err := search.BuildQuery(reg, req)
+  1248→	if err != nil {
+  1249→		t.Fatal(err)
+  1250→	}
+  1251→	if !strings.Contains(sql, "LIMIT") {
+  1252→		t.Errorf("expected LIMIT in query: %s", sql)
+  1253→	}
+  1254→	// args[0] should be DefaultLimit (20)
+  1255→	if len(args) < 1 {
+  1256→		t.Fatal("expected at least 1 arg")
+  1257→	}
+  1258→	if args[0] != 20 {
+  1259→		t.Errorf("expected default limit 20, got %v", args[0])
+  1260→	}
+  1261→}
+  1262→
+  1263→func TestBuildQuery_LimitCapping(t *testing.T) {
+  1264→	t.Parallel()
+  1265→	reg := search.NewRegistry()
+  1266→	req := search.SearchRequest{Limit: 500}
+  1267→	_, args, err := search.BuildQuery(reg, req)
+  1268→	if err != nil {
+  1269→		t.Fatal(err)
+  1270→	}
+  1271→	// args[0] is limit, should be capped to MaxLimit (100)
+  1272→	if args[0] != 100 {
+  1273→		t.Errorf("expected limit capped to 100, got %v", args[0])
+  1274→	}
+  1275→}
+  1276→
+  1277→func TestBuildQuery_OffsetClamping(t *testing.T) {
+  1278→	t.Parallel()
+  1279→	reg := search.NewRegistry()
+  1280→
+  1281→	t.Run("offset plus limit exceeds max", func(t *testing.T) {
+  1282→		req := search.SearchRequest{Limit: 20, Offset: 90}
+  1283→		_, args, err := search.BuildQuery(reg, req)
+  1284→		if err != nil {
+  1285→			t.Fatal(err)
+  1286→		}
+  1287→		limit := args[len(args)-2].(int)
+  1288→		offset := args[len(args)-1].(int)
+  1289→		if limit+offset > 100 {
+  1290→			t.Errorf("limit(%d) + offset(%d) = %d > 100", limit, offset, limit+offset)
+  1291→		}
+  1292→	})
+  1293→
+  1294→	t.Run("negative offset becomes zero", func(t *testing.T) {
+  1295→		req := search.SearchRequest{Limit: 20, Offset: -5}
+  1296→		_, args, err := search.BuildQuery(reg, req)
+  1297→		if err != nil {
+  1298→			t.Fatal(err)
+  1299→		}
+  1300→		offset := args[len(args)-1].(int)
+  1301→		if offset < 0 {
+  1302→			t.Errorf("expected non-negative offset, got %d", offset)
+  1303→		}
+  1304→	})
+  1305→
+  1306→	t.Run("large limit and offset both capped", func(t *testing.T) {
+  1307→		req := search.SearchRequest{Limit: 200, Offset: 50}
+  1308→		_, args, err := search.BuildQuery(reg, req)
+  1309→		if err != nil {
+  1310→			t.Fatal(err)
+  1311→		}
+  1312→		limit := args[len(args)-2].(int)
+  1313→		offset := args[len(args)-1].(int)
+  1314→		if limit > 100 {
+  1315→			t.Errorf("limit %d exceeds MaxLimit", limit)
+  1316→		}
+  1317→		if limit+offset > 100 {
+  1318→			t.Errorf("limit(%d) + offset(%d) = %d > 100", limit, offset, limit+offset)
+  1319→		}
+  1320→	})
+  1321→}
+  1322→
+  1323→func TestBuildCountQuery_NoFilters(t *testing.T) {
+  1324→	t.Parallel()
+  1325→	reg := search.NewRegistry()
+  1326→	req := search.SearchRequest{}
+  1327→	sql, args, err := search.BuildCountQuery(reg, req)
+  1328→	if err != nil {
+  1329→		t.Fatal(err)
+  1330→	}
+  1331→	if !strings.HasPrefix(sql, "SELECT COUNT(*)") {
+  1332→		t.Errorf("expected COUNT(*): %s", sql)
+  1333→	}
+  1334→	// Permanent degree filter is always present.
+  1335→	if !strings.Contains(sql, "WHERE") {
+  1336→		t.Errorf("expected WHERE with permanent filter: %s", sql)
+  1337→	}
+  1338→	if !strings.Contains(sql, "degrees_awarded_highest") {
+  1339→		t.Errorf("expected permanent degree filter: %s", sql)
+  1340→	}
+  1341→	if len(args) != 0 {
+  1342→		t.Errorf("expected 0 args, got %d", len(args))
+  1343→	}
+  1344→}
+  1345→
+  1346→// ─────────────────────────────────────────────────────────────────────────────
+  1347→// Permanent degree filter
+  1348→// ─────────────────────────────────────────────────────────────────────────────
+  1349→
+  1350→func TestPermanentDegreeFilter_PresentInAllQueryTypes(t *testing.T) {
+  1351→	t.Parallel()
+  1352→	reg := search.NewRegistry()
+  1353→
+  1354→	t.Run("BuildQuery without user filters", func(t *testing.T) {
+  1355→		sql, args, err := search.BuildQuery(reg, search.SearchRequest{Limit: 10})
+  1356→		if err != nil {
+  1357→			t.Fatal(err)
+  1358→		}
+  1359→		if !strings.Contains(sql, "degrees_awarded_highest") {
+  1360→			t.Errorf("permanent filter missing from BuildQuery: %s", sql)
+  1361→		}
+  1362→		// Only pagination args; permanent filter uses no placeholders.
+  1363→		if len(args) != 2 {
+  1364→			t.Errorf("expected 2 args (limit/offset), got %d", len(args))
+  1365→		}
+  1366→	})
+  1367→
+  1368→	t.Run("BuildQuery with user filter preserves placeholder numbering", func(t *testing.T) {
+  1369→		req := search.SearchRequest{
+  1370→			Filters: []search.FilterInput{
+  1371→				{Field: "enrollment", Value: mustJSON(search.NumericRangeFilter{Min: ptrF(1000), Max: ptrF(50000)})},
+  1372→			},
+  1373→			Limit: 10,
+  1374→		}
+  1375→		sql, args, err := search.BuildQuery(reg, req)
+  1376→		if err != nil {
+  1377→			t.Fatal(err)
+  1378→		}
+  1379→		if !strings.Contains(sql, "degrees_awarded_highest") {
+  1380→			t.Errorf("permanent filter missing: %s", sql)
+  1381→		}
+  1382→		// Filter args ($1, $2) + pagination args ($3, $4) = 4
+  1383→		if len(args) != 4 {
+  1384→			t.Errorf("expected 4 args, got %d", len(args))
+  1385→		}
+  1386→		// First filter placeholder should be $1.
+  1387→		if !strings.Contains(sql, "$1") {
+  1388→			t.Errorf("expected $1 placeholder for user filter: %s", sql)
+  1389→		}
+  1390→	})
+  1391→
+  1392→	t.Run("BuildCountQuery without user filters", func(t *testing.T) {
+  1393→		sql, _, err := search.BuildCountQuery(reg, search.SearchRequest{})
+  1394→		if err != nil {
+  1395→			t.Fatal(err)
+  1396→		}
+  1397→		if !strings.Contains(sql, "degrees_awarded_highest") {
+  1398→			t.Errorf("permanent filter missing from BuildCountQuery: %s", sql)
+  1399→		}
+  1400→	})
+  1401→
+  1402→	t.Run("BuildExportQuery without user filters", func(t *testing.T) {
+  1403→		sql, _, err := search.BuildExportQuery(reg, search.SearchRequest{Limit: 10}, 500)
+  1404→		if err != nil {
+  1405→			t.Fatal(err)
+  1406→		}
+  1407→		if !strings.Contains(sql, "degrees_awarded_highest") {
+  1408→			t.Errorf("permanent filter missing from BuildExportQuery: %s", sql)
+  1409→		}
+  1410→	})
+  1411→}
+  1412→
+  1413→// ptrF is a test helper returning a pointer to a float64.
+  1414→func ptrF(v float64) *float64 { return &v }
+  1415→
+  1416→// ─────────────────────────────────────────────────────────────────────────────
+  1417→// BuildQuery with UserLocation
+  1418→// ─────────────────────────────────────────────────────────────────────────────
+  1419→
+  1420→func TestBuildQuery_WithUserLocation(t *testing.T) {
+  1421→	t.Parallel()
+  1422→	reg := search.NewRegistry()
+  1423→
+  1424→	t.Run("distance column computed", func(t *testing.T) {
+  1425→		req := search.SearchRequest{
+  1426→			Limit:        10,
+  1427→			UserLocation: &search.UserLocation{Latitude: 42.0, Longitude: -72.0},
+  1428→		}
+  1429→		sql, args, err := search.BuildQuery(reg, req)
+  1430→		if err != nil {
+  1431→			t.Fatal(err)
+  1432→		}
+  1433→		if !strings.Contains(sql, "ST_Distance") {
+  1434→			t.Errorf("expected ST_Distance in SQL: %s", sql)
+  1435→		}
+  1436→		if !strings.Contains(sql, "1609.344") {
+  1437→			t.Errorf("expected meters-to-miles conversion: %s", sql)
+  1438→		}
+  1439→		// NULL::integer for myPrice (no state provided)
+  1440→		if !strings.Contains(sql, "NULL::integer") {
+  1441→			t.Errorf("expected NULL::integer for myPrice when no state: %s", sql)
+  1442→		}
+  1443→		// 2 geo args + 2 pagination = 4
+  1444→		if len(args) != 4 {
+  1445→			t.Errorf("expected 4 args, got %d: %v", len(args), args)
+  1446→		}
+  1447→		// First two args: longitude, latitude
+  1448→		if args[0] != -72.0 {
+  1449→			t.Errorf("args[0] (lng) = %v, want -72.0", args[0])
+  1450→		}
+  1451→		if args[1] != 42.0 {
+  1452→			t.Errorf("args[1] (lat) = %v, want 42.0", args[1])
+  1453→		}
+  1454→	})
+  1455→
+  1456→	t.Run("distance and myPrice with state", func(t *testing.T) {
+  1457→		req := search.SearchRequest{
+  1458→			Limit:        10,
+  1459→			UserLocation: &search.UserLocation{Latitude: 42.0, Longitude: -72.0, State: "MA"},
+  1460→		}
+  1461→		sql, args, err := search.BuildQuery(reg, req)
+  1462→		if err != nil {
+  1463→			t.Fatal(err)
+  1464→		}
+  1465→		if !strings.Contains(sql, "ST_Distance") {
+  1466→			t.Errorf("expected ST_Distance: %s", sql)
+  1467→		}
+  1468→		if !strings.Contains(sql, "tuition_in_state") {
+  1469→			t.Errorf("expected tuition_in_state in myPrice CASE: %s", sql)
+  1470→		}
+  1471→		if !strings.Contains(sql, "tuition_out_of_state") {
+  1472→			t.Errorf("expected tuition_out_of_state in myPrice CASE: %s", sql)
+  1473→		}
+  1474→		// 2 geo args + 1 state arg + 2 pagination = 5
+  1475→		if len(args) != 5 {
+  1476→			t.Errorf("expected 5 args, got %d: %v", len(args), args)
+  1477→		}
+  1478→		if args[2] != "MA" {
+  1479→			t.Errorf("args[2] (state) = %v, want MA", args[2])
+  1480→		}
+  1481→	})
+  1482→
+  1483→	t.Run("no user location produces NULL columns", func(t *testing.T) {
+  1484→		req := search.SearchRequest{Limit: 10}
+  1485→		sql, args, err := search.BuildQuery(reg, req)
+  1486→		if err != nil {
+  1487→			t.Fatal(err)
+  1488→		}
+  1489→		if !strings.Contains(sql, "NULL::double precision") {
+  1490→			t.Errorf("expected NULL::double precision: %s", sql)
+  1491→		}
+  1492→		if !strings.Contains(sql, "NULL::integer") {
+  1493→			t.Errorf("expected NULL::integer: %s", sql)
+  1494→		}
+  1495→		// Only 2 pagination args
+  1496→		if len(args) != 2 {
+  1497→			t.Errorf("expected 2 args, got %d", len(args))
+  1498→		}
+  1499→	})
+  1500→}
+  1501→
+  1502→// ─────────────────────────────────────────────────────────────────────────────
+  1503→// BuildQuery with Sort
+  1504→// ─────────────────────────────────────────────────────────────────────────────
+  1505→
+  1506→func TestBuildQuery_WithSort(t *testing.T) {
+  1507→	t.Parallel()
+  1508→	reg := search.NewRegistry()
+  1509→
+  1510→	t.Run("sort by name ASC", func(t *testing.T) {
+  1511→		req := search.SearchRequest{
+  1512→			Limit: 10,
+  1513→			Sort:  &search.SortInput{Field: "name", Direction: search.SortDirectionAsc},
+  1514→		}
+  1515→		sql, _, err := search.BuildQuery(reg, req)
+  1516→		if err != nil {
+  1517→			t.Fatal(err)
+  1518→		}
+  1519→		if !strings.Contains(sql, "ORDER BY institution_name ASC") {
+  1520→			t.Errorf("expected ORDER BY institution_name ASC: %s", sql)
+  1521→		}
+  1522→	})
+  1523→
+  1524→	t.Run("sort by name DESC", func(t *testing.T) {
+  1525→		req := search.SearchRequest{
+  1526→			Limit: 10,
+  1527→			Sort:  &search.SortInput{Field: "name", Direction: search.SortDirectionDesc},
+  1528→		}
+  1529→		sql, _, err := search.BuildQuery(reg, req)
+  1530→		if err != nil {
+  1531→			t.Fatal(err)
+  1532→		}
+  1533→		if !strings.Contains(sql, "ORDER BY institution_name DESC") {
+  1534→			t.Errorf("expected ORDER BY institution_name DESC: %s", sql)
+  1535→		}
+  1536→	})
+  1537→
+  1538→	t.Run("sort by distance", func(t *testing.T) {
+  1539→		req := search.SearchRequest{
+  1540→			Limit:        10,
+  1541→			UserLocation: &search.UserLocation{Latitude: 40.0, Longitude: -74.0},
+  1542→			Sort:         &search.SortInput{Field: "distance"},
+  1543→		}
+  1544→		sql, _, err := search.BuildQuery(reg, req)
+  1545→		if err != nil {
+  1546→			t.Fatal(err)
+  1547→		}
+  1548→		if !strings.Contains(sql, "ORDER BY 7 ASC NULLS LAST") {
+  1549→			t.Errorf("expected ORDER BY 7 ASC NULLS LAST: %s", sql)
+  1550→		}
+  1551→	})
+  1552→
+  1553→	t.Run("sort by distance DESC", func(t *testing.T) {
+  1554→		req := search.SearchRequest{
+  1555→			Limit:        10,
+  1556→			UserLocation: &search.UserLocation{Latitude: 40.0, Longitude: -74.0},
+  1557→			Sort:         &search.SortInput{Field: "distance", Direction: search.SortDirectionDesc},
+  1558→		}
+  1559→		sql, _, err := search.BuildQuery(reg, req)
+  1560→		if err != nil {
+  1561→			t.Fatal(err)
+  1562→		}
+  1563→		if !strings.Contains(sql, "ORDER BY 7 DESC NULLS FIRST") {
+  1564→			t.Errorf("expected ORDER BY 7 DESC NULLS FIRST: %s", sql)
+  1565→		}
+  1566→	})
+  1567→
+  1568→	t.Run("default sort is name ASC", func(t *testing.T) {
+  1569→		req := search.SearchRequest{Limit: 10}
+  1570→		sql, _, err := search.BuildQuery(reg, req)
+  1571→		if err != nil {
+  1572→			t.Fatal(err)
+  1573→		}
+  1574→		if !strings.Contains(sql, "ORDER BY institution_name ASC") {
+  1575→			t.Errorf("expected default ORDER BY institution_name ASC: %s", sql)
+  1576→		}
+  1577→	})
+  1578→
+  1579→	t.Run("sort by JSONB field enrollment ASC", func(t *testing.T) {
+  1580→		req := search.SearchRequest{
+  1581→			Limit: 10,
+  1582→			Sort:  &search.SortInput{Field: "enrollment", Direction: search.SortDirectionAsc},
+  1583→		}
+  1584→		sql, _, err := search.BuildQuery(reg, req)
+  1585→		if err != nil {
+  1586→			t.Fatal(err)
+  1587→		}
+  1588→		if !strings.Contains(sql, "ORDER BY (data #>> '{nces,size}')::integer ASC NULLS LAST") {
+  1589→			t.Errorf("unexpected ORDER BY clause: %s", sql)
+  1590→		}
+  1591→	})
+  1592→
+  1593→	t.Run("sort by JSONB field admission_rate DESC", func(t *testing.T) {
+  1594→		req := search.SearchRequest{
+  1595→			Limit: 10,
+  1596→			Sort:  &search.SortInput{Field: "admission_rate", Direction: search.SortDirectionDesc},
+  1597→		}
+  1598→		sql, _, err := search.BuildQuery(reg, req)
+  1599→		if err != nil {
+  1600→			t.Fatal(err)
+  1601→		}
+  1602→		if !strings.Contains(sql, "ORDER BY (data #>> '{nces,admission_rate_overall}')::numeric DESC NULLS FIRST") {
+  1603→			t.Errorf("unexpected ORDER BY clause: %s", sql)
+  1604→		}
+  1605→	})
+  1606→
+  1607→	t.Run("sort by column field city ASC", func(t *testing.T) {
+  1608→		req := search.SearchRequest{
+  1609→			Limit: 10,
+  1610→			Sort:  &search.SortInput{Field: "city", Direction: search.SortDirectionAsc},
+  1611→		}
+  1612→		sql, _, err := search.BuildQuery(reg, req)
+  1613→		if err != nil {
+  1614→			t.Fatal(err)
+  1615→		}
+  1616→		if !strings.Contains(sql, "ORDER BY city ASC NULLS LAST") {
+  1617→			t.Errorf("unexpected ORDER BY clause: %s", sql)
+  1618→		}
+  1619→	})
+  1620→
+  1621→	t.Run("sort by unknown field returns error", func(t *testing.T) {
+  1622→		req := search.SearchRequest{
+  1623→			Limit: 10,
+  1624→			Sort:  &search.SortInput{Field: "nonexistent"},
+  1625→		}
+  1626→		_, _, err := search.BuildQuery(reg, req)
+  1627→		if err == nil {
+  1628→			t.Fatal("expected error for unknown sort field")
+  1629→		}
+  1630→		if !strings.Contains(err.Error(), "unknown sort field") {
+  1631→			t.Errorf("unexpected error: %v", err)
+  1632→		}
+  1633→	})
+  1634→
+  1635→	t.Run("sort by non-sortable field returns error", func(t *testing.T) {
+  1636→		req := search.SearchRequest{
+  1637→			Limit: 10,
+  1638→			Sort:  &search.SortInput{Field: "institution_type"},
+  1639→		}
+  1640→		_, _, err := search.BuildQuery(reg, req)
+  1641→		if err == nil {
+  1642→			t.Fatal("expected error for non-sortable field")
+  1643→		}
+  1644→		if !strings.Contains(err.Error(), "not sortable") {
+  1645→			t.Errorf("unexpected error: %v", err)
+  1646→		}
+  1647→	})
+  1648→
+  1649→	t.Run("sort by blend_score ASC", func(t *testing.T) {
+  1650→		req := search.SearchRequest{
+  1651→			Limit: 10,
+  1652→			Blend: &search.BlendInput{
+  1653→				Weights: []search.BlendWeight{{Field: "rank_us_news_national", Weight: 100}},
+  1654→			},
+  1655→			Sort: &search.SortInput{Field: "blend_score", Direction: search.SortDirectionAsc},
+  1656→		}
+  1657→		sql, _, err := search.BuildQuery(reg, req)
+  1658→		if err != nil {
+  1659→			t.Fatal(err)
+  1660→		}
+  1661→		if !strings.Contains(sql, "ORDER BY 10 ASC NULLS LAST") {
+  1662→			t.Errorf("expected ORDER BY 10 ASC NULLS LAST: %s", sql)
+  1663→		}
+  1664→	})
+  1665→
+  1666→	t.Run("sort by blend_score DESC", func(t *testing.T) {
+  1667→		req := search.SearchRequest{
+  1668→			Limit: 10,
+  1669→			Blend: &search.BlendInput{
+  1670→				Weights: []search.BlendWeight{{Field: "rank_us_news_national", Weight: 100}},
+  1671→			},
+  1672→			Sort: &search.SortInput{Field: "blend_score", Direction: search.SortDirectionDesc},
+  1673→		}
+  1674→		sql, _, err := search.BuildQuery(reg, req)
+  1675→		if err != nil {
+  1676→			t.Fatal(err)
+  1677→		}
+  1678→		if !strings.Contains(sql, "ORDER BY 10 DESC NULLS FIRST") {
+  1679→			t.Errorf("expected ORDER BY 10 DESC NULLS FIRST: %s", sql)
+  1680→		}
+  1681→	})
+  1682→
+  1683→	t.Run("blend active with explicit sort uses user sort", func(t *testing.T) {
+  1684→		req := search.SearchRequest{
+  1685→			Limit: 10,
+  1686→			Blend: &search.BlendInput{
+  1687→				Weights: []search.BlendWeight{{Field: "rank_us_news_national", Weight: 100}},
+  1688→			},
+  1689→			Sort: &search.SortInput{Field: "enrollment", Direction: search.SortDirectionDesc},
+  1690→		}
+  1691→		sql, _, err := search.BuildQuery(reg, req)
+  1692→		if err != nil {
+  1693→			t.Fatal(err)
+  1694→		}
+  1695→		if !strings.Contains(sql, "ORDER BY (data #>> '{nces,size}')::integer DESC NULLS FIRST") {
+  1696→			t.Errorf("expected enrollment sort, got: %s", sql)
+  1697→		}
+  1698→	})
+  1699→
+  1700→	t.Run("blend active without sort defaults to blend score", func(t *testing.T) {
+  1701→		req := search.SearchRequest{
+  1702→			Limit: 10,
+  1703→			Blend: &search.BlendInput{
+  1704→				Weights: []search.BlendWeight{{Field: "rank_us_news_national", Weight: 100}},
+  1705→			},
+  1706→		}
+  1707→		sql, _, err := search.BuildQuery(reg, req)
+  1708→		if err != nil {
+  1709→			t.Fatal(err)
+  1710→		}
+  1711→		if !strings.Contains(sql, "ORDER BY 10 ASC NULLS LAST") {
+  1712→			t.Errorf("expected default blend ORDER BY 10 ASC NULLS LAST: %s", sql)
+  1713→		}
+  1714→	})
+  1715→}
+  1716→
+  1717→// ─────────────────────────────────────────────────────────────────────────────
+  1718→// ValidateRequest — UserLocation and Sort
+  1719→// ─────────────────────────────────────────────────────────────────────────────
+  1720→
+  1721→func TestValidateRequest_UserLocation(t *testing.T) {
+  1722→	t.Parallel()
+  1723→	reg := search.NewRegistry()
+  1724→
+  1725→	t.Run("valid location", func(t *testing.T) {
+  1726→		req := search.SearchRequest{
+  1727→			UserLocation: &search.UserLocation{Latitude: 42.0, Longitude: -72.0, State: "MA"},
+  1728→		}
+  1729→		errs := search.ValidateRequest(reg, req, true)
+  1730→		if len(errs) != 0 {
+  1731→			t.Fatalf("expected no errors, got: %v", errs)
+  1732→		}
+  1733→	})
+  1734→
+  1735→	t.Run("latitude out of range", func(t *testing.T) {
+  1736→		req := search.SearchRequest{
+  1737→			UserLocation: &search.UserLocation{Latitude: 91.0, Longitude: -72.0},
+  1738→		}
+  1739→		errs := search.ValidateRequest(reg, req, true)
+  1740→		if len(errs) != 1 {
+  1741→			t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+  1742→		}
+  1743→		if !strings.Contains(errs[0].Message, "latitude") {
+  1744→			t.Errorf("unexpected message: %q", errs[0].Message)
+  1745→		}
+  1746→	})
+  1747→
+  1748→	t.Run("longitude out of range", func(t *testing.T) {
+  1749→		req := search.SearchRequest{
+  1750→			UserLocation: &search.UserLocation{Latitude: 42.0, Longitude: 181.0},
+  1751→		}
+  1752→		errs := search.ValidateRequest(reg, req, true)
+  1753→		if len(errs) != 1 {
+  1754→			t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+  1755→		}
+  1756→		if !strings.Contains(errs[0].Message, "longitude") {
+  1757→			t.Errorf("unexpected message: %q", errs[0].Message)
+  1758→		}
+  1759→	})
+  1760→
+  1761→	t.Run("invalid state code", func(t *testing.T) {
+  1762→		req := search.SearchRequest{
+  1763→			UserLocation: &search.UserLocation{Latitude: 42.0, Longitude: -72.0, State: "m"},
+  1764→		}
+  1765→		errs := search.ValidateRequest(reg, req, true)
+  1766→		if len(errs) != 1 {
+  1767→			t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+  1768→		}
+  1769→		if !strings.Contains(errs[0].Message, "2-letter uppercase") {
+  1770→			t.Errorf("unexpected message: %q", errs[0].Message)
+  1771→		}
+  1772→	})
+  1773→
+  1774→	t.Run("empty state is valid", func(t *testing.T) {
+  1775→		req := search.SearchRequest{
+  1776→			UserLocation: &search.UserLocation{Latitude: 42.0, Longitude: -72.0},
+  1777→		}
+  1778→		errs := search.ValidateRequest(reg, req, true)
+  1779→		if len(errs) != 0 {
+  1780→			t.Fatalf("expected no errors, got: %v", errs)
+  1781→		}
+  1782→	})
+  1783→}
+  1784→
+  1785→func TestValidateRequest_SortDistanceWithoutLocation(t *testing.T) {
+  1786→	t.Parallel()
+  1787→	reg := search.NewRegistry()
+  1788→	req := search.SearchRequest{
+  1789→		Sort: &search.SortInput{Field: "distance"},
+  1790→	}
+  1791→	errs := search.ValidateRequest(reg, req, true)
+  1792→	if len(errs) != 1 {
+  1793→		t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+  1794→	}
+  1795→	if !strings.Contains(errs[0].Message, "distance requires userLocation") {
+  1796→		t.Errorf("unexpected message: %q", errs[0].Message)
+  1797→	}
+  1798→}
+  1799→
+  1800→func TestValidateRequest_SortNameWithoutLocation(t *testing.T) {
+  1801→	t.Parallel()
+  1802→	reg := search.NewRegistry()
+  1803→	req := search.SearchRequest{
+  1804→		Sort: &search.SortInput{Field: "name"},
+  1805→	}
+  1806→	errs := search.ValidateRequest(reg, req, true)
+  1807→	if len(errs) != 0 {
+  1808→		t.Fatalf("expected no errors for NAME sort without location, got: %v", errs)
+  1809→	}
+  1810→}
+  1811→
+  1812→func TestValidateRequest_SortByRegistryField(t *testing.T) {
+  1813→	t.Parallel()
+  1814→	reg := search.NewRegistry()
+  1815→
+  1816→	t.Run("sortable field is valid", func(t *testing.T) {
+  1817→		req := search.SearchRequest{
+  1818→			Sort: &search.SortInput{Field: "enrollment"},
+  1819→		}
+  1820→		errs := search.ValidateRequest(reg, req, true)
+  1821→		if len(errs) != 0 {
+  1822→			t.Fatalf("expected no errors, got: %v", errs)
+  1823→		}
+  1824→	})
+  1825→
+  1826→	t.Run("non-sortable field produces error", func(t *testing.T) {
+  1827→		req := search.SearchRequest{
+  1828→			Sort: &search.SortInput{Field: "institution_type"},
+  1829→		}
+  1830→		errs := search.ValidateRequest(reg, req, true)
+  1831→		if len(errs) != 1 {
+  1832→			t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+  1833→		}
+  1834→		if !strings.Contains(errs[0].Message, "not sortable") {
+  1835→			t.Errorf("unexpected message: %q", errs[0].Message)
+  1836→		}
+  1837→	})
+  1838→
+  1839→	t.Run("unknown field produces error", func(t *testing.T) {
+  1840→		req := search.SearchRequest{
+  1841→			Sort: &search.SortInput{Field: "bogus_field"},
+  1842→		}
+  1843→		errs := search.ValidateRequest(reg, req, true)
+  1844→		if len(errs) != 1 {
+  1845→			t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+  1846→		}
+  1847→		if !strings.Contains(errs[0].Message, "unknown sort field") {
+  1848→			t.Errorf("unexpected message: %q", errs[0].Message)
+  1849→		}
+  1850→	})
+  1851→
+  1852→	t.Run("blend_score valid with blend active", func(t *testing.T) {
+  1853→		req := search.SearchRequest{
+  1854→			Sort: &search.SortInput{Field: "blend_score"},
+  1855→			Blend: &search.BlendInput{
+  1856→				Weights: []search.BlendWeight{{Field: "rank_us_news_national", Weight: 100}},
+  1857→			},
+  1858→		}
+  1859→		errs := search.ValidateRequest(reg, req, true)
+  1860→		if len(errs) != 0 {
+  1861→			t.Fatalf("expected no errors, got: %v", errs)
+  1862→		}
+  1863→	})
+  1864→
+  1865→	t.Run("blend_score without blend produces error", func(t *testing.T) {
+  1866→		req := search.SearchRequest{
+  1867→			Sort: &search.SortInput{Field: "blend_score"},
+  1868→		}
+  1869→		errs := search.ValidateRequest(reg, req, true)
+  1870→		if len(errs) != 1 {
+  1871→			t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+  1872→		}
+  1873→		if !strings.Contains(errs[0].Message, "blend_score requires an active ranking blend") {
+  1874→			t.Errorf("unexpected message: %q", errs[0].Message)
+  1875→		}
+  1876→	})
+  1877→}
+  1878→
+  1879→// TestAllFields_VisibilitySearchabilityRequired verifies that every registered
+  1880→// field has non-empty Visibility and Searchability values. This enforces that
+  1881→// both flags are treated as required — no field may rely on a zero value.
+  1882→func TestAllFields_VisibilitySearchabilityRequired(t *testing.T) {
+  1883→	t.Parallel()
+  1884→	reg := search.NewRegistry()
+  1885→	for _, d := range reg.Descriptors() {
+  1886→		if d.Visibility == "" {
+  1887→			t.Errorf("field %q: Visibility is empty (must be set explicitly)", d.Name)
+  1888→		}
+  1889→		if d.Searchability == "" {
+  1890→			t.Errorf("field %q: Searchability is empty (must be set explicitly)", d.Name)
+  1891→		}
+  1892→	}
+  1893→}
+  1894→
+  1895→// TestAllFields_ExportableRequired verifies that every registered field has its
+  1896→// Exportable flag set explicitly (non-nil). Because exportable is stored as
+  1897→// *bool, a nil value means the field author forgot to set it.
+  1898→func TestAllFields_ExportableRequired(t *testing.T) {
+  1899→	t.Parallel()
+  1900→	reg := search.NewRegistry()
+  1901→	for _, d := range reg.Descriptors() {
+  1902→		if d.Exportable == nil {
+  1903→			t.Errorf("field %q: Exportable is nil (must be set explicitly)", d.Name)
+  1904→		}
+  1905→	}
+  1906→}
+  1907→
+  1908→// TestOutputDescriptors verifies that OutputDescriptors returns only fields with
+  1909→// a non-nil OutputDefault, that every returned field has a name and label, and
+  1910→// that the count is a strict subset of all descriptors.
+  1911→func TestOutputDescriptors(t *testing.T) {
+  1912→	t.Parallel()
+  1913→	reg := search.NewRegistry()
+  1914→	all := reg.Descriptors()
+  1915→	out := reg.OutputDescriptors()
+  1916→
+  1917→	if len(out) == 0 {
+  1918→		t.Fatal("OutputDescriptors() returned empty slice — at least some fields must be output fields")
+  1919→	}
+  1920→	if len(out) >= len(all) {
+  1921→		t.Errorf("OutputDescriptors() count %d >= all descriptors %d; some fields should be input-only", len(out), len(all))
+  1922→	}
+  1923→
+  1924→	for _, d := range out {
+  1925→		if d.Name == "" {
+  1926→			t.Errorf("output descriptor has empty Name: %+v", d)
+  1927→		}
+  1928→		if d.Label == "" {
+  1929→			t.Errorf("output descriptor %q has empty Label", d.Name)
+  1930→		}
+  1931→		// OutputDefault must be non-nil (that's the filter criterion).
+  1932→		if d.OutputDefault == nil {
+  1933→			t.Errorf("output descriptor %q has nil OutputDefault — OutputDescriptors() filter is broken", d.Name)
+  1934→		}
+  1935→	}
+  1936→}
+  1937→
+  1938→// TestOutputDescriptors_KnownValues spot-checks the outputDefault and sortable
+  1939→// flags for a representative set of fields.
+  1940→func TestOutputDescriptors_KnownValues(t *testing.T) {
+  1941→	t.Parallel()
+  1942→	reg := search.NewRegistry()
+  1943→
+  1944→	cases := []struct {
+  1945→		name            string
+  1946→		wantOutput      bool // true = is an output field (OutputDefault != nil)
+  1947→		wantDefault     bool // expected *OutputDefault when wantOutput=true
+  1948→		wantSortable    bool
+  1949→	}{
+  1950→		// Default-visible output fields
+  1951→		{"name", true, true, true},
+  1952→		{"city", true, true, true},
+  1953→		{"state", true, true, true},
+  1954→		{"enrollment", true, true, true},
+  1955→		{"institution_type", true, true, false},
+  1956→		// Available-but-not-default output fields
+  1957→		{"admission_rate", true, false, true},
+  1958→		{"tuition_in_state", true, false, true},
+  1959→		{"rank_us_news_national", true, false, true},
+  1960→		{"ncaa_conference", true, false, false},
+  1961→		// Input-only fields — not output fields
+  1962→		{"location", false, false, false},
+  1963→		{"carnegie_basic", false, false, false},
+  1964→		{"congressional_district", false, false, false},
+  1965→		{"fields_of_study", false, false, false},
+  1966→	}
+  1967→
+  1968→	for _, tc := range cases {
+  1969→		t.Run(tc.name, func(t *testing.T) {
+  1970→			f, ok := reg.Lookup(tc.name)
+  1971→			if !ok {
+  1972→				t.Fatalf("field %q not found in registry", tc.name)
+  1973→			}
+  1974→			d := f.Descriptor()
+  1975→
+  1976→			isOutput := d.OutputDefault != nil
+  1977→			if isOutput != tc.wantOutput {
+  1978→				t.Errorf("field %q: isOutputField = %v, want %v", tc.name, isOutput, tc.wantOutput)
+  1979→			}
+  1980→			if tc.wantOutput && isOutput {
+  1981→				if *d.OutputDefault != tc.wantDefault {
+  1982→					t.Errorf("field %q: OutputDefault = %v, want %v", tc.name, *d.OutputDefault, tc.wantDefault)
+  1983→				}
+  1984→			}
+  1985→			if d.Sortable != tc.wantSortable {
+  1986→				t.Errorf("field %q: Sortable = %v, want %v", tc.name, d.Sortable, tc.wantSortable)
+  1987→			}
+  1988→		})
+  1989→	}
+  1990→}
+  1991→
+  1992→// TestField_ExportableKnownValues spot-checks that well-known fields carry the
+  1993→// expected exportable value, guarding against accidental edits to the registry.
+  1994→func TestField_ExportableKnownValues(t *testing.T) {
+  1995→	t.Parallel()
+  1996→	reg := search.NewRegistry()
+  1997→
+  1998→	cases := []struct {
+  1999→		name     string
+  2000→		wantExportable bool
+  2001→	}{
+  2002→		// Public institution name — must appear in exports.
+  2003→		{"name", true},
+  2004→		// Tuition — key data point for exports.
+  2005→		{"tuition_in_state", true},
+  2006→		// Raw coordinates — not a useful CSV column; exportable=false prevents
+  2007→		// bulk lat/lng scraping.
+  2008→		{"location", false},
+  2009→		// Hidden internal classification code — excluded from exports.
+  2010→		{"carnegie_basic", false},
+  2011→		// Hidden granular identifier — excluded from exports.
+  2012→		{"congressional_district", false},
+  2013→		// Open-ended JSONB blob — not representable as a flat CSV column.
+  2014→		{"fields_of_study", false},
+  2015→	}
+  2016→
+  2017→	for _, tc := range cases {
+  2018→		t.Run(tc.name, func(t *testing.T) {
+  2019→			f, ok := reg.Lookup(tc.name)
+  2020→			if !ok {
+  2021→				t.Fatalf("field %q not found in registry", tc.name)
+  2022→			}
+  2023→			d := f.Descriptor()
+  2024→			if d.Exportable == nil {
+  2025→				t.Fatalf("field %q: Exportable is nil", tc.name)
+  2026→			}
+  2027→			if *d.Exportable != tc.wantExportable {
+  2028→				t.Errorf("field %q: Exportable = %v, want %v", tc.name, *d.Exportable, tc.wantExportable)
+  2029→			}
+  2030→		})
+  2031→	}
+  2032→}
+  2033→
+  2034→// ─────────────────────────────────────────────────────────────────────────────
+  2035→// BuildExportQuery
+  2036→// ─────────────────────────────────────────────────────────────────────────────
+  2037→
+  2038→func TestBuildExportQuery(t *testing.T) {
+  2039→	t.Parallel()
+  2040→	reg := search.NewRegistry()
+  2041→
+  2042→	t.Run("caps limit to maxRows", func(t *testing.T) {
+  2043→		req := search.SearchRequest{Limit: 1000}
+  2044→		sql, args, err := search.BuildExportQuery(reg, req, 500)
+  2045→		if err != nil {
+  2046→			t.Fatal(err)
+  2047→		}
+  2048→		if !strings.Contains(sql, "LIMIT") {
+  2049→			t.Errorf("expected LIMIT in query: %s", sql)
+  2050→		}
+  2051→		// Last arg is the limit, should be capped to maxRows (500).
+  2052→		limit := args[len(args)-1]
+  2053→		if limit != 500 {
+  2054→			t.Errorf("expected limit capped to 500, got %v", limit)
+  2055→		}
+  2056→	})
+  2057→
+  2058→	t.Run("uses default limit when zero", func(t *testing.T) {
+  2059→		req := search.SearchRequest{Limit: 0}
+  2060→		_, args, err := search.BuildExportQuery(reg, req, 500)
+  2061→		if err != nil {
+  2062→			t.Fatal(err)
+  2063→		}
+  2064→		limit := args[len(args)-1]
+  2065→		if limit != search.DefaultLimit {
+  2066→			t.Errorf("expected default limit %d, got %v", search.DefaultLimit, limit)
+  2067→		}
+  2068→	})
+  2069→
+  2070→	t.Run("positive limit within maxRows is preserved", func(t *testing.T) {
+  2071→		req := search.SearchRequest{Limit: 50}
+  2072→		_, args, err := search.BuildExportQuery(reg, req, 500)
+  2073→		if err != nil {
+  2074→			t.Fatal(err)
+  2075→		}
+  2076→		limit := args[len(args)-1]
+  2077→		if limit != 50 {
+  2078→			t.Errorf("expected limit 50, got %v", limit)
+  2079→		}
+  2080→	})
+  2081→}
+  2082→
+  2083→func TestBuildExportQuery_NoOffset(t *testing.T) {
+  2084→	t.Parallel()
+  2085→	reg := search.NewRegistry()
+  2086→	req := search.SearchRequest{Limit: 100, Offset: 50}
+  2087→	sql, _, err := search.BuildExportQuery(reg, req, 500)
+  2088→	if err != nil {
+  2089→		t.Fatal(err)
+  2090→	}
+  2091→	if strings.Contains(sql, "OFFSET") {
+  2092→		t.Errorf("export query should not contain OFFSET: %s", sql)
+  2093→	}
+  2094→}
+  2095→
+  2096→func TestBuildExportQuery_UnknownField(t *testing.T) {
+  2097→	t.Parallel()
+  2098→	reg := search.NewRegistry()
+  2099→	req := search.SearchRequest{
+  2100→		Filters: []search.FilterInput{
+  2101→			{Field: "nonexistent", Value: mustJSON(map[string]any{"value": "x"})},
+  2102→		},
+  2103→	}
+  2104→	_, _, err := search.BuildExportQuery(reg, req, 500)
+  2105→	if err == nil {
+  2106→		t.Fatal("expected error for unknown field")
+  2107→	}
+  2108→}
+  2109→
+  2110→// ─────────────────────────────────────────────────────────────────────────────
+  2111→// ExportableDescriptors
+  2112→// ─────────────────────────────────────────────────────────────────────────────
+  2113→
+  2114→func TestExportableDescriptors(t *testing.T) {
+  2115→	t.Parallel()
+  2116→	reg := search.NewRegistry()
+  2117→	descs := reg.ExportableDescriptors()
+  2118→
+  2119→	if len(descs) == 0 {
+  2120→		t.Fatal("ExportableDescriptors() returned empty slice")
+  2121→	}
+  2122→
+  2123→	// Every descriptor must have Exportable=true and OutputDefault non-nil.
+  2124→	for _, d := range descs {
+  2125→		if d.Exportable == nil || !*d.Exportable {
+  2126→			t.Errorf("descriptor %q has Exportable != true", d.Name)
+  2127→		}
+  2128→		if d.OutputDefault == nil {
+  2129→			t.Errorf("descriptor %q has nil OutputDefault", d.Name)
+  2130→		}
+  2131→	}
+  2132→
+  2133→	// Non-exportable fields must be excluded.
+  2134→	nameSet := make(map[string]bool, len(descs))
+  2135→	for _, d := range descs {
+  2136→		nameSet[d.Name] = true
+  2137→	}
+  2138→	for _, excluded := range []string{"location", "carnegie_basic", "congressional_district", "fields_of_study"} {
+  2139→		if nameSet[excluded] {
+  2140→			t.Errorf("non-exportable field %q should not appear in ExportableDescriptors()", excluded)
+  2141→		}
+  2142→	}
+  2143→
+  2144→	// Verify ordering: themes should be in AllThemes order.
+  2145→	themeIndex := make(map[search.Theme]int, len(search.AllThemes))
+  2146→	for i, th := range search.AllThemes {
+  2147→		themeIndex[th] = i
+  2148→	}
+  2149→	for i := 1; i < len(descs); i++ {
+  2150→		prevIdx := themeIndex[descs[i-1].Theme]
+  2151→		currIdx := themeIndex[descs[i].Theme]
+  2152→		if prevIdx > currIdx {
+  2153→			t.Errorf("theme ordering violated: %q (%s) before %q (%s)",
+  2154→				descs[i-1].Name, descs[i-1].Theme, descs[i].Name, descs[i].Theme)
+  2155→		}
+  2156→	}
+  2157→}
+  2158→

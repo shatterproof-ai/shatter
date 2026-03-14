@@ -1,0 +1,59 @@
+.PHONY: help build build-rust build-core build-cli build-ts build-go \
+       test test-quick test-standard test-full test-e2e \
+       clean lint walkthrough
+
+help: ## Show this help
+	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \
+		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
+
+# -- Build -------------------------------------------------------------------
+
+build: build-rust build-ts build-go ## Build everything (Rust + TS + Go)
+
+build-rust: build-core build-cli ## Build all Rust crates
+
+build-core: ## Build shatter-core library
+	cargo build -p shatter-core
+
+build-cli: ## Build shatter CLI binary
+	cargo build -p shatter-cli
+
+build-ts: ## Build TypeScript frontend
+	cd shatter-ts && npm install --silent && npm run build
+
+build-go: ## Build Go frontend
+	cd shatter-go && go build ./...
+
+# -- Test tiers (see CLAUDE.md) -----------------------------------------------
+
+test: test-full ## Run full test suite (default)
+
+test-quick: build ## Quick: cargo test only
+	cargo test
+
+test-standard: build ## Standard: cargo test + clippy
+	cargo test
+	cargo clippy -- -D warnings
+
+test-full: build ## Full: all languages + clippy
+	cargo test
+	cargo clippy -- -D warnings
+	cd shatter-ts && npm test
+	cd shatter-go && go test ./...
+
+test-e2e: build ## E2E: concolic pipeline tests only
+	cargo test --test e2e_concolic
+
+# -- Other --------------------------------------------------------------------
+
+lint: ## Run linters (clippy + golangci-lint)
+	cargo clippy -- -D warnings
+	cd shatter-go && golangci-lint run ./...
+
+walkthrough: build ## Run the demo walkthrough
+	bash demo/walkthrough.sh --auto --delay 0
+
+clean: ## Remove all build artifacts
+	cargo clean
+	rm -rf shatter-ts/dist shatter-ts/node_modules
+	cd shatter-go && go clean ./...

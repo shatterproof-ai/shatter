@@ -1,0 +1,85 @@
+package sandbox
+
+import (
+	"fmt"
+	"path"
+	"path/filepath"
+)
+
+// SandboxConfig defines the mount points and environment for a bwrap sandbox.
+type SandboxConfig struct {
+	AgentRepo    string   // bind rw — agent's git clone
+	TeamMailbox  string   // bind rw — ~/.claude/teams/<team>/
+	ClaudeHome   string   // bind rw — writable copy of ~/.claude/
+	ClaudeBinDir string   // ro-bind — claude binary directory
+	ClaudeJSON   string   // bind rw — ~/.claude.json (modified copy with trust pre-accepted)
+	AgentSSHDir  string   // ro-bind — agent's deploy key as ~/.ssh/, optional
+	ExtraRO      []string // ro-bind — user-configured extra read-only mounts
+	ExtraRW      []string // bind    — user-configured extra read-write mounts
+	Home         string   // $HOME value inside sandbox
+	User         string   // $USER value inside sandbox
+	WorkDir      string   // --chdir target (agent repo)
+}
+
+// Validate checks that required fields are non-empty and absolute paths.
+func (c *SandboxConfig) Validate() error {
+	checks := map[string]string{
+		"Home":         c.Home,
+		"AgentRepo":    c.AgentRepo,
+		"ClaudeHome":   c.ClaudeHome,
+		"ClaudeBinDir": c.ClaudeBinDir,
+		"TeamMailbox":  c.TeamMailbox,
+		"WorkDir":      c.WorkDir,
+	}
+	for name, val := range checks {
+		if val == "" {
+			return fmt.Errorf("SandboxConfig.%s must not be empty", name)
+		}
+		if !filepath.IsAbs(val) {
+			return fmt.Errorf("SandboxConfig.%s must be an absolute path, got %q", name, val)
+		}
+	}
+	return nil
+}
+
+// Args returns the full bwrap argument list.
+// Order matters: later mounts overlay earlier ones.
+func (c *SandboxConfig) Args() []string {
+	args := []string{
+		// Base: read-only root, then tmpfs overlays for isolation.
+		// Order matters: later mounts overlay earlier ones, so tmpfs
+		// must come before any bind mounts under those paths.
+		"--ro-bind", "/", "/",
+		"--tmpfs", c.Home,
+		"--tmpfs", "/tmp",
+		"--proc", "/proc",
+		"--dev", "/dev",
+		// Writable bind mounts (after tmpfs so they overlay correctly)
+		"--bind", c.ClaudeHome, path.Join(c.Home, ".claude"),
+		"--bind", c.AgentRepo, c.AgentRepo,
+		"--bind", c.TeamMailbox, c.TeamMailbox,
+		"--ro-bind", c.ClaudeBinDir, c.ClaudeBinDir,
+		"--setenv", "HOME", c.Home,
+		"--setenv", "USER", c.User,
+		"--setenv", "SSH_AUTH_SOCK", "",
+	}
+
+	if c.ClaudeJSON != "" {
+		args = append(args, "--bind", c.ClaudeJSON, path.Join(c.Home, ".claude.json"))
+	}
+
+	if c.AgentSSHDir != "" {
+		args = append(args, "--ro-bind", c.AgentSSHDir, path.Join(c.Home, ".ssh"))
+	}
+
+	for _, p := range c.ExtraRO {
+		args = append(args, "--ro-bind", p, p)
+	}
+	for _, p := range c.ExtraRW {
+		args = append(args, "--bind", p, p)
+	}
+
+	args = append(args, "--chdir", c.WorkDir)
+
+	return args
+}

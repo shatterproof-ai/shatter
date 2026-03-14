@@ -1,0 +1,8 @@
+{
+  "id": "5",
+  "subject": "kapow-j2l.8: QuestBridge + CBCA scrapers",
+  "description": "Implement platform/questbridge.go and platform/cbca.go scrapers.",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

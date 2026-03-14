@@ -1,0 +1,8 @@
+{
+  "id": "11",
+  "subject": "str-28vd.8: Agent bugfix workflow skill",
+  "description": "Add project-local agent workflow/skill for bug fixes enforcing failing-test-first policy. Beads ID: str-28vd.8",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

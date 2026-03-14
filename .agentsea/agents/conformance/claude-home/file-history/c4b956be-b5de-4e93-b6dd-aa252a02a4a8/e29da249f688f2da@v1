@@ -1,0 +1,27 @@
+# markdownlint-cli2 configuration for Shatter documentation.
+# Rules reference: https://github.com/DavidAnson/markdownlint/blob/main/doc/Rules.md
+
+globs:
+  - "**/*.md"
+  - "!node_modules"
+  - "!target"
+  - "!.claude"
+  - "!shatter-ts/node_modules"
+
+config:
+  # Disable line length — tables and code blocks routinely exceed 80 chars
+  MD013: false
+
+  # Disable inline HTML — not used, but avoid false positives from angle brackets
+  MD033: false
+
+  # Disable first-line-h1 — sub-crate CLAUDE.md files use # crate-name
+  MD041: false
+
+  # Allow duplicate headings in different sections (common in multi-section docs)
+  MD024:
+    siblings_only: true
+
+  # Allow trailing punctuation in headings (used in this project for ? and :)
+  MD026:
+    punctuation: ".,;!"

@@ -1,0 +1,2616 @@
+
+==> Rust tests (cargo test)
+   Compiling shatter-core v0.1.0 (/home/ketan/project/shatter/shatter-core)
+   Compiling shatter-cli v0.1.0 (/home/ketan/project/shatter/shatter-cli)
+warning: cannot test inner items
+   --> shatter-core/src/interesting_pool.rs:701:5
+    |
+701 |     #[test]
+    |     ^^^^^^^
+    |
+    = note: `#[warn(unnameable_test_items)]` on by default
+
+warning: cannot test inner items
+   --> shatter-core/src/interesting_pool.rs:713:5
+    |
+713 |     #[test]
+    |     ^^^^^^^
+
+warning: cannot test inner items
+   --> shatter-core/src/interesting_pool.rs:784:5
+    |
+784 |     #[test]
+    |     ^^^^^^^
+
+warning: cannot test inner items
+   --> shatter-core/src/interesting_pool.rs:793:5
+    |
+793 |     #[test]
+    |     ^^^^^^^
+
+warning: cannot test inner items
+   --> shatter-core/src/interesting_pool.rs:815:5
+    |
+815 |     #[test]
+    |     ^^^^^^^
+
+warning: cannot test inner items
+   --> shatter-core/src/interesting_pool.rs:830:5
+    |
+830 |     #[test]
+    |     ^^^^^^^
+
+warning: cannot test inner items
+   --> shatter-core/src/interesting_pool.rs:846:5
+    |
+846 |     #[test]
+    |     ^^^^^^^
+
+warning: cannot test inner items
+   --> shatter-core/src/interesting_pool.rs:868:5
+    |
+868 |     #[test]
+    |     ^^^^^^^
+
+warning: cannot test inner items
+   --> shatter-core/src/interesting_pool.rs:887:5
+    |
+887 |     #[test]
+    |     ^^^^^^^
+
+warning: unused import: `crate::execution_record::BranchDecision`
+    --> shatter-core/src/strategy.rs:1608:13
+     |
+1608 |         use crate::execution_record::BranchDecision;
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `arb_param_info`
+    --> shatter-core/src/strategy.rs:1740:59
+     |
+1740 |         use crate::test_arbitraries::{arb_execute_result, arb_param_info};
+     |                                                           ^^^^^^^^^^^^^^
+
+warning: unused variable: `prev_branch_count`
+   --> shatter-core/src/observe.rs:833:21
+    |
+833 |                 let prev_branch_count = state.seen_branch_ids.len();
+    |                     ^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_prev_branch_count`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> shatter-core/src/string_mutation.rs:519:13
+    |
+519 |         let mut rng = SmallRng::seed_from_u64(0);
+    |             ----^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `rng`
+   --> shatter-core/src/string_mutation.rs:519:13
+    |
+519 |         let mut rng = SmallRng::seed_from_u64(0);
+    |             ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_rng`
+
+warning: function `values_for_type_returns_matching_entries` is never used
+   --> shatter-core/src/interesting_pool.rs:702:8
+    |
+702 |     fn values_for_type_returns_matching_entries() {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `values_for_type_returns_empty_for_missing_type` is never used
+   --> shatter-core/src/interesting_pool.rs:714:8
+    |
+714 |     fn values_for_type_returns_empty_for_missing_type() {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `make_params` is never used
+   --> shatter-core/src/interesting_pool.rs:727:8
+    |
+727 |     fn make_params(types: &[TypeInfo]) -> Vec<ParamInfo> {
+    |        ^^^^^^^^^^^
+
+warning: function `make_exec_result_ok` is never used
+   --> shatter-core/src/interesting_pool.rs:739:8
+    |
+739 |     fn make_exec_result_ok(branch_id: u32) -> ExecuteResult {
+    |        ^^^^^^^^^^^^^^^^^^^
+
+warning: function `make_exec_result_error` is never used
+   --> shatter-core/src/interesting_pool.rs:759:8
+    |
+759 |     fn make_exec_result_error(error_type: &str, branch_id: u32) -> ExecuteResult {
+    |        ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `harvest_handles_empty_results` is never used
+   --> shatter-core/src/interesting_pool.rs:785:8
+    |
+785 |     fn harvest_handles_empty_results() {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `harvest_inserts_error_inputs` is never used
+   --> shatter-core/src/interesting_pool.rs:794:8
+    |
+794 |     fn harvest_inserts_error_inputs() {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `harvest_inserts_rare_path_inputs` is never used
+   --> shatter-core/src/interesting_pool.rs:816:8
+    |
+816 |     fn harvest_inserts_rare_path_inputs() {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `harvest_skips_common_paths` is never used
+   --> shatter-core/src/interesting_pool.rs:831:8
+    |
+831 |     fn harvest_skips_common_paths() {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `harvest_skips_boundary_values` is never used
+   --> shatter-core/src/interesting_pool.rs:847:8
+    |
+847 |     fn harvest_skips_boundary_values() {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `harvest_decomposes_vectors` is never used
+   --> shatter-core/src/interesting_pool.rs:869:8
+    |
+869 |     fn harvest_decomposes_vectors() {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `harvest_merges_same_value` is never used
+   --> shatter-core/src/interesting_pool.rs:888:8
+    |
+888 |     fn harvest_merges_same_value() {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `arb_crypto_direction` is never used
+   --> shatter-core/src/test_arbitraries.rs:225:8
+    |
+225 | pub fn arb_crypto_direction() -> impl Strategy<Value = CryptoDirection> {
+    |        ^^^^^^^^^^^^^^^^^^^^
+
+warning: function `arb_output_semantics` is never used
+   --> shatter-core/src/test_arbitraries.rs:233:8
+    |
+233 | pub fn arb_output_semantics() -> impl Strategy<Value = OutputSemantics> {
+    |        ^^^^^^^^^^^^^^^^^^^^
+
+warning: function `arb_param_role` is never used
+   --> shatter-core/src/test_arbitraries.rs:244:8
+    |
+244 | pub fn arb_param_role() -> impl Strategy<Value = ParamRole> {
+    |        ^^^^^^^^^^^^^^
+
+warning: function `arb_crypto_boundary` is never used
+   --> shatter-core/src/test_arbitraries.rs:610:8
+    |
+610 | pub fn arb_crypto_boundary() -> impl Strategy<Value = CryptoBoundary> {
+    |        ^^^^^^^^^^^^^^^^^^^
+
+warning: function `arb_branch_prediction` is never used
+    --> shatter-core/src/test_arbitraries.rs:1093:8
+     |
+1093 | pub fn arb_branch_prediction() -> impl Strategy<Value = BranchPrediction> {
+     |        ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `arb_triage_verdict` is never used
+    --> shatter-core/src/test_arbitraries.rs:1101:8
+     |
+1101 | pub fn arb_triage_verdict() -> impl Strategy<Value = TriageVerdict> {
+     |        ^^^^^^^^^^^^^^^^^^
+
+warning: function `arb_triage_disable_reason` is never used
+    --> shatter-core/src/test_arbitraries.rs:1113:8
+     |
+1113 | pub fn arb_triage_disable_reason() -> impl Strategy<Value = TriageDisableReason> {
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `shatter-core` (lib test) generated 33 warnings (run `cargo fix --lib -p shatter-core --tests` to apply 5 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 47.62s
+     Running unittests src/main.rs (target/debug/deps/shatter-d2c1e91fd599faa8)
+
+running 96 tests
+test embedded_frontend::tests::bundle_hash_is_64_hex_chars ... ok
+test embedded_frontend::tests::bundle_is_embedded ... ok
+test embedded_go_frontend::tests::binary_is_embedded ... ok
+test embedded_go_frontend::tests::binary_hash_is_64_hex_chars ... ok
+test tests::cli_diff_requires_both_arguments ... ok
+test tests::cli_clean_and_dry_run_default_to_false ... ok
+test tests::cli_explore_requires_at_least_one_target ... ok
+test tests::cli_core_sample_defaults_to_none ... ok
+test tests::cli_export_tests_defaults ... ok
+test tests::cli_concolic_defaults_to_false ... ok
+test tests::cli_cache_dir_defaults_to_none ... ok
+test tests::cli_explore_exec_timeout_defaults ... ok
+test tests::cli_genetic_defaults_to_false ... ok
+test tests::cli_no_cache_defaults_to_false_for_explore ... ok
+test tests::cli_export_tests_requires_at_least_one_target ... ok
+test tests::cli_parses_diff_subcommand ... ok
+test tests::cli_parses_cache_dir_flag ... ok
+test tests::cli_no_cache_defaults_to_false_for_scan ... ok
+test tests::cli_output_defaults_to_none ... ok
+test tests::cli_parses_diff_with_json_flag ... ok
+test tests::cli_export_tests_with_output_flag ... ok
+test tests::cli_parses_explore_subcommand ... ok
+test tests::cli_parses_explore_with_clean_flag ... ok
+test tests::cli_parses_explore_with_config_flag ... ok
+test tests::cli_parses_explore_with_concolic_flag ... ok
+test tests::cli_parses_explore_with_exec_timeout ... ok
+test tests::cli_parses_explore_with_genetic_flag ... ok
+test tests::cli_parses_explore_with_flags ... ok
+test tests::cli_parses_explore_with_dry_run_flag ... ok
+test tests::cli_parses_explore_with_inputs_flag ... ok
+test tests::cli_parses_explore_with_genetic_options ... ok
+test tests::cli_parses_explore_with_no_cache ... ok
+test embedded_frontend::tests::extract_to_cleans_up_old_bundles ... ok
+test embedded_frontend::tests::extract_to_is_idempotent ... ok
+test tests::cli_parses_explore_with_output_flag ... ok
+test tests::cli_parses_run_with_all_flags ... ok
+test tests::cli_parses_run_with_request_timeout ... ok
+test tests::cli_parses_explore_with_request_timeout ... ok
+test tests::cli_parses_scan_subcommand ... ok
+test tests::cli_parses_export_tests_with_request_timeout ... ok
+test tests::cli_parses_explore_with_scope_flag ... ok
+test tests::cli_parses_scan_with_core_sample_absolute ... ok
+test tests::cli_parses_run_subcommand ... ok
+test tests::cli_parses_scan_with_core_sample ... ok
+test tests::cli_parses_scan_with_flags ... ok
+test tests::cli_parses_scan_with_request_timeout ... ok
+test tests::cli_parses_scan_with_no_cache ... ok
+test tests::cli_parses_export_tests_subcommand ... ok
+test tests::cli_parses_spec_diff_subcommand ... ok
+test tests::cli_parses_scan_with_genetic_flag ... ok
+test tests::cli_parses_scan_with_seed ... ok
+test tests::cli_parses_scan_with_exec_timeout ... ok
+test tests::cli_parses_spec_diff_with_json_flag ... ok
+test tests::cli_parses_stale_with_json_format ... ok
+test tests::cli_parses_test_budget_seconds ... ok
+test tests::cli_parses_test_dry_run ... ok
+test tests::cli_parses_test_prioritize ... ok
+test tests::cli_parses_test_budget_combined ... ok
+test tests::cli_parses_test_record ... ok
+test tests::cli_parses_stale_subcommand ... ok
+test tests::cli_parses_test_subcommand_defaults ... ok
+test tests::cli_parses_test_all ... ok
+test tests::cli_parses_test_budget_minutes ... ok
+test tests::cli_requires_subcommand ... ok
+test tests::cli_run_requires_path_argument ... ok
+test tests::cli_scan_emit_tests_flag ... ok
+test tests::cli_scan_emit_tests_defaults_to_none ... ok
+test tests::cli_parses_test_tier ... ok
+test tests::discovery_lang_to_cli_lang_maps_correctly ... ok
+test tests::cli_scan_output_flag ... ok
+test tests::cli_scan_requires_directory ... ok
+test tests::frontend_config_typescript_uses_embedded_bundle ... ok
+test tests::cli_scan_emit_tests_gotest ... ok
+test tests::cli_scan_new_flags ... ok
+test tests::cli_spec_diff_requires_both_arguments ... ok
+test tests::language_labels_are_correct ... ok
+test tests::parse_target_file_and_function ... ok
+test tests::language_from_extension_recognizes_tsx ... ok
+test tests::frontend_config_passes_timeout_env_vars ... ok
+test tests::language_from_extension_recognizes_rs ... ok
+test tests::parse_target_rust_file_only ... ok
+test tests::parse_target_no_extension ... ok
+test tests::parse_target_file_only ... ok
+test tests::parse_target_go_file_and_function ... ok
+test tests::parse_target_go_file_only ... ok
+test tests::parse_target_rust_file_and_function ... ok
+test tests::parse_target_unsupported_extension ... ok
+test tests::parse_target_path_with_colons_uses_last_colon ... ok
+test tests::validate_targets_accepts_existing_file ... ok
+test tests::validate_targets_rejects_nonexistent_file ... ok
+test tests::parse_target_trailing_colon_treated_as_file_only ... ok
+test tests::frontend_config_go_uses_embedded_binary ... ok
+test embedded_go_frontend::tests::extract_to_is_idempotent ... ok
+test embedded_go_frontend::tests::extract_to_cleans_up_old_binaries ... ok
+test embedded_frontend::tests::extract_to_writes_bundle_to_cache ... ok
+test embedded_go_frontend::tests::extract_to_writes_binary_to_cache ... ok
+
+test result: ok. 96 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.33s
+
+     Running unittests src/lib.rs (target/debug/deps/shatter_core-3dbecc3b66253e08)
+
+running 1847 tests
+test analysis_cache::tests::default_dir_path ... ok
+test array_mutation::tests::delete_decreases_length_by_one ... ok
+test array_mutation::tests::insert_increases_length_by_one ... ok
+test array_mutation::tests::all_mutation_kinds_exercised_over_many_trials ... ok
+test array_mutation::tests::mutate_empty_array_always_inserts ... ok
+test array_mutation::tests::mutate_returns_none_for_non_array ... ok
+test array_mutation::tests::batch_produces_requested_count ... ok
+test array_mutation::tests::batch_with_non_array_returns_empty ... ok
+test array_mutation::tests::mutations_with_complex_element_type ... ok
+test array_mutation::tests::splice_modifies_contiguous_section ... ok
+test array_mutation::tests::replace_preserves_length ... ok
+test array_mutation::tests::single_element_array_never_swaps_or_splices ... ok
+test auto_mock::tests::auto_mock_configs_serialize_for_protocol ... ok
+test array_mutation::tests::swap_preserves_length_and_elements ... ok
+test auto_mock::tests::build_mock_params_auto_generated_without_config ... ok
+test analysis_cache::tests::cache_hit_returns_cached_analysis ... ok
+test auto_mock::tests::auto_mock_pipeline_mixed_dependencies ... ok
+test array_mutation::tests::truncate_reduces_length ... ok
+test auto_mock::tests::build_mock_params_call_count_from_call_sites ... ok
+test auto_mock::tests::build_mock_params_empty_deps ... ok
+test auto_mock::tests::build_mock_params_includes_pure_utility_with_config ... ok
+test auto_mock::tests::build_mock_params_mixed_deps ... ok
+test auto_mock::tests::build_mock_params_skips_pure_utility_without_config ... ok
+test auto_mock::tests::build_mock_params_user_override_with_config ... ok
+test auto_mock::tests::classify_go_stdlib_modules ... ok
+test auto_mock::tests::classify_network_modules ... ok
+test auto_mock::tests::classify_database_modules ... ok
+test auto_mock::tests::classify_fs_modules ... ok
+test auto_mock::tests::classify_pure_utility_modules ... ok
+test auto_mock::tests::classify_unknown_module_as_external_other ... ok
+test analysis_cache::tests::lookup_returns_none_for_uncached_file ... ok
+test auto_mock::tests::default_error_probability_value ... ok
+test auto_mock::tests::default_mock_for_db_insert ... ok
+test auto_mock::tests::default_mock_for_db_query ... ok
+test auto_mock::tests::default_for_type_object ... ok
+test analysis_cache::tests::clear_removes_all_entries ... ok
+test auto_mock::tests::default_mock_for_fs_exists ... ok
+test auto_mock::tests::default_mock_for_fs_read ... ok
+test auto_mock::tests::default_mock_for_network ... ok
+test analysis_cache::tests::timestamp_fast_path_unchanged_mtime ... ok
+test analysis_cache::tests::new_creates_directory_if_missing ... ok
+test auto_mock::tests::default_mock_for_external_other_uses_type ... ok
+test auto_mock::tests::auto_mock_pipeline_with_scope_rules ... ok
+test auto_mock::tests::default_mock_for_pure_utility_is_passthrough ... ok
+test auto_mock::tests::error_variant_database_category ... ok
+test auto_mock::tests::error_variant_fallback_throws ... ok
+test auto_mock::tests::error_variant_filesystem_category ... ok
+test auto_mock::tests::error_variant_network_category ... ok
+test auto_mock::tests::error_variant_nullable_returns_null ... ok
+test auto_mock::tests::error_variant_object_with_status_field ... ok
+test auto_mock::tests::generate_auto_mocks_applies_overrides ... ok
+test auto_mock::tests::generate_auto_mocks_for_multiple_deps ... ok
+test auto_mock::tests::generate_auto_mocks_respects_scope_passthrough ... ok
+test auto_mock::tests::generate_auto_mocks_skips_existing ... ok
+test auto_mock::tests::generate_auto_mocks_skips_pure_utilities ... ok
+[noop-frontend] Starting no-op frontend (protocol 0.1.0)
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze","execute","instrument"]}
+test auto_mock::tests::generate_error_mocks_respects_probability ... ok
+test auto_mock::tests::generate_error_mocks_skips_existing_and_pure_utility ... ok
+test analysis_cache::tests::protocol_version_change_invalidates_cache ... ok
+test batch_analyze::tests::empty_function_registry ... ok
+test batch_analyze::tests::function_entry_branch_count_matches_branches ... ok
+test batch_analyze::tests::function_entry_from_analysis_preserves_fields ... ok
+test batch_analyze::tests::function_entry_preserves_dependencies ... ok
+test batch_analyze::tests::function_entry_unexported_function ... ok
+test batch_analyze::tests::function_entry_zero_branches ... ok
+test batch_analyze::tests::function_registry_exported_functions ... ok
+test batch_analyze::tests::function_registry_from_entries ... ok
+test batch_analyze::tests::batch_analyze_empty_file_list ... ok
+test batch_analyze::tests::function_registry_functions_in_file ... ok
+[noop-frontend] Starting no-op frontend (protocol 0.1.0)
+test batch_analyze::tests::function_registry_qualified_name_format ... ok
+test batch_state::tests::completed_batches_sorted ... ok
+test batch_state::tests::cumulative_coverage_pct_computed ... ok
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze","execute","instrument"]}
+test batch_state::tests::cumulative_coverage_pct_zero_branches ... ok
+test batch_state::tests::format_cumulative_section_includes_key_info ... ok
+test batch_state::tests::load_missing_returns_none ... ok
+test batch_analyze::tests::function_registry_get_by_qualified_name ... ok
+test batch_state::tests::record_batch_accumulates_metrics ... ok
+test batch_analyze::tests::batch_analyze_no_frontend_for_language_returns_error ... ok
+test batch_state::tests::save_creates_parent_directories ... ok
+test behavior::tests::all_side_effect_kinds_round_trip ... ok
+test behavior::tests::behavior_coverage_matches_exercised_behaviors ... ok
+test batch_state::tests::re_running_same_batch_replaces_previous ... ok
+test behavior::tests::behavior_coverage_no_match ... ok
+test batch_state::tests::round_trip_save_load ... ok
+test behavior::tests::behavior_map_entries_include_traces_when_available ... ok
+test behavior::tests::behavior_map_from_exploration_result ... ok
+test behavior::tests::behavior_map_from_single_record ... ok
+test behavior::tests::behavior_map_no_trace_when_no_deps ... ok
+test behavior::tests::behavior_map_nondeterministic_fields_round_trip ... ok
+test behavior::tests::behavior_map_without_nondeterministic_fields_deserializes ... ok
+test behavior::tests::behavior_map_from_multiple_records_deduplicates ... ok
+test behavior::tests::call_graph_from_analyses_builds_edges ... ok
+test behavior::tests::behavior_map_to_mock_config ... ok
+test behavior::tests::build_dependency_trace_from_execute_result ... ok
+test behavior::tests::call_graph_self_edges_excluded_from_callees ... ok
+test behavior::tests::call_graph_self_recursive_not_rejected_as_cycle ... ok
+test behavior::tests::call_graph_mutual_recursion_returns_group ... ok
+test behavior::tests::call_graph_mutual_recursion_with_leaf_dependency ... ok
+test behavior::tests::composite_result_round_trips ... ok
+test behavior::tests::call_graph_test_order_leaf_first ... ok
+test behavior::tests::call_graph_self_recursive_with_dependency ... ok
+test behavior::tests::dependency_trace_round_trips ... ok
+test behavior::tests::dependency_trace_with_side_effects_only ... ok
+test behavior::tests::dependency_trace_captures_call_ordering ... ok
+test behavior::tests::empty_trace_no_external_calls ... ok
+test behavior::tests::from_exploration_result_carries_nondeterministic_fields ... ok
+test behavior::tests::from_exploration_result_populates_trace_from_raw_results ... ok
+test behavior::tests::traced_call_round_trips ... ok
+test boundary_dict::tests::all_entries_are_valid_json ... ok
+test behavior::tests::two_function_chain_integration ... ok
+test boundary_dict::tests::bool_boundaries_return_both_values ... ok
+test boundary_dict::tests::boundary_category_round_trips ... ok
+test boundary_dict::tests::boundary_entry_round_trips ... ok
+test boundary_dict::tests::all_entries_have_descriptions ... ok
+test boundary_dict::tests::category_filtering_works ... ok
+test boundary_dict::tests::float_boundaries_include_nan_infinity_epsilon ... ok
+test boundary_dict::tests::generate_boundary_inputs_produces_correct_count ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"noop","capabilities":["analyze","execute","instrument","setup","teardown","generate"]}
+test boundary_dict::tests::generate_boundary_inputs_empty_params ... ok
+test boundary_dict::tests::nullable_includes_null_plus_inner_boundaries ... ok
+test boundary_dict::tests::int_boundaries_include_expected_values ... ok
+test boundary_dict::tests::opaque_type_returns_empty ... ok
+test behavior::tests::traced_side_effect_round_trips ... ok
+test boundary_dict::tests::string_boundaries_include_expected_values ... ok
+test boundary_dict::tests::unknown_type_returns_empty ... ok
+test boundary_dict::tests::string_boundaries_include_unicode ... ok
+[noop-frontend] Starting no-op frontend (protocol 0.1.0)
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze","execute","instrument"]}
+test boundary_search::proptests::interpolate_float_midpoint_in_range ... ok
+test boundary_search::proptests::interpolate_bounded_output ... ok
+test boundary_search::tests::candidates_preserve_vector_length ... ok
+test boundary_search::tests::find_witness_pair_missing_side ... ok
+test boundary_search::tests::find_witness_pair_prefers_recent ... ok
+test boundary_search::tests::find_witness_pair_unknown_branch ... ok
+test boundary_search::tests::find_witness_pair_with_both_sides ... ok
+test boundary_search::tests::interpolate_array_per_element ... ok
+test boundary_search::tests::interpolate_float_binary_search ... ok
+test boundary_search::tests::interpolate_float_convergence ... ok
+test boundary_search::tests::interpolate_float_infinity_skipped ... ok
+test boundary_search::tests::interpolate_float_nan_skipped ... ok
+test boundary_search::tests::interpolate_inputs_single_differing_param ... ok
+test boundary_search::tests::interpolate_int_adjacent ... ok
+test boundary_search::tests::interpolate_int_binary_search ... ok
+test boundary_search::tests::interpolate_int_equal ... ok
+test boundary_search::tests::interpolate_int_negative_range ... ok
+test boundary_search::tests::interpolate_nullable_both_non_null ... ok
+test boundary_search::tests::interpolate_nullable_null_vs_value ... ok
+test boundary_search::tests::interpolate_object_per_field ... ok
+test boundary_search::tests::interpolate_respects_max_steps ... ok
+test boundary_search::tests::interpolate_skips_identical_values ... ok
+test boundary_search::tests::interpolate_union_matching_variant ... ok
+test boundary_search::tests::interpolate_union_no_match ... ok
+test boundary_search::tests::interpolate_zero_max_steps ... ok
+test boundary_search::proptests::interpolate_int_midpoint_in_range ... ok
+test boundary_search::proptests::interpolate_preserves_vector_length ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"noop","capabilities":["analyze","execute","instrument","setup","teardown","generate"]}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":2,"command":"analyze","file":"src/app.ts","function":null}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"noop","capabilities":["analyze","execute","instrument","setup","teardown","generate"]}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":2,"command":"analyze","file":"src/app.ts","function":null}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":2,"status":"analyze","functions":[{"name":"stub","exported":true,"params":[],"branches":[],"dependencies":[],"return_type":{"kind":"unknown"},"start_line":1,"end_line":1}]}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":3,"command":"analyze","file":"src/utils.ts","function":null}
+test auto_mock::tests::prop_tests::error_variant_behavior_is_valid ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":2,"status":"analyze","functions":[{"name":"stub","exported":true,"params":[],"branches":[],"dependencies":[],"return_type":{"kind":"unknown"},"start_line":1,"end_line":1}]}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":2,"command":"analyze","file":"pkg/handler.go","function":null}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":3,"status":"analyze","functions":[{"name":"stub","exported":true,"params":[],"branches":[],"dependencies":[],"return_type":{"kind":"unknown"},"start_line":1,"end_line":1}]}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":4,"command":"shutdown"}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":2,"status":"analyze","functions":[{"name":"stub","exported":true,"params":[],"branches":[],"dependencies":[],"return_type":{"kind":"unknown"},"start_line":1,"end_line":1}]}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":3,"command":"shutdown"}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":4,"status":"shutdown_ack"}
+[noop-frontend] Shutting down
+test batch_analyze::tests::batch_analyze_with_noop_frontend ... ok
+test cache::tests::default_dir_is_relative_to_project_root ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":3,"status":"shutdown_ack"}
+[noop-frontend] Shutting down
+test cache::tests::hierarchical_path_class_method ... ok
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":3,"command":"shutdown"}
+test cache::tests::hierarchical_path_free_function ... ok
+test cache::tests::hierarchical_path_no_colon ... ok
+test cache::tests::is_fresh_returns_false_when_fingerprint_differs ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":3,"status":"shutdown_ack"}
+[noop-frontend] Shutting down
+test batch_analyze::tests::batch_analyze_multiple_languages_with_noop ... ok
+test cache::tests::is_fresh_returns_false_when_no_cached_fingerprint ... ok
+test cache::tests::is_fresh_returns_true_when_fingerprint_matches ... ok
+test cache::tests::is_fresh_returns_false_when_no_cached_map ... ok
+test cache::tests::load_returns_none_for_missing ... ok
+test cache::tests::no_collision_same_func_different_files ... ok
+test cache::tests::new_creates_directory_if_missing ... ok
+test cache::tests::old_bare_json_format_returns_none ... ok
+test cache::tests::protocol_version_mismatch_returns_none ... ok
+test cache::tests::spec_and_behavior_map_coexist ... ok
+test cache::tests::spec_hierarchical_path ... ok
+test cache::tests::spec_is_fresh_with_matching_fingerprint ... ok
+test cache::tests::spec_load_returns_none_for_missing ... ok
+test cache::tests::spec_store_and_load_round_trip ... ok
+test cache::tests::spec_protocol_version_mismatch_returns_none ... ok
+test cache::tests::store_and_load_preserves_nondeterministic_fields ... ok
+test cache::tests::store_and_load_round_trip ... ok
+test call_graph::tests::batches_caller_of_cycle_appears_after_cycle ... ok
+test call_graph::tests::batches_cycle_grouped_together ... ok
+test cache::tests::store_overwrites_existing ... ok
+test call_graph::tests::batches_diamond_produces_three_layers ... ok
+test call_graph::tests::batches_cycle_with_dependency_on_leaf ... ok
+test call_graph::tests::batches_empty_graph ... ok
+test call_graph::tests::batches_isolated_nodes_all_in_layer_zero ... ok
+test call_graph::tests::batches_layer_indices_are_sequential ... ok
+test call_graph::tests::batches_linear_chain_produces_one_per_layer ... ok
+test call_graph::tests::batches_mixed_cycles_and_linear_chains ... ok
+test call_graph::tests::batches_single_node ... ok
+test call_graph::tests::batches_three_node_cycle ... ok
+test call_graph::tests::batches_two_independent_cycles ... ok
+test call_graph::tests::callers_of_unknown_node_returns_empty ... ok
+test call_graph::tests::cross_file_dependency_resolution ... ok
+test call_graph::tests::cycle_nodes_appear_in_final_topo_layer ... ok
+test call_graph::tests::cycle_detection_two_nodes ... ok
+test call_graph::tests::diamond_dependency ... ok
+test call_graph::tests::empty_registry_produces_empty_graph ... ok
+test call_graph::tests::large_graph_with_mixed_structure ... ok
+test call_graph::tests::leaf_nodes_have_no_callees ... ok
+test call_graph::tests::linear_chain_produces_correct_topo_layers ... ok
+test call_graph::tests::self_call_not_added_as_edge ... ok
+test call_graph::tests::multiple_sccs_detected ... ok
+test call_graph::tests::single_node_no_edges ... ok
+test call_graph::tests::source_module_disambiguates_same_name_functions ... ok
+test call_graph::tests::transitive_callers_cross_file ... ok
+test call_graph::tests::three_node_cycle ... ok
+test call_graph::tests::transitive_callers_cycle ... ok
+test call_graph::tests::transitive_callers_diamond ... ok
+test call_graph::tests::transitive_callers_empty_seeds ... ok
+test call_graph::tests::transitive_callers_disjoint_subgraphs ... ok
+test call_graph::tests::transitive_callers_linear_chain ... ok
+test call_graph::tests::transitive_callers_multiple_seeds ... ok
+test call_graph::tests::unknown_dependency_is_ignored ... ok
+test call_graph::tests::transitive_callers_unknown_seed ... ok
+test canonical_json::tests::array_preserves_order ... ok
+test canonical_json::tests::composite_id_format ... ok
+test canonical_json::tests::deeply_nested_structure ... ok
+test canonical_json::tests::different_values_produce_different_hashes ... ok
+test canonical_json::tests::composite_id_stable_across_calls ... ok
+test canonical_json::tests::float_canonicalize ... ok
+test canonical_json::tests::hash_is_six_hex_chars ... ok
+test canonical_json::tests::empty_object_and_array ... ok
+test canonical_json::tests::key_order_does_not_affect_hash ... ok
+test canonical_json::tests::integer_canonicalize ... ok
+test canonical_json::tests::null_bool_canonicalize ... ok
+test canonical_json::tests::nested_object_keys_sorted ... ok
+test canonical_json::tests::object_keys_sorted ... ok
+test canonical_json::tests::unicode_nfc_normalization ... ok
+test checkpoint::tests::compute_scan_id_deterministic_regardless_of_order ... ok
+test canonical_json::tests::string_canonicalize_escapes ... ok
+test auto_mock::tests::prop_tests::error_mocks_never_exceed_dep_count ... ok
+test checkpoint::tests::compute_scan_id_differs_for_different_files ... ok
+test checkpoint::tests::is_completed_false_when_cache_missing ... ok
+test auto_mock::tests::prop_tests::error_variant_serializes ... ok
+test checkpoint::tests::load_returns_none_for_missing_file ... ok
+test checkpoint::tests::is_completed_false_when_fp_changed ... ok
+test checkpoint::tests::round_trip_save_load ... ok
+test checkpoint::tests::is_completed_true_when_all_conditions_met ... ok
+test clustering::tests::cluster_specimen_counts_are_accurate ... ok
+test clustering::tests::clustering_result_round_trips ... ok
+test clustering::tests::input_ranges_reflect_parameter_min_max ... ok
+test clustering::tests::multiple_parameters_have_independent_ranges ... ok
+test clustering::tests::output_range_is_none_when_all_records_threw ... ok
+test clustering::tests::empty_records_produces_empty_clusters ... ok
+test checkpoint::tests::save_creates_parent_directories ... ok
+test clustering::tests::output_range_reflects_return_value_min_max ... ok
+test clustering::tests::record_indices_point_to_correct_records ... ok
+test clustering::tests::records_with_no_branches_cluster_together ... ok
+test clustering::tests::single_record_produces_one_cluster ... ok
+test checkpoint::tests::is_completed_false_when_not_in_checkpoint ... ok
+test clustering::tests::string_values_use_lexicographic_range ... ok
+test clustering::tests::two_branch_function_groups_into_four_clusters ... ok
+test config::tests::genetic_config_defaults ... ok
+test config::tests::defaults_config_round_trip_with_all_setup_fields ... ok
+test config::tests::discover_configs_empty_when_no_shatter_dirs ... ok
+test config::tests::genetic_config_partial_yaml_uses_defaults ... ok
+test config::tests::merge_configs_combines_opaque_types_and_deduplicates ... ok
+test config::tests::merge_configs_empty_returns_default ... ok
+test config::tests::genetic_config_serde_roundtrip ... ok
+test config::tests::merge_configs_file_setup_near_overrides_far ... ok
+test config::tests::merge_configs_generators_near_overrides_far ... ok
+test config::tests::discover_configs_finds_nearest_first ... ok
+test config::tests::merge_configs_nearest_wins_for_function_patterns ... ok
+test config::tests::merge_configs_no_nondeterminism_stays_none ... ok
+test config::tests::merge_configs_opaque_types_empty_when_no_configs_have_them ... ok
+test config::tests::merge_configs_setup_nearest_wins ... ok
+test config::tests::nondeterminism_config_round_trip ... ok
+test config::tests::merge_configs_unions_nondeterminism ... ok
+test config::tests::merge_configs_nearest_wins_for_defaults ... ok
+test config::tests::parse_candidate_inputs_basic ... ok
+test config::tests::parse_candidate_inputs_missing_file ... ok
+test config::tests::hierarchical_merge_integration ... ok
+test config::tests::parse_candidate_inputs_invalid_json ... ok
+test config::tests::parse_config_minimal ... ok
+test config::tests::parse_config_invalid_yaml_returns_error ... ok
+test config::tests::parse_config_missing_file_returns_error ... ok
+test auto_mock::tests::prop_tests::error_variant_preserves_symbol ... ok
+test config::tests::parse_config_basic ... ok
+test config::tests::parse_config_with_nondeterminism ... ok
+test config::tests::parse_candidate_inputs_without_labels ... ok
+test config::tests::parse_config_with_setup_and_generators ... ok
+test config::tests::parse_config_with_file_setup ... ok
+test config::tests::parse_config_without_new_fields_still_works ... ok
+test config::tests::parse_config_with_opaque_types ... ok
+test config::tests::parse_config_without_nondeterminism_is_none ... ok
+test config::tests::parse_config_without_opaque_types_defaults_to_empty ... ok
+test config::tests::prop_tests::merge_single_config_is_identity ... ok
+test config::tests::resolve_config_generators_function_overrides_defaults ... ok
+test config::tests::resolve_config_no_setup_returns_none ... ok
+test config::tests::resolve_config_session_setup_from_defaults ... ok
+test config::tests::resolve_config_with_file_setup ... ok
+test config::tests::resolve_config_with_setup_from_defaults ... ok
+test config::tests::resolve_config_with_setup_from_function ... ok
+test config::tests::prop_tests::session_setup_config_yaml_roundtrip ... ok
+test config::tests::resolve_function_config_explicit_inputs_overrides_config ... ok
+test config::tests::resolve_function_config_glob_pattern_matching ... ok
+test config::tests::resolve_function_config_falls_through_to_defaults ... ok
+test config::tests::resolve_function_config_setup_level_defaults_to_function ... ok
+test config::tests::resolve_function_config_uses_cli_defaults_when_no_config ... ok
+test config::tests::resolve_function_config_uses_function_override ... ok
+test config::tests::session_setup_config_without_timeout ... ok
+test config::tests::session_setup_config_yaml_round_trip ... ok
+test config::tests::setup_level_serialization_round_trip ... ok
+test config::tests::setup_level_yaml_round_trip ... ok
+test config::tests::shatter_config_with_genetic_section ... ok
+test config::tests::prop_tests::defaults_config_yaml_roundtrip ... ok
+test core_sample::tests::test_batch_uses_qualified_names ... ok
+test core_sample::tests::test_batches_are_disjoint ... ok
+test core_sample::tests::test_complexity_tier_classification ... ok
+test core_sample::tests::test_budget_exceeds_total ... ok
+test core_sample::tests::test_dependency_closure ... ok
+test core_sample::tests::test_depth_map_uses_qualified_names ... ok
+test core_sample::tests::test_dependency_closure_uses_qualified_names ... ok
+test core_sample::tests::test_empty_entries ... ok
+test core_sample::tests::test_function_kind_classification ... ok
+test core_sample::tests::test_different_seed_different_selection ... ok
+test core_sample::tests::test_min_one_per_stratum ... ok
+test core_sample::tests::test_parse_batch_invalid ... ok
+test core_sample::tests::test_parse_batch_next ... ok
+test core_sample::tests::test_parse_batch_range ... ok
+test core_sample::tests::test_parse_batch_single ... ok
+test core_sample::tests::test_parse_budget_absolute ... ok
+test core_sample::tests::test_parse_budget_invalid ... ok
+test core_sample::tests::test_parse_budget_percentage ... ok
+test core_sample::tests::test_selected_names_are_qualified ... ok
+test core_sample::tests::test_same_named_functions_different_files ... ok
+test core_sample::tests::test_stable_selection ... ok
+test coverage_metrics::tests::all_branches_found_by_z3_gives_100_percent_z3 ... ok
+test coverage_metrics::tests::all_discovery_methods_represented ... ok
+test coverage_metrics::tests::coverage_metrics_serialization_round_trips ... ok
+test coverage_metrics::tests::discovery_method_serialization_round_trips ... ok
+test coverage_metrics::tests::extract_targets_all_discovered_solvable ... ok
+test coverage_metrics::tests::extract_targets_all_uncovered ... ok
+test coverage_metrics::tests::extract_targets_empty_branches ... ok
+test coverage_metrics::tests::extract_targets_mixed_uncovered_and_opaque ... ok
+test coverage_metrics::tests::extract_targets_opaque_hint_from_runtime_not_static ... ok
+test coverage_metrics::tests::extract_targets_sorted_by_branch_id ... ok
+test coverage_metrics::tests::format_coverage_metrics_omits_zero_categories ... ok
+test coverage_metrics::tests::extract_targets_uncovered_hint_from_condition_text ... ok
+test coverage_metrics::tests::format_coverage_metrics_shows_all_sections ... ok
+test coverage_metrics::tests::format_coverage_metrics_with_no_branches ... ok
+test coverage_metrics::tests::merge_adds_all_counters ... ok
+test coverage_metrics::tests::merge_with_default_is_identity ... ok
+test coverage_metrics::tests::metrics_from_empty_exploration ... ok
+test coverage_metrics::tests::merge_is_additive ... ok
+test coverage_metrics::tests::mixed_discovery_methods_give_correct_percentages ... ok
+test coverage_metrics::tests::no_branches_gives_zero_metrics_no_division_by_zero ... ok
+test coverage_metrics::tests::symexpr_ratio_with_no_constraints_returns_zero ... ok
+test coverage_metrics::tests::symexpr_vs_unknown_ratio_calculation ... ok
+test coverage_metrics::tests::target_branch_serialization_round_trips ... ok
+test config::tests::resolve_function_config_with_inputs_loads_candidates ... ok
+test config::tests::prop_tests::setup_level_in_config_roundtrip ... ok
+test crypto_registry::tests::chacha20poly1305_entries ... ok
+test crypto_registry::tests::classify_all_dependencies_empty_input ... ok
+test crypto_registry::tests::classify_all_dependencies_matches_crypto ... ok
+test crypto_registry::tests::classify_dependency_with_module_prefix ... ok
+test crypto_registry::tests::classify_all_dependencies_no_match ... ok
+test crypto_registry::tests::crypto_js_entries ... ok
+test crypto_registry::tests::load_builtin_registry ... ok
+test crypto_registry::tests::classify_dependency_no_match ... ok
+test crypto_registry::tests::lookup_go_aead_open ... ok
+test crypto_registry::tests::lookup_go_aead_seal ... ok
+test crypto_registry::tests::classify_dependency_exact_match ... ok
+test crypto_registry::tests::lookup_rust_aes_gcm_decrypt ... ok
+test crypto_registry::tests::lookup_node_crypto_decipheriv ... ok
+test crypto_registry::tests::lookup_rust_ring_seal ... ok
+test discovery::tests::discovers_go_files ... ok
+test discovery::tests::discovers_typescript_files ... ok
+test discovery::tests::discovers_rust_files ... ok
+test crypto_registry::tests::lookup_missing_returns_none ... ok
+test crypto_registry::tests::override_merge ... ok
+test discovery::tests::empty_directory_returns_empty_vec ... ok
+test config::tests::prop_tests::merge_near_setup_wins ... ok
+test discovery::tests::exclude_patterns_remove_files ... ok
+test discovery::tests::excludes_dist_and_target_by_default ... ok
+test discovery::tests::excludes_node_modules_by_default ... ok
+test discovery::tests::excludes_test_files_by_default ... ok
+test discovery::tests::filter_applies_user_excludes ... ok
+test discovery::tests::filter_applies_default_excludes ... ok
+test discovery::tests::excludes_vendor_by_default ... ok
+test discovery::tests::filter_keeps_source_files_and_detects_language ... ok
+test discovery::tests::filter_empty_list_returns_empty ... ok
+test discovery::tests::filter_results_are_sorted ... ok
+test discovery::tests::filter_skips_paths_outside_root ... ok
+test discovery::tests::filter_applies_user_includes ... ok
+test discovery::tests::language_from_extension_all_variants ... ok
+test discovery::tests::respects_gitignore ... ok
+test discovery::tests::invalid_glob_pattern_returns_error ... ok
+test discovery::tests::respects_shatterignore ... ok
+test discovery::tests::gitignore_disabled_when_respect_gitignore_is_false ... ok
+test discovery::tests::include_patterns_filter_results ... ok
+test discovery::tests::setup_discovers_file_level_colocated ... ok
+test discovery::tests::setup_discovers_session_in_shatter_dir ... ok
+test discovery::tests::setup_empty_sources_returns_empty_file_level ... ok
+test discovery::tests::setup_discovers_session_in_root ... ok
+test discovery::tests::setup_config_overrides_file_level ... ok
+test discovery::tests::setup_multiple_levels_simultaneously ... ok
+test discovery::tests::setup_config_overrides_session ... ok
+test discovery::tests::setup_ignores_source_without_colocated_setup ... ok
+test drilling::tests::blocking_params_from_multi_param_expr ... ok
+test drilling::tests::blocking_params_from_single_param_expr ... ok
+test drilling::tests::blocking_params_unknown_returns_empty ... ok
+test discovery::tests::setup_no_files_returns_empty ... ok
+test drilling::tests::blocking_params_unresolvable_name_skipped ... ok
+test drilling::tests::drilled_inputs_empty_blocking_mutates_all ... ok
+test drilling::tests::drilled_inputs_multiple_blocking_params ... ok
+test discovery::tests::results_are_sorted_by_path ... ok
+test drilling::tests::drilled_inputs_out_of_bounds_index_skipped ... ok
+test drilling::tests::drilled_inputs_empty_prefix_returns_empty ... ok
+test discovery::tests::setup_wrong_extension_not_discovered ... ok
+test equivalence::tests::branch_path_equality ... ok
+test equivalence::tests::branch_path_from_decisions ... ok
+test drilling::tests::drilled_inputs_pins_non_blocking ... ok
+test equivalence::tests::canonical_example_is_simplest_input ... ok
+test equivalence::tests::canonical_example_prefers_shorter_json ... ok
+test equivalence::tests::empty_executions_produce_no_classes ... ok
+test equivalence::tests::empty_branch_path_groups_together ... ok
+test equivalence::tests::error_executions_grouped_by_branch_path ... ok
+test equivalence::tests::multiple_params_preconditions ... ok
+test equivalence::tests::precondition_round_trips ... ok
+test equivalence::tests::preconditions_all_equal ... ok
+test equivalence::tests::different_branches_different_classes ... ok
+test equivalence::tests::preconditions_same_type ... ok
+test equivalence::tests::same_branches_different_returns_same_class ... ok
+test equivalence::tests::branch_path_round_trips ... ok
+test equivalence::tests::preconditions_all_negative ... ok
+test equivalence::tests::preconditions_all_positive ... ok
+test equivalence::tests::single_execution_produces_one_class ... ok
+test executability::tests::all_primitive_params_returns_empty ... ok
+test executability::tests::builtin_opaque_takes_precedence_over_custom ... ok
+test executability::tests::complex_with_opaque_inner_returns_reason ... ok
+test executability::tests::custom_opaque_type_matched_by_type_name ... ok
+test executability::tests::custom_opaque_type_no_match_returns_empty ... ok
+test executability::tests::custom_opaque_types_empty_list_preserves_default_behavior ... ok
+test executability::tests::custom_opaque_with_no_type_name_not_matched ... ok
+test executability::tests::deeply_nested_opaque_in_object_array_returns_reason ... ok
+test executability::tests::direct_opaque_param_returns_reason ... ok
+test executability::tests::empty_params_returns_empty ... ok
+test executability::tests::multiple_opaque_params_returns_multiple_reasons ... ok
+test executability::tests::array_of_opaque_returns_reason ... ok
+test executability::tests::multiple_custom_opaque_types_matched ... ok
+test executability::tests::no_opaque_params_returns_empty ... ok
+test executability::tests::union_containing_opaque_returns_reason ... ok
+test execution_record::tests::branch_decision_missing_constraint_defaults_to_unknown ... ok
+test execution_record::tests::error_info_category_none_omitted_in_json ... ok
+test execution_record::tests::branch_decision_round_trips ... ok
+test executability::tests::nullable_opaque_returns_reason ... ok
+test execution_record::tests::error_info_round_trips ... ok
+test execution_record::tests::error_info_without_stack_round_trips ... ok
+test execution_record::tests::execution_record_with_error_round_trips ... ok
+test execution_record::tests::external_call_round_trips ... ok
+test discovery::tests::setup_root_takes_precedence_over_shatter_dir ... ok
+test execution_record::tests::error_info_with_category_round_trips ... ok
+test execution_record::tests::full_execution_record_round_trips ... ok
+test execution_record::tests::scope_event_round_trips ... ok
+test execution_record::tests::sym_constraint_unknown_round_trips ... ok
+test execution_record::tests::sym_constraint_default_is_unknown ... ok
+test execution_record::tests::trace_event_branch_round_trips ... ok
+test execution_record::tests::truncation_info_round_trips ... ok
+test execution_record::tests::trace_event_scope_round_trips ... ok
+test execution_record::tests::sym_constraint_expr_round_trips ... ok
+test execution_record::tests::side_effect_variants_round_trip ... ok
+test explorer::tests::classify_error_intent_guard_branch_is_validation ... ok
+test explorer::tests::classify_error_intent_deep_path_is_runtime ... ok
+test auto_mock::tests::prop_tests::error_mocks_prob_zero_always_empty ... ok
+test explorer::tests::format_exploration_report_includes_coverage_metrics ... ok
+test explorer::tests::format_exploration_report_shows_clustered_paths ... ok
+test explorer::tests::format_exploration_report_shows_errors ... ok
+test explorer::tests::format_exploration_report_verbose_shows_legacy_format ... ok
+test explorer::tests::format_exploration_report_with_color ... ok
+test explorer::tests::format_exploration_report_with_perf ... ok
+test explorer::tests::format_exploration_report_with_location ... ok
+test explorer::tests::format_explore_header_and_footer ... ok
+test explorer::tests::format_value_short_truncates_long_values ... [noop-frontend] Starting no-op frontend (protocol 0.1.0)
+ok
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze","execute","instrument"]}
+test explorer::tests::loop_buckets_default_boundaries ... ok
+[noop-frontend] Starting no-op frontend (protocol 0.1.0)
+test explorer::tests::loop_buckets_none_is_disabled ... ok
+test explorer::tests::path_hash_backward_compat_when_scope_events_empty ... ok
+test explorer::tests::classify_error_intent_no_error_returns_none ... ok
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze","execute","instrument"]}
+test explorer::tests::path_hash_branches_outside_scopes_still_ordered ... ok
+test explorer::tests::path_hash_different_lines_executed_produces_different_hash ... ok
+test explorer::tests::path_hash_distinguishes_error_from_success ... ok
+test explorer::tests::path_hash_distinguishes_different_return_values ... ok
+test explorer::tests::path_hash_loop_bucketing_collapses_within_bucket ... ok
+test explorer::tests::path_hash_early_exit_from_loop ... ok
+test explorer::tests::path_hash_loop_bucketing_disabled ... ok
+test explorer::tests::path_hash_loop_bucketing_distinguishes_counts ... ok
+test explorer::tests::path_hash_loop_different_branches_different_hash ... ok
+test explorer::tests::path_hash_mixed_loops_and_recursion ... ok
+test explorer::tests::path_hash_loop_bucketing_custom_boundaries ... ok
+test explorer::tests::path_hash_nested_loops ... ok
+[noop-frontend] Starting no-op frontend (protocol 0.1.0)
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze","execute","instrument"]}
+[noop-frontend] Starting no-op frontend (protocol 0.1.0)
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze","execute","instrument"]}
+test explorer::tests::path_hash_recursion_collapses ... ok
+test explorer::tests::path_hash_nested_loop_in_call_scope_bucketing ... ok
+test explorer::tests::path_hash_same_lines_executed_produces_same_hash ... ok
+test explorer::tests::path_hash_uses_branch_path_when_available ... ok
+test explorer::tests::path_hash_simple_loop_same_branches_same_hash ... ok
+[noop-frontend] Starting no-op frontend (protocol 0.1.0)
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze","execute","instrument"]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"noop","capabilities":["analyze","execute","instrument","setup","teardown","generate"]}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":2,"command":"instrument","file":"test.ts","function":"stub","mocks":[]}
+[noop-frontend] Starting no-op frontend (protocol 0.1.0)
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze","execute","instrument"]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"noop","capabilities":["analyze","execute","instrument","setup","teardown","generate"]}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":2,"command":"instrument","file":"test.ts","function":"stub","mocks":[]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"noop","capabilities":["analyze","execute","instrument","setup","teardown","generate"]}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":2,"command":"instrument","file":"test.ts","function":"stub","mocks":[]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"noop","capabilities":["analyze","execute","instrument","setup","teardown","generate"]}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":2,"command":"instrument","file":"test.ts","function":"stub","mocks":[]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"noop","capabilities":["analyze","execute","instrument","setup","teardown","generate"]}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":2,"command":"instrument","file":"test.ts","function":"stub","mocks":[]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"noop","capabilities":["analyze","execute","instrument","setup","teardown","generate"]}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":2,"command":"instrument","file":"test.ts","function":"stub","mocks":[]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":2,"status":"instrument","instrumented":true,"output_file":null}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":3,"command":"execute","function":"stub","inputs":[1],"mocks":[]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":2,"status":"instrument","instrumented":true,"output_file":null}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":3,"command":"generate","file":"gen.ts","name":"x","kind":"param_name"}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":2,"status":"instrument","instrumented":true,"output_file":null}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":3,"command":"execute","function":"stub","inputs":[777],"mocks":[]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":2,"status":"instrument","instrumented":true,"output_file":null}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":3,"command":"setup","file":"setup.ts","scope":"stub","level":"function"}
+test analysis_cache::tests::cache_miss_on_modified_file ... ok
+test analysis_cache::tests::touch_without_content_change_is_cache_hit ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":2,"status":"instrument","instrumented":true,"output_file":null}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":3,"command":"execute","function":"stub","inputs":[1],"mocks":[]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":3,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":4,"command":"execute","function":"stub","inputs":[85],"mocks":[]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":3,"status":"setup","setup_context":{"noop":true}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":4,"command":"execute","function":"stub","inputs":[1],"mocks":[],"setup_context":{"contexts":[{"level":"function","context":{"noop":true}}]}}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":3,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":4,"command":"execute","function":"stub","inputs":[888],"mocks":[]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":3,"status":"generate","value":42}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":4,"command":"execute","function":"stub","inputs":[1],"mocks":[]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":2,"status":"instrument","instrumented":true,"output_file":null}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":3,"command":"setup","file":"setup.ts","scope":"stub","level":"execution"}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":4,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":5,"command":"execute","function":"stub","inputs":[981],"mocks":[]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":4,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":5,"command":"execute","function":"stub","inputs":[85],"mocks":[],"setup_context":{"contexts":[{"level":"function","context":{"noop":true}}]}}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":4,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":5,"command":"execute","function":"stub","inputs":[1],"mocks":[]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":3,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":4,"command":"execute","function":"stub","inputs":[85],"mocks":[]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":3,"status":"setup","setup_context":{"noop":true}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":4,"command":"execute","function":"stub","inputs":[1],"mocks":[],"setup_context":{"contexts":[{"level":"execution","context":{"noop":true}}]}}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":5,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+test explorer::tests::prop_tests::path_hash_sensitive_to_taken_bit ... ok
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":6,"command":"teardown","scope":"stub","level":"function"}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":4,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Starting no-op frontend (protocol 0.1.0)
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze","execute","instrument"]}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":5,"command":"execute","function":"stub","inputs":[85],"mocks":[]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":5,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":4,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":5,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":6,"command":"execute","function":"stub","inputs":[85],"mocks":[]}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":6,"command":"shutdown"}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":5,"command":"teardown","scope":"stub","level":"execution"}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":4,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":5,"command":"execute","function":"stub","inputs":[981],"mocks":[]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":5,"status":"teardown_ack"}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":6,"command":"setup","file":"setup.ts","scope":"stub","level":"execution"}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":6,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":7,"command":"execute","function":"stub","inputs":[981],"mocks":[]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":6,"status":"shutdown_ack"}
+[noop-frontend] Shutting down
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":5,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":6,"command":"shutdown"}
+test explorer::tests::explore_function_instruments_before_executing ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":5,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Starting no-op frontend (protocol 0.1.0)
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":6,"command":"shutdown"}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze","execute","instrument"]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":6,"status":"teardown_ack"}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":6,"status":"setup","setup_context":{"noop":true}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":7,"command":"shutdown"}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":7,"command":"execute","function":"stub","inputs":[85],"mocks":[],"setup_context":{"contexts":[{"level":"execution","context":{"noop":true}}]}}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"noop","capabilities":["analyze","execute","instrument","setup","teardown","generate"]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"noop","capabilities":["analyze","execute","instrument","setup","teardown","generate"]}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":2,"command":"instrument","file":"test.ts","function":"stub","mocks":[]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":6,"status":"shutdown_ack"}
+[noop-frontend] Shutting down
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":2,"command":"instrument","file":"test.ts","function":"stub","mocks":[]}
+test explorer::tests::fallback_to_builtin_when_no_generators_configured ... ok
+[noop-frontend] Starting no-op frontend (protocol 0.1.0)
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze","execute","instrument"]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":7,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":8,"command":"execute","function":"stub","inputs":[-9223372036854775808],"mocks":[]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":7,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":8,"command":"teardown","scope":"stub","level":"execution"}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":7,"status":"shutdown_ack"}
+[noop-frontend] Shutting down
+test explorer::tests::per_function_setup_teardown_lifecycle ... ok
+test export::tests::capitalize_first_works ... ok
+test export::tests::escapes_single_quotes_in_strings ... ok
+test export::tests::format_value_bigint_produces_constructor ... ok
+test export::tests::format_value_date_produces_js_constructor ... ok
+test export::tests::format_value_error_produces_constructor ... ok
+test export::tests::format_value_handles_all_json_types ... ok
+test export::tests::format_value_option_none ... ok
+test export::tests::format_value_option_some ... ok
+test export::tests::format_value_regexp_produces_literal ... ok
+test export::tests::format_value_symbol_produces_constructor ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"noop","capabilities":["analyze","execute","instrument","setup","teardown","generate"]}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":2,"command":"instrument","file":"test.ts","function":"stub","mocks":[]}
+test export::tests::format_value_unknown_complex_falls_through ... ok
+test export::tests::format_value_url_produces_constructor ... ok
+test export::tests::format_value_uuid_produces_string ... ok
+test export::tests::generates_describe_block ... ok
+test export::tests::generates_import_statement ... ok
+test export::tests::generates_it_block_for_return_value ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":2,"status":"instrument","instrumented":true,"output_file":null}
+test export::tests::generates_it_block_for_string_return ... ok
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":3,"command":"execute","function":"stub","inputs":[42],"mocks":[]}
+test export::tests::generates_it_block_for_thrown_error ... ok
+test export::tests::generates_multiple_behaviors ... ok
+test export::tests::go_empty_behavior_map_has_comment ... ok
+test export::tests::go_escapes_double_quotes_in_strings ... ok
+test export::tests::go_format_value_all_types ... ok
+test export::tests::go_format_value_date_produces_constructor ... ok
+test export::tests::go_format_value_error_produces_errors_new ... ok
+test export::tests::go_format_value_regexp_produces_compile ... ok
+test export::tests::go_generates_bool_values ... ok
+test export::tests::go_generates_float_values ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":8,"status":"teardown_ack"}
+test export::tests::go_generates_multiple_params ... ok
+test export::tests::go_generates_nil_return_for_null ... ok
+test export::tests::go_generates_package_and_import ... ok
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":9,"command":"shutdown"}
+test export::tests::go_generates_panic_test_with_defer_recover ... ok
+test export::tests::go_generates_string_return_values ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":8,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+test export::tests::go_generates_table_driven_test_with_int_return ... ok
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":9,"command":"execute","function":"stub","inputs":[235],"mocks":[]}
+test export::tests::go_generates_test_function_name_capitalized ... ok
+test export::tests::go_mixed_normal_and_panic_behaviors ... ok
+test export::tests::go_type_detection_from_values ... ok
+test export::tests::go_type_from_complex_date ... ok
+test export::tests::go_type_from_complex_regexp ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":2,"status":"instrument","instrumented":true,"output_file":null}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":2,"status":"instrument","instrumented":true,"output_file":null}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":3,"command":"execute","function":"stub","inputs":[1],"mocks":[]}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":3,"command":"execute","function":"stub","inputs":[999],"mocks":[]}
+test export::tests::go_type_from_complex_unknown_is_interface ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":3,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+test export::tests::handles_null_return_value ... ok
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":4,"command":"shutdown"}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":9,"status":"shutdown_ack"}
+[noop-frontend] Shutting down
+test explorer::tests::per_execution_setup_teardown_lifecycle ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":4,"status":"shutdown_ack"}
+[noop-frontend] Shutting down
+test explorer::tests::random_explorer_raw_results_are_harvestable ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":3,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":4,"command":"execute","function":"stub","inputs":[1],"mocks":[]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":9,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":10,"command":"execute","function":"stub","inputs":[-9223372036854775808],"mocks":[]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":3,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":4,"command":"execute","function":"stub","inputs":[85],"mocks":[]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":6,"status":"shutdown_ack"}
+[noop-frontend] Shutting down
+test explorer::tests::generator_integration_uses_custom_values ... ok
+test export::tests::vitest_generates_describe_block ... ok
+test export::tests::vitest_generates_function_import ... ok
+test export::tests::vitest_generates_it_block_for_return_value ... ok
+test export::tests::vitest_generates_multiple_behaviors ... ok
+test export::tests::vitest_generates_thrown_error_test ... ok
+test export::tests::vitest_generates_vitest_import ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":10,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":11,"command":"execute","function":"stub","inputs":[9223372036854775807],"mocks":[]}
+test file_lock::tests::acquire_and_drop_releases_lock ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":4,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":5,"command":"execute","function":"stub","inputs":[85],"mocks":[]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":4,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":5,"command":"shutdown"}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":11,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":12,"command":"execute","function":"stub","inputs":[699],"mocks":[]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":5,"status":"shutdown_ack"}
+[noop-frontend] Shutting down
+test explorer::tests::setup_skipped_when_frontend_lacks_capability ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":12,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":13,"command":"shutdown"}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":5,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":6,"command":"execute","function":"stub","inputs":[981],"mocks":[]}
+test file_lock::tests::try_acquire_returns_none_when_held ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":13,"status":"shutdown_ack"}
+[noop-frontend] Shutting down
+test explorer::tests::candidate_inputs_consumed_between_literals_and_pool ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":6,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":7,"command":"execute","function":"stub","inputs":[-9223372036854775808],"mocks":[]}
+test fingerprint::proptests::cross_file_deep_fp_length_invariant ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":7,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":8,"command":"shutdown"}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":8,"status":"shutdown_ack"}
+[noop-frontend] Shutting down
+test explorer::tests::user_seeds_consumed_before_literals ... ok
+test fingerprint::proptests::deep_fingerprint_length_invariant ... ok
+test file_lock::tests::concurrent_access_serialized ... ok
+test fingerprint::proptests::deep_fingerprint_deterministic ... ok
+test export::tests::proptests::vitest_export_structural_validity ... ok
+test export::tests::proptests::jest_export_structural_validity ... ok
+test fingerprint::tests::cross_file::cross_file_callee_change_propagates ... ok
+test fingerprint::proptests::cross_file_deterministic ... ok
+test fingerprint::tests::cross_file::cross_file_diamond ... ok
+test fingerprint::tests::cross_file::cross_file_isolated_function ... ok
+test fingerprint::tests::cross_file::cross_file_composition ... ok
+test fingerprint::tests::cross_file::staleness_diamond_propagation ... ok
+test fingerprint::tests::cross_file::staleness_direct_source_change ... ok
+test fingerprint::tests::cross_file::staleness_all_fresh ... ok
+test fingerprint::tests::cross_file::staleness_new_function ... ok
+test fingerprint::tests::cross_file::staleness_transitive_propagation ... ok
+test fingerprint::tests::cross_file::staleness_removed_function ... ok
+test fingerprint::tests::deep_fingerprints_callee_change_propagates_to_caller ... ok
+test fingerprint::tests::deep_fingerprints_caller_incorporates_callee ... ok
+test fingerprint::tests::deep_fingerprints_cross_file_callee_changes_caller ... ok
+test fingerprint::tests::deep_fingerprints_diamond_dependency ... ok
+test fingerprint::tests::deep_fingerprints_empty_external_preserves_behavior ... ok
+test fingerprint::tests::deep_fingerprints_external_entries_not_leaked ... ok
+test fingerprint::tests::deep_fingerprints_out_of_scope_dep_ignored ... ok
+test fingerprint::tests::deep_fp_changes_when_callee_fp_changes ... ok
+test fingerprint::proptests::external_callee_change_propagates ... ok
+test fingerprint::tests::deep_fingerprints_single_function_no_deps ... ok
+test fingerprint::tests::deep_fp_differs_with_different_shallow ... ok
+test fingerprint::tests::deep_fp_ignores_out_of_scope_callees ... ok
+test fingerprint::tests::deep_fp_same_inputs_same_output ... ok
+test fingerprint::tests::deep_fp_no_callees_is_deterministic ... ok
+test fingerprint::tests::different_branch_structure_produces_different_fingerprint ... ok
+test fingerprint::tests::different_param_types_produces_different_fingerprint ... ok
+test fingerprint::tests::different_source_text_produces_different_fingerprint ... ok
+test fingerprint::tests::identical_inputs_produce_same_fingerprint ... ok
+test fingerprint::tests::param_order_does_not_affect_fingerprint ... ok
+test fingerprint::tests::registry_basic_crud ... ok
+test fingerprint::tests::registry_names_iteration ... ok
+test fingerprint::tests::whitespace_change_in_source_produces_different_fingerprint ... ok
+test float_probe::tests::build_bias_map_from_results ... ok
+test float_probe::tests::classify_all_agree ... ok
+test float_probe::tests::classify_at_threshold ... ok
+test float_probe::tests::classify_below_threshold ... ok
+test float_probe::tests::classify_none_agree ... ok
+test float_probe::tests::classify_zero_probes ... ok
+test float_probe::tests::executions_agree_same_error_type ... ok
+test fingerprint::tests::extract_function_source_reads_correct_lines ... ok
+test fingerprint::tests::extract_function_source_handles_single_line ... ok
+test float_probe::tests::executions_disagree_different_error_type ... ok
+test float_probe::tests::executions_agree_same_return ... ok
+test float_probe::tests::float_param_indices_empty_when_no_floats ... ok
+test float_probe::tests::float_param_indices_finds_floats ... ok
+test float_probe::tests::executions_disagree_return_vs_error ... ok
+test float_probe::tests::generate_probe_pairs_correct_structure ... ok
+test float_probe::tests::executions_disagree_different_return ... ok
+test frontend::tests::frontend_config_new_sets_defaults ... ok
+[noop-frontend] Starting no-op frontend (protocol 0.1.0)
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze","execute","instrument"]}
+[noop-frontend] Starting no-op frontend (protocol 0.1.0)
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze","execute","instrument"]}
+[noop-frontend] Starting no-op frontend (protocol 0.1.0)
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze","execute","instrument"]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"noop","capabilities":["analyze","execute","instrument","setup","teardown","generate"]}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":2,"command":"execute","function":"myFunc","inputs":[42],"mocks":[]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"noop","capabilities":["analyze","execute","instrument","setup","teardown","generate"]}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":2,"command":"analyze","file":"test.ts","function":"myFunc"}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":2,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":3,"command":"shutdown"}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":2,"status":"analyze","functions":[{"name":"stub","exported":true,"params":[],"branches":[],"dependencies":[],"return_type":{"kind":"unknown"},"start_line":1,"end_line":1}]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":3,"status":"shutdown_ack"}
+[noop-frontend] Shutting down
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":3,"command":"shutdown"}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"noop","capabilities":["analyze","execute","instrument","setup","teardown","generate"]}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":2,"command":"analyze","file":"test.ts","function":"fn1"}
+test frontend::tests::execute_returns_empty_result ... ok
+[noop-frontend] Starting no-op frontend (protocol 0.1.0)
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze","execute","instrument"]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":3,"status":"shutdown_ack"}
+[noop-frontend] Shutting down
+test frontend::tests::analyze_returns_stub_function ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":2,"status":"analyze","functions":[{"name":"stub","exported":true,"params":[],"branches":[],"dependencies":[],"return_type":{"kind":"unknown"},"start_line":1,"end_line":1}]}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":3,"command":"instrument","file":"test.ts","function":"fn1","mocks":[]}
+[noop-frontend] Starting no-op frontend (protocol 0.1.0)
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze","execute","instrument"]}
+test fingerprint::proptests::different_source_different_fingerprint ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":3,"status":"instrument","instrumented":true,"output_file":null}
+[noop-frontend] Starting no-op frontend (protocol 0.1.0)
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze","execute","instrument"]}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":4,"command":"execute","function":"fn1","inputs":[1,"hello"],"mocks":[]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"noop","capabilities":["analyze","execute","instrument","setup","teardown","generate"]}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":2,"command":"instrument","file":"test.ts","function":"myFunc","mocks":[]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"noop","capabilities":["analyze","execute","instrument","setup","teardown","generate"]}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":2,"command":"shutdown"}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":2,"status":"instrument","instrumented":true,"output_file":null}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":3,"command":"shutdown"}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":4,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":5,"command":"shutdown"}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":2,"status":"shutdown_ack"}
+[noop-frontend] Shutting down
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"noop","capabilities":["analyze","execute","instrument","setup","teardown","generate"]}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":2,"command":"shutdown"}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":5,"status":"shutdown_ack"}
+[noop-frontend] Shutting down
+test frontend::tests::full_lifecycle_handshake_through_shutdown ... ok
+test frontend::tests::major_minor_extracts_correctly ... ok
+test frontend::tests::major_minor_handles_no_dots ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":3,"status":"shutdown_ack"}
+[noop-frontend] Shutting down
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":2,"status":"shutdown_ack"}
+[noop-frontend] Shutting down
+test frontend::tests::is_alive_returns_true_for_running_frontend ... ok
+[noop-frontend] Starting no-op frontend (protocol 0.1.0)
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze","execute","instrument"]}
+[noop-frontend] Starting no-op frontend (protocol 0.1.0)
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze","execute","instrument"]}
+test frontend::tests::instrument_returns_success ... ok
+test frontend::tests::spawn_nonexistent_binary_returns_spawn_error ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"noop","capabilities":["analyze","execute","instrument","setup","teardown","generate"]}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":2,"command":"analyze","file":"a.ts","function":null}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"noop","capabilities":["analyze","execute","instrument","setup","teardown","generate"]}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":2,"command":"shutdown"}
+test frontend::tests::is_alive_returns_false_after_shutdown ... ok
+test frontier::tests::blocking_params_and_best_prefix_preserved ... ok
+test frontier::tests::duplicate_branch_id_replaces ... ok
+test frontier::tests::empty_set_returns_none ... ok
+test frontier::tests::increment_stall_missing_returns_false ... ok
+test frontier::tests::increment_stall_updates_count ... ok
+test frontier::tests::iter_yields_all_frontiers ... ok
+test frontier::tests::peek_matches_pop ... ok
+test frontier::tests::priority_lower_depth_first ... ok
+test fingerprint::proptests::fingerprint_deterministic ... ok
+test frontier::tests::priority_stall_count_breaks_ties ... ok
+test frontier::tests::remove_by_branch_id ... ok
+test frontier::tests::single_insert_and_pop ... ok
+test frontier::tests::stall_count_saturates ... ok
+test genetic_fitness::tests::branch_distance_eq_exact_match ... ok
+test genetic_fitness::tests::all_targets_hit_scores_high ... ok
+test genetic_fitness::tests::branch_distance_eq_far_apart ... ok
+test genetic_fitness::tests::branch_distance_lt_not_satisfied ... ok
+test genetic_fitness::tests::branch_distance_lt_satisfied ... ok
+test genetic_fitness::tests::branch_distance_ne_different_values ... ok
+test genetic_fitness::tests::branch_distance_ne_equal_values ... ok
+test genetic_fitness::tests::coverage_no_targets_is_perfect ... ok
+test genetic_fitness::tests::custom_weights_affect_total ... ok
+test genetic_fitness::tests::default_weights_sum_to_one ... ok
+test genetic_fitness::tests::empty_execution_coverage_zero ... ok
+test genetic_fitness::tests::empty_execution_scores_low ... ok
+test genetic_fitness::tests::fitness_always_in_zero_one_range ... ok
+test genetic_fitness::tests::normalize_distance_large_gives_near_one ... ok
+test genetic_fitness::tests::normalize_distance_negative_gives_zero ... ok
+test genetic_fitness::tests::normalize_distance_zero_gives_zero ... ok
+test genetic_fitness::tests::novelty_new_path_scores_one ... ok
+test genetic_fitness::tests::unknown_bonus_none ... ok
+test genetic_fitness::tests::unknown_bonus_saturates_at_five ... ok
+test genetic_fitness::tests::unknown_constraint_gives_moderate_distance ... ok
+test genetic_fitness::tests::zero_weights_give_zero_total ... ok
+test input_gen::tests::bounded_array_length_favors_small_sizes ... ok
+test input_gen::tests::collect_generate_commands_deduplicates ... ok
+test input_gen::tests::collect_generate_commands_empty_for_all_builtin ... ok
+test input_gen::tests::collect_generate_commands_multiple_generators ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":2,"status":"shutdown_ack"}
+[noop-frontend] Shutting down
+test input_gen::tests::complex_type_with_caps_generates_tagged_json ... ok
+test genetic_fitness::tests::novelty_repeated_path_scores_zero ... ok
+test frontend::tests::spawn_and_handshake_with_noop_frontend ... ok
+test input_gen::tests::complex_type_without_caps_falls_back ... ok
+test input_gen::tests::crossover_inputs_array_single_point ... ok
+test input_gen::tests::crossover_inputs_handles_empty ... ok
+test input_gen::tests::crossover_inputs_length_matches_params ... ok
+test input_gen::tests::crossover_inputs_object_field_level ... ok
+test input_gen::tests::crossover_inputs_produces_mixed_children ... ok
+test input_gen::tests::crossover_inputs_respects_rate_zero ... ok
+test input_gen::tests::crossover_mock_values_preserves_length ... ok
+test input_gen::tests::crossover_string_empty_no_panic ... ok
+test input_gen::tests::crossover_string_children_are_strings ... ok
+test input_gen::tests::crossover_string_nonstring_types_unchanged ... ok
+test input_gen::tests::crossover_string_produces_mixed_children ... ok
+test input_gen::tests::empty_union_produces_null ... ok
+test input_gen::tests::crossover_inputs_preserves_types ... ok
+test input_gen::tests::crossover_string_unicode_safe ... ok
+test input_gen::tests::generate_date_produces_tagged_json ... ok
+test input_gen::tests::generate_duration_produces_tagged_json ... ok
+test input_gen::tests::generate_inputs_with_custom_all_builtin_matches_generate_random_inputs ... ok
+test input_gen::tests::generate_date_includes_boundary_values ... ok
+test input_gen::tests::generate_inputs_with_custom_falls_back_when_exhausted ... ok
+test input_gen::tests::generate_mock_values_network_unknown_produces_http_shape ... ok
+test input_gen::tests::generate_inputs_with_custom_uses_prefetched_values ... ok
+test input_gen::tests::generate_mock_values_typed_param ... ok
+test input_gen::tests::generate_mock_values_result_type_produces_ok_and_err ... ok
+test input_gen::tests::generate_mock_values_unknown_uses_category_shaping ... ok
+test input_gen::tests::generate_mock_values_zero_call_count_produces_at_least_one ... ok
+test input_gen::tests::generate_mock_values_union_with_error_produces_both ... ok
+test input_gen::tests::generate_random_inputs_checks_type_name_fallback ... ok
+test input_gen::tests::generate_random_inputs_falls_back_for_unknown_name ... ok
+test input_gen::tests::generate_random_inputs_uses_heuristic_for_str ... ok
+test input_gen::tests::generate_random_inputs_matches_param_count ... ok
+test input_gen::tests::generated_arrays_have_bounded_length ... ok
+test input_gen::tests::generates_array_values ... ok
+test input_gen::tests::generates_bool_values ... ok
+test input_gen::tests::generates_float_values ... ok
+test input_gen::tests::generates_int_values ... ok
+test input_gen::tests::generates_nullable_values_including_null ... ok
+test input_gen::tests::generates_string_values ... ok
+test input_gen::tests::heuristic_case_insensitive ... ok
+test input_gen::tests::heuristic_date ... ok
+test input_gen::tests::generates_union_values ... ok
+test input_gen::tests::heuristic_does_not_affect_non_str_types ... ok
+test input_gen::tests::heuristic_ip ... ok
+test input_gen::tests::generates_object_values ... ok
+test input_gen::tests::heuristic_name_specificity ... ok
+test export::tests::proptests::go_export_structural_validity ... ok
+test input_gen::tests::heuristic_no_match_returns_none ... ok
+test input_gen::tests::heuristic_email ... ok
+test input_gen::tests::heuristic_path ... ok
+test input_gen::tests::heuristic_phone ... ok
+test input_gen::tests::heuristic_uuid_and_id ... ok
+test input_gen::tests::heuristic_token ... ok
+test input_gen::tests::heuristic_url ... ok
+test input_gen::tests::literals_to_candidates_empty_literals_returns_empty ... ok
+test input_gen::tests::literals_to_candidates_int_does_not_match_str_param ... ok
+test input_gen::tests::literals_to_candidates_int_matches_float_param ... ok
+test input_gen::tests::literals_to_candidates_multi_param_uses_defaults ... ok
+test input_gen::tests::literals_to_candidates_regex_matches_str_param ... ok
+test input_gen::tests::literals_to_candidates_str_matches_str_param ... ok
+test input_gen::tests::literals_to_candidates_nullable_unwraps ... ok
+test input_gen::tests::literals_to_candidates_empty_params_returns_empty ... ok
+test input_gen::tests::mutate_array_empty_can_grow ... ok
+test input_gen::tests::mutate_bool_flips ... ok
+test input_gen::tests::mutate_array_type_valid ... ok
+test input_gen::tests::mutate_inputs_rate_one_mutates_all ... ok
+test input_gen::tests::mutate_inputs_rate_zero_returns_identical ... ok
+test input_gen::tests::mutate_int_invalid_input_regenerates ... ok
+test input_gen::tests::mutate_float_special_values ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":2,"status":"analyze","functions":[{"name":"stub","exported":true,"params":[],"branches":[],"dependencies":[],"return_type":{"kind":"unknown"},"start_line":1,"end_line":1}]}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":3,"command":"analyze","file":"b.ts","function":null}
+test input_gen::tests::mutate_mock_values_preserves_symbol_and_count ... ok
+test input_gen::tests::mutate_nullable_can_flip_from_null ... ok
+test input_gen::tests::literals_to_candidates_deduplicates_same_value ... ok
+test input_gen::tests::mutate_int_boundary_values ... ok
+test frontend::tests::spawn_timeout_returns_timeout_error ... ok
+test input_gen::tests::mutate_nullable_can_flip_to_null ... ok
+test input_gen::tests::mutate_object_type_valid ... ok
+test input_gen::tests::mutate_string_empty_dictionary_no_injection ... ok
+test input_gen::tests::mutate_union_delegates_to_variant ... ok
+test input_gen::tests::mutate_string_operators_change_length ... ok
+test input_gen::tests::mutate_string_dictionary_injection ... ok
+test input_gen::tests::mutate_value_opaque_returns_unchanged ... ok
+test input_gen::tests::mutate_value_unknown_returns_unchanged ... ok
+test input_gen::tests::opaque_type_generates_null ... ok
+test input_gen::tests::pool_to_candidate_inputs_produces_candidates ... ok
+test input_gen::tests::pool_to_candidate_inputs_deduplicates ... ok
+test input_gen::tests::prefetched_values_missing_key_returns_none ... ok
+test input_gen::tests::prefetched_values_insert_and_take ... ok
+test input_gen::tests::prefetched_values_multiple_inserts_append ... ok
+test input_gen::tests::mutate_string_empty_input_is_safe ... ok
+test input_gen::tests::pool_to_candidate_inputs_empty_pool_returns_empty ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":3,"status":"analyze","functions":[{"name":"stub","exported":true,"params":[],"branches":[],"dependencies":[],"return_type":{"kind":"unknown"},"start_line":1,"end_line":1}]}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":4,"command":"shutdown"}
+test input_gen::tests::prop_tests::generate_mock_values_type_valid ... ok
+test input_gen::tests::prop_tests::mutate_bool_preserves_bool ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":4,"status":"shutdown_ack"}
+[noop-frontend] Shutting down
+test frontend::tests::multiple_requests_use_sequential_ids ... ok
+test input_gen::tests::prop_tests::mutate_inputs_preserves_length ... ok
+test input_gen::tests::prop_tests::mutate_inputs_actually_mutates ... ok
+test input_gen::tests::prop_tests::mutate_int_preserves_number ... ok
+test input_gen::tests::prop_tests::mutate_mock_values_preserves_structure ... ok
+test input_gen::tests::prop_tests::crossover_inputs_type_compatible ... ok
+test input_gen::tests::prop_tests::mutate_str_preserves_string ... ok
+test input_gen::tests::prop_tests::mutate_inputs_preserves_types_arbitrary ... ok
+test input_gen::tests::prop_tests::generate_mock_values_count_matches_params ... ok
+test input_gen::tests::prop_tests::shrink_candidates_preserve_type ... ok
+test input_gen::tests::resolve_value_sources_all_builtin_when_no_generators ... ok
+test input_gen::tests::prop_tests::shrink_candidates_exclude_original ... ok
+test input_gen::tests::resolve_value_sources_param_generator_overrides_type_generator ... ok
+test input_gen::tests::prop_tests::shrink_int_toward_zero ... ok
+test input_gen::tests::shrink_array_empty ... ok
+test input_gen::tests::shrink_array_three_elements ... ok
+test input_gen::tests::shrink_bool_false ... ok
+test input_gen::tests::prop_tests::shrink_candidates_no_duplicates ... ok
+test input_gen::tests::shrink_int_42 ... ok
+test input_gen::tests::shrink_bool_true ... ok
+test input_gen::tests::resolve_value_sources_param_generator_takes_precedence ... ok
+test input_gen::tests::shrink_int_zero ... ok
+test input_gen::tests::shrink_nullable_non_null ... ok
+test input_gen::tests::shrink_nullable_null ... ok
+test input_gen::tests::shrink_object_removes_fields ... ok
+test input_gen::tests::resolve_value_sources_type_generator_requires_type_name ... ok
+test input_gen::tests::shrink_no_duplicates ... ok
+test input_gen::tests::shrink_str_hello ... ok
+test input_gen::tests::shrink_str_single_char ... ok
+test input_gen::tests::unknown_type_generates_diverse_values ... ok
+test interesting_pool::tests::behavior_sig_from_observation ... ok
+test interesting_pool::tests::behavior_sig_hash_equality ... ok
+test interesting_pool::tests::classify_case_insensitive ... ok
+test interesting_pool::tests::classify_crash_overrides_error ... ok
+test interesting_pool::tests::classify_custom_error_as_handled ... ok
+test interesting_pool::tests::classify_no_error_as_rare_path ... ok
+test interesting_pool::tests::classify_runtime_error_as_unhandled ... ok
+test interesting_pool::tests::load_pool_missing_returns_none ... ok
+test interesting_pool::tests::pool_entry_serde_round_trip ... ok
+test interesting_pool::tests::pool_evicts_redundant_first ... ok
+test input_gen::tests::shrink_str_empty ... ok
+test interesting_pool::tests::severity_ordering ... ok
+test interesting_pool::tests::pool_insert_and_merge ... ok
+test invariants::tests::classified_invariant_has_label ... ok
+test input_gen::tests::prop_tests::crossover_inputs_preserves_length_arbitrary ... ok
+test invariants::tests::classified_invariants_empty_returns_empty ... ok
+test invariants::tests::classified_invariants_all_observed ... ok
+test invariants::tests::classified_invariant_serialization_round_trips ... ok
+test invariants::tests::detects_is_null_invariant ... ok
+test invariants::tests::detects_always_true_boolean ... ok
+test invariants::tests::detects_numeric_constant ... ok
+test invariants::tests::detects_not_null_invariant ... ok
+test invariants::tests::classified_invariants_include_output ... ok
+test invariants::tests::combined_invariants_x_positive_and_output_len_equals_input_len ... ok
+test invariants::tests::detects_positive_numeric_invariant ... ok
+test invariants::tests::does_not_detect_false_output_input_relation ... ok
+test invariants::tests::does_not_detect_non_empty_when_empty_present ... ok
+test invariants::tests::detects_output_equals_input_field ... ok
+test invariants::tests::does_not_detect_positive_when_zero_present ... ok
+test invariants::tests::empty_specimens_returns_no_invariants ... ok
+test invariants::tests::detects_string_non_empty ... ok
+test invariants::tests::format_invariant_label_numeric_comparison ... ok
+test invariants::tests::filters_ge_zero_when_gt_zero_present ... ok
+test invariants::tests::format_invariant_label_output_equals_input ... ok
+test invariants::tests::format_invariant_label_root_path ... ok
+test invariants::tests::invariant_serialization_round_trips ... ok
+test invariants::tests::parallel_cluster_detection ... ok
+test invariants::tests::nested_object_paths_detected ... ok
+test interesting_pool::tests::pool_save_load_round_trip ... ok
+test log_level::tests::log_level_default_is_info ... ok
+test log_level::tests::log_level_display ... ok
+test log_level::tests::log_level_from_str_case_insensitive ... ok
+test log_level::tests::log_level_from_str_rejects_unknown ... ok
+test invariants::tests::records_from_raw_results_converts_correctly ... ok
+test log_level::tests::log_level_ordering ... ok
+test invariants::tests::records_from_raw_results_empty_input ... ok
+test log_level::tests::log_level_round_trip_from_str ... ok
+test mock_fixture::tests::call_count_expectation_serde_roundtrip ... ok
+test mock_fixture::tests::json_matches_int ... ok
+test mock_fixture::tests::arg_matcher_serde_roundtrip ... ok
+test mock_fixture::tests::json_matches_float ... ok
+test mock_fixture::tests::mock_fixture_config_serde_roundtrip ... ok
+test mock_fixture::tests::json_matches_nested_array ... ok
+test invariants::tests::does_not_report_trivially_true_type_invariants ... ok
+test mock_fixture::tests::mock_fixture_serde_roundtrip ... ok
+test invariants::tests::single_parameter_without_wrapping_object ... ok
+test mock_fixture::tests::proptests::exact_count_passes_iff_equal ... ok
+test mock_fixture::tests::proptests::arg_matcher_json_roundtrip ... ok
+test mock_fixture::tests::proptests::call_count_json_roundtrip ... ok
+test mock_fixture::tests::proptests::validation_catches_string_as_int ... ok
+test mock_fixture::tests::resolve_different_symbols_at_different_scopes ... ok
+test mock_fixture::tests::resolve_file_overrides_global ... ok
+test mock_fixture::tests::resolve_function_overrides_file ... ok
+test mock_fixture::tests::resolve_global_only ... ok
+test mock_fixture::tests::resolve_unknown_symbol_returns_none ... ok
+test mock_fixture::tests::resolve_wrong_file_falls_to_global ... ok
+test mock_fixture::tests::validate_array_type_checks_elements ... ok
+test mock_fixture::tests::validate_empty_fixed_set_detected ... ok
+test mock_fixture::tests::validate_expectations_arity_mismatch ... ok
+test mock_fixture::tests::validate_expectations_at_least ... ok
+test mock_fixture::tests::validate_expectations_between ... ok
+test mock_fixture::tests::validate_expectations_called_with_match ... ok
+test mock_fixture::tests::validate_expectations_called_with_mismatch ... ok
+test mock_fixture::tests::validate_expectations_exact_count_fail ... ok
+test mock_fixture::tests::validate_expectations_exact_count_pass ... ok
+test mock_fixture::tests::validate_expectations_none_always_passes ... ok
+test mock_fixture::tests::validate_expectations_typeof_matcher ... ok
+test mock_fixture::tests::validate_matching_types_passes ... ok
+test mock_fixture::tests::validate_nullable_type_accepts_null ... ok
+test mock_fixture::tests::validate_object_type_checks_fields ... ok
+test mock_fixture::tests::validate_type_mismatch_detected ... ok
+test mock_fixture::tests::validate_union_type_accepts_any_variant ... ok
+test mock_fixture::tests::validate_unknown_type_accepts_anything ... ok
+test mock_gen::tests::any_pattern_matches_everything ... ok
+test mock_gen::tests::behavior_without_return_or_error_is_skipped ... ok
+test mock_gen::tests::branching_function_produces_two_conditions ... ok
+test mock_gen::tests::decision_tree_round_trips_through_json ... ok
+test mock_gen::tests::empty_behavior_map_returns_none ... ok
+test mock_gen::tests::enhanced_mock_config_from_decision_tree ... ok
+test mock_gen::tests::eq_pattern_matches_exact_value ... ok
+test mock_gen::tests::error_throwing_function_includes_error_condition ... ok
+test mock_gen::tests::fallback_to_flat_mock_when_no_tree ... ok
+test mock_gen::tests::matches_condition_requires_all_patterns ... ok
+test mock_gen::tests::mock_config_from_behavior_map_uses_tree_when_possible ... ok
+test mock_gen::tests::multiple_parameters_have_correct_arg_indices ... ok
+test mock_gen::tests::range_pattern_matches_inclusive_bounds ... ok
+test mock_gen::tests::single_behavior_produces_single_condition ... ok
+test mock_gen::tests::type_pattern_matches_json_type ... ok
+test mock_value_space::tests::classify_auth_error ... ok
+test mock_value_space::tests::classify_connection_refused ... ok
+test mock_value_space::tests::classify_dns_failure ... ok
+test mock_value_space::tests::classify_live_call_app_error ... ok
+test mock_value_space::tests::classify_live_call_connection_failure ... ok
+test mock_value_space::tests::classify_live_call_success ... ok
+test mock_value_space::tests::classify_timeout ... ok
+test mock_value_space::tests::classify_unknown_error_returns_none ... ok
+test mock_value_space::tests::default_state_is_untried ... ok
+test mock_value_space::tests::live_call_outcome_serde_roundtrip ... ok
+test mock_value_space::tests::live_first_state_serde_roundtrip ... ok
+test mock_value_space::tests::mock_value_space_serde_roundtrip ... ok
+test mock_fixture::tests::proptests::resolve_prefers_function_over_file ... ok
+test mock_value_space::tests::proptests::classify_ok_is_success ... ok
+test mock_value_space::tests::proptests::conn_failure_always_unavailable ... ok
+test explorer::tests::prop_tests::path_hash_is_deterministic ... ok
+test mock_value_space::tests::proptests::live_call_outcome_roundtrip ... ok
+test mock_value_space::tests::proptests::live_first_state_roundtrip ... ok
+test mock_value_space::tests::proptests::should_try_live_iff_not_unavailable ... ok
+test mock_value_space::tests::proptests::mock_value_space_roundtrip ... ok
+test mock_value_space::tests::proptests::unavailable_is_terminal ... ok
+test mock_value_space::tests::should_try_live_reflects_state ... ok
+test mock_value_space::tests::state_machine_available_stays_on_success ... ok
+test mock_fixture::tests::proptests::fixture_yaml_roundtrip ... ok
+test mock_value_space::tests::state_machine_available_to_unavailable_on_conn_failure ... ok
+test mock_value_space::tests::state_machine_unavailable_is_terminal ... ok
+test mock_value_space::tests::state_machine_untried_to_available_on_app_error ... ok
+test mock_value_space::tests::state_machine_untried_to_unavailable_on_conn_failure ... ok
+test nondeterminism::tests::construct_nondeterministic_field ... ok
+test nondeterminism::tests::cross_run_empty_no_match ... ok
+test mock_value_space::tests::state_machine_untried_to_available_on_success ... ok
+test nondeterminism::tests::cross_run_monotonic_counter_large_step_within_bound ... ok
+test nondeterminism::tests::cross_run_monotonic_counter_step_too_large ... ok
+test nondeterminism::tests::confidence_ordering ... ok
+test nondeterminism::tests::cross_run_monotonic_counter_three_values ... ok
+test nondeterminism::tests::cross_run_not_monotonic_decreasing ... ok
+test nondeterminism::tests::cross_run_not_monotonic_equal ... ok
+test nondeterminism::tests::cross_run_single_value_no_match ... ok
+test nondeterminism::tests::env_heuristic_bool_rejected ... ok
+test nondeterminism::tests::env_heuristic_dot_path ... ok
+test nondeterminism::tests::env_heuristic_empty_string_rejected ... ok
+test nondeterminism::tests::cross_run_mixed_types_no_match ... ok
+test nondeterminism::tests::cross_run_monotonic_counter_two_values_low_confidence ... ok
+test nondeterminism::tests::env_heuristic_hostname_string ... ok
+test nondeterminism::tests::env_heuristic_long_string_rejected ... ok
+test mock_fixture::tests::proptests::fixture_json_roundtrip ... ok
+test nondeterminism::tests::env_heuristic_negative_pid_rejected ... ok
+test nondeterminism::tests::env_heuristic_pid_integer ... ok
+test nondeterminism::tests::multiple_evidence_accumulates ... ok
+test nondeterminism::tests::name_heuristic_at_suffix ... ok
+test nondeterminism::tests::evidence_variants_round_trip ... ok
+test nondeterminism::tests::name_heuristic_case_insensitive ... ok
+test nondeterminism::tests::name_heuristic_date_suffix ... ok
+test nondeterminism::tests::name_heuristic_dot_path_uses_last_segment ... ok
+test nondeterminism::tests::name_heuristic_hostname_suffix ... ok
+test nondeterminism::tests::name_heuristic_id_suffix ... ok
+test nondeterminism::tests::name_heuristic_input_echo_case_insensitive ... ok
+test nondeterminism::tests::name_heuristic_input_echo_reduces_confidence ... ok
+test nondeterminism::tests::name_heuristic_no_match ... ok
+test nondeterminism::tests::env_heuristic_unrelated_field ... ok
+test nondeterminism::tests::name_heuristic_nonce_suffix ... ok
+test nondeterminism::tests::name_heuristic_pattern_table_ordered_by_confidence ... ok
+test nondeterminism::tests::name_heuristic_pid_bare_matches_id ... ok
+test nondeterminism::tests::name_heuristic_suffix_no_false_positive_on_interior ... ok
+test nondeterminism::tests::name_heuristic_suffix_requires_prefix ... ok
+test nondeterminism::tests::name_heuristic_highest_confidence_wins ... ok
+test nondeterminism::tests::name_heuristic_token_suffix ... ok
+test nondeterminism::tests::name_heuristic_timestamp_suffix ... ok
+test nondeterminism::tests::name_heuristic_pid_suffix ... ok
+test nondeterminism::tests::name_heuristic_uuid_suffix ... ok
+test mock_value_space::tests::proptests::success_leads_to_available ... ok
+test nondeterminism::tests::name_heuristic_random_substring ... ok
+test nondeterminism::tests::pattern_date_iso_only ... ok
+test nondeterminism::tests::pattern_date_locale_month_first ... ok
+test nondeterminism::tests::pattern_date_locale_day_first ... ok
+test nondeterminism::tests::pattern_date_locale_case_insensitive ... ok
+test nondeterminism::tests::pattern_date_us_format ... ok
+test nondeterminism::tests::pattern_iso8601_rejects_date_only ... ok
+test nondeterminism::tests::pattern_empty_string ... ok
+test nondeterminism::tests::pattern_hex_too_short ... ok
+test nondeterminism::tests::pattern_date_rejects_partial ... ok
+test nondeterminism::tests::pattern_iso8601_datetime ... ok
+test nondeterminism::tests::pattern_iso8601_still_works_separately ... ok
+test nondeterminism::tests::pattern_match_serialization_round_trip ... ok
+test nondeterminism::tests::pattern_null_and_bool ... ok
+test nondeterminism::tests::pattern_iso8601_with_offset ... ok
+test nondeterminism::tests::pattern_jwt_rejects_non_jwt ... ok
+test nondeterminism::tests::pattern_number_outside_timestamp_range ... ok
+test nondeterminism::tests::pattern_object_and_array_return_empty ... ok
+test nondeterminism::tests::pattern_unix_timestamp_millis ... ok
+test nondeterminism::tests::pattern_jwt_token ... ok
+test nondeterminism::tests::pattern_unix_timestamp_seconds ... ok
+test nondeterminism::tests::pattern_non_hex_string ... ok
+test nondeterminism::tests::pattern_random_hex_long ... ok
+test nondeterminism::tests::pattern_uuid_v4 ... ok
+test nondeterminism::tests::pattern_sha256_hex ... ok
+test nondeterminism::tests::pattern_uuid_v4_uppercase ... ok
+test nondeterminism::tests::reexec_all_deterministic ... ok
+test nondeterminism::tests::reexec_both_return_none_is_deterministic ... ok
+test nondeterminism::tests::pattern_uuid_v4_rejects_v1 ... ok
+test nondeterminism::tests::reexec_confidence_medium ... ok
+test nondeterminism::tests::reexec_empty_samples ... ok
+test nondeterminism::tests::reexec_confidence_levels ... ok
+test nondeterminism::tests::reexec_error_type_variation ... ok
+test nondeterminism::tests::reexec_outcome_mismatch ... ok
+test nondeterminism::tests::reexec_primitive_return_value_changes ... ok
+test nondeterminism::tests::reexec_fully_nondeterministic ... ok
+test nondeterminism::tests::reexec_multiple_samples_aggregate ... ok
+test nondeterminism::tests::reexec_single_field_nondeterministic ... ok
+test nondeterminism::tests::select_samples_empty_inputs ... ok
+test nondeterminism::tests::select_samples_single_input ... ok
+test nondeterminism::tests::similarity_array_same_length ... ok
+test nondeterminism::tests::serialize_deserialize_round_trip ... ok
+test nondeterminism::tests::similarity_array_different_length ... ok
+test nondeterminism::tests::similarity_different_primitives ... ok
+test nondeterminism::tests::similarity_deeply_nested ... ok
+test nondeterminism::tests::similarity_empty_arrays ... ok
+test nondeterminism::tests::similarity_completely_different_objects ... ok
+test nondeterminism::tests::similarity_empty_objects ... ok
+test nondeterminism::tests::similarity_high_threshold_large_object ... ok
+test nondeterminism::tests::similarity_identical_objects ... ok
+test nondeterminism::tests::similarity_identical_primitives ... ok
+test nondeterminism::tests::similarity_low_threshold_mostly_different ... ok
+test nondeterminism::tests::similarity_missing_key_with_nested_value ... ok
+test nondeterminism::tests::similarity_mixed_array_and_object ... ok
+test nondeterminism::tests::similarity_nested_objects ... ok
+test nondeterminism::tests::similarity_null_handling ... ok
+test nondeterminism::tests::similarity_object_vs_primitive ... ok
+test nondeterminism::tests::similarity_type_mismatch ... ok
+test nondeterminism::tests::select_samples_picks_most_different ... ok
+test nondeterminism::tests::similarity_one_field_changed ... ok
+test nondeterminism::tests::slow_pattern_evidence_round_trip ... ok
+test observe::proptests::lines_covered_is_union ... ok
+test observe::tests::batch_observation_discovery_uniqueness ... ok
+test observe::tests::batch_observation_lines_covered_union ... ok
+test observe::tests::batch_observation_path_dedup ... ok
+test observe::tests::empty_inputs_produce_empty_observation ... ok
+test observe::tests::observe_config_from_explore_config ... ok
+test observe::tests::observe_state_default_is_empty ... ok
+test observe::tests::observe_state_tracks_paths_and_branches ... ok
+test orchestrator::tests::concrete_complex_bigint_to_json ... ok
+test orchestrator::tests::concrete_complex_to_json_produces_tagged_format ... ok
+test orchestrator::tests::concrete_to_json_primitives ... ok
+test orchestrator::tests::default_config_has_reasonable_limits ... ok
+test orchestrator::tests::different_taken_hashes_differently ... ok
+test orchestrator::tests::empty_branch_path_hashes_consistently ... ok
+test orchestrator::tests::equal_fitness_falls_back_to_source ... ok
+test observe::proptests::unique_paths_equals_distinct_hashes ... ok
+[noop-frontend] Starting no-op frontend (protocol 0.1.0)
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze","execute","instrument"]}
+[concolic-test] Starting concolic test frontend
+[concolic-test] Received: {"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze","execute","instrument"]}
+[concolic-test] Sent: {"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"test","capabilities":["analyze","execute","instrument"]}
+[concolic-test] Received: {"protocol_version":"0.1.0","id":2,"command":"execute","function":"f","inputs":[0],"mocks":[]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"noop","capabilities":["analyze","execute","instrument","setup","teardown","generate"]}
+test observe::proptests::discovery_branch_ids_unique ... ok
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":2,"command":"execute","function":"stub","inputs":[0],"mocks":[]}
+[noop-frontend] Starting no-op frontend (protocol 0.1.0)
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze","execute","instrument"]}
+[concolic-test] Executing f(0)
+[concolic-test] Sent: {"protocol_version":"0.1.0","id":2,"status":"execute","return_value":"small","thrown_error":null,"branch_path":[{"branch_id":0,"line":1,"taken":false,"constraint":{"kind":"expr","expr":{"kind":"bin_op","op":"gt","left":{"kind":"param","name":"x","path":[]},"right":{"kind":"const","type":"int","value":10}}}}],"lines_executed":[1,4],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.05,"cpu_time_us":50,"heap_used_bytes":256,"heap_allocated_bytes":512}}
+test observe::proptests::observe_state_accumulates_correctly ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"noop","capabilities":["analyze","execute","instrument","setup","teardown","generate"]}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":2,"command":"execute","function":"stub","inputs":[0],"mocks":[]}
+[noop-frontend] Starting no-op frontend (protocol 0.1.0)
+test fingerprint::proptests::fingerprint_length_invariant ... ok
+[concolic-test] Starting concolic test frontend
+[concolic-test] Received: {"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze","execute","instrument"]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":2,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[concolic-test] Received: {"protocol_version":"0.1.0","id":3,"command":"execute","function":"f","inputs":[11],"mocks":[]}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze","execute","instrument"]}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":3,"command":"shutdown"}
+[concolic-test] Sent: {"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"test","capabilities":["analyze","execute","instrument"]}
+[concolic-test] Received: {"protocol_version":"0.1.0","id":2,"command":"execute","function":"f","inputs":[0],"mocks":[]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":2,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":3,"command":"execute","function":"stub","inputs":[2],"mocks":[]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":3,"status":"shutdown_ack"}
+[noop-frontend] Shutting down
+test orchestrator::tests::explore_noop_frontend_exhausts_worklist ... ok
+[concolic-test] Executing f(11)
+[concolic-test] Sent: {"protocol_version":"0.1.0","id":3,"status":"execute","return_value":"big","thrown_error":null,"branch_path":[{"branch_id":0,"line":1,"taken":true,"constraint":{"kind":"expr","expr":{"kind":"bin_op","op":"gt","left":{"kind":"param","name":"x","path":[]},"right":{"kind":"const","type":"int","value":10}}}},{"branch_id":1,"line":2,"taken":false,"constraint":{"kind":"expr","expr":{"kind":"bin_op","op":"eq","left":{"kind":"param","name":"x","path":[]},"right":{"kind":"const","type":"int","value":42}}}}],"lines_executed":[1,2,3],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.1,"cpu_time_us":100,"heap_used_bytes":512,"heap_allocated_bytes":1024}}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"noop","capabilities":["analyze","execute","instrument","setup","teardown","generate"]}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":2,"command":"execute","function":"stub","inputs":[0],"mocks":[]}
+[noop-frontend] Starting no-op frontend (protocol 0.1.0)
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze","execute","instrument"]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":3,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":4,"command":"execute","function":"stub","inputs":[6],"mocks":[]}
+[concolic-test] Executing f(0)
+[concolic-test] Sent: {"protocol_version":"0.1.0","id":2,"status":"execute","return_value":"small","thrown_error":null,"branch_path":[{"branch_id":0,"line":1,"taken":false,"constraint":{"kind":"expr","expr":{"kind":"bin_op","op":"gt","left":{"kind":"param","name":"x","path":[]},"right":{"kind":"const","type":"int","value":10}}}}],"lines_executed":[1,4],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.05,"cpu_time_us":50,"heap_used_bytes":256,"heap_allocated_bytes":512}}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"noop","capabilities":["analyze","execute","instrument","setup","teardown","generate"]}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":2,"command":"execute","function":"stub","inputs":[0],"mocks":[]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":2,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":3,"command":"execute","function":"stub","inputs":[2],"mocks":[]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":2,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":3,"command":"shutdown"}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":4,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":5,"command":"execute","function":"stub","inputs":[9],"mocks":[]}
+[concolic-test] Received: {"protocol_version":"0.1.0","id":4,"command":"execute","function":"f","inputs":[10],"mocks":[]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":3,"status":"shutdown_ack"}
+[noop-frontend] Shutting down
+test orchestrator::tests::explore_stops_on_timeout_explore ... ok
+[fixed-branch] Starting fixed-branch test frontend
+[fixed-branch] Received: {"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze","execute","instrument"]}
+[fixed-branch] Sent: {"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"test","capabilities":["analyze","execute","instrument"]}
+[fixed-branch] Received: {"protocol_version":"0.1.0","id":2,"command":"execute","function":"f","inputs":[5],"mocks":[]}
+[concolic-test] Received: {"protocol_version":"0.1.0","id":3,"command":"shutdown"}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":5,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":6,"command":"shutdown"}
+[fixed-branch] Sent: {"protocol_version":"0.1.0","id":2,"status":"execute","return_value":1,"thrown_error":null,"branch_path":[{"branch_id":0,"line":1,"taken":true,"constraint":{"kind":"expr","expr":{"kind":"bin_op","op":"gt","left":{"kind":"param","name":"x","path":[]},"right":{"kind":"const","type":"int","value":0}}}}],"lines_executed":[1,2],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.1,"cpu_time_us":100,"heap_used_bytes":256,"heap_allocated_bytes":512}}
+[concolic-test] Sent: {"protocol_version":"0.1.0","id":3,"status":"shutdown_ack"}
+[concolic-test] Shutting down
+[concolic-test] Executing f(10)
+test orchestrator::tests::explore_stops_on_max_iterations ... ok
+test orchestrator::tests::extracts_expr_constraints_and_skips_unknown ... ok
+test orchestrator::tests::fitness_context_from_seen_paths_marks_existing ... ok
+test orchestrator::tests::fitness_entries_outrank_no_fitness ... ok
+test orchestrator::tests::frontend_capabilities_default_is_empty ... ok
+test orchestrator::tests::frontend_capabilities_ignores_unknown_complex_types ... ok
+test orchestrator::tests::frontend_capabilities_parses_complex_types ... ok
+test orchestrator::tests::frontend_capabilities_separates_commands_from_complex_types ... ok
+test orchestrator::tests::fuzz_boolean_flips ... ok
+test orchestrator::tests::fuzz_integer_produces_mutations ... ok
+test orchestrator::tests::fuzz_multiple_inputs_mutates_each ... ok
+test orchestrator::tests::fuzz_null_produces_nothing ... ok
+test orchestrator::tests::fuzz_string_produces_mutations ... ok
+test orchestrator::tests::fuzz_zero_produces_mutations ... ok
+test orchestrator::tests::higher_fitness_drains_first ... ok
+[concolic-test] Sent: {"protocol_version":"0.1.0","id":4,"status":"execute","return_value":"small","thrown_error":null,"branch_path":[{"branch_id":0,"line":1,"taken":false,"constraint":{"kind":"expr","expr":{"kind":"bin_op","op":"gt","left":{"kind":"param","name":"x","path":[]},"right":{"kind":"const","type":"int","value":10}}}}],"lines_executed":[1,4],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.05,"cpu_time_us":50,"heap_used_bytes":256,"heap_allocated_bytes":512}}
+[concolic-test] Received: {"protocol_version":"0.1.0","id":5,"command":"execute","function":"f","inputs":[42],"mocks":[]}
+[fixed-branch] Received: {"protocol_version":"0.1.0","id":3,"command":"execute","function":"f","inputs":[0],"mocks":[]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":3,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":4,"command":"execute","function":"stub","inputs":[6],"mocks":[]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":6,"status":"shutdown_ack"}
+[noop-frontend] Shutting down
+test orchestrator::tests::explore_stops_on_coverage_plateau ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":4,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":5,"command":"shutdown"}
+test input_gen::tests::prop_tests::crossover_mock_values_preserves_structure ... ok
+test orchestrator::tests::overlay_no_match_preserves_base ... ok
+test orchestrator::tests::overlay_replaces_matching_param ... ok
+test orchestrator::tests::overlay_single_param_fallback ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":5,"status":"shutdown_ack"}
+[noop-frontend] Shutting down
+[fixed-branch] Sent: {"protocol_version":"0.1.0","id":3,"status":"execute","return_value":1,"thrown_error":null,"branch_path":[{"branch_id":0,"line":1,"taken":true,"constraint":{"kind":"expr","expr":{"kind":"bin_op","op":"gt","left":{"kind":"param","name":"x","path":[]},"right":{"kind":"const","type":"int","value":0}}}}],"lines_executed":[1,2],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.1,"cpu_time_us":100,"heap_used_bytes":256,"heap_allocated_bytes":512}}
+test orchestrator::tests::negating_failed_equality_finds_target_value ... ok
+test orchestrator::tests::explore_stops_on_max_executions ... ok
+[fixed-branch] Received: {"protocol_version":"0.1.0","id":4,"command":"shutdown"}
+test orchestrator::tests::prop_tests::budget_limits_iteration_count ... ok
+[concolic-test] Executing f(42)
+[concolic-test] Sent: {"protocol_version":"0.1.0","id":5,"status":"execute","return_value":"found","thrown_error":null,"branch_path":[{"branch_id":0,"line":1,"taken":true,"constraint":{"kind":"expr","expr":{"kind":"bin_op","op":"gt","left":{"kind":"param","name":"x","path":[]},"right":{"kind":"const","type":"int","value":10}}}},{"branch_id":1,"line":2,"taken":true,"constraint":{"kind":"expr","expr":{"kind":"bin_op","op":"eq","left":{"kind":"param","name":"x","path":[]},"right":{"kind":"const","type":"int","value":42}}}}],"lines_executed":[1,2,3],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.1,"cpu_time_us":100,"heap_used_bytes":512,"heap_allocated_bytes":1024}}
+[fixed-branch] Sent: {"protocol_version":"0.1.0","id":4,"status":"shutdown_ack"}
+[fixed-branch] Shutting down
+[concolic-test] Received: {"protocol_version":"0.1.0","id":6,"command":"execute","function":"f","inputs":[10],"mocks":[]}
+test observe::proptests::coverage_monotonically_nondecreasing ... ok
+[concolic-test] Executing f(10)
+[concolic-test] Sent: {"protocol_version":"0.1.0","id":6,"status":"execute","return_value":"small","thrown_error":null,"branch_path":[{"branch_id":0,"line":1,"taken":false,"constraint":{"kind":"expr","expr":{"kind":"bin_op","op":"gt","left":{"kind":"param","name":"x","path":[]},"right":{"kind":"const","type":"int","value":10}}}}],"lines_executed":[1,4],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.05,"cpu_time_us":50,"heap_used_bytes":256,"heap_allocated_bytes":512}}
+[concolic-test] Received: {"protocol_version":"0.1.0","id":7,"command":"execute","function":"f","inputs":[11],"mocks":[]}
+test orchestrator::tests::explore_triage_skips_redundant_seeds ... ok
+test orchestrator::tests::prop_tests::overlay_preserves_length ... ok
+test orchestrator::tests::prop_tests::overlay_with_known_param_updates_value ... ok
+test orchestrator::tests::same_branch_path_hashes_identically ... ok
+test orchestrator::tests::solve_and_generate_produces_fuzz_for_unknown_constraints ... ok
+[concolic-test] Executing f(11)
+[concolic-test] Sent: {"protocol_version":"0.1.0","id":7,"status":"execute","return_value":"big","thrown_error":null,"branch_path":[{"branch_id":0,"line":1,"taken":true,"constraint":{"kind":"expr","expr":{"kind":"bin_op","op":"gt","left":{"kind":"param","name":"x","path":[]},"right":{"kind":"const","type":"int","value":10}}}},{"branch_id":1,"line":2,"taken":false,"constraint":{"kind":"expr","expr":{"kind":"bin_op","op":"eq","left":{"kind":"param","name":"x","path":[]},"right":{"kind":"const","type":"int","value":42}}}}],"lines_executed":[1,2,3],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.1,"cpu_time_us":100,"heap_used_bytes":512,"heap_allocated_bytes":1024}}
+[concolic-test] Received: {"protocol_version":"0.1.0","id":8,"command":"shutdown"}
+test orchestrator::tests::prop_tests::path_dedup_set_size_equals_distinct_count ... ok
+test orchestrator::tests::solve_and_generate_skips_duplicate_observations ... ok
+test orchestrator::tests::solve_output_default_is_empty ... ok
+test orchestrator::tests::worklist_drains_in_priority_order ... ok
+test orchestrator::tests::solve_and_generate_produces_z3_for_expr_constraints ... ok
+test orchestrator::tests::prop_tests::overlay_ignores_unknown_names ... ok
+test orchestrator::tests::multi_branch_z3_exploration ... ok
+test pipeline::tests::analyze_carries_nondeterministic_fields ... ok
+test pipeline::tests::analyze_empty_exploration ... ok
+test pipeline::tests::observation_output_from_concolic_result ... ok
+test pipeline::tests::analyze_produces_all_outputs ... ok
+test pipeline::tests::constraint_count_deduplicates_by_branch_id ... ok
+test project::tests::accepts_directory_as_input ... ok
+test project::tests::detects_typescript_project_via_package_json ... ok
+test project::tests::detects_go_project_via_go_mod ... ok
+test protocol::tests::all_branch_types_round_trip ... ok
+test protocol::tests::all_dependency_kinds_round_trip ... ok
+test protocol::tests::all_error_codes_round_trip ... ok
+test protocol::tests::all_generator_kinds_round_trip ... ok
+test protocol::tests::analyze_request_serializes_with_command_tag ... ok
+[concolic-test] Sent: {"protocol_version":"0.1.0","id":8,"status":"shutdown_ack"}
+[concolic-test] Shutting down
+test protocol::tests::analyze_request_with_function_round_trips ... ok
+test protocol::tests::analyze_request_without_function_round_trips ... ok
+test protocol::tests::analyze_response_missing_functions_field_defaults_to_empty ... ok
+test protocol::tests::analyze_response_multiple_functions_round_trips ... ok
+test protocol::tests::all_mock_behaviors_round_trip ... ok
+test protocol::tests::analyze_response_round_trips ... ok
+test orchestrator::tests::explore_concolic_frontend_discovers_paths_via_z3 ... ok
+test protocol::tests::analyze_with_project_root_round_trips ... ok
+test project::tests::returns_none_for_isolated_file ... ok
+test protocol::tests::analyze_without_project_root_omits_field ... ok
+test protocol::tests::branch_info_without_condition_round_trips ... ok
+test protocol::tests::crypto_boundary_round_trips ... ok
+test protocol::tests::empty_crypto_boundaries_omitted_from_json ... ok
+test protocol::tests::error_code_enum_is_exhaustive ... ok
+test protocol::tests::error_response_round_trips ... ok
+test protocol::tests::error_code_serialized_form_matches_registry ... ok
+test protocol::tests::execute_request_with_mocks_round_trips ... ok
+test protocol::tests::execute_request_with_setup_context_round_trips ... ok
+test protocol::tests::execute_request_without_setup_context_backward_compatible ... ok
+test protocol::tests::execute_request_without_setup_context_omits_field_in_json ... ok
+test protocol::tests::execute_response_round_trips ... ok
+test protocol::tests::execute_response_with_error_round_trips ... ok
+test protocol::tests::external_dependency_round_trips ... ok
+test protocol::tests::execute_request_round_trips ... ok
+test protocol::tests::function_analysis_empty_literals_omits_field_in_json ... ok
+test protocol::tests::function_analysis_minimal_round_trips ... ok
+test protocol::tests::function_analysis_with_crypto_boundaries_round_trips ... ok
+test protocol::tests::function_analysis_with_literals_round_trips ... ok
+test protocol::tests::function_analysis_without_literals_field_deserializes_as_empty ... ok
+test protocol::tests::error_response_with_details_round_trips ... ok
+test protocol::tests::generate_request_param_name_round_trips ... ok
+test protocol::tests::generate_request_serializes_with_command_tag ... ok
+test protocol::tests::generate_request_type_name_round_trips ... ok
+test protocol::tests::generate_response_primitive_value_round_trips ... ok
+test protocol::tests::generate_response_round_trips ... ok
+test protocol::tests::handshake_request_round_trips ... ok
+test protocol::tests::handshake_response_round_trips ... ok
+test protocol::tests::instrument_request_empty_mocks_round_trips ... ok
+test protocol::tests::instrument_request_round_trips ... ok
+test protocol::tests::instrument_response_round_trips ... ok
+test protocol::tests::instrument_response_with_line_count_deserializes ... ok
+test protocol::tests::instrument_response_without_line_count_round_trips ... ok
+test protocol::tests::instrument_with_project_root_round_trips ... ok
+test protocol::tests::literal_value_round_trips_all_variants ... ok
+test protocol::tests::missing_crypto_boundaries_defaults_to_empty ... ok
+test protocol::tests::mock_config_round_trips ... ok
+test orchestrator::tests::z3_finds_exact_equality_input ... ok
+test protocol::tests::noop_frontend_execute_response_deserializes ... ok
+test protocol::tests::noop_frontend_error_response_deserializes ... ok
+test protocol::tests::error_response_serializes_with_status_tag ... ok
+test protocol::tests::noop_frontend_analyze_response_deserializes ... ok
+test protocol::tests::noop_frontend_instrument_response_deserializes ... ok
+test protocol::tests::noop_frontend_handshake_response_deserializes ... ok
+test protocol::tests::noop_frontend_shutdown_response_deserializes ... ok
+test protocol::tests::performance_metrics_round_trips ... ok
+test protocol::tests::select_branch_type_deserializes ... ok
+test protocol::tests::setup_request_file_level_round_trips ... ok
+test protocol::tests::setup_request_per_execution_round_trips ... ok
+test protocol::tests::setup_request_round_trips ... ok
+test protocol::tests::setup_request_serializes_with_command_tag ... ok
+test protocol::tests::setup_request_session_level_round_trips ... ok
+test protocol::tests::setup_request_with_parent_context_round_trips ... ok
+test protocol::tests::setup_response_round_trips ... ok
+test protocol::tests::shutdown_ack_response_round_trips ... ok
+test protocol::tests::shutdown_request_round_trips ... ok
+test protocol::tests::teardown_ack_response_round_trips ... ok
+test protocol::tests::teardown_request_round_trips ... ok
+test protocol::tests::teardown_request_serializes_with_command_tag ... ok
+test protocol::tests::validate_analyze_result_accepts_empty_list ... ok
+test protocol::tests::validate_analyze_result_accepts_valid_function ... ok
+test protocol::tests::validate_analyze_result_rejects_empty_name ... ok
+test protocol::tests::validate_analyze_result_rejects_inverted_lines ... ok
+test protocol::tests::validate_execute_result_accepts_empty_branch_path ... ok
+test protocol::tests::validate_execute_result_rejects_unknown_branches_with_constraints ... ok
+test recorded_mocks::tests::aggregate_empty_results ... ok
+test orchestrator::tests::prop_tests::worklist_dequeues_in_priority_order ... ok
+test recorded_mocks::tests::aggregate_no_external_calls ... ok
+test recorded_mocks::tests::aggregate_preserves_args_and_return_values ... ok
+test recorded_mocks::tests::conversion_to_mock_configs ... ok
+test recorded_mocks::tests::aggregate_groups_by_symbol ... ok
+test recorded_mocks::tests::dep_observation_serde_roundtrip ... ok
+test recorded_mocks::tests::dep_observation_with_error_serde_roundtrip ... ok
+test recorded_mocks::tests::passthrough_mocks_all_passthrough_and_tracked ... ok
+test recorded_mocks::tests::external_dep_behavior_serde_roundtrip ... ok
+test recorded_mocks::tests::passthrough_mocks_empty_deps ... ok
+test mock_fixture::tests::proptests::config_yaml_roundtrip ... ok
+test recorded_mocks::tests::proptests::passthrough_mocks_count_equals_deps ... ok
+test recorded_mocks::tests::recorded_mock_file_serde_roundtrip ... ok
+test recorded_mocks::tests::sanitize_handles_backslashes ... ok
+test recorded_mocks::tests::sanitize_strips_leading_underscore ... ok
+test recorded_mocks::tests::sanitize_strips_slashes ... ok
+test recorded_mocks::tests::proptests::dep_observation_roundtrip ... ok
+test recorded_mocks::tests::save_load_roundtrip ... ok
+test recursive::tests::generate_depth_inputs_grows_with_depth ... ok
+test recursive::tests::generate_depth_inputs_array_grows ... ok
+test recursive::tests::generate_probe_inputs_empty_params ... ok
+test recursive::tests::generate_probe_inputs_multi_param_capped ... ok
+test recursive::tests::generate_probe_inputs_single_param ... ok
+test recursive::tests::hash_inputs_distinct ... ok
+test recursive::tests::hash_inputs_deterministic ... ok
+test recursive::tests::probe_values_int_includes_boundaries ... ok
+test recursive::tests::probe_values_nullable_includes_null ... ok
+test recursive::tests::probe_values_str_includes_empty ... ok
+test recursive::tests::recursive_config_default ... ok
+test report::tests::boundary_values_detected ... ok
+test report::tests::coverage_percentage_calculation ... ok
+test report::tests::coverage_percentage_zero_total_lines ... ok
+test report::tests::empty_scan_produces_valid_report ... ok
+test report::tests::function_report_with_errors ... ok
+test report::tests::generate_report_from_parallel_scan ... ok
+test report::tests::generate_report_from_sequential_scan ... ok
+test report::tests::generate_report_with_skipped_functions ... ok
+test report::tests::json_serialization_round_trip ... ok
+test report::tests::markdown_empty_report_produces_sensible_output ... ok
+test report::tests::markdown_report_contains_all_sections ... ok
+test report::tests::markdown_report_coverage_indicators ... ok
+test report::tests::markdown_report_has_correct_statistics ... ok
+test report::tests::markdown_report_shows_mocks ... ok
+test report::tests::markdown_report_summary_table_has_headers ... ok
+test report::tests::markdown_report_with_skipped_functions ... ok
+test report::tests::markdown_table_formatting_is_valid ... ok
+test report::tests::overall_coverage_computed_correctly ... ok
+test report::tests::progress_event_has_correct_structure ... ok
+test report::tests::progress_event_round_trips ... ok
+test report::tests::progress_event_serializes_to_json ... ok
+test report::tests::report_contains_all_required_fields ... ok
+test report::tests::report_file_paths_are_relative_when_file_map_is_relative ... ok
+test report::tests::report_format_from_str ... ok
+test report::tests::write_markdown_report_creates_file ... ok
+test report::tests::write_report_creates_directory_and_file ... ok
+test report_style::tests::ansi_style_has_codes ... ok
+test report_style::tests::coverage_bar_thresholds ... ok
+test report_style::tests::coverage_indicator_symbols ... ok
+test recursive::tests::probe_values_array_includes_empty ... ok
+test report_style::tests::coverage_pct_color_thresholds ... ok
+test orchestrator::tests::prop_tests::constraint_accumulation_is_monotonic ... ok
+test reporter::tests::annotated_cluster_round_trips ... ok
+test reporter::tests::behavior_section_with_return_value ... ok
+test report_style::tests::default_style_has_no_ansi ... ok
+test reporter::tests::dependencies_section ... ok
+test reporter::tests::behavior_section_with_thrown_error ... ok
+test reporter::tests::behavior_section_with_external_calls ... ok
+test reporter::tests::edge_case_round_trips ... ok
+test reporter::tests::format_type_handles_all_variants ... ok
+test reporter::tests::full_spec_matches_expected_format ... ok
+test reporter::tests::format_bytes_produces_human_readable ... ok
+test reporter::tests::edge_cases_section ... ok
+test reporter::tests::generate_from_behavior_map_produces_sections ... ok
+test reporter::tests::multiple_invariants_joined_with_semicolon ... ok
+test reporter::tests::no_dependencies_section_when_empty ... ok
+test reporter::tests::no_edge_cases_section_when_empty ... ok
+test reporter::tests::no_parameters_section_when_empty ... ok
+test reporter::tests::parameters_section_lists_params ... ok
+test reporter::tests::summarize_return_values_non_numeric_uses_first ... ok
+test reporter::tests::summarize_return_values_numeric_range ... ok
+test reporter::tests::invariant_round_trips ... ok
+test reporter::tests::summarize_return_values_single_numeric ... ok
+test reporter::tests::function_heading_includes_signature ... ok
+test revalidation::proptests::confirmed_when_path_and_severity_match ... ok
+test revalidation::proptests::severity_downgrade_always_wins ... ok
+test revalidation::proptests::severity_upgrade_always_wins ... ok
+test revalidation::proptests::vanished_never_confirmed ... ok
+test revalidation::tests::both_empty_paths_match ... ok
+test revalidation::tests::confirmed_when_code_changed_but_behavior_identical ... ok
+test revalidation::tests::confirmed_when_nothing_changed ... ok
+test revalidation::tests::display_impl ... ok
+test revalidation::proptests::branch_paths_different_length_never_match ... ok
+test revalidation::tests::expected_drift_when_code_changed_and_path_differs ... ok
+test revalidation::tests::flaky_when_code_unchanged_and_behavior_vanished ... ok
+test revalidation::tests::flaky_when_code_unchanged_but_path_differs ... ok
+test revalidation::tests::paths_differ_in_branch_id ... ok
+test revalidation::tests::paths_differ_in_length ... ok
+test revalidation::tests::paths_differ_in_taken ... ok
+test revalidation::tests::paths_masked_by_nondeterministic_branch_field ... ok
+test revalidation::tests::paths_masked_by_nondeterministic_branch_subfield ... ok
+test revalidation::tests::now_epoch_ms_returns_reasonable_value ... ok
+test revalidation::tests::paths_match_ignores_constraint_text ... ok
+test revalidation::tests::potential_regression_when_code_changed_and_behavior_vanished ... ok
+test revalidation::tests::paths_match_identical ... ok
+test revalidation::tests::report_serde_round_trip ... ok
+test revalidation::tests::severity_downgrade_takes_precedence_over_drift ... ok
+test revalidation::tests::severity_downgrade ... ok
+test revalidation::tests::severity_rare_path_from_behavior ... ok
+test revalidation::tests::severity_unhandled_from_behavior ... ok
+test revalidation::tests::severity_upgrade ... ok
+test revalidation::tests::severity_upgrade_takes_precedence_over_path_match ... ok
+test revalidation::tests::verdict_serde_round_trip ... ok
+test scan_orchestrator::tests::build_layers_diamond_groups_siblings ... ok
+test scan_orchestrator::tests::build_layers_empty_input ... ok
+test scan_orchestrator::tests::build_layers_independent_functions_in_same_layer ... ok
+test scan_orchestrator::tests::build_layers_linear_chain_produces_separate_layers ... ok
+test scan_orchestrator::tests::build_layers_single_function ... ok
+test scan_orchestrator::tests::core_sample_without_stratum_uses_full_population ... ok
+test scan_orchestrator::tests::dry_run_plan_empty_analyses ... ok
+test revalidation::tests::severity_handled_from_behavior ... ok
+test scan_orchestrator::tests::dry_run_plan_shows_external_deps ... ok
+test scan_orchestrator::tests::dry_run_plan_shows_layers_and_deps ... ok
+test scan_orchestrator::tests::execution_record_from_result_builds_correctly ... ok
+test scan_orchestrator::tests::execution_record_from_result_hashes_inputs_consistently ... ok
+test scan_orchestrator::tests::dry_run_plan_shows_skipped_functions ... ok
+test scan_orchestrator::tests::format_mocks_used_includes_stratum_excluded ... ok
+test scan_orchestrator::tests::format_parallel_scan_report_shows_workers_and_skipped ... ok
+test scan_orchestrator::tests::format_parallel_scan_report_no_skipped ... ok
+test scan_orchestrator::tests::format_scan_report_includes_sampling_context ... ok
+test scan_orchestrator::tests::format_scan_report_includes_skipped_functions ... ok
+test scan_orchestrator::tests::format_scan_report_mixed_expected_and_errors ... ok
+test scan_orchestrator::tests::format_scan_report_no_skipped_functions_omits_section ... ok
+test scan_orchestrator::tests::format_scan_report_no_sampling_context_omits_header ... ok
+test scan_orchestrator::tests::format_scan_report_shows_test_order ... ok
+test scan_orchestrator::tests::format_scan_report_single_function_no_deps ... ok
+test revalidation::proptests::branch_paths_match_reflexive ... ok
+test scan_orchestrator::tests::load_config_candidate_inputs_returns_empty_without_config_dir ... ok
+test scan_orchestrator::tests::load_config_candidate_inputs_returns_args_from_config ... ok
+[noop-frontend] Starting no-op frontend (protocol 0.1.0)
+test recorded_mocks::tests::proptests::external_dep_behavior_roundtrip ... ok
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze","execute","instrument"]}
+test scan_orchestrator::tests::load_config_candidate_inputs_returns_empty_for_unmatched_function ... ok
+[noop-frontend] Starting no-op frontend (protocol 0.1.0)
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze","execute","instrument"]}
+test protocol::tests::prop_tests::request_round_trips ... ok
+[slow-execute-frontend] Starting (execute delay=60s)
+[slow-execute-frontend] Received: {"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze","execute","instrument"]}
+[noop-frontend] Starting no-op frontend (protocol 0.1.0)
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze","execute","instrument"]}
+[noop-frontend] Starting no-op frontend (protocol 0.1.0)
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze","execute","instrument"]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"noop","capabilities":["analyze","execute","instrument","setup","teardown","generate"]}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":2,"command":"instrument","file":"test.ts","function":"solo","mocks":[]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"noop","capabilities":["analyze","execute","instrument","setup","teardown","generate"]}
+[slow-execute-frontend] Sent: {"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"slow-execute","capabilities":["analyze","execute","instrument"]}
+[slow-execute-frontend] Received: {"protocol_version":"0.1.0","id":2,"command":"instrument","file":"test.ts","function":"slow_a","mocks":[]}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":2,"command":"instrument","file":"test.ts","function":"cached_fn","mocks":[]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"noop","capabilities":["analyze","execute","instrument","setup","teardown","generate"]}
+[noop-frontend] Starting no-op frontend (protocol 0.1.0)
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze","execute","instrument"]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"noop","capabilities":["analyze","execute","instrument","setup","teardown","generate"]}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":2,"command":"shutdown"}
+[slow-execute-frontend] Sent: {"protocol_version":"0.1.0","id":2,"status":"instrument","instrumented":true,"output_file":null}
+[slow-execute-frontend] Received: {"protocol_version":"0.1.0","id":3,"command":"execute","function":"slow_a","inputs":[1],"mocks":[]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"noop","capabilities":["analyze","execute","instrument","setup","teardown","generate"]}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":2,"command":"instrument","file":"test.ts","function":"leaf","mocks":[]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":2,"status":"shutdown_ack"}
+[noop-frontend] Shutting down
+test scan_orchestrator::tests::parallel_scan_timeout_total_zero_skips_all ... ok
+test scan_orchestrator::tests::stratum_excluded_mock_source_attribution ... ok
+test scan_orchestrator::tests::stratum_only_filters_layers_correctly ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":2,"status":"instrument","instrumented":true,"output_file":null}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":2,"status":"instrument","instrumented":true,"output_file":null}
+test scan_orchestrator::tests::stratum_then_core_sample_budget_on_filtered_set ... ok
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":3,"command":"execute","function":"cached_fn","inputs":[1],"mocks":[]}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":3,"command":"execute","function":"solo","inputs":[512],"mocks":[]}
+[slow-execute-frontend] Sleeping 60s to trigger timeout...
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":2,"status":"instrument","instrumented":true,"output_file":null}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":3,"command":"execute","function":"leaf","inputs":[1],"mocks":[]}
+test scm::tests::test_changed_files_runs_without_error ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":3,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+test scm::tests::test_detect_provider_in_git_repo ... ok
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":4,"command":"execute","function":"cached_fn","inputs":[85],"mocks":[]}
+test scm::tests::test_detect_provider_not_a_repo ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":3,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":4,"command":"execute","function":"solo","inputs":[-549],"mocks":[]}
+test scm::tests::test_diff_files_against_head ... ok
+test scm::tests::test_parse_file_list_basic ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":3,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":4,"command":"execute","function":"leaf","inputs":[85],"mocks":[]}
+test scm::tests::test_parse_file_list_blank_lines ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":4,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+test scm::tests::test_parse_file_list_empty ... ok
+test scm::tests::test_parse_file_list_trailing_whitespace ... ok
+test scope::tests::acceptance_test_node_modules_mocked_lodash_passthrough ... ok
+test scope::tests::classify_dependency_default_is_analyze ... ok
+test scope::tests::classify_dependency_mock ... ok
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":5,"command":"shutdown"}
+test scope::tests::classify_dependency_passthrough ... ok
+test scope::tests::default_config_has_sensible_values ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":4,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":5,"command":"shutdown"}
+test protocol::tests::prop_tests::response_round_trips ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":4,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":5,"command":"execute","function":"leaf","inputs":[981],"mocks":[]}
+test scope::tests::from_file_missing_file_returns_io_error ... ok
+test scope::tests::from_file_invalid_yaml_returns_parse_error ... ok
+test scope::tests::is_included_excludes_matching_patterns ... ok
+test scope::tests::from_file_valid_yaml ... ok
+test scope::tests::is_included_with_no_include_patterns_includes_everything ... ok
+test scope::tests::is_included_matches_include_patterns ... ok
+test scope::tests::yaml_round_trip ... ok
+test scope::tests::passthrough_takes_precedence_over_mock ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":5,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":2,"command":"instrument","file":"test.ts","function":"caller","mocks":[{"symbol":"leaf","return_values":[],"should_track_calls":true,"default_behavior":"repeat_last"}]}
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":5,"status":"shutdown_ack"}
+[noop-frontend] Shutting down
+test scan_orchestrator::tests::parallel_scan_single_worker ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":5,"status":"shutdown_ack"}
+[noop-frontend] Shutting down
+test scan_orchestrator::tests::parallel_scan_persists_behavior_maps_to_cache ... ok
+test setup_manager::proptests::should_skip_respects_hierarchy ... ok
+test setup_manager::tests::context_stack_returns_ordered_contexts ... ok
+test setup_manager::tests::context_stack_skips_missing_levels ... ok
+test setup_manager::tests::default_timeouts_match_constants ... ok
+test setup_manager::tests::env_invalid_falls_back_to_defaults ... ok
+test setup_manager::tests::env_override_applies_to_all_levels ... ok
+test setup_manager::tests::env_zero_falls_back_to_defaults ... ok
+test setup_manager::proptests::timeouts_always_positive ... ok
+test setup_manager::tests::fail_on_error_false_records_silently ... ok
+test setup_manager::tests::fail_on_error_returns_err ... ok
+test setup_manager::tests::failure_clear_removes_entry ... ok
+test setup_manager::tests::failure_tracking_record_and_check ... ok
+test setup_manager::tests::multiple_scopes_at_same_level ... ok
+test setup_manager::tests::setup_blocked_by_outer_failure ... ok
+test setup_manager::tests::setup_stores_context ... ok
+test setup_manager::proptests::failure_record_clear_idempotent ... ok
+test setup_manager::tests::should_skip_only_inner_levels ... ok
+test setup_manager::tests::successful_setup_clears_prior_failure ... ok
+test setup_manager::tests::teardown_removes_context ... ok
+test setup_manager::tests::timeout_for_returns_correct_level ... ok
+test shrink::tests::candidates_never_contain_original ... ok
+test shrink::tests::no_duplicate_candidates ... ok
+test setup_manager::tests::should_skip_when_outer_level_failed ... ok
+test shrink::tests::prop_tests::shrink_empty_array_minimal ... ok
+test shrink::tests::prop_tests::shrink_empty_string_minimal ... ok
+test shrink::tests::prop_tests::shrink_false_minimal ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":2,"status":"instrument","instrumented":true,"output_file":null}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":3,"command":"execute","function":"caller","inputs":[1],"mocks":[{"symbol":"leaf","return_values":[],"should_track_calls":true,"default_behavior":"repeat_last"}]}
+test setup_manager::proptests::timeout_for_roundtrip ... ok
+test shrink::tests::prop_tests::shrink_int_abs_leq_or_boundary ... ok
+test shrink::tests::prop_tests::shrink_float_candidates_are_floats ... ok
+test shrink::tests::prop_tests::shrink_int_candidates_are_ints ... ok
+test shrink::tests::prop_tests::shrink_never_contains_original_float ... ok
+test shrink::tests::prop_tests::shrink_never_contains_original_int ... ok
+test shrink::tests::prop_tests::shrink_array_len_leq_original ... ok
+test shrink::tests::prop_tests::shrink_no_duplicates_int ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":3,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+test shrink::tests::prop_tests::shrink_null_nullable_minimal ... ok
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":4,"command":"execute","function":"caller","inputs":[85],"mocks":[{"symbol":"leaf","return_values":[],"should_track_calls":true,"default_behavior":"repeat_last"}]}
+test shrink::tests::prop_tests::shrink_zero_int_minimal ... ok
+test shrink::tests::shrink_array_empty_already_minimal ... ok
+test shrink::tests::shrink_array_multiple_elements ... ok
+test shrink::tests::shrink_array_single_element ... ok
+test shrink::tests::shrink_bool_false_already_minimal ... ok
+test shrink::tests::shrink_bool_true ... ok
+test shrink::tests::shrink_complex_returns_empty ... ok
+test shrink::tests::shrink_float_positive ... ok
+test shrink::tests::shrink_float_zero_already_minimal ... ok
+test shrink::tests::shrink_int_negative ... ok
+test shrink::tests::shrink_int_one_no_duplicate ... ok
+test shrink::tests::shrink_int_positive ... ok
+test shrink::tests::shrink_int_zero_already_minimal ... ok
+test shrink::tests::shrink_nullable_already_null ... ok
+test shrink::tests::shrink_nullable_non_null ... ok
+test shrink::tests::shrink_object_empty_fields ... ok
+test shrink::tests::shrink_object_removes_fields ... ok
+test shrink::tests::shrink_opaque_returns_empty ... ok
+test shrink::tests::shrink_string_empty_already_minimal ... ok
+test shrink::tests::shrink_string_multi_char ... ok
+test shrink::tests::shrink_string_single_char ... ok
+test shrink::tests::shrink_union_collects_from_variants ... ok
+test shrink::tests::shrink_unknown_returns_empty ... ok
+test snapshot::tests::diff_detects_new_behaviors ... ok
+test snapshot::tests::diff_detects_new_function ... ok
+test snapshot::tests::diff_detects_regression_changed_return_value ... ok
+test snapshot::tests::diff_detects_regression_return_became_error ... ok
+test snapshot::tests::diff_detects_removed_behaviors ... ok
+test snapshot::tests::diff_detects_removed_function ... ok
+test snapshot::tests::diff_empty_snapshots ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":4,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":5,"command":"execute","function":"caller","inputs":[981],"mocks":[{"symbol":"leaf","return_values":[],"should_track_calls":true,"default_behavior":"repeat_last"}]}
+test snapshot::tests::diff_identical_snapshots_all_match ... ok
+test snapshot::tests::diff_mixed_scenario ... ok
+test snapshot::tests::diff_report_format ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":5,"status":"execute","return_value":null,"thrown_error":null,"branch_path":[],"lines_executed":[],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":0.0,"cpu_time_us":0,"heap_used_bytes":0,"heap_allocated_bytes":0}}
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":6,"command":"shutdown"}
+test snapshot::tests::diff_report_shows_error_outcomes ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":6,"status":"shutdown_ack"}
+[noop-frontend] Shutting down
+[noop-frontend] Received: {"protocol_version":"0.1.0","id":6,"command":"shutdown"}
+test snapshot::tests::snapshot_diff_round_trips ... ok
+test snapshot::tests::snapshot_file_round_trip ... ok
+test snapshot::tests::snapshot_from_behavior_map_end_to_end ... ok
+test snapshot::tests::snapshot_from_multiple_behavior_maps ... ok
+test snapshot::tests::snapshot_from_single_behavior_map ... ok
+test snapshot::tests::snapshot_includes_error_behaviors ... ok
+test snapshot::tests::snapshot_json_is_pretty_and_stable ... ok
+[noop-frontend] Sent: {"protocol_version":"0.1.0","id":6,"status":"shutdown_ack"}
+[noop-frontend] Shutting down
+test snapshot::tests::snapshot_round_trips_through_json ... ok
+test scan_orchestrator::tests::parallel_scan_with_noop_frontend ... ok
+test shrink::tests::prop_tests::shrink_str_candidates_are_strings ... ok
+test shrink::tests::prop_tests::shrink_never_contains_original_str ... ok
+test solver::tests::arithmetic_in_constraints ... ok
+test shrink::tests::prop_tests::shrink_str_len_leq_original ... ok
+test solver::tests::bool_constraint_satisfiable ... ok
+test solver::tests::bitwise_not_specific_value ... ok
+test solver::tests::bitwise_not_constraint ... ok
+test solver::tests::logical_and_constraint ... ok
+test solver::tests::negate_first_branch ... ok
+test solver::tests::all_operations_produce_declared_sort ... ok
+test solver::tests::negate_index_out_of_bounds_returns_error ... ok
+test solver::tests::mixed_int_float_comparison ... ok
+test solver::tests::call_expr_returns_error ... ok
+test protocol::tests::prop_tests::execute_result_round_trips ... ok
+test solver::tests::multi_variable_constraints ... ok
+test solver::tests::not_unop ... ok
+test solver::tests::negation_unop ... ok
+test solver::tests::postcondition_accepts_int_for_unknown_type ... ok
+test cache::proptests::behavior_map_cache_roundtrip ... ok
+test solver::tests::postcondition_accepts_matching_int_type ... ok
+test solver::tests::postcondition_accepts_nullable_inner_match ... ok
+test solver::tests::postcondition_ignores_unknown_solved_vars ... ok
+test solver::tests::postcondition_accepts_matching_str_type ... ok
+test solver::tests::postcondition_rejects_int_for_str_param ... ok
+test solver::tests::negate_last_branch_finds_new_path ... ok
+test protocol::tests::prop_tests::function_analysis_round_trips ... ok
+test solver::tests::postcondition_trivially_true_for_error ... ok
+test solver::tests::postcondition_trivially_true_for_unsat ... ok
+test solver::tests::prop_tests::bool_const_infers_bool ... ok
+test solver::tests::nested_arithmetic_comparison ... ok
+test solver::tests::prop_tests::int_const_infers_int ... ok
+test solver::tests::prop_tests::float_const_infers_real ... ok
+test solver::tests::nested_param_path_creates_distinct_variable ... ok
+test solver::tests::prop_tests::str_const_infers_str ... ok
+test solver::tests::prop_tests::type_info_to_sort_nullable_unwraps ... ok
+test solver::tests::prop_tests::type_info_to_sort_primitives ... ok
+test cache::proptests::behavior_map_freshness_consistent ... ok
+test solver::tests::satisfiable_int_constraints ... ok
+test solver::tests::prop_tests::infer_sort_never_panics ... ok
+test solver::tests::solver_timeout_does_not_panic ... ok
+test solver::tests::spec_aliases_match_generated_code ... ok
+test solver::tests::solve_for_new_path_multi_constraint ... ok
+test solver::tests::string_char_at_constraint ... ok
+test solver::tests::prop_tests::build_param_sorts_maps_all_params ... ok
+test solver::tests::string_ends_with_sat ... ok
+test solver::tests::string_concat_constraint ... ok
+test solver::tests::string_equality_satisfiable ... ok
+test solver::tests::string_contains_go_style ... ok
+test solver::tests::string_has_prefix_go_style ... ok
+test solver::tests::string_includes_negated_unsat ... ok
+[slow-execute-frontend] Starting (execute delay=60s)
+[slow-execute-frontend] Received: {"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze","execute","instrument"]}
+test solver::tests::string_has_suffix_go_style ... ok
+test solver::tests::string_includes_sat ... ok
+test solver::tests::string_index_go_style ... ok
+test solver::tests::string_index_of_not_found ... ok
+[slow-execute-frontend] Sent: {"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"slow-execute","capabilities":["analyze","execute","instrument"]}
+[slow-execute-frontend] Received: {"protocol_version":"0.1.0","id":2,"command":"instrument","file":"test.ts","function":"slow_b","mocks":[]}
+test solver::tests::string_inequality_unsatisfiable ... ok
+[slow-execute-frontend] Sent: {"protocol_version":"0.1.0","id":2,"status":"instrument","instrumented":true,"output_file":null}
+[slow-execute-frontend] Received: {"protocol_version":"0.1.0","id":3,"command":"execute","function":"slow_b","inputs":[1],"mocks":[]}
+test solver::tests::string_length_constraint ... ok
+[slow-execute-frontend] Sleeping 60s to trigger timeout...
+test solver::tests::string_index_of_found ... ok
+test solver::tests::string_ordering_contradictory_is_unsat ... ok
+test solver::tests::string_ordering_lt ... ok
+test solver::tests::string_slice_constraint ... ok
+test solver::tests::typeof_bool_param ... ok
+test solver::tests::typeof_int_param ... ok
+test solver::tests::string_starts_with_sat ... ok
+test solver::tests::string_ordering_ge ... ok
+test solver::tests::typeof_mismatch_is_unsat ... ok
+test cache::proptests::spec_cache_roundtrip ... ok
+test solver::tests::typeof_string_constant ... ok
+test spec::tests::all_z3_branches_means_proven ... ok
+test spec::tests::build_spec_empty_classes ... ok
+test spec::tests::build_spec_from_exploration_and_classes ... ok
+test spec::tests::build_spec_with_error_class ... ok
+test spec::tests::build_spec_with_void_return ... ok
+test spec::tests::categorize_invariant_kinds ... ok
+test solver::tests::unknown_expr_returns_error ... ok
+test spec::tests::confidence_level_thresholds ... ok
+test spec::tests::file_spec_bundle_round_trip ... ok
+test spec::tests::empty_branch_path_stays_observed ... ok
+test spec::tests::format_precondition_all_variants ... ok
+test spec::tests::format_spec_json_contains_expected_fields ... ok
+test spec::tests::format_side_effect_all_variants ... ok
+test spec::tests::format_spec_markdown_contains_all_sections ... ok
+test spec::tests::format_spec_markdown_error_class ... ok
+test spec::tests::format_spec_json_round_trips ... ok
+test spec::tests::format_spec_markdown_includes_class_invariants ... ok
+test spec::tests::format_spec_markdown_no_location ... ok
+test spec::tests::format_spec_markdown_includes_function_invariants ... ok
+test spec::tests::format_spec_markdown_no_preconditions ... ok
+test spec::tests::incremental_plan_all_fresh ... ok
+test spec::tests::incremental_plan_caller_stale_when_callee_changes ... ok
+test spec::tests::full_spec_round_trip_with_all_fields ... ok
+test spec::tests::incremental_plan_new_function ... ok
+test spec::tests::incremental_plan_removed_function ... ok
+test spec::tests::incremental_plan_stale_when_no_fingerprint ... ok
+test spec::tests::incremental_plan_stale_on_fingerprint_mismatch ... ok
+test spec::tests::invariants_skipped_in_json_when_empty ... ok
+test spec::tests::invariants_present_in_json_when_populated ... ok
+test spec::tests::merge_with_empty_existing ... ok
+test spec::tests::merge_with_no_new_specs ... ok
+test spec::tests::merge_preserves_fresh_drops_removed ... ok
+test spec::tests::postcondition_serialization_round_trips ... ok
+test solver::tests::unsatisfiable_int_constraints ... ok
+test solver::tests::unrecognized_call_returns_error ... ok
+test cache::proptests::spec_freshness_consistent ... ok
+test spec::tests::proptests::invariant_conversion_maps_category ... ok
+test spec::tests::proptests::invariant_conversion_preserves_label ... ok
+[slow-execute-frontend] Starting (execute delay=60s)
+[slow-execute-frontend] Received: {"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze","execute","instrument"]}
+[slow-execute-frontend] Sent: {"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"slow-execute","capabilities":["analyze","execute","instrument"]}
+[slow-execute-frontend] Received: {"protocol_version":"0.1.0","id":2,"command":"shutdown"}
+test spec::tests::proptests::format_spec_markdown_structural_validity ... ok
+test spec::tests::proptests::function_spec_yaml_roundtrip ... ok
+test spec::tests::proptests::invariant_conversion_maps_confidence ... ok
+[slow-execute-frontend] Sent: {"protocol_version":"0.1.0","id":2,"status":"shutdown_ack"}
+[slow-execute-frontend] Shutting down
+test scan_orchestrator::tests::parallel_scan_respawns_frontend_after_timeout ... ok
+test spec::tests::proptests::function_spec_json_roundtrip ... ok
+test spec::tests::provenance_serialization_round_trips ... ok
+test spec::tests::read_file_spec_bundle_invalid_json ... ok
+test spec::tests::read_file_spec_bundle_nonexistent_file ... ok
+test spec::tests::spec_invariant_from_classified ... ok
+test spec::tests::spec_invariant_medium_confidence ... ok
+test spec::tests::spec_invariant_serialization_round_trips ... ok
+test spec::tests::spec_io_error_display ... ok
+test spec::tests::write_and_read_file_spec_bundle_round_trip ... ok
+test spec::tests::write_file_spec_bundle_creates_parent_dirs ... ok
+test spec::tests::z3_discovered_branches_get_proven_provenance ... ok
+test spec_diff::tests::added_class_detected ... ok
+test spec_diff::tests::changed_postcondition_error_to_return ... ok
+test spec_diff::tests::changed_postcondition_return_value ... ok
+test spec_diff::tests::coverage_drop_detected ... ok
+test spec_diff::tests::deterministic_field_still_reports_postcondition_diff ... ok
+test spec_diff::tests::empty_specs_produce_empty_diff ... ok
+test spec_diff::tests::format_text_empty_diff ... ok
+test spec_diff::tests::format_text_produces_readable_output ... ok
+test spec_diff::tests::identical_specs_produce_empty_diff ... ok
+test spec_diff::tests::json_output_round_trips ... ok
+test spec_diff::tests::lost_property_all_return_to_mixed ... ok
+test spec_diff::tests::mixed_nondeterministic_and_deterministic_changes ... ok
+test spec_diff::tests::nondeterministic_field_excludes_postcondition_diff ... ok
+test spec_diff::tests::precondition_narrowed ... ok
+test spec_diff::tests::precondition_widened ... ok
+test spec_diff::tests::removed_class_detected ... ok
+test spec_diff::tests::throws_postcondition_not_affected_by_return_nondeterminism ... ok
+test spec_diff::tests::whole_return_nondeterministic_skips_comparison ... ok
+test strategy::tests::adaptive_cold_start_gives_fair_share ... ok
+test strategy::tests::boundary_seeds_bool_exhausts_after_two ... ok
+test strategy::tests::boundary_seeds_empty_params ... ok
+test strategy::tests::boundary_seeds_estimated_size_matches_drain_count ... ok
+test strategy::tests::boundary_seeds_multi_param_pairwise ... ok
+test strategy::tests::boundary_seeds_name ... ok
+test strategy::tests::boundary_seeds_single_int_param ... ok
+test strategy::tests::boundary_seeds_single_string_param ... ok
+test strategy::tests::boundary_seeds_unknown_type_yields_nothing ... ok
+test strategy::tests::effective_cold_start_clamped_to_estimated_size ... ok
+test strategy::tests::exhaustible_strategy_returns_none_when_done ... ok
+test strategy::tests::feedback_fans_out_to_all_strategies ... ok
+test strategy::tests::floor_prevents_zero_allocation ... ok
+test strategy::tests::fuzzer_crossover_with_two_seeds ... ok
+test strategy::tests::fuzzer_estimated_size_is_none ... ok
+test strategy::tests::fuzzer_name_is_fuzzer ... ok
+test strategy::tests::fuzzer_produces_mutations_after_unknown_feedback ... ok
+test strategy::tests::fuzzer_records_new_path_inputs ... ok
+test strategy::tests::fuzzer_returns_none_without_feedback ... ok
+test strategy::tests::hit_rate_all_hits ... ok
+test strategy::tests::hit_rate_empty_window ... ok
+test strategy::tests::hit_rate_mixed ... ok
+test strategy::tests::literals_strategy_empty_literals ... ok
+test strategy::tests::literals_strategy_empty_params ... ok
+test strategy::tests::literals_strategy_estimated_size_matches_drain ... ok
+test strategy::tests::literals_strategy_exhausts_then_none ... ok
+test strategy::tests::literals_strategy_name ... ok
+test strategy::tests::literals_strategy_yields_expected_candidates ... ok
+test strategy::tests::meta_returns_none_when_all_exhausted ... ok
+test strategy::tests::meta_round_robin_interleaves_strategies ... ok
+test strategy::tests::meta_skips_exhausted_strategies ... ok
+test strategy::tests::pool_seeds_empty ... ok
+test strategy::tests::pool_seeds_exhausts ... ok
+test strategy::tests::pool_seeds_yields_in_order ... ok
+test strategy::tests::random_strategy_deterministic_with_seed ... ok
+test strategy::tests::random_strategy_estimated_size_is_none ... ok
+test strategy::tests::random_strategy_name ... ok
+test strategy::tests::random_strategy_never_exhausts ... ok
+test strategy::tests::random_strategy_produces_type_appropriate_values ... ok
+test strategy::tests::static_weights_selection ... ok
+test strategy::tests::user_provided_empty_returns_none_immediately ... ok
+test strategy::tests::user_provided_estimated_size ... ok
+test strategy::tests::user_provided_exhausts_then_stays_none ... ok
+test strategy::tests::user_provided_preserves_ordering ... ok
+test strategy::tests::weighted_select_handles_zero_weights ... ok
+test strategy::tests::z3_solver_empty_branch_path_yields_nothing ... ok
+test strategy::tests::z3_solver_is_infinite ... ok
+test strategy::tests::z3_solver_multiple_feedbacks_accumulate ... ok
+test strategy::tests::z3_solver_name ... ok
+test strategy::tests::z3_solver_next_returns_none_without_feedback ... ok
+test strategy::tests::z3_solver_output_preserves_input_length ... ok
+test strategy::tests::z3_solver_proptests::feedback_never_panics ... ok
+test strategy::tests::z3_solver_proptests::output_preserves_length ... ok
+test strategy::tests::z3_solver_solvable_constraint_queues_input ... ok
+test strategy::tests::z3_solver_unknown_constraints_yield_nothing ... ok
+test stratum::tests::filter_layers_empty_range ... ok
+test stratum::tests::filter_layers_selects_correct_range ... ok
+test stratum::tests::parse_empty_range_is_error ... ok
+test stratum::tests::parse_invalid_is_error ... ok
+test stratum::tests::parse_range_both_bounds ... ok
+test stratum::tests::parse_range_negative_indices ... ok
+test stratum::tests::parse_range_open_end ... ok
+test stratum::tests::parse_range_open_start ... ok
+test stratum::tests::parse_single_negative ... ok
+test stratum::tests::parse_single_positive ... ok
+test stratum::tests::proptests::arbitrary_input_never_panics ... ok
+test stratum::tests::proptests::filter_layers_indices_in_range ... ok
+test stratum::tests::proptests::negative_zero_is_max_layer ... ok
+test stratum::tests::proptests::open_end_reaches_max_layer ... ok
+test stratum::tests::proptests::open_start_begins_at_zero ... ok
+test stratum::tests::proptests::resolved_range_within_bounds ... ok
+test spec::tests::proptests::merge_idempotent_with_empty_new_specs ... ok
+test stratum::tests::resolve_clamps_beyond_max ... ok
+test stratum::tests::resolve_negative_beyond_max_clamps_to_zero ... ok
+test stratum::tests::resolve_range_negative ... ok
+test stratum::tests::resolve_range_open_end ... ok
+test stratum::tests::resolve_range_open_start ... ok
+test stratum::tests::resolve_range_positive ... ok
+test stratum::tests::resolve_single_negative_one ... ok
+test stratum::tests::resolve_single_negative_zero ... ok
+test stratum::tests::resolve_single_positive ... ok
+test string_mutation::tests::best_delimiter_none_for_no_delimiters ... ok
+test string_mutation::tests::best_delimiter_picks_most_segments ... ok
+test string_mutation::tests::dispatcher_covers_all_strategies ... ok
+test string_mutation::tests::dispatcher_handles_ascii ... ok
+test string_mutation::tests::dispatcher_handles_emoji_only ... ok
+test string_mutation::tests::dispatcher_handles_empty_string ... ok
+test string_mutation::tests::dispatcher_handles_unicode ... ok
+test string_mutation::tests::dispatcher_produces_variety ... ok
+test stratum::tests::proptests::valid_specs_always_parse ... ok
+test string_mutation::tests::duplicate_segment_grows_by_one ... ok
+test string_mutation::tests::duplicate_segment_no_delimiter_returns_original ... ok
+test string_mutation::tests::duplicate_segment_preserves_content ... ok
+test string_mutation::tests::multi_point_empty_returns_empty ... ok
+test string_mutation::tests::multi_point_short_string_changes_chars ... ok
+test string_mutation::tests::multi_point_preserves_length ... ok
+test string_mutation::tests::pattern_insert_contains_original_chars ... ok
+test string_mutation::tests::multi_point_unicode_preserves_count ... ok
+test string_mutation::tests::pattern_insert_grows_string ... ok
+test string_mutation::tests::swap_segments_email ... ok
+test string_mutation::tests::pattern_insert_empty_produces_fragment ... ok
+test string_mutation::tests::swap_segments_no_delimiter_returns_original ... ok
+test string_mutation::tests::swap_segments_path ... ok
+test string_mutation::tests::swap_segments_single_delimiter_two_parts ... ok
+test string_mutation::tests::unicode_boundary_empty_produces_single_char ... ok
+test string_mutation::tests::unicode_boundary_inserts_near_delimiters ... ok
+test string_mutation::tests::unicode_boundary_no_delimiter_uses_edges ... ok
+test string_mutation::tests::unicode_insert_adds_one_char ... ok
+test string_mutation::tests::unicode_insert_empty_produces_single_char ... ok
+test string_mutation::tests::unicode_insert_valid_utf8 ... ok
+test string_mutation::tests::weighted_char_changes_one_char ... ok
+test string_mutation::tests::weighted_char_empty_returns_empty ... ok
+test string_mutation::tests::weighted_char_tends_toward_special ... ok
+test sym_expr::tests::all_binop_kinds_round_trip ... ok
+test sym_expr::tests::all_unop_kinds_round_trip ... ok
+test sym_expr::tests::extract_param_names_binop_two_params ... ok
+test sym_expr::tests::const_value_complex_round_trips ... ok
+test sym_expr::tests::extract_param_names_call_no_receiver ... ok
+test sym_expr::tests::extract_param_names_call_with_receiver_and_args ... ok
+test sym_expr::tests::extract_param_names_const_returns_empty ... ok
+test sym_expr::tests::extract_param_names_deduplicates ... ok
+test sym_expr::tests::extract_param_names_deeply_nested ... ok
+test sym_expr::tests::extract_param_names_single_param ... ok
+test sym_expr::tests::extract_param_names_unknown_returns_empty ... ok
+test sym_expr::tests::extract_param_names_unop ... ok
+test sym_expr::tests::extract_param_names_with_field_path ... ok
+test sym_expr::tests::go_bitwise_ops_deserialize ... ok
+test sym_expr::tests::nested_binop_round_trips ... ok
+test sym_expr::tests::sym_expr_binop_round_trips ... ok
+test sym_expr::tests::sym_expr_call_round_trips ... ok
+test sym_expr::tests::sym_expr_call_without_receiver_round_trips ... ok
+test sym_expr::tests::sym_expr_const_round_trips ... ok
+test sym_expr::tests::sym_expr_param_round_trips ... ok
+test sym_expr::tests::sym_expr_unknown_round_trips ... ok
+test sym_expr::tests::sym_expr_with_complex_const_round_trips ... ok
+test sym_expr::tests::typeof_alias_deserializes_from_frontend_format ... ok
+test sym_expr::tests::sym_expr_unop_round_trips ... ok
+test test_impact::proptests::query_monotonicity ... ok
+test test_impact::proptests::reverse_index_no_duplicates ... ok
+test test_impact::proptests::reverse_index_covers_forward ... ok
+test test_impact::tests::build_reverse_index_basic ... ok
+test test_impact::tests::build_reverse_index_empty ... ok
+test test_impact::tests::coverage_map_save_and_load ... ok
+test test_impact::tests::coverage_map_yaml_roundtrip ... ok
+test test_impact::tests::query_affected_deduplicates ... ok
+test test_impact::tests::query_affected_returns_union ... ok
+test test_impact::tests::query_affected_tracks_unmapped_files ... ok
+test test_impact::tests::read_nonexistent_tier_marker ... ok
+test test_impact::tests::tier_marker_freshness ... ok
+test test_impact::tests::tier_marker_write_read_roundtrip ... ok
+test test_prioritization::proptests::budget_parse_secs ... ok
+test test_impact::proptests::yaml_roundtrip ... ok
+test spec::tests::proptests::merge_output_count ... ok
+test spec::tests::proptests::merge_result_subset_of_current_names ... ok
+test test_prioritization::proptests::no_recency_uniform_weight ... ok
+test spec::tests::proptests::merge_drops_removed ... ok
+test test_prioritization::proptests::recency_decay_monotonic ... ok
+test test_prioritization::tests::budget_excludes_over_limit ... ok
+test test_prioritization::tests::budget_prefers_smaller_when_large_exceeds ... ok
+test test_prioritization::tests::format_report_no_budget ... ok
+test test_prioritization::tests::format_report_with_budget_and_excluded ... ok
+test test_prioritization::tests::greedy_picks_highest_ratio_first ... ok
+test test_prioritization::tests::marginal_coverage_decreases ... ok
+test test_prioritization::tests::parse_budget_combined ... ok
+test test_prioritization::tests::parse_budget_hours ... ok
+test test_prioritization::tests::parse_budget_invalid ... ok
+test test_prioritization::tests::parse_budget_minutes ... ok
+test test_prioritization::tests::parse_budget_seconds ... ok
+test test_prioritization::tests::prioritize_empty_input ... ok
+test test_prioritization::tests::prioritize_single_test ... ok
+test test_prioritization::tests::recency_decay_half_life ... ok
+test test_prioritization::tests::recency_decay_recent_file ... ok
+test test_prioritization::tests::recency_decay_very_old ... ok
+test test_prioritization::tests::recency_weights_boost_recent_files ... ok
+test test_prioritization::tests::redundant_test_excluded ... ok
+test test_prioritization::tests::test_cases_from_coverage_map_basic ... ok
+test test_runner::tests::detect_runners_empty_dir ... ok
+test test_runner::tests::detect_runners_finds_cargo_in_project ... ok
+test test_runner::tests::git_head_commit_works ... ok
+test test_runner::tests::parse_go_coverprofile_sample ... ok
+test test_runner::tests::parse_istanbul_coverage_sample ... ok
+test test_runner::tests::runner_kind_display ... ok
+test test_runner::tests::test_tier_display ... ok
+test test_runner::tests::test_tier_from_str ... ok
+test triage::tests::all_execute_verdicts_disable ... ok
+test triage::tests::binop_add_integers ... ok
+test triage::tests::binop_add_strings ... ok
+test triage::tests::binop_and_evaluates_right_when_truthy ... ok
+test triage::tests::binop_and_short_circuit ... ok
+test triage::tests::binop_div_and_mod ... ok
+test triage::tests::binop_div_by_zero_returns_none ... ok
+test triage::tests::binop_eq_integers ... ok
+test triage::tests::binop_eq_null ... ok
+test triage::tests::binop_lt_gt_le_ge ... ok
+test spec::tests::proptests::merge_new_specs_override_existing ... ok
+test triage::tests::binop_mixed_types_returns_none ... ok
+test triage::tests::binop_mod_by_zero_returns_none ... ok
+test triage::tests::binop_ne_strings ... ok
+test triage::tests::binop_or_evaluates_right_when_falsy ... ok
+test triage::tests::binop_or_short_circuit ... ok
+test triage::tests::binop_sub_mul ... ok
+test triage::tests::bitwise_ops_return_none ... ok
+test triage::tests::call_concat ... ok
+test triage::tests::call_contains_free_style ... ok
+test triage::tests::call_contains_receiver_style ... ok
+test triage::tests::call_ends_with ... ok
+test triage::tests::call_index_of ... ok
+test triage::tests::call_length_free_style ... ok
+test triage::tests::call_char_at ... ok
+test triage::tests::call_starts_with ... ok
+test triage::tests::call_length_receiver_style ... ok
+test triage::tests::call_substr_no_end ... ok
+test triage::tests::call_unknown_name_returns_none ... ok
+test triage::tests::const_bool ... ok
+test triage::tests::call_substr ... ok
+test triage::tests::const_complex_uses_repr ... ok
+test triage::tests::const_float ... ok
+test triage::tests::const_int ... ok
+test triage::tests::const_string ... ok
+test triage::tests::const_null_and_undefined ... ok
+test triage::tests::disabled_freezes_counters ... ok
+test triage::tests::disabled_triage_returns_indeterminate ... ok
+test triage::tests::disabled_always_indeterminate ... ok
+test triage::tests::empty_traces_indeterminate ... ok
+test triage::tests::evaluate_constraint_deterministic ... ok
+test triage::tests::in_and_instanceof_return_none ... ok
+test triage::tests::indeterminate_verdicts_count_toward_total ... ok
+test triage::tests::low_skip_rate_disables_triage ... ok
+test triage::tests::misprediction_disables_triage ... ok
+test triage::tests::misprediction_within_tolerance_stays_enabled ... ok
+test solver::tests::prop_tests::string_params_solved_as_strings ... ok
+test triage::tests::nested_and_with_comparisons ... ok
+test triage::tests::nested_string_length_comparison ... ok
+test triage::tests::no_disable_before_min_verdicts ... ok
+test triage::tests::param_lookup_by_name ... ok
+test triage::tests::param_lookup_second_param ... ok
+test triage::tests::param_missing_field_returns_none ... ok
+test triage::tests::param_missing_name_returns_none ... ok
+test triage::tests::param_nested_field_path ... ok
+test triage::tests::param_with_field_path ... ok
+test triage::tests::evaluate_constraint_no_panic ... ok
+test triage::tests::predict_branch_indeterminate_unknown_constraint ... ok
+test triage::tests::predict_branch_indeterminate_unresolvable_expr ... ok
+test triage::tests::predict_branch_not_taken ... ok
+test triage::tests::predict_branch_taken ... ok
+test triage::tests::record_sample_noop_when_disabled ... ok
+test triage::tests::record_verdict_noop_when_disabled ... ok
+test triage::tests::should_sample_at_interval ... ok
+test triage::tests::string_op_with_non_string_returns_none ... ok
+test triage::tests::sufficient_skip_rate_stays_enabled ... ok
+test triage::tests::triage_dedup_preserves_observed_directions_from_both ... ok
+test triage::tests::triage_multi_trace_first_novel_wins ... ok
+test triage::tests::triage_state_cap_at_64 ... ok
+test triage::tests::triage_state_dedup_same_branch_id_sequence ... ok
+test triage::tests::triage_state_observed_directions_updated ... ok
+test triage::tests::triage_state_trace_accumulation ... ok
+test test_prioritization::proptests::cumulative_monotonic ... ok
+test triage::tests::triage_verdict_execute_novel_direction ... ok
+test triage::tests::triage_verdict_execute_novel_path_hash ... ok
+test triage::tests::triage_verdict_indeterminate_no_traces ... ok
+test triage::tests::triage_verdict_indeterminate_too_many_unknowns ... ok
+test triage::tests::triage_verdict_skip_when_path_covered ... ok
+test triage::tests::truthiness_edge_cases ... ok
+test triage::tests::unknown_in_binop_propagates_none ... ok
+test triage::tests::unknown_in_unop_propagates_none ... ok
+test triage::tests::unknown_returns_none ... ok
+test triage::tests::unop_bitwise_not_returns_none ... ok
+test triage::tests::unop_neg ... ok
+test triage::tests::unop_not ... ok
+test triage::tests::unop_typeof_returns_none ... ok
+test triage::tests::predict_branch_consistent_with_evaluator ... ok
+test types::tests::array_type_round_trips ... ok
+test types::tests::complex_kind_all_variants_round_trip ... ok
+test types::tests::complex_kind_serializes_to_snake_case ... ok
+test types::tests::complex_type_info_empty_metadata_no_inner_round_trips ... ok
+test types::tests::complex_type_info_result_with_inner_round_trips ... ok
+test types::tests::complex_type_info_with_inner_round_trips ... ok
+test types::tests::complex_type_info_with_metadata_round_trips ... ok
+test types::tests::find_opaque_label_direct ... ok
+test types::tests::find_opaque_label_nested ... ok
+test types::tests::find_opaque_label_none_for_primitive_tree ... ok
+test types::tests::find_opaque_label_returns_first ... ok
+test types::tests::has_opaque_direct ... ok
+test types::tests::has_opaque_false_for_all_primitive_tree ... ok
+test types::tests::has_opaque_false_for_primitives ... ok
+test types::tests::has_opaque_nested_in_array ... ok
+test types::tests::has_opaque_nested_in_nullable ... ok
+test types::tests::has_opaque_nested_in_object ... ok
+test types::tests::nested_type_round_trips ... ok
+test types::tests::nullable_type_round_trips ... ok
+test types::tests::object_type_round_trips ... ok
+test types::tests::opaque_round_trips ... ok
+test types::tests::param_info_round_trips ... ok
+test types::tests::param_info_with_unknown_type_round_trips ... ok
+test types::tests::primitive_types_round_trip ... ok
+test types::tests::union_type_round_trips ... ok
+test test_prioritization::proptests::partition_complete ... ok
+test triage::tests::update_idempotent_for_same_branch_ids ... ok
+test test_prioritization::proptests::no_duplicates_in_ordered ... ok
+test test_prioritization::proptests::budget_respected ... ok
+test triage::tests::observed_directions_monotonic ... ok
+test solver::tests::prop_tests::negate_preserves_type_correctness ... ok
+test solver::tests::prop_tests::well_typed_constraints_never_panic ... ok
+test solver::tests::prop_tests::solved_values_match_param_types ... ok
+test solver::tests::prop_tests::negation_at_any_valid_index_never_panics ... ok
+test solver::tests::prop_tests::multi_param_type_preservation ... ok
+test triage::tests::triage_state_trace_count_bounded ... ok
+
+test result: ok. 1847 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 30.58s
+
+     Running tests/e2e_concolic.rs (target/debug/deps/e2e_concolic-6db12641f46204e0)
+
+running 14 tests
+test setup_file_level_scoped_per_file ... ok
+test setup_failure_skips_dependents ... ok
+test setup_teardown_runs_in_reverse_order ... ok
+test explorer_explore_function_with_setup ... ok
+test concolic_classifynumber_discovers_all_branches ... ok
+test concolic_safedivide_discovers_error_paths ... ok
+test setup_session_context_flows_to_execute ... ok
+test concolic_mock_loop_branches_discovered ... ok
+test concolic_mock_status_branches_discovered ... ok
+test concolic_mock_result_branches_discovered ... ok
+test orchestrator_explore_with_setup_context ... ok
+test concolic_comparemagnitudes_discovers_compound_branches ... ok
+test concolic_validateemail_with_literal_seeds ... ok
+test concolic_validateemail_discovers_string_paths ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 19.48s
+
+     Running tests/e2e_float_probe.rs (target/debug/deps/e2e_float_probe-8c6de3b2bbe5c74e)
+
+running 3 tests
+test float_probe_skips_non_float_params ... ok
+test float_probe_classifies_integer_treating ... ok
+test float_probe_classifies_float_sensitive ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.87s
+
+     Running tests/fuzz_deserialization.rs (target/debug/deps/fuzz_deserialization-d7c90d6d14a9e766)
+
+running 6 tests
+test fuzz_typeinfo_json ... ok
+test fuzz_request_json ... ok
+test fuzz_shatter_config_yaml ... ok
+test fuzz_function_spec_yaml ... ok
+test fuzz_symexpr_json ... ok
+test fuzz_response_json ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.52s
+
+     Running tests/rust_explore_integration.rs (target/debug/deps/rust_explore_integration-f5e227f937884011)
+
+running 5 tests
+test rust_explore_parse_config_line_analyze_instrument ... ok
+test rust_explore_classify_greeting_analyze_instrument ... ok

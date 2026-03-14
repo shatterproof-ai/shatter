@@ -1,0 +1,96 @@
+# Flotsam
+
+Personal knowledge management system — a "second brain" for capturing thoughts,
+notes, URLs, and voice dictations, with semantic search and AI integration via MCP.
+
+## What it does
+
+- **Capture**: Save bookmarks (Chrome extension), voice notes (Android app),
+  text notes, and files with minimal friction
+- **Search**: Full-text and semantic (vector) search across everything you've saved
+- **AI integration**: MCP server lets AI tools (Claude, ChatGPT, Cursor) access
+  your personal knowledge base with defense-in-depth authorization
+- **Self-hosted**: You own your data end-to-end, deployed on your VPS
+
+## Architecture
+
+```
+Clients (Chrome Extension, Android App, Web App, AI Tools via MCP)
+  │
+  ▼
+Go API Server (GraphQL + REST upload + MCP)
+  │
+  ├── PostgreSQL + pgvector (metadata, embeddings, FTS, jobs)
+  └── S3-Compatible Storage (page HTML, audio files, documents)
+```
+
+See [docs/specs/product-overview.md](docs/specs/product-overview.md) for the
+full architecture document.
+
+## Quick start
+
+```bash
+# Prerequisites: Go 1.24+, Node.js 22+, pnpm 9+, Docker
+
+cp .env.example .env          # Edit with your settings
+make dev                      # Start everything (DB + API + web)
+```
+
+| Service | URL |
+|---------|-----|
+| Web app | http://localhost:8080 |
+| API | http://localhost:8081 |
+| GraphQL Playground | http://localhost:8081/playground |
+| MinIO Console | http://localhost:9001 |
+
+## Development
+
+```bash
+make help                     # List all available targets
+make dev-db-up                # Start dev database only
+make api-build                # Build API binary
+make api-test                 # Run Go tests
+make web-install              # Install frontend dependencies
+make web-dev                  # Start frontend dev server
+make test-quick               # Fast checks (no DB required)
+make test-standard            # Full local validation
+```
+
+## Project structure
+
+```
+flotsam/
+├── api/                     # Go API server
+│   ├── cmd/server/          # Entrypoint
+│   ├── internal/            # Business logic packages
+│   ├── graph/               # GraphQL (gqlgen)
+│   └── migrations/          # SQL migrations (goose)
+├── web/                     # React/TypeScript frontend
+├── extension/               # Chrome extension (Manifest V3)
+├── mobile/                  # Android app
+├── compose/                 # Docker Compose files
+├── docs/specs/              # Product & architecture specs
+└── scripts/                 # Shell utilities
+```
+
+## Tech stack
+
+| Component | Technology |
+|-----------|-----------|
+| API | Go + chi/v5 |
+| GraphQL | gqlgen (schema-first) |
+| Database | PostgreSQL 16 + pgvector |
+| Background jobs | River (PG-backed) |
+| Object storage | S3-compatible (MinIO dev / R2 prod) |
+| Frontend | React 18 + TypeScript + Vite + Mantine 7 |
+| GraphQL client | urql + gql.tada |
+
+## Issue tracking
+
+This project uses [beads](https://github.com/bead-code/beads) for issue tracking:
+
+```bash
+bd list          # All open issues
+bd ready         # Unblocked issues ready to work
+bd show <id>     # Issue details
+```

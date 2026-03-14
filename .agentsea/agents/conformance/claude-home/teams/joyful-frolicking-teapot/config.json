@@ -1,0 +1,33 @@
+{
+  "name": "joyful-frolicking-teapot",
+  "description": "Swarm working P1 issues in parallel",
+  "createdAt": 1773195904060,
+  "leadAgentId": "team-lead@joyful-frolicking-teapot",
+  "leadSessionId": "0f7eb2f3-a9c1-4e2a-b278-c81b460e4f5b",
+  "members": [
+    {
+      "agentId": "team-lead@joyful-frolicking-teapot",
+      "name": "team-lead",
+      "agentType": "team-lead",
+      "model": "claude-opus-4-6",
+      "joinedAt": 1773195904060,
+      "tmuxPaneId": "",
+      "cwd": "/home/ketan/project/kapow",
+      "subscriptions": []
+    },
+    {
+      "agentId": "router-policy-tests@joyful-frolicking-teapot",
+      "name": "router-policy-tests",
+      "model": "claude-opus-4-6",
+      "prompt": "You are working on beads issue kapow-r4q.2: Router assembly policy tests.\n\n## WORKTREE SETUP — RUN FIRST\nBefore doing anything else, create and enter an isolated worktree:\n```bash\nREPO_ROOT=\"$(git rev-parse --show-toplevel)\"\nBRANCH_NAME=\"worktree/router-policy-tests\"\nWORKTREE_DIR=\"$REPO_ROOT/.claude/worktrees/$BRANCH_NAME\"\n\nif [ -d \"$WORKTREE_DIR\" ]; then\n  echo \"Worktree already exists, reusing\"\nelse\n  git worktree add \"$WORKTREE_DIR\" -b \"$BRANCH_NAME\"\nfi\n\ncd \"$WORKTREE_DIR\"\n```\nVerify you are in the right place:\n```bash\necho \"CWD: $(pwd)\"\necho \"Branch: $(git branch --show-current)\"\necho \"$(pwd)\" | grep -q '\\.claude/worktrees/' && echo \"WORKTREE VERIFIED\" || echo \"FATAL: NOT in a worktree\"\n```\nIf verification fails, STOP.\n\nALL subsequent commands must run from this worktree directory.\n\n## Issue Details\n**kapow-r4q.2: Router assembly policy tests**\n\nAdd assembled router tests that validate CORS, route protection, optional versus mandatory auth behavior, export behavior, private-route policy, and MCP policy at the router level rather than only through isolated middleware tests.\n\n**Acceptance Criteria**: Router-level tests cover the agreed protected routes and policy-sensitive behavior. CORS, auth mode, private routes, export behavior, and MCP behavior are exercised in assembled router tests. The tests would catch earlier router or policy drift classes.\n\n## Instructions\n1. Read CLAUDE.md and api/CLAUDE.md for Go conventions and testing standards\n2. Read api/internal/router/ to understand the current router setup\n3. Read api/internal/middleware/ for existing middleware (Auth, CORS, etc.)\n4. Read docs/specs/authentication.md for route-level auth table\n5. Read existing router tests if any exist\n6. Create/extend `api/internal/router/router_test.go` with table-driven tests covering:\n   - CORS headers on preflight and actual requests\n   - Auth behavior: /graphql (OptionalAuth), /mcp/* (mandatory Auth), /api/export/* (no auth), /private/* (no auth)\n   - Route existence and method constraints\n   - MCP routes require valid JWT (401 without)\n   - Export routes work without auth\n   - Private routes work without auth\n7. Use httptest.NewServer or httptest.NewRecorder with the assembled router\n8. Tests should be unit tests (no DB required) — mock or stub the DB pool if needed\n\n## Quality Gate\nGo-only change. Run: `make api-test-unit && make api-lint`\n\n## When Done\nCommit and push:\n```bash\ngit add -A\ngit commit -m \"test: add router assembly policy tests\n\nValidates CORS, route protection, auth modes (optional/mandatory/none),\nexport behavior, private-route policy, and MCP policy at the assembled\nrouter level.\n\nCloses kapow-r4q.2\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\"\ngit push -u origin HEAD\n```\nReport completion with test count and coverage info.",
+      "color": "orange",
+      "planModeRequired": true,
+      "joinedAt": 1773196041002,
+      "tmuxPaneId": "%94",
+      "cwd": "/home/ketan/project/kapow",
+      "subscriptions": [],
+      "backendType": "tmux",
+      "isActive": true
+    }
+  ]
+}

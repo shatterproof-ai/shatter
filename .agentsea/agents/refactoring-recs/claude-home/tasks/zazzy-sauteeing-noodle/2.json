@@ -1,0 +1,9 @@
+{
+  "id": "2",
+  "subject": "str-fpgb.3: Lifecycle schema coverage",
+  "description": "Schemas include valid setup and teardown request/response variants; fixtures cover those messages; schema validation accepts lifecycle traffic. Beads ID: str-fpgb.3",
+  "owner": "t2-fpgb3",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

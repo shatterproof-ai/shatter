@@ -1,0 +1,526 @@
+## Demo: rename demo:test to demo:autopilot and add pause/backward/autopilot controls
+- Priority: 2
+- Labels: demo, enhancement
+
+Demo controller changes:
+- Rename `demo:test` to `demo:autopilot`
+- Overlay shows play/pause, back, and forward controls in all modes
+- In manual mode, add "Start Autopilot" button that continues from current step
+- Going backward shows the previous step's state without full replay
+- Each step gets a `setup()` function that can independently establish its precondition state (URL + key interactions), enabling non-sequential navigation
+- Add deviation detection: before advancing, verify page state matches expectations; if not, show warning with option to re-run setup or continue anyway
+
+---
+
+## Demo: step 14/16 mobile view fails on "site header"
+- Priority: 2
+- Labels: demo, bug
+
+Step 14/16 (Mobile View) fails the "Site header" assertion (`selector: 'header'`). The `<header>` element is visually present on mobile (confirmed via screenshot). Likely a timing issue — the `page.goto` may not fully render the header before `verify()` runs at mobile viewport size. Investigate and fix the assertion timing or selector.
+
+---
+
+## Demo: mobile search window width doesn't match content width
+- Priority: 2
+- Labels: demo, bug
+
+Mobile search window shows a white bar (content doesn't fill full width) during demo mobile steps. Not reproducible with manual browser resize — likely a Playwright `page.setViewportSize()` issue where the viewport doesn't trigger the same responsive behavior as a real mobile browser. Investigate whether the demo needs additional viewport setup (e.g., device emulation instead of raw viewport size) or if the app CSS has an edge case at exactly 375px.
+
+---
+
+## Demo: step 3/16 Add Filters fails on filter dropdown select
+- Priority: 2
+- Labels: demo, bug
+
+Step 3/16 (Add Filters) fails the "Filter dropdown" assertion with selector `select`. The `<select>` element exists in the DOM (confirmed manually — it's the locale selector for City/Suburb/Town/Rural). Likely a timing or visibility issue — the filter sidebar may not be fully rendered or visible when `verify()` checks. Investigate whether the step's action needs to wait for filter panel to be visible before asserting.
+
+---
+
+## Demo: step 11/16 About Page fails on section heading h2
+- Priority: 2
+- Labels: demo, bug
+
+Step 11/16 (About Page) fails the "Section heading" assertion with selector `h2`. The `<h2>` element exists in the DOM (confirmed manually — "Our Mission" heading in a `<section>`). Likely a timing issue — the page may not be fully rendered when `verify()` runs. Investigate wait/timing in the step's action.
+
+---
+
+## Demo: manual mode exits after timeout when pausing interaction
+- Priority: 2
+- Labels: demo, bug
+
+Manual mode exits after 30s because `waitForAdvance()` uses a hardcoded 30s timeout in `page.waitForFunction`. Fix:
+- Manual mode should use `timeout: 0` (wait indefinitely)
+- Switching from autopilot to manual should change timeout to 0
+- Switching from manual to autopilot should set timeout to the autopilot default
+- All timeout values should be named constants, not inline literals
+
+---
+
+## Map view: should be wider, toggled on any view, positioned above facets/results
+- Priority: 2
+- Labels: map, enhancement
+
+Redesign map as a toggle overlay that works with any result view (card/list/table):
+
+**Layout:**
+- Map sits above facets and search results, full width minus small padding
+- Height is responsive to viewport by default — user should still see useful content below. User-resizable.
+- Map toggle button is in the toolbar but visually offset from the card/list/table view switcher to make it clear it's a different kind of control
+
+**Result/map interaction:**
+- Hovering over a result highlights the corresponding pin (color change)
+- Viewing an individual result card highlights the pin
+- Hovering over a pin highlights the corresponding result in the card/list/table view below
+- When hovering a pin, scroll the results to make the highlighted result visible (try this; may revert if UX feels wrong)
+
+**Mobile (Airbnb-style):**
+- Map stays visible at top even on mobile viewport
+- Results are in a scrollable area below the map — scrolling results does not hide the map
+- Clicking a result opens card view that fully covers the results list (but not the map)
+- Active result highlighted on map via pin color
+
+---
+
+## Demo: search term should match multiple universities, not just "Stanford"
+- Priority: 2
+- Labels: demo, enhancement
+
+Change demo search term from "Stanford" to "technology" to demonstrate multi-result searches. Update all steps that reference the search term accordingly.
+
+---
+
+## Search: application-level synonym/abbreviation expansion
+- Priority: 2
+- Labels: search, enhancement
+
+Add an application-level synonym map for common search term expansions (e.g., tech↔technology, CS↔computer science, eng↔engineering). When a user searches, expand the query using the synonym map before sending to the database. This should be a maintainable data structure (not hardcoded in query logic) and covered by tests. Prefix matching (`tech:*`) was considered but rejected as too broad.
+
+---
+
+## Demo: clicking through initial manual step too fast causes incomplete typing
+- Priority: 2
+- Labels: demo, bug
+
+Clicking "Next Step" before the current step's action completes (e.g., mid-typing of search term) causes incomplete state. Fix: disable the advance button until the step's `action()` promise has resolved. The overlay should not allow advancing until the step is fully complete.
+
+---
+
+## Search button on homepage nearly invisible
+- Priority: 1
+- Labels: ui, bug
+
+Search button on homepage is nearly invisible (white text, gray background; black background on hover).
+
+Fix: use brand primary (dark blue `brand.9`) with white text for the search button. Additionally, establish a consistent primary/secondary button design system using Mantine's variant/color props:
+- **Primary buttons**: `variant="filled" color="brand"` (dark blue bg, white text)
+- **Secondary buttons**: `variant="outline" color="brand"` or `variant="light" color="brand"`
+- Apply this standard to all buttons throughout the app, not just the homepage search button
+
+---
+
+## Remove city from facet display
+- Priority: 2
+- Labels: search, enhancement
+
+Hide city from the facet sidebar in the frontend. Keep it searchable via the API (do not remove from the search field registry).
+
+---
+
+## Remove latitude/longitude from facet list
+- Priority: 2
+- Labels: search, enhancement
+
+Hide latitude/longitude from the facet sidebar in the frontend. Keep in the API, but lat/long should only be accepted in conjunction with an explicit distance/radius parameter — reject bare lat/long queries (no exact-match geo search).
+
+---
+
+## Radius facet should be below location and conditional on location value
+- Priority: 2
+- Labels: search, enhancement
+
+Radius facet should be positioned directly below zip code/browser location in the facet sidebar. Only visible/enabled when a location value is provided. Dropdown with preset options (10, 25, 50, 100, 250 miles). Default to 50 miles when location is set.
+
+---
+
+## Carousel cards: right border on third card is cut off
+- Priority: 2
+- Labels: ui, bug
+
+Third carousel card's right border is cut off in the default display. Fix: size the carousel and cards so that only whole cards are shown — Mantine's Carousel supports `slideSize` and `slideGap` props that should handle this. At the widest viewport, three full cards should be visible without clipping.
+
+---
+
+## Free text field: connect via WebMCP to browser chat or built-in Claude API
+- Priority: 3
+- Labels: feature, ai
+
+Natural language search: user types a free-text question (e.g., "small engineering schools in California with good financial aid"), which gets converted to structured search filters, and results are displayed on the search page. The original question is shown in a text box at the top of the page (separate from the facets).
+
+**Two paths for NL→filter conversion:**
+1. **WebMCP (preferred)**: If the user has a browser-based LLM integration (Claude, Gemini, etc.), connect via WebMCP. The LLM uses Kapow's existing MCP tools (`search_colleges`, `get_search_fields`) to convert the question to filters.
+2. **Built-in fallback**: If no browser AI is available, the Kapow backend calls the Claude API directly (new `ANTHROPIC_API_KEY` env var) with the MCP tools to convert the question to structured filters, then returns the filter set to the frontend.
+
+In both cases the output is a set of search filters applied to the normal search page — not a chat interface.
+
+---
+
+## List view: show more useful information (aim for 5 fields)
+- Priority: 2
+- Labels: ui, enhancement
+
+List view currently shows name and location. Expand to show 6 fields:
+
+1. **Institution type** (Public/Private)
+2. **Total enrollment**
+3. **Total price** — in-state if user's location matches the institution's state, out-of-state otherwise
+4. **Acceptance rate**
+5. **Setting/locale** (City: Large, Suburb: Small, etc.)
+6. **SAT/ACT range**
+
+---
+
+## Research: data source for top programs / what a school is known for
+- Priority: 3
+- Labels: data, research
+
+Investigate available data sources for "top programs" or "what a school is known for" information. This could come from NCES CIP codes (fields of study with enrollment counts), College Scorecard program-level data, or third-party rankings by major. Goal: determine if we can surface 2-3 top programs per institution.
+
+---
+
+## Card view: show more information (aim for 10 fields)
+- Priority: 2
+- Labels: ui, enhancement
+
+Card view currently shows only name and location. Expand to show 12 fields (includes the 6 from the list view plus 6 more):
+
+**From list view:**
+1. Institution type (Public/Private)
+2. Total enrollment
+3. Total price (in-state/out-of-state based on user location)
+4. Acceptance rate
+5. Setting/locale
+6. SAT/ACT range
+
+**Additional for card view:**
+7. Graduation rate
+8. Student-to-faculty ratio
+9. Best ranking (top rank from any major ranking system)
+10. Average class size
+11. Athletic conference
+12. Climate (Koppen group — warm/cold/temperate)
+
+---
+
+## Search: default sort order needs design (distance if location available)
+- Priority: 2
+- Labels: search, enhancement
+
+Default sort order logic:
+- **With location set**: sort by distance (nearest first)
+- **With search query**: sort by relevance (full-text rank)
+- **With both**: sort by relevance, distance as tiebreaker
+- **Neither (just browsing)**: sort alphabetically
+
+---
+
+## Search: region facet should be multi-select
+- Priority: 2
+- Labels: search, enhancement
+
+"Region" should be multi-select in the faceted search. Use the same multi-select component as all other multi-select facets — the multi-select approach should be controlled by a single shared component/pattern so it can be changed globally.
+
+---
+
+## Search: multiple-choice facets should be sorted alphabetically by default
+- Priority: 2
+- Labels: search, enhancement
+
+All multiple-choice facets should be sorted alphabetically by default. Support an optional custom ordering in the field metadata that overrides alphabetical. Candidates for custom ordering (need review before implementation):
+- **Locale type**: urban→rural gradient (City: Large → Rural: Remote)
+- **Climate fields**: natural climate zone ordering
+- Others TBD — file list of all enum facets with proposed ordering for review before implementing
+
+---
+
+## Search: region should not include "US Service Schools"
+- Priority: 2
+- Labels: search, data
+
+"Region" should not include "US Service Schools" (NCES region_id=0) — that is not a geographical region. Remove it from the enum options in `registry.go`. Remap the 5 affected institutions to their actual geographic region:
+- US Air Force Academy (CO) → Rocky Mountains (7)
+- US Coast Guard Academy (CT) → New England (1)
+- US Merchant Marine Academy (NY) → Mid East (2)
+- US Military Academy (NY) → Mid East (2)
+- US Naval Academy (MD) → Mid East (2)
+
+This can be done via a migration that updates the JSONB `nces.region_id` field, or via a lookup/override in the application layer.
+
+---
+
+## Research: source ROTC program data (Army, Navy, Air Force)
+- Priority: 2
+- Labels: data, research
+
+We want a search field for which ROTC programs a university hosts (Army, Navy, Air Force). Current NCES data only has `program_bachelors_military` / `program_percentage_military` which indicates military-related degree programs, not ROTC hosting. ROTC host school data likely comes from the Department of Defense or individual service branches. Research available data sources, determine ingestion approach, and then implement as a multi-select facet.
+
+---
+
+## Detail card: expanded result card shows no data
+- Priority: 1
+- Labels: ui, bug
+
+Clicking on a card in the card view pops up an expanded result card with no data in it. Two parts:
+
+**Bug (P1):** Fix the data binding so the detail card actually displays data.
+
+**Enhancement:** Show a curated set of fields grouped by theme:
+
+- **Core**: Institution name, type (Public/Private), Carnegie Basic classification (code→label mapping needed)
+- **Location**: City, state, region, setting/locale (carnegie_size_setting)
+- **Academics**: Student-to-faculty ratio, average class size
+- **Cost**: In-state tuition, out-of-state tuition, total price (smart in/out-of-state), net price
+- **Admissions**: Acceptance rate, SAT range, ACT range, application fee, application platform
+- **Outcomes**: Graduation rate, retention rate, median earnings after graduation, transfer rate
+- **Ranking**: Best ranking(s), blend score
+- **Athletics**: Athletic conference, NCAA division
+- **Demographics**: Total enrollment, undergraduate enrollment, gender breakdown, minority-serving designations (HBCU, HSI, AANAPISI, PBI — show as badges only when applicable)
+- **Cultural Environment**: Partisan score/direction, religious affiliation, coeducational status
+- **Weather**: Climate group, temperature subtype, precipitation subtype
+- **Student Life**: Religious affiliation, coeducational status, room & board
+- **Metadata**: School URL (as link), accreditor, highest degree awarded
+- **Physical Environment**: Skip for now (no data)
+- **Safety**: Skip for now (needs data sourcing — separate research task)
+
+---
+
+## Similar schools: very slow performance
+- Priority: 2
+- Labels: performance, bug
+
+"Find similar schools" takes ~15 seconds. Likely the API query, not frontend rendering. Investigate the similar schools query — check for missing indexes, expensive joins, or unoptimized similarity calculation. Profile with `EXPLAIN ANALYZE`.
+
+---
+
+## Similar schools: add button to expand search via main search page
+- Priority: 2
+- Labels: ui, enhancement
+
+After seeing "similar schools" results on a detail card, show a button (e.g., "Search for more schools like this") that navigates to the search page in a special "similar to: [Institution Name]" mode. This is a distinct search type from faceted search — it uses the same similarity algorithm with full pagination/sorting, and the user can layer additional facet filters on top. Do not expose the underlying similarity query as individual facets.
+
+---
+
+## Similar schools: loads on other cards without activation
+- Priority: 2
+- Labels: ui, bug
+
+Similar schools state leaks across cards — after activating it on one institution, navigating to a different institution shows similar schools without requiring activation. Fix: scope the "similar schools active" state to a specific institution ID and reset it when navigating to a different card.
+
+---
+
+## Similar schools: no way to dismiss once visible
+- Priority: 2
+- Labels: ui, bug
+
+No way to dismiss similar schools once visible. Fix: make the "Find similar schools" button a toggle — clicking it again hides the similar schools section.
+
+---
+
+## Detail card: add next/previous result navigation
+- Priority: 2
+- Labels: ui, enhancement
+
+Add next/previous navigation to the detail card view. Include a position indicator ("3 of 47"). Support keyboard navigation (left/right arrow keys). Disable previous on first result, next on last result.
+
+---
+
+## Detail card: institution name shown twice at top
+- Priority: 2
+- Labels: ui, bug
+
+The detail card view shows the institution name twice at the top. Remove the duplicate — likely one is from the modal title and one from the card content.
+
+---
+
+## Search: remove "graduate enrollment" facet
+- Priority: 2
+- Labels: search, enhancement
+
+Hide "graduate enrollment" from the facet sidebar. Keep it searchable via the API.
+
+---
+
+## Search: rename "gender" facet to "coeducational enrollment" or similar
+- Priority: 2
+- Labels: search, enhancement
+
+Rename the "gender" facet to "Coeducation Status" with options: "Coeducational", "Men Only", "Women Only" (derived from `men_only` / `women_only` NCES flags).
+
+---
+
+## Search: remove "room and board" facet
+- Priority: 2
+- Labels: search, enhancement
+
+Hide "room and board" from the facet sidebar. Keep it searchable via the API.
+
+---
+
+## Facets: consolidate description/citation tooltips
+- Priority: 2
+- Labels: ui, enhancement
+
+Consolidate the two tooltips per facet label:
+- **Description**: show on hover over the facet label itself (no separate icon)
+- **Citation**: show as a tooltip on a book icon (replace the current circle+i icon)
+
+---
+
+## Facets: remove NCES reference from tooltip descriptions
+- Priority: 2
+- Labels: ui, enhancement
+
+Strip the `(NCES: x_y_z)` suffix from all facet field descriptions in the search registry. The NCES field name is an internal reference, not useful to users.
+
+---
+
+## Search: "fields of study" facet has nothing to interact with
+- Priority: 1
+- Labels: search, bug
+
+The "fields of study" facet is non-functional. Fix:
+
+1. **Remove** the `program_percentage_*` and `program_bachelors_*` NCES fields from the search registry entirely — they track enrollment, not available programs, and are not useful for search. May revisit for detail view later.
+2. **Implement** the fields of study facet using the `nces_fos` data in the `dataset` table (theme=FIELDS_OF_STUDY). This has per-institution CIP codes with program descriptions and credential levels.
+3. **UI**: search-as-you-type multi-select drawing from the `cip_data` table (~401 Bachelor's entries). Filter to Bachelor's degrees only.
+4. Selecting a program filters to institutions that offer that program at the Bachelor's level.
+
+---
+
+## Facets: combine partisan direction and score into R-to-D color-coded slider
+- Priority: 2
+- Labels: ui, enhancement
+
+Replace the separate "partisan direction" and "partisan score" facets with a single combined-score range slider. Combine direction and magnitude into one value (e.g., -1.0 = strong R, +1.0 = strong D). Slider is color-coded red on the R end, blue on the D end. Two drag handles for range selection, default includes the entire range.
+
+---
+
+## Search: expand application platforms to include UC, ApplyTexas, ApplySUNY, etc.
+- Priority: 2
+- Labels: search, data, enhancement
+
+The application platforms facet isn't showing its options. The data already exists in the DB (Common App: 947, Coalition: 175, ApplyTexas: 113, Apply SUNY: 50, Universal College Application: 42, California State: 16, University of California: 10). Fix the facet to expose these as a multi-select. Investigate why the options aren't populating — likely the facet is misconfigured or missing enum options in the registry.
+
+---
+
+## Facets: clean up Koppen climate field labels and make multiselect
+- Priority: 2
+- Labels: search, enhancement
+
+All Koppen fields should be multiselect. Rename labels:
+- "Koppen Climate Group" → "Climate"
+- "Koppen Temperature Subtype" → "Temperature"
+- "Koppen Precipitation Subtype" → "Precipitation"
+
+"Koppen" can remain in the tooltip descriptions but not in the labels.
+
+---
+
+## Facets: enrollment/cost min-max should be dropdowns with increment steps
+- Priority: 2
+- Labels: ui, enhancement
+
+Replace free-text min/max inputs with dropdowns for enrollment and cost fields.
+
+**Enrollment**: 0, 1000, 2000, ... 10,000 (by 1,000), then 12,500, 15,000, ... 50,000 (by 2,500), then "Unlimited"
+
+**Cost**: 0, 5000, 10,000, ... 30,000 (by $5,000), then 40,000, 50,000, ... 80,000 (by $10,000), then "Unlimited"
+
+All increment steps, bounds, and labels must be factored into well-named constants/configuration (not inline literals) so they're easy to find and modify.
+
+---
+
+## Facets: move custom rankings blend widget to rankings group
+- Priority: 2
+- Labels: ui, enhancement
+
+The "custom rankings blend" widget should be with the rankings facet group.
+
+---
+
+## Facets: make every facet group collapsible with active indicator
+- Priority: 2
+- Labels: ui, enhancement
+
+Every facet group should be collapsible. When collapsed with active filters, show both a count badge ("3 active filters") and a brief summary of the active values (e.g., "CA, NY, TX").
+
+---
+
+## Search: show active filter pills at top of results with dismiss button
+- Priority: 2
+- Labels: ui, enhancement
+
+Show active filter pills at the top of search results. Each pill displays "Field: Value" (e.g., "State: California") with an X button to remove that filter. Also include a "Clear all" action when multiple filters are active.
+
+---
+
+## Custom ranking blend: summary display with modal editor
+- Priority: 2
+- Labels: ui, enhancement
+
+The custom ranking blend should not be editable directly on the search page; it should just be a summary display (with no summary if there isn't a custom ranking blend). The user should have an edit button/link to modify it that spawns a separate modal widget where they can edit the blend. This does not modify search results until the user indicates completion.
+
+---
+
+## Search: add sort options for list and card view
+- Priority: 2
+- Labels: ui, enhancement
+
+We need sort options on the list and card view. That needs a design.
+
+---
+
+## Table view: show many more columns by default with horizontal scroll
+- Priority: 2
+- Labels: ui, enhancement
+
+The table view needs to show many more columns by default. A horizontal scroll bar is acceptable.
+
+---
+
+## Table view: institution type shows as number instead of descriptive word
+- Priority: 2
+- Labels: ui, bug
+
+In the table view, "institution type" shows up as a number. It should be the descriptive word.
+
+---
+
+## Data: filter out non-real institution locations (e.g. ASU-Pima transfer paths)
+- Priority: 2
+- Labels: data, bug
+
+Many institutions don't have a total enrollment number e.g. Arizona State University - Pima. That appears not to be a real location but rather a transfer path from Pima Community College to ASU. These should not be shown. Probably marked as a community college; we don't want to show those. Needs investigation.
+
+---
+
+## PDF export: terrible formatting with squeezed columns and ugly colors
+- Priority: 2
+- Labels: export, bug
+
+The PDF export has all columns squeezed so narrow that text is stretched out vertically and unreadable. Also has white text on dark blue background that is ugly. If there are many columns, should split horizontally across successive pages; leftmost two columns should always be institution name and location.
+
+---
+
+## PDF export: Koppen temperature subtype shows letter code instead of label
+- Priority: 2
+- Labels: export, bug
+
+The "Koppen temperature subtype" in the PDF export seems to be a letter code rather than a useful label.
+
+---
+
+## csv export: clicking export gives "missing or malformed authorization header"
+- Priority: 1
+- Labels: export, bug
+
+Clicking the csv export just gives "missing or malformed authorization header" error. Export should work without authentication or handle auth properly.

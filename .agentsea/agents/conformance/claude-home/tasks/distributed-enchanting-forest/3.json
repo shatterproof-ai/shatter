@@ -1,0 +1,9 @@
+{
+  "id": "3",
+  "subject": "str-ws3k: Go malformed JSON response",
+  "description": "Fix Go frontend silently dropping malformed JSON. Add failing test that expects invalid_request response, then implement the fix. Beads ID: str-ws3k",
+  "owner": "go-json",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

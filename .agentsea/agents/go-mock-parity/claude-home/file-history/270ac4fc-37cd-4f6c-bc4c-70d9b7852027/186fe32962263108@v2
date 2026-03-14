@@ -1,0 +1,190 @@
+# API — Claude Instructions
+
+Go API server. Module: `github.com/ketang/flotsam/api`. All paths below are
+relative to `api/` unless noted.
+
+---
+
+## Startup sequence (`cmd/server/main.go`)
+
+1. Load `.env` via godotenv (no-op if absent — dev convenience only)
+2. Parse all config from env vars → `internal/config.Config`
+3. Set the default `slog` logger (format/level from config)
+4. Connect pgxpool with retry → `internal/db.Connect`
+5. Initialize S3 storage client → `internal/storage.New`
+6. Start River background job processor → `internal/worker.Start`
+7. Choose JWT validator: HMACValidator (HS256) using `JWT_SECRET`
+8. Build chi router with all middleware and routes → `internal/router.New`
+9. Start HTTP server; block on SIGINT/SIGTERM; graceful shutdown
+
+---
+
+## Package map
+
+| Package | Purpose |
+|---|---|
+| `internal/config` | Env var binding via `caarlos0/env` struct tags |
+| `internal/auth` | JWT validation, password hashing (bcrypt) |
+| `internal/db` | pgxpool connection with retry; goose embedded migration runner |
+| `internal/item` | Item CRUD, search (FTS + semantic) |
+| `internal/middleware` | RequestID, Logging (slog), Recovery, Auth, RateLimit |
+| `internal/router` | Chi router wiring — routes, middleware, GraphQL handler |
+| `internal/mcp` | MCP server + per-client authorization |
+| `internal/provider` | AI provider interfaces (embedding, transcription, classification) |
+| `internal/storage` | S3 client abstraction (MinIO dev / R2 prod) |
+| `internal/worker` | River background job definitions (page fetch, transcription, etc.) |
+| `internal/server` | `http.Server` with production timeouts; `Shutdown` helper |
+| `graph/schema/` | GraphQL SDL files (source of truth) |
+| `graph/generated/` | gqlgen output — **never edit manually** |
+| `graph/model/` | Generated Go types — **never edit manually** |
+| `graph/resolver/` | Hand-written resolver implementations |
+| `migrations/` | Goose SQL files + `//go:embed` wrapper (`migrations.go`) |
+
+---
+
+## Go conventions
+
+- **Error wrapping**: `fmt.Errorf("package: context: %w", err)` — always include package prefix
+- **Logging**: `slog.Error("msg", "key", val, "error", err)` — structured, never `fmt.Println`
+- **Constructors**: return `(T, error)`; caller decides how to handle; never panic on bad input
+- **Context**: always the first parameter — `func Foo(ctx context.Context, ...)`
+- **Package names**: single lowercase word matching the directory name
+- **File layout**: exported types first, unexported helpers below
+- **Interfaces**: named by behaviour (`Validator`, not `IValidator`); defined where consumed
+- **Dependencies**: passed explicitly through structs (e.g. `router.Deps`); no `init()` globals
+- **SQL**: always parameterized (`$1`, `$2`); never `fmt.Sprintf` into a query string
+
+---
+
+## Authentication (`internal/auth`)
+
+`Validator` interface with `HMACValidator` (HS256, `JWT_SECRET`).
+
+### Request flow
+
+1. **Auth middleware** (`middleware.Auth`) extracts `Authorization: Bearer <token>`,
+   validates the JWT, and stores `*auth.Claims` in the request context.
+2. Resolvers access the authenticated user via `auth.GetClaims(ctx)`.
+
+### Protected routes
+
+- `/graphql` — **OptionalAuth** (anonymous allowed for health; auth required for mutations)
+- `/mcp/*` — **Auth** (mandatory JWT or API key; 401 if missing/invalid)
+- `/upload` — **Auth** (mandatory JWT)
+- `/health` — no auth
+
+---
+
+## GraphQL (`graph/`, gqlgen — schema-first)
+
+### Workflow for adding a query or type
+
+1. Edit or create a `.graphql` file under `graph/schema/`
+2. `make generate` — regenerates `graph/generated/generated.go` and `graph/model/models_gen.go`
+3. Implement the new resolver method in `graph/resolver/schema.resolvers.go`
+4. Add new deps to the `Resolver` struct in `graph/resolver/resolver.go` and wire them in `router.go`
+
+---
+
+## Database & migrations
+
+- **PostgreSQL 16+** with pgvector
+- **Driver**: `jackc/pgx/v5` + `pgxpool` — context-aware, async
+- **Migrations**: `pressly/goose/v3` embedded in binary via `migrations/migrations.go`
+
+### Creating a migration
+
+```bash
+make migrate-create NAME=short_description
+# → creates migrations/NNNN_short_description.sql
+```
+
+Write the migration using Goose markers:
+
+```sql
+-- +goose Up
+ALTER TABLE items ADD COLUMN foo text;
+
+-- +goose Down
+ALTER TABLE items DROP COLUMN foo;
+```
+
+Then apply:
+
+```bash
+make migrate-up
+```
+
+---
+
+## Background jobs (River)
+
+PG-backed job queue using [River](https://riverqueue.com). Jobs are defined in
+`internal/worker/` and registered at startup.
+
+### Job types
+
+| Job | Purpose | Trigger |
+|---|---|---|
+| PageFetch | Fetch + extract readable content from bookmark URLs | Bookmark capture |
+| Transcribe | Transcribe audio via Whisper API or local whisper.cpp | Voice note upload |
+| Embed | Generate vector embedding for item content | Item create/update |
+| Classify | Auto-extract metadata (category, people, topics) via LLM | After content ready |
+| S3Upload | Upload large content to S3 | File/audio upload |
+
+### Adding a job
+
+1. Create `internal/worker/<job_name>.go` with a struct implementing `river.Worker`
+2. Register the worker in `internal/worker/start.go`
+3. Enqueue from service layer: `river.Client.Insert(ctx, &MyJobArgs{...})`
+
+---
+
+## Provider interfaces (`internal/provider`)
+
+Pluggable AI service interfaces with local fallback for sensitive content:
+
+```go
+type EmbeddingProvider interface {
+    Embed(ctx context.Context, text string) ([]float32, error)
+    EmbedBatch(ctx context.Context, texts []string) ([][]float32, error)
+    Dimensions() int
+}
+
+type TranscriptionProvider interface {
+    Transcribe(ctx context.Context, audio io.Reader, opts TranscribeOpts) (string, error)
+}
+
+type ClassificationProvider interface {
+    Classify(ctx context.Context, content string) (*Classification, error)
+}
+```
+
+Routing: if item sensitivity >= `sensitive`, use local providers (Ollama).
+Otherwise, use configured default (OpenAI).
+
+---
+
+## Testing
+
+### Rules
+
+- **Target >= 80% line coverage per package** via unit tests (`-short`). Document exceptions.
+- **Never touch a real DB in unit tests.** Use `testing.Short()` guards in integration tests.
+- **Write tests alongside code**, not as a follow-up.
+
+### Unit vs integration
+
+- Unit tests: no DB, no network; run via `make test-unit` (`-short`)
+- Integration tests: name prefixed `Integration`; skip when `testing.Short()` is true or `DATABASE_URL` is unset
+- New GraphQL queries require: resolver unit tests **and** an integration test
+
+### Per-package expectations
+
+| Package | Unit coverage | Notes |
+|---|---|---|
+| `internal/item` | >= 80% | Core logic |
+| `internal/auth` | >= 80% | |
+| `internal/config` | >= 80% | |
+| `internal/provider` | >= 80% | Test with mocked APIs |
+| `cmd/server`, `internal/router` | exempt | Wiring-only; covered by integration tests |

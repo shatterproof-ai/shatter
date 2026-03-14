@@ -1,0 +1,908 @@
+import { useEffect, useMemo, useState, useCallback } from 'react'
+import { useSearchParams } from 'react-router-dom'
+import { useQuery } from 'urql'
+import {
+  Box,
+  Button,
+  Collapse,
+  Container,
+  Flex,
+  Group,
+  NativeSelect,
+  Pagination,
+  SimpleGrid,
+  Stack,
+  Text,
+  Title,
+} from '@mantine/core'
+import { useDisclosure, useMediaQuery } from '@mantine/hooks'
+import { Download, FileDown, SlidersHorizontal } from 'lucide-react'
+import {
+  type SearchField,
+  type SearchInstitution,
+  type SearchOutputField,
+  type UserLocationValue,
+  type ViewMode,
+  fieldsByTheme,
+  buildFilterInputs,
+  serializeFilterValue,
+  parseUrlToFilters,
+  parseBlendParam,
+  serializeBlendWeights,
+  FilterControl,
+  LocationInput,
+  InstitutionDetail,
+  InstitutionCard,
+  InstitutionCardSkeleton,
+  ResultsList,
+  ResultsMap,
+  ResultsTable,
+  ColumnPicker,
+  ViewToggle,
+  downloadSearchPdf,
+  RankingBlendBuilder,
+  type SortState,
+} from '@/components/search'
+import { useDataSources } from '@/components/search/useDataSources'
+
+// ── Constants ────────────────────────────────────────────────────────────────
+
+const MAX_RESULTS = 100
+const PAGE_SIZE_OPTIONS = [5, 10, 20, 50, 100]
+const DEFAULT_PAGE_SIZE = 20
+const VISIBLE_COLUMNS_KEY = 'kapow:visible-columns'
+const COLUMN_ORDER_KEY = 'kapow:column-order'
+const VIEW_MODE_KEY = 'kapow:results-view'
+const VALID_VIEW_MODES: ViewMode[] = ['card', 'list', 'table', 'map']
+
+// ── GraphQL queries ────────────────────────────────────────────────────────────
+
+const SearchFieldsQuery = `
+  query SearchFields {
+    searchFields {
+      __typename
+      name
+      label
+      description
+      theme
+      visibility
+      searchability
+      exportable
+      dataSourceID
+      ... on ChoiceSearchField {
+        options {
+          value
+          displayName
+        }
+        minSelections
+        maxSelections
+      }
+      ... on NumericalSearchField {
+        min
+        max
+        step
+        unit
+        defaultValue
+      }
+      ... on NumericalRangeSearchField {
+        min
+        max
+        step
+        unit
+        defaultLower
+        defaultUpper
+      }
+      ... on GeoSearchField {
+        defaultLatitude
+        defaultLongitude
+        maxRadiusMiles
+      }
+    }
+  }
+`
+
+const SearchOutputFieldsQuery = `
+  query SearchOutputFields {
+    searchOutputFields {
+      name
+      label
+      theme
+      defaultVisible
+      exportable
+      dataSourceID
+      sortable
+      unit
+      outputKey
+    }
+  }
+`
+
+const SearchQuery = `
+  query Search($filters: [FilterInput!], $limit: Int, $offset: Int, $sort: SortInput, $userLocation: UserLocation, $rankingBlend: [RankingBlendWeight!]) {
+    search(filters: $filters, limit: $limit, offset: $offset, sort: $sort, userLocation: $userLocation, rankingBlend: $rankingBlend) {
+      results {
+        unitID
+        name
+        city
+        state
+        latitude
+        longitude
+        distance
+        myPrice
+        blendScore
+        locationDetails {
+          locale
+          region
+          metroArea
+          metroDistance
+        }
+        academics {
+          institutionType
+          highestDegree
+          enrollment
+          gradEnrollment
+          studentFacultyRatio
+          fullTimeFacultyRate
+          menOnly
+          womenOnly
+          onlineOnly
+        }
+        cost {
+          avgNetPrice
+          tuitionInState
+          tuitionOutOfState
+          roomAndBoard
+          avgNetPriceLowIncome
+          pellGrantRate
+          federalLoanRate
+          endowment
+        }
+        outcomes {
+          admissionRate
+          graduationRate
+          retentionRate
+          transferRate
+        }
+        rankings {
+          usNewsNational
+          usNewsLiberalArts
+          forbes
+          washingtonMonthlyNational
+          washingtonMonthlyLiberalArts
+          niche
+          moneyScore
+        }
+        admissions {
+          applicationPlatforms
+        }
+        athletics {
+          ncaaDivision
+          ncaaConference
+        }
+        climate {
+          koppenClimate
+          koppenTemperature
+          koppenPrecipitation
+        }
+        culture {
+          partisanDirection
+          partisanScore
+        }
+      }
+      total
+      limit
+      offset
+    }
+  }
+`
+
+// ── Search page ────────────────────────────────────────────────────────────────
+
+export function Search() {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [selectedUnitID, setSelectedUnitID] = useState<string | null>(null)
+  const [detailOpened, setDetailOpened] = useState(false)
+  const [filtersOpened, { toggle: toggleFilters }] = useDisclosure(false)
+  const isDesktop = useMediaQuery('(min-width: 62em)')
+
+  // ── View mode state ──────────────────────────────────────────────────────
+  const [viewMode, setViewMode] = useState<ViewMode>(() => {
+    const fromUrl = searchParams.get('view')
+    if (fromUrl && VALID_VIEW_MODES.includes(fromUrl as ViewMode)) return fromUrl as ViewMode
+    const fromStorage = localStorage.getItem(VIEW_MODE_KEY)
+    if (fromStorage && VALID_VIEW_MODES.includes(fromStorage as ViewMode))
+      return fromStorage as ViewMode
+    return 'card'
+  })
+
+  const handleViewModeChange = useCallback(
+    (mode: ViewMode) => {
+      setViewMode(mode)
+      localStorage.setItem(VIEW_MODE_KEY, mode)
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev)
+          if (mode === 'card') {
+            next.delete('view')
+          } else {
+            next.set('view', mode)
+          }
+          return next
+        },
+        { replace: true },
+      )
+    },
+    [setSearchParams],
+  )
+
+  const dataSources = useDataSources()
+
+  const [fieldsResult] = useQuery<{ searchFields: SearchField[] }>({
+    query: SearchFieldsQuery,
+  })
+
+  const [outputFieldsResult] = useQuery<{ searchOutputFields: SearchOutputField[] }>({
+    query: SearchOutputFieldsQuery,
+  })
+
+  const fields = useMemo(
+    () => fieldsResult.data?.searchFields ?? [],
+    [fieldsResult.data?.searchFields],
+  )
+
+  const allOutputFields = useMemo(
+    () => outputFieldsResult.data?.searchOutputFields ?? [],
+    [outputFieldsResult.data?.searchOutputFields],
+  )
+
+  // ── Column visibility state ─────────────────────────────────────────────
+  const [visibleColumns, setVisibleColumns] = useState<Set<string>>(() => {
+    const stored = localStorage.getItem(VISIBLE_COLUMNS_KEY)
+    if (stored) {
+      try {
+        const arr = JSON.parse(stored) as string[]
+        if (Array.isArray(arr) && arr.length > 0) return new Set(arr)
+      } catch {
+        // ignore parse errors
+      }
+    }
+    return new Set<string>()
+  })
+
+  // ── Column order state (excludes pinned "name" column) ────────────────
+  const [columnOrder, setColumnOrder] = useState<string[]>(() => {
+    const stored = localStorage.getItem(COLUMN_ORDER_KEY)
+    if (stored) {
+      try {
+        const arr = JSON.parse(stored) as string[]
+        if (Array.isArray(arr) && arr.length > 0) return arr
+      } catch {
+        // ignore parse errors
+      }
+    }
+    return []
+  })
+
+  // Initialize from defaultVisible when output fields load
+  useEffect(() => {
+    if (allOutputFields.length > 0 && visibleColumns.size === 0) {
+      const defaults = new Set(
+        allOutputFields.filter((f) => f.defaultVisible).map((f) => f.name),
+      )
+      // Always include core fields
+      defaults.add('name')
+      defaults.add('city')
+      defaults.add('state')
+      setVisibleColumns(defaults)
+    }
+  }, [allOutputFields, visibleColumns.size])
+
+  // Initialize column order when output fields load and no saved order exists
+  useEffect(() => {
+    if (allOutputFields.length > 0 && columnOrder.length === 0 && visibleColumns.size > 0) {
+      // Default order: city, state, distance, myPrice, then other visible fields
+      const defaultOrder = ['city', 'state', 'distance', 'myPrice']
+      const outputFieldsByName = new Map(allOutputFields.map((f) => [f.name, f]))
+      for (const name of visibleColumns) {
+        if (name !== 'name' && !defaultOrder.includes(name) && outputFieldsByName.has(name)) {
+          defaultOrder.push(name)
+        }
+      }
+      setColumnOrder(defaultOrder)
+    }
+  }, [allOutputFields, columnOrder.length, visibleColumns])
+
+  // Persist to localStorage
+  useEffect(() => {
+    if (visibleColumns.size > 0) {
+      localStorage.setItem(VISIBLE_COLUMNS_KEY, JSON.stringify([...visibleColumns]))
+    }
+  }, [visibleColumns])
+
+  useEffect(() => {
+    if (columnOrder.length > 0) {
+      localStorage.setItem(COLUMN_ORDER_KEY, JSON.stringify(columnOrder))
+    }
+  }, [columnOrder])
+
+  const handleToggleColumn = useCallback((fieldName: string) => {
+    setVisibleColumns((prev) => {
+      const next = new Set(prev)
+      if (next.has(fieldName)) {
+        next.delete(fieldName)
+      } else {
+        next.add(fieldName)
+      }
+      return next
+    })
+    // Update column order: add to end when toggling on, remove when toggling off
+    setColumnOrder((prev) => {
+      if (prev.includes(fieldName)) {
+        return prev.filter((n) => n !== fieldName)
+      }
+      return [...prev, fieldName]
+    })
+  }, [])
+
+  const handleReorderColumn = useCallback((fieldName: string, direction: 'up' | 'down') => {
+    setColumnOrder((prev) => {
+      const idx = prev.indexOf(fieldName)
+      if (idx === -1) return prev
+      const swapIdx = direction === 'up' ? idx - 1 : idx + 1
+      if (swapIdx < 0 || swapIdx >= prev.length) return prev
+      const next = [...prev]
+      next[idx] = prev[swapIdx]
+      next[swapIdx] = prev[idx]
+      return next
+    })
+  }, [])
+
+  const handleSetColumnOrder = useCallback((order: string[]) => {
+    setColumnOrder(order)
+  }, [])
+
+  // Derive filter state from URL search params + field metadata
+  const filters = useMemo(
+    () => (fields.length === 0 ? {} : parseUrlToFilters(searchParams, fields)),
+    [searchParams, fields],
+  )
+
+  // User location from URL params
+  const userLocation = useMemo(() => {
+    const lat = searchParams.get('userLat')
+    const lng = searchParams.get('userLng')
+    if (lat == null || lng == null) return undefined
+    const latitude = Number(lat)
+    const longitude = Number(lng)
+    if (Number.isNaN(latitude) || Number.isNaN(longitude)) return undefined
+    const state = searchParams.get('userState') ?? undefined
+    return { latitude, longitude, state }
+  }, [searchParams])
+
+  // Sort state from URL params
+  const sort = useMemo((): SortState | undefined => {
+    const sortParam = searchParams.get('sort')
+    if (!sortParam) return undefined
+    const dirParam = searchParams.get('sortDir')
+    const direction = dirParam === 'DESC' ? ('DESC' as const) : ('ASC' as const)
+    return { field: sortParam, direction }
+  }, [searchParams])
+
+  // Ranking blend weights from URL params
+  const blendWeights = useMemo(
+    () => parseBlendParam(searchParams.get('blend')),
+    [searchParams],
+  )
+  const hasBlend = Object.keys(blendWeights).length > 0
+
+  // Pagination state from URL params
+  const pageSize = useMemo(() => {
+    const ps = Number(searchParams.get('pageSize'))
+    return PAGE_SIZE_OPTIONS.includes(ps) ? ps : DEFAULT_PAGE_SIZE
+  }, [searchParams])
+
+  const page = useMemo(() => {
+    const p = Number(searchParams.get('page'))
+    return p >= 1 ? p : 1
+  }, [searchParams])
+
+  const offset = (page - 1) * pageSize
+
+  const [searchResult] = useQuery<{
+    search: { results: SearchInstitution[]; total: number; limit: number; offset: number }
+  }>({
+    query: SearchQuery,
+    variables: {
+      filters: buildFilterInputs(filters),
+      limit: pageSize,
+      offset,
+      sort: hasBlend ? null : (sort ?? null),
+      userLocation: userLocation
+        ? {
+            latitude: userLocation.latitude,
+            longitude: userLocation.longitude,
+            state: userLocation.state,
+          }
+        : null,
+      rankingBlend: hasBlend
+        ? Object.entries(blendWeights).map(([field, weight]) => ({ field, weight }))
+        : null,
+    },
+    pause: fieldsResult.fetching,
+  })
+
+  const themeGroups = useMemo(
+    () => fieldsByTheme(fields.filter((f) => f.visibility !== 'HIDDEN')),
+    [fields],
+  )
+
+  const institutions = useMemo(
+    () => searchResult.data?.search.results ?? [],
+    [searchResult.data?.search.results],
+  )
+  const total = searchResult.data?.search.total ?? 0
+  const cappedTotal = Math.min(total, MAX_RESULTS)
+  const totalPages = Math.ceil(cappedTotal / pageSize)
+
+  // "Showing X–Y of Z" display values
+  const showStart = cappedTotal === 0 ? 0 : offset + 1
+  const showEnd = Math.min(offset + pageSize, cappedTotal)
+
+  const hasLocation = userLocation != null
+  const hasState = userLocation?.state != null
+
+  function handleFilterChange(fieldName: string, value: unknown | undefined) {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        // Convert legacy ?q= to canonical ?name= so the value is preserved
+        const q = next.get('q')
+        if (q) {
+          next.delete('q')
+          if (!next.has('name') && fieldName !== 'name') {
+            next.set('name', q)
+          }
+        }
+        if (value === undefined) {
+          next.delete(fieldName)
+        } else {
+          next.set(fieldName, serializeFilterValue(value))
+        }
+        // Reset to page 1 when filters change
+        next.delete('page')
+        return next
+      },
+      { replace: true },
+    )
+  }
+
+  const handleLocationChange = useCallback(
+    (loc: UserLocationValue | undefined) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev)
+          if (loc) {
+            next.set('userLat', String(loc.latitude))
+            next.set('userLng', String(loc.longitude))
+            if (loc.state) {
+              next.set('userState', loc.state)
+            } else {
+              next.delete('userState')
+            }
+          } else {
+            next.delete('userLat')
+            next.delete('userLng')
+            next.delete('userState')
+            if (next.get('sort') === 'distance') {
+              next.delete('sort')
+              next.delete('sortDir')
+            }
+          }
+          next.delete('page')
+          return next
+        },
+        { replace: true },
+      )
+    },
+    [setSearchParams],
+  )
+
+  const handleSort = useCallback(
+    (field: string) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev)
+          const currentField = next.get('sort')
+          const currentDir = next.get('sortDir') ?? 'ASC'
+
+          if (currentField === field) {
+            if (currentDir === 'ASC') {
+              // ASC → DESC
+              next.set('sortDir', 'DESC')
+            } else {
+              // DESC → clear
+              next.delete('sort')
+              next.delete('sortDir')
+            }
+          } else {
+            // New field → ASC
+            next.set('sort', field)
+            next.delete('sortDir')
+          }
+          next.delete('page')
+          return next
+        },
+        { replace: true },
+      )
+    },
+    [setSearchParams],
+  )
+
+  const handleBlendChange = useCallback(
+    (weights: Record<string, number>) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev)
+          const serialized = serializeBlendWeights(weights)
+          if (serialized) {
+            next.set('blend', serialized)
+            // Clear sort when blend is active — blend determines ordering
+            next.delete('sort')
+            next.delete('sortDir')
+          } else {
+            next.delete('blend')
+          }
+          next.delete('page')
+          return next
+        },
+        { replace: true },
+      )
+    },
+    [setSearchParams],
+  )
+
+  function handlePageChange(newPage: number) {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        if (newPage <= 1) {
+          next.delete('page')
+        } else {
+          next.set('page', String(newPage))
+        }
+        return next
+      },
+      { replace: true },
+    )
+  }
+
+  function handlePageSizeChange(newSize: number) {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        if (newSize === DEFAULT_PAGE_SIZE) {
+          next.delete('pageSize')
+        } else {
+          next.set('pageSize', String(newSize))
+        }
+        next.delete('page')
+        return next
+      },
+      { replace: true },
+    )
+  }
+
+  const handleExportCsv = useCallback(() => {
+    const params = new URLSearchParams()
+    const filterInputs = buildFilterInputs(filters)
+    if (filterInputs.length > 0) {
+      params.set('filters', JSON.stringify(filterInputs))
+    }
+    if (sort) {
+      params.set('sort', sort.field)
+    }
+    if (userLocation) {
+      params.set('userLat', String(userLocation.latitude))
+      params.set('userLng', String(userLocation.longitude))
+      if (userLocation.state) {
+        params.set('userState', userLocation.state)
+      }
+    }
+    window.open(`/api/export/csv?${params.toString()}`, '_blank')
+  }, [filters, sort, userLocation])
+
+  const handleExportPdf = useCallback(() => {
+    const activeFilters = fields
+      .filter((f) => filters[f.name] !== undefined)
+      .map((f) => f.label)
+    downloadSearchPdf({
+      institutions,
+      outputFields: allOutputFields,
+      activeFilters,
+      maxRows: MAX_RESULTS,
+      dataSources,
+    })
+  }, [institutions, allOutputFields, fields, filters, dataSources])
+
+  const filterContent = (
+    <>
+      <Title order={6} tt="uppercase" fz="xs" fw={600} lts="0.05em" c="brand.9" mb="md">
+        Filters
+      </Title>
+
+      <Box mb="md">
+        <Text size="xs" fw={600} tt="uppercase" lts="0.05em" c="dimmed" mb="xs">
+          Your Location
+        </Text>
+        <LocationInput
+          value={
+            userLocation
+              ? {
+                  latitude: userLocation.latitude,
+                  longitude: userLocation.longitude,
+                  state: userLocation.state,
+                }
+              : undefined
+          }
+          onChange={handleLocationChange}
+        />
+      </Box>
+
+      <Box mb="md">
+        <RankingBlendBuilder
+          weights={blendWeights}
+          onChange={handleBlendChange}
+          fields={fields}
+        />
+      </Box>
+
+      {fieldsResult.fetching && (
+        <Text size="sm" c="dimmed">
+          Loading filters…
+        </Text>
+      )}
+      {fieldsResult.error && (
+        <Text size="sm" c="red">
+          Failed to load filters.
+        </Text>
+      )}
+      {themeGroups.map((group) => (
+        <Box key={group.theme} mb="md">
+          <Text size="xs" fw={600} tt="uppercase" lts="0.05em" c="dimmed" mb="xs">
+            {group.label}
+          </Text>
+          {group.fields.map((field) => (
+            <FilterControl
+              key={field.name}
+              field={field}
+              value={filters[field.name]}
+              onChange={(v) => handleFilterChange(field.name, v)}
+              dataSources={dataSources}
+            />
+          ))}
+        </Box>
+      ))}
+    </>
+  )
+
+  return (
+    <Box component="main" style={{ display: 'flex', flex: 1, flexDirection: 'column' }}>
+      <Container size="xl" px="md" py="md" style={{ display: 'flex', flex: 1 }}>
+        <Flex
+          direction={{ base: 'column', md: 'row' }}
+          gap={0}
+          style={{ flex: 1, width: '100%' }}
+        >
+          {/* Sidebar: on mobile, collapsible; on desktop, fixed-width aside */}
+          <Box
+            style={{
+              ...(isDesktop
+                ? {
+                    width: 280,
+                    flexShrink: 0,
+                    overflowY: 'auto',
+                    borderRight: '1px solid var(--mantine-color-gray-3)',
+                    paddingRight: 16,
+                  }
+                : {}),
+            }}
+          >
+            {!isDesktop && (
+              <Box mb="sm">
+                <Button
+                  variant="default"
+                  size="xs"
+                  onClick={toggleFilters}
+                  leftSection={<SlidersHorizontal size={16} />}
+                >
+                  {filtersOpened ? 'Hide Filters' : 'Show Filters'}
+                </Button>
+              </Box>
+            )}
+
+            {isDesktop ? (
+              filterContent
+            ) : (
+              <Collapse in={filtersOpened}>
+                <Box
+                  mb="md"
+                  pb="md"
+                  style={{ borderBottom: '1px solid var(--mantine-color-gray-3)' }}
+                >
+                  {filterContent}
+                </Box>
+              </Collapse>
+            )}
+          </Box>
+
+          {/* Results section */}
+          <Box style={{ flex: 1, minWidth: 0 }} pl={{ base: 0, md: 'lg' }}>
+            <Group justify="space-between" mb="md" wrap="wrap" gap="sm">
+              <Title order={2} c="brand.9">
+                Results
+              </Title>
+              <Group gap="xs" wrap="wrap">
+                <ViewToggle value={viewMode} onChange={handleViewModeChange} />
+                {hasLocation && (
+                  <Button variant="default" size="xs" onClick={() => handleSort('distance')}>
+                    {sort?.field === 'distance' ? 'Sorting by distance' : 'Sort by distance'}
+                  </Button>
+                )}
+                {viewMode === 'table' && (
+                  <ColumnPicker
+                    outputFields={allOutputFields}
+                    visibleColumns={visibleColumns}
+                    onToggleColumn={handleToggleColumn}
+                    columnOrder={columnOrder}
+                    onReorderColumn={handleReorderColumn}
+                    onSetColumnOrder={handleSetColumnOrder}
+                  />
+                )}
+                <Button
+                  variant="default"
+                  size="xs"
+                  onClick={handleExportPdf}
+                  disabled={institutions.length === 0}
+                  leftSection={<FileDown size={14} />}
+                >
+                  Export PDF
+                </Button>
+                <Button
+                  variant="default"
+                  size="xs"
+                  onClick={handleExportCsv}
+                  disabled={institutions.length === 0}
+                  leftSection={<Download size={14} />}
+                >
+                  Export CSV
+                </Button>
+              </Group>
+            </Group>
+
+            {searchResult.fetching && (
+              <div data-testid="results-loading">
+                {Array.from({ length: 3 }, (_, i) => (
+                  <InstitutionCardSkeleton key={i} />
+                ))}
+              </div>
+            )}
+            {searchResult.error && (
+              <Stack align="center" py="xl" gap="sm">
+                <Text fz="sm" c="red">
+                  Something went wrong loading results.
+                </Text>
+                <Button variant="default" size="xs" onClick={() => window.location.reload()}>
+                  Retry
+                </Button>
+              </Stack>
+            )}
+            {!searchResult.fetching && searchResult.data && (
+              <Stack gap="md">
+                <Text fz="sm" c="dimmed" aria-live="polite">
+                  {total > MAX_RESULTS
+                    ? `Showing ${showStart}–${showEnd} of ${MAX_RESULTS}+ results`
+                    : `Showing ${showStart}–${showEnd} of ${total.toLocaleString()} institutions found`}
+                </Text>
+                {institutions.length === 0 ? (
+                  <Stack align="center" py="xl" gap="xs">
+                    <Text fw={500}>No colleges match your filters</Text>
+                    <Button
+                      variant="default"
+                      size="xs"
+                      style={{ color: 'var(--color-primary)' }}
+                      onClick={() => setSearchParams({}, { replace: true })}
+                    >
+                      Clear all filters
+                    </Button>
+                  </Stack>
+                ) : viewMode === 'card' ? (
+                  <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="md">
+                    {institutions.map((inst) => (
+                      <InstitutionCard
+                        key={inst.unitID}
+                        institution={inst}
+                        hasLocation={hasLocation}
+                        hasState={hasState}
+                        onClick={() => {
+                          setSelectedUnitID(inst.unitID)
+                          setDetailOpened(true)
+                        }}
+                      />
+                    ))}
+                  </SimpleGrid>
+                ) : viewMode === 'list' ? (
+                  <ResultsList
+                    institutions={institutions}
+                    hasLocation={hasLocation}
+                    hasState={hasState}
+                    onClickInstitution={(unitID) => {
+                      setSelectedUnitID(unitID)
+                      setDetailOpened(true)
+                    }}
+                  />
+                ) : viewMode === 'map' ? (
+                  <ResultsMap
+                    institutions={institutions}
+                    userLocation={userLocation ?? undefined}
+                    onClickInstitution={(unitID) => {
+                      setSelectedUnitID(unitID)
+                      setDetailOpened(true)
+                    }}
+                  />
+                ) : (
+                  <Box style={{ overflowX: 'auto' }}>
+                    <ResultsTable
+                      institutions={institutions}
+                      outputFields={allOutputFields}
+                      visibleColumns={visibleColumns}
+                      columnOrder={columnOrder}
+                      onClickInstitution={(unitID) => {
+                        setSelectedUnitID(unitID)
+                        setDetailOpened(true)
+                      }}
+                      hasLocation={hasLocation}
+                      hasState={hasState}
+                      hasBlend={hasBlend}
+                      sort={sort}
+                      onSort={handleSort}
+                      dataSources={dataSources}
+                    />
+                  </Box>
+                )}
+
+                {totalPages > 1 && (
+                  <Group gap="md" wrap="wrap" data-testid="pagination-controls">
+                    <Pagination total={totalPages} value={page} onChange={handlePageChange} />
+                    <Group gap="xs">
+                      <NativeSelect
+                        id="page-size"
+                        aria-label="Per page"
+                        value={String(pageSize)}
+                        onChange={(e) => handlePageSizeChange(Number(e.target.value))}
+                        data={PAGE_SIZE_OPTIONS.map((size) => ({
+                          value: String(size),
+                          label: String(size),
+                        }))}
+                        size="xs"
+                        style={{ width: 70 }}
+                      />
+                      <Text component="label" htmlFor="page-size" fz="sm" c="dimmed">
+                        Per page
+                      </Text>
+                    </Group>
+                  </Group>
+                )}
+              </Stack>
+            )}
+          </Box>
+        </Flex>
+      </Container>
+
+      <InstitutionDetail
+        unitID={selectedUnitID}
+        opened={detailOpened}
+        onClose={() => setDetailOpened(false)}
+      />
+    </Box>
+  )
+}

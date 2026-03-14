@@ -1,0 +1,592 @@
+78-    if PURE_UTILITY_MODULES.iter().any(|m| module == *m || module.starts_with(&format!("{m}/"))) {
+79-        return IoCategory::PureUtility;
+80-    }
+81-
+82-    IoCategory::ExternalOther
+83-}
+84-
+85-/// Generate a default [`MockConfig`] for a dependency based on its category.
+86-pub fn generate_default_mock(dep: &ExternalDependency, category: IoCategory) -> MockConfig {
+87-    match category {
+88-        IoCategory::FileSystem => MockConfig {
+89-            symbol: dep.symbol.clone(),
+90:            return_values: vec![default_for_fs(&dep.symbol)],
+91-            should_track_calls: true,
+92-            default_behavior: MockBehavior::RepeatLast,
+93-        },
+94-        IoCategory::Network => MockConfig {
+95-            symbol: dep.symbol.clone(),
+96:            return_values: vec![json!({"status": 200, "data": {}})],
+97-            should_track_calls: true,
+98-            default_behavior: MockBehavior::RepeatLast,
+99-        },
+100-        IoCategory::Database => MockConfig {
+101-            symbol: dep.symbol.clone(),
+102:            return_values: vec![default_for_db(&dep.symbol)],
+103-            should_track_calls: true,
+104-            default_behavior: MockBehavior::RepeatLast,
+105-        },
+106-        IoCategory::PureUtility => MockConfig {
+107-            symbol: dep.symbol.clone(),
+108:            return_values: vec![],
+109-            should_track_calls: false,
+110-            default_behavior: MockBehavior::Passthrough,
+111-        },
+112-        IoCategory::ExternalOther => MockConfig {
+113-            symbol: dep.symbol.clone(),
+114:            return_values: vec![default_for_type(&dep.return_type)],
+115-            should_track_calls: true,
+116-            default_behavior: MockBehavior::RepeatLast,
+117-        },
+118-    }
+119-}
+120-
+121-/// Pick a sensible default for a file-system operation based on the symbol name.
+122-fn default_for_fs(symbol: &str) -> Value {
+123-    let lower = symbol.to_lowercase();
+124-    if lower.contains("read") {
+125-        json!("")
+126-    } else if lower.contains("stat") || lower.contains("lstat") {
+--
+172-                Value::Null
+173-            }
+174-        }
+175-        TypeInfo::Complex { .. } | TypeInfo::Opaque { .. } | TypeInfo::Unknown => Value::Null,
+176-    }
+177-}
+178-
+179-/// User-provided mock override from `.shatter/config.yaml`.
+180-#[derive(Debug, Clone, PartialEq, serde::Deserialize, serde::Serialize)]
+181-pub struct MockOverride {
+182-    /// Pre-configured return values, replacing auto-generated defaults.
+183-    #[serde(default)]
+184:    pub return_values: Option<Vec<Value>>,
+185-    /// Override the default behavior.
+186-    #[serde(default)]
+187-    pub behavior: Option<MockBehavior>,
+188-}
+189-
+190-/// Generate auto-mocks for all dependencies of a function.
+191-///
+192-/ Returns mock configs for dependencies that:
+193-/// 1. Are not already covered by `existing_mocks` (e.g., behavior-map mocks)
+194-/// 2. Are classified as Mock (not Passthrough or Analyze) by the scope matcher
+195-///
+196-/// User overrides from config take precedence over auto-generated defaults.
+197:pub fn generate_auto_mocks(
+198-    deps: &[ExternalDependency],
+199-    scope: Option<&ScopeMatcher>,
+200-    overrides: &HashMap<String, MockOverride>,
+201-    existing_mocks: &[MockConfig],
+202-) -> Vec<MockConfig> {
+203-    let already_mocked: std::collections::HashSet<&str> = existing_mocks
+204-        .iter()
+205-        .map(|m| m.symbol.as_str())
+206-        .collect();
+207-
+208-    let mut result = Vec::new();
+209-
+--
+223-
+224-        let category = classify_dependency(dep);
+225-
+226-        // Pure utilities default to passthrough — skip generating a mock
+227-        if category == IoCategory::PureUtility && !overrides.contains_key(&dep.symbol) {
+228-            continue;
+229-        }
+230-
+231-        let mut mock = generate_default_mock(dep, category);
+232-
+233-        // Apply user overrides
+234-        if let Some(ov) = overrides.get(&dep.symbol) {
+235:            if let Some(ref vals) = ov.return_values {
+236:                mock.return_values = vals.clone();
+237-            }
+238-            if let Some(ref behavior) = ov.behavior {
+239-                mock.default_behavior = behavior.clone();
+240-            }
+241-        }
+242-
+243-        result.push(mock);
+244-    }
+245-
+246-    result
+247-}
+248-
+249-// ---------------------------------------------------------------------------
+250-// Error variant generation
+251-// ---------------------------------------------------------------------------
+252-
+253-/// Generate a [`MockConfig`] that throws an error, producing a realistic
+254-/// error shape based on the dependency's return type and I/O category.
+255-///
+256-/ Dispatch order:
+257-/// 1. Object with a `"status"` field → HTTP 400/500 error objects
+258-/// 2. Nullable → `null` (represents a "not found" / absent value)
+259-/ 3. Category-aware: Network → HTTP error, Database → connection error,
+260-///    FileSystem → ENOENT
+261:/// 4. Fallback → `ThrowError` behavior with an empty return_values vec
+262-pub fn generate_error_variant(dep: &ExternalDependency, category: IoCategory) -> MockConfig {
+263-    // Check for object with "status" field → HTTP error responses
+264-    if let TypeInfo::Object { fields } = &dep.return_type
+265-        && fields.iter().any(|(name, _)| name == "status")
+266-    {
+267-        return MockConfig {
+268-            symbol: dep.symbol.clone(),
+269:            return_values: vec![
+270-                json!({"status": 400, "error": "Bad Request"}),
+271-                json!({"status": 500, "error": "Internal Server Error"}),
+272-            ],
+273-            should_track_calls: true,
+274-            default_behavior: MockBehavior::RepeatLast,
+275-        };
+276-    }
+277-
+278-    // Nullable → null (represents absence / not-found)
+279-    if matches!(&dep.return_type, TypeInfo::Nullable { .. }) {
+280-        return MockConfig {
+281-            symbol: dep.symbol.clone(),
+282:            return_values: vec![Value::Null],
+283-            should_track_calls: true,
+284-            default_behavior: MockBehavior::RepeatLast,
+285-        };
+286-    }
+287-
+288-    // Category-aware error shapes
+289-    match category {
+290-        IoCategory::Network => MockConfig {
+291-            symbol: dep.symbol.clone(),
+292:            return_values: vec![
+293-                json!({"status": 500, "error": "Internal Server Error"}),
+294-                json!({"status": 503, "error": "Service Unavailable"}),
+295-            ],
+296-            should_track_calls: true,
+297-            default_behavior: MockBehavior::ThrowError,
+298-        },
+299-        IoCategory::Database => MockConfig {
+300-            symbol: dep.symbol.clone(),
+301:            return_values: vec![
+302-                json!({"code": "ECONNREFUSED", "message": "Connection refused"}),
+303-            ],
+304-            should_track_calls: true,
+305-            default_behavior: MockBehavior::ThrowError,
+306-        },
+307-        IoCategory::FileSystem => MockConfig {
+308-            symbol: dep.symbol.clone(),
+309:            return_values: vec![
+310-                json!({"code": "ENOENT", "message": "No such file or directory"}),
+311-            ],
+312-            should_track_calls: true,
+313-            default_behavior: MockBehavior::ThrowError,
+314-        },
+315-        / Fallback: bare ThrowError with no pre-configured return values
+316-        IoCategory::PureUtility | IoCategory::ExternalOther => MockConfig {
+317-            symbol: dep.symbol.clone(),
+318:            return_values: vec![],
+319-            should_track_calls: true,
+320-            default_behavior: MockBehavior::ThrowError,
+321-        },
+322-    }
+323-}
+324-
+325-/// Generate error-variant [`MockConfig`]s for dependencies that should
+326-/// exercise error-handling paths.
+327-///
+328-/// Uses `error_probability` to decide per-dependency whether to generate an
+329-/// error mock. Dependencies already covered by `existing_mocks` or marked
+330-/// as passthrough are skipped. Pure utilities are always skipped.
+--
+523-
+524-    #[test]
+525-    fn classify_unknown_module_as_external_other() {
+526-        let dep = make_dep("doSomething", "my-custom-lib", TypeInfo::Int);
+527-        assert_eq!(classify_dependency(&dep), IoCategory::ExternalOther);
+528-    }
+529-
+530-    #[test]
+531-    fn default_mock_for_fs_read() {
+532-        let dep = make_dep("readFile", "fs", TypeInfo::Str);
+533-        let mock = generate_default_mock(&dep, IoCategory::FileSystem);
+534-        assert_eq!(mock.symbol, "readFile");
+535:        assert_eq!(mock.return_values, vec![json!("")]);
+536-        assert!(mock.should_track_calls);
+537-        assert_eq!(mock.default_behavior, MockBehavior::RepeatLast);
+538-    }
+539-
+540-    #[test]
+541-    fn default_mock_for_fs_exists() {
+542-        let dep = make_dep("existsSync", "fs", TypeInfo::Bool);
+543-        let mock = generate_default_mock(&dep, IoCategory::FileSystem);
+544:        assert_eq!(mock.return_values, vec![json!(true)]);
+545-    }
+546-
+547-    #[test]
+548-    fn default_mock_for_network() {
+549-        let dep = make_dep("get", "axios", TypeInfo::Unknown);
+550-        let mock = generate_default_mock(&dep, IoCategory::Network);
+551:        assert_eq!(mock.return_values, vec![json!({"status": 200, "data": {}})]);
+552-        assert!(mock.should_track_calls);
+553-    }
+554-
+555-    #[test]
+556-    fn default_mock_for_db_query() {
+557-        let dep = make_dep("query", "pg", TypeInfo::Unknown);
+558-        let mock = generate_default_mock(&dep, IoCategory::Database);
+559:        assert_eq!(mock.return_values, vec![json!({"rows": []})]);
+560-    }
+561-
+562-    #[test]
+563-    fn default_mock_for_db_insert() {
+564-        let dep = make_dep("insert", "pg", TypeInfo::Unknown);
+565-        let mock = generate_default_mock(&dep, IoCategory::Database);
+566:        assert_eq!(mock.return_values, vec![json!({"rowCount": 1})]);
+567-    }
+568-
+569-    #[test]
+570-    fn default_mock_for_pure_utility_is_passthrough() {
+571-        let dep = make_dep("map", "lodash", TypeInfo::Unknown);
+572-        let mock = generate_default_mock(&dep, IoCategory::PureUtility);
+573-        assert_eq!(mock.default_behavior, MockBehavior::Passthrough);
+574:        assert!(mock.return_values.is_empty());
+575-        assert!(!mock.should_track_calls);
+576-    }
+577-
+578-    #[test]
+579-    fn default_mock_for_external_other_uses_type() {
+580-        let dep = make_dep("compute", "my-lib", TypeInfo::Int);
+581-        let mock = generate_default_mock(&dep, IoCategory::ExternalOther);
+582:        assert_eq!(mock.return_values, vec![json!(0)]);
+583-    }
+584-
+585-    #[test]
+586-    fn default_for_type_object() {
+587-        let typ = TypeInfo::Object {
+588-            fields: vec![
+589-                ("name".to_string(), TypeInfo::Str),
+590-                ("age".to_string(), TypeInfo::Int),
+591-            ],
+592-        };
+593-        let val = default_for_type(&typ);
+594-        assert_eq!(val, json!({"name": "", "age": 0}));
+595-    }
+596-
+597-    #[test]
+598-    fn generate_auto_mocks_skips_existing() {
+599-        let deps = vec![make_dep("query", "pg", TypeInfo::Unknown)];
+600-        let existing = vec![MockConfig {
+601-            symbol: "query".to_string(),
+602:            return_values: vec![json!({"rows": [1, 2, 3]})],
+603-            should_track_calls: true,
+604-            default_behavior: MockBehavior::RepeatLast,
+605-        }];
+606-
+607-        let result = generate_auto_mocks(&deps, None, &HashMap::new(), &existing);
+608-        assert!(result.is_empty());
+609-    }
+610-
+611-    #[test]
+612-    fn generate_auto_mocks_skips_pure_utilities() {
+613-        let deps = vec![make_dep("map", "lodash", TypeInfo::Unknown)];
+614-        let result = generate_auto_mocks(&deps, None, &HashMap::new(), &[]);
+615-        assert!(result.is_empty());
+616-    }
+617-
+618-    #[test]
+619-    fn generate_auto_mocks_applies_overrides() {
+620-        let deps = vec![make_dep("query", "pg", TypeInfo::Unknown)];
+621-        let mut overrides = HashMap::new();
+622-        overrides.insert(
+623-            "query".to_string(),
+624-            MockOverride {
+625:                return_values: Some(vec![json!({"rows": [{"id": 1}]})]),
+626-                behavior: None,
+627-            },
+628-        );
+629-
+630-        let result = generate_auto_mocks(&deps, None, &overrides, &[]);
+631-        assert_eq!(result.len(), 1);
+632:        assert_eq!(result[0].return_values, vec![json!({"rows": [{"id": 1}]})]);
+633-    }
+634-
+635-    #[test]
+636-    fn generate_auto_mocks_respects_scope_passthrough() {
+637-        let deps = vec![make_dep("map", "lodash", TypeInfo::Unknown)];
+638-        let scope_config = crate::scope::ScopeConfig {
+639-            include: vec![],
+640-            exclude: vec![],
+641-            mock: vec![],
+642-            passthrough: vec!["map".to_string()],
+643-        };
+644-        let matcher = ScopeMatcher::new(&scope_config).unwrap();
+--
+658-            make_dep("readFileSync", "fs", TypeInfo::Str),
+659-            make_dep("get", "axios", TypeInfo::Unknown),
+660-            make_dep("query", "pg", TypeInfo::Unknown),
+661-            make_dep("map", "lodash", TypeInfo::Unknown),
+662-            make_dep("compute", "my-analytics-lib", TypeInfo::Int),
+663-        ];
+664-
+665-        / User override: custom return value for the database query mock
+666-        let mut overrides = HashMap::new();
+667-        overrides.insert(
+668-            "query".to_string(),
+669-            MockOverride {
+670:                return_values: Some(vec![json!({"rows": [{"id": 1, "name": "alice"}]})]),
+671-                behavior: None,
+672-            },
+673-        );
+674-
+675-        let mocks = generate_auto_mocks(&deps, None, &overrides, &[]);
+676-
+677-        / 4 mocks generated: fs, network, db (overridden), and external other.
+678-        // lodash (pure utility) is skipped.
+679-        assert_eq!(mocks.len(), 4, "expected 4 mocks (lodash skipped)");
+680-
+681-        let by_symbol: HashMap<&str, &MockConfig> =
+682-            mocks.iter().map(|m| (m.symbol.as_str(), m)).collect();
+683-
+684-        // fs.readFileSync → filesystem category, returns ""
+685-        let fs_mock = by_symbol["readFileSync"];
+686:        assert_eq!(fs_mock.return_values, vec![json!("")]);
+687-        assert!(fs_mock.should_track_calls);
+688-        assert_eq!(fs_mock.default_behavior, MockBehavior::RepeatLast);
+689-
+690-        / axios.get → network category, returns {status: 200, data: {}}
+691-        let net_mock = by_symbol["get"];
+692:        assert_eq!(net_mock.return_values, vec![json!({"status": 200, "data": {}})]);
+693-        assert!(net_mock.should_track_calls);
+694-
+695-        // pg.query → database category, but overridden with custom rows
+696-        let db_mock = by_symbol["query"];
+697-        assert_eq!(
+698:            db_mock.return_values,
+699-            vec![json!({"rows": [{"id": 1, "name": "alice"}]})]
+700-        );
+701-        assert!(db_mock.should_track_calls);
+702-
+703-        // my-analytics-lib.compute → external other, type-aware default for Int
+704-        let ext_mock = by_symbol["compute"];
+705:        assert_eq!(ext_mock.return_values, vec![json!(0)]);
+706-        assert!(ext_mock.should_track_calls);
+707-
+708-        // Verify lodash.map is NOT in the mock list
+709-        assert!(!by_symbol.contains_key("map"));
+710-    }
+711-
+712-    / Integration test: auto-mocks are compatible with the Instrument command format.
+713-    /// Verifies that generated MockConfig values serialize correctly for the protocol.
+714-    #[test]
+715-    fn auto_mock_configs_serialize_for_protocol() {
+716-        let deps = vec![
+717-            make_dep("existsSync", "fs", TypeInfo::Bool),
+718-            make_dep("query", "pg", TypeInfo::Unknown),
+719-        ];
+720-
+721-        let mocks = generate_auto_mocks(&deps, None, &HashMap::new(), &[]);
+722-        assert_eq!(mocks.len(), 2);
+723-
+724-        // Verify each mock serializes to valid JSON (required for protocol)
+725-        for mock in &mocks {
+726-            let json = serde_json::to_value(mock).expect("mock should serialize");
+727-            assert!(json.get("symbol").is_some());
+728:            assert!(json.get("return_values").is_some());
+729-            assert!(json.get("should_track_calls").is_some());
+730-            assert!(json.get("default_behavior").is_some());
+731-        }
+732-    }
+733-
+734-    / Integration test: auto-mocks respect scope configuration.
+735-    /// Dependencies marked as passthrough in scope config are excluded from mocking.
+736-    #[test]
+737-    fn auto_mock_pipeline_with_scope_rules() {
+738-        let deps = vec![
+739-            make_dep("readFile", "fs", TypeInfo::Str),
+740-            make_dep("get", "axios", TypeInfo::Unknown),
+--
+820-            make_dep("map", "lodash", TypeInfo::Unknown),
+821-            make_dep("format", "date-fns", TypeInfo::Str),
+822-        ];
+823-        let result = build_mock_params(&deps, &[]);
+824-        assert!(result.is_empty());
+825-    }
+826-
+827-    #[test]
+828-    fn build_mock_params_includes_pure_utility_with_config() {
+829-        let deps = vec![make_dep("map", "lodash", TypeInfo::Unknown)];
+830-        let configs = vec![MockConfig {
+831-            symbol: "map".to_string(),
+832:            return_values: vec![json!([1, 2, 3])],
+833-            should_track_calls: true,
+834-            default_behavior: MockBehavior::RepeatLast,
+835-        }];
+836-
+837-        let result = build_mock_params(&deps, &configs);
+838-        assert_eq!(result.len(), 1);
+839-        assert_eq!(result[0].symbol, "map");
+840-        assert_eq!(result[0].category, IoCategory::PureUtility);
+841-        assert_eq!(result[0].value_source, ValueSource::UserOverride);
+842-    }
+843-
+844-    #[test]
+--
+849-        assert_eq!(result.len(), 1);
+850-        assert_eq!(result[0].symbol, "readFile");
+851-        assert_eq!(result[0].return_type, TypeInfo::Str);
+852-        assert_eq!(result[0].category, IoCategory::FileSystem);
+853-        assert_eq!(result[0].value_source, ValueSource::AutoGenerated);
+854-    }
+855-
+856-    #[test]
+857-    fn build_mock_params_user_override_with_config() {
+858-        let deps = vec![make_dep("query", "pg", TypeInfo::Unknown)];
+859-        let configs = vec![MockConfig {
+860-            symbol: "query".to_string(),
+861:            return_values: vec![json!({"rows": [{"id": 1}]})],
+862-            should_track_calls: true,
+863-            default_behavior: MockBehavior::RepeatLast,
+864-        }];
+865-
+866-        let result = build_mock_params(&deps, &configs);
+867-        assert_eq!(result.len(), 1);
+868-        assert_eq!(result[0].value_source, ValueSource::UserOverride);
+869-        assert_eq!(result[0].category, IoCategory::Database);
+870-    }
+871-
+872-    #[test]
+873-    fn build_mock_params_call_count_from_call_sites() {
+--
+883-    /// Validates correct classification, filtering, and value source assignment.
+884-    #[test]
+885-    fn build_mock_params_mixed_deps() {
+886-        let deps = vec![
+887-            make_dep("readFile", "fs", TypeInfo::Str),
+888-            make_dep("get", "axios", TypeInfo::Unknown),
+889-            make_dep("query", "pg", TypeInfo::Unknown),
+890-            make_dep("map", "lodash", TypeInfo::Unknown),
+891-            make_dep("compute", "my-lib", TypeInfo::Int),
+892-        ];
+893-        let configs = vec![MockConfig {
+894-            symbol: "query".to_string(),
+895:            return_values: vec![json!({"rows": []})],
+896-            should_track_calls: true,
+897-            default_behavior: MockBehavior::RepeatLast,
+898-        }];
+899-
+900-        let result = build_mock_params(&deps, &configs);
+901-
+902-        / 4 results: fs, network, db (with config), custom. lodash skipped.
+903-        assert_eq!(result.len(), 4);
+904-
+905-        let by_symbol: HashMap<&str, &MockParam> =
+906-            result.iter().map(|p| (p.symbol.as_str(), p)).collect();
+907-
+--
+928-            "fetchUser",
+929-            "axios",
+930-            TypeInfo::Object {
+931-                fields: vec![
+932-                    ("status".to_string(), TypeInfo::Int),
+933-                    ("data".to_string(), TypeInfo::Unknown),
+934-                ],
+935-            },
+936-        );
+937-        let mock = generate_error_variant(&dep, IoCategory::Network);
+938-
+939-        assert_eq!(mock.symbol, "fetchUser");
+940:        assert_eq!(mock.return_values.len(), 2);
+941:        assert_eq!(mock.return_values[0]["status"], 400);
+942:        assert_eq!(mock.return_values[1]["status"], 500);
+943-        // Object-with-status uses RepeatLast (returns error objects, doesn't throw)
+944-        assert_eq!(mock.default_behavior, MockBehavior::RepeatLast);
+945-    }
+946-
+947-    #[test]
+948-    fn error_variant_nullable_returns_null() {
+949-        let dep = make_dep(
+950-            "findUser",
+951-            "my-db",
+952-            TypeInfo::Nullable {
+953-                inner: Box::new(TypeInfo::Object {
+954-                    fields: vec![("id".to_string(), TypeInfo::Int)],
+955-                }),
+956-            },
+957-        );
+958-        let mock = generate_error_variant(&dep, IoCategory::Database);
+959-
+960:        assert_eq!(mock.return_values, vec![Value::Null]);
+961-        assert_eq!(mock.default_behavior, MockBehavior::RepeatLast);
+962-    }
+963-
+964-    #[test]
+965-    fn error_variant_network_category() {
+966-        let dep = make_dep("get", "axios", TypeInfo::Unknown);
+967-        let mock = generate_error_variant(&dep, IoCategory::Network);
+968-
+969-        assert_eq!(mock.default_behavior, MockBehavior::ThrowError);
+970:        assert!(mock.return_values.iter().any(|v| v["status"] == 500));
+971:        assert!(mock.return_values.iter().any(|v| v["status"] == 503));
+972-    }
+973-
+974-    #[test]
+975-    fn error_variant_database_category() {
+976-        let dep = make_dep("query", "pg", TypeInfo::Unknown);
+977-        let mock = generate_error_variant(&dep, IoCategory::Database);
+978-
+979-        assert_eq!(mock.default_behavior, MockBehavior::ThrowError);
+980:        assert_eq!(mock.return_values[0]["code"], "ECONNREFUSED");
+981-    }
+982-
+983-    #[test]
+984-    fn error_variant_filesystem_category() {
+985-        let dep = make_dep("readFile", "fs", TypeInfo::Str);
+986-        let mock = generate_error_variant(&dep, IoCategory::FileSystem);
+987-
+988-        assert_eq!(mock.default_behavior, MockBehavior::ThrowError);
+989:        assert_eq!(mock.return_values[0]["code"], "ENOENT");
+990-    }
+991-
+992-    #[test]
+993-    fn error_variant_fallback_throws() {
+994-        let dep = make_dep("compute", "my-lib", TypeInfo::Int);
+995-        let mock = generate_error_variant(&dep, IoCategory::ExternalOther);
+996-
+997-        assert_eq!(mock.default_behavior, MockBehavior::ThrowError);
+998:        assert!(mock.return_values.is_empty());
+999-    }
+1000-
+1001-    #[test]
+1002-    fn generate_error_mocks_respects_probability() {
+1003-        let deps = vec![
+1004-            make_dep("readFile", "fs", TypeInfo::Str),
+1005-            make_dep("get", "axios", TypeInfo::Unknown),
+1006-            make_dep("query", "pg", TypeInfo::Unknown),
+1007-        ];
+1008-
+1009-        // probability=0 → no error mocks
+1010-        let mut rng = rand::rng();
+--
+1018-            assert_eq!(mock.default_behavior, MockBehavior::ThrowError);
+1019-        }
+1020-    }
+1021-
+1022-    #[test]
+1023-    fn generate_error_mocks_skips_existing_and_pure_utility() {
+1024-        let deps = vec![
+1025-            make_dep("readFile", "fs", TypeInfo::Str),
+1026-            make_dep("map", "lodash", TypeInfo::Unknown),
+1027-        ];
+1028-        let existing = vec![MockConfig {
+1029-            symbol: "readFile".to_string(),
+1030:            return_values: vec![json!("")],
+1031-            should_track_calls: true,
+1032-            default_behavior: MockBehavior::RepeatLast,
+1033-        }];
+1034-
+1035-        // Even with probability=1, existing and pure utility are skipped
+1036-        let mut rng = rand::rng();
+1037-        let result = generate_error_mocks(&deps, None, &existing, 1.0, &mut rng);
+1038-        assert!(result.is_empty());
+1039-    }
+1040-
+1041-    #[test]
+1042-    fn default_error_probability_value() {

@@ -1,0 +1,170 @@
+[
+  {
+    "from": "team-lead",
+    "text": "You are working on beads issue flt-it8.32.7: \"TDD Guard Claude hooks\" (P1 task).\n\n## Issue Details\nAdd shared Claude Code hook config and a safe wrapper so tdd-guard can enforce red-green-refactor locally without breaking setups where it is not installed.\n\n## Plan Reference\nSee docs/plans/claude-governance-hardening.md (Phase 3). Deliverables:\n- shared Claude hook config\n- wrapper script for safe local execution\n- install docs\n\n## WORKTREE SETUP — RUN FIRST\nBefore doing anything else, create and enter an isolated worktree:\n```bash\nREPO_ROOT=\"$(git rev-parse --show-toplevel)\"\nBRANCH_NAME=\"worktree/tdd-guard\"\nWORKTREE_DIR=\"$REPO_ROOT/.claude/worktrees/$BRANCH_NAME\"\n\nif [ -d \"$WORKTREE_DIR\" ]; then\n  echo \"Worktree already exists, reusing\"\nelse\n  git worktree add \"$WORKTREE_DIR\" -b \"$BRANCH_NAME\"\nfi\n\ncd \"$WORKTREE_DIR\"\n```\nVerify you are in the right place:\n```bash\necho \"CWD: $(pwd)\"\necho \"Branch: $(git branch --show-current)\"\necho \"$(pwd)\" | grep -q '\\.claude/worktrees/' && echo \"WORKTREE VERIFIED\" || echo \"FATAL: NOT in a worktree\"\n```\nALL subsequent commands must run from this worktree directory.\n\nWhen done, push your branch:\n```bash\ngit push -u origin HEAD\n```\n\n## Instructions\n1. Read CLAUDE.md and AGENTS.md for project conventions\n2. Check existing .claude/ structure and .githooks/ directory\n3. Create Claude Code hook configuration that integrates tdd-guard\n4. Create a wrapper script (e.g., scripts/tdd-guard-wrapper.sh) that:\n   - Checks if tdd-guard is installed\n   - If installed, runs it with appropriate config\n   - If not installed, exits 0 with informational message (never blocks)\n5. Document installation in a clear section\n\n## Quality Gate\nThis is a config/scripts change. Verify scripts are executable and wrapper handles missing tdd-guard gracefully.\n\n## Completion\nWhen done, commit all changes, push your branch, and report back with summary and any concerns.",
+    "timestamp": "2026-03-11T02:27:39.105Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"task_assignment\",\"taskId\":\"9\",\"subject\":\"flt-it8.32.7: TDD Guard Claude hooks\",\"description\":\"P1 task. Add shared Claude Code hook config and safe wrapper so tdd-guard can enforce red-green-refactor locally without breaking setups where not installed.\",\"assignedBy\":\"team-lead\",\"timestamp\":\"2026-03-11T02:28:01.141Z\"}",
+    "timestamp": "2026-03-11T02:28:01.141Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773196065954-k0wcz5b\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"REPO_ROOT=\\\"$(git rev-parse --show-toplevel)\\\" && BRANCH_NAME=\\\"worktree/tdd-guard\\\" && WORKTREE_DIR=\\\"$REPO_ROOT/.claude/worktrees/$BRANCH_NAME\\\" && if [ -d \\\"$WORKTREE_DIR\\\" ]; then echo \\\"Worktree already exists, reusing\\\"; else git worktree add \\\"$WORKTREE_DIR\\\" -b \\\"$BRANCH_NAME\\\"; fi && cd \\\"$WORKTREE_DIR\\\" && echo \\\"CWD: $(pwd)\\\" && echo \\\"Branch: $(git branch --show-current)\\\" && echo \\\"$(pwd)\\\" | grep -q '\\\\.claude/worktrees/' && echo \\\"WORKTREE VERIFIED\\\" || echo \\\"FATAL: NOT in a worktree\\\"\",\"description\":\"Create and enter worktree for tdd-guard branch\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T02:37:12.503Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773196719607-gjl7rvu\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"ls -la .claude/ 2>/dev/null; echo \\\"---\\\"; ls -la scripts/ 2>/dev/null; echo \\\"---\\\"; ls -la .githooks/ 2>/dev/null; echo \\\"---\\\"; git status --short\",\"description\":\"Check what files exist in worktree\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T02:38:41.112Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773196725693-uqb61fg\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"cd /home/ketan/project/flotsam && cat .claude/settings.json 2>/dev/null; echo \\\"===\\\"; ls scripts/hooks/ 2>/dev/null; echo \\\"===\\\"; cat scripts/hooks/claude-tdd-guard.sh 2>/dev/null; echo \\\"===\\\"; ls .githooks/ 2>/dev/null; echo \\\"===\\\"; cat scripts/install-hooks.sh 2>/dev/null\",\"description\":\"Check files on main working tree (uncommitted)\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T02:48:06.247Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"plan_approval_response\",\"requestId\":\"plan_approval-1773197355718@tdd-guard@gentle-cuddling-puddle\",\"approved\":true,\"timestamp\":\"2026-03-11T02:49:15.952Z\",\"permissionMode\":\"default\"}",
+    "timestamp": "2026-03-11T02:49:15.952Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773197364335-hq9e6ly\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"cd /home/ketan/project/flotsam/.claude/worktrees/worktree/tdd-guard && pwd && git branch --show-current\",\"description\":\"Verify worktree location\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T02:50:12.744Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"plan_approval_response\",\"requestId\":\"plan_approval-1773197355718@tdd-guard@gentle-cuddling-puddle\",\"approved\":true,\"timestamp\":\"2026-03-11T02:50:21.477Z\",\"permissionMode\":\"default\"}",
+    "timestamp": "2026-03-11T02:50:21.477Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773197416489-osbbpzp\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"mkdir -p scripts/hooks\",\"description\":\"Create scripts/hooks directory\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T02:50:38.691Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773197444805-57semmv\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/flotsam/.claude/worktrees/worktree/tdd-guard/scripts/hooks/claude-tdd-guard.sh\",\"content\":\"#!/usr/bin/env bash\\nset -euo pipefail\\n\\nif command -v tdd-guard >/dev/null 2>&1; then\\n  exec tdd-guard \\\"$@\\\"\\nfi\\n\\nexit 0\\n\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T02:50:56.449Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773197457200-ncrfg5y\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/flotsam/.claude/worktrees/worktree/tdd-guard/.claude/settings.json\",\"content\":\"{\\n  \\\"hooks\\\": {\\n    \\\"PreToolUse\\\": [\\n      {\\n        \\\"matcher\\\": \\\"Write|Edit|MultiEdit|TodoWrite\\\",\\n        \\\"hooks\\\": [\\n          {\\n            \\\"type\\\": \\\"command\\\",\\n            \\\"command\\\": \\\"./scripts/hooks/claude-tdd-guard.sh\\\"\\n          }\\n        ]\\n      }\\n    ],\\n    \\\"UserPromptSubmit\\\": [\\n      {\\n        \\\"hooks\\\": [\\n          {\\n            \\\"type\\\": \\\"command\\\",\\n            \\\"command\\\": \\\"$CLAUDE_PROJECT_DIR/scripts/hooks/claude-tdd-guard.sh\\\"\\n          }\\n        ]\\n      }\\n    ],\\n    \\\"SessionStart\\\": [\\n      {\\n        \\\"matcher\\\": \\\"startup|resume|clear\\\",\\n        \\\"hooks\\\": [\\n          {\\n            \\\"type\\\": \\\"command\\\",\\n            \\\"command\\\": \\\"./scripts/hooks/claude-tdd-guard.sh\\\"\\n          }\\n        ]\\n      }\\n    ]\\n  }\\n}\\n\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T02:50:58.757Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773197461879-sim28ha\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"chmod +x /home/ketan/project/flotsam/.claude/worktrees/worktree/tdd-guard/scripts/hooks/claude-tdd-guard.sh\",\"description\":\"Make wrapper script executable\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T02:51:50.746Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773197524344-rtbgq66\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/flotsam/.claude/worktrees/worktree/tdd-guard/Makefile\",\"old_string\":\".PHONY: api-build api-run api-generate api-test api-test-unit \\\\\\n        api-lint api-migrate-up api-migrate-down api-clean \\\\\\n        web-install web-dev web-build web-lint web-clean web-test web-schema-sync \\\\\\n        lint \\\\\\n        dev dev-db-up dev-db-down \\\\\\n        test-quick test-standard test-full \\\\\\n        help\",\"new_string\":\".PHONY: api-build api-run api-generate api-test api-test-unit api-test-tdd \\\\\\n        api-lint api-migrate-up api-migrate-down api-clean \\\\\\n        web-install web-dev web-build web-lint web-clean web-test web-test-tdd web-schema-sync \\\\\\n        lint \\\\\\n        dev dev-db-up dev-db-down \\\\\\n        test-quick test-standard test-full \\\\\\n        help\",\"replace_all\":false},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T02:52:09.678Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773197535010-qmwgqhx\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/flotsam/.claude/worktrees/worktree/tdd-guard/Makefile\",\"old_string\":\"## api-lint: Run linter on the API\",\"new_string\":\"## api-test-tdd: Run API tests with tdd-guard-go when installed\\napi-test-tdd:\\n\\t$(MAKE) -C api test-tdd\\n\\n## api-lint: Run linter on the API\",\"replace_all\":false},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T02:52:52.259Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773197578265-yqnpf3r\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/flotsam/.claude/worktrees/worktree/tdd-guard/Makefile\",\"old_string\":\"## web-schema-sync: Regenerate web/schema.graphql and graphql-env.d.ts from API SDL files\",\"new_string\":\"## web-test-tdd: Run web tests with TDD Guard reporter when configured\\nweb-test-tdd:\\n\\t$(MAKE) -C web test-tdd\\n\\n## web-schema-sync: Regenerate web/schema.graphql and graphql-env.d.ts from API SDL files\",\"replace_all\":false},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T02:54:57.463Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773197702734-kh572pe\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/flotsam/.claude/worktrees/worktree/tdd-guard/api/Makefile\",\"old_string\":\"        test test-unit test-integration seed dev help\",\"new_string\":\"        test test-unit test-tdd test-integration seed dev help\",\"replace_all\":false},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T02:55:05.018Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773197705529-xeyi3mf\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/flotsam/.claude/worktrees/worktree/tdd-guard/api/Makefile\",\"old_string\":\"## test-integration: Run integration tests (requires DATABASE_URL)\",\"new_string\":\"## test-tdd: Run Go tests with tdd-guard-go when installed\\ntest-tdd:\\n\\tif command -v tdd-guard-go >/dev/null 2>&1; then \\\\\\n\\t\\tgo test -json ./... 2>&1 | tdd-guard-go -project-root \\\"$$(pwd)\\\"; \\\\\\n\\telse \\\\\\n\\t\\tgo test -json ./...; \\\\\\n\\tfi\\n\\n## test-integration: Run integration tests (requires DATABASE_URL)\",\"replace_all\":false},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T02:55:08.143Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773197708357-2tds9wi\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/flotsam/.claude/worktrees/worktree/tdd-guard/web/Makefile\",\"old_string\":\".PHONY: install dev build lint format clean test test-coverage help\",\"new_string\":\".PHONY: install dev build lint format clean test test-tdd test-coverage help\",\"replace_all\":false},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T02:55:36.921Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773197737400-x012w2k\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/flotsam/.claude/worktrees/worktree/tdd-guard/web/Makefile\",\"old_string\":\"## test-coverage: Run unit tests with coverage report\",\"new_string\":\"## test-tdd: Run unit tests with optional TDD Guard reporter\\ntest-tdd:\\n\\tTDD_GUARD_PROJECT_ROOT=\\\"$$(pwd)\\\" pnpm test\\n\\n## test-coverage: Run unit tests with coverage report\",\"replace_all\":false},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T02:55:39.385Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773197755676-xe6tq08\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/flotsam/.claude/worktrees/worktree/tdd-guard/web/vitest.config.ts\",\"content\":\"import { defineConfig } from 'vitest/config'\\nimport react from '@vitejs/plugin-react'\\nimport { fileURLToPath, URL } from 'node:url'\\n\\nasync function loadTddGuardReporter() {\\n  const projectRoot = process.env.TDD_GUARD_PROJECT_ROOT\\n  if (!projectRoot) {\\n    return null\\n  }\\n\\n  try {\\n    const dynamicImport = new Function('specifier', 'return import(specifier)') as (\\n      specifier: string,\\n    ) => Promise<{ VitestReporter?: new (root: string) => unknown }>\\n    const mod = await dynamicImport('tdd-guard-vitest')\\n    if (!mod.VitestReporter) {\\n      throw new Error('tdd-guard-vitest did not export VitestReporter')\\n    }\\n    return new mod.VitestReporter(projectRoot)\\n  } catch (error) {\\n    if (process.env.TDD_GUARD_REQUIRED === '1') {\\n      throw error\\n    }\\n    console.warn('vitest: tdd-guard-vitest not installed; continuing without TDD Guard reporter')\\n    return null\\n  }\\n}\\n\\nexport default defineConfig(async () => {\\n  const tddGuardReporter = await loadTddGuardReporter()\\n\\n  return {\\n    plugins: [react()],\\n    resolve: {\\n      alias: {\\n        '@': fileURLToPath(new URL('./src', import.meta.url)),\\n      },\\n    },\\n    test: {\\n      environment: 'happy-dom',\\n      setupFiles: ['./src/test/setup.ts'],\\n      exclude: ['e2e/**', 'node_modules/**'],\\n      reporters: tddGuardReporter ? ['default', tddGuardReporter] : ['default'],\\n      coverage: {\\n        provider: 'v8',\\n        reporter: ['text', 'lcov'],\\n        include: ['src/**/*.{ts,tsx}'],\\n        exclude: ['src/test/**', 'src/**/*.test.{ts,tsx}', 'src/main.tsx', 'src/vite-env.d.ts'],\\n        thresholds: {\\n          lines: 80,\\n          functions: 80,\\n          branches: 80,\\n          statements: 80,\\n        },\\n      },\\n    },\\n  }\\n})\\n\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T03:01:34.222Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773198101698-sdv5jb5\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/flotsam/.claude/worktrees/worktree/tdd-guard/CLAUDE.md\",\"old_string\":\"| `make web-test` | Vitest unit tests |\",\"new_string\":\"| `make web-test` | Vitest unit tests |\\n| `make api-test-tdd` | API tests with tdd-guard-go (when installed) |\\n| `make web-test-tdd` | Web tests with TDD Guard reporter (when configured) |\",\"replace_all\":false},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T03:03:21.739Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773198206463-nm2o6nq\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"bash scripts/hooks/claude-tdd-guard.sh; echo \\\"Exit code: $?\\\"\",\"description\":\"Test wrapper exits 0 when tdd-guard not installed\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T03:03:29.915Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773198210944-d0d59oy\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"python3 -m json.tool .claude/settings.json > /dev/null && echo \\\"Valid JSON\\\"\",\"description\":\"Validate settings.json is valid JSON\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T03:03:34.410Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773198219711-zn0yk9n\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"cd web && pnpm install --frozen-lockfile 2>&1 | tail -3\",\"timeout\":60000,\"description\":\"Install web dependencies\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T03:03:59.061Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773198246425-y385qlt\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"cd web && TDD_GUARD_PROJECT_ROOT=\\\"$(pwd)\\\" pnpm test 2>&1 | tail -15\",\"timeout\":60000,\"description\":\"Test web-test-tdd with optional reporter\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T03:04:14.298Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773198260227-5qhs8vp\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"pnpm install --frozen-lockfile 2>&1 | tail -3 && TDD_GUARD_PROJECT_ROOT=\\\"$(pwd)\\\" pnpm test 2>&1 | tail -15\",\"timeout\":60000,\"description\":\"Install deps and test web-test-tdd\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T03:04:27.311Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773198284464-ogndzky\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"cd /home/ketan/project/flotsam/.claude/worktrees/worktree/tdd-guard && git add .claude/settings.json scripts/hooks/claude-tdd-guard.sh Makefile api/Makefile web/Makefile web/vitest.config.ts CLAUDE.md\",\"description\":\"Stage all changed files\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T03:04:52.560Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"shutdown_request\",\"requestId\":\"shutdown-1773198372029@tdd-guard\",\"from\":\"team-lead\",\"reason\":\"Work merged and issue closed. Thanks!\",\"timestamp\":\"2026-03-11T03:06:12.029Z\"}",
+    "timestamp": "2026-03-11T03:06:12.029Z",
+    "read": true
+  }
+]

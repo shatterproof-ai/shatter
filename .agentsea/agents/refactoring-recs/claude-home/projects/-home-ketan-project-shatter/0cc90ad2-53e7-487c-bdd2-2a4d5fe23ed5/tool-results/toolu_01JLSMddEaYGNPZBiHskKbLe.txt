@@ -1,0 +1,1443 @@
+     1→/**
+     2→ * Source code instrumentor using the TypeScript Compiler API.
+     3→ *
+     4→ * Rewrites a target function to insert:
+     5→ * - __shatter_record(line) calls at each statement for line-level coverage
+     6→ * - __shatter_branch(id, line, condition, symExpr) wrappers around branch
+     7→ *   conditions for symbolic constraint capture
+     8→ *
+     9→ * The __shatter_branch() call evaluates the original condition, records a
+    10→ * BranchDecision with both the concrete result and the static symbolic
+    11→ * expression, and returns the boolean so control flow is preserved.
+    12→ */
+    13→
+    14→import ts from "typescript";
+    15→import type { SymExpr, BinOpKind, UnOpKind, MockConfig } from "./protocol.js";
+    16→
+    17→/** Result of instrumenting a source file. */
+    18→export interface InstrumentResult {
+    19→  /** The full instrumented source code. */
+    20→  instrumentedSource: string;
+    21→  /** The name of the line-recording function injected into the code. */
+    22→  recordFunctionName: string;
+    23→  /** The name of the branch-recording function injected into the code. */
+    24→  branchFunctionName: string;
+    25→  /** Total number of branch points instrumented. */
+    26→  branchCount: number;
+    27→  /** Number of unique executable statement lines instrumented with __shatter_record(). */
+    28→  instrumentableLineCount: number;
+    29→}
+    30→
+    31→/**
+    32→ * The name of the mock call recording function inserted into instrumented code.
+    33→ * Signature: __shatter_mock_call(module, symbol, args, returnValue) → void
+    34→ */
+    35→export const MOCK_CALL_FUNCTION = "__shatter_mock_call";
+    36→
+    37→/**
+    38→ * The name of the global mock registry object.
+    39→ * Maps "module:symbol" to mock functions.
+    40→ */
+    41→export const MOCK_REGISTRY = "__shatter_mocks";
+    42→
+    43→/**
+    44→ * The name of the line-recording function inserted into instrumented code.
+    45→ * Callers must define this function before executing instrumented code.
+    46→ */
+    47→export const RECORD_FUNCTION = "__shatter_record";
+    48→
+    49→/**
+    50→ * The name of the branch-recording function inserted into instrumented code.
+    51→ * Signature: __shatter_branch(branchId, line, conditionResult, symExpr) → boolean
+    52→ */
+    53→export const BRANCH_FUNCTION = "__shatter_branch";
+    54→
+    55→/**
+    56→ * The name of the scope-event recording function inserted into instrumented code.
+    57→ * Signature: __shatter_scope_event(scopeId, kind) → void
+    58→ */
+    59→export const SCOPE_EVENT_FUNCTION = "__shatter_scope_event";
+    60→
+    61→/** Mutable state threaded through the instrumentation pass. */
+    62→interface InstrumentationContext {
+    63→  sourceFile: ts.SourceFile;
+    64→  factory: ts.NodeFactory;
+    65→  paramNames: Set<string>;
+    66→  nextBranchId: number;
+    67→  nextLoopId: number;
+    68→  nextCallSiteId: number;
+    69→  /** Maps local variable names to their symbolic expressions derived from parameters. */
+    70→  dataFlowMap: Map<string, SymExpr>;
+    71→  /** Unique source lines where __shatter_record() calls were inserted. */
+    72→  instrumentableLines: Set<number>;
+    73→}
+    74→
+    75→/**
+    76→ * Instrument a TypeScript source file, inserting line-recording and
+    77→ * branch-recording calls into the specified function.
+    78→ *
+    79→ * @param source - The original TypeScript source text.
+    80→ * @param functionName - The name of the function to instrument.
+    81→ * @param fileName - The file name used for parsing (affects diagnostics only).
+    82→ * @param mocks - Optional mock configurations for import rewriting.
+    83→ * @returns The instrumented source, or an error message.
+    84→ */
+    85→export function instrumentFunction(
+    86→  source: string,
+    87→  functionName: string,
+    88→  fileName = "input.ts",
+    89→  mocks: MockConfig[] = [],
+    90→): InstrumentResult | { error: string } {
+    91→  const scriptKind = fileName.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+    92→  const sourceFile = ts.createSourceFile(
+    93→    fileName,
+    94→    source,
+    95→    ts.ScriptTarget.Latest,
+    96→    true,
+    97→    scriptKind,
+    98→  );
+    99→
+   100→  const targetFunction = findFunction(sourceFile, functionName);
+   101→  if (targetFunction === undefined) {
+   102→    return { error: `Function '${functionName}' not found` };
+   103→  }
+   104→
+   105→  const paramNames = extractParamNames(targetFunction, sourceFile);
+   106→  const dataFlowMap = buildDataFlowMap(targetFunction, sourceFile, paramNames);
+   107→
+   108→  // Shared mutable branch counter — captured by the transformer closure.
+   109→  const branchState = { nextBranchId: 0 };
+   110→  const instrumentableLines = new Set<number>();
+   111→
+   112→  // Build mock lookup for import rewriting
+   113→  const mocksBySymbol = buildMockLookup(mocks);
+   114→
+   115→  const printer = ts.createPrinter({ newLine: ts.NewLineKind.LineFeed });
+   116→  const transformed = ts.transform(sourceFile, [
+   117→    createInstrumentationTransformer(functionName, paramNames, branchState, dataFlowMap, mocksBySymbol, instrumentableLines),
+   118→  ]);
+   119→  const result = printer.printFile(transformed.transformed[0] as ts.SourceFile);
+   120→  transformed.dispose();
+   121→
+   122→  return {
+   123→    instrumentedSource: result,
+   124→    recordFunctionName: RECORD_FUNCTION,
+   125→    branchFunctionName: BRANCH_FUNCTION,
+   126→    branchCount: branchState.nextBranchId,
+   127→    instrumentableLineCount: instrumentableLines.size,
+   128→  };
+   129→}
+   130→
+   131→/**
+   132→ * Find a function declaration or variable-declared arrow/function expression
+   133→ * by name in the top-level statements of a source file.
+   134→ */
+   135→function findFunction(
+   136→  sourceFile: ts.SourceFile,
+   137→  name: string,
+   138→): ts.FunctionDeclaration | ts.VariableStatement | undefined {
+   139→  for (const statement of sourceFile.statements) {
+   140→    if (
+   141→      ts.isFunctionDeclaration(statement) &&
+   142→      statement.name?.text === name
+   143→    ) {
+   144→      return statement;
+   145→    }
+   146→
+   147→    if (ts.isVariableStatement(statement)) {
+   148→      for (const decl of statement.declarationList.declarations) {
+   149→        if (
+   150→          ts.isIdentifier(decl.name) &&
+   151→          decl.name.text === name &&
+   152→          decl.initializer &&
+   153→          (ts.isArrowFunction(decl.initializer) ||
+   154→            ts.isFunctionExpression(decl.initializer))
+   155→        ) {
+   156→          return statement;
+   157→        }
+   158→      }
+   159→    }
+   160→  }
+   161→  return undefined;
+   162→}
+   163→
+   164→/**
+   165→ * Extract parameter names from a function declaration or arrow function.
+   166→ */
+   167→function extractParamNames(
+   168→  node: ts.FunctionDeclaration | ts.VariableStatement,
+   169→  sourceFile: ts.SourceFile,
+   170→): Set<string> {
+   171→  const names = new Set<string>();
+   172→
+   173→  if (ts.isFunctionDeclaration(node)) {
+   174→    for (const param of node.parameters) {
+   175→      if (ts.isIdentifier(param.name)) {
+   176→        names.add(param.name.text);
+   177→      }
+   178→    }
+   179→    return names;
+   180→  }
+   181→
+   182→  // Variable statement — find the arrow/function expression
+   183→  for (const decl of node.declarationList.declarations) {
+   184→    if (decl.initializer && (ts.isArrowFunction(decl.initializer) || ts.isFunctionExpression(decl.initializer))) {
+   185→      for (const param of decl.initializer.parameters) {
+   186→        if (ts.isIdentifier(param.name)) {
+   187→          names.add(param.name.text);
+   188→        }
+   189→      }
+   190→    }
+   191→  }
+   192→  return names;
+   193→}
+   194→
+   195→// ---------------------------------------------------------------------------
+   196→// Data flow analysis
+   197→// ---------------------------------------------------------------------------
+   198→
+   199→/**
+   200→ * Build a map from local variable names to their symbolic expressions.
+   201→ * Scans variable declarations in the function body where the initializer
+   202→ * references parameters (directly or transitively through other locals).
+   203→ */
+   204→function buildDataFlowMap(
+   205→  node: ts.FunctionDeclaration | ts.VariableStatement,
+   206→  sourceFile: ts.SourceFile,
+   207→  paramNames: Set<string>,
+   208→): Map<string, SymExpr> {
+   209→  const body = extractFunctionBody(node);
+   210→  if (!body) {
+   211→    return new Map();
+   212→  }
+   213→
+   214→  const flowMap = new Map<string, SymExpr>();
+   215→
+   216→  // Create a combined lookup: params + already-resolved locals
+   217→  const resolveName = (name: string): SymExpr | undefined => {
+   218→    if (paramNames.has(name)) {
+   219→      return { kind: "param", name, path: [] };
+   220→    }
+   221→    return flowMap.get(name);
+   222→  };
+   223→
+   224→  visitStatementsForDataFlow(body.statements, resolveName, flowMap);
+   225→  return flowMap;
+   226→}
+   227→
+   228→/**
+   229→ * Walk statements collecting variable declarations whose initializers
+   230→ * can be resolved to symbolic expressions.
+   231→ */
+   232→function visitStatementsForDataFlow(
+   233→  statements: ts.NodeArray<ts.Statement> | ReadonlyArray<ts.Statement>,
+   234→  resolveName: (name: string) => SymExpr | undefined,
+   235→  flowMap: Map<string, SymExpr>,
+   236→): void {
+   237→  for (const stmt of statements) {
+   238→    if (ts.isVariableStatement(stmt)) {
+   239→      for (const decl of stmt.declarationList.declarations) {
+   240→        if (ts.isIdentifier(decl.name) && decl.initializer) {
+   241→          const symExpr = buildSymExprWithFlow(decl.initializer, resolveName);
+   242→          if (symExpr.kind !== "unknown") {
+   243→            flowMap.set(decl.name.text, symExpr);
+   244→          }
+   245→        } else if ((ts.isObjectBindingPattern(decl.name) || ts.isArrayBindingPattern(decl.name)) && decl.initializer) {
+   246→          const symExpr = buildSymExprWithFlow(decl.initializer, resolveName);
+   247→          if (symExpr.kind !== "unknown") {
+   248→            registerDestructuredBindings(decl.name, symExpr, flowMap);
+   249→          }
+   250→        }
+   251→      }
+   252→    }
+   253→    // Recurse into blocks for if/else, loops, etc.
+   254→    if (ts.isIfStatement(stmt)) {
+   255→      visitStatementsForDataFlow(
+   256→        statementsFromBranch(stmt.thenStatement),
+   257→        resolveName,
+   258→        flowMap,
+   259→      );
+   260→      if (stmt.elseStatement) {
+   261→        if (ts.isIfStatement(stmt.elseStatement)) {
+   262→          visitStatementsForDataFlow([stmt.elseStatement], resolveName, flowMap);
+   263→        } else {
+   264→          visitStatementsForDataFlow(
+   265→            statementsFromBranch(stmt.elseStatement),
+   266→            resolveName,
+   267→            flowMap,
+   268→          );
+   269→        }
+   270→      }
+   271→    }
+   272→    if (ts.isBlock(stmt)) {
+   273→      visitStatementsForDataFlow(stmt.statements, resolveName, flowMap);
+   274→    }
+   275→  }
+   276→}
+   277→
+   278→function statementsFromBranch(stmt: ts.Statement): ReadonlyArray<ts.Statement> {
+   279→  if (ts.isBlock(stmt)) {
+   280→    return stmt.statements;
+   281→  }
+   282→  return [stmt];
+   283→}
+   284→
+   285→/**
+   286→ * Append a property segment to a param SymExpr's path.
+   287→ * Returns null for non-param expressions (can't track property access on computed values).
+   288→ */
+   289→function appendPathSegment(expr: SymExpr, segment: string): SymExpr | null {
+   290→  if (expr.kind === "param") {
+   291→    return { kind: "param", name: expr.name, path: [...expr.path, segment] };
+   292→  }
+   293→  return null;
+   294→}
+   295→
+   296→/**
+   297→ * Walk a destructuring pattern and register each binding in the flow map
+   298→ * with the appropriate property path appended to the base expression.
+   299→ */
+   300→function registerDestructuredBindings(
+   301→  pattern: ts.BindingPattern,
+   302→  baseExpr: SymExpr,
+   303→  flowMap: Map<string, SymExpr>,
+   304→): void {
+   305→  if (ts.isObjectBindingPattern(pattern)) {
+   306→    for (const element of pattern.elements) {
+   307→      if (element.dotDotDotToken) {
+   308→        continue;
+   309→      }
+   310→      // Renamed binding: {a: renamed} uses propertyName="a", name="renamed"
+   311→      // Direct binding: {a} uses propertyName=undefined, name="a"
+   312→      const propName = element.propertyName
+   313→        ? (ts.isIdentifier(element.propertyName) ? element.propertyName.text : null)
+   314→        : (ts.isIdentifier(element.name) ? element.name.text : null);
+   315→      if (!propName) continue;
+   316→
+   317→      const childExpr = appendPathSegment(baseExpr, propName);
+   318→      if (!childExpr) continue;
+   319→
+   320→      if (ts.isIdentifier(element.name)) {
+   321→        flowMap.set(element.name.text, childExpr);
+   322→      } else if ((ts.isObjectBindingPattern(element.name) || ts.isArrayBindingPattern(element.name))) {
+   323→        registerDestructuredBindings(element.name, childExpr, flowMap);
+   324→      }
+   325→    }
+   326→  } else if (ts.isArrayBindingPattern(pattern)) {
+   327→    for (let i = 0; i < pattern.elements.length; i++) {
+   328→      const element = pattern.elements[i]!;
+   329→      if (ts.isOmittedExpression(element)) continue;
+   330→      if (element.dotDotDotToken) continue;
+   331→
+   332→      const childExpr = appendPathSegment(baseExpr, String(i));
+   333→      if (!childExpr) continue;
+   334→
+   335→      if (ts.isIdentifier(element.name)) {
+   336→        flowMap.set(element.name.text, childExpr);
+   337→      } else if ((ts.isObjectBindingPattern(element.name) || ts.isArrayBindingPattern(element.name))) {
+   338→        registerDestructuredBindings(element.name, childExpr, flowMap);
+   339→      }
+   340→    }
+   341→  }
+   342→}
+   343→
+   344→/**
+   345→ * Build a SymExpr from an expression, resolving local variables via the
+   346→ * flow-sensitive resolveName lookup (which checks params and already-mapped locals).
+   347→ */
+   348→export function buildSymExprWithFlow(
+   349→  expr: ts.Expression,
+   350→  resolveName: (name: string) => SymExpr | undefined,
+   351→): SymExpr {
+   352→  if (ts.isParenthesizedExpression(expr)) {
+   353→    return buildSymExprWithFlow(expr.expression, resolveName);
+   354→  }
+   355→
+   356→  if (ts.isIdentifier(expr)) {
+   357→    const resolved = resolveName(expr.text);
+   358→    if (resolved) {
+   359→      return resolved;
+   360→    }
+   361→    return { kind: "unknown" };
+   362→  }
+   363→
+   364→  if (ts.isNumericLiteral(expr)) {
+   365→    const n = Number(expr.text);
+   366→    if (Number.isInteger(n)) {
+   367→      return { kind: "const", type: "int", value: n };
+   368→    }
+   369→    return { kind: "const", type: "float", value: n };
+   370→  }
+   371→
+   372→  if (ts.isStringLiteral(expr)) {
+   373→    return { kind: "const", type: "str", value: expr.text };
+   374→  }
+   375→
+   376→  if (expr.kind === ts.SyntaxKind.TrueKeyword) {
+   377→    return { kind: "const", type: "bool", value: true };
+   378→  }
+   379→
+   380→  if (expr.kind === ts.SyntaxKind.FalseKeyword) {
+   381→    return { kind: "const", type: "bool", value: false };
+   382→  }
+   383→
+   384→  if (expr.kind === ts.SyntaxKind.NullKeyword) {
+   385→    return { kind: "const", type: "null" };
+   386→  }
+   387→
+   388→  if (ts.isBinaryExpression(expr)) {
+   389→    const op = binaryTokenToOp(expr.operatorToken.kind);
+   390→    if (op) {
+   391→      const left = buildSymExprWithFlow(expr.left, resolveName);
+   392→      const right = buildSymExprWithFlow(expr.right, resolveName);
+   393→      // Only produce a symbolic bin_op if at least one side is non-unknown
+   394→      if (left.kind !== "unknown" || right.kind !== "unknown") {
+   395→        return { kind: "bin_op", op, left, right };
+   396→      }
+   397→    }
+   398→    return { kind: "unknown" };
+   399→  }
+   400→
+   401→  if (ts.isPrefixUnaryExpression(expr)) {
+   402→    const op = unaryTokenToOp(expr.operator);
+   403→    if (op) {
+   404→      const operand = buildSymExprWithFlow(expr.operand, resolveName);
+   405→      if (operand.kind !== "unknown") {
+   406→        return { kind: "un_op", op, operand };
+   407→      }
+   408→    }
+   409→    return { kind: "unknown" };
+   410→  }
+   411→
+   412→  if (ts.isPropertyAccessExpression(expr)) {
+   413→    // Check if this is a property chain starting from a known name
+   414→    const chain = resolvePropertyChainWithFlow(expr, resolveName);
+   415→    if (chain) {
+   416→      return chain;
+   417→    }
+   418→    return { kind: "unknown" };
+   419→  }
+   420→
+   421→  if (ts.isTypeOfExpression(expr)) {
+   422→    const operand = buildSymExprWithFlow(expr.expression, resolveName);
+   423→    if (operand.kind !== "unknown") {
+   424→      return { kind: "un_op", op: "typeof" as UnOpKind, operand };
+   425→    }
+   426→    return { kind: "unknown" };
+   427→  }
+   428→
+   429→  if (ts.isCallExpression(expr)) {
+   430→    if (ts.isPropertyAccessExpression(expr.expression)) {
+   431→      const methodName = expr.expression.name.text;
+   432→      const receiver = buildSymExprWithFlow(expr.expression.expression, resolveName);
+   433→      const args = expr.arguments.map((a) => buildSymExprWithFlow(a, resolveName));
+   434→      if (receiver.kind !== "unknown" || args.some((a) => a.kind !== "unknown")) {
+   435→        return { kind: "call", name: methodName, receiver, args };
+   436→      }
+   437→      return { kind: "unknown" };
+   438→    }
+   439→    if (ts.isIdentifier(expr.expression)) {
+   440→      const args = expr.arguments.map((a) => buildSymExprWithFlow(a, resolveName));
+   441→      if (args.some((a) => a.kind !== "unknown")) {
+   442→        return { kind: "call", name: expr.expression.text, receiver: null, args };
+   443→      }
+   444→      return { kind: "unknown" };
+   445→    }
+   446→    return { kind: "unknown" };
+   447→  }
+   448→
+   449→  return { kind: "unknown" };
+   450→}
+   451→
+   452→/**
+   453→ * Resolve property access chains using flow-sensitive lookup.
+   454→ */
+   455→function resolvePropertyChainWithFlow(
+   456→  expr: ts.PropertyAccessExpression,
+   457→  resolveName: (name: string) => SymExpr | undefined,
+   458→): SymExpr | null {
+   459→  const path: string[] = [];
+   460→  let current: ts.Expression = expr;
+   461→
+   462→  while (ts.isPropertyAccessExpression(current)) {
+   463→    path.unshift(current.name.text);
+   464→    current = current.expression;
+   465→  }
+   466→
+   467→  if (ts.isIdentifier(current)) {
+   468→    const resolved = resolveName(current.text);
+   469→    if (resolved && resolved.kind === "param") {
+   470→      return { kind: "param", name: resolved.name, path: [...resolved.path, ...path] };
+   471→    }
+   472→  }
+   473→  return null;
+   474→}
+   475→
+   476→/**
+   477→ * Extract the function body from a function declaration or variable statement.
+   478→ */
+   479→function extractFunctionBody(
+   480→  node: ts.FunctionDeclaration | ts.VariableStatement,
+   481→): ts.Block | undefined {
+   482→  if (ts.isFunctionDeclaration(node) && node.body) {
+   483→    return node.body;
+   484→  }
+   485→
+   486→  if (ts.isVariableStatement(node)) {
+   487→    for (const decl of node.declarationList.declarations) {
+   488→      if (decl.initializer) {
+   489→        if (ts.isArrowFunction(decl.initializer) && ts.isBlock(decl.initializer.body)) {
+   490→          return decl.initializer.body;
+   491→        }
+   492→        if (ts.isFunctionExpression(decl.initializer) && decl.initializer.body) {
+   493→          return decl.initializer.body;
+   494→        }
+   495→      }
+   496→    }
+   497→  }
+   498→
+   499→  return undefined;
+   500→}
+   501→
+   502→// ---------------------------------------------------------------------------
+   503→// Mock support
+   504→// ---------------------------------------------------------------------------
+   505→
+   506→/** Parsed mock lookup: maps "module:symbol" to the MockConfig. */
+   507→type MockLookup = Map<string, MockConfig>;
+   508→
+   509→/**
+   510→ * Build a lookup map from mock configs keyed by "module:symbol".
+   511→ * The module is extracted from the symbol field if it contains a colon,
+   512→ * otherwise the symbol is used as-is.
+   513→ */
+   514→function buildMockLookup(mocks: MockConfig[]): MockLookup {
+   515→  const lookup = new Map<string, MockConfig>();
+   516→  for (const mock of mocks) {
+   517→    lookup.set(mock.symbol, mock);
+   518→  }
+   519→  return lookup;
+   520→}
+   521→
+   522→/**
+   523→ * Create a TypeScript transformer that instruments a specific function
+   524→ * with __shatter_record() and __shatter_branch() calls.
+   525→ */
+   526→function createInstrumentationTransformer(
+   527→  targetFunctionName: string,
+   528→  paramNames: Set<string>,
+   529→  branchState: { nextBranchId: number },
+   530→  dataFlowMap: Map<string, SymExpr> = new Map(),
+   531→  mockLookup: MockLookup = new Map(),
+   532→  instrumentableLines: Set<number> = new Set(),
+   533→): ts.TransformerFactory<ts.SourceFile> {
+   534→  return (context) => {
+   535→    return (sourceFile) => {
+   536→      const ctx: InstrumentationContext = {
+   537→        sourceFile,
+   538→        factory: context.factory,
+   539→        paramNames,
+   540→        nextBranchId: 0,
+   541→        nextLoopId: 0,
+   542→        nextCallSiteId: 0,
+   543→        dataFlowMap,
+   544→        instrumentableLines,
+   545→      };
+   546→
+   547→      const visitor = (node: ts.Node): ts.Node => {
+   548→        if (ts.isFunctionDeclaration(node) && node.name?.text === targetFunctionName && node.body) {
+   549→          ctx.nextBranchId = 0;
+   550→          ctx.nextLoopId = 0;
+   551→          ctx.nextCallSiteId = 1;
+   552→          const instrumentedBody = instrumentBlock(node.body, ctx);
+   553→          const newBody = wrapFunctionBodyWithCallScope(instrumentedBody, 0, context.factory);
+   554→          branchState.nextBranchId = ctx.nextBranchId;
+   555→          return context.factory.updateFunctionDeclaration(
+   556→            node,
+   557→            node.modifiers,
+   558→            node.asteriskToken,
+   559→            node.name,
+   560→            node.typeParameters,
+   561→            node.parameters,
+   562→            node.type,
+   563→            newBody,
+   564→          );
+   565→        }
+   566→
+   567→        if (ts.isVariableStatement(node)) {
+   568→          for (const decl of node.declarationList.declarations) {
+   569→            if (
+   570→              ts.isIdentifier(decl.name) &&
+   571→              decl.name.text === targetFunctionName &&
+   572→              decl.initializer
+   573→            ) {
+   574→              ctx.nextBranchId = 0;
+   575→
+   576→              if (ts.isArrowFunction(decl.initializer) && ts.isBlock(decl.initializer.body)) {
+   577→                ctx.nextLoopId = 0;
+   578→                ctx.nextCallSiteId = 1;
+   579→                const instrumentedBody = instrumentBlock(decl.initializer.body, ctx);
+   580→                const newBody = wrapFunctionBodyWithCallScope(instrumentedBody, 0, context.factory);
+   581→                branchState.nextBranchId = ctx.nextBranchId;
+   582→                const newArrow = context.factory.updateArrowFunction(
+   583→                  decl.initializer,
+   584→                  decl.initializer.modifiers,
+   585→                  decl.initializer.typeParameters,
+   586→                  decl.initializer.parameters,
+   587→                  decl.initializer.type,
+   588→                  decl.initializer.equalsGreaterThanToken,
+   589→                  newBody,
+   590→                );
+   591→                const newDecl = context.factory.updateVariableDeclaration(
+   592→                  decl,
+   593→                  decl.name,
+   594→                  decl.exclamationToken,
+   595→                  decl.type,
+   596→                  newArrow,
+   597→                );
+   598→                const newDeclList = context.factory.updateVariableDeclarationList(
+   599→                  node.declarationList,
+   600→                  [newDecl],
+   601→                );
+   602→                return context.factory.updateVariableStatement(node, node.modifiers, newDeclList);
+   603→              }
+   604→
+   605→              if (ts.isFunctionExpression(decl.initializer) && decl.initializer.body) {
+   606→                ctx.nextLoopId = 0;
+   607→                ctx.nextCallSiteId = 1;
+   608→                const instrumentedBody = instrumentBlock(decl.initializer.body, ctx);
+   609→                const newBody = wrapFunctionBodyWithCallScope(instrumentedBody, 0, context.factory);
+   610→                branchState.nextBranchId = ctx.nextBranchId;
+   611→                const newFn = context.factory.updateFunctionExpression(
+   612→                  decl.initializer,
+   613→                  decl.initializer.modifiers,
+   614→                  decl.initializer.asteriskToken,
+   615→                  decl.initializer.name,
+   616→                  decl.initializer.typeParameters,
+   617→                  decl.initializer.parameters,
+   618→                  decl.initializer.type,
+   619→                  newBody,
+   620→                );
+   621→                const newDecl = context.factory.updateVariableDeclaration(
+   622→                  decl,
+   623→                  decl.name,
+   624→                  decl.exclamationToken,
+   625→                  decl.type,
+   626→                  newFn,
+   627→                );
+   628→                const newDeclList = context.factory.updateVariableDeclarationList(
+   629→                  node.declarationList,
+   630→                  [newDecl],
+   631→                );
+   632→                return context.factory.updateVariableStatement(node, node.modifiers, newDeclList);
+   633→              }
+   634→            }
+   635→          }
+   636→        }
+   637→
+   638→        return ts.visitEachChild(node, visitor, context);
+   639→      };
+   640→
+   641→      let result = ts.visitNode(sourceFile, visitor) as ts.SourceFile;
+   642→
+   643→      // Rewrite imports for mocked symbols (post-pass to handle multi-node expansion)
+   644→      if (mockLookup.size > 0) {
+   645→        result = rewriteImportsInSourceFile(result, mockLookup, context.factory);
+   646→      }
+   647→
+   648→      return result;
+   649→    };
+   650→  };
+   651→}
+   652→
+   653→/**
+   654→ * Instrument a block by prepending a __shatter_record() call before each
+   655→ * statement in the block, and recursively instrumenting branch bodies.
+   656→ */
+   657→function instrumentBlock(
+   658→  block: ts.Block,
+   659→  ctx: InstrumentationContext,
+   660→): ts.Block {
+   661→  const newStatements: ts.Statement[] = [];
+   662→
+   663→  for (const stmt of block.statements) {
+   664→    const line = ctx.sourceFile.getLineAndCharacterOfPosition(stmt.getStart(ctx.sourceFile)).line + 1;
+   665→    ctx.instrumentableLines.add(line);
+   666→    newStatements.push(createRecordCall(ctx.factory, line));
+   667→    newStatements.push(instrumentStatement(stmt, ctx));
+   668→  }
+   669→
+   670→  return ctx.factory.updateBlock(block, newStatements);
+   671→}
+   672→
+   673→/**
+   674→ * Recursively instrument a statement, handling branch constructs (if/else,
+   675→ * switch, for, while, do-while) by instrumenting their sub-blocks and
+   676→ * wrapping conditions with __shatter_branch() calls.
+   677→ */
+   678→function instrumentStatement(
+   679→  stmt: ts.Statement,
+   680→  ctx: InstrumentationContext,
+   681→): ts.Statement {
+   682→  if (ts.isIfStatement(stmt)) {
+   683→    const line = ctx.sourceFile.getLineAndCharacterOfPosition(stmt.getStart(ctx.sourceFile)).line + 1;
+   684→    const wrappedCondition = wrapBranchCondition(stmt.expression, line, ctx);
+   685→
+   686→    const thenBranch = ensureBlock(stmt.thenStatement, ctx.factory);
+   687→    const instrumentedThen = instrumentBlock(thenBranch, ctx);
+   688→
+   689→    let instrumentedElse: ts.Statement | undefined;
+   690→    if (stmt.elseStatement) {
+   691→      if (ts.isIfStatement(stmt.elseStatement)) {
+   692→        const elseIfLine = ctx.sourceFile.getLineAndCharacterOfPosition(
+   693→          stmt.elseStatement.getStart(ctx.sourceFile),
+   694→        ).line + 1;
+   695→        ctx.instrumentableLines.add(elseIfLine);
+   696→        const nestedIf = instrumentStatement(stmt.elseStatement, ctx);
+   697→        instrumentedElse = ctx.factory.createBlock(
+   698→          [createRecordCall(ctx.factory, elseIfLine), nestedIf as ts.Statement],
+   699→          true,
+   700→        );
+   701→      } else {
+   702→        const elseBlock = ensureBlock(stmt.elseStatement, ctx.factory);
+   703→        instrumentedElse = instrumentBlock(elseBlock, ctx);
+   704→      }
+   705→    }
+   706→
+   707→    return ctx.factory.updateIfStatement(stmt, wrappedCondition, instrumentedThen, instrumentedElse);
+   708→  }
+   709→
+   710→  if (ts.isSwitchStatement(stmt)) {
+   711→    const newClauses = stmt.caseBlock.clauses.map((clause) => {
+   712→      const newStmts: ts.Statement[] = [];
+   713→      for (const clauseStmt of clause.statements) {
+   714→        const line = ctx.sourceFile.getLineAndCharacterOfPosition(clauseStmt.getStart(ctx.sourceFile)).line + 1;
+   715→        ctx.instrumentableLines.add(line);
+   716→        newStmts.push(createRecordCall(ctx.factory, line));
+   717→        newStmts.push(instrumentStatement(clauseStmt, ctx));
+   718→      }
+   719→
+   720→      if (ts.isCaseClause(clause)) {
+   721→        return ctx.factory.updateCaseClause(clause, clause.expression, newStmts);
+   722→      }
+   723→      return ctx.factory.updateDefaultClause(clause, newStmts);
+   724→    });
+   725→
+   726→    const newCaseBlock = ctx.factory.updateCaseBlock(stmt.caseBlock, newClauses);
+   727→    return ctx.factory.updateSwitchStatement(stmt, stmt.expression, newCaseBlock);
+   728→  }
+   729→
+   730→  if (ts.isForStatement(stmt)) {
+   731→    let condition = stmt.condition;
+   732→    if (condition) {
+   733→      const line = ctx.sourceFile.getLineAndCharacterOfPosition(stmt.getStart(ctx.sourceFile)).line + 1;
+   734→      condition = wrapBranchCondition(condition, line, ctx);
+   735→    }
+   736→    const body = ensureBlock(stmt.statement, ctx.factory);
+   737→    const instrumentedBody = wrapLoopBody(instrumentBlock(body, ctx), ctx);
+   738→    return ctx.factory.updateForStatement(
+   739→      stmt,
+   740→      stmt.initializer,
+   741→      condition,
+   742→      stmt.incrementor,
+   743→      instrumentedBody,
+   744→    );
+   745→  }
+   746→
+   747→  if (ts.isForInStatement(stmt)) {
+   748→    const body = ensureBlock(stmt.statement, ctx.factory);
+   749→    const instrumentedBody = wrapLoopBody(instrumentBlock(body, ctx), ctx);
+   750→    return ctx.factory.updateForInStatement(stmt, stmt.initializer, stmt.expression, instrumentedBody);
+   751→  }
+   752→
+   753→  if (ts.isForOfStatement(stmt)) {
+   754→    const body = ensureBlock(stmt.statement, ctx.factory);
+   755→    const instrumentedBody = wrapLoopBody(instrumentBlock(body, ctx), ctx);
+   756→    return ctx.factory.updateForOfStatement(
+   757→      stmt,
+   758→      stmt.awaitModifier,
+   759→      stmt.initializer,
+   760→      stmt.expression,
+   761→      instrumentedBody,
+   762→    );
+   763→  }
+   764→
+   765→  if (ts.isWhileStatement(stmt)) {
+   766→    const line = ctx.sourceFile.getLineAndCharacterOfPosition(stmt.getStart(ctx.sourceFile)).line + 1;
+   767→    const wrappedCondition = wrapBranchCondition(stmt.expression, line, ctx);
+   768→    const body = ensureBlock(stmt.statement, ctx.factory);
+   769→    const instrumentedBody = wrapLoopBody(instrumentBlock(body, ctx), ctx);
+   770→    return ctx.factory.updateWhileStatement(stmt, wrappedCondition, instrumentedBody);
+   771→  }
+   772→
+   773→  if (ts.isDoStatement(stmt)) {
+   774→    const line = ctx.sourceFile.getLineAndCharacterOfPosition(stmt.expression.getStart(ctx.sourceFile)).line + 1;
+   775→    const wrappedCondition = wrapBranchCondition(stmt.expression, line, ctx);
+   776→    const body = ensureBlock(stmt.statement, ctx.factory);
+   777→    const instrumentedBody = wrapLoopBody(instrumentBlock(body, ctx), ctx);
+   778→    return ctx.factory.updateDoStatement(stmt, instrumentedBody, wrappedCondition);
+   779→  }
+   780→
+   781→  if (ts.isTryStatement(stmt)) {
+   782→    const tryBlock = instrumentBlock(stmt.tryBlock, ctx);
+   783→
+   784→    let catchClause: ts.CatchClause | undefined;
+   785→    if (stmt.catchClause) {
+   786→      const catchBlock = instrumentBlock(stmt.catchClause.block, ctx);
+   787→      catchClause = ctx.factory.updateCatchClause(
+   788→        stmt.catchClause,
+   789→        stmt.catchClause.variableDeclaration,
+   790→        catchBlock,
+   791→      );
+   792→    }
+   793→
+   794→    let finallyBlock: ts.Block | undefined;
+   795→    if (stmt.finallyBlock) {
+   796→      finallyBlock = instrumentBlock(stmt.finallyBlock, ctx);
+   797→    }
+   798→
+   799→    return ctx.factory.updateTryStatement(stmt, tryBlock, catchClause, finallyBlock);
+   800→  }
+   801→
+   802→  // For expression statements, return statements, and variable declarations,
+   803→  // instrument inline callbacks in call arguments.
+   804→  if (ts.isExpressionStatement(stmt)) {
+   805→    const newExpr = instrumentExpressionCallbacks(stmt.expression, ctx);
+   806→    if (newExpr !== stmt.expression) {
+   807→      return ctx.factory.updateExpressionStatement(stmt, newExpr);
+   808→    }
+   809→  }
+   810→
+   811→  if (ts.isReturnStatement(stmt) && stmt.expression) {
+   812→    const newExpr = instrumentExpressionCallbacks(stmt.expression, ctx);
+   813→    if (newExpr !== stmt.expression) {
+   814→      return ctx.factory.updateReturnStatement(stmt, newExpr);
+   815→    }
+   816→  }
+   817→
+   818→  if (ts.isVariableStatement(stmt)) {
+   819→    let changed = false;
+   820→    const newDecls = stmt.declarationList.declarations.map((decl) => {
+   821→      if (decl.initializer) {
+   822→        const newInit = instrumentExpressionCallbacks(decl.initializer, ctx);
+   823→        if (newInit !== decl.initializer) {
+   824→          changed = true;
+   825→          return ctx.factory.updateVariableDeclaration(decl, decl.name, decl.exclamationToken, decl.type, newInit);
+   826→        }
+   827→      }
+   828→      return decl;
+   829→    });
+   830→    if (changed) {
+   831→      const newList = ctx.factory.updateVariableDeclarationList(stmt.declarationList, newDecls);
+   832→      return ctx.factory.updateVariableStatement(stmt, stmt.modifiers, newList);
+   833→    }
+   834→  }
+   835→
+   836→  return stmt;
+   837→}
+   838→
+   839→/**
+   840→ * Recursively visit expressions, wrapping inline callback arguments
+   841→ * (arrow functions and function expressions) with call_enter/call_exit scope events.
+   842→ */
+   843→function instrumentExpressionCallbacks(
+   844→  expr: ts.Expression,
+   845→  ctx: InstrumentationContext,
+   846→): ts.Expression {
+   847→  if (ts.isCallExpression(expr)) {
+   848→    let changed = false;
+   849→    const newArgs = expr.arguments.map((arg) => {
+   850→      if (ts.isArrowFunction(arg) && ts.isBlock(arg.body)) {
+   851→        changed = true;
+   852→        return wrapCallbackWithScope(arg, ctx);
+   853→      }
+   854→      if (ts.isFunctionExpression(arg) && arg.body) {
+   855→        changed = true;
+   856→        return wrapCallbackFnExprWithScope(arg, ctx);
+   857→      }
+   858→      const newArg = instrumentExpressionCallbacks(arg, ctx);
+   859→      if (newArg !== arg) changed = true;
+   860→      return newArg;
+   861→    });
+   862→    const newCallExpr = instrumentExpressionCallbacks(expr.expression, ctx);
+   863→    if (changed || newCallExpr !== expr.expression) {
+   864→      return ctx.factory.updateCallExpression(expr, newCallExpr, expr.typeArguments, newArgs);
+   865→    }
+   866→  }
+   867→
+   868→  if (ts.isPropertyAccessExpression(expr)) {
+   869→    const newExpr = instrumentExpressionCallbacks(expr.expression, ctx);
+   870→    if (newExpr !== expr.expression) {
+   871→      return ctx.factory.updatePropertyAccessExpression(expr, newExpr, expr.name);
+   872→    }
+   873→  }
+   874→
+   875→  return expr;
+   876→}
+   877→
+   878→/** Wrap an inline arrow function callback with call_enter/call_exit and instrument its body. */
+   879→function wrapCallbackWithScope(
+   880→  arrow: ts.ArrowFunction,
+   881→  ctx: InstrumentationContext,
+   882→): ts.ArrowFunction {
+   883→  const callSiteId = ctx.nextCallSiteId++;
+   884→  const body = arrow.body as ts.Block;
+   885→  const instrumentedBody = instrumentBlock(body, ctx);
+   886→  const wrappedBody = wrapFunctionBodyWithCallScope(instrumentedBody, callSiteId, ctx.factory);
+   887→  return ctx.factory.updateArrowFunction(
+   888→    arrow,
+   889→    arrow.modifiers,
+   890→    arrow.typeParameters,
+   891→    arrow.parameters,
+   892→    arrow.type,
+   893→    arrow.equalsGreaterThanToken,
+   894→    wrappedBody,
+   895→  );
+   896→}
+   897→
+   898→/** Wrap an inline function expression callback with call_enter/call_exit and instrument its body. */
+   899→function wrapCallbackFnExprWithScope(
+   900→  fn: ts.FunctionExpression,
+   901→  ctx: InstrumentationContext,
+   902→): ts.FunctionExpression {
+   903→  const callSiteId = ctx.nextCallSiteId++;
+   904→  const instrumentedBody = instrumentBlock(fn.body, ctx);
+   905→  const wrappedBody = wrapFunctionBodyWithCallScope(instrumentedBody, callSiteId, ctx.factory);
+   906→  return ctx.factory.updateFunctionExpression(
+   907→    fn,
+   908→    fn.modifiers,
+   909→    fn.asteriskToken,
+   910→    fn.name,
+   911→    fn.typeParameters,
+   912→    fn.parameters,
+   913→    fn.type,
+   914→    wrappedBody,
+   915→  );
+   916→}
+   917→
+   918→/**
+   919→ * Wrap a branch condition expression with a __shatter_branch() call.
+   920→ *
+   921→ * Transforms `condition` into:
+   922→ *   __shatter_branch(branchId, line, condition, symExprLiteral)
+   923→ *
+   924→ * The __shatter_branch function evaluates the condition (passed as a boolean),
+   925→ * records the branch decision, and returns the boolean result.
+   926→ */
+   927→function wrapBranchCondition(
+   928→  condition: ts.Expression,
+   929→  line: number,
+   930→  ctx: InstrumentationContext,
+   931→): ts.Expression {
+   932→  const branchId = ctx.nextBranchId++;
+   933→  const symExpr = buildSymExpr(condition, ctx.paramNames, ctx.dataFlowMap);
+   934→  const symExprLiteral = valueToAstLiteral(symExpr, ctx.factory);
+   935→
+   936→  return ctx.factory.createCallExpression(
+   937→    ctx.factory.createIdentifier(BRANCH_FUNCTION),
+   938→    undefined,
+   939→    [
+   940→      ctx.factory.createNumericLiteral(branchId),
+   941→      ctx.factory.createNumericLiteral(line),
+   942→      ctx.factory.createPrefixUnaryExpression(
+   943→        ts.SyntaxKind.ExclamationToken,
+   944→        ctx.factory.createPrefixUnaryExpression(
+   945→          ts.SyntaxKind.ExclamationToken,
+   946→          condition,
+   947→        ),
+   948→      ),
+   949→      symExprLiteral,
+   950→    ],
+   951→  );
+   952→}
+   953→
+   954→// ---------------------------------------------------------------------------
+   955→// Symbolic expression builder
+   956→// ---------------------------------------------------------------------------
+   957→
+   958→/**
+   959→ * Convert a TypeScript AST expression into a SymExpr object matching the
+   960→ * Rust serialization format. Expressions involving function parameters
+   961→ * produce symbolic nodes; everything else falls back to Unknown.
+   962→ */
+   963→export function buildSymExpr(
+   964→  expr: ts.Expression,
+   965→  paramNames: Set<string>,
+   966→  dataFlowMap: Map<string, SymExpr> = new Map(),
+   967→): SymExpr {
+   968→  if (ts.isParenthesizedExpression(expr)) {
+   969→    return buildSymExpr(expr.expression, paramNames, dataFlowMap);
+   970→  }
+   971→
+   972→  if (ts.isIdentifier(expr)) {
+   973→    if (paramNames.has(expr.text)) {
+   974→      return { kind: "param", name: expr.text, path: [] };
+   975→    }
+   976→    const flowExpr = dataFlowMap.get(expr.text);
+   977→    if (flowExpr) {
+   978→      return flowExpr;
+   979→    }
+   980→    return { kind: "unknown" };
+   981→  }
+   982→
+   983→  if (ts.isPropertyAccessExpression(expr)) {
+   984→    const chain = resolvePropertyChain(expr, paramNames);
+   985→    if (chain) {
+   986→      return { kind: "param", name: chain.name, path: chain.path };
+   987→    }
+   988→    return { kind: "unknown" };
+   989→  }
+   990→
+   991→  if (ts.isNumericLiteral(expr)) {
+   992→    const n = Number(expr.text);
+   993→    if (Number.isInteger(n)) {
+   994→      return { kind: "const", type: "int", value: n };
+   995→    }
+   996→    return { kind: "const", type: "float", value: n };
+   997→  }
+   998→
+   999→  if (ts.isStringLiteral(expr)) {
+  1000→    return { kind: "const", type: "str", value: expr.text };
+  1001→  }
+  1002→
+  1003→  if (expr.kind === ts.SyntaxKind.TrueKeyword) {
+  1004→    return { kind: "const", type: "bool", value: true };
+  1005→  }
+  1006→
+  1007→  if (expr.kind === ts.SyntaxKind.FalseKeyword) {
+  1008→    return { kind: "const", type: "bool", value: false };
+  1009→  }
+  1010→
+  1011→  if (expr.kind === ts.SyntaxKind.NullKeyword) {
+  1012→    return { kind: "const", type: "null" };
+  1013→  }
+  1014→
+  1015→  if (ts.isBinaryExpression(expr)) {
+  1016→    const op = binaryTokenToOp(expr.operatorToken.kind);
+  1017→    if (op) {
+  1018→      const left = buildSymExpr(expr.left, paramNames, dataFlowMap);
+  1019→      const right = buildSymExpr(expr.right, paramNames, dataFlowMap);
+  1020→      return { kind: "bin_op", op, left, right };
+  1021→    }
+  1022→    return { kind: "unknown" };
+  1023→  }
+  1024→
+  1025→  if (ts.isPrefixUnaryExpression(expr)) {
+  1026→    const op = unaryTokenToOp(expr.operator);
+  1027→    if (op) {
+  1028→      const operand = buildSymExpr(expr.operand, paramNames, dataFlowMap);
+  1029→      return { kind: "un_op", op, operand };
+  1030→    }
+  1031→    return { kind: "unknown" };
+  1032→  }
+  1033→
+  1034→  if (ts.isTypeOfExpression(expr)) {
+  1035→    const operand = buildSymExpr(expr.expression, paramNames, dataFlowMap);
+  1036→    return { kind: "un_op", op: "typeof" as UnOpKind, operand };
+  1037→  }
+  1038→
+  1039→  if (ts.isCallExpression(expr)) {
+  1040→    if (ts.isPropertyAccessExpression(expr.expression)) {
+  1041→      const methodName = expr.expression.name.text;
+  1042→      const receiver = buildSymExpr(expr.expression.expression, paramNames, dataFlowMap);
+  1043→      const args = expr.arguments.map((a) => buildSymExpr(a, paramNames, dataFlowMap));
+  1044→      return { kind: "call", name: methodName, receiver, args };
+  1045→    }
+  1046→    if (ts.isIdentifier(expr.expression)) {
+  1047→      const args = expr.arguments.map((a) => buildSymExpr(a, paramNames, dataFlowMap));
+  1048→      return { kind: "call", name: expr.expression.text, receiver: null, args };
+  1049→    }
+  1050→    return { kind: "unknown" };
+  1051→  }
+  1052→
+  1053→  return { kind: "unknown" };
+  1054→}
+  1055→
+  1056→/**
+  1057→ * Resolve a chain of property accesses to a base parameter name and path.
+  1058→ * Returns null if the base is not a known parameter.
+  1059→ *
+  1060→ * Example: `config.timeout.max` where `config` is a param
+  1061→ *   → { name: "config", path: ["timeout", "max"] }
+  1062→ */
+  1063→function resolvePropertyChain(
+  1064→  expr: ts.PropertyAccessExpression,
+  1065→  paramNames: Set<string>,
+  1066→): { name: string; path: string[] } | null {
+  1067→  const path: string[] = [];
+  1068→  let current: ts.Expression = expr;
+  1069→
+  1070→  while (ts.isPropertyAccessExpression(current)) {
+  1071→    path.unshift(current.name.text);
+  1072→    current = current.expression;
+  1073→  }
+  1074→
+  1075→  if (ts.isIdentifier(current) && paramNames.has(current.text)) {
+  1076→    return { name: current.text, path };
+  1077→  }
+  1078→  return null;
+  1079→}
+  1080→
+  1081→// ---------------------------------------------------------------------------
+  1082→// Operator mapping
+  1083→// ---------------------------------------------------------------------------
+  1084→
+  1085→function binaryTokenToOp(kind: ts.SyntaxKind): BinOpKind | null {
+  1086→  switch (kind) {
+  1087→    case ts.SyntaxKind.EqualsEqualsToken:
+  1088→    case ts.SyntaxKind.EqualsEqualsEqualsToken:
+  1089→      return "eq";
+  1090→    case ts.SyntaxKind.ExclamationEqualsToken:
+  1091→    case ts.SyntaxKind.ExclamationEqualsEqualsToken:
+  1092→      return "ne";
+  1093→    case ts.SyntaxKind.LessThanToken:
+  1094→      return "lt";
+  1095→    case ts.SyntaxKind.LessThanEqualsToken:
+  1096→      return "le";
+  1097→    case ts.SyntaxKind.GreaterThanToken:
+  1098→      return "gt";
+  1099→    case ts.SyntaxKind.GreaterThanEqualsToken:
+  1100→      return "ge";
+  1101→    case ts.SyntaxKind.PlusToken:
+  1102→      return "add";
+  1103→    case ts.SyntaxKind.MinusToken:
+  1104→      return "sub";
+  1105→    case ts.SyntaxKind.AsteriskToken:
+  1106→      return "mul";
+  1107→    case ts.SyntaxKind.SlashToken:
+  1108→      return "div";
+  1109→    case ts.SyntaxKind.PercentToken:
+  1110→      return "mod";
+  1111→    case ts.SyntaxKind.AmpersandAmpersandToken:
+  1112→      return "and";
+  1113→    case ts.SyntaxKind.BarBarToken:
+  1114→      return "or";
+  1115→    case ts.SyntaxKind.AmpersandToken:
+  1116→      return "bitwise_and";
+  1117→    case ts.SyntaxKind.BarToken:
+  1118→      return "bitwise_or";
+  1119→    case ts.SyntaxKind.CaretToken:
+  1120→      return "bitwise_xor";
+  1121→    case ts.SyntaxKind.InKeyword:
+  1122→      return "in";
+  1123→    case ts.SyntaxKind.InstanceOfKeyword:
+  1124→      return "instance_of";
+  1125→    default:
+  1126→      return null;
+  1127→  }
+  1128→}
+  1129→
+  1130→function unaryTokenToOp(kind: ts.PrefixUnaryOperator): UnOpKind | null {
+  1131→  switch (kind) {
+  1132→    case ts.SyntaxKind.ExclamationToken:
+  1133→      return "not";
+  1134→    case ts.SyntaxKind.MinusToken:
+  1135→      return "neg";
+  1136→    case ts.SyntaxKind.TildeToken:
+  1137→      return "bitwise_not";
+  1138→    default:
+  1139→      return null;
+  1140→  }
+  1141→}
+  1142→
+  1143→// ---------------------------------------------------------------------------
+  1144→// AST literal builder
+  1145→// ---------------------------------------------------------------------------
+  1146→
+  1147→/**
+  1148→ * Convert a plain JavaScript value into a TypeScript AST expression node.
+  1149→ * Used to embed SymExpr objects as literal expressions in instrumented code.
+  1150→ */
+  1151→function valueToAstLiteral(value: unknown, factory: ts.NodeFactory): ts.Expression {
+  1152→  if (value === null) {
+  1153→    return factory.createNull();
+  1154→  }
+  1155→  if (value === undefined) {
+  1156→    return factory.createIdentifier("undefined");
+  1157→  }
+  1158→  if (typeof value === "string") {
+  1159→    return factory.createStringLiteral(value);
+  1160→  }
+  1161→  if (typeof value === "number") {
+  1162→    return factory.createNumericLiteral(value);
+  1163→  }
+  1164→  if (typeof value === "boolean") {
+  1165→    return value ? factory.createTrue() : factory.createFalse();
+  1166→  }
+  1167→  if (Array.isArray(value)) {
+  1168→    return factory.createArrayLiteralExpression(
+  1169→      value.map((v: unknown) => valueToAstLiteral(v, factory)),
+  1170→    );
+  1171→  }
+  1172→  if (typeof value === "object") {
+  1173→    const entries = Object.entries(value as Record<string, unknown>);
+  1174→    return factory.createObjectLiteralExpression(
+  1175→      entries.map(([k, v]) =>
+  1176→        factory.createPropertyAssignment(k, valueToAstLiteral(v, factory)),
+  1177→      ),
+  1178→      false,
+  1179→    );
+  1180→  }
+  1181→  return factory.createIdentifier("undefined");
+  1182→}
+  1183→
+  1184→// ---------------------------------------------------------------------------
+  1185→// Import rewriting for mocks
+  1186→// ---------------------------------------------------------------------------
+  1187→
+  1188→/**
+  1189→ * Rewrite all imports in a source file for mocked symbols.
+  1190→ * Expands each import declaration that contains mocked symbols into
+  1191→ * a (possibly smaller) import + const declarations for mock lookups.
+  1192→ */
+  1193→function rewriteImportsInSourceFile(
+  1194→  sourceFile: ts.SourceFile,
+  1195→  mockLookup: MockLookup,
+  1196→  factory: ts.NodeFactory,
+  1197→): ts.SourceFile {
+  1198→  const newStatements: ts.Statement[] = [];
+  1199→  let changed = false;
+  1200→
+  1201→  for (const stmt of sourceFile.statements) {
+  1202→    if (ts.isImportDeclaration(stmt)) {
+  1203→      const result = rewriteImportForMocks(stmt, mockLookup, factory);
+  1204→      if (Array.isArray(result)) {
+  1205→        newStatements.push(...result as ts.Statement[]);
+  1206→        changed = true;
+  1207→      } else {
+  1208→        newStatements.push(result as ts.Statement);
+  1209→      }
+  1210→    } else {
+  1211→      newStatements.push(stmt);
+  1212→    }
+  1213→  }
+  1214→
+  1215→  if (!changed) {
+  1216→    return sourceFile;
+  1217→  }
+  1218→
+  1219→  return factory.updateSourceFile(sourceFile, newStatements);
+  1220→}
+  1221→
+  1222→/**
+  1223→ * Rewrite an import declaration to use the mock registry for mocked symbols.
+  1224→ *
+  1225→ * For `import { foo, bar } from 'module'` where `module:foo` is mocked:
+  1226→ * - `foo` becomes: `const foo = __shatter_mocks['module:foo'] || original_foo`
+  1227→ * - `bar` remains unchanged (kept in the original import)
+  1228→ *
+  1229→ * Returns the original import if no symbols are mocked, or a mix of the
+  1230→ * original import (for non-mocked symbols) plus variable statements for
+  1231→ * mocked symbols.
+  1232→ */
+  1233→function rewriteImportForMocks(
+  1234→  node: ts.ImportDeclaration,
+  1235→  mockLookup: MockLookup,
+  1236→  factory: ts.NodeFactory,
+  1237→): ts.Node | ts.Node[] {
+  1238→  const moduleSpecifier = node.moduleSpecifier;
+  1239→  if (!ts.isStringLiteral(moduleSpecifier)) {
+  1240→    return node;
+  1241→  }
+  1242→  const moduleName = moduleSpecifier.text;
+  1243→
+  1244→  const namedBindings = node.importClause?.namedBindings;
+  1245→  if (!namedBindings || !ts.isNamedImports(namedBindings)) {
+  1246→    return node;
+  1247→  }
+  1248→
+  1249→  const mockedElements: ts.ImportSpecifier[] = [];
+  1250→  const unmockedElements: ts.ImportSpecifier[] = [];
+  1251→
+  1252→  for (const element of namedBindings.elements) {
+  1253→    const symbolKey = `${moduleName}:${element.name.text}`;
+  1254→    if (mockLookup.has(symbolKey)) {
+  1255→      mockedElements.push(element);
+  1256→    } else {
+  1257→      unmockedElements.push(element);
+  1258→    }
+  1259→  }
+  1260→
+  1261→  if (mockedElements.length === 0) {
+  1262→    return node;
+  1263→  }
+  1264→
+  1265→  const result: ts.Node[] = [];
+  1266→
+  1267→  // Keep the original import for unmocked symbols
+  1268→  if (unmockedElements.length > 0) {
+  1269→    const newBindings = factory.createNamedImports(unmockedElements);
+  1270→    const newClause = factory.createImportClause(false, undefined, newBindings);
+  1271→    result.push(
+  1272→      factory.createImportDeclaration(node.modifiers, newClause, node.moduleSpecifier),
+  1273→    );
+  1274→  }
+  1275→
+  1276→  // For each mocked symbol, generate a variable declaration that looks up the mock
+  1277→  for (const element of mockedElements) {
+  1278→    const symbolName = element.name.text;
+  1279→    const mockKey = `${moduleName}:${symbolName}`;
+  1280→
+  1281→    // const <symbol> = (() => { const _orig = <symbol>; const _mock = __shatter_mocks['module:symbol'];
+  1282→    //   return _mock ? (...args) => { const _r = _mock(...args); __shatter_mock_call('module', 'symbol', args, _r); return _r; } : _orig; })()
+  1283→    // Simplified: const <symbol> = __shatter_mocks['module:symbol']
+  1284→    // with call recording wrapper
+  1285→    const mockLookupExpr = factory.createElementAccessExpression(
+  1286→      factory.createIdentifier(MOCK_REGISTRY),
+  1287→      factory.createStringLiteral(mockKey),
+  1288→    );
+  1289→
+  1290→    // Create a wrapper that records mock calls:
+  1291→    // __shatter_mocks['module:symbol']
+  1292→    //   ? (...args) => { const r = __shatter_mocks['module:symbol'](...args); __shatter_mock_call('module', 'symbol', args, r); return r; }
+  1293→    //   : undefined
+  1294→    const argsParam = factory.createParameterDeclaration(
+  1295→      undefined, factory.createToken(ts.SyntaxKind.DotDotDotToken),
+  1296→      factory.createIdentifier("args"),
+  1297→    );
+  1298→
+  1299→    const callMock = factory.createCallExpression(
+  1300→      factory.createElementAccessExpression(
+  1301→        factory.createIdentifier(MOCK_REGISTRY),
+  1302→        factory.createStringLiteral(mockKey),
+  1303→      ),
+  1304→      undefined,
+  1305→      [factory.createSpreadElement(factory.createIdentifier("args"))],
+  1306→    );
+  1307→
+  1308→    const rDecl = factory.createVariableStatement(
+  1309→      undefined,
+  1310→      factory.createVariableDeclarationList(
+  1311→        [factory.createVariableDeclaration("_r", undefined, undefined, callMock)],
+  1312→        ts.NodeFlags.Const,
+  1313→      ),
+  1314→    );
+  1315→
+  1316→    const recordCall = factory.createExpressionStatement(
+  1317→      factory.createCallExpression(
+  1318→        factory.createIdentifier(MOCK_CALL_FUNCTION),
+  1319→        undefined,
+  1320→        [
+  1321→          factory.createStringLiteral(moduleName),
+  1322→          factory.createStringLiteral(symbolName),
+  1323→          factory.createIdentifier("args"),
+  1324→          factory.createIdentifier("_r"),
+  1325→        ],
+  1326→      ),
+  1327→    );
+  1328→
+  1329→    const returnR = factory.createReturnStatement(factory.createIdentifier("_r"));
+  1330→
+  1331→    const wrapperBody = factory.createBlock([rDecl, recordCall, returnR], true);
+  1332→    const wrapperArrow = factory.createArrowFunction(
+  1333→      undefined, undefined, [argsParam], undefined,
+  1334→      factory.createToken(ts.SyntaxKind.EqualsGreaterThanToken),
+  1335→      wrapperBody,
+  1336→    );
+  1337→
+  1338→    // Ternary: __shatter_mocks['key'] ? wrapper : undefined
+  1339→    const conditional = factory.createConditionalExpression(
+  1340→      mockLookupExpr,
+  1341→      factory.createToken(ts.SyntaxKind.QuestionToken),
+  1342→      wrapperArrow,
+  1343→      factory.createToken(ts.SyntaxKind.ColonToken),
+  1344→      factory.createIdentifier("undefined"),
+  1345→    );
+  1346→
+  1347→    const varDecl = factory.createVariableStatement(
+  1348→      undefined,
+  1349→      factory.createVariableDeclarationList(
+  1350→        [factory.createVariableDeclaration(symbolName, undefined, undefined, conditional)],
+  1351→        ts.NodeFlags.Const,
+  1352→      ),
+  1353→    );
+  1354→
+  1355→    result.push(varDecl);
+  1356→  }
+  1357→
+  1358→  return result;
+  1359→}
+  1360→
+  1361→// ---------------------------------------------------------------------------
+  1362→// Helpers
+  1363→// ---------------------------------------------------------------------------
+  1364→
+  1365→/**
+  1366→ * Create a `__shatter_scope_event(scopeId, kind);` expression statement.
+  1367→ */
+  1368→function createScopeEventCall(
+  1369→  factory: ts.NodeFactory,
+  1370→  scopeId: number,
+  1371→  kind: string,
+  1372→): ts.ExpressionStatement {
+  1373→  return factory.createExpressionStatement(
+  1374→    factory.createCallExpression(
+  1375→      factory.createIdentifier(SCOPE_EVENT_FUNCTION),
+  1376→      undefined,
+  1377→      [
+  1378→        factory.createNumericLiteral(scopeId),
+  1379→        factory.createStringLiteral(kind),
+  1380→      ],
+  1381→    ),
+  1382→  );
+  1383→}
+  1384→
+  1385→/**
+  1386→ * Wrap an instrumented loop body with loop_enter/loop_exit scope events.
+  1387→ * Events are placed inside the body so each iteration emits its own pair.
+  1388→ */
+  1389→function wrapLoopBody(
+  1390→  instrumentedBody: ts.Block,
+  1391→  ctx: InstrumentationContext,
+  1392→): ts.Block {
+  1393→  const loopId = ctx.nextLoopId++;
+  1394→  const enter = createScopeEventCall(ctx.factory, loopId, "loop_enter");
+  1395→  const exit = createScopeEventCall(ctx.factory, loopId, "loop_exit");
+  1396→  return ctx.factory.updateBlock(instrumentedBody, [
+  1397→    enter,
+  1398→    ...instrumentedBody.statements,
+  1399→    exit,
+  1400→  ]);
+  1401→}
+  1402→
+  1403→/**
+  1404→ * Wrap a function body in try/finally with call_enter/call_exit scope events.
+  1405→ * call_enter fires at entry, call_exit fires in finally (even on throw/return).
+  1406→ */
+  1407→function wrapFunctionBodyWithCallScope(
+  1408→  body: ts.Block,
+  1409→  callSiteId: number,
+  1410→  factory: ts.NodeFactory,
+  1411→): ts.Block {
+  1412→  const enter = createScopeEventCall(factory, callSiteId, "call_enter");
+  1413→  const tryFinally = factory.createTryStatement(
+  1414→    factory.createBlock([...body.statements], true),
+  1415→    undefined,
+  1416→    factory.createBlock([createScopeEventCall(factory, callSiteId, "call_exit")], true),
+  1417→  );
+  1418→  return factory.createBlock([enter, tryFinally], true);
+  1419→}
+  1420→
+  1421→/**
+  1422→ * Wrap a single statement in a block if it isn't already one.
+  1423→ */
+  1424→function ensureBlock(stmt: ts.Statement, factory: ts.NodeFactory): ts.Block {
+  1425→  if (ts.isBlock(stmt)) {
+  1426→    return stmt;
+  1427→  }
+  1428→  return factory.createBlock([stmt], true);
+  1429→}
+  1430→
+  1431→/**
+  1432→ * Create a `__shatter_record(lineNumber);` expression statement.
+  1433→ */
+  1434→function createRecordCall(factory: ts.NodeFactory, line: number): ts.ExpressionStatement {
+  1435→  return factory.createExpressionStatement(
+  1436→    factory.createCallExpression(
+  1437→      factory.createIdentifier(RECORD_FUNCTION),
+  1438→      undefined,
+  1439→      [factory.createNumericLiteral(line)],
+  1440→    ),
+  1441→  );
+  1442→}
+  1443→

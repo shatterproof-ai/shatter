@@ -1,0 +1,14 @@
+[
+  {
+    "from": "team-lead",
+    "text": "You are working on task str-3ky9.8: E2E test — dynamic mock branch discovery.\n\n**Task:** Add E2E test functions that branch on mock return values, then verify dynamic mocking discovers all branches.\n\n**Test cases needed:**\n1. Function that branches on mock return values (e.g., HTTP response status 200 vs 404 vs 500)\n2. Function with Result-returning mock exploring Ok/Err paths\n3. Function with loop calling mock with different return values per iteration\n\n**Steps:**\n1. Read shatter-core/tests/e2e_concolic.rs to understand the E2E test pattern\n2. Read examples/standalone/ts/ for example target function patterns\n3. Create TypeScript example functions in examples/standalone/ts/ that use external deps (so mocks apply)\n4. Add E2E test cases that verify all branches gated by mock return values are discovered\n5. Build shatter-ts first: `cd shatter-ts && npm run build`\n6. Run `cargo test --test e2e_concolic` to verify\n7. Run `cargo clippy -- -D warnings`\n\nNote: Dynamic mocking generates fresh mock return values per iteration via mock_params. The example functions need external dependencies that the analyzer can detect.\n\nWhen done, mark: `bd close str-3ky9.8 -r \"description\"`",
+    "timestamp": "2026-03-10T22:35:09.712Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773182508430-3k28i8k\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"cd /home/ketan/project/shatter/shatter-ts && npm run build 2>&1 | tail -5\",\"timeout\":60000,\"description\":\"Build shatter-ts frontend\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-10T22:42:57.894Z",
+    "read": true
+  }
+]

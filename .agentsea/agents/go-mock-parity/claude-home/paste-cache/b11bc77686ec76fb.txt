@@ -1,0 +1,16 @@
+ that integration would be in the front end, and generate_mock_values is in core.
+
+elaborate on what category-aware generation is and what default_for_network and default_for_db are.  this seems to make assumptions about how ability to identify and classify these things, but there are so many ways they can work differently and be wrapped by different libraries that I really need to understand what is intended here.
+
+used mock values should be tracked the same way input parameters are and incorporated into coverage, behavior maps, exploration optimization, etc.  they should as much as possible have all of the aspects of input parameters with the only differences being the potential for expectation matching and that they appear in the middle of the tested function not at the beginning.  question: how do we deal with loops?  and how do we structurally make sure the return values from mocks get the full set of features that we have for input parameters?
+
+explain the typescript calls_to_external.  is the execution-time gap detection something that applies to all calls outside the current module or just the network ones?
+
+I forgot to mention "external" should encompass interprocess communication beyond network calls if possible e.g. named pipes.  TBD: how do we handle a case where the target function is shelling out to another program
+
+we may need to produce refactoring recommendations for the user for calls that are hard to mock or emulate so that they can be better isolated from the surrounding code.  that way the surrounding code can be tested thoroughly even if the hard-to-mock call is intractable.
+
+error-case handling: this seems to make quite a lot of assumptions about our ability to know when network calls are happening.  like default_for_network and default_for_db above, I have doubts.  the code we're testing is likely working through layers of libraries.
+
+"exhaustive" seems to be poorly named.  I would think "exhaustive" meant using user-supplied values AND for shatter to generate.  also, I suspect this would be better as an Enum as there may be more than two possibilities.  At minimum, we have only user supplied, only shatter autonomously mocked, and a combination.  This is also where expectations need to go.  Also, this mock format doesn't seem to target to the file or function level; it seems global.  We may even need to discriminate between different call sites in the same function, which seems challenging to do stably.
+

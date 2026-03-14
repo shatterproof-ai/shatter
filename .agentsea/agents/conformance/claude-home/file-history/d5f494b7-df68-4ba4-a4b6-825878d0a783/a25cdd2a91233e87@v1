@@ -1,0 +1,156 @@
+package platform
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"testing"
+)
+
+// mockBrowser implements Browser for testing extractors.
+type mockBrowser struct {
+	navigateErr error
+	evalResults []string
+	evalErr     error
+}
+
+func (m *mockBrowser) Navigate(_ context.Context, _ string) error {
+	return m.navigateErr
+}
+
+func (m *mockBrowser) EvalStrings(_ context.Context, _ string) ([]string, error) {
+	if m.evalErr != nil {
+		return nil, m.evalErr
+	}
+	return m.evalResults, nil
+}
+
+func TestCommonAppKeyAndLabel(t *testing.T) {
+	e := NewCommonApp()
+	if got := e.Key(); got != KeyCommon {
+		t.Errorf("Key() = %q, want %q", got, KeyCommon)
+	}
+	if got := e.Label(); got != "Common App" {
+		t.Errorf("Label() = %q, want %q", got, "Common App")
+	}
+}
+
+func TestCommonAppExtractSuccess(t *testing.T) {
+	names := make([]string, 1100)
+	for i := range names {
+		names[i] = fmt.Sprintf("University %d", i)
+	}
+
+	e := NewCommonApp()
+	got, err := e.Extract(context.Background(), &mockBrowser{evalResults: names})
+	if err != nil {
+		t.Fatalf("Extract() error = %v", err)
+	}
+	if len(got) != 1100 {
+		t.Errorf("Extract() returned %d names, want 1100", len(got))
+	}
+}
+
+func TestCommonAppExtractDeduplication(t *testing.T) {
+	names := make([]string, 0, 1200)
+	for i := 0; i < 1000; i++ {
+		names = append(names, fmt.Sprintf("University %d", i))
+	}
+	// Add duplicates and whitespace variants.
+	names = append(names, "University 0", "  University 1  ", "", "   ", "University 2")
+
+	e := NewCommonApp()
+	got, err := e.Extract(context.Background(), &mockBrowser{evalResults: names})
+	if err != nil {
+		t.Fatalf("Extract() error = %v", err)
+	}
+	if len(got) != 1000 {
+		t.Errorf("Extract() returned %d unique names, want 1000", len(got))
+	}
+}
+
+func TestCommonAppExtractNavigateError(t *testing.T) {
+	navErr := errors.New("connection refused")
+	e := NewCommonApp()
+	_, err := e.Extract(context.Background(), &mockBrowser{navigateErr: navErr})
+	if err == nil {
+		t.Fatal("Extract() expected error, got nil")
+	}
+	if !errors.Is(err, navErr) {
+		t.Errorf("Extract() error does not wrap navigate error: %v", err)
+	}
+}
+
+func TestCommonAppExtractEvalError(t *testing.T) {
+	evalErr := errors.New("JS execution timeout")
+	e := NewCommonApp()
+	_, err := e.Extract(context.Background(), &mockBrowser{evalErr: evalErr})
+	if err == nil {
+		t.Fatal("Extract() expected error, got nil")
+	}
+	if !errors.Is(err, evalErr) {
+		t.Errorf("Extract() error does not wrap eval error: %v", err)
+	}
+}
+
+func TestCommonAppExtractTooFewResults(t *testing.T) {
+	names := []string{"School A", "School B", "School C"}
+	e := NewCommonApp()
+	got, err := e.Extract(context.Background(), &mockBrowser{evalResults: names})
+	if err == nil {
+		t.Fatal("Extract() expected error for too few results, got nil")
+	}
+	// Should still return partial results so caller can decide.
+	if len(got) != 3 {
+		t.Errorf("Extract() returned %d names, want 3 (partial results)", len(got))
+	}
+}
+
+func TestCommonAppExtractEmpty(t *testing.T) {
+	e := NewCommonApp()
+	got, err := e.Extract(context.Background(), &mockBrowser{evalResults: []string{}})
+	if err == nil {
+		t.Fatal("Extract() expected error for empty results, got nil")
+	}
+	if len(got) != 0 {
+		t.Errorf("Extract() returned %d names, want 0", len(got))
+	}
+}
+
+func TestDeduplicate(t *testing.T) {
+	tests := []struct {
+		name  string
+		input []string
+		want  int
+	}{
+		{"empty", nil, 0},
+		{"no duplicates", []string{"A", "B", "C"}, 3},
+		{"with duplicates", []string{"A", "B", "A", "C", "B"}, 3},
+		{"whitespace only", []string{"", "  ", "\t"}, 0},
+		{"trim and dedup", []string{"  A  ", "A", " A"}, 1},
+		{"mixed", []string{"A", "", "B", "  A  ", "C", " ", "B"}, 3},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := deduplicate(tt.input)
+			if len(got) != tt.want {
+				t.Errorf("deduplicate() returned %d items, want %d", len(got), tt.want)
+			}
+		})
+	}
+}
+
+func TestDeduplicatePreservesOrder(t *testing.T) {
+	input := []string{"C", "A", "B", "A", "C"}
+	got := deduplicate(input)
+	want := []string{"C", "A", "B"}
+	if len(got) != len(want) {
+		t.Fatalf("deduplicate() returned %d items, want %d", len(got), len(want))
+	}
+	for i, v := range got {
+		if v != want[i] {
+			t.Errorf("deduplicate()[%d] = %q, want %q", i, v, want[i])
+		}
+	}
+}

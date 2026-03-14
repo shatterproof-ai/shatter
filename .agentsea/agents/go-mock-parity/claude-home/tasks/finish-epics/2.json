@@ -1,0 +1,9 @@
+{
+  "id": "2",
+  "subject": "str-3ky9.15: Refactoring recs for hard-to-mock deps",
+  "description": "Detect hard-to-mock calls (dynamic dispatch, closures, subprocess spawning, multi-layer indirection). Produce refactoring recommendations in scan output: extract to parameter, wrap in named function, move behind interface. See `bd show str-3ky9.15` for full details.",
+  "activeForm": "Building refactoring recommendations",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

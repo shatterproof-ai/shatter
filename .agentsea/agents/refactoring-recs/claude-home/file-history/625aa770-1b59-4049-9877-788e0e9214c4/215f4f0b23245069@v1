@@ -1,0 +1,121 @@
+# ─── Kapow API — Environment Variables ────────────────────────────────────────
+# Copy this file to .env and fill in real values.
+# NEVER commit .env to version control.
+
+# ─── Server ───────────────────────────────────────────────────────────────────
+HOST=0.0.0.0
+PORT=8081
+
+# ─── Database ─────────────────────────────────────────────────────────────────
+# PostgreSQL connection string (pgx format)
+# Required — server will not start without this.
+DATABASE_URL=postgres://user:password@localhost:5432/kapow?sslmode=disable
+# For `make dev-db-up` (standalone dev database on port 5433):
+# DATABASE_URL=postgres://postgres:postgres@localhost:5433/kapow?sslmode=disable
+
+# ─── Authentication (JWT) ─────────────────────────────────────────────────────
+# HS256 shared secret — used when JWT_PUBLIC_KEY is not set (dev / simple clients)
+JWT_SECRET=change-me-to-a-long-random-secret
+
+# RS256 PEM-encoded public key — if set, overrides JWT_SECRET
+# JWT_PUBLIC_KEY=-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----
+
+# Expected "iss" claim in incoming tokens (optional)
+# JWT_ISSUER=https://auth.example.com
+
+# Expected "aud" claims — comma-separated (optional)
+# JWT_AUDIENCE=kapow-api
+
+# ── Supabase shortcut ──
+# Use the JWT secret from Supabase Dashboard → Settings → API → JWT Secret:
+# JWT_SECRET=<your-supabase-jwt-secret>
+# JWT_ISSUER=https://<project-ref>.supabase.co/auth/v1
+# JWT_AUDIENCE=authenticated
+
+# Future: OIDC discovery URL (not yet active)
+# OIDC_DISCOVERY_URL=https://auth.example.com/.well-known/openid-configuration
+
+# ─── Supabase (Frontend Auth SDK) ───────────────────────────────────────────
+# Project URL and anon key from Supabase Dashboard → Settings → API.
+# These are used by the Supabase JS SDK in the frontend for login/signup flows.
+# SUPABASE_URL=https://<project-ref>.supabase.co
+# SUPABASE_ANON_KEY=eyJ...
+
+# Vite exposes these to the browser (VITE_ prefix required)
+# VITE_SUPABASE_URL=https://<project-ref>.supabase.co
+# VITE_SUPABASE_ANON_KEY=eyJ...
+
+# ─── Logging ──────────────────────────────────────────────────────────────────
+LOG_LEVEL=info          # trace | debug | info | warn | error
+LOG_FORMAT=json         # json (default/prod) | text (dev)
+
+# ─── HTTP Debug Logging ───────────────────────────────────────────────────────
+# Request header logging: none (off) | selected | all
+# HTTP_DEBUG_REQUEST_HEADERS=none
+# Comma-separated headers to log when mode is "selected"
+# HTTP_DEBUG_SELECTED_HEADERS=Content-Type,Accept,User-Agent
+# Redact sensitive headers (Authorization, Cookie, Set-Cookie, X-Api-Key)
+# HTTP_DEBUG_REDACT_SENSITIVE=true
+# Response logging: none (off) | headers | full (headers + body)
+# HTTP_DEBUG_RESPONSE_MODE=none
+# Max response body bytes to capture when mode is "full"
+# HTTP_DEBUG_BODY_MAX_BYTES=4096
+
+# ─── Environment ──────────────────────────────────────────────────────────────
+ENV=development         # development | staging | production
+
+# ─── CORS ─────────────────────────────────────────────────────────────────────
+# Comma-separated allowed origins (empty = no CORS headers set)
+CORS_ORIGINS=http://localhost:8080
+
+# ─── GraphQL ──────────────────────────────────────────────────────────────────
+GRAPHQL_PLAYGROUND=true     # Enable Playground UI (dev only — disable in prod)
+GRAPHQL_INTROSPECTION=true  # Enable schema introspection
+
+# ─── MCP (Model Context Protocol) ─────────────────────────────────────────────
+MCP_ENABLED=true               # Enable MCP server endpoint at /mcp
+# MCP requires a valid JWT — same tokens used for /graphql work for /mcp.
+# OAuth 2.1 Protected Resource Metadata is served at /.well-known/oauth-protected-resource
+
+# ─── OpenTelemetry ────────────────────────────────────────────────────────────
+# Set to true to enable OTLP HTTP export of traces and metrics.
+OTEL_ENABLED=false
+# Standard OTel SDK env vars (only used when OTEL_ENABLED=true):
+# OTEL_EXPORTER_OTLP_ENDPOINT=https://otlp.example.com:4318
+# OTEL_EXPORTER_OTLP_HEADERS=x-api-key=YOUR_KEY
+# OTEL_SERVICE_NAME=kapow-api   (overridden by code — set in Config)
+# See https://opentelemetry.io/docs/specs/otel/configuration/sdk-environment-variables/
+
+# ─── Shutdown ─────────────────────────────────────────────────────────────────
+SHUTDOWN_TIMEOUT=15s
+
+# ─── Export ──────────────────────────────────────────────────────────────────
+MAX_EXPORT_ROWS=500                # Maximum rows in CSV export (default: 500)
+
+# ─── Feedback ──────────────────────────────────────────────────────────────
+# Allow anonymous (unauthenticated) feedback submissions
+FEEDBACK_ANONYMOUS_ENABLED=true
+
+# GitHub PAT for feedback → GitHub Issues sync (tools/feedbacksync).
+# Needs "Issues: Read and write" permission on the target repo.
+# Generate at: GitHub → Settings → Developer settings → Fine-grained tokens
+# GITHUB_TOKEN=github_pat_...
+
+# ─── Rate Limiting ───────────────────────────────────────────────────────────
+RATE_LIMIT_ENABLED=true            # Master switch for all rate limits
+RATE_LIMIT_GRAPHQL=60              # /graphql requests per minute (anonymous)
+RATE_LIMIT_GRAPHQL_AUTH=120        # /graphql requests per minute (authenticated)
+RATE_LIMIT_EXPORT=10               # /api/export/csv requests per minute (per user)
+RATE_LIMIT_MCP=120                 # /mcp/* requests per minute (per user)
+
+# ─── Private Endpoint Access ─────────────────────────────────────────────────
+# Comma-separated CIDRs allowed to access /private/* routes
+PRIVATE_ALLOWLIST_CIDRS=127.0.0.0/8,::1/128
+
+# ─── PostHog (Frontend Analytics) ───────────────────────────────────────────
+# Project API key from PostHog → Settings → Project API Key.
+# When absent, the entire PostHog integration is inert (no tracking, no errors).
+# VITE_POSTHOG_KEY=phc_...
+
+# PostHog ingest host (optional — defaults to https://us.i.posthog.com)
+# VITE_POSTHOG_HOST=https://us.i.posthog.com

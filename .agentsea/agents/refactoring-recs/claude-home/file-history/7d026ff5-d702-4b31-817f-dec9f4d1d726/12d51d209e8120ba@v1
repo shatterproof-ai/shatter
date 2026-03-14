@@ -1,0 +1,429 @@
+package dbutil
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"testing"
+)
+
+// --- Unit tests (no DB) ---
+
+func TestMergeJSONB(t *testing.T) {
+	tests := []struct {
+		name    string
+		dst     []byte
+		src     []byte
+		want    map[string]any
+		wantErr bool
+	}{
+		{
+			name: "both nil",
+			dst:  nil,
+			src:  nil,
+			want: map[string]any{},
+		},
+		{
+			name: "dst nil src has data",
+			dst:  nil,
+			src:  []byte(`{"a":1}`),
+			want: map[string]any{"a": float64(1)},
+		},
+		{
+			name: "src nil dst has data",
+			dst:  []byte(`{"a":1}`),
+			src:  nil,
+			want: map[string]any{"a": float64(1)},
+		},
+		{
+			name: "no overlap",
+			dst:  []byte(`{"a":1}`),
+			src:  []byte(`{"b":2}`),
+			want: map[string]any{"a": float64(1), "b": float64(2)},
+		},
+		{
+			name: "src overwrites dst on conflict",
+			dst:  []byte(`{"a":1,"b":2}`),
+			src:  []byte(`{"b":99,"c":3}`),
+			want: map[string]any{"a": float64(1), "b": float64(99), "c": float64(3)},
+		},
+		{
+			name: "empty objects",
+			dst:  []byte(`{}`),
+			src:  []byte(`{}`),
+			want: map[string]any{},
+		},
+		{
+			name:    "invalid dst",
+			dst:     []byte(`not-json`),
+			src:     []byte(`{"a":1}`),
+			wantErr: true,
+		},
+		{
+			name:    "invalid src",
+			dst:     []byte(`{"a":1}`),
+			src:     []byte(`not-json`),
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := MergeJSONB(tc.dst, tc.src)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			var gotMap map[string]any
+			if err := json.Unmarshal(got, &gotMap); err != nil {
+				t.Fatalf("output is not valid JSON: %v", err)
+			}
+
+			if len(gotMap) != len(tc.want) {
+				t.Fatalf("got %d keys, want %d: %v", len(gotMap), len(tc.want), gotMap)
+			}
+			for k, wantVal := range tc.want {
+				gotVal, ok := gotMap[k]
+				if !ok {
+					t.Errorf("missing key %q", k)
+					continue
+				}
+				if fmt.Sprintf("%v", gotVal) != fmt.Sprintf("%v", wantVal) {
+					t.Errorf("key %q: got %v, want %v", k, gotVal, wantVal)
+				}
+			}
+		})
+	}
+}
+
+func TestDatasetID(t *testing.T) {
+	got := datasetID("123456", "ACADEMICS", "enrollment")
+	want := "123456:ACADEMICS:enrollment"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestAnnualDatasetID(t *testing.T) {
+	got := annualDatasetID("123456", 2023, "ACADEMICS", "enrollment")
+	want := "123456:2023:ACADEMICS:enrollment"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestBatchQuery(t *testing.T) {
+	q := BatchQuery{SQL: "SELECT $1", Args: []any{42}}
+	if q.SQL == "" {
+		t.Error("SQL should not be empty")
+	}
+	if len(q.Args) != 1 {
+		t.Errorf("expected 1 arg, got %d", len(q.Args))
+	}
+}
+
+// --- Integration tests (require DATABASE_URL) ---
+
+func integrationPool(t *testing.T) (context.Context, interface{ Close() }) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("skipping integration test: DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	pool, err := Connect(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	return ctx, pool
+}
+
+func TestIntegrationConnect(t *testing.T) {
+	dbURL := os.Getenv("DATABASE_URL")
+	if testing.Short() || dbURL == "" {
+		t.Skip("skipping integration test")
+	}
+	ctx := context.Background()
+	pool, err := Connect(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer pool.Close()
+
+	if err := pool.Ping(ctx); err != nil {
+		t.Fatalf("Ping after connect failed: %v", err)
+	}
+}
+
+func TestIntegrationUpsertInstitution(t *testing.T) {
+	dbURL := os.Getenv("DATABASE_URL")
+	if testing.Short() || dbURL == "" {
+		t.Skip("skipping integration test")
+	}
+	ctx := context.Background()
+	pool, err := Connect(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer pool.Close()
+
+	const testUnitID = "TEST_DBUTIL_01"
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, "DELETE FROM search_base.institution WHERE unit_id = $1", testUnitID)
+	})
+
+	inst := &Institution{
+		UnitID: testUnitID,
+		OPE6ID: "999999",
+		OPE8ID: "99999900",
+		Name:   "Test University",
+		City:   "Testville",
+		State:  "TX",
+		NCES:   []byte(`{"control":1}`),
+	}
+
+	if err := UpsertInstitution(ctx, pool, inst); err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+
+	// Verify row exists.
+	var name string
+	var version int
+	err = pool.QueryRow(ctx,
+		"SELECT institution_name, version FROM search_base.institution WHERE unit_id = $1",
+		testUnitID,
+	).Scan(&name, &version)
+	if err != nil {
+		t.Fatalf("QueryRow after insert: %v", err)
+	}
+	if name != "Test University" {
+		t.Errorf("name = %q, want %q", name, "Test University")
+	}
+	if version != 1 {
+		t.Errorf("version = %d, want 1", version)
+	}
+
+	// Re-upsert — version should increment.
+	inst.NCES = []byte(`{"control":1,"size":5000}`)
+	if err := UpsertInstitution(ctx, pool, inst); err != nil {
+		t.Fatalf("second upsert: %v", err)
+	}
+
+	err = pool.QueryRow(ctx,
+		"SELECT version FROM search_base.institution WHERE unit_id = $1",
+		testUnitID,
+	).Scan(&version)
+	if err != nil {
+		t.Fatalf("QueryRow after re-upsert: %v", err)
+	}
+	if version != 2 {
+		t.Errorf("version after re-upsert = %d, want 2", version)
+	}
+}
+
+func TestIntegrationUpsertDataset(t *testing.T) {
+	dbURL := os.Getenv("DATABASE_URL")
+	if testing.Short() || dbURL == "" {
+		t.Skip("skipping integration test")
+	}
+	ctx := context.Background()
+	pool, err := Connect(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer pool.Close()
+
+	const testUnitID = "TEST_DBUTIL_02"
+	// Ensure the institution FK row exists.
+	inst := &Institution{
+		UnitID: testUnitID, OPE6ID: "999998", OPE8ID: "99999800",
+		Name: "Test University 2", City: "Testville", State: "TX",
+	}
+	if err := UpsertInstitution(ctx, pool, inst); err != nil {
+		t.Fatalf("setup institution: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, "DELETE FROM search_base.dataset WHERE unit_id = $1", testUnitID)
+		_, _ = pool.Exec(ctx, "DELETE FROM search_base.institution WHERE unit_id = $1", testUnitID)
+	})
+
+	ds := &Dataset{
+		UnitID:  testUnitID,
+		Theme:   "ACADEMICS",
+		Datakey: "programs",
+		Data:    []byte(`{"count":42}`),
+	}
+	if err := UpsertDataset(ctx, pool, ds); err != nil {
+		t.Fatalf("UpsertDataset: %v", err)
+	}
+
+	id := datasetID(testUnitID, "ACADEMICS", "programs")
+	var version int
+	if err := pool.QueryRow(ctx,
+		"SELECT version FROM search_base.dataset WHERE id = $1", id,
+	).Scan(&version); err != nil {
+		t.Fatalf("QueryRow: %v", err)
+	}
+	if version != 1 {
+		t.Errorf("version = %d, want 1", version)
+	}
+
+	// Re-upsert should merge data and bump version.
+	ds.Data = []byte(`{"count":42,"credits":120}`)
+	if err := UpsertDataset(ctx, pool, ds); err != nil {
+		t.Fatalf("second UpsertDataset: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		"SELECT version FROM search_base.dataset WHERE id = $1", id,
+	).Scan(&version); err != nil {
+		t.Fatalf("QueryRow after re-upsert: %v", err)
+	}
+	if version != 2 {
+		t.Errorf("version after re-upsert = %d, want 2", version)
+	}
+}
+
+func TestIntegrationUpsertAnnualDataset(t *testing.T) {
+	dbURL := os.Getenv("DATABASE_URL")
+	if testing.Short() || dbURL == "" {
+		t.Skip("skipping integration test")
+	}
+	ctx := context.Background()
+	pool, err := Connect(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer pool.Close()
+
+	const testUnitID = "TEST_DBUTIL_03"
+	inst := &Institution{
+		UnitID: testUnitID, OPE6ID: "999997", OPE8ID: "99999700",
+		Name: "Test University 3", City: "Testville", State: "TX",
+	}
+	if err := UpsertInstitution(ctx, pool, inst); err != nil {
+		t.Fatalf("setup institution: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, "DELETE FROM search_base.annual_dataset WHERE unit_id = $1", testUnitID)
+		_, _ = pool.Exec(ctx, "DELETE FROM search_base.institution WHERE unit_id = $1", testUnitID)
+	})
+
+	ads := &AnnualDataset{
+		UnitID:  testUnitID,
+		Year:    2023,
+		Theme:   "ADMISSIONS",
+		Datakey: "rates",
+		Data:    []byte(`{"acceptance":0.75}`),
+	}
+	if err := UpsertAnnualDataset(ctx, pool, ads); err != nil {
+		t.Fatalf("UpsertAnnualDataset: %v", err)
+	}
+
+	id := annualDatasetID(testUnitID, 2023, "ADMISSIONS", "rates")
+	var version int
+	if err := pool.QueryRow(ctx,
+		"SELECT version FROM search_base.annual_dataset WHERE id = $1", id,
+	).Scan(&version); err != nil {
+		t.Fatalf("QueryRow: %v", err)
+	}
+	if version != 1 {
+		t.Errorf("version = %d, want 1", version)
+	}
+
+	// Re-upsert should merge and bump version.
+	ads.Data = []byte(`{"acceptance":0.75,"yield":0.40}`)
+	if err := UpsertAnnualDataset(ctx, pool, ads); err != nil {
+		t.Fatalf("second UpsertAnnualDataset: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		"SELECT version FROM search_base.annual_dataset WHERE id = $1", id,
+	).Scan(&version); err != nil {
+		t.Fatalf("QueryRow after re-upsert: %v", err)
+	}
+	if version != 2 {
+		t.Errorf("version after re-upsert = %d, want 2", version)
+	}
+}
+
+func TestIntegrationBatchExec(t *testing.T) {
+	dbURL := os.Getenv("DATABASE_URL")
+	if testing.Short() || dbURL == "" {
+		t.Skip("skipping integration test")
+	}
+	ctx := context.Background()
+	pool, err := Connect(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer pool.Close()
+
+	const testUnitID = "TEST_DBUTIL_04"
+	inst := &Institution{
+		UnitID: testUnitID, OPE6ID: "999996", OPE8ID: "99999600",
+		Name: "Test University 4", City: "Testville", State: "TX",
+	}
+	if err := UpsertInstitution(ctx, pool, inst); err != nil {
+		t.Fatalf("setup institution: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, "DELETE FROM search_base.dataset WHERE unit_id = $1", testUnitID)
+		_, _ = pool.Exec(ctx, "DELETE FROM search_base.institution WHERE unit_id = $1", testUnitID)
+	})
+
+	// Insert two dataset rows in a single batch.
+	const insertSQL = `
+		INSERT INTO search_base.dataset (id, unit_id, theme, datakey, data, created, updated, version)
+		VALUES ($1, $2, $3, $4, $5, now(), now(), 1)
+		ON CONFLICT (id) DO NOTHING`
+
+	queries := []BatchQuery{
+		{SQL: insertSQL, Args: []any{
+			datasetID(testUnitID, "COST", "tuition"), testUnitID, "COST", "tuition", []byte(`{"in_state":10000}`),
+		}},
+		{SQL: insertSQL, Args: []any{
+			datasetID(testUnitID, "COST", "fees"), testUnitID, "COST", "fees", []byte(`{"amount":500}`),
+		}},
+	}
+
+	if err := BatchExec(ctx, pool, queries); err != nil {
+		t.Fatalf("BatchExec: %v", err)
+	}
+
+	var count int
+	if err := pool.QueryRow(ctx,
+		"SELECT COUNT(*) FROM search_base.dataset WHERE unit_id = $1", testUnitID,
+	).Scan(&count); err != nil {
+		t.Fatalf("count query: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("expected 2 rows, got %d", count)
+	}
+}
+
+func TestIntegrationRefreshMaterializedViews(t *testing.T) {
+	dbURL := os.Getenv("DATABASE_URL")
+	if testing.Short() || dbURL == "" {
+		t.Skip("skipping integration test")
+	}
+	ctx := context.Background()
+	pool, err := Connect(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer pool.Close()
+
+	if err := RefreshMaterializedViews(ctx, pool); err != nil {
+		t.Fatalf("RefreshMaterializedViews: %v", err)
+	}
+}

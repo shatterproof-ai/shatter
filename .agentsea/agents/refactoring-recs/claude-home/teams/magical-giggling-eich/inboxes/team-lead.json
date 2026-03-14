@@ -1,0 +1,10 @@
+[
+  {
+    "from": "smoke-agent",
+    "text": "Smoke test checks complete. Results committed to `smoke-results.txt` on branch `smoke-agent/work`.\n\nSummary:\n- CHECK 1: PASS - User namespace active (user:[4026532244])\n- CHECK 2: FAIL - /tmp has 3 entries (claude-1000, node-compile-cache, sea-smoke-1207518829) instead of 0\n- CHECK 3: PASS - $HOME is empty/restricted\n- CHECK 4: PASS - On branch smoke-agent/work\n- CHECK 5: PASS - Root filesystem is read-only\n\n4/5 checks passed. CHECK 2 failed because /tmp contains claude-related runtime files and the workspace directory itself, rather than being completely empty.",
+    "summary": "Smoke tests done: 4/5 passed, results committed",
+    "timestamp": "2026-03-09T14:32:31.260Z",
+    "color": "blue",
+    "read": false
+  }
+]

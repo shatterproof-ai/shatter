@@ -1,0 +1,13 @@
+{
+  "id": "6",
+  "subject": "str-fpgb.11: Rust invalid JSON response (wait queue)",
+  "description": "Fix Rust frontend silently dropping malformed JSON. Add failing test expecting invalid_request, then fix handler. Beads ID: str-fpgb.11. SEQUENCED: spawn after str-fpgb.10 merges.",
+  "owner": "rust-json-error",
+  "status": "completed",
+  "blocks": [
+    "7"
+  ],
+  "blockedBy": [
+    "2"
+  ]
+}

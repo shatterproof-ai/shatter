@@ -1,0 +1,98 @@
+import { Link } from 'react-router-dom'
+import { useQuery } from 'urql'
+import { Card, Text, Box, Skeleton, Stack } from '@mantine/core'
+import type { SampleSearch } from './sampleSearches'
+
+export const SAMPLE_SEARCH_QUERY = `
+  query SampleSearch($filters: [FilterInput!], $limit: Int) {
+    search(filters: $filters, limit: $limit) {
+      results {
+        unitID
+        name
+        city
+        state
+      }
+      total
+    }
+  }
+`
+
+export interface SampleSearchResult {
+  search: {
+    results: Array<{ unitID: string; name: string; city: string; state: string }>
+    total: number
+  }
+}
+
+export function useSampleSearchQuery(filters: Array<{ field: string; value: unknown }>) {
+  return useQuery<SampleSearchResult>({
+    query: SAMPLE_SEARCH_QUERY,
+    variables: { filters, limit: 4 },
+  })
+}
+
+interface SampleSearchCardProps {
+  sample: SampleSearch
+  fetching: boolean
+  data: SampleSearchResult | undefined
+}
+
+export function SampleSearchCard({ sample, fetching, data }: SampleSearchCardProps) {
+  const searchParams = new URLSearchParams(sample.params)
+  const href = `/search?${searchParams.toString()}`
+  const Icon = sample.icon
+
+  return (
+    <Card
+      component={Link}
+      to={href}
+      shadow="sm"
+      withBorder
+      padding="lg"
+      h="100%"
+      style={{ textDecoration: 'none', cursor: 'pointer' }}
+    >
+      <Box
+        mb="sm"
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          width: 44,
+          height: 44,
+          borderRadius: 8,
+          backgroundColor: 'var(--color-primary)',
+        }}
+      >
+        <Icon size={20} color="#fff" />
+      </Box>
+      <Text fw={600} size="lg" c="brand.9" mb={4}>
+        {sample.title}
+      </Text>
+      <Text size="sm" c="dimmed" mb="sm">
+        {sample.description}
+      </Text>
+
+      <Stack gap={4}>
+        {fetching && (
+          <>
+            <Skeleton height={16} />
+            <Skeleton height={16} />
+            <Skeleton height={16} />
+            <Skeleton height={16} />
+          </>
+        )}
+        {data?.search.results.map((inst) => (
+          <Text key={inst.unitID} size="xs" c="dark.4" truncate>
+            {inst.name} — {inst.city}, {inst.state}
+          </Text>
+        ))}
+        {data && (
+          <Text size="xs" c="accent.5" fw={500} mt={4}>
+            {data.search.total.toLocaleString()} results &rsaquo;
+          </Text>
+        )}
+      </Stack>
+    </Card>
+  )
+}

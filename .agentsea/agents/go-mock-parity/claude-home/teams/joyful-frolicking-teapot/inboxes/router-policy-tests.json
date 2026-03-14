@@ -1,0 +1,74 @@
+[
+  {
+    "from": "team-lead",
+    "text": "You are working on beads issue kapow-r4q.2: Router assembly policy tests.\n\n## WORKTREE SETUP — RUN FIRST\nBefore doing anything else, create and enter an isolated worktree:\n```bash\nREPO_ROOT=\"$(git rev-parse --show-toplevel)\"\nBRANCH_NAME=\"worktree/router-policy-tests\"\nWORKTREE_DIR=\"$REPO_ROOT/.claude/worktrees/$BRANCH_NAME\"\n\nif [ -d \"$WORKTREE_DIR\" ]; then\n  echo \"Worktree already exists, reusing\"\nelse\n  git worktree add \"$WORKTREE_DIR\" -b \"$BRANCH_NAME\"\nfi\n\ncd \"$WORKTREE_DIR\"\n```\nVerify you are in the right place:\n```bash\necho \"CWD: $(pwd)\"\necho \"Branch: $(git branch --show-current)\"\necho \"$(pwd)\" | grep -q '\\.claude/worktrees/' && echo \"WORKTREE VERIFIED\" || echo \"FATAL: NOT in a worktree\"\n```\nIf verification fails, STOP.\n\nALL subsequent commands must run from this worktree directory.\n\n## Issue Details\n**kapow-r4q.2: Router assembly policy tests**\n\nAdd assembled router tests that validate CORS, route protection, optional versus mandatory auth behavior, export behavior, private-route policy, and MCP policy at the router level rather than only through isolated middleware tests.\n\n**Acceptance Criteria**: Router-level tests cover the agreed protected routes and policy-sensitive behavior. CORS, auth mode, private routes, export behavior, and MCP behavior are exercised in assembled router tests. The tests would catch earlier router or policy drift classes.\n\n## Instructions\n1. Read CLAUDE.md and api/CLAUDE.md for Go conventions and testing standards\n2. Read api/internal/router/ to understand the current router setup\n3. Read api/internal/middleware/ for existing middleware (Auth, CORS, etc.)\n4. Read docs/specs/authentication.md for route-level auth table\n5. Read existing router tests if any exist\n6. Create/extend `api/internal/router/router_test.go` with table-driven tests covering:\n   - CORS headers on preflight and actual requests\n   - Auth behavior: /graphql (OptionalAuth), /mcp/* (mandatory Auth), /api/export/* (no auth), /private/* (no auth)\n   - Route existence and method constraints\n   - MCP routes require valid JWT (401 without)\n   - Export routes work without auth\n   - Private routes work without auth\n7. Use httptest.NewServer or httptest.NewRecorder with the assembled router\n8. Tests should be unit tests (no DB required) — mock or stub the DB pool if needed\n\n## Quality Gate\nGo-only change. Run: `make api-test-unit && make api-lint`\n\n## When Done\nCommit and push:\n```bash\ngit add -A\ngit commit -m \"test: add router assembly policy tests\n\nValidates CORS, route protection, auth modes (optional/mandatory/none),\nexport behavior, private-route policy, and MCP policy at the assembled\nrouter level.\n\nCloses kapow-r4q.2\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\"\ngit push -u origin HEAD\n```\nReport completion with test count and coverage info.",
+    "timestamp": "2026-03-11T02:27:21.016Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"task_assignment\",\"taskId\":\"5\",\"subject\":\"kapow-r4q.2: Router assembly policy tests\",\"description\":\"Add assembled router tests that validate CORS, route protection, optional versus mandatory auth behavior, export behavior, private-route policy, and MCP policy at the router level. AC: Router-level tests cover the agreed protected routes and policy-sensitive behavior.\",\"assignedBy\":\"team-lead\",\"timestamp\":\"2026-03-11T02:28:06.116Z\"}",
+    "timestamp": "2026-03-11T02:28:06.116Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773196046636-eznupfo\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"REPO_ROOT=\\\"$(git rev-parse --show-toplevel)\\\" && BRANCH_NAME=\\\"worktree/router-policy-tests\\\" && WORKTREE_DIR=\\\"$REPO_ROOT/.claude/worktrees/$BRANCH_NAME\\\" && if [ -d \\\"$WORKTREE_DIR\\\" ]; then echo \\\"Worktree already exists, reusing\\\"; else git worktree add \\\"$WORKTREE_DIR\\\" -b \\\"$BRANCH_NAME\\\"; fi && cd \\\"$WORKTREE_DIR\\\" && echo \\\"CWD: $(pwd)\\\" && echo \\\"Branch: $(git branch --show-current)\\\" && echo \\\"$(pwd)\\\" | grep -q '\\\\.claude/worktrees/' && echo \\\"WORKTREE VERIFIED\\\" || echo \\\"FATAL: NOT in a worktree\\\"\",\"description\":\"Set up isolated worktree for router policy tests\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T02:36:28.463Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"plan_approval_response\",\"requestId\":\"plan_approval-1773196696378@router-policy-tests@joyful-frolicking-teapot\",\"approved\":true,\"timestamp\":\"2026-03-11T02:38:17.199Z\",\"permissionMode\":\"default\"}",
+    "timestamp": "2026-03-11T02:38:17.199Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773196722552-ptwladi\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/kapow/.claude/worktrees/worktree/router-policy-tests/api/internal/router/router_test.go\",\"old_string\":\"\\t{\\n\\t\\t\\tname:    \\\"graphql anonymous allowed\\\",\\n\\t\\t\\tmethod:  \\\"POST\\\",\\n\\t\\t\\tpath:    \\\"/graphql\\\",\\n\\t\\t\\twantNot: http.StatusUnauthorized,\\n\\t\\t},\",\"new_string\":\"\\t{\\n\\t\\t\\tname:    \\\"graphql POST anonymous allowed\\\",\\n\\t\\t\\tmethod:  \\\"POST\\\",\\n\\t\\t\\tpath:    \\\"/graphql\\\",\\n\\t\\t\\twantNot: http.StatusUnauthorized,\\n\\t\\t},\\n\\t\\t{\\n\\t\\t\\tname:    \\\"graphql GET anonymous allowed\\\",\\n\\t\\t\\tmethod:  \\\"GET\\\",\\n\\t\\t\\tpath:    \\\"/graphql\\\",\\n\\t\\t\\twantNot: http.StatusUnauthorized,\\n\\t\\t},\",\"replace_all\":false},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T02:43:57.430Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"plan_approval_response\",\"requestId\":\"plan_approval-1773196696378@router-policy-tests@joyful-frolicking-teapot\",\"approved\":true,\"timestamp\":\"2026-03-11T02:44:09.938Z\",\"permissionMode\":\"default\"}",
+    "timestamp": "2026-03-11T02:44:09.938Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773197074076-mbgvwjj\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/kapow/.claude/worktrees/worktree/router-policy-tests/api/internal/router/router_test.go\",\"old_string\":\"\\t\\t\\tif tt.wantStatus == 0 && rr.Code == http.StatusForbidden {\\n\\t\\t\\t\\tt.Errorf(\\\"status = %d, expected non-403 for allowed IP\\\", rr.Code)\\n\\t\\t\\t}\\n\\t\\t})\\n\\t}\\n}\",\"new_string\":\"\\t\\t\\tif tt.wantStatus == 0 && rr.Code == http.StatusForbidden {\\n\\t\\t\\t\\tt.Errorf(\\\"status = %d, expected non-403 for allowed IP\\\", rr.Code)\\n\\t\\t\\t}\\n\\t\\t})\\n\\t}\\n}\\n\\n// --- Group 7: CORS Absence on Actual Requests ---\\n\\nfunc TestNoCORSOnActualRequests(t *testing.T) {\\n\\tt.Parallel()\\n\\tcfg := testConfig()\\n\\th := router.New(testDeps(cfg, &stubValidator{}))\\n\\n\\tpaths := []struct {\\n\\t\\tmethod string\\n\\t\\tpath   string\\n\\t}{\\n\\t\\t{\\\"POST\\\", \\\"/graphql\\\"},\\n\\t\\t{\\\"GET\\\", \\\"/graphql\\\"},\\n\\t\\t{\\\"GET\\\", \\\"/api/export/csv\\\"},\\n\\t\\t{\\\"GET\\\", \\\"/.well-known/oauth-protected-resource\\\"},\\n\\t}\\n\\tfor _, p := range paths {\\n\\t\\tt.Run(p.method+\\\" \\\"+p.path, func(t *testing.T) {\\n\\t\\t\\tt.Parallel()\\n\\t\\t\\treq := httptest.NewRequest(p.method, p.path, nil)\\n\\t\\t\\treq.Header.Set(\\\"Origin\\\", \\\"https://evil.example.com\\\")\\n\\t\\t\\trr := httptest.NewRecorder()\\n\\t\\t\\th.ServeHTTP(rr, req)\\n\\n\\t\\t\\tif acao := rr.Header().Get(\\\"Access-Control-Allow-Origin\\\"); acao != \\\"\\\" {\\n\\t\\t\\t\\tt.Errorf(\\\"unexpected Access-Control-Allow-Origin = %q on %s %s; CORS should be handled externally\\\", acao, p.method, p.path)\\n\\t\\t\\t}\\n\\t\\t})\\n\\t}\\n}\\n\\n// --- Group 8: Authenticated Access ---\\n\\nfunc TestAuthenticatedAccess(t *testing.T) {\\n\\tt.Parallel()\\n\\n\\t// Validator that accepts any token and returns valid claims.\\n\\tokValidator := &stubValidator{\\n\\t\\tclaims: &auth.Claims{},\\n\\t}\\n\\n\\tcfg := testConfig(func(c *config.Config) { c.MCPEnabled = true })\\n\\th := router.New(testDeps(cfg, okValidator))\\n\\n\\ttests := []struct {\\n\\t\\tname   string\\n\\t\\tmethod string\\n\\t\\tpath   string\\n\\t}{\\n\\t\\t{\\\"graphql POST with valid token\\\", \\\"POST\\\", \\\"/graphql\\\"},\\n\\t\\t{\\\"graphql GET with valid token\\\", \\\"GET\\\", \\\"/graphql\\\"},\\n\\t\\t{\\\"export with valid token\\\", \\\"GET\\\", \\\"/api/export/csv\\\"},\\n\\t\\t{\\\"mcp with valid token\\\", \\\"POST\\\", \\\"/mcp/message\\\"},\\n\\t}\\n\\tfor _, tt := range tests {\\n\\t\\tt.Run(tt.name, func(t *testing.T) {\\n\\t\\t\\tt.Parallel()\\n\\t\\t\\treq := httptest.NewRequest(tt.method, tt.path, nil)\\n\\t\\t\\treq.Header.Set(\\\"Authorization\\\", \\\"Bearer valid-test-token\\\")\\n\\t\\t\\trr := httptest.NewRecorder()\\n\\t\\t\\th.ServeHTTP(rr, req)\\n\\n\\t\\t\\tif rr.Code == http.StatusUnauthorized {\\n\\t\\t\\t\\tt.Errorf(\\\"status = 401, expected authenticated request to pass auth middleware\\\")\\n\\t\\t\\t}\\n\\t\\t})\\n\\t}\\n}\\n\\n// --- Group 9: Method Constraints ---\\n\\nfunc TestMethodConstraints(t *testing.T) {\\n\\tt.Parallel()\\n\\n\\tcfg := testConfig(func(c *config.Config) {\\n\\t\\tc.Env = \\\"development\\\"\\n\\t\\tc.JWTSecret = \\\"dev-secret\\\"\\n\\t})\\n\\th := router.New(testDeps(cfg, &stubValidator{}))\\n\\n\\ttests := []struct {\\n\\t\\tname   string\\n\\t\\tmethod string\\n\\t\\tpath   string\\n\\t}{\\n\\t\\t{\\\"PUT /graphql not allowed\\\", \\\"PUT\\\", \\\"/graphql\\\"},\\n\\t\\t{\\\"DELETE /graphql not allowed\\\", \\\"DELETE\\\", \\\"/graphql\\\"},\\n\\t\\t{\\\"PATCH /graphql not allowed\\\", \\\"PATCH\\\", \\\"/graphql\\\"},\\n\\t\\t{\\\"POST /api/export/csv not allowed\\\", \\\"POST\\\", \\\"/api/export/csv\\\"},\\n\\t\\t{\\\"POST /.well-known/oauth-protected-resource not allowed\\\", \\\"POST\\\", \\\"/.well-known/oauth-protected-resource\\\"},\\n\\t\\t{\\\"GET /dev/auth/login not allowed\\\", \\\"GET\\\", \\\"/dev/auth/login\\\"},\\n\\t\\t{\\\"POST /private/healthcheck not allowed\\\", \\\"POST\\\", \\\"/private/healthcheck\\\"},\\n\\t}\\n\\tfor _, tt := range tests {\\n\\t\\tt.Run(tt.name, func(t *testing.T) {\\n\\t\\t\\tt.Parallel()\\n\\t\\t\\treq := httptest.NewRequest(tt.method, tt.path, nil)\\n\\t\\t\\trr := httptest.NewRecorder()\\n\\t\\t\\th.ServeHTTP(rr, req)\\n\\n\\t\\t\\tif rr.Code != http.StatusMethodNotAllowed {\\n\\t\\t\\t\\tt.Errorf(\\\"status = %d, want %d\\\", rr.Code, http.StatusMethodNotAllowed)\\n\\t\\t\\t}\\n\\t\\t})\\n\\t}\\n}\\n\\n// --- Group 10: Private Routes Open Access ---\\n\\nfunc TestPrivateRoutesOpenAccess(t *testing.T) {\\n\\tt.Parallel()\\n\\n\\t// No PrivateCIDRs — private routes should be accessible without IP restriction.\\n\\tcfg := testConfig()\\n\\th := router.New(testDeps(cfg, &stubValidator{}))\\n\\n\\tpaths := []struct {\\n\\t\\tmethod string\\n\\t\\tpath   string\\n\\t}{\\n\\t\\t{\\\"GET\\\", \\\"/private/healthcheck\\\"},\\n\\t\\t{\\\"GET\\\", \\\"/private/log-config\\\"},\\n\\t\\t{\\\"PUT\\\", \\\"/private/log-config\\\"},\\n\\t}\\n\\tfor _, p := range paths {\\n\\t\\tt.Run(p.method+\\\" \\\"+p.path, func(t *testing.T) {\\n\\t\\t\\tt.Parallel()\\n\\t\\t\\treq := httptest.NewRequest(p.method, p.path, nil)\\n\\t\\t\\treq.RemoteAddr = \\\"192.168.1.1:12345\\\" // arbitrary external IP\\n\\t\\t\\trr := httptest.NewRecorder()\\n\\t\\t\\th.ServeHTTP(rr, req)\\n\\n\\t\\t\\tif rr.Code == http.StatusForbidden {\\n\\t\\t\\t\\tt.Errorf(\\\"status = 403, expected open access when no PrivateCIDRs configured\\\")\\n\\t\\t\\t}\\n\\t\\t\\tif rr.Code == http.StatusUnauthorized {\\n\\t\\t\\t\\tt.Errorf(\\\"status = 401, expected no auth required on private routes\\\")\\n\\t\\t\\t}\\n\\t\\t})\\n\\t}\\n}\",\"replace_all\":false},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T02:46:58.688Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773197308786-eotwy8q\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"git commit -m \\\"$(cat <<'EOF'\\ntest: add router assembly policy tests\\n\\nExtends router_test.go with 4 new test groups and 1 expanded test:\\n- CORS absence on actual (non-preflight) requests across multiple routes\\n- Authenticated access verification with valid claims for all auth modes\\n- HTTP method constraints (405 for wrong methods on all route groups)\\n- Private route open access when no PrivateCIDRs configured\\n- GraphQL GET anonymous access in route protection matrix\\n\\nCloses kapow-r4q.2\\n\\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\\nEOF\\n)\\\"\",\"description\":\"Commit router policy tests\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T02:51:18.459Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773197482567-va816ga\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"git push -u origin HEAD 2>&1\",\"description\":\"Push branch to remote\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-11T02:51:24.794Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"shutdown_request\",\"requestId\":\"shutdown-1773197568025@router-policy-tests\",\"from\":\"team-lead\",\"reason\":\"Merged and closed. Shutting down.\",\"timestamp\":\"2026-03-11T02:52:48.025Z\"}",
+    "timestamp": "2026-03-11T02:52:48.025Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"shutdown_request\",\"requestId\":\"shutdown-1773205071941@router-policy-tests\",\"from\":\"team-lead\",\"reason\":\"All work complete. Shutting down.\",\"timestamp\":\"2026-03-11T04:57:51.941Z\"}",
+    "timestamp": "2026-03-11T04:57:51.941Z",
+    "read": false
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"shutdown_request\",\"requestId\":\"shutdown-1773205097434@router-policy-tests\",\"from\":\"team-lead\",\"reason\":\"All work merged long ago. Please shut down now.\",\"timestamp\":\"2026-03-11T04:58:17.434Z\"}",
+    "timestamp": "2026-03-11T04:58:17.434Z",
+    "read": false
+  }
+]

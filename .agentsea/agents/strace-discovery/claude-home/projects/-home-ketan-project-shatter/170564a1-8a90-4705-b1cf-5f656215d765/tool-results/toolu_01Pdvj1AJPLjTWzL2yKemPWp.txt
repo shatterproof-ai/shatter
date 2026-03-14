@@ -1,0 +1,1299 @@
+     1→//! User-defined mock fixtures with scoped resolution and type validation.
+     2→//!
+     3→//! Mock fixtures let users declare exactly how external dependencies should
+     4→//! behave during exploration. Fixtures are defined in `.shatter/config.yaml`
+     5→//! at three scope levels (global → file → function), with innermost scope
+     6→//! winning on conflicts.
+     7→
+     8→use std::collections::HashMap;
+     9→
+    10→use serde::{Deserialize, Serialize};
+    11→use serde_json::Value;
+    12→
+    13→use crate::types::TypeInfo;
+    14→
+    15→// ---------------------------------------------------------------------------
+    16→// MockValueSpace — strategy for generating mock return values
+    17→// ---------------------------------------------------------------------------
+    18→// NOTE: This duplicates the enum from mock_value_space.rs (str-3ky9.10).
+    19→// It will be reconciled once both branches merge — one definition will be
+    20→// removed and re-exported from the surviving module.
+    21→
+    22→/// Strategy for selecting mock return values during exploration.
+    23→#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+    24→#[serde(rename_all = "snake_case", tag = "kind")]
+    25→pub enum MockValueSpace {
+    26→    /// Try the real service first; fall back to synthetic mocks on connection
+    27→    /// failure. This is the default for network/database dependencies.
+    28→    LiveFirst,
+    29→    /// Use a fixed set of user-provided return values (round-robin).
+    30→    FixedSet { values: Vec<Value> },
+    31→    /// Engine generates values autonomously based on type information.
+    32→    Autonomous,
+    33→    /// Replay a recorded seed corpus (e.g. from a prior live session).
+    34→    Seeded { seed_file: String },
+    35→}
+    36→
+    37→// ---------------------------------------------------------------------------
+    38→// Expectation types — post-execution verification
+    39→// ---------------------------------------------------------------------------
+    40→
+    41→/// A single argument matcher for `called_with` expectations.
+    42→#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    43→#[serde(rename_all = "snake_case", tag = "match")]
+    44→pub enum ArgMatcher {
+    45→    /// Exact JSON equality.
+    46→    Exact { value: Value },
+    47→    /// Matches any value (wildcard).
+    48→    Any,
+    49→    /// Matches any value of the given type.
+    50→    TypeOf { expected: TypeInfo },
+    51→}
+    52→
+    53→/// Post-execution expectations for a mock fixture.
+    54→#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    55→pub struct MockExpectations {
+    56→    /// Expected argument patterns for each call. If present, every call must
+    57→    /// match at least one entry (order-independent).
+    58→    #[serde(default, skip_serializing_if = "Option::is_none")]
+    59→    pub called_with: Option<Vec<Vec<ArgMatcher>>>,
+    60→
+    61→    /// Expected number of calls. `None` means no assertion on call count.
+    62→    #[serde(default, skip_serializing_if = "Option::is_none")]
+    63→    pub call_count: Option<CallCountExpectation>,
+    64→}
+    65→
+    66→/// How many times a mock is expected to be called.
+    67→#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    68→#[serde(rename_all = "snake_case", tag = "kind")]
+    69→pub enum CallCountExpectation {
+    70→    /// Exactly N times.
+    71→    Exact { n: u32 },
+    72→    /// At least N times.
+    73→    AtLeast { n: u32 },
+    74→    /// At most N times.
+    75→    AtMost { n: u32 },
+    76→    /// Between min and max (inclusive).
+    77→    Between { min: u32, max: u32 },
+    78→}
+    79→
+    80→// ---------------------------------------------------------------------------
+    81→// MockFixture — a single user-declared fixture
+    82→// ---------------------------------------------------------------------------
+    83→
+    84→/// A user-defined mock fixture for a specific external dependency symbol.
+    85→#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    86→pub struct MockFixture {
+    87→    /// The dependency symbol this fixture targets (e.g. `"db.query"`, `"fetch"`).
+    88→    pub symbol: String,
+    89→
+    90→    /// Strategy for selecting return values.
+    91→    pub value_space: MockValueSpace,
+    92→
+    93→    /// Explicit return values (used with `FixedSet` value space, or as
+    94→    /// overrides for other strategies).
+    95→    #[serde(default, skip_serializing_if = "Option::is_none")]
+    96→    pub return_values: Option<Vec<Value>>,
+    97→
+    98→    /// Expected return type. Used for load-time validation and to guide
+    99→    /// autonomous value generation.
+   100→    #[serde(default, skip_serializing_if = "Option::is_none")]
+   101→    pub return_type: Option<TypeInfo>,
+   102→
+   103→    /// Post-execution expectations (call count, argument patterns).
+   104→    #[serde(default, skip_serializing_if = "Option::is_none")]
+   105→    pub expectations: Option<MockExpectations>,
+   106→}
+   107→
+   108→// ---------------------------------------------------------------------------
+   109→// MockFixtureConfig — three-level scoped configuration
+   110→// ---------------------------------------------------------------------------
+   111→
+   112→/// Three-level scoped mock fixture configuration.
+   113→///
+   114→/// Resolution order (innermost wins):
+   115→/// 1. `functions["file:func"].fixtures["symbol"]`
+   116→/// 2. `files["file"].fixtures["symbol"]`
+   117→/// 3. `global.fixtures["symbol"]`
+   118→#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+   119→pub struct MockFixtureConfig {
+   120→    /// Global fixtures applied to all functions unless overridden.
+   121→    #[serde(default)]
+   122→    pub global: MockFixtureScope,
+   123→
+   124→    /// Per-file fixtures, keyed by file path or glob pattern.
+   125→    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+   126→    pub files: HashMap<String, MockFixtureScope>,
+   127→
+   128→    /// Per-function fixtures, keyed by `"file:function"` identifier.
+   129→    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+   130→    pub functions: HashMap<String, MockFixtureScope>,
+   131→}
+   132→
+   133→/// A collection of fixtures at a single scope level.
+   134→#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+   135→pub struct MockFixtureScope {
+   136→    /// Fixtures keyed by dependency symbol.
+   137→    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+   138→    pub fixtures: HashMap<String, MockFixture>,
+   139→}
+   140→
+   141→// ---------------------------------------------------------------------------
+   142→// Scope resolution — innermost wins
+   143→// ---------------------------------------------------------------------------
+   144→
+   145→/// Resolve the effective fixture for a given symbol, applying innermost-wins
+   146→/// precedence: function → file → global.
+   147→pub fn resolve_fixture<'a>(
+   148→    config: &'a MockFixtureConfig,
+   149→    file: &str,
+   150→    function: &str,
+   151→    symbol: &str,
+   152→) -> Option<&'a MockFixture> {
+   153→    let func_key = format!("{file}:{function}");
+   154→
+   155→    // 1. Function-level (most specific)
+   156→    if let Some(fixture) = config
+   157→        .functions
+   158→        .get(&func_key)
+   159→        .and_then(|scope| scope.fixtures.get(symbol))
+   160→    {
+   161→        return Some(fixture);
+   162→    }
+   163→
+   164→    // 2. File-level
+   165→    if let Some(fixture) = config
+   166→        .files
+   167→        .get(file)
+   168→        .and_then(|scope| scope.fixtures.get(symbol))
+   169→    {
+   170→        return Some(fixture);
+   171→    }
+   172→
+   173→    // 3. Global (least specific)
+   174→    config.global.fixtures.get(symbol)
+   175→}
+   176→
+   177→// ---------------------------------------------------------------------------
+   178→// Type validation
+   179→// ---------------------------------------------------------------------------
+   180→
+   181→/// Errors from fixture validation.
+   182→#[derive(Debug, Clone, PartialEq)]
+   183→pub enum FixtureValidationError {
+   184→    /// A return value doesn't match the declared return type.
+   185→    TypeMismatch {
+   186→        symbol: String,
+   187→        index: usize,
+   188→        expected: TypeInfo,
+   189→        actual_value: Value,
+   190→    },
+   191→    /// FixedSet value space requires `return_values` to be non-empty.
+   192→    EmptyFixedSet { symbol: String },
+   193→}
+   194→
+   195→impl std::fmt::Display for FixtureValidationError {
+   196→    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+   197→        match self {
+   198→            Self::TypeMismatch {
+   199→                symbol,
+   200→                index,
+   201→                expected,
+   202→                actual_value,
+   203→            } => write!(
+   204→                f,
+   205→                "fixture '{symbol}': return_values[{index}] doesn't match declared type {expected:?}: got {actual_value}"
+   206→            ),
+   207→            Self::EmptyFixedSet { symbol } => write!(
+   208→                f,
+   209→                "fixture '{symbol}': value_space is fixed_set but return_values is empty"
+   210→            ),
+   211→        }
+   212→    }
+   213→}
+   214→
+   215→impl std::error::Error for FixtureValidationError {}
+   216→
+   217→/// Check that a JSON value is compatible with a TypeInfo.
+   218→fn json_matches_type(value: &Value, ty: &TypeInfo) -> bool {
+   219→    match (value, ty) {
+   220→        (Value::Null, TypeInfo::Nullable { .. }) => true,
+   221→        (_, TypeInfo::Nullable { inner }) => json_matches_type(value, inner),
+   222→        (Value::Number(n), TypeInfo::Int) => n.as_i64().is_some(),
+   223→        (Value::Number(n), TypeInfo::Float) => n.as_f64().is_some(),
+   224→        (Value::String(_), TypeInfo::Str) => true,
+   225→        (Value::Bool(_), TypeInfo::Bool) => true,
+   226→        (Value::Array(items), TypeInfo::Array { element }) => {
+   227→            items.iter().all(|item| json_matches_type(item, element))
+   228→        }
+   229→        (Value::Object(map), TypeInfo::Object { fields }) => {
+   230→            fields.iter().all(|(name, field_ty)| {
+   231→                map.get(name)
+   232→                    .is_some_and(|v| json_matches_type(v, field_ty))
+   233→            })
+   234→        }
+   235→        (_, TypeInfo::Union { variants }) => {
+   236→            variants.iter().any(|v| json_matches_type(value, v))
+   237→        }
+   238→        // Unknown/Complex/Opaque — can't validate statically, accept anything.
+   239→        (_, TypeInfo::Unknown | TypeInfo::Complex { .. } | TypeInfo::Opaque { .. }) => true,
+   240→        _ => false,
+   241→    }
+   242→}
+   243→
+   244→/// Validate all fixtures in a config at load time.
+   245→///
+   246→/// Checks:
+   247→/// - `FixedSet` value spaces have non-empty `return_values`
+   248→/// - Each return value matches the declared `return_type` (when both are present)
+   249→pub fn validate_fixture_types(config: &MockFixtureConfig) -> Vec<FixtureValidationError> {
+   250→    let mut errors = Vec::new();
+   251→    let all_scopes = std::iter::once(&config.global)
+   252→        .chain(config.files.values())
+   253→        .chain(config.functions.values());
+   254→
+   255→    for scope in all_scopes {
+   256→        for fixture in scope.fixtures.values() {
+   257→            validate_single_fixture(fixture, &mut errors);
+   258→        }
+   259→    }
+   260→    errors
+   261→}
+   262→
+   263→fn validate_single_fixture(fixture: &MockFixture, errors: &mut Vec<FixtureValidationError>) {
+   264→    // FixedSet requires non-empty return_values.
+   265→    if matches!(fixture.value_space, MockValueSpace::FixedSet { .. }) {
+   266→        let has_values = fixture
+   267→            .return_values
+   268→            .as_ref()
+   269→            .is_some_and(|v| !v.is_empty());
+   270→        if !has_values {
+   271→            errors.push(FixtureValidationError::EmptyFixedSet {
+   272→                symbol: fixture.symbol.clone(),
+   273→            });
+   274→        }
+   275→    }
+   276→
+   277→    // Type-check return_values against return_type when both are present.
+   278→    if let (Some(values), Some(ty)) = (&fixture.return_values, &fixture.return_type) {
+   279→        for (i, val) in values.iter().enumerate() {
+   280→            if !json_matches_type(val, ty) {
+   281→                errors.push(FixtureValidationError::TypeMismatch {
+   282→                    symbol: fixture.symbol.clone(),
+   283→                    index: i,
+   284→                    expected: ty.clone(),
+   285→                    actual_value: val.clone(),
+   286→                });
+   287→            }
+   288→        }
+   289→    }
+   290→}
+   291→
+   292→// ---------------------------------------------------------------------------
+   293→// Expectation validation — post-execution
+   294→// ---------------------------------------------------------------------------
+   295→
+   296→/// A record of a single call made to a mocked dependency.
+   297→#[derive(Debug, Clone, PartialEq)]
+   298→pub struct MockCallRecord {
+   299→    /// Arguments passed to the mock.
+   300→    pub args: Vec<Value>,
+   301→}
+   302→
+   303→/// Errors from post-execution expectation validation.
+   304→#[derive(Debug, Clone, PartialEq)]
+   305→pub enum ExpectationError {
+   306→    /// Call count didn't match the expectation.
+   307→    CallCountMismatch {
+   308→        symbol: String,
+   309→        expected: CallCountExpectation,
+   310→        actual: u32,
+   311→    },
+   312→    /// A call's arguments didn't match any `called_with` pattern.
+   313→    ArgMismatch {
+   314→        symbol: String,
+   315→        call_index: usize,
+   316→        args: Vec<Value>,
+   317→    },
+   318→}
+   319→
+   320→impl std::fmt::Display for ExpectationError {
+   321→    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+   322→        match self {
+   323→            Self::CallCountMismatch {
+   324→                symbol,
+   325→                expected,
+   326→                actual,
+   327→            } => write!(
+   328→                f,
+   329→                "fixture '{symbol}': expected {expected:?} calls, got {actual}"
+   330→            ),
+   331→            Self::ArgMismatch {
+   332→                symbol,
+   333→                call_index,
+   334→                args,
+   335→            } => write!(
+   336→                f,
+   337→                "fixture '{symbol}': call #{call_index} args {args:?} didn't match any called_with pattern"
+   338→            ),
+   339→        }
+   340→    }
+   341→}
+   342→
+   343→impl std::error::Error for ExpectationError {}
+   344→
+   345→/// Validate post-execution expectations against observed call records.
+   346→pub fn validate_expectations(
+   347→    fixture: &MockFixture,
+   348→    calls: &[MockCallRecord],
+   349→) -> Vec<ExpectationError> {
+   350→    let mut errors = Vec::new();
+   351→    let Some(expectations) = &fixture.expectations else {
+   352→        return errors;
+   353→    };
+   354→
+   355→    // Check call count.
+   356→    if let Some(count_exp) = &expectations.call_count {
+   357→        let actual = calls.len() as u32;
+   358→        let ok = match count_exp {
+   359→            CallCountExpectation::Exact { n } => actual == *n,
+   360→            CallCountExpectation::AtLeast { n } => actual >= *n,
+   361→            CallCountExpectation::AtMost { n } => actual <= *n,
+   362→            CallCountExpectation::Between { min, max } => actual >= *min && actual <= *max,
+   363→        };
+   364→        if !ok {
+   365→            errors.push(ExpectationError::CallCountMismatch {
+   366→                symbol: fixture.symbol.clone(),
+   367→                expected: count_exp.clone(),
+   368→                actual,
+   369→            });
+   370→        }
+   371→    }
+   372→
+   373→    // Check called_with patterns.
+   374→    if let Some(patterns) = &expectations.called_with {
+   375→        for (i, call) in calls.iter().enumerate() {
+   376→            let matches_any = patterns.iter().any(|pattern| args_match(pattern, &call.args));
+   377→            if !matches_any {
+   378→                errors.push(ExpectationError::ArgMismatch {
+   379→                    symbol: fixture.symbol.clone(),
+   380→                    call_index: i,
+   381→                    args: call.args.clone(),
+   382→                });
+   383→            }
+   384→        }
+   385→    }
+   386→
+   387→    errors
+   388→}
+   389→
+   390→/// Check whether a call's arguments match a pattern of ArgMatchers.
+   391→fn args_match(pattern: &[ArgMatcher], args: &[Value]) -> bool {
+   392→    if pattern.len() != args.len() {
+   393→        return false;
+   394→    }
+   395→    pattern.iter().zip(args.iter()).all(|(matcher, arg)| match matcher {
+   396→        ArgMatcher::Exact { value } => arg == value,
+   397→        ArgMatcher::Any => true,
+   398→        ArgMatcher::TypeOf { expected } => json_matches_type(arg, expected),
+   399→    })
+   400→}
+   401→
+   402→// ---------------------------------------------------------------------------
+   403→// Tests
+   404→// ---------------------------------------------------------------------------
+   405→
+   406→#[cfg(test)]
+   407→mod tests {
+   408→    use super::*;
+   409→    use serde_json::json;
+   410→
+   411→    // -- Helper builders --
+   412→
+   413→    fn global_fixture(symbol: &str, value_space: MockValueSpace) -> MockFixture {
+   414→        MockFixture {
+   415→            symbol: symbol.to_string(),
+   416→            value_space,
+   417→            return_values: None,
+   418→            return_type: None,
+   419→            expectations: None,
+   420→        }
+   421→    }
+   422→
+   423→    fn fixture_with_values(symbol: &str, values: Vec<Value>, ty: TypeInfo) -> MockFixture {
+   424→        MockFixture {
+   425→            symbol: symbol.to_string(),
+   426→            value_space: MockValueSpace::FixedSet {
+   427→                values: values.clone(),
+   428→            },
+   429→            return_values: Some(values),
+   430→            return_type: Some(ty),
+   431→            expectations: None,
+   432→        }
+   433→    }
+   434→
+   435→    fn config_with_scopes(
+   436→        global: Vec<MockFixture>,
+   437→        files: Vec<(&str, Vec<MockFixture>)>,
+   438→        functions: Vec<(&str, Vec<MockFixture>)>,
+   439→    ) -> MockFixtureConfig {
+   440→        let to_scope = |fixtures: Vec<MockFixture>| MockFixtureScope {
+   441→            fixtures: fixtures
+   442→                .into_iter()
+   443→                .map(|f| (f.symbol.clone(), f))
+   444→                .collect(),
+   445→        };
+   446→
+   447→        MockFixtureConfig {
+   448→            global: to_scope(global),
+   449→            files: files
+   450→                .into_iter()
+   451→                .map(|(k, v)| (k.to_string(), to_scope(v)))
+   452→                .collect(),
+   453→            functions: functions
+   454→                .into_iter()
+   455→                .map(|(k, v)| (k.to_string(), to_scope(v)))
+   456→                .collect(),
+   457→        }
+   458→    }
+   459→
+   460→    // -- Serde roundtrip tests --
+   461→
+   462→    #[test]
+   463→    fn mock_fixture_serde_roundtrip() {
+   464→        let fixture = MockFixture {
+   465→            symbol: "db.query".into(),
+   466→            value_space: MockValueSpace::FixedSet {
+   467→                values: vec![json!({"id": 1}), json!({"id": 2})],
+   468→            },
+   469→            return_values: Some(vec![json!({"id": 1}), json!({"id": 2})]),
+   470→            return_type: Some(TypeInfo::Object {
+   471→                fields: vec![("id".into(), TypeInfo::Int)],
+   472→            }),
+   473→            expectations: Some(MockExpectations {
+   474→                called_with: Some(vec![vec![ArgMatcher::Exact {
+   475→                    value: json!("SELECT * FROM users"),
+   476→                }]]),
+   477→                call_count: Some(CallCountExpectation::AtLeast { n: 1 }),
+   478→            }),
+   479→        };
+   480→
+   481→        let yaml = serde_yaml::to_string(&fixture).unwrap();
+   482→        let back: MockFixture = serde_yaml::from_str(&yaml).unwrap();
+   483→        assert_eq!(back, fixture);
+   484→    }
+   485→
+   486→    #[test]
+   487→    fn mock_fixture_config_serde_roundtrip() {
+   488→        let config = config_with_scopes(
+   489→            vec![global_fixture("fetch", MockValueSpace::Autonomous)],
+   490→            vec![(
+   491→                "src/api.ts",
+   492→                vec![global_fixture("db.query", MockValueSpace::LiveFirst)],
+   493→            )],
+   494→            vec![(
+   495→                "src/api.ts:getUser",
+   496→                vec![fixture_with_values(
+   497→                    "db.query",
+   498→                    vec![json!({"id": 1, "name": "Alice"})],
+   499→                    TypeInfo::Object {
+   500→                        fields: vec![
+   501→                            ("id".into(), TypeInfo::Int),
+   502→                            ("name".into(), TypeInfo::Str),
+   503→                        ],
+   504→                    },
+   505→                )],
+   506→            )],
+   507→        );
+   508→
+   509→        let yaml = serde_yaml::to_string(&config).unwrap();
+   510→        let back: MockFixtureConfig = serde_yaml::from_str(&yaml).unwrap();
+   511→        assert_eq!(back, config);
+   512→    }
+   513→
+   514→    #[test]
+   515→    fn arg_matcher_serde_roundtrip() {
+   516→        let matchers = vec![
+   517→            ArgMatcher::Exact { value: json!(42) },
+   518→            ArgMatcher::Any,
+   519→            ArgMatcher::TypeOf {
+   520→                expected: TypeInfo::Str,
+   521→            },
+   522→        ];
+   523→
+   524→        for m in &matchers {
+   525→            let json_str = serde_json::to_string(m).unwrap();
+   526→            let back: ArgMatcher = serde_json::from_str(&json_str).unwrap();
+   527→            assert_eq!(&back, m);
+   528→        }
+   529→    }
+   530→
+   531→    #[test]
+   532→    fn call_count_expectation_serde_roundtrip() {
+   533→        let expectations = vec![
+   534→            CallCountExpectation::Exact { n: 3 },
+   535→            CallCountExpectation::AtLeast { n: 1 },
+   536→            CallCountExpectation::AtMost { n: 5 },
+   537→            CallCountExpectation::Between { min: 2, max: 4 },
+   538→        ];
+   539→
+   540→        for exp in &expectations {
+   541→            let json_str = serde_json::to_string(exp).unwrap();
+   542→            let back: CallCountExpectation = serde_json::from_str(&json_str).unwrap();
+   543→            assert_eq!(&back, exp);
+   544→        }
+   545→    }
+   546→
+   547→    // -- Scope resolution tests --
+   548→
+   549→    #[test]
+   550→    fn resolve_global_only() {
+   551→        let config = config_with_scopes(
+   552→            vec![global_fixture("fetch", MockValueSpace::Autonomous)],
+   553→            vec![],
+   554→            vec![],
+   555→        );
+   556→
+   557→        let result = resolve_fixture(&config, "src/api.ts", "getUser", "fetch");
+   558→        assert!(result.is_some());
+   559→        assert_eq!(result.unwrap().value_space, MockValueSpace::Autonomous);
+   560→    }
+   561→
+   562→    #[test]
+   563→    fn resolve_file_overrides_global() {
+   564→        let config = config_with_scopes(
+   565→            vec![global_fixture("fetch", MockValueSpace::Autonomous)],
+   566→            vec![(
+   567→                "src/api.ts",
+   568→                vec![global_fixture("fetch", MockValueSpace::LiveFirst)],
+   569→            )],
+   570→            vec![],
+   571→        );
+   572→
+   573→        let result = resolve_fixture(&config, "src/api.ts", "getUser", "fetch");
+   574→        assert_eq!(result.unwrap().value_space, MockValueSpace::LiveFirst);
+   575→    }
+   576→
+   577→    #[test]
+   578→    fn resolve_function_overrides_file() {
+   579→        let config = config_with_scopes(
+   580→            vec![global_fixture("fetch", MockValueSpace::Autonomous)],
+   581→            vec![(
+   582→                "src/api.ts",
+   583→                vec![global_fixture("fetch", MockValueSpace::LiveFirst)],
+   584→            )],
+   585→            vec![(
+   586→                "src/api.ts:getUser",
+   587→                vec![global_fixture("fetch", MockValueSpace::Seeded {
+   588→                    seed_file: "seeds/fetch.jsonl".into(),
+   589→                })],
+   590→            )],
+   591→        );
+   592→
+   593→        let result = resolve_fixture(&config, "src/api.ts", "getUser", "fetch");
+   594→        assert!(matches!(
+   595→            result.unwrap().value_space,
+   596→            MockValueSpace::Seeded { .. }
+   597→        ));
+   598→    }
+   599→
+   600→    #[test]
+   601→    fn resolve_different_symbols_at_different_scopes() {
+   602→        let config = config_with_scopes(
+   603→            vec![global_fixture("fetch", MockValueSpace::Autonomous)],
+   604→            vec![(
+   605→                "src/api.ts",
+   606→                vec![global_fixture("db.query", MockValueSpace::LiveFirst)],
+   607→            )],
+   608→            vec![],
+   609→        );
+   610→
+   611→        // fetch from global
+   612→        let fetch = resolve_fixture(&config, "src/api.ts", "getUser", "fetch");
+   613→        assert_eq!(fetch.unwrap().value_space, MockValueSpace::Autonomous);
+   614→
+   615→        // db.query from file
+   616→        let db = resolve_fixture(&config, "src/api.ts", "getUser", "db.query");
+   617→        assert_eq!(db.unwrap().value_space, MockValueSpace::LiveFirst);
+   618→    }
+   619→
+   620→    #[test]
+   621→    fn resolve_unknown_symbol_returns_none() {
+   622→        let config = config_with_scopes(
+   623→            vec![global_fixture("fetch", MockValueSpace::Autonomous)],
+   624→            vec![],
+   625→            vec![],
+   626→        );
+   627→
+   628→        assert!(resolve_fixture(&config, "src/api.ts", "getUser", "unknown").is_none());
+   629→    }
+   630→
+   631→    #[test]
+   632→    fn resolve_wrong_file_falls_to_global() {
+   633→        let config = config_with_scopes(
+   634→            vec![global_fixture("fetch", MockValueSpace::Autonomous)],
+   635→            vec![(
+   636→                "src/api.ts",
+   637→                vec![global_fixture("fetch", MockValueSpace::LiveFirst)],
+   638→            )],
+   639→            vec![],
+   640→        );
+   641→
+   642→        // Different file — should get global, not file-level.
+   643→        let result = resolve_fixture(&config, "src/other.ts", "getUser", "fetch");
+   644→        assert_eq!(result.unwrap().value_space, MockValueSpace::Autonomous);
+   645→    }
+   646→
+   647→    // -- Type validation tests --
+   648→
+   649→    #[test]
+   650→    fn validate_matching_types_passes() {
+   651→        let config = config_with_scopes(
+   652→            vec![fixture_with_values(
+   653→                "db.query",
+   654→                vec![json!(42), json!(-1)],
+   655→                TypeInfo::Int,
+   656→            )],
+   657→            vec![],
+   658→            vec![],
+   659→        );
+   660→
+   661→        let errors = validate_fixture_types(&config);
+   662→        assert!(errors.is_empty());
+   663→    }
+   664→
+   665→    #[test]
+   666→    fn validate_type_mismatch_detected() {
+   667→        let config = config_with_scopes(
+   668→            vec![fixture_with_values(
+   669→                "db.query",
+   670→                vec![json!(42), json!("not_an_int")],
+   671→                TypeInfo::Int,
+   672→            )],
+   673→            vec![],
+   674→            vec![],
+   675→        );
+   676→
+   677→        let errors = validate_fixture_types(&config);
+   678→        assert_eq!(errors.len(), 1);
+   679→        assert!(matches!(
+   680→            &errors[0],
+   681→            FixtureValidationError::TypeMismatch { symbol, index: 1, .. } if symbol == "db.query"
+   682→        ));
+   683→    }
+   684→
+   685→    #[test]
+   686→    fn validate_empty_fixed_set_detected() {
+   687→        let fixture = MockFixture {
+   688→            symbol: "fetch".into(),
+   689→            value_space: MockValueSpace::FixedSet {
+   690→                values: vec![json!(1)],
+   691→            },
+   692→            return_values: None, // Missing!
+   693→            return_type: None,
+   694→            expectations: None,
+   695→        };
+   696→
+   697→        let config = MockFixtureConfig {
+   698→            global: MockFixtureScope {
+   699→                fixtures: [("fetch".into(), fixture)].into_iter().collect(),
+   700→            },
+   701→            ..Default::default()
+   702→        };
+   703→
+   704→        let errors = validate_fixture_types(&config);
+   705→        assert_eq!(errors.len(), 1);
+   706→        assert!(matches!(
+   707→            &errors[0],
+   708→            FixtureValidationError::EmptyFixedSet { symbol } if symbol == "fetch"
+   709→        ));
+   710→    }
+   711→
+   712→    #[test]
+   713→    fn validate_nullable_type_accepts_null() {
+   714→        let config = config_with_scopes(
+   715→            vec![fixture_with_values(
+   716→                "db.findOne",
+   717→                vec![json!(null), json!("found")],
+   718→                TypeInfo::Nullable {
+   719→                    inner: Box::new(TypeInfo::Str),
+   720→                },
+   721→            )],
+   722→            vec![],
+   723→            vec![],
+   724→        );
+   725→
+   726→        let errors = validate_fixture_types(&config);
+   727→        assert!(errors.is_empty());
+   728→    }
+   729→
+   730→    #[test]
+   731→    fn validate_union_type_accepts_any_variant() {
+   732→        let config = config_with_scopes(
+   733→            vec![fixture_with_values(
+   734→                "parse",
+   735→                vec![json!(42), json!("hello")],
+   736→                TypeInfo::Union {
+   737→                    variants: vec![TypeInfo::Int, TypeInfo::Str],
+   738→                },
+   739→            )],
+   740→            vec![],
+   741→            vec![],
+   742→        );
+   743→
+   744→        let errors = validate_fixture_types(&config);
+   745→        assert!(errors.is_empty());
+   746→    }
+   747→
+   748→    #[test]
+   749→    fn validate_array_type_checks_elements() {
+   750→        let config = config_with_scopes(
+   751→            vec![fixture_with_values(
+   752→                "getIds",
+   753→                vec![json!([1, 2, 3]), json!([1, "oops"])],
+   754→                TypeInfo::Array {
+   755→                    element: Box::new(TypeInfo::Int),
+   756→                },
+   757→            )],
+   758→            vec![],
+   759→            vec![],
+   760→        );
+   761→
+   762→        let errors = validate_fixture_types(&config);
+   763→        assert_eq!(errors.len(), 1);
+   764→        assert!(matches!(
+   765→            &errors[0],
+   766→            FixtureValidationError::TypeMismatch { index: 1, .. }
+   767→        ));
+   768→    }
+   769→
+   770→    #[test]
+   771→    fn validate_object_type_checks_fields() {
+   772→        let config = config_with_scopes(
+   773→            vec![fixture_with_values(
+   774→                "getUser",
+   775→                vec![json!({"id": 1, "name": "Alice"}), json!({"id": "bad"})],
+   776→                TypeInfo::Object {
+   777→                    fields: vec![("id".into(), TypeInfo::Int)],
+   778→                },
+   779→            )],
+   780→            vec![],
+   781→            vec![],
+   782→        );
+   783→
+   784→        let errors = validate_fixture_types(&config);
+   785→        assert_eq!(errors.len(), 1);
+   786→    }
+   787→
+   788→    #[test]
+   789→    fn validate_unknown_type_accepts_anything() {
+   790→        let config = config_with_scopes(
+   791→            vec![fixture_with_values(
+   792→                "mystery",
+   793→                vec![json!(42), json!("hi"), json!(null)],
+   794→                TypeInfo::Unknown,
+   795→            )],
+   796→            vec![],
+   797→            vec![],
+   798→        );
+   799→
+   800→        assert!(validate_fixture_types(&config).is_empty());
+   801→    }
+   802→
+   803→    // -- Expectation validation tests --
+   804→
+   805→    #[test]
+   806→    fn validate_expectations_exact_count_pass() {
+   807→        let fixture = MockFixture {
+   808→            symbol: "db.query".into(),
+   809→            value_space: MockValueSpace::Autonomous,
+   810→            return_values: None,
+   811→            return_type: None,
+   812→            expectations: Some(MockExpectations {
+   813→                called_with: None,
+   814→                call_count: Some(CallCountExpectation::Exact { n: 2 }),
+   815→            }),
+   816→        };
+   817→
+   818→        let calls = vec![
+   819→            MockCallRecord { args: vec![json!("a")] },
+   820→            MockCallRecord { args: vec![json!("b")] },
+   821→        ];
+   822→
+   823→        assert!(validate_expectations(&fixture, &calls).is_empty());
+   824→    }
+   825→
+   826→    #[test]
+   827→    fn validate_expectations_exact_count_fail() {
+   828→        let fixture = MockFixture {
+   829→            symbol: "db.query".into(),
+   830→            value_space: MockValueSpace::Autonomous,
+   831→            return_values: None,
+   832→            return_type: None,
+   833→            expectations: Some(MockExpectations {
+   834→                called_with: None,
+   835→                call_count: Some(CallCountExpectation::Exact { n: 3 }),
+   836→            }),
+   837→        };
+   838→
+   839→        let calls = vec![MockCallRecord { args: vec![json!("a")] }];
+   840→        let errors = validate_expectations(&fixture, &calls);
+   841→        assert_eq!(errors.len(), 1);
+   842→        assert!(matches!(&errors[0], ExpectationError::CallCountMismatch { actual: 1, .. }));
+   843→    }
+   844→
+   845→    #[test]
+   846→    fn validate_expectations_at_least() {
+   847→        let fixture = MockFixture {
+   848→            symbol: "fetch".into(),
+   849→            value_space: MockValueSpace::Autonomous,
+   850→            return_values: None,
+   851→            return_type: None,
+   852→            expectations: Some(MockExpectations {
+   853→                called_with: None,
+   854→                call_count: Some(CallCountExpectation::AtLeast { n: 2 }),
+   855→            }),
+   856→        };
+   857→
+   858→        // 1 call — fails
+   859→        let errors = validate_expectations(&fixture, &[MockCallRecord { args: vec![] }]);
+   860→        assert_eq!(errors.len(), 1);
+   861→
+   862→        // 3 calls — passes
+   863→        let calls: Vec<_> = (0..3).map(|_| MockCallRecord { args: vec![] }).collect();
+   864→        assert!(validate_expectations(&fixture, &calls).is_empty());
+   865→    }
+   866→
+   867→    #[test]
+   868→    fn validate_expectations_between() {
+   869→        let fixture = MockFixture {
+   870→            symbol: "fetch".into(),
+   871→            value_space: MockValueSpace::Autonomous,
+   872→            return_values: None,
+   873→            return_type: None,
+   874→            expectations: Some(MockExpectations {
+   875→                called_with: None,
+   876→                call_count: Some(CallCountExpectation::Between { min: 2, max: 4 }),
+   877→            }),
+   878→        };
+   879→
+   880→        // 1 call — too few
+   881→        let errors = validate_expectations(&fixture, &[MockCallRecord { args: vec![] }]);
+   882→        assert_eq!(errors.len(), 1);
+   883→
+   884→        // 3 calls — in range
+   885→        let calls: Vec<_> = (0..3).map(|_| MockCallRecord { args: vec![] }).collect();
+   886→        assert!(validate_expectations(&fixture, &calls).is_empty());
+   887→
+   888→        // 5 calls — too many
+   889→        let calls: Vec<_> = (0..5).map(|_| MockCallRecord { args: vec![] }).collect();
+   890→        assert_eq!(validate_expectations(&fixture, &calls).len(), 1);
+   891→    }
+   892→
+   893→    #[test]
+   894→    fn validate_expectations_called_with_match() {
+   895→        let fixture = MockFixture {
+   896→            symbol: "db.query".into(),
+   897→            value_space: MockValueSpace::Autonomous,
+   898→            return_values: None,
+   899→            return_type: None,
+   900→            expectations: Some(MockExpectations {
+   901→                called_with: Some(vec![
+   902→                    vec![ArgMatcher::Exact { value: json!("SELECT") }, ArgMatcher::Any],
+   903→                    vec![ArgMatcher::Exact { value: json!("INSERT") }, ArgMatcher::Any],
+   904→                ]),
+   905→                call_count: None,
+   906→            }),
+   907→        };
+   908→
+   909→        let calls = vec![
+   910→            MockCallRecord { args: vec![json!("SELECT"), json!(1)] },
+   911→            MockCallRecord { args: vec![json!("INSERT"), json!({"name": "Bob"})] },
+   912→        ];
+   913→
+   914→        assert!(validate_expectations(&fixture, &calls).is_empty());
+   915→    }
+   916→
+   917→    #[test]
+   918→    fn validate_expectations_called_with_mismatch() {
+   919→        let fixture = MockFixture {
+   920→            symbol: "db.query".into(),
+   921→            value_space: MockValueSpace::Autonomous,
+   922→            return_values: None,
+   923→            return_type: None,
+   924→            expectations: Some(MockExpectations {
+   925→                called_with: Some(vec![vec![ArgMatcher::Exact {
+   926→                    value: json!("SELECT"),
+   927→                }]]),
+   928→                call_count: None,
+   929→            }),
+   930→        };
+   931→
+   932→        let calls = vec![MockCallRecord {
+   933→            args: vec![json!("DELETE")],
+   934→        }];
+   935→
+   936→        let errors = validate_expectations(&fixture, &calls);
+   937→        assert_eq!(errors.len(), 1);
+   938→        assert!(matches!(&errors[0], ExpectationError::ArgMismatch { call_index: 0, .. }));
+   939→    }
+   940→
+   941→    #[test]
+   942→    fn validate_expectations_typeof_matcher() {
+   943→        let fixture = MockFixture {
+   944→            symbol: "api.call".into(),
+   945→            value_space: MockValueSpace::Autonomous,
+   946→            return_values: None,
+   947→            return_type: None,
+   948→            expectations: Some(MockExpectations {
+   949→                called_with: Some(vec![vec![ArgMatcher::TypeOf {
+   950→                    expected: TypeInfo::Str,
+   951→                }]]),
+   952→                call_count: None,
+   953→            }),
+   954→        };
+   955→
+   956→        // String arg — matches
+   957→        let calls = vec![MockCallRecord { args: vec![json!("hello")] }];
+   958→        assert!(validate_expectations(&fixture, &calls).is_empty());
+   959→
+   960→        // Int arg — doesn't match
+   961→        let calls = vec![MockCallRecord { args: vec![json!(42)] }];
+   962→        assert_eq!(validate_expectations(&fixture, &calls).len(), 1);
+   963→    }
+   964→
+   965→    #[test]
+   966→    fn validate_expectations_none_always_passes() {
+   967→        let fixture = MockFixture {
+   968→            symbol: "fetch".into(),
+   969→            value_space: MockValueSpace::Autonomous,
+   970→            return_values: None,
+   971→            return_type: None,
+   972→            expectations: None,
+   973→        };
+   974→
+   975→        let calls = vec![MockCallRecord { args: vec![json!(1)] }];
+   976→        assert!(validate_expectations(&fixture, &calls).is_empty());
+   977→    }
+   978→
+   979→    #[test]
+   980→    fn validate_expectations_arity_mismatch() {
+   981→        let fixture = MockFixture {
+   982→            symbol: "fn".into(),
+   983→            value_space: MockValueSpace::Autonomous,
+   984→            return_values: None,
+   985→            return_type: None,
+   986→            expectations: Some(MockExpectations {
+   987→                called_with: Some(vec![vec![ArgMatcher::Any, ArgMatcher::Any]]),
+   988→                call_count: None,
+   989→            }),
+   990→        };
+   991→
+   992→        // Call with 1 arg vs pattern expecting 2 → mismatch
+   993→        let calls = vec![MockCallRecord { args: vec![json!(1)] }];
+   994→        assert_eq!(validate_expectations(&fixture, &calls).len(), 1);
+   995→    }
+   996→
+   997→    // -- json_matches_type unit tests --
+   998→
+   999→    #[test]
+  1000→    fn json_matches_int() {
+  1001→        assert!(json_matches_type(&json!(42), &TypeInfo::Int));
+  1002→        assert!(!json_matches_type(&json!(3.14), &TypeInfo::Int));
+  1003→        assert!(!json_matches_type(&json!("hi"), &TypeInfo::Int));
+  1004→    }
+  1005→
+  1006→    #[test]
+  1007→    fn json_matches_float() {
+  1008→        assert!(json_matches_type(&json!(3.14), &TypeInfo::Float));
+  1009→        assert!(json_matches_type(&json!(42), &TypeInfo::Float)); // ints coerce to f64
+  1010→        assert!(!json_matches_type(&json!("hi"), &TypeInfo::Float));
+  1011→    }
+  1012→
+  1013→    #[test]
+  1014→    fn json_matches_nested_array() {
+  1015→        let ty = TypeInfo::Array {
+  1016→            element: Box::new(TypeInfo::Array {
+  1017→                element: Box::new(TypeInfo::Int),
+  1018→            }),
+  1019→        };
+  1020→        assert!(json_matches_type(&json!([[1, 2], [3]]), &ty));
+  1021→        assert!(!json_matches_type(&json!([[1, "x"]]), &ty));
+  1022→    }
+  1023→
+  1024→    // -- Proptest --
+  1025→
+  1026→    mod proptests {
+  1027→        use super::super::*;
+  1028→        use proptest::prelude::*;
+  1029→        use serde_json::json;
+  1030→
+  1031→        fn arb_mock_value_space() -> impl Strategy<Value = MockValueSpace> {
+  1032→            prop_oneof![
+  1033→                Just(MockValueSpace::LiveFirst),
+  1034→                prop::collection::vec(
+  1035→                    prop_oneof![
+  1036→                        Just(json!(null)),
+  1037→                        Just(json!(42)),
+  1038→                        Just(json!("test")),
+  1039→                        Just(json!(true)),
+  1040→                    ],
+  1041→                    0..5,
+  1042→                )
+  1043→                .prop_map(|values| MockValueSpace::FixedSet { values }),
+  1044→                Just(MockValueSpace::Autonomous),
+  1045→                "[a-z/_]{1,20}".prop_map(|seed_file| MockValueSpace::Seeded { seed_file }),
+  1046→            ]
+  1047→        }
+  1048→
+  1049→        fn arb_type_info_leaf() -> impl Strategy<Value = TypeInfo> {
+  1050→            prop_oneof![
+  1051→                Just(TypeInfo::Int),
+  1052→                Just(TypeInfo::Float),
+  1053→                Just(TypeInfo::Str),
+  1054→                Just(TypeInfo::Bool),
+  1055→                Just(TypeInfo::Unknown),
+  1056→            ]
+  1057→        }
+  1058→
+  1059→        fn arb_arg_matcher() -> impl Strategy<Value = ArgMatcher> {
+  1060→            prop_oneof![
+  1061→                prop_oneof![
+  1062→                    Just(json!(null)),
+  1063→                    Just(json!(42)),
+  1064→                    Just(json!("test")),
+  1065→                    Just(json!(true)),
+  1066→                ]
+  1067→                .prop_map(|value| ArgMatcher::Exact { value }),
+  1068→                Just(ArgMatcher::Any),
+  1069→                arb_type_info_leaf().prop_map(|expected| ArgMatcher::TypeOf { expected }),
+  1070→            ]
+  1071→        }
+  1072→
+  1073→        fn arb_call_count() -> impl Strategy<Value = CallCountExpectation> {
+  1074→            prop_oneof![
+  1075→                (0u32..100).prop_map(|n| CallCountExpectation::Exact { n }),
+  1076→                (0u32..100).prop_map(|n| CallCountExpectation::AtLeast { n }),
+  1077→                (0u32..100).prop_map(|n| CallCountExpectation::AtMost { n }),
+  1078→                (0u32..50, 0u32..50)
+  1079→                    .prop_map(|(a, b)| CallCountExpectation::Between {
+  1080→                        min: a.min(b),
+  1081→                        max: a.max(b),
+  1082→                    }),
+  1083→            ]
+  1084→        }
+  1085→
+  1086→        fn arb_expectations() -> impl Strategy<Value = MockExpectations> {
+  1087→            let called_with = prop::option::of(prop::collection::vec(
+  1088→                prop::collection::vec(arb_arg_matcher(), 0..4),
+  1089→                0..4,
+  1090→            ));
+  1091→            let call_count = prop::option::of(arb_call_count());
+  1092→            (called_with, call_count).prop_map(|(called_with, call_count)| MockExpectations {
+  1093→                called_with,
+  1094→                call_count,
+  1095→            })
+  1096→        }
+  1097→
+  1098→        fn arb_mock_fixture() -> impl Strategy<Value = MockFixture> {
+  1099→            let symbol = "[a-zA-Z_.]{1,20}";
+  1100→            let value_space = arb_mock_value_space();
+  1101→            let return_values = prop::option::of(prop::collection::vec(
+  1102→                prop_oneof![Just(json!(1)), Just(json!("x")), Just(json!(null))],
+  1103→                0..5,
+  1104→            ));
+  1105→            let return_type = prop::option::of(arb_type_info_leaf());
+  1106→            let expectations = prop::option::of(arb_expectations());
+  1107→
+  1108→            (symbol, value_space, return_values, return_type, expectations).prop_map(
+  1109→                |(symbol, value_space, return_values, return_type, expectations)| MockFixture {
+  1110→                    symbol,
+  1111→                    value_space,
+  1112→                    return_values,
+  1113→                    return_type,
+  1114→                    expectations,
+  1115→                },
+  1116→            )
+  1117→        }
+  1118→
+  1119→        fn arb_fixture_scope() -> impl Strategy<Value = MockFixtureScope> {
+  1120→            prop::collection::hash_map("[a-z_.]{1,10}", arb_mock_fixture(), 0..4).prop_map(
+  1121→                |fixtures| MockFixtureScope {
+  1122→                    fixtures: fixtures
+  1123→                        .into_iter()
+  1124→                        .map(|(k, mut f)| {
+  1125→                            f.symbol = k.clone();
+  1126→                            (k, f)
+  1127→                        })
+  1128→                        .collect(),
+  1129→                },
+  1130→            )
+  1131→        }
+  1132→
+  1133→        fn arb_fixture_config() -> impl Strategy<Value = MockFixtureConfig> {
+  1134→            let global = arb_fixture_scope();
+  1135→            let files = prop::collection::hash_map("[a-z/]{1,15}", arb_fixture_scope(), 0..3);
+  1136→            let functions =
+  1137→                prop::collection::hash_map("[a-z/:]{1,20}", arb_fixture_scope(), 0..3);
+  1138→
+  1139→            (global, files, functions).prop_map(|(global, files, functions)| MockFixtureConfig {
+  1140→                global,
+  1141→                files,
+  1142→                functions,
+  1143→            })
+  1144→        }
+  1145→
+  1146→        proptest! {
+  1147→            #[test]
+  1148→            fn fixture_yaml_roundtrip(fixture in arb_mock_fixture()) {
+  1149→                let yaml = serde_yaml::to_string(&fixture).unwrap();
+  1150→                let back: MockFixture = serde_yaml::from_str(&yaml).unwrap();
+  1151→                prop_assert_eq!(&back, &fixture);
+  1152→            }
+  1153→
+  1154→            #[test]
+  1155→            fn fixture_json_roundtrip(fixture in arb_mock_fixture()) {
+  1156→                let json_str = serde_json::to_string(&fixture).unwrap();
+  1157→                let back: MockFixture = serde_json::from_str(&json_str).unwrap();
+  1158→                prop_assert_eq!(&back, &fixture);
+  1159→            }
+  1160→
+  1161→            #[test]
+  1162→            fn config_yaml_roundtrip(config in arb_fixture_config()) {
+  1163→                let yaml = serde_yaml::to_string(&config).unwrap();
+  1164→                let back: MockFixtureConfig = serde_yaml::from_str(&yaml).unwrap();
+  1165→                prop_assert_eq!(&back, &config);
+  1166→            }
+  1167→
+  1168→            #[test]
+  1169→            fn arg_matcher_json_roundtrip(matcher in arb_arg_matcher()) {
+  1170→                let json_str = serde_json::to_string(&matcher).unwrap();
+  1171→                let back: ArgMatcher = serde_json::from_str(&json_str).unwrap();
+  1172→                prop_assert_eq!(&back, &matcher);
+  1173→            }
+  1174→
+  1175→            #[test]
+  1176→            fn call_count_json_roundtrip(exp in arb_call_count()) {
+  1177→                let json_str = serde_json::to_string(&exp).unwrap();
+  1178→                let back: CallCountExpectation = serde_json::from_str(&json_str).unwrap();
+  1179→                prop_assert_eq!(&back, &exp);
+  1180→            }
+  1181→
+  1182→            // Semantic: resolve_fixture always prefers innermost scope.
+  1183→            #[test]
+  1184→            fn resolve_prefers_function_over_file(
+  1185→                vs_global in arb_mock_value_space(),
+  1186→                vs_file in arb_mock_value_space(),
+  1187→                vs_func in arb_mock_value_space(),
+  1188→            ) {
+  1189→                let config = MockFixtureConfig {
+  1190→                    global: MockFixtureScope {
+  1191→                        fixtures: [(
+  1192→                            "s".into(),
+  1193→                            MockFixture {
+  1194→                                symbol: "s".into(),
+  1195→                                value_space: vs_global,
+  1196→                                return_values: None,
+  1197→                                return_type: None,
+  1198→                                expectations: None,
+  1199→                            },
+  1200→                        )]
+  1201→                        .into_iter()
+  1202→                        .collect(),
+  1203→                    },
+  1204→                    files: [(
+  1205→                        "f".into(),
+  1206→                        MockFixtureScope {
+  1207→                            fixtures: [(
+  1208→                                "s".into(),
+  1209→                                MockFixture {
+  1210→                                    symbol: "s".into(),
+  1211→                                    value_space: vs_file,
+  1212→                                    return_values: None,
+  1213→                                    return_type: None,
+  1214→                                    expectations: None,
+  1215→                                },
+  1216→                            )]
+  1217→                            .into_iter()
+  1218→                            .collect(),
+  1219→                        },
+  1220→                    )]
+  1221→                    .into_iter()
+  1222→                    .collect(),
+  1223→                    functions: [(
+  1224→                        "f:fn".into(),
+  1225→                        MockFixtureScope {
+  1226→                            fixtures: [(
+  1227→                                "s".into(),
+  1228→                                MockFixture {
+  1229→                                    symbol: "s".into(),
+  1230→                                    value_space: vs_func.clone(),
+  1231→                                    return_values: None,
+  1232→                                    return_type: None,
+  1233→                                    expectations: None,
+  1234→                                },
+  1235→                            )]
+  1236→                            .into_iter()
+  1237→                            .collect(),
+  1238→                        },
+  1239→                    )]
+  1240→                    .into_iter()
+  1241→                    .collect(),
+  1242→                };
+  1243→
+  1244→                let resolved = resolve_fixture(&config, "f", "fn", "s").unwrap();
+  1245→                prop_assert_eq!(&resolved.value_space, &vs_func);
+  1246→            }
+  1247→
+  1248→            // Semantic: validate_fixture_types catches all type mismatches.
+  1249→            #[test]
+  1250→            fn validation_catches_string_as_int(s in "[a-z]{1,10}") {
+  1251→                let config = MockFixtureConfig {
+  1252→                    global: MockFixtureScope {
+  1253→                        fixtures: [(
+  1254→                            "x".into(),
+  1255→                            MockFixture {
+  1256→                                symbol: "x".into(),
+  1257→                                value_space: MockValueSpace::FixedSet { values: vec![json!(s.clone())] },
+  1258→                                return_values: Some(vec![json!(s)]),
+  1259→                                return_type: Some(TypeInfo::Int),
+  1260→                                expectations: None,
+  1261→                            },
+  1262→                        )]
+  1263→                        .into_iter()
+  1264→                        .collect(),
+  1265→                    },
+  1266→                    ..Default::default()
+  1267→                };
+  1268→
+  1269→                let errors = validate_fixture_types(&config);
+  1270→                prop_assert!(!errors.is_empty(), "should detect string-as-int mismatch");
+  1271→            }
+  1272→
+  1273→            // Semantic: exact call count validates correctly.
+  1274→            #[test]
+  1275→            fn exact_count_passes_iff_equal(expected in 0u32..20, actual in 0u32..20) {
+  1276→                let fixture = MockFixture {
+  1277→                    symbol: "f".into(),
+  1278→                    value_space: MockValueSpace::Autonomous,
+  1279→                    return_values: None,
+  1280→                    return_type: None,
+  1281→                    expectations: Some(MockExpectations {
+  1282→                        called_with: None,
+  1283→                        call_count: Some(CallCountExpectation::Exact { n: expected }),
+  1284→                    }),
+  1285→                };
+  1286→
+  1287→                let calls: Vec<_> = (0..actual).map(|_| MockCallRecord { args: vec![] }).collect();
+  1288→                let errors = validate_expectations(&fixture, &calls);
+  1289→
+  1290→                if expected == actual {
+  1291→                    prop_assert!(errors.is_empty());
+  1292→                } else {
+  1293→                    prop_assert!(!errors.is_empty());
+  1294→                }
+  1295→            }
+  1296→        }
+  1297→    }
+  1298→}
+  1299→

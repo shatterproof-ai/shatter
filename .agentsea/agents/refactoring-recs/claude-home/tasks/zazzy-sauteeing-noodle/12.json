@@ -1,0 +1,8 @@
+{
+  "id": "12",
+  "subject": "str-28vd.6: Local hook bootstrap",
+  "description": "Add repo docs/config for local git hooks (pre-commit, pre-push) pointing to scripts/quality/ entrypoints. Beads ID: str-28vd.6",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

@@ -1,0 +1,33 @@
+{
+  "name": "lexical-herding-puppy",
+  "description": "Smoke test for sandbox isolation checks",
+  "createdAt": 1773200669157,
+  "leadAgentId": "team-lead@lexical-herding-puppy",
+  "leadSessionId": "c100ab0a-2269-4095-9a65-7b7b1246999a",
+  "members": [
+    {
+      "agentId": "team-lead@lexical-herding-puppy",
+      "name": "team-lead",
+      "agentType": "team-lead",
+      "model": "claude-opus-4-6",
+      "joinedAt": 1773200669157,
+      "tmuxPaneId": "",
+      "cwd": "/tmp/sea-smoke-1520869340",
+      "subscriptions": []
+    },
+    {
+      "agentId": "smoke-agent@lexical-herding-puppy",
+      "name": "smoke-agent",
+      "model": "claude-opus-4-6",
+      "prompt": "You are a smoke test agent. Run ALL of these checks using the Bash tool and report results:\n\nCHECK 1 - NAMESPACE: Run: cat /proc/self/cgroup 2>/dev/null; ls /proc/self/ns/user -la\nReport PASS if you see namespace indicators (any output from ns/user shows user namespace is active).\n\nCHECK 2 - TMP ISOLATION: Run: touch /tmp/sea-smoke-canary-$$ && ls /tmp/sea-smoke-canary-$$ && rm /tmp/sea-smoke-canary-$$; echo \"TMPFS_ENTRIES=$(ls /tmp/ | wc -l)\"\nReport PASS if you can write to /tmp (it is writable tmpfs) AND the number of entries is small (less than 10, meaning it is isolated from the host's real /tmp which would have many more files).\n\nCHECK 3 - HOME READ-ONLY: Run: touch $HOME/sea-smoke-canary 2>&1 || echo READONLY\nReport PASS if READONLY or \"Read-only file system\" (home directory is visible but not writable).\n\nCHECK 4 - WORKTREE: Run: git branch --show-current && pwd\nReport the branch and working directory. PASS if you are on a branch like smoke-agent/work.\n\nCHECK 5 - READ-ONLY ROOT: Run: touch /usr/local/sea-smoke-test 2>&1 || echo READONLY\nReport PASS if READONLY or \"Read-only file system\".\n\nAfter running all checks, write your results to smoke-results.txt in the current directory, one check per line:\nCHECK 1: PASS/FAIL - details\nCHECK 2: PASS/FAIL - details\nCHECK 3: PASS/FAIL - details\nCHECK 4: PASS/FAIL - details\nCHECK 5: PASS/FAIL - details",
+      "color": "blue",
+      "planModeRequired": false,
+      "joinedAt": 1773200683988,
+      "tmuxPaneId": "%125",
+      "cwd": "/tmp/sea-smoke-1520869340",
+      "subscriptions": [],
+      "backendType": "tmux",
+      "isActive": false
+    }
+  ]
+}

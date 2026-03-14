@@ -1,0 +1,59 @@
+/**
+ * Strict GraphQL utilities — re-exports urql hooks with types that reject raw strings.
+ *
+ * Import useQuery/useMutation from here instead of 'urql'. Raw string queries
+ * bypass gql.tada's compile-time schema validation, which has caused production
+ * bugs (e.g. querying fields that don't exist in the schema).
+ *
+ * These wrappers require a parsed DocumentNode (has 'kind' and 'definitions'),
+ * which gql.tada's graphql() returns but raw strings do not satisfy.
+ *
+ * Usage:
+ *   import { graphql } from 'gql.tada'
+ *   import { useQuery, useMutation } from '@/lib/graphql'
+ *
+ *   const MyQuery = graphql(`query MyQuery { ... }`)
+ *   const [result] = useQuery({ query: MyQuery })
+ */
+
+import {
+  useQuery as _useQuery,
+  useMutation as _useMutation,
+  type UseQueryResponse,
+  type UseMutationResponse,
+  type AnyVariables,
+  type OperationContext,
+  type RequestPolicy,
+} from 'urql'
+
+// A parsed GraphQL document has { kind: 'Document', definitions: [...] }.
+// gql.tada's graphql() returns this at runtime. Raw strings don't have these
+// properties, so TypeScript rejects them.
+interface ParsedDocument {
+  readonly kind: string
+  readonly definitions: readonly unknown[]
+}
+
+interface StrictQueryArgs<Variables extends AnyVariables = AnyVariables> {
+  query: ParsedDocument
+  variables?: Variables
+  requestPolicy?: RequestPolicy
+  context?: Partial<OperationContext>
+  pause?: boolean
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function useQuery<Data = any, Variables extends AnyVariables = AnyVariables>(
+  args: StrictQueryArgs<Variables>,
+): UseQueryResponse<Data, Variables> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return _useQuery(args as any)
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function useMutation<Data = any, Variables extends AnyVariables = AnyVariables>(
+  query: ParsedDocument,
+): UseMutationResponse<Data, Variables> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return _useMutation(query as any)
+}

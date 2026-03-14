@@ -1,0 +1,51 @@
+package platform
+
+import "context"
+
+// Browser is satisfied by scraper.Browser (defined in the scraper package).
+type Browser interface {
+	Navigate(ctx context.Context, url string) error
+	EvalStrings(ctx context.Context, jsExpr string) ([]string, error)
+}
+
+// Extractor scrapes a college application platform's member list.
+type Extractor interface {
+	Key() string   // enum value stored in JSONB (e.g. "Common", "CBCA")
+	Label() string // human-readable label (e.g. "Common App")
+	Extract(ctx context.Context, browser Browser) ([]string, error)
+}
+
+// Platform key constants.
+const (
+	KeyCommon        = "Common"
+	KeyCoalition     = "Coalition"
+	KeyCBCA          = "CBCA"
+	KeyQuestBridge   = "QuestBridge"
+	KeyApplyTexas    = "ApplyTexas"
+	KeyApplySUNY     = "ApplySUNY"
+	KeyUCApplication = "UCApplication"
+	KeyCalStateApply = "CalStateApply"
+	KeyUWSystem      = "UWSystem"
+	KeyApplyIdaho    = "ApplyIdaho"
+	KeyGAFutures     = "GAFutures"
+	KeyCFNC          = "CFNC"
+	KeyFloridaSUS    = "FloridaSUS"
+)
+
+// AllKeys returns all platform key constants.
+func AllKeys() []string {
+	return []string{
+		KeyCommon, KeyCoalition, KeyCBCA, KeyQuestBridge,
+		KeyApplyTexas, KeyApplySUNY, KeyUCApplication, KeyCalStateApply,
+		KeyUWSystem, KeyApplyIdaho, KeyGAFutures, KeyCFNC, KeyFloridaSUS,
+	}
+}
+
+// All returns all registered extractors.
+func All() []Extractor {
+	return []Extractor{
+		newUCApplication(),
+		newCalStateApply(),
+		newFloridaSUS(),
+	}
+}

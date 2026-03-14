@@ -1,0 +1,298 @@
+package cli
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
+
+	"github.com/agentsea/agentsea/internal/detect"
+	"github.com/agentsea/agentsea/internal/workspace"
+)
+
+func diagCmd() *cobra.Command {
+	var timeout time.Duration
+	var useSetsid bool
+
+	cmd := &cobra.Command{
+		Use:   "diag",
+		Short: "Diagnostic test of bwrap sandbox with real Claude binary",
+		Long: `Runs the real Claude binary inside a bwrap sandbox in a tmux pane,
+bypassing the lead agent entirely. Tests whether Claude starts correctly,
+can write to stdout (no SIGTTOU), and responds to a simple prompt.
+
+Two modes:
+  --setsid=false (default): Uses ExecBwrap — no setsid, no --print injection.
+    Tests whether the teammate can run in normal interactive mode inside bwrap.
+  --setsid=true: Uses ExecSetsidBwrap + --print "start".
+    Tests the current workaround (non-interactive mode).
+
+The test creates a temp workspace, runs teammate-wrapper in a tmux pane
+with a --print prompt that asks Claude to write a results file, and
+checks for output. No API key needed for the SIGTTOU/TTY check (Claude
+failing to start is itself diagnostic). API key needed for the full
+response test.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runDiag(timeout, useSetsid)
+		},
+	}
+
+	cmd.Flags().DurationVar(&timeout, "timeout", 2*time.Minute, "Maximum wait time")
+	cmd.Flags().BoolVar(&useSetsid, "setsid", false, "Use setsid (current workaround) vs direct bwrap")
+	return cmd
+}
+
+func runDiag(timeout time.Duration, useSetsid bool) error {
+	claudeBin, err := detect.FindClaudeBinary()
+	if err != nil {
+		return fmt.Errorf("finding claude binary: %w", err)
+	}
+
+	seaBin, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolving sea binary: %w", err)
+	}
+
+	if _, err := exec.LookPath("bwrap"); err != nil {
+		return fmt.Errorf("bwrap not found: install with sudo apt install bubblewrap")
+	}
+
+	if _, err := exec.LookPath("tmux"); err != nil {
+		return fmt.Errorf("tmux not found")
+	}
+
+	// Create temp workspace
+	tmpDir, err := os.MkdirTemp("", "sea-diag-*")
+	if err != nil {
+		return fmt.Errorf("creating temp dir: %w", err)
+	}
+
+	mode := "ExecBwrap (no setsid)"
+	if useSetsid {
+		mode = "ExecSetsidBwrap (setsid + --print)"
+	}
+
+	fmt.Printf("=== sea diag ===\n")
+	fmt.Printf("  mode:    %s\n", mode)
+	fmt.Printf("  claude:  %s\n", claudeBin)
+	fmt.Printf("  sea:     %s\n", seaBin)
+	fmt.Printf("  tmpdir:  %s\n", tmpDir)
+	fmt.Printf("  timeout: %s\n", timeout)
+	fmt.Println()
+
+	// Set up minimal workspace
+	if err := diagSetup(tmpDir, seaBin, useSetsid); err != nil {
+		os.RemoveAll(tmpDir)
+		return fmt.Errorf("setup: %w", err)
+	}
+
+	// Run teammate-wrapper in a tmux pane
+	sessionName := fmt.Sprintf("sea-diag-%d", os.Getpid())
+	launcherPath := filepath.Join(tmpDir, "launch.sh")
+
+	tmuxCmd := exec.Command("tmux", "new-session", "-d", "-s", sessionName,
+		"-x", "200", "-y", "50",
+		launcherPath,
+	)
+	if out, err := tmuxCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("creating tmux session: %s: %w", out, err)
+	}
+	defer exec.Command("tmux", "kill-session", "-t", sessionName).Run()
+
+	fmt.Printf("Running in tmux session %q\n\n", sessionName)
+
+	// Poll for results
+	resultsFile := filepath.Join(tmpDir, ".agentsea", "agents", "diag-agent", "repo", "diag-results.json")
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+
+	gotResults := false
+	lastCapture := ""
+
+	for !gotResults {
+		select {
+		case <-ticker.C:
+			// Check if session is alive
+			alive := exec.Command("tmux", "has-session", "-t", sessionName).Run() == nil
+
+			// Capture pane content
+			if out, err := exec.Command("tmux", "capture-pane", "-t", sessionName, "-p").Output(); err == nil {
+				capture := strings.TrimSpace(string(out))
+				if capture != lastCapture && capture != "" {
+					// Print new content
+					lines := strings.Split(capture, "\n")
+					for _, line := range lines {
+						line = strings.TrimSpace(line)
+						if line != "" {
+							fmt.Fprintf(os.Stderr, "  [pane] %s\n", line)
+						}
+					}
+					lastCapture = capture
+				}
+			}
+
+			// Check for results file
+			if data, err := os.ReadFile(resultsFile); err == nil && len(data) > 0 {
+				gotResults = true
+				fmt.Printf("\n=== Results ===\n%s\n", data)
+			}
+
+			if !alive && !gotResults {
+				fmt.Println("\nTmux session died.")
+				goto done
+			}
+
+		case <-timer.C:
+			fmt.Fprintf(os.Stderr, "\nTimeout after %s\n", timeout)
+			goto done
+		}
+	}
+
+done:
+	exec.Command("tmux", "kill-session", "-t", sessionName).Run()
+
+	// Diagnostics
+	fmt.Println()
+	if gotResults {
+		fmt.Println("RESULT: Claude responded inside bwrap sandbox.")
+	} else {
+		// Check what happened
+		fmt.Println("RESULT: No response from Claude.")
+		fmt.Println()
+
+		// Print any diagnostic info
+		if capture, err := exec.Command("tmux", "capture-pane", "-t", sessionName, "-p").Output(); err == nil {
+			stripped := stripANSI(string(capture))
+			if strings.Contains(stripped, "SIGTTOU") || strings.TrimSpace(stripped) == "" {
+				fmt.Println("DIAGNOSIS: Likely SIGTTOU — Claude hung with no output.")
+				fmt.Println("  bwrap's process group may not be the foreground group.")
+			} else if strings.Contains(stripped, "Input must be provided") {
+				fmt.Println("DIAGNOSIS: Claude entered non-interactive mode without --print.")
+				fmt.Println("  stdout is not a TTY inside bwrap (setsid or PTY issue).")
+			} else if strings.Contains(stripped, "cannot launch inside another") {
+				fmt.Println("DIAGNOSIS: CLAUDECODE env var not unset.")
+			}
+		}
+	}
+
+	// Print logs
+	for _, lf := range []struct{ name, path string }{
+		{"Wrapper Log", filepath.Join(tmpDir, "wrapper.log")},
+	} {
+		if data, err := os.ReadFile(lf.path); err == nil {
+			fmt.Printf("\n── %s ──\n%s", lf.name, data)
+		}
+	}
+
+	fmt.Printf("\nInspect: %s\n", tmpDir)
+	return nil
+}
+
+// diagSetup creates a minimal workspace and launcher script.
+func diagSetup(tmpDir, seaBin string, useSetsid bool) error {
+	// Create git repo
+	for name, content := range map[string]string{
+		"CLAUDE.md": "# Diagnostic test\n",
+		"README.md": "# Diagnostic test\n",
+	} {
+		if err := os.WriteFile(filepath.Join(tmpDir, name), []byte(content), 0644); err != nil {
+			return err
+		}
+	}
+
+	gitEnv := append(os.Environ(),
+		"GIT_AUTHOR_NAME=sea-diag",
+		"GIT_AUTHOR_EMAIL=diag@test",
+		"GIT_COMMITTER_NAME=sea-diag",
+		"GIT_COMMITTER_EMAIL=diag@test",
+	)
+	for _, args := range [][]string{
+		{"git", "init", "-q"},
+		{"git", "add", "."},
+		{"git", "commit", "-q", "-m", "diag init"},
+	} {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = tmpDir
+		cmd.Env = gitEnv
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("%v: %s: %w", args, out, err)
+		}
+	}
+
+	// Create workspace structure
+	wsDir := filepath.Join(tmpDir, workspace.DirName)
+	for _, dir := range []string{
+		wsDir,
+		filepath.Join(wsDir, "agents"),
+		filepath.Join(wsDir, "ssh"),
+	} {
+		os.MkdirAll(dir, 0755)
+	}
+
+	canonicalPath := filepath.Join(wsDir, "canonical")
+	if out, err := exec.Command("git", "clone", "--bare", tmpDir, canonicalPath).CombinedOutput(); err != nil {
+		return fmt.Errorf("git clone --bare: %s: %w", out, err)
+	}
+
+	wsCfg := workspace.Config{
+		RepoURL:       tmpDir,
+		ProjectPath:   tmpDir,
+		DefaultBranch: "main",
+	}
+	yamlData, _ := yaml.Marshal(&wsCfg)
+	os.WriteFile(filepath.Join(wsDir, "workspace.yaml"), yamlData, 0644)
+
+	// Wrapper script that selects exec mode via env var
+	wrapperBin := filepath.Join(tmpDir, "teammate-wrapper")
+	logFile := filepath.Join(tmpDir, "wrapper.log")
+	wrapperContent := fmt.Sprintf("#!/bin/sh\necho \"[wrapper] invoked at $(date)\" >> %q\necho \"[wrapper] args: $@\" >> %q\necho \"[wrapper] SEA_DIAG_SETSID=$SEA_DIAG_SETSID\" >> %q\nexec %q teammate-wrapper \"$@\"\n",
+		logFile, logFile, logFile, seaBin)
+	os.WriteFile(wrapperBin, []byte(wrapperContent), 0755)
+
+	// Build the teammate-wrapper invocation.
+	// We call it directly (not through CLAUDE_CODE_TEAMMATE_COMMAND) to test
+	// the wrapper → bwrap → claude pipeline in isolation.
+	agentName := "diag-agent"
+	teamName := "diag-team"
+
+	// The teammate-wrapper needs to find the workspace, so we cd to tmpDir.
+	// We pass the minimal flags that teammate-wrapper requires.
+	var launcherLines []string
+	launcherLines = append(launcherLines, "#!/bin/sh")
+	launcherLines = append(launcherLines, fmt.Sprintf("cd %q", tmpDir))
+
+	// Set env var to control setsid behavior in teammate-wrapper
+	if useSetsid {
+		launcherLines = append(launcherLines, "export SEA_USE_SETSID=1")
+	} else {
+		launcherLines = append(launcherLines, "export SEA_USE_SETSID=0")
+	}
+
+	// Unset env vars that block nested Claude sessions
+	launcherLines = append(launcherLines, "unset CLAUDECODE")
+	launcherLines = append(launcherLines, "unset CLAUDE_CODE_ENTRYPOINT")
+	launcherLines = append(launcherLines, "unset CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS")
+
+	// Run teammate-wrapper directly with minimal flags.
+	// --print asks Claude to write a results file (tests stdout + API).
+	// Without --print (when !useSetsid), Claude should enter interactive mode.
+	args := fmt.Sprintf("--agent-name %s --team-name %s --agent-id %s@%s",
+		agentName, teamName, agentName, teamName)
+
+	// Both modes go through the same teammate-wrapper.
+	// SEA_USE_SETSID controls whether it uses setsid or direct bwrap.
+	launcherLines = append(launcherLines,
+		fmt.Sprintf("exec %q teammate-wrapper %s", seaBin, args))
+
+	launcherPath := filepath.Join(tmpDir, "launch.sh")
+	os.WriteFile(launcherPath, []byte(strings.Join(launcherLines, "\n")+"\n"), 0755)
+
+	return nil
+}

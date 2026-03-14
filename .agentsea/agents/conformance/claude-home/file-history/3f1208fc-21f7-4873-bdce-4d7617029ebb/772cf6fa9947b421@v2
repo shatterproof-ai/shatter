@@ -1,0 +1,21 @@
+#!/bin/bash
+set -euo pipefail
+
+# $WORKSPACE is provided by Laminar (persistent per-job directory)
+
+# Ensure workspace exists
+if [ ! -d "$WORKSPACE/.git" ]; then
+    git clone "{{ item.url }}" "$WORKSPACE"
+fi
+
+cd "$WORKSPACE"
+git fetch origin
+git checkout "origin/{{ item.branch }}" --force
+git clean -fdx
+
+# Run the build command
+{% if item.timeout is defined %}
+timeout {{ item.timeout }} {{ item.command }}
+{% else %}
+{{ item.command }}
+{% endif %}

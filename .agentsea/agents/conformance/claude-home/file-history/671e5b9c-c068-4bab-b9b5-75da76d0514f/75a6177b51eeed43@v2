@@ -1,0 +1,153 @@
+import { test, expect } from '@playwright/test'
+import { searchWith, waitForResults } from './helpers'
+
+/** Switch to table view via SegmentedControl. */
+async function switchToTable(page: import('@playwright/test').Page) {
+  await page.locator('input[value="table"] + label').click()
+  await expect(page.locator('table')).toBeVisible({ timeout: 10_000 })
+}
+
+// ── Critical ────────────────────────────────────────────────────────────────
+
+test.describe('Table Column Customization', () => {
+  test('table view shows expected default columns @critical @columns', async ({
+    page,
+  }) => {
+    await searchWith(page, {})
+    await waitForResults(page)
+    await switchToTable(page)
+
+    const table = page.locator('table')
+
+    // Default columns should include Name, City, State
+    await expect(table.locator('th').filter({ hasText: 'Name' })).toBeVisible()
+    await expect(table.locator('th').filter({ hasText: 'City' })).toBeVisible()
+    await expect(
+      table.locator('th').filter({ hasText: 'State' }),
+    ).toBeVisible()
+  })
+
+  // ── Standard ──────────────────────────────────────────────────────────────
+
+  test('uncheck a column in picker removes it from table @standard @columns', async ({
+    page,
+  }) => {
+    await searchWith(page, {})
+    await waitForResults(page)
+    await switchToTable(page)
+
+    // Verify City column is visible initially
+    const table = page.locator('table')
+    await expect(table.locator('th').filter({ hasText: 'City' })).toBeVisible()
+
+    // Open the column picker
+    await page.getByRole('button', { name: 'Columns' }).click()
+
+    // Uncheck the City checkbox
+    const cityCheckbox = page.getByRole('checkbox', { name: 'City' })
+    await expect(cityCheckbox).toBeChecked()
+    await cityCheckbox.uncheck()
+
+    // City column header should disappear from the table
+    await expect(
+      table.locator('th').filter({ hasText: 'City' }),
+    ).toBeHidden()
+  })
+
+  test('re-check a column in picker restores it in table @standard @columns', async ({
+    page,
+  }) => {
+    await searchWith(page, {})
+    await waitForResults(page)
+    await switchToTable(page)
+
+    // Open the column picker
+    await page.getByRole('button', { name: 'Columns' }).click()
+
+    // Uncheck City, then re-check it
+    const cityCheckbox = page.getByRole('checkbox', { name: 'City' })
+    await cityCheckbox.uncheck()
+
+    const table = page.locator('table')
+    await expect(
+      table.locator('th').filter({ hasText: 'City' }),
+    ).toBeHidden()
+
+    await cityCheckbox.check()
+
+    // City column should reappear
+    await expect(table.locator('th').filter({ hasText: 'City' })).toBeVisible()
+  })
+
+  // ── Comprehensive ─────────────────────────────────────────────────────────
+
+  test('column visibility persists across page reload via localStorage @comprehensive @columns', async ({
+    page,
+  }) => {
+    await searchWith(page, {})
+    await waitForResults(page)
+    await switchToTable(page)
+
+    // Open the column picker and uncheck City
+    await page.getByRole('button', { name: 'Columns' }).click()
+    await page.getByRole('checkbox', { name: 'City' }).uncheck()
+
+    // Verify localStorage was updated
+    const storedColumns = await page.evaluate(() =>
+      localStorage.getItem('kapow:visible-columns'),
+    )
+    expect(storedColumns).toBeTruthy()
+    expect(storedColumns).not.toContain('city')
+
+    // Close popover by clicking elsewhere, then reload
+    await page.locator('body').click({ position: { x: 0, y: 0 } })
+    await page.goto('/search?view=table')
+    await waitForResults(page)
+    await expect(page.locator('table')).toBeVisible({ timeout: 10_000 })
+
+    // City column should still be hidden after reload
+    await expect(
+      page.locator('table').locator('th').filter({ hasText: 'City' }),
+    ).toBeHidden()
+  })
+
+  test('column order changes via picker are reflected in table header order @comprehensive @columns', async ({
+    page,
+  }) => {
+    await searchWith(page, {})
+    await waitForResults(page)
+    await switchToTable(page)
+
+    // Open column picker
+    await page.getByRole('button', { name: 'Columns' }).click()
+
+    // Find the first moveable column item and move it down
+    const firstOrderItem = page
+      .locator('[data-testid^="column-order-item-"]')
+      .first()
+    const firstLabel = await firstOrderItem.textContent()
+    expect(firstLabel).toBeTruthy()
+
+    // Get the label text for comparison
+    const moveDownButton = firstOrderItem.getByRole('button', {
+      name: /Move .* down/i,
+    })
+
+    if (await moveDownButton.isEnabled()) {
+      // Get the second item's label before the move
+      const secondOrderItem = page
+        .locator('[data-testid^="column-order-item-"]')
+        .nth(1)
+      const secondLabel = await secondOrderItem.textContent()
+
+      await moveDownButton.click()
+
+      // After moving down, the first position should now show the second item
+      const newFirstItem = page
+        .locator('[data-testid^="column-order-item-"]')
+        .first()
+      const newFirstLabel = await newFirstItem.textContent()
+      expect(newFirstLabel).toContain(secondLabel!.trim())
+    }
+  })
+})

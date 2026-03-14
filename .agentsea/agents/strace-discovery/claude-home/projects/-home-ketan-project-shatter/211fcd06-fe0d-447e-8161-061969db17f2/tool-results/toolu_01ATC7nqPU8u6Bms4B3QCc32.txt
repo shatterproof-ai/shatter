@@ -1,0 +1,1648 @@
+     1→//! Shatter configuration: `.shatter/config.yaml` parsing, hierarchical discovery, and merging.
+     2→//!
+     3→//! Users can place `.shatter/` directories at any level of their project tree.
+     4→//! Each directory can contain a `config.yaml` with per-function settings and
+     5→//! an `inputs/` subdirectory with candidate input files.
+     6→//!
+     7→//! Config resolution walks upward from each target file to the filesystem root,
+     8→//! collecting all `.shatter/config.yaml` files. The nearest config wins on
+     9→//! conflicts (closest to the target file takes precedence).
+    10→
+    11→use std::collections::HashMap;
+    12→use std::path::{Path, PathBuf};
+    13→
+    14→use globset::{Glob, GlobMatcher};
+    15→use serde::{Deserialize, Serialize};
+    16→
+    17→/// When to run the setup file relative to function executions.
+    18→#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+    19→#[serde(rename_all = "snake_case")]
+    20→pub enum SetupMode {
+    21→    /// Run setup once before all executions of a function (default).
+    22→    PerFunction,
+    23→    /// Run setup before each individual execution.
+    24→    PerExecution,
+    25→}
+    26→
+    27→/// Error type for config operations.
+    28→#[derive(Debug, thiserror::Error)]
+    29→pub enum ConfigError {
+    30→    #[error("failed to read config file '{path}': {source}")]
+    31→    Io {
+    32→        path: PathBuf,
+    33→        source: std::io::Error,
+    34→    },
+    35→
+    36→    #[error("failed to parse config YAML '{path}': {source}")]
+    37→    Parse {
+    38→        path: PathBuf,
+    39→        source: serde_yaml::Error,
+    40→    },
+    41→
+    42→    #[error("failed to read candidate inputs '{path}': {source}")]
+    43→    InputIo {
+    44→        path: PathBuf,
+    45→        source: std::io::Error,
+    46→    },
+    47→
+    48→    #[error("failed to parse candidate inputs '{path}': {source}")]
+    49→    InputParse {
+    50→        path: PathBuf,
+    51→        source: serde_json::Error,
+    52→    },
+    53→
+    54→    #[error("invalid glob pattern '{pattern}': {source}")]
+    55→    InvalidPattern {
+    56→        pattern: String,
+    57→        source: globset::Error,
+    58→    },
+    59→}
+    60→
+    61→/// Top-level `.shatter/config.yaml` structure.
+    62→#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+    63→pub struct ShatterConfig {
+    64→    /// Default settings applied to all functions unless overridden.
+    65→    #[serde(default)]
+    66→    pub defaults: DefaultsConfig,
+    67→
+    68→    /// Per-function overrides, keyed by function pattern (e.g. `"src/auth.ts:validateToken"`).
+    69→    #[serde(default)]
+    70→    pub functions: HashMap<String, FunctionConfig>,
+    71→
+    72→    /// Additional type names to treat as opaque (unexecutable).
+    73→    #[serde(default)]
+    74→    pub opaque_types: Vec<String>,
+    75→
+    76→    /// User-declared nondeterminism: confirmed and rejected field declarations.
+    77→    #[serde(default)]
+    78→    pub nondeterminism: Option<NondeterminismConfig>,
+    79→}
+    80→
+    81→
+    82→/// Configuration for the genetic algorithm explorer.
+    83→#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+    84→pub struct GeneticConfig {
+    85→    /// Whether the genetic algorithm explorer is enabled.
+    86→    #[serde(default)]
+    87→    pub enabled: bool,
+    88→
+    89→    /// Number of individuals in each generation.
+    90→    #[serde(default = "GeneticConfig::default_population_size")]
+    91→    pub population_size: u32,
+    92→
+    93→    /// Maximum number of generations to evolve.
+    94→    #[serde(default = "GeneticConfig::default_max_generations")]
+    95→    pub max_generations: u32,
+    96→
+    97→    /// Probability of mutating an individual (0.0–1.0).
+    98→    #[serde(default = "GeneticConfig::default_mutation_rate")]
+    99→    pub mutation_rate: f64,
+   100→
+   101→    /// Probability of crossover between two individuals (0.0–1.0).
+   102→    #[serde(default = "GeneticConfig::default_crossover_rate")]
+   103→    pub crossover_rate: f64,
+   104→
+   105→    /// Timeout in seconds for the entire genetic exploration.
+   106→    #[serde(default = "GeneticConfig::default_timeout_secs")]
+   107→    pub timeout_secs: u32,
+   108→}
+   109→
+   110→impl GeneticConfig {
+   111→    fn default_population_size() -> u32 { 50 }
+   112→    fn default_max_generations() -> u32 { 100 }
+   113→    fn default_mutation_rate() -> f64 { 0.3 }
+   114→    fn default_crossover_rate() -> f64 { 0.7 }
+   115→    fn default_timeout_secs() -> u32 { 300 }
+   116→}
+   117→
+   118→impl Default for GeneticConfig {
+   119→    fn default() -> Self {
+   120→        Self {
+   121→            enabled: false,
+   122→            population_size: Self::default_population_size(),
+   123→            max_generations: Self::default_max_generations(),
+   124→            mutation_rate: Self::default_mutation_rate(),
+   125→            crossover_rate: Self::default_crossover_rate(),
+   126→            timeout_secs: Self::default_timeout_secs(),
+   127→        }
+   128→    }
+   129→}
+   130→
+   131→/// Default settings for all functions.
+   132→#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+   133→pub struct DefaultsConfig {
+   134→    /// Maximum number of iterations per function.
+   135→    #[serde(default)]
+   136→    pub max_iterations: Option<u32>,
+   137→
+   138→    /// Timeout in seconds per function.
+   139→    #[serde(default)]
+   140→    pub timeout: Option<u64>,
+   141→
+   142→    /// Path to a setup file, relative to the `.shatter/` directory.
+   143→    #[serde(default)]
+   144→    pub setup: Option<String>,
+   145→
+   146→    /// When to run the setup file.
+   147→    #[serde(default)]
+   148→    pub setup_mode: Option<SetupMode>,
+   149→
+   150→    /// Type-name-to-generator-file mappings (e.g. `"User": "./generators/user.js"`).
+   151→    #[serde(default)]
+   152→    pub generators: Option<HashMap<String, String>>,
+   153→
+   154→    /// Param-name-to-generator-file mappings (e.g. `"authToken": "./generators/token.js"`).
+   155→    #[serde(default)]
+   156→    pub param_generators: Option<HashMap<String, String>>,
+   157→
+   158→    /// Per-symbol mock overrides for auto-mocking (e.g. `"db.query": { return_values: [...] }`).
+   159→    #[serde(default)]
+   160→    pub mocks: Option<HashMap<String, crate::auto_mock::MockOverride>>,
+   161→
+   162→    /// Genetic algorithm explorer settings.
+   163→    #[serde(default)]
+   164→    pub genetic: Option<GeneticConfig>,
+   165→}
+   166→
+   167→
+   168→/// Per-function configuration, matched by glob pattern against function identifiers.
+   169→#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+   170→pub struct FunctionConfig {
+   171→    /// Maximum iterations for this function.
+   172→    #[serde(default)]
+   173→    pub max_iterations: Option<u32>,
+   174→
+   175→    /// Timeout in seconds for this function.
+   176→    #[serde(default)]
+   177→    pub timeout: Option<u64>,
+   178→
+   179→    /// Path to a candidate inputs JSON file, relative to the `.shatter/` directory.
+   180→    #[serde(default)]
+   181→    pub inputs: Option<String>,
+   182→
+   183→    /// Skip this function entirely.
+   184→    #[serde(default)]
+   185→    pub skip: Option<bool>,
+   186→
+   187→    /// Path to a setup file, relative to the `.shatter/` directory.
+   188→    #[serde(default)]
+   189→    pub setup: Option<String>,
+   190→
+   191→    /// When to run the setup file.
+   192→    #[serde(default)]
+   193→    pub setup_mode: Option<SetupMode>,
+   194→
+   195→    /// Type-name-to-generator-file mappings, overriding defaults.
+   196→    #[serde(default)]
+   197→    pub generators: Option<HashMap<String, String>>,
+   198→
+   199→    /// Param-name-to-generator-file mappings, overriding defaults.
+   200→    #[serde(default)]
+   201→    pub param_generators: Option<HashMap<String, String>>,
+   202→
+   203→    /// Per-symbol mock overrides, overriding defaults.
+   204→    #[serde(default)]
+   205→    pub mocks: Option<HashMap<String, crate::auto_mock::MockOverride>>,
+   206→
+   207→    /// Genetic algorithm explorer settings, overriding defaults.
+   208→    #[serde(default)]
+   209→    pub genetic: Option<GeneticConfig>,
+   210→}
+   211→
+   212→/// A single candidate input for a function.
+   213→#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+   214→pub struct CandidateInput {
+   215→    /// The argument values to pass to the function.
+   216→    pub args: Vec<serde_json::Value>,
+   217→
+   218→    /// Optional human-readable label describing this input.
+   219→    #[serde(default)]
+   220→    pub label: Option<String>,
+   221→}
+   222→
+   223→/// A user declaration that a specific field is (or is not) nondeterministic.
+   224→#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+   225→pub struct NondeterminismDeclaration {
+   226→    /// Function name or pattern (e.g. `"createUser"`).
+   227→    pub function: String,
+   228→    /// JSONPath to the field (e.g. `"$.id"`).
+   229→    pub path: String,
+   230→    /// Human-readable explanation of why this field is/isn't nondeterministic.
+   231→    pub reason: String,
+   232→}
+   233→
+   234→/// User-declared nondeterminism configuration.
+   235→///
+   236→/// `confirmed` entries become `NondeterminismEvidence::UserDeclared` (highest precedence).
+   237→/// `rejected` entries suppress re-flagging by heuristics.
+   238→#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+   239→pub struct NondeterminismConfig {
+   240→    #[serde(default)]
+   241→    pub confirmed: Vec<NondeterminismDeclaration>,
+   242→    #[serde(default)]
+   243→    pub rejected: Vec<NondeterminismDeclaration>,
+   244→}
+   245→
+   246→/// Resolved configuration for a specific function, after merging hierarchical configs.
+   247→#[derive(Debug, Clone)]
+   248→pub struct ResolvedFunctionConfig {
+   249→    /// Maximum iterations (from config or CLI default).
+   250→    pub max_iterations: u32,
+   251→
+   252→    /// Timeout in seconds (from config or CLI default).
+   253→    pub timeout: u64,
+   254→
+   255→    /// Whether to skip this function.
+   256→    pub skip: bool,
+   257→
+   258→    /// User-provided candidate inputs, if any.
+   259→    pub candidate_inputs: Vec<CandidateInput>,
+   260→
+   261→    /// Resolved absolute path to the setup file, if any.
+   262→    pub setup: Option<PathBuf>,
+   263→
+   264→    /// When to run the setup file (defaults to `PerFunction`).
+   265→    pub setup_mode: SetupMode,
+   266→
+   267→    /// Merged type-name-to-generator-file mappings (absolute paths).
+   268→    pub generators: HashMap<String, PathBuf>,
+   269→
+   270→    /// Merged param-name-to-generator-file mappings (absolute paths).
+   271→    pub param_generators: HashMap<String, PathBuf>,
+   272→
+   273→    /// Merged per-symbol mock overrides for auto-mocking.
+   274→    pub mock_overrides: HashMap<String, crate::auto_mock::MockOverride>,
+   275→}
+   276→
+   277→/// A config file found during hierarchical discovery, paired with its directory.
+   278→#[derive(Debug, Clone)]
+   279→struct DiscoveredConfig {
+   280→    /// The `.shatter/` directory containing this config.
+   281→    shatter_dir: PathBuf,
+   282→    /// The parsed config.
+   283→    config: ShatterConfig,
+   284→}
+   285→
+   286→/// Parse a `.shatter/config.yaml` file.
+   287→pub fn parse_config(path: &Path) -> Result<ShatterConfig, ConfigError> {
+   288→    let contents = std::fs::read_to_string(path).map_err(|e| ConfigError::Io {
+   289→        path: path.to_path_buf(),
+   290→        source: e,
+   291→    })?;
+   292→    let config: ShatterConfig =
+   293→        serde_yaml::from_str(&contents).map_err(|e| ConfigError::Parse {
+   294→            path: path.to_path_buf(),
+   295→            source: e,
+   296→        })?;
+   297→    Ok(config)
+   298→}
+   299→
+   300→/// Parse a candidate inputs JSON file.
+   301→pub fn parse_candidate_inputs(path: &Path) -> Result<Vec<CandidateInput>, ConfigError> {
+   302→    let contents = std::fs::read_to_string(path).map_err(|e| ConfigError::InputIo {
+   303→        path: path.to_path_buf(),
+   304→        source: e,
+   305→    })?;
+   306→    let inputs: Vec<CandidateInput> =
+   307→        serde_json::from_str(&contents).map_err(|e| ConfigError::InputParse {
+   308→            path: path.to_path_buf(),
+   309→            source: e,
+   310→        })?;
+   311→    Ok(inputs)
+   312→}
+   313→
+   314→/// Discover `.shatter/config.yaml` files by walking upward from `start_dir`.
+   315→///
+   316→/// Returns configs ordered from nearest (highest priority) to farthest (lowest priority).
+   317→pub fn discover_configs(start_dir: &Path) -> Result<Vec<ShatterConfig>, ConfigError> {
+   318→    let discovered = discover_configs_with_paths(start_dir)?;
+   319→    Ok(discovered.into_iter().map(|d| d.config).collect())
+   320→}
+   321→
+   322→/// Internal: discover configs with their `.shatter/` directory paths preserved.
+   323→fn discover_configs_with_paths(start_dir: &Path) -> Result<Vec<DiscoveredConfig>, ConfigError> {
+   324→    let mut configs = Vec::new();
+   325→    let mut current = Some(start_dir.to_path_buf());
+   326→
+   327→    while let Some(dir) = current {
+   328→        let shatter_dir = dir.join(".shatter");
+   329→        let config_path = shatter_dir.join("config.yaml");
+   330→
+   331→        if config_path.is_file() {
+   332→            let config = parse_config(&config_path)?;
+   333→            configs.push(DiscoveredConfig {
+   334→                shatter_dir,
+   335→                config,
+   336→            });
+   337→        }
+   338→
+   339→        current = dir.parent().map(Path::to_path_buf);
+   340→    }
+   341→
+   342→    Ok(configs)
+   343→}
+   344→
+   345→/// Merge multiple configs where the first config in the slice has highest priority.
+   346→///
+   347→/// For defaults, the nearest non-None value wins.
+   348→/// For function patterns, the nearest matching pattern wins.
+   349→pub fn merge_configs(configs: &[ShatterConfig]) -> ShatterConfig {
+   350→    if configs.is_empty() {
+   351→        return ShatterConfig::default();
+   352→    }
+   353→    if configs.len() == 1 {
+   354→        return configs[0].clone();
+   355→    }
+   356→
+   357→    // Merge defaults: nearest non-None wins.
+   358→    let mut max_iterations = None;
+   359→    let mut timeout = None;
+   360→    let mut setup = None;
+   361→    let mut setup_mode = None;
+   362→
+   363→    // Merge generators maps: start from farthest, overlay nearer.
+   364→    // This lets a near config override specific keys while inheriting the rest.
+   365→    let mut generators: Option<HashMap<String, String>> = None;
+   366→    let mut param_generators: Option<HashMap<String, String>> = None;
+   367→
+   368→    for config in configs.iter().rev() {
+   369→        if let Some(ref g) = config.defaults.generators {
+   370→            generators.get_or_insert_with(HashMap::new).extend(
+   371→                g.iter().map(|(k, v)| (k.clone(), v.clone())),
+   372→            );
+   373→        }
+   374→        if let Some(ref pg) = config.defaults.param_generators {
+   375→            param_generators.get_or_insert_with(HashMap::new).extend(
+   376→                pg.iter().map(|(k, v)| (k.clone(), v.clone())),
+   377→            );
+   378→        }
+   379→    }
+   380→
+   381→    for config in configs {
+   382→        if max_iterations.is_none() {
+   383→            max_iterations = config.defaults.max_iterations;
+   384→        }
+   385→        if timeout.is_none() {
+   386→            timeout = config.defaults.timeout;
+   387→        }
+   388→        if setup.is_none() {
+   389→            setup = config.defaults.setup.clone();
+   390→        }
+   391→        if setup_mode.is_none() {
+   392→            setup_mode = config.defaults.setup_mode;
+   393→        }
+   394→    }
+   395→
+   396→    // Merge function configs: collect all, nearest first (already in order).
+   397→    // Later entries only fill in if the pattern hasn't been seen.
+   398→    let mut functions: HashMap<String, FunctionConfig> = HashMap::new();
+   399→    for config in configs {
+   400→        for (pattern, func_config) in &config.functions {
+   401→            functions.entry(pattern.clone()).or_insert_with(|| func_config.clone());
+   402→        }
+   403→    }
+   404→
+   405→    let mut opaque_types = Vec::new();
+   406→    for config in configs {
+   407→        for t in &config.opaque_types {
+   408→            if !opaque_types.contains(t) {
+   409→                opaque_types.push(t.clone());
+   410→            }
+   411→        }
+   412→    }
+   413→
+   414→    // Merge nondeterminism declarations: union all confirmed/rejected, dedup by (function, path).
+   415→    let mut confirmed = Vec::<NondeterminismDeclaration>::new();
+   416→    let mut rejected = Vec::<NondeterminismDeclaration>::new();
+   417→    let mut has_any = false;
+   418→    for config in configs {
+   419→        if let Some(ref nd) = config.nondeterminism {
+   420→            has_any = true;
+   421→            for decl in &nd.confirmed {
+   422→                if !confirmed.iter().any(|d| d.function == decl.function && d.path == decl.path) {
+   423→                    confirmed.push(decl.clone());
+   424→                }
+   425→            }
+   426→            for decl in &nd.rejected {
+   427→                if !rejected.iter().any(|d| d.function == decl.function && d.path == decl.path) {
+   428→                    rejected.push(decl.clone());
+   429→                }
+   430→            }
+   431→        }
+   432→    }
+   433→    let nondeterminism = if has_any {
+   434→        Some(NondeterminismConfig { confirmed, rejected })
+   435→    } else {
+   436→        None
+   437→    };
+   438→
+   439→    ShatterConfig {
+   440→        defaults: DefaultsConfig {
+   441→            max_iterations,
+   442→            timeout,
+   443→            setup,
+   444→            setup_mode,
+   445→            generators,
+   446→            param_generators,
+   447→            mocks: None,
+   448→            genetic: None,
+   449→        },
+   450→        functions,
+   451→        opaque_types,
+   452→        nondeterminism,
+   453→    }
+   454→}
+   455→
+   456→/// Resolve the effective configuration for a specific function identifier.
+   457→///
+   458→/// `function_id` is typically in `"file:function"` format.
+   459→/// `configs` should be ordered nearest-first (as returned by `discover_configs`).
+   460→/// `cli_max_iterations` and `cli_timeout` are the CLI-provided defaults.
+   461→pub fn resolve_function_config(
+   462→    function_id: &str,
+   463→    configs: &[ShatterConfig],
+   464→    cli_max_iterations: u32,
+   465→    cli_timeout: u64,
+   466→) -> Result<ResolvedFunctionConfig, ConfigError> {
+   467→    let merged = merge_configs(configs);
+   468→    resolve_from_merged(function_id, &merged, cli_max_iterations, cli_timeout)
+   469→}
+   470→
+   471→/// Resolve config for a function from an already-merged config.
+   472→fn resolve_from_merged(
+   473→    function_id: &str,
+   474→    config: &ShatterConfig,
+   475→    cli_max_iterations: u32,
+   476→    cli_timeout: u64,
+   477→) -> Result<ResolvedFunctionConfig, ConfigError> {
+   478→    // Find the first matching function pattern.
+   479→    let mut func_config: Option<&FunctionConfig> = None;
+   480→
+   481→    for (pattern, fc) in &config.functions {
+   482→        let matcher = compile_pattern(pattern)?;
+   483→        if matcher.is_match(function_id) {
+   484→            func_config = Some(fc);
+   485→            break;
+   486→        }
+   487→    }
+   488→
+   489→    // Resolution order: function config > defaults > CLI flags
+   490→    let max_iterations = func_config
+   491→        .and_then(|fc| fc.max_iterations)
+   492→        .or(config.defaults.max_iterations)
+   493→        .unwrap_or(cli_max_iterations);
+   494→
+   495→    let timeout = func_config
+   496→        .and_then(|fc| fc.timeout)
+   497→        .or(config.defaults.timeout)
+   498→        .unwrap_or(cli_timeout);
+   499→
+   500→    let skip = func_config
+   501→        .and_then(|fc| fc.skip)
+   502→        .unwrap_or(false);
+   503→
+   504→    let setup_mode = func_config
+   505→        .and_then(|fc| fc.setup_mode)
+   506→        .or(config.defaults.setup_mode)
+   507→        .unwrap_or(SetupMode::PerFunction);
+   508→
+   509→    // Merge mock overrides: defaults first, then function-level overrides on top.
+   510→    let mut mock_overrides: HashMap<String, crate::auto_mock::MockOverride> = config
+   511→        .defaults
+   512→        .mocks
+   513→        .clone()
+   514→        .unwrap_or_default();
+   515→    if let Some(fc) = func_config
+   516→        && let Some(ref func_mocks) = fc.mocks
+   517→    {
+   518→        for (k, v) in func_mocks {
+   519→            mock_overrides.insert(k.clone(), v.clone());
+   520→        }
+   521→    }
+   522→
+   523→    Ok(ResolvedFunctionConfig {
+   524→        max_iterations,
+   525→        timeout,
+   526→        skip,
+   527→        candidate_inputs: Vec::new(),
+   528→        // Setup and generator paths are resolved to absolute paths by
+   529→        // resolve_function_config_with_inputs, which has access to .shatter/ dirs.
+   530→        setup: None,
+   531→        setup_mode,
+   532→        generators: HashMap::new(),
+   533→        param_generators: HashMap::new(),
+   534→        mock_overrides,
+   535→    })
+   536→}
+   537→
+   538→/// Resolve config for a function and load candidate inputs if specified.
+   539→///
+   540→/// `shatter_dir` is the `.shatter/` directory used to resolve relative input paths.
+   541→/// If `explicit_inputs` is provided (from `--inputs` CLI flag), it takes precedence.
+   542→pub fn resolve_function_config_with_inputs(
+   543→    function_id: &str,
+   544→    start_dir: &Path,
+   545→    explicit_inputs: Option<&Path>,
+   546→    cli_max_iterations: u32,
+   547→    cli_timeout: u64,
+   548→) -> Result<ResolvedFunctionConfig, ConfigError> {
+   549→    let discovered = discover_configs_with_paths(start_dir)?;
+   550→    let configs: Vec<ShatterConfig> = discovered.iter().map(|d| d.config.clone()).collect();
+   551→    let merged = merge_configs(&configs);
+   552→
+   553→    let mut resolved = resolve_from_merged(function_id, &merged, cli_max_iterations, cli_timeout)?;
+   554→
+   555→    // Load candidate inputs.
+   556→    if let Some(inputs_path) = explicit_inputs {
+   557→        resolved.candidate_inputs = parse_candidate_inputs(inputs_path)?;
+   558→    } else {
+   559→        // Check function config for an inputs path.
+   560→        for dc in &discovered {
+   561→            for (pattern, fc) in &dc.config.functions {
+   562→                let matcher = compile_pattern(pattern)?;
+   563→                if matcher.is_match(function_id)
+   564→                    && let Some(inputs_rel) = &fc.inputs
+   565→                {
+   566→                    let inputs_path = dc.shatter_dir.join(inputs_rel);
+   567→                    if inputs_path.is_file() {
+   568→                        resolved.candidate_inputs =
+   569→                            parse_candidate_inputs(&inputs_path)?;
+   570→                    }
+   571→                    break;
+   572→                }
+   573→            }
+   574→        }
+   575→    }
+   576→
+   577→    // Resolve setup file path: function-level > defaults, nearest config wins.
+   578→    for dc in &discovered {
+   579→        if resolved.setup.is_some() {
+   580→            break;
+   581→        }
+   582→        for (pattern, fc) in &dc.config.functions {
+   583→            let matcher = compile_pattern(pattern)?;
+   584→            if matcher.is_match(function_id)
+   585→                && let Some(setup_rel) = &fc.setup
+   586→            {
+   587→                resolved.setup = Some(dc.shatter_dir.join(setup_rel));
+   588→                break;
+   589→            }
+   590→        }
+   591→        if resolved.setup.is_none()
+   592→            && let Some(setup_rel) = &dc.config.defaults.setup
+   593→        {
+   594→            resolved.setup = Some(dc.shatter_dir.join(setup_rel));
+   595→        }
+   596→    }
+   597→
+   598→    // Resolve generators: merge defaults then overlay function-level.
+   599→    // Walk farthest-to-nearest so nearer configs override.
+   600→    for dc in discovered.iter().rev() {
+   601→        if let Some(ref g) = dc.config.defaults.generators {
+   602→            for (type_name, gen_rel) in g {
+   603→                resolved.generators.insert(type_name.clone(), dc.shatter_dir.join(gen_rel));
+   604→            }
+   605→        }
+   606→        if let Some(ref pg) = dc.config.defaults.param_generators {
+   607→            for (param_name, gen_rel) in pg {
+   608→                resolved.param_generators.insert(param_name.clone(), dc.shatter_dir.join(gen_rel));
+   609→            }
+   610→        }
+   611→    }
+   612→    // Function-level generators overlay defaults (nearest matching function wins).
+   613→    for dc in &discovered {
+   614→        for (pattern, fc) in &dc.config.functions {
+   615→            let matcher = compile_pattern(pattern)?;
+   616→            if matcher.is_match(function_id) {
+   617→                if let Some(ref g) = fc.generators {
+   618→                    for (type_name, gen_rel) in g {
+   619→                        resolved.generators.insert(type_name.clone(), dc.shatter_dir.join(gen_rel));
+   620→                    }
+   621→                }
+   622→                if let Some(ref pg) = fc.param_generators {
+   623→                    for (param_name, gen_rel) in pg {
+   624→                        resolved.param_generators.insert(param_name.clone(), dc.shatter_dir.join(gen_rel));
+   625→                    }
+   626→                }
+   627→                break;
+   628→            }
+   629→        }
+   630→    }
+   631→
+   632→    Ok(resolved)
+   633→}
+   634→
+   635→fn compile_pattern(pattern: &str) -> Result<GlobMatcher, ConfigError> {
+   636→    let glob = Glob::new(pattern).map_err(|e| ConfigError::InvalidPattern {
+   637→        pattern: pattern.to_string(),
+   638→        source: e,
+   639→    })?;
+   640→    Ok(glob.compile_matcher())
+   641→}
+   642→
+   643→#[cfg(test)]
+   644→mod tests {
+   645→    use super::*;
+   646→    use std::fs;
+   647→    use tempfile::TempDir;
+   648→
+   649→    #[test]
+   650→    fn parse_config_basic() {
+   651→        let dir = TempDir::new().unwrap();
+   652→        let config_path = dir.path().join("config.yaml");
+   653→        fs::write(
+   654→            &config_path,
+   655→            r#"
+   656→defaults:
+   657→  max_iterations: 200
+   658→  timeout: 30
+   659→
+   660→functions:
+   661→  "src/auth.ts:validateToken":
+   662→    max_iterations: 500
+   663→    timeout: 120
+   664→    inputs: ./inputs/validateToken/candidates.json
+   665→  "src/generated/**":
+   666→    skip: true
+   667→"#,
+   668→        )
+   669→        .unwrap();
+   670→
+   671→        let config = parse_config(&config_path).unwrap();
+   672→        assert_eq!(config.defaults.max_iterations, Some(200));
+   673→        assert_eq!(config.defaults.timeout, Some(30));
+   674→        assert_eq!(config.functions.len(), 2);
+   675→
+   676→        let auth_config = &config.functions["src/auth.ts:validateToken"];
+   677→        assert_eq!(auth_config.max_iterations, Some(500));
+   678→        assert_eq!(auth_config.timeout, Some(120));
+   679→        assert_eq!(
+   680→            auth_config.inputs.as_deref(),
+   681→            Some("./inputs/validateToken/candidates.json")
+   682→        );
+   683→
+   684→        let gen_config = &config.functions["src/generated/**"];
+   685→        assert_eq!(gen_config.skip, Some(true));
+   686→    }
+   687→
+   688→    #[test]
+   689→    fn parse_config_minimal() {
+   690→        let dir = TempDir::new().unwrap();
+   691→        let config_path = dir.path().join("config.yaml");
+   692→        fs::write(&config_path, "defaults: {}\n").unwrap();
+   693→
+   694→        let config = parse_config(&config_path).unwrap();
+   695→        assert_eq!(config.defaults.max_iterations, None);
+   696→        assert_eq!(config.defaults.timeout, None);
+   697→        assert!(config.functions.is_empty());
+   698→    }
+   699→
+   700→    #[test]
+   701→    fn parse_config_missing_file_returns_error() {
+   702→        let result = parse_config(Path::new("/nonexistent/config.yaml"));
+   703→        assert!(matches!(result, Err(ConfigError::Io { .. })));
+   704→    }
+   705→
+   706→    #[test]
+   707→    fn parse_config_invalid_yaml_returns_error() {
+   708→        let dir = TempDir::new().unwrap();
+   709→        let config_path = dir.path().join("config.yaml");
+   710→        fs::write(&config_path, "not: [valid: yaml: {{").unwrap();
+   711→
+   712→        let result = parse_config(&config_path);
+   713→        assert!(matches!(result, Err(ConfigError::Parse { .. })));
+   714→    }
+   715→
+   716→    #[test]
+   717→    fn parse_candidate_inputs_basic() {
+   718→        let dir = TempDir::new().unwrap();
+   719→        let inputs_path = dir.path().join("candidates.json");
+   720→        fs::write(
+   721→            &inputs_path,
+   722→            r#"[
+   723→  { "args": [42, "hello"], "label": "typical usage" },
+   724→  { "args": [-1, ""], "label": "edge: negative with empty" }
+   725→]"#,
+   726→        )
+   727→        .unwrap();
+   728→
+   729→        let inputs = parse_candidate_inputs(&inputs_path).unwrap();
+   730→        assert_eq!(inputs.len(), 2);
+   731→        assert_eq!(inputs[0].args, vec![serde_json::json!(42), serde_json::json!("hello")]);
+   732→        assert_eq!(inputs[0].label.as_deref(), Some("typical usage"));
+   733→        assert_eq!(inputs[1].args, vec![serde_json::json!(-1), serde_json::json!("")]);
+   734→    }
+   735→
+   736→    #[test]
+   737→    fn parse_candidate_inputs_without_labels() {
+   738→        let dir = TempDir::new().unwrap();
+   739→        let inputs_path = dir.path().join("candidates.json");
+   740→        fs::write(
+   741→            &inputs_path,
+   742→            r#"[{ "args": [1, 2, 3] }]"#,
+   743→        )
+   744→        .unwrap();
+   745→
+   746→        let inputs = parse_candidate_inputs(&inputs_path).unwrap();
+   747→        assert_eq!(inputs.len(), 1);
+   748→        assert_eq!(inputs[0].label, None);
+   749→    }
+   750→
+   751→    #[test]
+   752→    fn parse_candidate_inputs_missing_file() {
+   753→        let result = parse_candidate_inputs(Path::new("/nonexistent/inputs.json"));
+   754→        assert!(matches!(result, Err(ConfigError::InputIo { .. })));
+   755→    }
+   756→
+   757→    #[test]
+   758→    fn parse_candidate_inputs_invalid_json() {
+   759→        let dir = TempDir::new().unwrap();
+   760→        let inputs_path = dir.path().join("candidates.json");
+   761→        fs::write(&inputs_path, "not json").unwrap();
+   762→
+   763→        let result = parse_candidate_inputs(&inputs_path);
+   764→        assert!(matches!(result, Err(ConfigError::InputParse { .. })));
+   765→    }
+   766→
+   767→    #[test]
+   768→    fn discover_configs_finds_nearest_first() {
+   769→        let root = TempDir::new().unwrap();
+   770→
+   771→        // Create root-level .shatter/config.yaml
+   772→        let root_shatter = root.path().join(".shatter");
+   773→        fs::create_dir_all(&root_shatter).unwrap();
+   774→        fs::write(
+   775→            root_shatter.join("config.yaml"),
+   776→            "defaults:\n  max_iterations: 50\n",
+   777→        )
+   778→        .unwrap();
+   779→
+   780→        // Create nested .shatter/config.yaml
+   781→        let sub = root.path().join("src").join("auth");
+   782→        fs::create_dir_all(&sub).unwrap();
+   783→        let sub_shatter = sub.join(".shatter");
+   784→        fs::create_dir_all(&sub_shatter).unwrap();
+   785→        fs::write(
+   786→            sub_shatter.join("config.yaml"),
+   787→            "defaults:\n  max_iterations: 500\n",
+   788→        )
+   789→        .unwrap();
+   790→
+   791→        let configs = discover_configs(&sub).unwrap();
+   792→        assert_eq!(configs.len(), 2);
+   793→        // Nearest first
+   794→        assert_eq!(configs[0].defaults.max_iterations, Some(500));
+   795→        assert_eq!(configs[1].defaults.max_iterations, Some(50));
+   796→    }
+   797→
+   798→    #[test]
+   799→    fn discover_configs_empty_when_no_shatter_dirs() {
+   800→        let dir = TempDir::new().unwrap();
+   801→        let sub = dir.path().join("some").join("path");
+   802→        fs::create_dir_all(&sub).unwrap();
+   803→
+   804→        let configs = discover_configs(&sub).unwrap();
+   805→        assert!(configs.is_empty());
+   806→    }
+   807→
+   808→    #[test]
+   809→    fn merge_configs_nearest_wins_for_defaults() {
+   810→        let near = ShatterConfig {
+   811→            defaults: DefaultsConfig {
+   812→                max_iterations: Some(500),
+   813→                timeout: None,
+   814→                ..DefaultsConfig::default()
+   815→            },
+   816→            functions: HashMap::new(),
+   817→            ..ShatterConfig::default()
+   818→        };
+   819→        let far = ShatterConfig {
+   820→            defaults: DefaultsConfig {
+   821→                max_iterations: Some(50),
+   822→                timeout: Some(120),
+   823→                ..DefaultsConfig::default()
+   824→            },
+   825→            functions: HashMap::new(),
+   826→            ..ShatterConfig::default()
+   827→        };
+   828→
+   829→        let merged = merge_configs(&[near, far]);
+   830→        assert_eq!(merged.defaults.max_iterations, Some(500)); // nearest wins
+   831→        assert_eq!(merged.defaults.timeout, Some(120)); // falls through to far
+   832→    }
+   833→
+   834→    #[test]
+   835→    fn merge_configs_nearest_wins_for_function_patterns() {
+   836→        let mut near_funcs = HashMap::new();
+   837→        near_funcs.insert(
+   838→            "src/auth.ts:*".to_string(),
+   839→            FunctionConfig {
+   840→                max_iterations: Some(1000),
+   841→                timeout: None,
+   842→                inputs: None,
+   843→                skip: None,
+   844→                setup: None,
+   845→                setup_mode: None,
+   846→                generators: None,
+   847→                param_generators: None,
+   848→                mocks: None,
+   849→                genetic: None,
+   850→            },
+   851→        );
+   852→
+   853→        let mut far_funcs = HashMap::new();
+   854→        far_funcs.insert(
+   855→            "src/auth.ts:*".to_string(),
+   856→            FunctionConfig {
+   857→                max_iterations: Some(50),
+   858→                timeout: Some(10),
+   859→                inputs: None,
+   860→                skip: None,
+   861→                setup: None,
+   862→                setup_mode: None,
+   863→                generators: None,
+   864→                param_generators: None,
+   865→                mocks: None,
+   866→                genetic: None,
+   867→            },
+   868→        );
+   869→
+   870→        let near = ShatterConfig {
+   871→            defaults: DefaultsConfig::default(),
+   872→            functions: near_funcs,
+   873→            ..ShatterConfig::default()
+   874→        };
+   875→        let far = ShatterConfig {
+   876→            defaults: DefaultsConfig::default(),
+   877→            functions: far_funcs,
+   878→            ..ShatterConfig::default()
+   879→        };
+   880→
+   881→        let merged = merge_configs(&[near, far]);
+   882→        let auth = &merged.functions["src/auth.ts:*"];
+   883→        assert_eq!(auth.max_iterations, Some(1000)); // nearest wins
+   884→    }
+   885→
+   886→    #[test]
+   887→    fn merge_configs_empty_returns_default() {
+   888→        let merged = merge_configs(&[]);
+   889→        assert_eq!(merged, ShatterConfig::default());
+   890→    }
+   891→
+   892→    #[test]
+   893→    fn resolve_function_config_uses_function_override() {
+   894→        let mut functions = HashMap::new();
+   895→        functions.insert(
+   896→            "src/auth.ts:validateToken".to_string(),
+   897→            FunctionConfig {
+   898→                max_iterations: Some(500),
+   899→                timeout: Some(120),
+   900→                inputs: None,
+   901→                skip: None,
+   902→                setup: None,
+   903→                setup_mode: None,
+   904→                generators: None,
+   905→                param_generators: None,
+   906→                mocks: None,
+   907→                genetic: None,
+   908→            },
+   909→        );
+   910→
+   911→        let config = ShatterConfig {
+   912→            defaults: DefaultsConfig {
+   913→                max_iterations: Some(100),
+   914→                timeout: Some(60),
+   915→                ..DefaultsConfig::default()
+   916→            },
+   917→            functions,
+   918→            ..ShatterConfig::default()
+   919→        };
+   920→
+   921→        let resolved =
+   922→            resolve_function_config("src/auth.ts:validateToken", &[config], 50, 30).unwrap();
+   923→        assert_eq!(resolved.max_iterations, 500);
+   924→        assert_eq!(resolved.timeout, 120);
+   925→        assert!(!resolved.skip);
+   926→    }
+   927→
+   928→    #[test]
+   929→    fn resolve_function_config_falls_through_to_defaults() {
+   930→        let config = ShatterConfig {
+   931→            defaults: DefaultsConfig {
+   932→                max_iterations: Some(200),
+   933→                timeout: None,
+   934→                ..DefaultsConfig::default()
+   935→            },
+   936→            functions: HashMap::new(),
+   937→            ..ShatterConfig::default()
+   938→        };
+   939→
+   940→        let resolved =
+   941→            resolve_function_config("some/func", &[config], 50, 30).unwrap();
+   942→        assert_eq!(resolved.max_iterations, 200); // from config defaults
+   943→        assert_eq!(resolved.timeout, 30); // from CLI (config default is None)
+   944→    }
+   945→
+   946→    #[test]
+   947→    fn resolve_function_config_uses_cli_defaults_when_no_config() {
+   948→        let resolved =
+   949→            resolve_function_config("any/func", &[], 100, 60).unwrap();
+   950→        assert_eq!(resolved.max_iterations, 100);
+   951→        assert_eq!(resolved.timeout, 60);
+   952→    }
+   953→
+   954→    #[test]
+   955→    fn resolve_function_config_glob_pattern_matching() {
+   956→        let mut functions = HashMap::new();
+   957→        functions.insert(
+   958→            "src/generated/**".to_string(),
+   959→            FunctionConfig {
+   960→                max_iterations: None,
+   961→                timeout: None,
+   962→                inputs: None,
+   963→                skip: Some(true),
+   964→                setup: None,
+   965→                setup_mode: None,
+   966→                generators: None,
+   967→                param_generators: None,
+   968→                mocks: None,
+   969→                genetic: None,
+   970→            },
+   971→        );
+   972→
+   973→        let config = ShatterConfig {
+   974→            defaults: DefaultsConfig::default(),
+   975→            functions,
+   976→            ..ShatterConfig::default()
+   977→        };
+   978→
+   979→        let resolved =
+   980→            resolve_function_config("src/generated/api.ts:handler", &[config.clone()], 100, 60)
+   981→                .unwrap();
+   982→        assert!(resolved.skip);
+   983→
+   984→        let resolved2 =
+   985→            resolve_function_config("src/auth.ts:login", &[config], 100, 60).unwrap();
+   986→        assert!(!resolved2.skip);
+   987→    }
+   988→
+   989→    #[test]
+   990→    fn resolve_function_config_with_inputs_loads_candidates() {
+   991→        let root = TempDir::new().unwrap();
+   992→
+   993→        // Create .shatter/ directory with config and inputs
+   994→        let shatter_dir = root.path().join(".shatter");
+   995→        fs::create_dir_all(&shatter_dir).unwrap();
+   996→        let inputs_dir = shatter_dir.join("inputs");
+   997→        fs::create_dir_all(&inputs_dir).unwrap();
+   998→
+   999→        fs::write(
+  1000→            shatter_dir.join("config.yaml"),
+  1001→            r#"
+  1002→defaults:
+  1003→  max_iterations: 100
+  1004→functions:
+  1005→  "myFunc":
+  1006→    inputs: ./inputs/candidates.json
+  1007→"#,
+  1008→        )
+  1009→        .unwrap();
+  1010→
+  1011→        fs::write(
+  1012→            inputs_dir.join("candidates.json"),
+  1013→            r#"[{"args": [42], "label": "the answer"}]"#,
+  1014→        )
+  1015→        .unwrap();
+  1016→
+  1017→        let resolved = resolve_function_config_with_inputs(
+  1018→            "myFunc",
+  1019→            root.path(),
+  1020→            None,
+  1021→            50,
+  1022→            30,
+  1023→        )
+  1024→        .unwrap();
+  1025→
+  1026→        assert_eq!(resolved.candidate_inputs.len(), 1);
+  1027→        assert_eq!(resolved.candidate_inputs[0].args, vec![serde_json::json!(42)]);
+  1028→        assert_eq!(
+  1029→            resolved.candidate_inputs[0].label.as_deref(),
+  1030→            Some("the answer")
+  1031→        );
+  1032→    }
+  1033→
+  1034→    #[test]
+  1035→    fn resolve_function_config_explicit_inputs_overrides_config() {
+  1036→        let root = TempDir::new().unwrap();
+  1037→
+  1038→        // Create .shatter/config.yaml pointing to one file
+  1039→        let shatter_dir = root.path().join(".shatter");
+  1040→        fs::create_dir_all(&shatter_dir).unwrap();
+  1041→        fs::write(
+  1042→            shatter_dir.join("config.yaml"),
+  1043→            "defaults: {}\nfunctions:\n  \"myFunc\":\n    inputs: ./nonexistent.json\n",
+  1044→        )
+  1045→        .unwrap();
+  1046→
+  1047→        // Create the explicit inputs file
+  1048→        let explicit_path = root.path().join("explicit.json");
+  1049→        fs::write(
+  1050→            &explicit_path,
+  1051→            r#"[{"args": [99]}]"#,
+  1052→        )
+  1053→        .unwrap();
+  1054→
+  1055→        let resolved = resolve_function_config_with_inputs(
+  1056→            "myFunc",
+  1057→            root.path(),
+  1058→            Some(&explicit_path),
+  1059→            50,
+  1060→            30,
+  1061→        )
+  1062→        .unwrap();
+  1063→
+  1064→        assert_eq!(resolved.candidate_inputs.len(), 1);
+  1065→        assert_eq!(resolved.candidate_inputs[0].args, vec![serde_json::json!(99)]);
+  1066→    }
+  1067→
+  1068→    #[test]
+  1069→    fn hierarchical_merge_integration() {
+  1070→        let root = TempDir::new().unwrap();
+  1071→
+  1072→        // Root config: conservative defaults
+  1073→        let root_shatter = root.path().join(".shatter");
+  1074→        fs::create_dir_all(&root_shatter).unwrap();
+  1075→        fs::write(
+  1076→            root_shatter.join("config.yaml"),
+  1077→            "defaults:\n  max_iterations: 50\n  timeout: 30\n",
+  1078→        )
+  1079→        .unwrap();
+  1080→
+  1081→        // Sub-project config: override max_iterations for auth functions
+  1082→        let sub = root.path().join("src").join("auth");
+  1083→        fs::create_dir_all(&sub).unwrap();
+  1084→        let sub_shatter = sub.join(".shatter");
+  1085→        fs::create_dir_all(&sub_shatter).unwrap();
+  1086→        fs::write(
+  1087→            sub_shatter.join("config.yaml"),
+  1088→            r#"
+  1089→defaults:
+  1090→  max_iterations: 500
+  1091→functions:
+  1092→  "src/auth/*:validate*":
+  1093→    timeout: 120
+  1094→"#,
+  1095→        )
+  1096→        .unwrap();
+  1097→
+  1098→        let configs = discover_configs(&sub).unwrap();
+  1099→        assert_eq!(configs.len(), 2);
+  1100→
+  1101→        let merged = merge_configs(&configs);
+  1102→        assert_eq!(merged.defaults.max_iterations, Some(500)); // nearest
+  1103→        assert_eq!(merged.defaults.timeout, Some(30)); // falls through
+  1104→
+  1105→        let resolved =
+  1106→            resolve_function_config("src/auth/login.ts:validateToken", &configs, 100, 60).unwrap();
+  1107→        assert_eq!(resolved.max_iterations, 500); // from sub defaults
+  1108→        assert_eq!(resolved.timeout, 120); // from function pattern
+  1109→    }
+  1110→
+  1111→    #[test]
+  1112→    fn setup_mode_serialization_round_trip() {
+  1113→        let per_func = SetupMode::PerFunction;
+  1114→        let json = serde_json::to_string(&per_func).unwrap();
+  1115→        assert_eq!(json, "\"per_function\"");
+  1116→        let deserialized: SetupMode = serde_json::from_str(&json).unwrap();
+  1117→        assert_eq!(deserialized, SetupMode::PerFunction);
+  1118→
+  1119→        let per_exec = SetupMode::PerExecution;
+  1120→        let json = serde_json::to_string(&per_exec).unwrap();
+  1121→        assert_eq!(json, "\"per_execution\"");
+  1122→        let deserialized: SetupMode = serde_json::from_str(&json).unwrap();
+  1123→        assert_eq!(deserialized, SetupMode::PerExecution);
+  1124→    }
+  1125→
+  1126→    #[test]
+  1127→    fn setup_mode_yaml_round_trip() {
+  1128→        let yaml = "per_function";
+  1129→        let mode: SetupMode = serde_yaml::from_str(yaml).unwrap();
+  1130→        assert_eq!(mode, SetupMode::PerFunction);
+  1131→
+  1132→        let yaml = "per_execution";
+  1133→        let mode: SetupMode = serde_yaml::from_str(yaml).unwrap();
+  1134→        assert_eq!(mode, SetupMode::PerExecution);
+  1135→    }
+  1136→
+  1137→    #[test]
+  1138→    fn parse_config_with_setup_and_generators() {
+  1139→        let dir = TempDir::new().unwrap();
+  1140→        let config_path = dir.path().join("config.yaml");
+  1141→        fs::write(
+  1142→            &config_path,
+  1143→            r#"
+  1144→defaults:
+  1145→  max_iterations: 100
+  1146→  setup: ./setup/global.ts
+  1147→  setup_mode: per_execution
+  1148→  generators:
+  1149→    User: ./generators/user.ts
+  1150→    Order: ./generators/order.ts
+  1151→  param_generators:
+  1152→    authToken: ./generators/token.ts
+  1153→
+  1154→functions:
+  1155→  "src/auth.ts:*":
+  1156→    setup: ./setup/auth.ts
+  1157→    setup_mode: per_function
+  1158→    generators:
+  1159→      User: ./generators/auth_user.ts
+  1160→    param_generators:
+  1161→      sessionId: ./generators/session.ts
+  1162→"#,
+  1163→        )
+  1164→        .unwrap();
+  1165→
+  1166→        let config = parse_config(&config_path).unwrap();
+  1167→
+  1168→        // Defaults
+  1169→        assert_eq!(config.defaults.setup.as_deref(), Some("./setup/global.ts"));
+  1170→        assert_eq!(config.defaults.setup_mode, Some(SetupMode::PerExecution));
+  1171→        let generators = config.defaults.generators.as_ref().unwrap();
+  1172→        assert_eq!(generators.len(), 2);
+  1173→        assert_eq!(generators["User"], "./generators/user.ts");
+  1174→        assert_eq!(generators["Order"], "./generators/order.ts");
+  1175→        let param_gens = config.defaults.param_generators.as_ref().unwrap();
+  1176→        assert_eq!(param_gens["authToken"], "./generators/token.ts");
+  1177→
+  1178→        // Function overrides
+  1179→        let auth = &config.functions["src/auth.ts:*"];
+  1180→        assert_eq!(auth.setup.as_deref(), Some("./setup/auth.ts"));
+  1181→        assert_eq!(auth.setup_mode, Some(SetupMode::PerFunction));
+  1182→        let auth_gens = auth.generators.as_ref().unwrap();
+  1183→        assert_eq!(auth_gens["User"], "./generators/auth_user.ts");
+  1184→        let auth_pgens = auth.param_generators.as_ref().unwrap();
+  1185→        assert_eq!(auth_pgens["sessionId"], "./generators/session.ts");
+  1186→    }
+  1187→
+  1188→    #[test]
+  1189→    fn parse_config_without_new_fields_still_works() {
+  1190→        let dir = TempDir::new().unwrap();
+  1191→        let config_path = dir.path().join("config.yaml");
+  1192→        fs::write(
+  1193→            &config_path,
+  1194→            "defaults:\n  max_iterations: 100\n",
+  1195→        )
+  1196→        .unwrap();
+  1197→
+  1198→        let config = parse_config(&config_path).unwrap();
+  1199→        assert_eq!(config.defaults.setup, None);
+  1200→        assert_eq!(config.defaults.setup_mode, None);
+  1201→        assert_eq!(config.defaults.generators, None);
+  1202→        assert_eq!(config.defaults.param_generators, None);
+  1203→    }
+  1204→
+  1205→    #[test]
+  1206→    fn merge_configs_generators_near_overrides_far() {
+  1207→        let far = ShatterConfig {
+  1208→            defaults: DefaultsConfig {
+  1209→                generators: Some(HashMap::from([
+  1210→                    ("User".to_string(), "./gen/user.ts".to_string()),
+  1211→                    ("Order".to_string(), "./gen/order.ts".to_string()),
+  1212→                ])),
+  1213→                param_generators: Some(HashMap::from([
+  1214→                    ("token".to_string(), "./gen/token.ts".to_string()),
+  1215→                ])),
+  1216→                ..DefaultsConfig::default()
+  1217→            },
+  1218→            functions: HashMap::new(),
+  1219→            ..ShatterConfig::default()
+  1220→        };
+  1221→        let near = ShatterConfig {
+  1222→            defaults: DefaultsConfig {
+  1223→                generators: Some(HashMap::from([
+  1224→                    ("User".to_string(), "./gen/custom_user.ts".to_string()),
+  1225→                ])),
+  1226→                ..DefaultsConfig::default()
+  1227→            },
+  1228→            functions: HashMap::new(),
+  1229→            ..ShatterConfig::default()
+  1230→        };
+  1231→
+  1232→        let merged = merge_configs(&[near, far]);
+  1233→        let gens = merged.defaults.generators.unwrap();
+  1234→        // Near overrides User
+  1235→        assert_eq!(gens["User"], "./gen/custom_user.ts");
+  1236→        // Far's Order is inherited
+  1237→        assert_eq!(gens["Order"], "./gen/order.ts");
+  1238→        // Param generators from far survive
+  1239→        let pgens = merged.defaults.param_generators.unwrap();
+  1240→        assert_eq!(pgens["token"], "./gen/token.ts");
+  1241→    }
+  1242→
+  1243→    #[test]
+  1244→    fn merge_configs_setup_nearest_wins() {
+  1245→        let near = ShatterConfig {
+  1246→            defaults: DefaultsConfig {
+  1247→                setup: Some("./setup/near.ts".to_string()),
+  1248→                setup_mode: Some(SetupMode::PerExecution),
+  1249→                ..DefaultsConfig::default()
+  1250→            },
+  1251→            functions: HashMap::new(),
+  1252→            ..ShatterConfig::default()
+  1253→        };
+  1254→        let far = ShatterConfig {
+  1255→            defaults: DefaultsConfig {
+  1256→                setup: Some("./setup/far.ts".to_string()),
+  1257→                setup_mode: Some(SetupMode::PerFunction),
+  1258→                ..DefaultsConfig::default()
+  1259→            },
+  1260→            functions: HashMap::new(),
+  1261→            ..ShatterConfig::default()
+  1262→        };
+  1263→
+  1264→        let merged = merge_configs(&[near, far]);
+  1265→        assert_eq!(merged.defaults.setup.as_deref(), Some("./setup/near.ts"));
+  1266→        assert_eq!(merged.defaults.setup_mode, Some(SetupMode::PerExecution));
+  1267→    }
+  1268→
+  1269→    #[test]
+  1270→    fn resolve_config_with_setup_from_function() {
+  1271→        let root = TempDir::new().unwrap();
+  1272→        let shatter_dir = root.path().join(".shatter");
+  1273→        fs::create_dir_all(&shatter_dir).unwrap();
+  1274→
+  1275→        fs::write(
+  1276→            shatter_dir.join("config.yaml"),
+  1277→            r#"
+  1278→defaults:
+  1279→  setup: ./setup/default.ts
+  1280→  setup_mode: per_function
+  1281→functions:
+  1282→  "myFunc":
+  1283→    setup: ./setup/custom.ts
+  1284→    setup_mode: per_execution
+  1285→"#,
+  1286→        )
+  1287→        .unwrap();
+  1288→
+  1289→        let resolved = resolve_function_config_with_inputs(
+  1290→            "myFunc",
+  1291→            root.path(),
+  1292→            None,
+  1293→            100,
+  1294→            60,
+  1295→        )
+  1296→        .unwrap();
+  1297→
+  1298→        // Function-level setup overrides defaults
+  1299→        assert_eq!(resolved.setup, Some(shatter_dir.join("./setup/custom.ts")));
+  1300→        assert_eq!(resolved.setup_mode, SetupMode::PerExecution);
+  1301→    }
+  1302→
+  1303→    #[test]
+  1304→    fn resolve_config_with_setup_from_defaults() {
+  1305→        let root = TempDir::new().unwrap();
+  1306→        let shatter_dir = root.path().join(".shatter");
+  1307→        fs::create_dir_all(&shatter_dir).unwrap();
+  1308→
+  1309→        fs::write(
+  1310→            shatter_dir.join("config.yaml"),
+  1311→            r#"
+  1312→defaults:
+  1313→  setup: ./setup/default.ts
+  1314→  setup_mode: per_execution
+  1315→"#,
+  1316→        )
+  1317→        .unwrap();
+  1318→
+  1319→        let resolved = resolve_function_config_with_inputs(
+  1320→            "anyFunc",
+  1321→            root.path(),
+  1322→            None,
+  1323→            100,
+  1324→            60,
+  1325→        )
+  1326→        .unwrap();
+  1327→
+  1328→        assert_eq!(resolved.setup, Some(shatter_dir.join("./setup/default.ts")));
+  1329→        assert_eq!(resolved.setup_mode, SetupMode::PerExecution);
+  1330→    }
+  1331→
+  1332→    #[test]
+  1333→    fn resolve_config_generators_function_overrides_defaults() {
+  1334→        let root = TempDir::new().unwrap();
+  1335→        let shatter_dir = root.path().join(".shatter");
+  1336→        fs::create_dir_all(&shatter_dir).unwrap();
+  1337→
+  1338→        fs::write(
+  1339→            shatter_dir.join("config.yaml"),
+  1340→            r#"
+  1341→defaults:
+  1342→  generators:
+  1343→    User: ./gen/default_user.ts
+  1344→    Order: ./gen/order.ts
+  1345→  param_generators:
+  1346→    token: ./gen/token.ts
+  1347→functions:
+  1348→  "myFunc":
+  1349→    generators:
+  1350→      User: ./gen/custom_user.ts
+  1351→    param_generators:
+  1352→      sessionId: ./gen/session.ts
+  1353→"#,
+  1354→        )
+  1355→        .unwrap();
+  1356→
+  1357→        let resolved = resolve_function_config_with_inputs(
+  1358→            "myFunc",
+  1359→            root.path(),
+  1360→            None,
+  1361→            100,
+  1362→            60,
+  1363→        )
+  1364→        .unwrap();
+  1365→
+  1366→        // Function-level User overrides default
+  1367→        assert_eq!(resolved.generators[&"User".to_string()], shatter_dir.join("./gen/custom_user.ts"));
+  1368→        // Default Order is inherited
+  1369→        assert_eq!(resolved.generators[&"Order".to_string()], shatter_dir.join("./gen/order.ts"));
+  1370→        // Both param generators present
+  1371→        assert_eq!(resolved.param_generators[&"token".to_string()], shatter_dir.join("./gen/token.ts"));
+  1372→        assert_eq!(resolved.param_generators[&"sessionId".to_string()], shatter_dir.join("./gen/session.ts"));
+  1373→    }
+  1374→
+  1375→    #[test]
+  1376→    fn resolve_config_no_setup_returns_none() {
+  1377→        let root = TempDir::new().unwrap();
+  1378→        let shatter_dir = root.path().join(".shatter");
+  1379→        fs::create_dir_all(&shatter_dir).unwrap();
+  1380→        fs::write(
+  1381→            shatter_dir.join("config.yaml"),
+  1382→            "defaults:\n  max_iterations: 100\n",
+  1383→        )
+  1384→        .unwrap();
+  1385→
+  1386→        let resolved = resolve_function_config_with_inputs(
+  1387→            "anyFunc",
+  1388→            root.path(),
+  1389→            None,
+  1390→            100,
+  1391→            60,
+  1392→        )
+  1393→        .unwrap();
+  1394→
+  1395→        assert_eq!(resolved.setup, None);
+  1396→        assert_eq!(resolved.setup_mode, SetupMode::PerFunction); // default
+  1397→        assert!(resolved.generators.is_empty());
+  1398→        assert!(resolved.param_generators.is_empty());
+  1399→    }
+  1400→
+  1401→    #[test]
+  1402→    fn resolve_function_config_setup_mode_defaults_to_per_function() {
+  1403→        let resolved =
+  1404→            resolve_function_config("any/func", &[], 100, 60).unwrap();
+  1405→        assert_eq!(resolved.setup_mode, SetupMode::PerFunction);
+  1406→    }
+  1407→
+  1408→    #[test]
+  1409→    fn parse_config_with_opaque_types() {
+  1410→        let dir = TempDir::new().unwrap();
+  1411→        let config_path = dir.path().join("config.yaml");
+  1412→        fs::write(
+  1413→            &config_path,
+  1414→            r#"
+  1415→defaults:
+  1416→  max_iterations: 100
+  1417→opaque_types:
+  1418→  - DatabasePool
+  1419→  - RedisClient
+  1420→  - KafkaProducer
+  1421→"#,
+  1422→        )
+  1423→        .unwrap();
+  1424→
+  1425→        let config = parse_config(&config_path).unwrap();
+  1426→        assert_eq!(config.opaque_types, vec![
+  1427→            "DatabasePool".to_string(),
+  1428→            "RedisClient".to_string(),
+  1429→            "KafkaProducer".to_string(),
+  1430→        ]);
+  1431→    }
+  1432→
+  1433→    #[test]
+  1434→    fn parse_config_without_opaque_types_defaults_to_empty() {
+  1435→        let dir = TempDir::new().unwrap();
+  1436→        let config_path = dir.path().join("config.yaml");
+  1437→        fs::write(&config_path, "defaults:\n  max_iterations: 100\n").unwrap();
+  1438→
+  1439→        let config = parse_config(&config_path).unwrap();
+  1440→        assert!(config.opaque_types.is_empty());
+  1441→    }
+  1442→
+  1443→    #[test]
+  1444→    fn merge_configs_combines_opaque_types_and_deduplicates() {
+  1445→        let near = ShatterConfig {
+  1446→            opaque_types: vec!["DatabasePool".to_string(), "RedisClient".to_string()],
+  1447→            ..ShatterConfig::default()
+  1448→        };
+  1449→        let far = ShatterConfig {
+  1450→            opaque_types: vec!["RedisClient".to_string(), "KafkaProducer".to_string()],
+  1451→            ..ShatterConfig::default()
+  1452→        };
+  1453→
+  1454→        let merged = merge_configs(&[near, far]);
+  1455→        assert_eq!(merged.opaque_types, vec![
+  1456→            "DatabasePool".to_string(),
+  1457→            "RedisClient".to_string(),
+  1458→            "KafkaProducer".to_string(),
+  1459→        ]);
+  1460→    }
+  1461→
+  1462→    #[test]
+  1463→    fn merge_configs_opaque_types_empty_when_no_configs_have_them() {
+  1464→        let a = ShatterConfig::default();
+  1465→        let b = ShatterConfig::default();
+  1466→        let merged = merge_configs(&[a, b]);
+  1467→        assert!(merged.opaque_types.is_empty());
+  1468→    }
+  1469→
+  1470→    #[test]
+  1471→    fn genetic_config_defaults() {
+  1472→        let config = GeneticConfig::default();
+  1473→        assert!(!config.enabled);
+  1474→        assert_eq!(config.population_size, 50);
+  1475→        assert_eq!(config.max_generations, 100);
+  1476→        assert!((config.mutation_rate - 0.3).abs() < f64::EPSILON);
+  1477→        assert!((config.crossover_rate - 0.7).abs() < f64::EPSILON);
+  1478→        assert_eq!(config.timeout_secs, 300);
+  1479→    }
+  1480→
+  1481→    #[test]
+  1482→    fn genetic_config_serde_roundtrip() {
+  1483→        let config = GeneticConfig {
+  1484→            enabled: true,
+  1485→            population_size: 200,
+  1486→            max_generations: 500,
+  1487→            mutation_rate: 0.5,
+  1488→            crossover_rate: 0.8,
+  1489→            timeout_secs: 600,
+  1490→        };
+  1491→        let yaml = serde_yaml::to_string(&config).unwrap();
+  1492→        let parsed: GeneticConfig = serde_yaml::from_str(&yaml).unwrap();
+  1493→        assert_eq!(config, parsed);
+  1494→    }
+  1495→
+  1496→    #[test]
+  1497→    fn genetic_config_partial_yaml_uses_defaults() {
+  1498→        let yaml = "enabled: true\npopulation_size: 75\n";
+  1499→        let config: GeneticConfig = serde_yaml::from_str(yaml).unwrap();
+  1500→        assert!(config.enabled);
+  1501→        assert_eq!(config.population_size, 75);
+  1502→        assert_eq!(config.max_generations, 100);
+  1503→        assert!((config.mutation_rate - 0.3).abs() < f64::EPSILON);
+  1504→        assert!((config.crossover_rate - 0.7).abs() < f64::EPSILON);
+  1505→        assert_eq!(config.timeout_secs, 300);
+  1506→    }
+  1507→
+  1508→    #[test]
+  1509→    fn shatter_config_with_genetic_section() {
+  1510→        let yaml = r#"
+  1511→defaults:
+  1512→  max_iterations: 50
+  1513→  genetic:
+  1514→    enabled: true
+  1515→    population_size: 100
+  1516→functions:
+  1517→  "src/math.ts:add":
+  1518→    genetic:
+  1519→      enabled: true
+  1520→      max_generations: 200
+  1521→"#;
+  1522→        let config: ShatterConfig = serde_yaml::from_str(yaml).unwrap();
+  1523→        let defaults_genetic = config.defaults.genetic.unwrap();
+  1524→        assert!(defaults_genetic.enabled);
+  1525→        assert_eq!(defaults_genetic.population_size, 100);
+  1526→
+  1527→        let func_config = config.functions.get("src/math.ts:add").unwrap();
+  1528→        let func_genetic = func_config.genetic.as_ref().unwrap();
+  1529→        assert!(func_genetic.enabled);
+  1530→        assert_eq!(func_genetic.max_generations, 200);
+  1531→    }
+  1532→
+  1533→    #[test]
+  1534→    fn parse_config_with_nondeterminism() {
+  1535→        let dir = TempDir::new().unwrap();
+  1536→        let config_path = dir.path().join("config.yaml");
+  1537→        fs::write(
+  1538→            &config_path,
+  1539→            r#"
+  1540→defaults: {}
+  1541→nondeterminism:
+  1542→  confirmed:
+  1543→    - function: createUser
+  1544→      path: '$.id'
+  1545→      reason: 'UUID generated per call'
+  1546→  rejected:
+  1547→    - function: processOrder
+  1548→      path: '$.orderId'
+  1549→      reason: 'deterministic sequence from input'
+  1550→"#,
+  1551→        )
+  1552→        .unwrap();
+  1553→
+  1554→        let config = parse_config(&config_path).unwrap();
+  1555→        let nd = config.nondeterminism.as_ref().expect("nondeterminism present");
+  1556→        assert_eq!(nd.confirmed.len(), 1);
+  1557→        assert_eq!(nd.confirmed[0].function, "createUser");
+  1558→        assert_eq!(nd.confirmed[0].path, "$.id");
+  1559→        assert_eq!(nd.confirmed[0].reason, "UUID generated per call");
+  1560→        assert_eq!(nd.rejected.len(), 1);
+  1561→        assert_eq!(nd.rejected[0].function, "processOrder");
+  1562→        assert_eq!(nd.rejected[0].path, "$.orderId");
+  1563→    }
+  1564→
+  1565→    #[test]
+  1566→    fn parse_config_without_nondeterminism_is_none() {
+  1567→        let dir = TempDir::new().unwrap();
+  1568→        let config_path = dir.path().join("config.yaml");
+  1569→        fs::write(&config_path, "defaults: {}\n").unwrap();
+  1570→
+  1571→        let config = parse_config(&config_path).unwrap();
+  1572→        assert!(config.nondeterminism.is_none());
+  1573→    }
+  1574→
+  1575→    #[test]
+  1576→    fn nondeterminism_config_round_trip() {
+  1577→        let config = ShatterConfig {
+  1578→            nondeterminism: Some(NondeterminismConfig {
+  1579→                confirmed: vec![NondeterminismDeclaration {
+  1580→                    function: "createUser".into(),
+  1581→                    path: "$.id".into(),
+  1582→                    reason: "UUID".into(),
+  1583→                }],
+  1584→                rejected: vec![],
+  1585→            }),
+  1586→            ..ShatterConfig::default()
+  1587→        };
+  1588→
+  1589→        let yaml = serde_yaml::to_string(&config).expect("serialize");
+  1590→        let restored: ShatterConfig = serde_yaml::from_str(&yaml).expect("deserialize");
+  1591→        assert_eq!(config, restored);
+  1592→    }
+  1593→
+  1594→    #[test]
+  1595→    fn merge_configs_unions_nondeterminism() {
+  1596→        let near = ShatterConfig {
+  1597→            nondeterminism: Some(NondeterminismConfig {
+  1598→                confirmed: vec![NondeterminismDeclaration {
+  1599→                    function: "createUser".into(),
+  1600→                    path: "$.id".into(),
+  1601→                    reason: "UUID".into(),
+  1602→                }],
+  1603→                rejected: vec![],
+  1604→            }),
+  1605→            ..ShatterConfig::default()
+  1606→        };
+  1607→        let far = ShatterConfig {
+  1608→            nondeterminism: Some(NondeterminismConfig {
+  1609→                confirmed: vec![
+  1610→                    // Duplicate (function, path) — should be deduped, near wins
+  1611→                    NondeterminismDeclaration {
+  1612→                        function: "createUser".into(),
+  1613→                        path: "$.id".into(),
+  1614→                        reason: "overridden reason".into(),
+  1615→                    },
+  1616→                    NondeterminismDeclaration {
+  1617→                        function: "getTime".into(),
+  1618→                        path: "$.now".into(),
+  1619→                        reason: "clock".into(),
+  1620→                    },
+  1621→                ],
+  1622→                rejected: vec![NondeterminismDeclaration {
+  1623→                    function: "processOrder".into(),
+  1624→                    path: "$.orderId".into(),
+  1625→                    reason: "deterministic".into(),
+  1626→                }],
+  1627→            }),
+  1628→            ..ShatterConfig::default()
+  1629→        };
+  1630→
+  1631→        let merged = merge_configs(&[near, far]);
+  1632→        let nd = merged.nondeterminism.expect("merged nondeterminism");
+  1633→        assert_eq!(nd.confirmed.len(), 2);
+  1634→        // Near wins for duplicate key
+  1635→        assert_eq!(nd.confirmed[0].reason, "UUID");
+  1636→        assert_eq!(nd.confirmed[1].function, "getTime");
+  1637→        assert_eq!(nd.rejected.len(), 1);
+  1638→    }
+  1639→
+  1640→    #[test]
+  1641→    fn merge_configs_no_nondeterminism_stays_none() {
+  1642→        let a = ShatterConfig::default();
+  1643→        let b = ShatterConfig::default();
+  1644→        let merged = merge_configs(&[a, b]);
+  1645→        assert!(merged.nondeterminism.is_none());
+  1646→    }
+  1647→}
+  1648→

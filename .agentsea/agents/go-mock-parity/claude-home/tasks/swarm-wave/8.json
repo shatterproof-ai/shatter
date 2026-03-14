@@ -1,0 +1,10 @@
+{
+  "id": "8",
+  "subject": "[str-3ky9.11] Recording mode (--record)",
+  "description": "Add --record CLI flag for intentional recording sessions. Runs against full integration stack, records external call I/O, builds ExternalDepBehavior maps, saves to .shatter/recorded-mocks/. Branch: str-3ky9.11. See `bd show str-3ky9.11`.",
+  "activeForm": "Planning --record mode implementation",
+  "owner": "record-mode",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

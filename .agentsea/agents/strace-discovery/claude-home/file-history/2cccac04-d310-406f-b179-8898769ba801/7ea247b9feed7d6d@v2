@@ -1,0 +1,44 @@
+import { useMemo } from 'react'
+import { graphql } from 'gql.tada'
+import { useQuery } from '@/lib/graphql'
+
+export interface DataSource {
+  id: string
+  name: string
+  shortName: string
+  dataset: string
+  url: string
+  description: string
+  fields: string[]
+}
+
+const DataSourcesQuery = graphql(`
+  query DataSources {
+    dataSources {
+      id
+      name
+      shortName
+      dataset
+      url
+      description
+      fields
+    }
+  }
+`)
+
+/**
+ * Fetches the data source catalog once and returns a Map keyed by source ID.
+ */
+export function useDataSources(): Map<string, DataSource> {
+  const [result] = useQuery<{ dataSources: DataSource[] }>({
+    query: DataSourcesQuery,
+  })
+
+  return useMemo(() => {
+    const map = new Map<string, DataSource>()
+    for (const ds of result.data?.dataSources ?? []) {
+      map.set(ds.id, ds)
+    }
+    return map
+  }, [result.data?.dataSources])
+}

@@ -1,0 +1,10 @@
+{
+  "id": "3",
+  "subject": "flt-it8.11: Android voice capture app",
+  "description": "Android app for voice note capture. Quick-action widget, notification shortcut, or Google Assistant routine trigger. Records audio and uploads to API.",
+  "activeForm": "Building Android voice capture app",
+  "owner": "android",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

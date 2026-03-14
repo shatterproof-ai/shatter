@@ -1,0 +1,500 @@
+import { useState } from 'react'
+<<<<<<< HEAD
+import { Modal, Text, Group, Stack, SimpleGrid, Loader, Center, Divider } from '@mantine/core'
+import { Button } from '@/components/ui/button'
+=======
+import {
+  Anchor,
+  Badge,
+  Button,
+  Divider,
+  Group,
+  Modal,
+  SimpleGrid,
+  Stack,
+  Text,
+} from '@mantine/core'
+>>>>>>> worktree/fix-detail-card
+import { useMediaQuery } from '@mantine/hooks'
+import type { SearchInstitution } from './types'
+import { SimilarInstitutions } from './SimilarInstitutions'
+
+// ── Code-to-label mappings ──────────────────────────────────────────────────
+
+const INSTITUTION_TYPES: Record<string, string> = {
+  '1': 'Public',
+  '2': 'Private nonprofit',
+  '3': 'Private for-profit',
+}
+
+const HIGHEST_DEGREES: Record<string, string> = {
+  '1': 'Certificate',
+  '2': "Associate's",
+  '3': "Bachelor's",
+  '4': "Master's",
+  '5': 'Doctorate',
+}
+
+const LOCALE_LABELS: Record<string, string> = {
+  '11': 'City: Large',
+  '12': 'City: Midsize',
+  '13': 'City: Small',
+  '21': 'Suburb: Large',
+  '22': 'Suburb: Midsize',
+  '23': 'Suburb: Small',
+  '31': 'Town: Fringe',
+  '32': 'Town: Distant',
+  '33': 'Town: Remote',
+  '41': 'Rural: Fringe',
+  '42': 'Rural: Distant',
+  '43': 'Rural: Remote',
+}
+
+const REGION_LABELS: Record<string, string> = {
+  '0': 'U.S. Service Schools',
+  '1': 'New England',
+  '2': 'Mid East',
+  '3': 'Great Lakes',
+  '4': 'Plains',
+  '5': 'Southeast',
+  '6': 'Southwest',
+  '7': 'Rocky Mountains',
+  '8': 'Far West',
+  '9': 'Outlying Areas',
+}
+
+const NCAA_DIVISIONS: Record<string, string> = {
+  '1': 'Division I',
+  '2': 'Division II',
+  '3': 'Division III',
+}
+
+const KOPPEN_CLIMATE: Record<string, string> = {
+  A: 'Tropical',
+  B: 'Dry',
+  C: 'Temperate',
+  D: 'Continental',
+  E: 'Polar',
+}
+
+const PARTISAN_LABELS: Record<string, string> = {
+  D: 'Democrat',
+  R: 'Republican',
+}
+
+// ── Formatters ──────────────────────────────────────────────────────────────
+
+function formatPercent(value: number | null | undefined): string {
+  if (value == null) return '—'
+  return `${(value * 100).toFixed(1)}%`
+}
+
+function formatCurrency(value: number | null | undefined): string {
+  if (value == null) return '—'
+  return `$${value.toLocaleString()}`
+}
+
+function formatNumber(value: number | null | undefined): string {
+  if (value == null) return '—'
+  return value.toLocaleString()
+}
+
+function mapLabel(
+  value: string | null | undefined,
+  labels: Record<string, string>,
+): string {
+  if (value == null) return '—'
+  return labels[value] ?? value
+}
+
+function formatRange(low: number | null | undefined, high: number | null | undefined): string {
+  if (low == null && high == null) return '—'
+  if (low != null && high != null) return `${low.toLocaleString()}–${high.toLocaleString()}`
+  if (low != null) return `${low.toLocaleString()}+`
+  return `≤${high!.toLocaleString()}`
+}
+
+// ── Sub-components ──────────────────────────────────────────────────────────
+
+function DetailRow({ label, value }: { label: string; value: string }) {
+  if (value === '—') return null
+  return (
+    <Group
+      justify="space-between"
+      style={{ borderBottom: '1px solid var(--mantine-color-gray-2)' }}
+      py="xs"
+    >
+      <Text size="sm" c="dimmed">
+        {label}
+      </Text>
+      <Text size="sm" fw={500}>
+        {value}
+      </Text>
+    </Group>
+  )
+}
+
+function LinkRow({ label, url }: { label: string; url: string | null | undefined }) {
+  if (!url) return null
+  const href = url.startsWith('http') ? url : `https://${url}`
+  return (
+    <Group
+      justify="space-between"
+      style={{ borderBottom: '1px solid var(--mantine-color-gray-2)' }}
+      py="xs"
+    >
+      <Text size="sm" c="dimmed">
+        {label}
+      </Text>
+      <Anchor href={href} target="_blank" rel="noopener noreferrer" size="sm" fw={500}>
+        {url}
+      </Anchor>
+    </Group>
+  )
+}
+
+function SectionHeader({ children }: { children: string }) {
+  return (
+    <Text size="xs" fw={700} tt="uppercase" c="dimmed" mb="xs">
+      {children}
+    </Text>
+  )
+}
+
+// ── Props ───────────────────────────────────────────────────────────────────
+
+interface InstitutionDetailProps {
+  institution: SearchInstitution | null
+  opened: boolean
+  onClose: () => void
+}
+
+// ── Component ───────────────────────────────────────────────────────────────
+
+export function InstitutionDetail({ institution: inst, opened, onClose }: InstitutionDetailProps) {
+  const isMobile = useMediaQuery('(max-width: 48em)')
+  const [showSimilar, setShowSimilar] = useState(false)
+
+  return (
+    <Modal
+      opened={opened}
+      onClose={onClose}
+      fullScreen={isMobile ?? false}
+      size="xl"
+      title={inst?.name ?? 'Institution Details'}
+      aria-label="Institution details"
+    >
+      {!inst && (
+        <Text c="dimmed" size="sm">
+          Institution not found.
+        </Text>
+      )}
+      {inst && (
+        <Stack gap="md">
+          {/* Header */}
+          <div>
+            <Text size="lg" fw={700} c="brand.9">
+              {inst.name}
+            </Text>
+            <Text size="sm" c="dimmed">
+              {inst.city}, {inst.state}
+            </Text>
+          </div>
+
+          <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="lg">
+            {/* Core / Academics */}
+            <Stack gap={0}>
+              <SectionHeader>Core</SectionHeader>
+              <DetailRow
+                label="Type"
+                value={mapLabel(inst.academics?.institutionType, INSTITUTION_TYPES)}
+              />
+              <DetailRow
+                label="Highest Degree"
+                value={mapLabel(inst.academics?.highestDegree, HIGHEST_DEGREES)}
+              />
+              <DetailRow
+                label="Student-Faculty Ratio"
+                value={
+                  inst.academics?.studentFacultyRatio != null
+                    ? `${inst.academics.studentFacultyRatio}:1`
+                    : '—'
+                }
+              />
+              <DetailRow
+                label="Full-Time Faculty"
+                value={formatPercent(inst.academics?.fullTimeFacultyRate)}
+              />
+              <DetailRow
+                label="Gender"
+                value={
+                  inst.academics?.gender === 'coed'
+                    ? 'Coeducational'
+                    : inst.academics?.gender === 'men-only'
+                      ? 'Men Only'
+                      : inst.academics?.gender === 'women-only'
+                        ? 'Women Only'
+                        : '—'
+                }
+              />
+            </Stack>
+
+            {/* Location */}
+            <Stack gap={0}>
+              <SectionHeader>Location</SectionHeader>
+              <DetailRow label="City" value={inst.city} />
+              <DetailRow label="State" value={inst.state} />
+              <DetailRow
+                label="Setting"
+                value={mapLabel(inst.locationDetails?.locale, LOCALE_LABELS)}
+              />
+              <DetailRow
+                label="Region"
+                value={mapLabel(inst.locationDetails?.region, REGION_LABELS)}
+              />
+              {inst.locationDetails?.metroArea && (
+                <DetailRow label="Metro Area" value={inst.locationDetails.metroArea} />
+              )}
+            </Stack>
+
+            {/* Cost */}
+            <Stack gap={0}>
+              <SectionHeader>Cost</SectionHeader>
+              <DetailRow
+                label="In-State Tuition"
+                value={formatCurrency(inst.cost?.tuitionInState)}
+              />
+              <DetailRow
+                label="Out-of-State Tuition"
+                value={formatCurrency(inst.cost?.tuitionOutOfState)}
+              />
+              <DetailRow label="Net Price" value={formatCurrency(inst.cost?.avgNetPrice)} />
+              <DetailRow label="Room & Board" value={formatCurrency(inst.cost?.roomAndBoard)} />
+            </Stack>
+
+            {/* Admissions */}
+            <Stack gap={0}>
+              <SectionHeader>Admissions</SectionHeader>
+              <DetailRow
+                label="Acceptance Rate"
+                value={formatPercent(inst.outcomes?.admissionRate)}
+              />
+              <DetailRow
+                label="SAT Math"
+                value={formatRange(inst.admissions?.satMath25, inst.admissions?.satMath75)}
+              />
+              <DetailRow
+                label="SAT Verbal"
+                value={formatRange(inst.admissions?.satVerbal25, inst.admissions?.satVerbal75)}
+              />
+              <DetailRow
+                label="ACT Composite"
+                value={formatRange(
+                  inst.admissions?.actComposite25,
+                  inst.admissions?.actComposite75,
+                )}
+              />
+              {inst.admissions?.applicationPlatforms &&
+                inst.admissions.applicationPlatforms.length > 0 && (
+                  <DetailRow
+                    label="Apply Via"
+                    value={inst.admissions.applicationPlatforms.join(', ')}
+                  />
+                )}
+            </Stack>
+
+            {/* Outcomes */}
+            <Stack gap={0}>
+              <SectionHeader>Outcomes</SectionHeader>
+              <DetailRow
+                label="Graduation Rate"
+                value={formatPercent(inst.outcomes?.graduationRate)}
+              />
+              <DetailRow
+                label="Retention Rate"
+                value={formatPercent(inst.outcomes?.retentionRate)}
+              />
+              <DetailRow
+                label="Transfer Rate"
+                value={formatPercent(inst.outcomes?.transferRate)}
+              />
+            </Stack>
+
+            {/* Rankings */}
+            {inst.rankings && (
+              <Stack gap={0}>
+                <SectionHeader>Rankings</SectionHeader>
+                <DetailRow
+                  label="US News National"
+                  value={formatNumber(inst.rankings.usNewsNational)}
+                />
+                <DetailRow
+                  label="US News Liberal Arts"
+                  value={formatNumber(inst.rankings.usNewsLiberalArts)}
+                />
+                <DetailRow label="Forbes" value={formatNumber(inst.rankings.forbes)} />
+                <DetailRow
+                  label="Wash. Monthly National"
+                  value={formatNumber(inst.rankings.washingtonMonthlyNational)}
+                />
+                <DetailRow
+                  label="Wash. Monthly Liberal Arts"
+                  value={formatNumber(inst.rankings.washingtonMonthlyLiberalArts)}
+                />
+                <DetailRow label="Niche" value={formatNumber(inst.rankings.niche)} />
+                <DetailRow
+                  label="Money Score"
+                  value={
+                    inst.rankings.moneyScore != null
+                      ? inst.rankings.moneyScore.toFixed(1)
+                      : '—'
+                  }
+                />
+                {inst.blendScore != null && (
+                  <DetailRow label="Blend Score" value={inst.blendScore.toFixed(1)} />
+                )}
+              </Stack>
+            )}
+
+            {/* Athletics */}
+            {inst.athletics && (
+              <Stack gap={0}>
+                <SectionHeader>Athletics</SectionHeader>
+                <DetailRow
+                  label="NCAA Division"
+                  value={mapLabel(inst.athletics.ncaaDivision, NCAA_DIVISIONS)}
+                />
+                {inst.athletics.ncaaConference && (
+                  <DetailRow label="Conference" value={inst.athletics.ncaaConference} />
+                )}
+              </Stack>
+            )}
+
+            {/* Demographics */}
+            {inst.demographics && (
+              <Stack gap={0}>
+                <SectionHeader>Demographics</SectionHeader>
+                <DetailRow
+                  label="Total Enrollment"
+                  value={formatNumber(inst.demographics.totalEnrollment)}
+                />
+                {inst.academics?.gradEnrollment != null && (
+                  <DetailRow
+                    label="Graduate Enrollment"
+                    value={formatNumber(inst.academics.gradEnrollment)}
+                  />
+                )}
+                <DetailRow label="Male" value={formatPercent(inst.demographics.percentMale)} />
+                <DetailRow
+                  label="Female"
+                  value={formatPercent(inst.demographics.percentFemale)}
+                />
+                {(inst.demographics.hbcu ||
+                  inst.demographics.hsi ||
+                  inst.demographics.aanapisi ||
+                  inst.demographics.pbi) && (
+                  <Group gap="xs" mt="xs">
+                    {inst.demographics.hbcu && (
+                      <Badge size="sm" variant="light" color="brand">
+                        HBCU
+                      </Badge>
+                    )}
+                    {inst.demographics.hsi && (
+                      <Badge size="sm" variant="light" color="brand">
+                        HSI
+                      </Badge>
+                    )}
+                    {inst.demographics.aanapisi && (
+                      <Badge size="sm" variant="light" color="brand">
+                        AANAPISI
+                      </Badge>
+                    )}
+                    {inst.demographics.pbi && (
+                      <Badge size="sm" variant="light" color="brand">
+                        PBI
+                      </Badge>
+                    )}
+                  </Group>
+                )}
+              </Stack>
+            )}
+
+            {/* Cultural Environment */}
+            {inst.culture && (
+              <Stack gap={0}>
+                <SectionHeader>Cultural Environment</SectionHeader>
+                <DetailRow
+                  label="Partisan Lean"
+                  value={
+                    inst.culture.partisanDirection && inst.culture.partisanScore != null
+                      ? `${mapLabel(inst.culture.partisanDirection, PARTISAN_LABELS)} +${inst.culture.partisanScore.toFixed(1)}`
+                      : '—'
+                  }
+                />
+                {inst.culture.religiousAffiliation && (
+                  <DetailRow
+                    label="Religious Affiliation"
+                    value={inst.culture.religiousAffiliation}
+                  />
+                )}
+              </Stack>
+            )}
+
+            {/* Weather */}
+            {inst.climate && (
+              <Stack gap={0}>
+                <SectionHeader>Weather</SectionHeader>
+                <DetailRow
+                  label="Climate"
+                  value={mapLabel(inst.climate.koppenClimate, KOPPEN_CLIMATE)}
+                />
+                <DetailRow
+                  label="Temperature"
+                  value={inst.climate.koppenTemperature ?? '—'}
+                />
+                <DetailRow
+                  label="Precipitation"
+                  value={inst.climate.koppenPrecipitation ?? '—'}
+                />
+              </Stack>
+            )}
+
+            {/* Metadata */}
+            {inst.meta && (
+              <Stack gap={0}>
+                <SectionHeader>Metadata</SectionHeader>
+                <LinkRow label="Website" url={inst.meta.schoolUrl} />
+                {inst.meta.accreditor && (
+                  <DetailRow label="Accreditor" value={inst.meta.accreditor} />
+                )}
+              </Stack>
+            )}
+          </SimpleGrid>
+
+          <Divider />
+
+          {!showSimilar ? (
+<<<<<<< HEAD
+            <Button
+              variant="light"
+              size="sm"
+              onClick={() => setShowSimilar(true)}
+            >
+=======
+            <Button variant="light" color="brand" size="sm" onClick={() => setShowSimilar(true)}>
+>>>>>>> worktree/fix-detail-card
+              Find Similar Schools
+            </Button>
+          ) : (
+            <Stack gap="sm">
+              <Text size="xs" fw={700} tt="uppercase" c="dimmed">
+                Similar Schools
+              </Text>
+              <SimilarInstitutions unitID={inst.unitID} />
+            </Stack>
+          )}
+        </Stack>
+      )}
+    </Modal>
+  )
+}

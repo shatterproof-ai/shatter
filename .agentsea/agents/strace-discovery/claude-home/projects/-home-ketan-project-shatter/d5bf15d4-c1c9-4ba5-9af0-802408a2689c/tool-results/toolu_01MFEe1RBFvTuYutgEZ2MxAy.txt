@@ -1,0 +1,560 @@
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/interesting_pool.rs-399-pub fn harvest_from_exploration(
+shatter-core/src/interesting_pool.rs-400-    pool: &mut InterestingPool,
+shatter-core/src/interesting_pool.rs:401:    raw_results: &[(Vec<serde_json::Value>, ExecuteResult)],
+shatter-core/src/interesting_pool.rs-402-    params: &[ParamInfo],
+shatter-core/src/interesting_pool.rs-403-    function_name: &str,
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/interesting_pool.rs-404-) -> usize {
+shatter-core/src/interesting_pool.rs:405:    if raw_results.is_empty() || params.is_empty() {
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/interesting_pool.rs-406-        return 0;
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/interesting_pool.rs-407-    }
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/interesting_pool.rs-409-    // Build path frequency map for rarity classification.
+shatter-core/src/interesting_pool.rs-410-    let mut path_counts: HashMap<u64, u32> = HashMap::new();
+shatter-core/src/interesting_pool.rs:411:    let hashes: Vec<u64> = raw_results
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/interesting_pool.rs-412-        .iter()
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/interesting_pool.rs-413-        .map(|(_, result)| {
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/interesting_pool.rs-432-    let mut inserted = 0;
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/interesting_pool.rs-433-
+shatter-core/src/interesting_pool.rs:434:    for (idx, (inputs, exec_result)) in raw_results.iter().enumerate() {
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/interesting_pool.rs-435-        let severity = classify_severity(exec_result.thrown_error.as_ref(), false);
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/interesting_pool.rs-436-
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/spec.rs-303-) {
+shatter-core/src/spec.rs-304-    use crate::invariants::{
+shatter-core/src/spec.rs:305:        detect_classified_invariants, records_from_raw_results, InvariantTarget,
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/spec.rs-306-    };
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/spec.rs-307-
+shatter-core/src/spec.rs:308:    let all_records = records_from_raw_results(&result.function_name, &result.raw_results);
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/spec.rs-309-
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/spec.rs-310-    // Function-wide invariants (across all executions)
+--
+shatter-core/src/spec.rs-864-            total_lines: 10,
+shatter-core/src/spec.rs-865-            new_path_executions: vec![],
+shatter-core/src/spec.rs:866:            raw_results: vec![],
+shatter-core/src/spec.rs-867-            discoveries: vec![],
+shatter-core/src/spec.rs-868-            nondeterministic_fields: vec![], float_probe_results: vec![],
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/behavior.rs-281-                // extract the dependency trace.
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/behavior.rs-282-                let dependency_trace = result
+shatter-core/src/behavior.rs:283:                    .raw_results
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/behavior.rs-284-                    .iter()
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/behavior.rs-285-                    .find(|(inputs, _)| *inputs == exec.inputs)
+--
+shatter-core/src/behavior.rs-712-                    is_new_path: true, error_intent: None },
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/behavior.rs-713-            ],
+shatter-core/src/behavior.rs:714:            raw_results: vec![],
+shatter-core/src/behavior.rs-715-            discoveries: vec![],
+shatter-core/src/behavior.rs-716-            nondeterministic_fields: vec![], float_probe_results: vec![],
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/behavior.rs-1294-
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/behavior.rs-1295-    #[test]
+shatter-core/src/behavior.rs:1296:    fn from_exploration_result_populates_trace_from_raw_results() {
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/behavior.rs-1297-        let raw_result = ExecuteResult {
+shatter-core/src/behavior.rs-1298-            return_value: Some(json!("positive")),
+--
+shatter-core/src/behavior.rs-1329-                lines_executed: vec![1, 2],
+shatter-core/src/behavior.rs-1330-                is_new_path: true, error_intent: None }],
+shatter-core/src/behavior.rs:1331:            raw_results: vec![(vec![json!(5)], raw_result)],
+shatter-core/src/behavior.rs-1332-            discoveries: vec![],
+shatter-core/src/behavior.rs-1333-            nondeterministic_fields: vec![], float_probe_results: vec![],
+--
+shatter-core/src/behavior.rs-1381-            total_lines: 10,
+shatter-core/src/behavior.rs-1382-            new_path_executions: vec![],
+shatter-core/src/behavior.rs:1383:            raw_results: vec![],
+shatter-core/src/behavior.rs-1384-            discoveries: vec![],
+shatter-core/src/behavior.rs-1385-            nondeterministic_fields: vec![NondeterministicField {
+--
+shatter-core/src/pipeline.rs-32-pub fn analyze(observe: &ObservationOutput, analysis: &FunctionAnalysis) -> AnalyzeOutput {
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/pipeline.rs-33-    // Build equivalence classes from raw results.
+shatter-core/src/pipeline.rs:34:    let eq_classes = equivalence::group_into_classes(&observe.raw_results);
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/pipeline.rs-35-
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/pipeline.rs-36-    // Build execution records for BehaviorMap construction.
+shatter-core/src/pipeline.rs-37-    let records: Vec<ExecutionRecord> = observe
+shatter-core/src/pipeline.rs:38:        .raw_results
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/pipeline.rs-39-        .iter()
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/pipeline.rs-40-        .map(|(inputs, result)| execution_record_from_result(&observe.function_name, inputs, result))
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/pipeline.rs-46-    // Deduplicate constraints by branch_id so each branch contributes exactly one classification.
+shatter-core/src/pipeline.rs-47-    let unique_constraints: HashMap<u32, SymConstraint> = observe
+shatter-core/src/pipeline.rs:48:        .raw_results
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/pipeline.rs-49-        .iter()
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/pipeline.rs-50-        .flat_map(|(_, result)| {
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/pipeline.rs-121-            .collect();
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/pipeline.rs-122-
+shatter-core/src/pipeline.rs:123:        // Compute lines covered from raw_results.
+shatter-core/src/pipeline.rs-124-        let mut all_lines: std::collections::HashSet<u32> = std::collections::HashSet::new();
+shatter-core/src/pipeline.rs:125:        for (_, result) in &r.raw_results {
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/pipeline.rs-126-            for &line in &result.lines_executed {
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/pipeline.rs-127-                all_lines.insert(line);
+--
+shatter-core/src/pipeline.rs-136-            total_lines: r.total_lines,
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/pipeline.rs-137-            new_path_executions,
+shatter-core/src/pipeline.rs:138:            raw_results: r.raw_results,
+shatter-core/src/pipeline.rs-139-            discoveries: r.discoveries,
+shatter-core/src/pipeline.rs-140-            nondeterministic_fields: r.nondeterministic_fields,
+--
+shatter-core/src/pipeline.rs-220-            total_lines: 5,
+shatter-core/src/pipeline.rs-221-            new_path_executions: vec![],
+shatter-core/src/pipeline.rs:222:            raw_results: vec![(vec![json!(5)], exec_result)],
+shatter-core/src/pipeline.rs-223-            discoveries: vec![(0, DiscoveryMethod::Random)],
+shatter-core/src/pipeline.rs-224-            nondeterministic_fields: vec![], float_probe_results: vec![],
+--
+shatter-core/src/pipeline.rs-245-            total_lines: 5,
+shatter-core/src/pipeline.rs-246-            new_path_executions: vec![],
+shatter-core/src/pipeline.rs:247:            raw_results: vec![],
+shatter-core/src/pipeline.rs-248-            discoveries: vec![],
+shatter-core/src/pipeline.rs-249-            nondeterministic_fields: vec![], float_probe_results: vec![],
+--
+shatter-core/src/pipeline.rs-307-            total_lines: 5,
+shatter-core/src/pipeline.rs-308-            new_path_executions: vec![],
+shatter-core/src/pipeline.rs:309:            raw_results: vec![
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/pipeline.rs-310-                (vec![json!(1)], make_result(json!("a"))),
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/pipeline.rs-311-                (vec![json!(2)], make_result(json!("b"))),
+--
+shatter-core/src/pipeline.rs-338-            total_lines: 5,
+shatter-core/src/pipeline.rs-339-            new_path_executions: vec![],
+shatter-core/src/pipeline.rs:340:            raw_results: vec![],
+shatter-core/src/pipeline.rs-341-            discoveries: vec![],
+shatter-core/src/pipeline.rs-342-            nondeterministic_fields: vec![NondeterministicField {
+--
+shatter-core/src/pipeline.rs-371-            drill_generated: 0,
+shatter-core/src/pipeline.rs-372-            termination_reason: crate::orchestrator::TerminationReason::WorklistExhausted,
+shatter-core/src/pipeline.rs:373:            raw_results: vec![],
+shatter-core/src/pipeline.rs-374-            discoveries: vec![(0, DiscoveryMethod::Random)],
+shatter-core/src/pipeline.rs-375-            triage_skipped: 0,
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/boundary_search.rs-23-/// Find inputs that took opposite sides of a specific branch.
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/boundary_search.rs-24-///
+shatter-core/src/boundary_search.rs:25:/// Scans `raw_results` for the most recent true-witness and false-witness
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/boundary_search.rs-26-/// for `branch_id`. Returns `None` if both sides haven't been observed.
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/boundary_search.rs-27-pub fn find_witness_pair(
+shatter-core/src/boundary_search.rs:28:    raw_results: &[(Vec<Value>, ExecuteResult)],
+shatter-core/src/boundary_search.rs-29-    branch_id: u32,
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/boundary_search.rs-30-) -> Option<(Vec<Value>, Vec<Value>)> {
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/boundary_search.rs-33-
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/boundary_search.rs-34-    // Iterate in reverse to prefer recent witnesses (more likely near the boundary).
+shatter-core/src/boundary_search.rs:35:    for (inputs, result) in raw_results.iter().rev() {
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/boundary_search.rs-36-        for decision in &result.branch_path {
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/boundary_search.rs-37-            if decision.branch_id == branch_id {
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/invariants.rs-744-
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/invariants.rs-745-/// Convert raw exploration results (inputs, ExecuteResult pairs) into ExecutionRecords.
+shatter-core/src/invariants.rs:746:pub fn records_from_raw_results(
+shatter-core/src/invariants.rs-747-    function_id: &str,
+shatter-core/src/invariants.rs:748:    raw_results: &[(Vec<serde_json::Value>, crate::protocol::ExecuteResult)],
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/invariants.rs-749-) -> Vec<ExecutionRecord> {
+shatter-core/src/invariants.rs-750-    use std::hash::{Hash, Hasher};
+shatter-core/src/invariants.rs:751:    raw_results
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/invariants.rs-752-        .iter()
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/invariants.rs-753-        .map(|(inputs, result)| {
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/invariants.rs-1332-
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/invariants.rs-1333-    #[test]
+shatter-core/src/invariants.rs:1334:    fn records_from_raw_results_converts_correctly() {
+shatter-core/src/invariants.rs-1335-        use crate::protocol::{ExecuteResult, PerformanceMetrics};
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/invariants.rs-1336-
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/invariants.rs-1356-        )];
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/invariants.rs-1357-
+shatter-core/src/invariants.rs:1358:        let records = records_from_raw_results("test_fn", &raw);
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/invariants.rs-1359-        assert_eq!(records.len(), 1);
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/invariants.rs-1360-        assert_eq!(records[0].function_id, "test_fn");
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/invariants.rs-1365-
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/invariants.rs-1366-    #[test]
+shatter-core/src/invariants.rs:1367:    fn records_from_raw_results_empty_input() {
+shatter-core/src/invariants.rs:1368:        let records = records_from_raw_results("empty_fn", &[]);
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/invariants.rs-1369-        assert!(records.is_empty());
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/invariants.rs-1370-    }
+--
+shatter-core/src/scan_orchestrator.rs-457-        interesting_pool::harvest_from_exploration(
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/scan_orchestrator.rs-458-            &mut input_pool,
+shatter-core/src/scan_orchestrator.rs:459:            &exploration.raw_results,
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/scan_orchestrator.rs-460-            &analysis.params,
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/scan_orchestrator.rs-461-            func_name,
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/scan_orchestrator.rs-484-        // Compute behavior coverage for each callee (cross-function concern).
+shatter-core/src/scan_orchestrator.rs-485-        let records: Vec<ExecutionRecord> = exploration
+shatter-core/src/scan_orchestrator.rs:486:            .raw_results
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/scan_orchestrator.rs-487-            .iter()
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/scan_orchestrator.rs-488-            .map(|(inputs, result)| execution_record_from_result(func_name, inputs, result))
+--
+shatter-core/src/scan_orchestrator.rs-1074-        interesting_pool::harvest_from_exploration(
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/scan_orchestrator.rs-1075-            &mut pool_guard,
+shatter-core/src/scan_orchestrator.rs:1076:            &exploration.raw_results,
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/scan_orchestrator.rs-1077-            &analysis.params,
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/scan_orchestrator.rs-1078-            func_name,
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/scan_orchestrator.rs-1086-    // Compute behavior coverage for each callee (cross-function concern).
+shatter-core/src/scan_orchestrator.rs-1087-    let records: Vec<ExecutionRecord> = exploration
+shatter-core/src/scan_orchestrator.rs:1088:        .raw_results
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/scan_orchestrator.rs-1089-        .iter()
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/scan_orchestrator.rs-1090-        .map(|(inputs, result)| execution_record_from_result(func_name, inputs, result))
+--
+shatter-core/src/scan_orchestrator.rs-1644-                        total_lines: 5,
+shatter-core/src/scan_orchestrator.rs-1645-                        new_path_executions: vec![],
+shatter-core/src/scan_orchestrator.rs:1646:                        raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![],
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/scan_orchestrator.rs-1647-                    },
+shatter-core/src/scan_orchestrator.rs-1648-                    behavior_map: BehaviorMap {
+--
+shatter-core/src/scan_orchestrator.rs-1665-                        total_lines: 10,
+shatter-core/src/scan_orchestrator.rs-1666-                        new_path_executions: vec![],
+shatter-core/src/scan_orchestrator.rs:1667:                        raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![],
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/scan_orchestrator.rs-1668-                    },
+shatter-core/src/scan_orchestrator.rs-1669-                    behavior_map: BehaviorMap {
+--
+shatter-core/src/scan_orchestrator.rs-1707-                    total_lines: 5,
+shatter-core/src/scan_orchestrator.rs-1708-                    new_path_executions: vec![],
+shatter-core/src/scan_orchestrator.rs:1709:                    raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![],
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/scan_orchestrator.rs-1710-                },
+shatter-core/src/scan_orchestrator.rs-1711-                behavior_map: BehaviorMap {
+--
+shatter-core/src/scan_orchestrator.rs-1742-                    total_lines: 5,
+shatter-core/src/scan_orchestrator.rs-1743-                    new_path_executions: vec![],
+shatter-core/src/scan_orchestrator.rs:1744:                    raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![],
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/scan_orchestrator.rs-1745-                },
+shatter-core/src/scan_orchestrator.rs-1746-                behavior_map: BehaviorMap {
+--
+shatter-core/src/scan_orchestrator.rs-1790-                    total_lines: 5,
+shatter-core/src/scan_orchestrator.rs-1791-                    new_path_executions: vec![],
+shatter-core/src/scan_orchestrator.rs:1792:                    raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![],
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/scan_orchestrator.rs-1793-                },
+shatter-core/src/scan_orchestrator.rs-1794-                behavior_map: BehaviorMap {
+--
+shatter-core/src/scan_orchestrator.rs-1837-                    total_lines: 1,
+shatter-core/src/scan_orchestrator.rs-1838-                    new_path_executions: vec![],
+shatter-core/src/scan_orchestrator.rs:1839:                    raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![],
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/scan_orchestrator.rs-1840-                },
+shatter-core/src/scan_orchestrator.rs-1841-                behavior_map: BehaviorMap {
+--
+shatter-core/src/scan_orchestrator.rs-1871-                    total_lines: 1,
+shatter-core/src/scan_orchestrator.rs-1872-                    new_path_executions: vec![],
+shatter-core/src/scan_orchestrator.rs:1873:                    raw_results: vec![],
+shatter-core/src/scan_orchestrator.rs-1874-                    discoveries: vec![],
+shatter-core/src/scan_orchestrator.rs-1875-                    nondeterministic_fields: vec![], float_probe_results: vec![],
+--
+shatter-core/src/scan_orchestrator.rs-1914-                    total_lines: 1,
+shatter-core/src/scan_orchestrator.rs-1915-                    new_path_executions: vec![],
+shatter-core/src/scan_orchestrator.rs:1916:                    raw_results: vec![],
+shatter-core/src/scan_orchestrator.rs-1917-                    discoveries: vec![],
+shatter-core/src/scan_orchestrator.rs-1918-                    nondeterministic_fields: vec![], float_probe_results: vec![],
+--
+shatter-core/src/scan_orchestrator.rs-2021-                    total_lines: 5,
+shatter-core/src/scan_orchestrator.rs-2022-                    new_path_executions: vec![],
+shatter-core/src/scan_orchestrator.rs:2023:                    raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![],
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/scan_orchestrator.rs-2024-                },
+shatter-core/src/scan_orchestrator.rs-2025-                behavior_map: BehaviorMap {
+--
+shatter-core/src/scan_orchestrator.rs-2066-                    total_lines: 5,
+shatter-core/src/scan_orchestrator.rs-2067-                    new_path_executions: vec![],
+shatter-core/src/scan_orchestrator.rs:2068:                    raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![],
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/scan_orchestrator.rs-2069-                },
+shatter-core/src/scan_orchestrator.rs-2070-                behavior_map: BehaviorMap {
+--
+shatter-core/src/explorer.rs-149-    pub new_path_executions: Vec<ExecutionSummary>,
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-150-    /// Raw execution results paired with their inputs, for building BehaviorMaps.
+shatter-core/src/explorer.rs:151:    pub raw_results: Vec<(Vec<serde_json::Value>, ExecuteResult)>,
+shatter-core/src/explorer.rs-152-    / Per-branch discovery attribution: which branch_id was first found by which method.
+shatter-core/src/explorer.rs-153-    pub discoveries: Vec<(u32, DiscoveryMethod)>,
+--
+shatter-core/src/explorer.rs-624-    let mut all_lines: HashSet<u32> = HashSet::new();
+shatter-core/src/explorer.rs-625-    let mut new_path_executions: Vec<ExecutionSummary> = Vec::new();
+shatter-core/src/explorer.rs:626:    let mut raw_results: Vec<(Vec<serde_json::Value>, ExecuteResult)> = Vec::new();
+shatter-core/src/explorer.rs-627-    let mut iterations: u32 = 0;
+shatter-core/src/explorer.rs-628-    let mut path_counts: HashMap<u64, u32> = HashMap::new();
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-631-
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-632-    // --- Float probe phase ---
+shatter-core/src/explorer.rs:633:    // Probes consume from the iteration budget, contributing to seen_paths and raw_results.
+shatter-core/src/explorer.rs-634-    let float_indices = crate::float_probe::float_param_indices(&analysis.params);
+shatter-core/src/explorer.rs-635-    let mut float_probe_results: Vec<crate::float_probe::FloatProbeResult> = Vec::new();
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-689-                    }
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-690-
+shatter-core/src/explorer.rs:691:                    raw_results.push((float_inputs.clone(), (**float_result).clone()));
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-692-                }
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-693-            }
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-864-        }
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-865-
+shatter-core/src/explorer.rs:866:        raw_results.push((inputs, exec_result));
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-867-    }
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-868-
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-885-        total_lines,
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-886-        new_path_executions,
+shatter-core/src/explorer.rs:887:        raw_results,
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-888-        discoveries,
+shatter-core/src/explorer.rs-889-        nondeterministic_fields: vec![],
+--
+shatter-core/src/explorer.rs-1714-                    thrown_error: None, lines_executed: vec![1, 4, 5], is_new_path: true, error_intent: None },
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-1715-            ],
+shatter-core/src/explorer.rs:1716:            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![],
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-1717-        };
+shatter-core/src/explorer.rs-1718-        let report = format_exploration_report(&result, &ReportOptions::default());
+--
+shatter-core/src/explorer.rs-1735-                return_value: Some(serde_json::json!(5)),
+shatter-core/src/explorer.rs-1736-                thrown_error: None, lines_executed: vec![1, 2, 3], is_new_path: true, error_intent: None }],
+shatter-core/src/explorer.rs:1737:            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![],
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-1738-        };
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-1739-        let report = format_exploration_report(&result, &ReportOptions {
+--
+shatter-core/src/explorer.rs-1754-                thrown_error: Some("TypeError: cannot read null".into()),
+shatter-core/src/explorer.rs-1755-                lines_executed: vec![], is_new_path: true, error_intent: None }],
+shatter-core/src/explorer.rs:1756:            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![],
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-1757-        };
+shatter-core/src/explorer.rs-1758-        let report = format_exploration_report(&result, &ReportOptions::default());
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-1765-        let result = ObservationOutput {
+shatter-core/src/explorer.rs-1766-            function_name: "fast".into(), iterations: 10, unique_paths: 1,
+shatter-core/src/explorer.rs:1767:            lines_covered: 0, total_lines: 0, new_path_executions: vec![], raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![],
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-1768-        };
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-1769-        let report = format_exploration_report(&result, &ReportOptions {
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-1780-        let result = ObservationOutput {
+shatter-core/src/explorer.rs-1781-            function_name: "analyze".into(), iterations: 20, unique_paths: 3,
+shatter-core/src/explorer.rs:1782:            lines_covered: 8, total_lines: 10, new_path_executions: vec![], raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![],
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-1783-        };
+shatter-core/src/explorer.rs-1784-        let metrics = crate::coverage_metrics::CoverageMetrics {
+--
+shatter-core/src/explorer.rs-1804-                return_value: Some(serde_json::json!("ok")),
+shatter-core/src/explorer.rs-1805-                thrown_error: None, lines_executed: vec![1, 2, 3, 4], is_new_path: true, error_intent: None }],
+shatter-core/src/explorer.rs:1806:            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![],
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-1807-        };
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-1808-        let report = format_exploration_report(&result, &ReportOptions {
+--
+shatter-core/src/explorer.rs-1835-                return_value: Some(serde_json::json!("positive-odd")),
+shatter-core/src/explorer.rs-1836-                thrown_error: None, lines_executed: vec![1, 2, 3], is_new_path: true, error_intent: None }],
+shatter-core/src/explorer.rs:1837:            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![],
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-1838-        };
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-1839-        let report = format_exploration_report_verbose(&result);
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-2109-        assert_eq!(result.iterations, 5);
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-2110-        // The first execution should use the user-provided seed value.
+shatter-core/src/explorer.rs:2111:        assert_eq!(result.raw_results[0].0, user_seed_value);
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-2112-        frontend.shutdown().await.expect("shutdown failed");
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-2113-    }
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-2134-        // Literal-derived inputs come first (from stub_analysis literals),
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-2135-        // then candidate_inputs, then pool_seeds.
+shatter-core/src/explorer.rs:2136:        // Find the candidate value in raw_results — it should appear before pool value.
+shatter-core/src/explorer.rs:2137:        let candidate_pos = result.raw_results.iter().position(|(inputs, _)| *inputs == candidate_value);
+shatter-core/src/explorer.rs:2138:        let pool_pos = result.raw_results.iter().position(|(inputs, _)| *inputs == pool_value);
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-2139-        assert!(candidate_pos.is_some(), "candidate input should be executed");
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-2140-        assert!(pool_pos.is_some(), "pool seed should be executed");
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-2146-    }
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-2147-
+shatter-core/src/explorer.rs:2148:    /// Random explorer raw_results are harvestable into the interesting pool.
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-2149-    ///
+shatter-core/src/explorer.rs:2150:    /// Verifies that explore_function produces raw_results containing non-boundary
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-2151-    /// values (from user seeds) that harvest_from_exploration can extract. This
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-2152-    /// guards against the pre-str-ttu3 gap where only the concolic path harvested.
+shatter-core/src/explorer.rs-2153-    #[tokio::test]
+shatter-core/src/explorer.rs:2154:    async fn random_explorer_raw_results_are_harvestable() {
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-2155-        let mut frontend = spawn_noop_frontend().await;
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-2156-        let analysis = stub_analysis();
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-2169-        let result = explore_function(&mut frontend, &analysis, &config, None)
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-2170-            .await.expect("should succeed with noop frontend");
+shatter-core/src/explorer.rs:2171:        assert!(!result.raw_results.is_empty(), "raw_results should be populated");
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-2172-
+shatter-core/src/explorer.rs-2173-        let mut pool = crate::interesting_pool::InterestingPool::default();
+shatter-core/src/explorer.rs-2174-        let harvested = crate::interesting_pool::harvest_from_exploration(
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-2175-            &mut pool,
+shatter-core/src/explorer.rs:2176:            &result.raw_results,
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-2177-            &analysis.params,
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/explorer.rs-2178-            &analysis.name,
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/report.rs-189-
+shatter-core/src/report.rs-190-    let total_constraints: usize = exploration
+shatter-core/src/report.rs:191:        .raw_results
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/report.rs-192-        .iter()
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/report.rs-193-        .map(|(_, r)| r.path_constraints.len())
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/report.rs-825-                total_lines,
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/report.rs-826-                new_path_executions,
+shatter-core/src/report.rs:827:                raw_results: vec![],
+shatter-core/src/report.rs-828-                discoveries: vec![],
+shatter-core/src/report.rs-829-                nondeterministic_fields: vec![], float_probe_results: vec![],
+--
+shatter-core/src/orchestrator.rs-244-    pub termination_reason: TerminationReason,
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/orchestrator.rs-245-    /// Raw execution results paired with inputs for pipeline composability.
+shatter-core/src/orchestrator.rs:246:    pub raw_results: Vec<(Vec<serde_json::Value>, ExecuteResult)>,
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/orchestrator.rs-247-    /// Per-branch discovery attribution with method (Z3, Random, UserProvided).
+shatter-core/src/orchestrator.rs-248-    pub discoveries: Vec<(u32, DiscoveryMethod)>,
+--
+shatter-core/src/orchestrator.rs-524-    param_infos: &[ParamInfo],
+shatter-core/src/orchestrator.rs-525-    param_names: &[String],
+shatter-core/src/orchestrator.rs:526:    raw_results: &[(Vec<serde_json::Value>, ExecuteResult)],
+shatter-core/src/orchestrator.rs-527-    seen_branch_sides: &std::collections::HashSet<(u32, bool)>,
+shatter-core/src/orchestrator.rs-528-    config: &ExploreConfig,
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/orchestrator.rs-586-                if opposite_seen
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/orchestrator.rs-587-                    && let Some((tw, fw)) =
+shatter-core/src/orchestrator.rs:588:                        boundary_search::find_witness_pair(raw_results, bd.branch_id)
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/orchestrator.rs-589-                {
+shatter-core/src/orchestrator.rs-590-                    let candidates = boundary_search::interpolate_inputs(
+--
+shatter-core/src/orchestrator.rs-733-    let mut covered_paths: HashSet<u64> = HashSet::new();
+shatter-core/src/orchestrator.rs-734-    let mut executions = Vec::new();
+shatter-core/src/orchestrator.rs:735:    let mut raw_results: Vec<(Vec<serde_json::Value>, ExecuteResult)> = Vec::new();
+shatter-core/src/orchestrator.rs-736-    let mut seen_branch_ids: HashSet<u32> = HashSet::new();
+shatter-core/src/orchestrator.rs-737-    let mut discoveries: Vec<(u32, DiscoveryMethod)> = Vec::new();
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/orchestrator.rs-905-
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/orchestrator.rs-906-        // Record raw result for pipeline composability.
+shatter-core/src/orchestrator.rs:907:        raw_results.push((obs.inputs.clone(), obs.result.clone()));
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/orchestrator.rs-908-
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/orchestrator.rs-909-        if !obs.is_new_path {
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/orchestrator.rs-971-            param_infos,
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/orchestrator.rs-972-            &param_names,
+shatter-core/src/orchestrator.rs:973:            &raw_results,
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/orchestrator.rs-974-            &seen_branch_sides,
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/orchestrator.rs-975-            config,
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/orchestrator.rs-1002-        drill_generated,
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/orchestrator.rs-1003-        termination_reason,
+shatter-core/src/orchestrator.rs:1004:        raw_results,
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/orchestrator.rs-1005-        discoveries,
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/orchestrator.rs-1006-        triage_skipped,
+--
+shatter-core/src/coverage_metrics.rs-272-    result: &ObservationOutput,
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-273-) -> Vec<TargetBranch> {
+shatter-core/src/coverage_metrics.rs:274:    extract_targets_inner(&analysis.branches, &result.discoveries, &result.raw_results)
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-275-}
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-276-
+--
+shatter-core/src/coverage_metrics.rs-282-    result: &ExploreResult,
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-283-) -> Vec<TargetBranch> {
+shatter-core/src/coverage_metrics.rs:284:    extract_targets_inner(&analysis.branches, &result.discoveries, &result.raw_results)
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-285-}
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-286-
+--
+shatter-core/src/coverage_metrics.rs-293-    branches: &[BranchInfo],
+shatter-core/src/coverage_metrics.rs-294-    discoveries: &[(u32, DiscoveryMethod)],
+shatter-core/src/coverage_metrics.rs:295:    raw_results: &[(Vec<serde_json::Value>, ExecuteResult)],
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-296-) -> Vec<TargetBranch> {
+shatter-core/src/coverage_metrics.rs-297-    let discovered: HashSet<u32> = discoveries.iter().map(|(id, _)| *id).collect();
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-299-    // Collect opaque constraint hints from runtime branch decisions.
+shatter-core/src/coverage_metrics.rs-300-    let mut opaque_hints: HashMap<u32, String> = HashMap::new();
+shatter-core/src/coverage_metrics.rs:301:    for (_, exec) in raw_results {
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-302-        for decision in &exec.branch_path {
+shatter-core/src/coverage_metrics.rs-303-            if let SymConstraint::Unknown { hint } = &decision.constraint {
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-629-        ]);
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-630-        let discoveries = vec![];
+shatter-core/src/coverage_metrics.rs:631:        let raw_results = vec![];
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-632-
+shatter-core/src/coverage_metrics.rs:633:        let targets = extract_targets_inner(&analysis.branches, &discoveries, &raw_results);
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-634-
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-635-        assert_eq!(targets.len(), 3);
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-669-            },
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-670-        ]);
+shatter-core/src/coverage_metrics.rs:671:        let raw_results = vec![(vec![serde_json::json!(5)], exec)];
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-672-
+shatter-core/src/coverage_metrics.rs:673:        let targets = extract_targets_inner(&analysis.branches, &discoveries, &raw_results);
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-674-        assert!(targets.is_empty());
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-675-    }
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-701-            },
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-702-        ]);
+shatter-core/src/coverage_metrics.rs:703:        let raw_results = vec![(vec![serde_json::json!(10)], exec)];
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-704-
+shatter-core/src/coverage_metrics.rs:705:        let targets = extract_targets_inner(&analysis.branches, &discoveries, &raw_results);
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-706-
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-707-        assert_eq!(targets.len(), 3);
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-723-        let analysis = make_analysis(vec![]);
+shatter-core/src/coverage_metrics.rs-724-        let discoveries = vec![(0, DiscoveryMethod::Z3)];
+shatter-core/src/coverage_metrics.rs:725:        let raw_results = vec![];
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-726-
+shatter-core/src/coverage_metrics.rs:727:        let targets = extract_targets_inner(&analysis.branches, &discoveries, &raw_results);
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-728-        assert!(targets.is_empty());
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-729-    }
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-745-            },
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-746-        ]);
+shatter-core/src/coverage_metrics.rs:747:        let raw_results = vec![(vec![serde_json::json!(1)], exec)];
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-748-
+shatter-core/src/coverage_metrics.rs:749:        let targets = extract_targets_inner(&analysis.branches, &discoveries, &raw_results);
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-750-
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-751-        assert_eq!(targets.len(), 1);
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-761-        ]);
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-762-        let discoveries = vec![];
+shatter-core/src/coverage_metrics.rs:763:        let raw_results = vec![];
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-764-
+shatter-core/src/coverage_metrics.rs:765:        let targets = extract_targets_inner(&analysis.branches, &discoveries, &raw_results);
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-766-
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-767-        assert_eq!(targets.len(), 1);
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-778-        ]);
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-779-        let discoveries = vec![];
+shatter-core/src/coverage_metrics.rs:780:        let raw_results = vec![];
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-781-
+shatter-core/src/coverage_metrics.rs:782:        let targets = extract_targets_inner(&analysis.branches, &discoveries, &raw_results);
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-783-
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/coverage_metrics.rs-784-        assert_eq!(targets.len(), 3);
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/observe.rs-91-pub struct BatchObservation {
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/observe.rs-92-    /// Every execution result paired with its inputs.
+shatter-core/src/observe.rs:93:    pub raw_results: Vec<(Vec<serde_json::Value>, ExecuteResult)>,
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/observe.rs-94-    /// Hashes of unique execution paths observed.
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/observe.rs-95-    #[serde(skip)]
+--
+shatter-core/src/observe.rs-125-    let mut discoveries: Vec<(u32, DiscoveryMethod)> = Vec::new();
+shatter-core/src/observe.rs-126-    let mut new_path_executions: Vec<ExecutionSummary> = Vec::new();
+shatter-core/src/observe.rs:127:    let mut raw_results: Vec<(Vec<serde_json::Value>, ExecuteResult)> = Vec::new();
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/observe.rs-128-
+shatter-core/src/observe.rs-129-    let start = Instant::now();
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/observe.rs-185-        }
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/observe.rs-186-
+shatter-core/src/observe.rs:187:        raw_results.push((input, exec_result));
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/observe.rs-188-    }
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/observe.rs-189-
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/observe.rs-190-    Ok(BatchObservation {
+shatter-core/src/observe.rs:191:        raw_results,
+shatter-core/src/observe.rs-192-        unique_path_hashes: seen_paths,
+shatter-core/src/observe.rs-193-        lines_covered: all_lines,
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/observe.rs-311-        total_lines,
+shatter-core/src/observe.rs-312-        new_path_executions: batch.new_path_executions,
+shatter-core/src/observe.rs:313:        raw_results: batch.raw_results,
+shatter-core/src/observe.rs-314-        discoveries: batch.discoveries,
+shatter-core/src/observe.rs-315-        nondeterministic_fields: vec![],
+--
+shatter-core/src/observe.rs-330-    let mut discoveries: Vec<(u32, DiscoveryMethod)> = Vec::new();
+shatter-core/src/observe.rs-331-    let mut new_path_executions: Vec<ExecutionSummary> = Vec::new();
+shatter-core/src/observe.rs:332:    let mut raw_results: Vec<(Vec<serde_json::Value>, ExecuteResult)> = Vec::new();
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/observe.rs-333-
+shatter-core/src/observe.rs-334-    let start = Instant::now();
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/observe.rs-409-        }
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/observe.rs-410-
+shatter-core/src/observe.rs:411:        raw_results.push((input, exec_result));
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/observe.rs-412-    }
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/observe.rs-413-
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/observe.rs-414-    Ok(BatchObservation {
+shatter-core/src/observe.rs:415:        raw_results,
+shatter-core/src/observe.rs-416-        unique_path_hashes: seen_paths,
+shatter-core/src/observe.rs-417-        lines_covered: all_lines,
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/observe.rs-560-        // BatchObservation from zero inputs should have empty everything.
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/observe.rs-561-        let batch = BatchObservation {
+shatter-core/src/observe.rs:562:            raw_results: vec![],
+shatter-core/src/observe.rs-563-            unique_path_hashes: HashSet::new(),
+shatter-core/src/observe.rs-564-            lines_covered: HashSet::new(),
+--
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/observe.rs-567-        };
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/observe.rs-568-
+shatter-core/src/observe.rs:569:        assert_eq!(batch.raw_results.len(), 0);
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/observe.rs-570-        assert_eq!(batch.unique_path_hashes.len(), 0);
+/home/ketan/project/shatter/.claude/worktrees/agent-ab668eda/shatter-core/src/observe.rs-571-        assert_eq!(batch.lines_covered.len(), 0);

@@ -1,0 +1,86 @@
+[
+  {
+    "from": "team-lead",
+    "text": "## Issue: kapow-gna9 — Search: region facet should be multi-select\n\n\"Region\" should be multi-select in the faceted search. Use the same multi-select component as all other multi-select facets — the multi-select approach should be controlled by a single shared component/pattern so it can be changed globally.\n\nCurrently region is a `SingleEnumField` in `api/internal/search/registry.go`. It needs to become a `MultiEnumField` to support multi-select.\n\nNOTE: The region field was recently modified — the \"U.S. Service Schools\" option (value \"0\") has been removed. The current options are regions 1-9 only. The field name is `region` with outputKey `location.region`.\n\n## WORKTREE SETUP — RUN FIRST\nBefore doing anything else, create and enter an isolated worktree:\n```bash\nREPO_ROOT=\"$(git rev-parse --show-toplevel)\"\nBRANCH_NAME=\"worktree/region-multiselect\"\nWORKTREE_DIR=\"$REPO_ROOT/.claude/worktrees/$BRANCH_NAME\"\n\nif [ -d \"$WORKTREE_DIR\" ]; then\n  echo \"Worktree already exists, reusing\"\nelse\n  git worktree add \"$WORKTREE_DIR\" -b \"$BRANCH_NAME\"\nfi\n\ncd \"$WORKTREE_DIR\"\n```\nVerify you are in the right place:\n```bash\necho \"CWD: $(pwd)\"\necho \"Branch: $(git branch --show-current)\"\necho \"$(pwd)\" | grep -q '\\.claude/worktrees/' && echo \"WORKTREE VERIFIED\" || echo \"FATAL: NOT in a worktree\"\n```\nALL subsequent commands must run from this worktree directory. Commit and push ONLY on your worktree branch.\n\nWhen done, push your branch:\n```bash\ngit push -u origin HEAD\n```\n\n## Approach\n\n1. In `api/internal/search/registry.go`, change the region field from `SingleEnumField` to `MultiEnumField`\n2. Check how other `MultiEnumField` instances are defined (e.g. locale, carnegie_basic) for the correct pattern\n3. The frontend should already handle multi-select fields via a shared component — verify this works for region\n4. Update any tests that reference the region field type\n\n## Quality Gate (must pass before reporting done)\n\n```bash\nmake api-test-unit && make api-lint\ncd web && pnpm build && pnpm lint && pnpm test\n```\n\n## Instructions\n- Follow CLAUDE.md and web/CLAUDE.md conventions\n- Minimal change — just convert the field type, don't redesign the component\n- Update tests as needed\n- Commit your work on the worktree branch with a descriptive message\n- Report back with quality gate results when done\n",
+    "timestamp": "2026-03-10T20:49:20.479Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773175767116-h1c1w1w\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"REPO_ROOT=\\\"$(git rev-parse --show-toplevel)\\\"\\nBRANCH_NAME=\\\"worktree/region-multiselect\\\"\\nWORKTREE_DIR=\\\"$REPO_ROOT/.claude/worktrees/$BRANCH_NAME\\\"\\n\\nif [ -d \\\"$WORKTREE_DIR\\\" ]; then\\n  echo \\\"Worktree already exists, reusing\\\"\\nelse\\n  git worktree add \\\"$WORKTREE_DIR\\\" -b \\\"$BRANCH_NAME\\\"\\nfi\\n\\ncd \\\"$WORKTREE_DIR\\\"\\necho \\\"CWD: $(pwd)\\\"\\necho \\\"Branch: $(git branch --show-current)\\\"\\necho \\\"$(pwd)\\\" | grep -q '\\\\.claude/worktrees/' && echo \\\"WORKTREE VERIFIED\\\" || echo \\\"FATAL: NOT in a worktree\\\"\",\"description\":\"Set up isolated worktree\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-10T21:57:00.714Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773179842269-3q6wfh4\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"find /home/ketan/project/kapow/web/src -type f \\\\( -name \\\"*.tsx\\\" -o -name \\\"*.ts\\\" \\\\) -exec grep -l \\\"FilterControl\\\\|FacetSidebar\\\\|facet\\\" {} \\\\;\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-10T21:57:42.804Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773179882567-5mswp3e\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"cd /home/ketan/project/kapow && git log --oneline -20 -- api/internal/search/registry.go | head -10\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-10T21:58:04.180Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773179887009-hgiqu3t\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"cd /home/ketan/project/kapow && git show ea077d5 --stat | head -20\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-10T22:03:37.889Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"plan_approval_response\",\"requestId\":\"plan_approval-1773180381057@region-multiselect@swarm-2026-03-10\",\"approved\":true,\"timestamp\":\"2026-03-10T22:06:22.013Z\",\"permissionMode\":\"default\"}",
+    "timestamp": "2026-03-10T22:06:22.013Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773180420966-9smy2pj\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/kapow/.claude/worktrees/worktree/region-multiselect/api/internal/search/field.go\",\"old_string\":\"const (\\n\\tJSONBStorageFormatArray     JSONBStorageFormat = \\\"array\\\"\\n\\tJSONBStorageFormatObjectKey JSONBStorageFormat = \\\"object_key\\\"\\n)\",\"new_string\":\"const (\\n\\tJSONBStorageFormatArray     JSONBStorageFormat = \\\"array\\\"\\n\\tJSONBStorageFormatObjectKey JSONBStorageFormat = \\\"object_key\\\"\\n\\t// JSONBStorageFormatText is for plain JSONB text values (not arrays or object keys).\\n\\t// BuildSQL generates: data #>> '{path}' = ANY($N::text[])\\n\\tJSONBStorageFormatText JSONBStorageFormat = \\\"text\\\"\\n)\",\"replace_all\":false},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-10T22:14:01.005Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"plan_approval_response\",\"requestId\":\"plan_approval-1773180381057@region-multiselect@swarm-2026-03-10\",\"approved\":true,\"timestamp\":\"2026-03-10T22:14:07.663Z\",\"permissionMode\":\"default\"}",
+    "timestamp": "2026-03-10T22:14:07.663Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773180848644-yw8ahh6\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/kapow/.claude/worktrees/worktree/region-multiselect/api/internal/search/field.go\",\"old_string\":\"\\tcase f.StorageFormat == JSONBStorageFormatObjectKey && f.SelectionMode == SelectionModeAll:\\n\\t\\texpr = fmt.Sprintf(\\\"%s ?& $%d::text[]\\\", jsonbRef, argStart)\\n\\t\\targs = []any{filter.Values}\\n\\tdefault:\",\"new_string\":\"\\tcase f.StorageFormat == JSONBStorageFormatObjectKey && f.SelectionMode == SelectionModeAll:\\n\\t\\texpr = fmt.Sprintf(\\\"%s ?& $%d::text[]\\\", jsonbRef, argStart)\\n\\t\\targs = []any{filter.Values}\\n\\tcase f.StorageFormat == JSONBStorageFormatText:\\n\\t\\t// Plain JSONB text value: extract as text then match against the provided set.\\n\\t\\t// Supports multi-level paths (e.g. {nces, region_id}).\\n\\t\\ttextRef := f.source.SQLRef() // e.g. data #>> '{nces,region_id}'\\n\\t\\texpr = fmt.Sprintf(\\\"%s = ANY($%d::text[])\\\", textRef, argStart)\\n\\t\\targs = []any{filter.Values}\\n\\tdefault:\",\"replace_all\":false},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-10T22:14:13.395Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773180860712-oder5x5\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/kapow/.claude/worktrees/worktree/region-multiselect/api/internal/search/registry.go\",\"old_string\":\"\\t\\t&SingleEnumField{\\n\\t\\t\\tbaseField: baseField{\\n\\t\\t\\t\\tname: \\\"region\\\", label: \\\"Region\\\",\\n\\t\\t\\t\\tdescription:   \\\"NCES geographic region\\\",\\n\\t\\t\\t\\tkind:          KindSingleEnum,\\n\\t\\t\\t\\ttheme:         ThemeLocation,\\n\\t\\t\\t\\tsource:        FieldSource{Kind: SourceJSONBPath, JSONBPath: []string{\\\"nces\\\", \\\"region_id\\\"}, ValueType: JSONBText},\\n\\t\\t\\t\\tvisibility:    VisibilityVisible,\\n\\t\\t\\t\\tsearchability: SearchabilitySearchable,\\n\\t\\t\\t\\texportable:    boolPtr(true),\\n\\t\\t\\t\\toutputDefault: boolPtr(false),\\n\\t\\t\\t\\tsortable:      false,\\n\\t\\t\\t\\toutputKey:     \\\"locationDetails.region\\\",\\n\\t\\t\\t\\tdataSourceID:  SourceNCESIPEDS.ID,\\n\\t\\t\\t},\\n\\t\\t\\tOptions: []EnumOption{\\n\\t\\t\\t\\t{Value: \\\"1\\\", Label: \\\"New England\\\"},\\n\\t\\t\\t\\t{Value: \\\"2\\\", Label: \\\"Mid East\\\"},\\n\\t\\t\\t\\t{Value: \\\"3\\\", Label: \\\"Great Lakes\\\"},\\n\\t\\t\\t\\t{Value: \\\"4\\\", Label: \\\"Plains\\\"},\\n\\t\\t\\t\\t{Value: \\\"5\\\", Label: \\\"Southeast\\\"},\\n\\t\\t\\t\\t{Value: \\\"6\\\", Label: \\\"Southwest\\\"},\\n\\t\\t\\t\\t{Value: \\\"7\\\", Label: \\\"Rocky Mountains\\\"},\\n\\t\\t\\t\\t{Value: \\\"8\\\", Label: \\\"Far West\\\"},\\n\\t\\t\\t\\t{Value: \\\"9\\\", Label: \\\"Outlying Areas\\\"},\\n\\t\\t\\t},\\n\\t\\t},\",\"new_string\":\"\\t\\t&MultiEnumField{\\n\\t\\t\\tbaseField: baseField{\\n\\t\\t\\t\\tname: \\\"region\\\", label: \\\"Region\\\",\\n\\t\\t\\t\\tdescription:   \\\"NCES geographic region\\\",\\n\\t\\t\\t\\tkind:          KindMultiEnum,\\n\\t\\t\\t\\ttheme:         ThemeLocation,\\n\\t\\t\\t\\tsource:        FieldSource{Kind: SourceJSONBPath, JSONBPath: []string{\\\"nces\\\", \\\"region_id\\\"}, ValueType: JSONBText},\\n\\t\\t\\t\\tvisibility:    VisibilityVisible,\\n\\t\\t\\t\\tsearchability: SearchabilitySearchable,\\n\\t\\t\\t\\texportable:    boolPtr(true),\\n\\t\\t\\t\\toutputDefault: boolPtr(false),\\n\\t\\t\\t\\tsortable:      false,\\n\\t\\t\\t\\toutputKey:     \\\"locationDetails.region\\\",\\n\\t\\t\\t\\tdataSourceID:  SourceNCESIPEDS.ID,\\n\\t\\t\\t},\\n\\t\\t\\tOptions: []EnumOption{\\n\\t\\t\\t\\t{Value: \\\"1\\\", Label: \\\"New England\\\"},\\n\\t\\t\\t\\t{Value: \\\"2\\\", Label: \\\"Mid East\\\"},\\n\\t\\t\\t\\t{Value: \\\"3\\\", Label: \\\"Great Lakes\\\"},\\n\\t\\t\\t\\t{Value: \\\"4\\\", Label: \\\"Plains\\\"},\\n\\t\\t\\t\\t{Value: \\\"5\\\", Label: \\\"Southeast\\\"},\\n\\t\\t\\t\\t{Value: \\\"6\\\", Label: \\\"Southwest\\\"},\\n\\t\\t\\t\\t{Value: \\\"7\\\", Label: \\\"Rocky Mountains\\\"},\\n\\t\\t\\t\\t{Value: \\\"8\\\", Label: \\\"Far West\\\"},\\n\\t\\t\\t\\t{Value: \\\"9\\\", Label: \\\"Outlying Areas\\\"},\\n\\t\\t\\t},\\n\\t\\t\\tSelectionMode: SelectionModeAny,\\n\\t\\t\\tStorageFormat: JSONBStorageFormatText,\\n\\t\\t},\",\"replace_all\":false},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-10T22:14:25.697Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773180886155-0jamhih\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/kapow/.claude/worktrees/worktree/region-multiselect/api/internal/search/search_test.go\",\"old_string\":\"func TestMultiEnumField_ObjectKeyAny(t *testing.T) {\\n\\tt.Parallel()\\n\\treg := search.NewRegistry()\\n\\tf, _ := reg.Lookup(\\\"fields_of_study\\\") // object_key/any\\n\\texpr, _, err := f.BuildSQL(mustJSON(search.MultiEnumFilter{Values: []string{\\\"52.0101\\\"}}), 1)\\n\\tif err != nil {\\n\\t\\tt.Fatal(err)\\n\\t}\\n\\tif !strings.Contains(expr, \\\"?|\\\") {\\n\\t\\tt.Errorf(\\\"expected ?| operator for object_key/any: %s\\\", expr)\\n\\t}\\n}\\n\\n// ─────────────────────────────────────────────────────────────────────────────\\n// sqlCastType — boolean branch\",\"new_string\":\"func TestMultiEnumField_ObjectKeyAny(t *testing.T) {\\n\\tt.Parallel()\\n\\treg := search.NewRegistry()\\n\\tf, _ := reg.Lookup(\\\"fields_of_study\\\") // object_key/any\\n\\texpr, _, err := f.BuildSQL(mustJSON(search.MultiEnumFilter{Values: []string{\\\"52.0101\\\"}}), 1)\\n\\tif err != nil {\\n\\t\\tt.Fatal(err)\\n\\t}\\n\\tif !strings.Contains(expr, \\\"?|\\\") {\\n\\t\\tt.Errorf(\\\"expected ?| operator for object_key/any: %s\\\", expr)\\n\\t}\\n}\\n\\nfunc TestMultiEnumField_TextAny(t *testing.T) {\\n\\tt.Parallel()\\n\\treg := search.NewRegistry()\\n\\tf, err := reg.Lookup(\\\"region\\\") // text/any — nested JSONB path\\n\\tif err != nil {\\n\\t\\tt.Fatal(err)\\n\\t}\\n\\texpr, args, err := f.BuildSQL(mustJSON(search.MultiEnumFilter{Values: []string{\\\"1\\\", \\\"5\\\"}}), 1)\\n\\tif err != nil {\\n\\t\\tt.Fatal(err)\\n\\t}\\n\\tif !strings.Contains(expr, \\\"= ANY(\\\") {\\n\\t\\tt.Errorf(\\\"expected = ANY() operator for text/any: %s\\\", expr)\\n\\t}\\n\\tif !strings.Contains(expr, \\\"#>>\\\") {\\n\\t\\tt.Errorf(\\\"expected #>> text extraction in SQL: %s\\\", expr)\\n\\t}\\n\\tif len(args) != 1 {\\n\\t\\tt.Errorf(\\\"expected 1 arg, got %d\\\", len(args))\\n\\t}\\n}\\n\\n// ─────────────────────────────────────────────────────────────────────────────\\n// sqlCastType — boolean branch\",\"replace_all\":false},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-10T22:31:36.733Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773181924778-4slbqqe\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"file_path\":\"/home/ketan/project/kapow/.claude/worktrees/worktree/region-multiselect/api/internal/search/search_test.go\",\"old_string\":\"func TestMultiEnumField_TextAny(t *testing.T) {\\n\\tt.Parallel()\\n\\treg := search.NewRegistry()\\n\\tf, err := reg.Lookup(\\\"region\\\") // text/any — nested JSONB path\\n\\tif err != nil {\\n\\t\\tt.Fatal(err)\\n\\t}\\n\\texpr, args, err := f.BuildSQL(mustJSON(search.MultiEnumFilter{Values: []string{\\\"1\\\", \\\"5\\\"}}), 1)\\n\\tif err != nil {\\n\\t\\tt.Fatal(err)\\n\\t}\",\"new_string\":\"func TestMultiEnumField_TextAny(t *testing.T) {\\n\\tt.Parallel()\\n\\treg := search.NewRegistry()\\n\\tf, ok := reg.Lookup(\\\"region\\\") // text/any — nested JSONB path\\n\\tif !ok {\\n\\t\\tt.Fatal(\\\"region field not found\\\")\\n\\t}\\n\\texpr, args, err := f.BuildSQL(mustJSON(search.MultiEnumFilter{Values: []string{\\\"1\\\", \\\"5\\\"}}), 1)\\n\\tif err != nil {\\n\\t\\tt.Fatal(err)\\n\\t}\",\"replace_all\":false},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-10T22:34:55.444Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773182191904-0qxmctk\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"cp /home/ketan/.claude/plans/expressive-finding-truffle.md /home/ketan/project/kapow/.claude/worktrees/worktree/region-multiselect/docs/plans/kapow-gna9-region-multiselect.md\",\"description\":\"Copy plan to docs/plans\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-10T22:36:54.739Z",
+    "read": true
+  },
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"permission_response\",\"request_id\":\"perm-1773182219384-8g7710w\",\"subtype\":\"success\",\"response\":{\"updated_input\":{\"command\":\"cd /home/ketan/project/kapow/.claude/worktrees/worktree/region-multiselect && git add api/internal/search/field.go api/internal/search/registry.go api/internal/search/search_test.go docs/plans/kapow-gna9-region-multiselect.md && git diff --staged --stat\",\"description\":\"Stage changes and show diff stat\"},\"permission_updates\":[]}}",
+    "timestamp": "2026-03-10T22:43:00.911Z",
+    "read": true
+  }
+]

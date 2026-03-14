@@ -1,0 +1,178 @@
+import { test, expect } from '@playwright/test'
+import { searchWith, waitForResults, getResultCount } from './helpers'
+
+// ── Critical ────────────────────────────────────────────────────────────────
+
+test.describe('Ranking Blend', () => {
+  test('adjust one ranking blend slider reorders results by blend score @critical @blend', async ({
+    page,
+  }) => {
+    await searchWith(page, {})
+    await waitForResults(page)
+
+    // Open the ranking blend builder and adjust the US News National slider
+    const blendBuilder = page.getByTestId('ranking-blend-builder')
+    await expect(blendBuilder).toBeVisible()
+
+    const usNewsSlider = blendBuilder.getByRole('slider', {
+      name: 'US News National weight',
+    })
+    await usNewsSlider.fill('50')
+
+    // Wait for results to update after blend change
+    await waitForResults(page)
+
+    // The URL should now contain the blend parameter
+    await expect(page).toHaveURL(/blend=rank_us_news_national:50/)
+
+    // Verify results are still showing (blend applied successfully)
+    const resultCount = await getResultCount(page)
+    expect(resultCount).toBeGreaterThan(0)
+  })
+
+  // ── Standard ──────────────────────────────────────────────────────────────
+
+  test('reset blend returns to default sorting @standard @blend', async ({
+    page,
+  }) => {
+    // Navigate with an active blend
+    await searchWith(page, {
+      blend: 'rank_us_news_national:50,rank_forbes:30',
+    })
+    await waitForResults(page)
+
+    // Verify blend is active in URL
+    await expect(page).toHaveURL(/blend=/)
+
+    // The Reset button should be visible when blend weights are set
+    const blendBuilder = page.getByTestId('ranking-blend-builder')
+    const resetButton = blendBuilder.getByRole('button', { name: 'Reset' })
+    await expect(resetButton).toBeVisible()
+
+    // Click reset
+    await resetButton.click()
+
+    // Wait for results to update
+    await waitForResults(page)
+
+    // blend param should be removed from URL
+    await expect(page).not.toHaveURL(/blend=/)
+  })
+
+  // ── Comprehensive ─────────────────────────────────────────────────────────
+
+  test('blend weights reflected in URL query params @comprehensive @blend', async ({
+    page,
+  }) => {
+    await searchWith(page, {})
+    await waitForResults(page)
+
+    const blendBuilder = page.getByTestId('ranking-blend-builder')
+
+    // Adjust US News National slider to 40
+    const usNewsSlider = blendBuilder.getByRole('slider', {
+      name: 'US News National weight',
+    })
+    await usNewsSlider.fill('40')
+
+    await expect(page).toHaveURL(/blend=rank_us_news_national:40/)
+
+    // Adjust Forbes slider to 30
+    const forbesSlider = blendBuilder.getByRole('slider', {
+      name: 'Forbes weight',
+    })
+    await forbesSlider.fill('30')
+
+    // Both weights should appear in the URL
+    await expect(page).toHaveURL(/blend=.*rank_us_news_national:40/)
+    await expect(page).toHaveURL(/blend=.*rank_forbes:30/)
+  })
+
+  test('multiple blend sliders combine correctly with percentages shown @comprehensive @blend', async ({
+    page,
+  }) => {
+    await searchWith(page, {
+      blend: 'rank_us_news_national:40,rank_forbes:60',
+    })
+    await waitForResults(page)
+
+    const blendBuilder = page.getByTestId('ranking-blend-builder')
+
+    // US News National: 40 out of 100 total = 40%
+    const usNewsField = blendBuilder.locator(
+      '[data-field="rank_us_news_national"]',
+    )
+    await expect(usNewsField.getByText('40 (40%)')).toBeVisible()
+
+    // Forbes: 60 out of 100 total = 60%
+    const forbesField = blendBuilder.locator('[data-field="rank_forbes"]')
+    await expect(forbesField.getByText('60 (60%)')).toBeVisible()
+  })
+})
+
+// ── Export ───────────────────────────────────────────────────────────────────
+
+test.describe('Export', () => {
+  test('click Export CSV downloads a file @standard @export', async ({
+    page,
+  }) => {
+    await searchWith(page, {})
+    await waitForResults(page)
+
+    // Set up download listener before clicking
+    const downloadPromise = page.waitForEvent('download')
+
+    // Click the Export CSV button
+    const csvButton = page.getByRole('button', { name: /Export CSV/i })
+    await expect(csvButton).toBeEnabled()
+    await csvButton.click()
+
+    // Verify that a download was initiated
+    const download = await downloadPromise
+    expect(download.suggestedFilename()).toContain('.csv')
+  })
+
+  test('click Export PDF downloads a file @standard @export', async ({
+    page,
+  }) => {
+    await searchWith(page, {})
+    await waitForResults(page)
+
+    // Set up download listener before clicking
+    const downloadPromise = page.waitForEvent('download')
+
+    // Click the Export PDF button
+    const pdfButton = page.getByRole('button', { name: /Export PDF/i })
+    await expect(pdfButton).toBeEnabled()
+    await pdfButton.click()
+
+    // Verify that a download was initiated
+    const download = await downloadPromise
+    expect(download.suggestedFilename()).toContain(
+      'college-power-search-export.pdf',
+    )
+  })
+
+  test('export respects active filters @comprehensive @export', async ({
+    page,
+  }) => {
+    // Search with a filter that narrows results
+    await searchWith(page, { state: 'MA' })
+    await waitForResults(page)
+
+    const filteredCount = await getResultCount(page)
+    expect(filteredCount).toBeGreaterThan(0)
+
+    // Set up download listener — CSV export triggers a download
+    const downloadPromise = page.waitForEvent('download')
+
+    await page.getByRole('button', { name: /Export CSV/i }).click()
+
+    const download = await downloadPromise
+
+    // The download URL should contain the filter data
+    const exportUrl = download.url()
+    expect(exportUrl).toContain('/api/export/csv')
+    expect(exportUrl).toContain('filters=')
+  })
+})

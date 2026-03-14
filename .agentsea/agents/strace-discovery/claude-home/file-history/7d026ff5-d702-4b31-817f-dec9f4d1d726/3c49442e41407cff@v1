@@ -1,0 +1,131 @@
+package dbutil
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strconv"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+// datasetID returns the deterministic primary key for a dataset row.
+func datasetID(unitID, theme, datakey string) string {
+	return unitID + ":" + theme + ":" + datakey
+}
+
+// annualDatasetID returns the deterministic primary key for an annual_dataset row.
+func annualDatasetID(unitID string, year int, theme, datakey string) string {
+	return unitID + ":" + strconv.Itoa(year) + ":" + theme + ":" + datakey
+}
+
+// UpsertInstitution inserts or updates a row in search_base.institution. On
+// conflict (unit_id), JSONB columns are merged with existing data using
+// COALESCE(existing, '{}') || incoming so that nil fields in inst are treated
+// as empty objects and do not overwrite existing data.
+func UpsertInstitution(ctx context.Context, pool *pgxpool.Pool, inst *Institution) error {
+	const sql = `
+INSERT INTO search_base.institution (
+    unit_id, ope6_id, ope8_id, institution_name, city, state,
+    nces, weather, rankings, athletics, admissions,
+    fields_of_study, misc, safety_and_security,
+    created, updated, version
+) VALUES (
+    $1, $2, $3, $4, $5, $6,
+    $7, $8, $9, $10, $11,
+    $12, $13, $14,
+    now(), now(), 1
+)
+ON CONFLICT (unit_id) DO UPDATE SET
+    ope6_id            = EXCLUDED.ope6_id,
+    ope8_id            = EXCLUDED.ope8_id,
+    institution_name   = EXCLUDED.institution_name,
+    city               = EXCLUDED.city,
+    state              = EXCLUDED.state,
+    nces               = COALESCE(search_base.institution.nces, '{}'::jsonb)               || COALESCE(EXCLUDED.nces,               '{}'::jsonb),
+    weather            = COALESCE(search_base.institution.weather, '{}'::jsonb)            || COALESCE(EXCLUDED.weather,            '{}'::jsonb),
+    rankings           = COALESCE(search_base.institution.rankings, '{}'::jsonb)           || COALESCE(EXCLUDED.rankings,           '{}'::jsonb),
+    athletics          = COALESCE(search_base.institution.athletics, '{}'::jsonb)          || COALESCE(EXCLUDED.athletics,          '{}'::jsonb),
+    admissions         = COALESCE(search_base.institution.admissions, '{}'::jsonb)         || COALESCE(EXCLUDED.admissions,         '{}'::jsonb),
+    fields_of_study    = COALESCE(search_base.institution.fields_of_study, '{}'::jsonb)    || COALESCE(EXCLUDED.fields_of_study,    '{}'::jsonb),
+    misc               = COALESCE(search_base.institution.misc, '{}'::jsonb)               || COALESCE(EXCLUDED.misc,               '{}'::jsonb),
+    safety_and_security = COALESCE(search_base.institution.safety_and_security, '{}'::jsonb) || COALESCE(EXCLUDED.safety_and_security, '{}'::jsonb),
+    updated            = now(),
+    version            = search_base.institution.version + 1`
+
+	_, err := pool.Exec(ctx, sql,
+		inst.UnitID, inst.OPE6ID, inst.OPE8ID, inst.Name, inst.City, inst.State,
+		inst.NCES, inst.Weather, inst.Rankings, inst.Athletics, inst.Admissions,
+		inst.FieldsOfStudy, inst.Misc, inst.SafetyAndSecurity,
+	)
+	if err != nil {
+		return fmt.Errorf("dbutil: upsert institution %s: %w", inst.UnitID, err)
+	}
+	return nil
+}
+
+// UpsertDataset inserts or updates a row in search_base.dataset. On conflict
+// (id), the data JSONB is merged with COALESCE || semantics.
+func UpsertDataset(ctx context.Context, pool *pgxpool.Pool, ds *Dataset) error {
+	const sql = `
+INSERT INTO search_base.dataset (id, unit_id, theme, datakey, data, created, updated, version)
+VALUES ($1, $2, $3, $4, $5, now(), now(), 1)
+ON CONFLICT (id) DO UPDATE SET
+    data    = COALESCE(search_base.dataset.data, '{}'::jsonb) || EXCLUDED.data,
+    updated = now(),
+    version = search_base.dataset.version + 1`
+
+	id := datasetID(ds.UnitID, ds.Theme, ds.Datakey)
+	_, err := pool.Exec(ctx, sql, id, ds.UnitID, ds.Theme, ds.Datakey, ds.Data)
+	if err != nil {
+		return fmt.Errorf("dbutil: upsert dataset %s: %w", id, err)
+	}
+	return nil
+}
+
+// UpsertAnnualDataset inserts or updates a row in search_base.annual_dataset.
+// On conflict (id), the data JSONB is merged with COALESCE || semantics.
+func UpsertAnnualDataset(ctx context.Context, pool *pgxpool.Pool, ads *AnnualDataset) error {
+	const sql = `
+INSERT INTO search_base.annual_dataset (id, unit_id, year, theme, datakey, data, is_latest, created, updated, version)
+VALUES ($1, $2, $3, $4, $5, $6, false, now(), now(), 1)
+ON CONFLICT (id) DO UPDATE SET
+    data    = COALESCE(search_base.annual_dataset.data, '{}'::jsonb) || EXCLUDED.data,
+    updated = now(),
+    version = search_base.annual_dataset.version + 1`
+
+	id := annualDatasetID(ads.UnitID, ads.Year, ads.Theme, ads.Datakey)
+	_, err := pool.Exec(ctx, sql, id, ads.UnitID, ads.Year, ads.Theme, ads.Datakey, ads.Data)
+	if err != nil {
+		return fmt.Errorf("dbutil: upsert annual_dataset %s: %w", id, err)
+	}
+	return nil
+}
+
+// MergeJSONB merges two JSON objects at the Go level. Keys in src overwrite
+// keys in dst. Both dst and src may be nil (treated as empty objects).
+func MergeJSONB(dst, src []byte) ([]byte, error) {
+	dstMap := make(map[string]json.RawMessage)
+	srcMap := make(map[string]json.RawMessage)
+
+	if len(dst) > 0 {
+		if err := json.Unmarshal(dst, &dstMap); err != nil {
+			return nil, fmt.Errorf("dbutil: merge jsonb: unmarshal dst: %w", err)
+		}
+	}
+	if len(src) > 0 {
+		if err := json.Unmarshal(src, &srcMap); err != nil {
+			return nil, fmt.Errorf("dbutil: merge jsonb: unmarshal src: %w", err)
+		}
+	}
+
+	for k, v := range srcMap {
+		dstMap[k] = v
+	}
+
+	out, err := json.Marshal(dstMap)
+	if err != nil {
+		return nil, fmt.Errorf("dbutil: merge jsonb: marshal: %w", err)
+	}
+	return out, nil
+}

@@ -1,0 +1,28 @@
+import { StrictMode } from 'react'
+import { createRoot } from 'react-dom/client'
+import { BrowserRouter } from 'react-router-dom'
+import { Provider as UrqlProvider } from 'urql'
+import '@mantine/core/styles.css'
+import '@mantine/carousel/styles.css'
+import { App } from './App'
+import { ErrorBoundary } from './components/ErrorBoundary'
+import './assets/styles/index.css'
+import { urqlClient } from './lib/urqlClient'
+import { AppProviders } from './providers/AppProviders'
+
+const rootEl = document.getElementById('root')
+if (!rootEl) throw new Error('Root element not found')
+
+createRoot(rootEl).render(
+  <StrictMode>
+    <UrqlProvider value={urqlClient}>
+      <AppProviders>
+        <ErrorBoundary>
+          <BrowserRouter>
+            <App />
+          </BrowserRouter>
+        </ErrorBoundary>
+      </AppProviders>
+    </UrqlProvider>
+  </StrictMode>,
+)

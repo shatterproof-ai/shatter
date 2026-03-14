@@ -1,0 +1,143 @@
+package cli
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestSmokePreflight_ClaudeNotFound(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_TEAMMATE_COMMAND", "")
+	t.Setenv("PATH", t.TempDir())
+
+	_, err := smokePreflight()
+	if err == nil {
+		t.Fatal("expected error when claude not on PATH")
+	}
+	if !strings.Contains(err.Error(), "claude binary") {
+		t.Errorf("error should mention claude binary, got: %v", err)
+	}
+}
+
+func TestSmokePreflight_BwrapNotFound(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_TEAMMATE_COMMAND", "")
+	dir := t.TempDir()
+	createFakeBinary(t, dir, "claude")
+	t.Setenv("PATH", dir)
+
+	_, err := smokePreflight()
+	if err == nil {
+		t.Fatal("expected error when bwrap not on PATH")
+	}
+	if !strings.Contains(err.Error(), "bwrap not found") {
+		t.Errorf("error should mention bwrap, got: %v", err)
+	}
+}
+
+func TestSmokePreflight_Success(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_TEAMMATE_COMMAND", "")
+	setPathWithBinaries(t)
+
+	cfg, err := smokePreflight()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer os.RemoveAll(cfg.TmpDir)
+
+	if cfg.ClaudeBin == "" {
+		t.Error("ClaudeBin should not be empty")
+	}
+	if cfg.SeaBin == "" {
+		t.Error("SeaBin should not be empty")
+	}
+	if cfg.TmpDir == "" {
+		t.Error("TmpDir should not be empty")
+	}
+	if cfg.WsDir == "" {
+		t.Error("WsDir should not be empty")
+	}
+	if _, err := os.Stat(cfg.TmpDir); err != nil {
+		t.Errorf("TmpDir should exist: %v", err)
+	}
+	if !strings.Contains(cfg.WsDir, filepath.Base(cfg.TmpDir)) {
+		t.Errorf("WsDir should contain tmpdir basename, got: %s", cfg.WsDir)
+	}
+}
+
+func TestSmokeSetup_CreatesWorkspace(t *testing.T) {
+	tmpDir := t.TempDir()
+	wsDir := t.TempDir()
+
+	cfg := &smokeConfig{
+		TmpDir:    tmpDir,
+		WsDir:     wsDir,
+		ClaudeBin: "/fake/claude",
+		SeaBin:    "/fake/sea",
+	}
+
+	if err := smokeSetup(cfg); err != nil {
+		t.Fatalf("smokeSetup failed: %v", err)
+	}
+
+	// Check project files
+	for _, name := range []string{"CLAUDE.md", "README.md"} {
+		if _, err := os.Stat(filepath.Join(tmpDir, name)); err != nil {
+			t.Errorf("%s should exist: %v", name, err)
+		}
+	}
+
+	// Check workspace structure
+	if _, err := os.Stat(filepath.Join(wsDir, "workspace.yaml")); err != nil {
+		t.Error("workspace.yaml should exist")
+	}
+	if _, err := os.Stat(filepath.Join(wsDir, "canonical")); err != nil {
+		t.Error("canonical bare repo should exist")
+	}
+	if _, err := os.Stat(filepath.Join(wsDir, "agents")); err != nil {
+		t.Error("agents dir should exist")
+	}
+
+	// Check CLAUDE.md content
+	content, err := os.ReadFile(filepath.Join(tmpDir, "CLAUDE.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(content), "sea smoke") {
+		t.Error("CLAUDE.md should mention sea smoke")
+	}
+}
+
+func TestSmokePrompt_NotEmpty(t *testing.T) {
+	if len(smokePrompt) < 100 {
+		t.Error("smokePrompt seems too short")
+	}
+	if !strings.Contains(smokePrompt, "BWRAP") {
+		t.Error("smokePrompt should include BWRAP check")
+	}
+	if !strings.Contains(smokePrompt, "WRITE ISOLATION") {
+		t.Error("smokePrompt should include WRITE ISOLATION check")
+	}
+	if !strings.Contains(smokePrompt, "SMOKE TEST RESULTS") {
+		t.Error("smokePrompt should include results summary format")
+	}
+}
+
+func TestSmokeCleanup_RemovesDir(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "ws-test")
+	if err := os.MkdirAll(sub, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	smokeCleanup(sub)
+
+	if _, err := os.Stat(sub); !os.IsNotExist(err) {
+		t.Error("smokeCleanup should remove the directory")
+	}
+}
+
+func TestSmokeCleanup_EmptyString(t *testing.T) {
+	// Should not panic
+	smokeCleanup("")
+}

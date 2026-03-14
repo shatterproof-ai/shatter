@@ -1,0 +1,34 @@
+package worker
+
+import (
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/riverqueue/river"
+
+	"github.com/ketang/flotsam/api/internal/item"
+	"github.com/ketang/flotsam/api/internal/provider"
+	"github.com/ketang/flotsam/api/internal/storage"
+)
+
+// Deps holds dependencies that workers need for processing jobs.
+type Deps struct {
+	Pool        *pgxpool.Pool
+	Storage     *storage.Client // nil if S3 not configured
+	Transcriber provider.Transcriber
+}
+
+// Workers returns a river.Workers collection with all job types registered.
+func Workers(deps Deps) *river.Workers {
+	items := item.New(deps.Pool)
+
+	workers := river.NewWorkers()
+	river.AddWorker(workers, &PageFetchWorker{Items: items, Storage: deps.Storage})
+	river.AddWorker(workers, &TranscribeWorker{
+		Storage:     deps.Storage,
+		Transcriber: deps.Transcriber,
+		Pool:        deps.Pool,
+	})
+	river.AddWorker(workers, &EmbedWorker{})
+	river.AddWorker(workers, &ClassifyWorker{})
+	river.AddWorker(workers, &S3UploadWorker{})
+	return workers
+}
