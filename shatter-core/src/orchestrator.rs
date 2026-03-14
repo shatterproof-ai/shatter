@@ -146,6 +146,9 @@ const GENTLE_MUTATE_ROUNDS: usize = 2;
 /// Crossover probability for recombining parent inputs on unknown constraints.
 const CROSSOVER_RATE_UNKNOWN: f64 = 0.7;
 
+/// Minimum observations of a loop-invariant branch before skipping redundant occurrences.
+const DEFAULT_MIN_INVARIANT_OBSERVATIONS: usize = 2;
+
 impl Default for ExploreConfig {
     fn default() -> Self {
         Self {
@@ -653,6 +656,135 @@ pub(crate) fn classify_iteration_positions(
     positions
 }
 
+/// Detects branches inside loops whose `taken` value never varies across iterations.
+///
+/// After observing enough iterations (>= `min_observations`) with a constant
+/// `taken` value, the branch is marked invariant. Only its first occurrence in
+/// each execution trace needs negation — later occurrences are redundant and
+/// can be skipped by the solver loop.
+///
+/// Invariance is revocable: if a branch previously marked invariant is observed
+/// to vary, it is removed from the invariant set.
+pub(crate) struct LoopInvariantDetector {
+    /// Maps (loop_id, branch_id) → list of observed `taken` values.
+    observations: HashMap<(u32, u32), Vec<bool>>,
+    /// Confirmed invariant (loop_id, branch_id) pairs.
+    invariant_cache: HashSet<(u32, u32)>,
+    /// Minimum observations before confirming invariance.
+    min_observations: usize,
+}
+
+impl LoopInvariantDetector {
+    pub(crate) fn new() -> Self {
+        Self {
+            observations: HashMap::new(),
+            invariant_cache: HashSet::new(),
+            min_observations: DEFAULT_MIN_INVARIANT_OBSERVATIONS,
+        }
+    }
+
+    /// Record branch `taken` values for each (loop_id, branch_id) pair in the trace.
+    /// After recording, update the invariant cache: confirm new invariants,
+    /// revoke ones that now vary.
+    pub(crate) fn observe(
+        &mut self,
+        scope_events: &[TraceEvent],
+        _branch_path: &[BranchDecision],
+    ) {
+        if scope_events.is_empty() {
+            return;
+        }
+
+        let mut loop_stack: Vec<u32> = Vec::new();
+
+        for ev in scope_events {
+            match ev {
+                TraceEvent::Scope {
+                    event: ScopeEvent::LoopEnter { loop_id },
+                } => {
+                    loop_stack.push(*loop_id);
+                }
+                TraceEvent::Scope {
+                    event: ScopeEvent::LoopExit { loop_id },
+                } => {
+                    loop_stack.retain(|id| id != loop_id);
+                }
+                TraceEvent::Branch { decision } => {
+                    if let Some(&innermost) = loop_stack.last() {
+                        self.observations
+                            .entry((innermost, decision.branch_id))
+                            .or_default()
+                            .push(decision.taken);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Update invariant cache.
+        for (&key, values) in &self.observations {
+            if values.len() >= self.min_observations {
+                let all_same = values.iter().all(|&v| v == values[0]);
+                if all_same {
+                    self.invariant_cache.insert(key);
+                } else {
+                    self.invariant_cache.remove(&key);
+                }
+            }
+        }
+    }
+
+    /// Return the set of branch_path indices that should be SKIPPED (redundant
+    /// later occurrences of invariant branches). The first occurrence of each
+    /// invariant (loop_id, branch_id) is kept; all subsequent are skipped.
+    pub(crate) fn skip_indices(
+        &self,
+        scope_events: &[TraceEvent],
+        branch_path: &[BranchDecision],
+    ) -> HashSet<usize> {
+        if scope_events.is_empty() || self.invariant_cache.is_empty() {
+            return HashSet::new();
+        }
+
+        // Map each branch event index to its enclosing loop_id.
+        let mut loop_stack: Vec<u32> = Vec::new();
+        let mut branch_loop_map: Vec<Option<u32>> = Vec::new();
+
+        for ev in scope_events {
+            match ev {
+                TraceEvent::Scope {
+                    event: ScopeEvent::LoopEnter { loop_id },
+                } => {
+                    loop_stack.push(*loop_id);
+                }
+                TraceEvent::Scope {
+                    event: ScopeEvent::LoopExit { loop_id },
+                } => {
+                    loop_stack.retain(|id| id != loop_id);
+                }
+                TraceEvent::Branch { .. } => {
+                    branch_loop_map.push(loop_stack.last().copied());
+                }
+                _ => {}
+            }
+        }
+
+        let mut seen_first: HashSet<(u32, u32)> = HashSet::new();
+        let mut skip = HashSet::new();
+
+        for (i, bd) in branch_path.iter().enumerate() {
+            if let Some(Some(loop_id)) = branch_loop_map.get(i) {
+                let key = (*loop_id, bd.branch_id);
+                if self.invariant_cache.contains(&key) && !seen_first.insert(key) {
+                    skip.insert(i);
+                }
+            }
+        }
+
+        skip
+    }
+}
+
 /// Solve/Generate phase: process new-path observations and produce candidate inputs.
 ///
 /// For each new-path observation:
@@ -675,6 +807,7 @@ fn solve_and_generate(
     fitness_weights: &FitnessWeights,
     mock_params: &[MockParam],
     branch_profile: Option<&crate::branch_profile::BranchProfile>,
+    invariant_detector: &mut LoopInvariantDetector,
 ) -> SolveOutput {
     let mut output = SolveOutput::default();
 
@@ -690,9 +823,20 @@ fn solve_and_generate(
             .collect();
         let solvable: Vec<SymExpr> = solvable_with_idx.iter().map(|(_, e)| e.clone()).collect();
 
+        // Loop-invariant detection: observe this trace and compute skip indices.
+        invariant_detector.observe(&obs.result.scope_events, &obs.result.branch_path);
+        let invariant_skip = invariant_detector.skip_indices(
+            &obs.result.scope_events,
+            &obs.result.branch_path,
+        );
+
         // Try to negate each branch constraint with Z3.
         if !solvable.is_empty() {
             for (solve_idx, &(branch_idx, _)) in solvable_with_idx.iter().enumerate() {
+                // Skip redundant later occurrences of loop-invariant branches.
+                if invariant_skip.contains(&branch_idx) {
+                    continue;
+                }
                 match solver::solve_for_new_path(&solvable, solve_idx, config.solver_timeout_ms, param_infos) {
                     Ok(SolveResult::Sat(values)) => {
                         let new_inputs =
@@ -996,6 +1140,8 @@ pub async fn explore(
     // generation with adaptive strategy selection.
     let _meta_strategy: MetaStrategy = MetaStrategy::new(vec![], Default::default());
 
+    let mut invariant_detector = LoopInvariantDetector::new();
+
     // Generate initial mock values when mock_params are configured.
     let initial_mocks = if !config.mock_params.is_empty() {
         input_gen::generate_mock_values(&config.mock_params, &mut rng, None)
@@ -1243,6 +1389,7 @@ pub async fn explore(
             &fitness_weights,
             &config.mock_params,
             config.branch_profile.as_ref(),
+            &mut invariant_detector,
         );
 
         z3_generated += solve_output.z3_count;
@@ -1843,6 +1990,7 @@ mod tests {
             &FitnessWeights::default(),
             &[],
             None,
+            &mut LoopInvariantDetector::new(),
         );
 
         assert!(output.candidates.is_empty());
@@ -1892,6 +2040,7 @@ mod tests {
             &FitnessWeights::default(),
             &[],
             None,
+            &mut LoopInvariantDetector::new(),
         );
 
         assert!(output.fuzz_count > 0, "should produce fuzz candidates for unknown constraints");
@@ -1952,6 +2101,7 @@ mod tests {
             &FitnessWeights::default(),
             &[],
             None,
+            &mut LoopInvariantDetector::new(),
         );
 
         assert!(output.z3_count > 0, "should produce Z3 candidates for solvable constraints");
@@ -2543,6 +2693,69 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Loop-invariant detector tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn invariant_detector_marks_constant_branch() {
+        let mut detector = LoopInvariantDetector::new();
+        let events = vec![
+            TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id: 1 } },
+            TraceEvent::Branch { decision: BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default() } },
+            TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id: 1 } },
+            TraceEvent::Branch { decision: BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default() } },
+            TraceEvent::Scope { event: ScopeEvent::LoopExit { loop_id: 1 } },
+        ];
+        let bp = vec![
+            BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default() },
+            BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default() },
+        ];
+        detector.observe(&events, &bp);
+        let skip = detector.skip_indices(&events, &bp);
+        assert!(!skip.contains(&0));
+        assert!(skip.contains(&1));
+    }
+
+    #[test]
+    fn invariant_detector_revokes_on_variation() {
+        let mut detector = LoopInvariantDetector::new();
+        let events1 = vec![
+            TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id: 1 } },
+            TraceEvent::Branch { decision: BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default() } },
+            TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id: 1 } },
+            TraceEvent::Branch { decision: BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default() } },
+            TraceEvent::Scope { event: ScopeEvent::LoopExit { loop_id: 1 } },
+        ];
+        let bp1 = vec![
+            BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default() },
+            BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default() },
+        ];
+        detector.observe(&events1, &bp1);
+        assert!(!detector.skip_indices(&events1, &bp1).is_empty());
+
+        let events2 = vec![
+            TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id: 1 } },
+            TraceEvent::Branch { decision: BranchDecision { branch_id: 10, line: 5, taken: false, constraint: SymConstraint::default() } },
+            TraceEvent::Scope { event: ScopeEvent::LoopExit { loop_id: 1 } },
+        ];
+        let bp2 = vec![
+            BranchDecision { branch_id: 10, line: 5, taken: false, constraint: SymConstraint::default() },
+        ];
+        detector.observe(&events2, &bp2);
+        let skip = detector.skip_indices(&events1, &bp1);
+        assert!(skip.is_empty());
+    }
+
+    #[test]
+    fn invariant_detector_empty_events_no_skip() {
+        let detector = LoopInvariantDetector::new();
+        let bp = vec![
+            BranchDecision { branch_id: 1, line: 5, taken: true, constraint: SymConstraint::default() },
+        ];
+        assert!(detector.skip_indices(&[], &bp).is_empty());
+    }
+
+    // -----------------------------------------------------------------------
     // Property-based tests
     // -----------------------------------------------------------------------
 
@@ -2738,6 +2951,40 @@ mod tests {
 
                 let positions = classify_iteration_positions(&events, &branch_path);
                 prop_assert_eq!(positions.len(), num_branches);
+            }
+
+            /// A branch that varies across observations is never marked invariant.
+            #[test]
+            fn varying_branch_never_invariant(
+                loop_id in 0..10u32,
+                branch_id in 0..20u32,
+            ) {
+                let mut detector = LoopInvariantDetector::new();
+                let events_true = vec![
+                    TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id } },
+                    TraceEvent::Branch { decision: BranchDecision { branch_id, line: 1, taken: true, constraint: SymConstraint::default() } },
+                    TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id } },
+                    TraceEvent::Branch { decision: BranchDecision { branch_id, line: 1, taken: true, constraint: SymConstraint::default() } },
+                    TraceEvent::Scope { event: ScopeEvent::LoopExit { loop_id } },
+                ];
+                let bp_true = vec![
+                    BranchDecision { branch_id, line: 1, taken: true, constraint: SymConstraint::default() },
+                    BranchDecision { branch_id, line: 1, taken: true, constraint: SymConstraint::default() },
+                ];
+                detector.observe(&events_true, &bp_true);
+
+                let events_false = vec![
+                    TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id } },
+                    TraceEvent::Branch { decision: BranchDecision { branch_id, line: 1, taken: false, constraint: SymConstraint::default() } },
+                    TraceEvent::Scope { event: ScopeEvent::LoopExit { loop_id } },
+                ];
+                let bp_false = vec![
+                    BranchDecision { branch_id, line: 1, taken: false, constraint: SymConstraint::default() },
+                ];
+                detector.observe(&events_false, &bp_false);
+
+                let skip = detector.skip_indices(&events_true, &bp_true);
+                prop_assert!(skip.is_empty());
             }
         }
     }

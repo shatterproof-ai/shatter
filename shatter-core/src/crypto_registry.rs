@@ -140,6 +140,8 @@ pub fn classify_by_name(dep: &ExternalDependency) -> Option<CryptoBoundary> {
                 confidence: Confidence::Medium,
                 param_roles: HashMap::new(),
                 call_sites: dep.call_sites.clone(),
+                input_entropy: None,
+                output_entropy: None,
             });
         }
     }
@@ -161,6 +163,8 @@ pub fn classify_by_name(dep: &ExternalDependency) -> Option<CryptoBoundary> {
                     confidence: Confidence::Low,
                     param_roles: HashMap::new(),
                     call_sites: dep.call_sites.clone(),
+                    input_entropy: None,
+                    output_entropy: None,
                 });
             }
         }
@@ -297,6 +301,8 @@ impl CryptoRegistry {
                         confidence: Confidence::High,
                         param_roles: entry.param_roles.clone(),
                         call_sites: dep.call_sites.clone(),
+                        input_entropy: None,
+                        output_entropy: None,
                     });
                 }
                 // Layer 2: naming heuristic.
