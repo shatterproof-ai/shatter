@@ -190,7 +190,8 @@ type CryptoBoundary struct {
 	Symbol       string            `json:"symbol"`
 	SourceModule string            `json:"source_module"`
 	Direction    string            `json:"direction"`
-	Output       string            `json:"output"`
+	Output       string            `json:"output,omitempty"`
+	Confidence   string            `json:"confidence,omitempty"`
 	ParamRoles   map[string]string `json:"param_roles,omitempty"`
 	CallSites    []int             `json:"call_sites"`
 }

@@ -13,6 +13,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::nondeterminism::Confidence;
 use crate::protocol::{CryptoBoundary, ExternalDependency};
 
 /// Built-in registry TOML, embedded at compile time.
@@ -84,6 +85,88 @@ struct LookupKey {
     language: String,
     package: String,
     symbol: String,
+}
+
+// ---------------------------------------------------------------------------
+// Layer 2: Naming heuristic patterns
+// ---------------------------------------------------------------------------
+
+/// Strong crypto name patterns — Medium confidence when matched.
+/// Checked as case-insensitive substrings of the function/method name.
+const STRONG_CRYPTO_PATTERNS: &[(&str, CryptoDirection)] = &[
+    ("decrypt", CryptoDirection::Decrypt),
+    ("decipher", CryptoDirection::Decrypt),
+    ("encrypt", CryptoDirection::Encrypt),
+    ("encipher", CryptoDirection::Encrypt),
+    ("unseal", CryptoDirection::Decrypt),
+    ("unprotect", CryptoDirection::Decrypt),
+];
+
+/// Ambiguous crypto patterns — Low confidence, only matched when the
+/// dependency's `source_module` contains a crypto-related indicator.
+const AMBIGUOUS_CRYPTO_PATTERNS: &[(&str, CryptoDirection)] = &[
+    ("seal", CryptoDirection::Encrypt),
+    ("open", CryptoDirection::Decrypt),
+    ("protect", CryptoDirection::Encrypt),
+];
+
+/// Module name substrings that establish a crypto context for ambiguous patterns.
+const CRYPTO_MODULE_INDICATORS: &[&str] = &[
+    "crypto", "cipher", "aes", "ssl", "tls", "gpg", "nacl", "sodium", "bcrypt",
+    "argon", "scrypt", "hmac", "rsa", "ecdsa", "ed25519", "chacha", "salsa",
+    "blake", "tweetnacl", "libsodium",
+];
+
+/// Layer 2: classify a dependency by naming heuristic.
+///
+/// Matches function/method names against known crypto patterns. Strong patterns
+/// (e.g. `decrypt*`, `encrypt*`) get Medium confidence; ambiguous patterns
+/// (e.g. `open`, `seal`) get Low confidence and require the source module to
+/// contain a crypto-related indicator.
+///
+/// Returns `None` if no pattern matches (or if the match is ambiguous without
+/// crypto context).
+pub fn classify_by_name(dep: &ExternalDependency) -> Option<CryptoBoundary> {
+    let symbol_lower = dep.symbol.to_lowercase();
+
+    // Strong patterns: match anywhere in the symbol name (case-insensitive).
+    for &(pattern, direction) in STRONG_CRYPTO_PATTERNS {
+        if symbol_lower.contains(pattern) {
+            return Some(CryptoBoundary {
+                symbol: dep.symbol.clone(),
+                source_module: dep.source_module.clone(),
+                direction,
+                output: None,
+                confidence: Confidence::Medium,
+                param_roles: HashMap::new(),
+                call_sites: dep.call_sites.clone(),
+            });
+        }
+    }
+
+    // Ambiguous patterns: require crypto context in the source module.
+    let module_lower = dep.source_module.to_lowercase();
+    let has_crypto_context = CRYPTO_MODULE_INDICATORS
+        .iter()
+        .any(|ind| module_lower.contains(ind));
+
+    if has_crypto_context {
+        for &(pattern, direction) in AMBIGUOUS_CRYPTO_PATTERNS {
+            if symbol_lower.contains(pattern) {
+                return Some(CryptoBoundary {
+                    symbol: dep.symbol.clone(),
+                    source_module: dep.source_module.clone(),
+                    direction,
+                    output: None,
+                    confidence: Confidence::Low,
+                    param_roles: HashMap::new(),
+                    call_sites: dep.call_sites.clone(),
+                });
+            }
+        }
+    }
+
+    None
 }
 
 /// Registry of known cryptographic API functions.
@@ -193,7 +276,10 @@ impl CryptoRegistry {
         self.entries.is_empty()
     }
 
-    /// Classify all dependencies in a list, returning `CryptoBoundary` for each match.
+    /// Classify all dependencies, returning `CryptoBoundary` for each match.
+    ///
+    /// Tries Layer 1 (exact registry match, High confidence) first, then
+    /// falls back to Layer 2 (naming heuristic, Medium/Low confidence).
     pub fn classify_all_dependencies(
         &self,
         deps: &[ExternalDependency],
@@ -201,16 +287,20 @@ impl CryptoRegistry {
     ) -> Vec<CryptoBoundary> {
         deps.iter()
             .filter_map(|dep| {
-                self.classify_dependency(dep, language).map(|entry| {
-                    CryptoBoundary {
+                // Layer 1: exact registry match.
+                if let Some(entry) = self.classify_dependency(dep, language) {
+                    return Some(CryptoBoundary {
                         symbol: dep.symbol.clone(),
                         source_module: dep.source_module.clone(),
                         direction: entry.direction,
-                        output: entry.output,
+                        output: Some(entry.output),
+                        confidence: Confidence::High,
                         param_roles: entry.param_roles.clone(),
                         call_sites: dep.call_sites.clone(),
-                    }
-                })
+                    });
+                }
+                // Layer 2: naming heuristic.
+                classify_by_name(dep)
             })
             .collect()
     }
@@ -447,7 +537,8 @@ output = "plaintext"
         assert_eq!(boundaries[0].symbol, "createDecipheriv");
         assert_eq!(boundaries[0].source_module, "crypto");
         assert_eq!(boundaries[0].direction, CryptoDirection::Decrypt);
-        assert_eq!(boundaries[0].output, OutputSemantics::Plaintext);
+        assert_eq!(boundaries[0].output, Some(OutputSemantics::Plaintext));
+        assert_eq!(boundaries[0].confidence, Confidence::High);
         assert_eq!(boundaries[0].call_sites, vec![5, 12]);
     }
 
@@ -472,5 +563,129 @@ output = "plaintext"
         let registry = CryptoRegistry::load().unwrap();
         let boundaries = registry.classify_all_dependencies(&[], "typescript");
         assert!(boundaries.is_empty());
+    }
+
+    // -- Layer 2: naming heuristic tests --
+
+    fn make_dep(symbol: &str, source_module: &str) -> ExternalDependency {
+        ExternalDependency {
+            kind: DependencyKind::FunctionCall,
+            symbol: symbol.to_string(),
+            source_module: source_module.to_string(),
+            return_type: crate::types::TypeInfo::Unknown,
+            param_types: vec![],
+            call_sites: vec![10],
+        }
+    }
+
+    #[test]
+    fn classify_by_name_strong_pattern_encrypt() {
+        let dep = make_dep("encryptData", "my-custom-lib");
+        let boundary = classify_by_name(&dep).expect("should match encrypt pattern");
+        assert_eq!(boundary.direction, CryptoDirection::Encrypt);
+        assert_eq!(boundary.confidence, Confidence::Medium);
+        assert!(boundary.output.is_none());
+        assert!(boundary.param_roles.is_empty());
+    }
+
+    #[test]
+    fn classify_by_name_strong_pattern_decrypt() {
+        let dep = make_dep("decipherToken", "auth-utils");
+        let boundary = classify_by_name(&dep).expect("should match decipher pattern");
+        assert_eq!(boundary.direction, CryptoDirection::Decrypt);
+        assert_eq!(boundary.confidence, Confidence::Medium);
+    }
+
+    #[test]
+    fn classify_by_name_case_insensitive() {
+        let dep = make_dep("AES_Encrypt", "some-lib");
+        let boundary = classify_by_name(&dep).expect("should match case-insensitively");
+        assert_eq!(boundary.direction, CryptoDirection::Encrypt);
+    }
+
+    #[test]
+    fn classify_by_name_no_match() {
+        let dep = make_dep("processData", "my-utils");
+        assert!(classify_by_name(&dep).is_none());
+    }
+
+    #[test]
+    fn classify_by_name_ambiguous_needs_crypto_context() {
+        // "open" without crypto context should NOT match.
+        let dep_fs = make_dep("open", "fs");
+        assert!(
+            classify_by_name(&dep_fs).is_none(),
+            "open in fs module should not match"
+        );
+
+        // "open" WITH crypto context should match.
+        let dep_crypto = make_dep("open", "crypto/cipher");
+        let boundary =
+            classify_by_name(&dep_crypto).expect("open in crypto module should match");
+        assert_eq!(boundary.direction, CryptoDirection::Decrypt);
+        assert_eq!(boundary.confidence, Confidence::Low);
+    }
+
+    #[test]
+    fn classify_by_name_seal_without_context() {
+        let dep = make_dep("seal", "database");
+        assert!(classify_by_name(&dep).is_none());
+    }
+
+    #[test]
+    fn classify_by_name_seal_with_crypto_context() {
+        let dep = make_dep("seal", "nacl/box");
+        let boundary = classify_by_name(&dep).expect("seal in nacl module should match");
+        assert_eq!(boundary.direction, CryptoDirection::Encrypt);
+        assert_eq!(boundary.confidence, Confidence::Low);
+    }
+
+    #[test]
+    fn classify_by_name_unseal_strong_pattern() {
+        // unseal is a strong pattern — no context needed.
+        let dep = make_dep("unseal", "my-vault-lib");
+        let boundary = classify_by_name(&dep).expect("unseal should match as strong pattern");
+        assert_eq!(boundary.direction, CryptoDirection::Decrypt);
+        assert_eq!(boundary.confidence, Confidence::Medium);
+    }
+
+    #[test]
+    fn classify_all_prefers_layer1_over_layer2() {
+        let registry = CryptoRegistry::load().unwrap();
+        let dep = ExternalDependency {
+            kind: DependencyKind::FunctionCall,
+            symbol: "createDecipheriv".to_string(),
+            source_module: "crypto".to_string(),
+            return_type: crate::types::TypeInfo::Unknown,
+            param_types: vec![],
+            call_sites: vec![5],
+        };
+        let boundaries = registry.classify_all_dependencies(&[dep], "typescript");
+        assert_eq!(boundaries.len(), 1);
+        assert_eq!(boundaries[0].confidence, Confidence::High);
+        assert!(
+            boundaries[0].output.is_some(),
+            "Layer 1 results should have output semantics"
+        );
+    }
+
+    #[test]
+    fn classify_all_falls_back_to_layer2() {
+        let registry = CryptoRegistry::load().unwrap();
+        let dep = ExternalDependency {
+            kind: DependencyKind::FunctionCall,
+            symbol: "encryptPayload".to_string(),
+            source_module: "my-custom-lib".to_string(),
+            return_type: crate::types::TypeInfo::Unknown,
+            param_types: vec![],
+            call_sites: vec![20],
+        };
+        let boundaries = registry.classify_all_dependencies(&[dep], "typescript");
+        assert_eq!(boundaries.len(), 1);
+        assert_eq!(boundaries[0].confidence, Confidence::Medium);
+        assert!(
+            boundaries[0].output.is_none(),
+            "Layer 2 results should not have output semantics"
+        );
     }
 }
