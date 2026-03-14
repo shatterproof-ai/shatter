@@ -30,7 +30,7 @@ use crate::coverage_metrics::DiscoveryMethod;
 use crate::explorer::{apply_live_first_overrides, update_live_first_states};
 use crate::mock_value_space::LiveFirstState;
 use crate::drilling;
-use crate::execution_record::SymConstraint;
+use crate::execution_record::{BranchDecision, ScopeEvent, SymConstraint, TraceEvent};
 use crate::frontier::{Frontier, FrontierSet};
 use crate::frontend::{Frontend, FrontendError};
 use crate::genetic_fitness::{FitnessContext, FitnessWeights};
@@ -130,6 +130,11 @@ const MUTATE_ROUNDS_PER_UNKNOWN: usize = 3;
 /// Set high (1.0) because unknown constraints have no symbolic guidance,
 /// so aggressive mutation is needed to explore the input space.
 const MUTATE_RATE_UNKNOWN: f64 = 1.0;
+
+/// Fitness boost for branches in the first loop iteration.
+const BOUNDARY_FITNESS_FIRST: f64 = 1.0;
+/// Fitness boost for branches in the second loop iteration.
+const BOUNDARY_FITNESS_SECOND: f64 = 0.9;
 
 impl Default for ExploreConfig {
     fn default() -> Self {
@@ -541,6 +546,103 @@ struct ExploreBudget {
     explore_start: Instant,
 }
 
+/// Classification of a branch's position within a loop iteration sequence.
+/// Used by loop peeling to prioritize boundary iterations for negation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IterationPosition {
+    /// First iteration of the loop.
+    First,
+    /// Second iteration of the loop.
+    Second,
+    /// First iteration followed immediately by loop exit.
+    FirstExit,
+    /// Third or later iteration (interior).
+    Interior,
+    /// Not inside any loop.
+    NonLoop,
+}
+
+/// Walk scope_events and classify each Branch event's loop iteration position.
+///
+/// Returns one `IterationPosition` per Branch event in `scope_events` (skipping
+/// Scope events). If `scope_events` is empty, returns `NonLoop` for every entry
+/// in `branch_path`.
+pub(crate) fn classify_iteration_positions(
+    scope_events: &[TraceEvent],
+    branch_path: &[BranchDecision],
+) -> Vec<IterationPosition> {
+    if scope_events.is_empty() {
+        return vec![IterationPosition::NonLoop; branch_path.len()];
+    }
+
+    let mut loop_iter_count: HashMap<u32, u32> = HashMap::new();
+    let mut loop_stack: Vec<u32> = Vec::new();
+
+    // Pre-scan: for each branch event index, check if a LoopExit follows
+    // before the next Branch event.
+    let mut exit_follows: HashSet<usize> = HashSet::new();
+    let mut branch_idx = 0usize;
+    for (i, ev) in scope_events.iter().enumerate() {
+        if matches!(ev, TraceEvent::Branch { .. }) {
+            let mut j = i + 1;
+            while j < scope_events.len() {
+                match &scope_events[j] {
+                    TraceEvent::Scope {
+                        event: ScopeEvent::LoopExit { .. },
+                    } => {
+                        exit_follows.insert(branch_idx);
+                        break;
+                    }
+                    TraceEvent::Branch { .. } => break,
+                    _ => {}
+                }
+                j += 1;
+            }
+            branch_idx += 1;
+        }
+    }
+
+    // Main pass: classify each branch event.
+    let mut positions = Vec::new();
+    let mut branch_event_idx = 0usize;
+    for ev in scope_events {
+        match ev {
+            TraceEvent::Scope {
+                event: ScopeEvent::LoopEnter { loop_id },
+            } => {
+                *loop_iter_count.entry(*loop_id).or_insert(0) += 1;
+                loop_stack.push(*loop_id);
+            }
+            TraceEvent::Scope {
+                event: ScopeEvent::LoopExit { loop_id },
+            } => {
+                loop_stack.retain(|id| id != loop_id);
+            }
+            TraceEvent::Branch { .. } => {
+                let pos = if let Some(&innermost_loop) = loop_stack.last() {
+                    let count = loop_iter_count.get(&innermost_loop).copied().unwrap_or(0);
+                    if count == 1 && exit_follows.contains(&branch_event_idx) {
+                        IterationPosition::FirstExit
+                    } else if count == 1 {
+                        IterationPosition::First
+                    } else if count == 2 {
+                        IterationPosition::Second
+                    } else {
+                        IterationPosition::Interior
+                    }
+                } else {
+                    IterationPosition::NonLoop
+                };
+                positions.push(pos);
+                branch_event_idx += 1;
+            }
+            _ => {}
+        }
+    }
+
+    positions
+}
+
 /// Solve/Generate phase: process new-path observations and produce candidate inputs.
 ///
 /// For each new-path observation:
@@ -752,6 +854,34 @@ fn solve_and_generate(
                     branch_profile,
                 );
                 candidate.fitness = Some(breakdown.total);
+            }
+        }
+    }
+
+    // Loop peeling: boost candidates from observations containing boundary branches.
+    // Candidates from observations with first/second iteration branches get higher
+    // worklist priority, ensuring boundary paths are explored before deep interior.
+    for obs in observations.iter().filter(|o| o.is_new_path) {
+        let positions = classify_iteration_positions(
+            &obs.result.scope_events,
+            &obs.result.branch_path,
+        );
+        let best_boost: Option<f64> = positions
+            .iter()
+            .filter_map(|pos| match pos {
+                IterationPosition::First | IterationPosition::FirstExit => {
+                    Some(BOUNDARY_FITNESS_FIRST)
+                }
+                IterationPosition::Second => Some(BOUNDARY_FITNESS_SECOND),
+                _ => None,
+            })
+            .reduce(f64::max);
+
+        if let Some(boost) = best_boost {
+            for candidate in &mut output.candidates {
+                candidate.fitness = Some(
+                    candidate.fitness.map_or(boost, |existing| existing.max(boost)),
+                );
             }
         }
     }
@@ -2229,6 +2359,246 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Loop peeling tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn classify_empty_scope_events_returns_all_nonloop() {
+        let branch_path = vec![
+            BranchDecision {
+                branch_id: 1,
+                line: 10,
+                taken: true,
+                constraint: SymConstraint::default(),
+            },
+            BranchDecision {
+                branch_id: 2,
+                line: 20,
+                taken: false,
+                constraint: SymConstraint::default(),
+            },
+        ];
+        let positions = classify_iteration_positions(&[], &branch_path);
+        assert_eq!(positions.len(), 2);
+        assert!(positions.iter().all(|p| *p == IterationPosition::NonLoop));
+    }
+
+    #[test]
+    fn classify_single_iteration_loop() {
+        let scope_events = vec![
+            TraceEvent::Scope {
+                event: ScopeEvent::LoopEnter { loop_id: 1 },
+            },
+            TraceEvent::Branch {
+                decision: BranchDecision {
+                    branch_id: 10,
+                    line: 5,
+                    taken: true,
+                    constraint: SymConstraint::default(),
+                },
+            },
+            TraceEvent::Scope {
+                event: ScopeEvent::LoopExit { loop_id: 1 },
+            },
+        ];
+        let branch_path = vec![BranchDecision {
+            branch_id: 10,
+            line: 5,
+            taken: true,
+            constraint: SymConstraint::default(),
+        }];
+        let positions = classify_iteration_positions(&scope_events, &branch_path);
+        assert_eq!(positions, vec![IterationPosition::FirstExit]);
+    }
+
+    #[test]
+    fn classify_two_iteration_loop() {
+        let scope_events = vec![
+            TraceEvent::Scope {
+                event: ScopeEvent::LoopEnter { loop_id: 1 },
+            },
+            TraceEvent::Branch {
+                decision: BranchDecision {
+                    branch_id: 10,
+                    line: 5,
+                    taken: true,
+                    constraint: SymConstraint::default(),
+                },
+            },
+            TraceEvent::Scope {
+                event: ScopeEvent::LoopEnter { loop_id: 1 },
+            },
+            TraceEvent::Branch {
+                decision: BranchDecision {
+                    branch_id: 10,
+                    line: 5,
+                    taken: true,
+                    constraint: SymConstraint::default(),
+                },
+            },
+            TraceEvent::Scope {
+                event: ScopeEvent::LoopExit { loop_id: 1 },
+            },
+        ];
+        let branch_path = vec![
+            BranchDecision {
+                branch_id: 10,
+                line: 5,
+                taken: true,
+                constraint: SymConstraint::default(),
+            },
+            BranchDecision {
+                branch_id: 10,
+                line: 5,
+                taken: true,
+                constraint: SymConstraint::default(),
+            },
+        ];
+        let positions = classify_iteration_positions(&scope_events, &branch_path);
+        assert_eq!(
+            positions,
+            vec![IterationPosition::First, IterationPosition::Second]
+        );
+    }
+
+    #[test]
+    fn classify_three_iterations_has_interior() {
+        let scope_events = vec![
+            TraceEvent::Scope {
+                event: ScopeEvent::LoopEnter { loop_id: 1 },
+            },
+            TraceEvent::Branch {
+                decision: BranchDecision {
+                    branch_id: 10,
+                    line: 5,
+                    taken: true,
+                    constraint: SymConstraint::default(),
+                },
+            },
+            TraceEvent::Scope {
+                event: ScopeEvent::LoopEnter { loop_id: 1 },
+            },
+            TraceEvent::Branch {
+                decision: BranchDecision {
+                    branch_id: 10,
+                    line: 5,
+                    taken: true,
+                    constraint: SymConstraint::default(),
+                },
+            },
+            TraceEvent::Scope {
+                event: ScopeEvent::LoopEnter { loop_id: 1 },
+            },
+            TraceEvent::Branch {
+                decision: BranchDecision {
+                    branch_id: 10,
+                    line: 5,
+                    taken: true,
+                    constraint: SymConstraint::default(),
+                },
+            },
+            TraceEvent::Scope {
+                event: ScopeEvent::LoopExit { loop_id: 1 },
+            },
+        ];
+        let branch_path = vec![
+            BranchDecision {
+                branch_id: 10,
+                line: 5,
+                taken: true,
+                constraint: SymConstraint::default(),
+            },
+            BranchDecision {
+                branch_id: 10,
+                line: 5,
+                taken: true,
+                constraint: SymConstraint::default(),
+            },
+            BranchDecision {
+                branch_id: 10,
+                line: 5,
+                taken: true,
+                constraint: SymConstraint::default(),
+            },
+        ];
+        let positions = classify_iteration_positions(&scope_events, &branch_path);
+        assert_eq!(
+            positions,
+            vec![
+                IterationPosition::First,
+                IterationPosition::Second,
+                IterationPosition::Interior,
+            ]
+        );
+    }
+
+    #[test]
+    fn classify_branch_outside_loop_is_nonloop() {
+        let scope_events = vec![
+            TraceEvent::Branch {
+                decision: BranchDecision {
+                    branch_id: 1,
+                    line: 3,
+                    taken: false,
+                    constraint: SymConstraint::default(),
+                },
+            },
+            TraceEvent::Scope {
+                event: ScopeEvent::LoopEnter { loop_id: 1 },
+            },
+            TraceEvent::Branch {
+                decision: BranchDecision {
+                    branch_id: 10,
+                    line: 5,
+                    taken: true,
+                    constraint: SymConstraint::default(),
+                },
+            },
+            TraceEvent::Scope {
+                event: ScopeEvent::LoopExit { loop_id: 1 },
+            },
+        ];
+        let branch_path = vec![
+            BranchDecision {
+                branch_id: 1,
+                line: 3,
+                taken: false,
+                constraint: SymConstraint::default(),
+            },
+            BranchDecision {
+                branch_id: 10,
+                line: 5,
+                taken: true,
+                constraint: SymConstraint::default(),
+            },
+        ];
+        let positions = classify_iteration_positions(&scope_events, &branch_path);
+        assert_eq!(positions[0], IterationPosition::NonLoop);
+        assert_eq!(positions[1], IterationPosition::FirstExit);
+    }
+
+    #[test]
+    fn boundary_candidates_sort_above_interior_in_worklist() {
+        let interior = WorklistEntry {
+            inputs: vec![serde_json::json!(1)],
+            source: InputSource::Z3Solved,
+            fitness: None,
+            mock_values: vec![],
+        };
+        let boundary = WorklistEntry {
+            inputs: vec![serde_json::json!(2)],
+            source: InputSource::Z3Solved,
+            fitness: Some(BOUNDARY_FITNESS_FIRST),
+            mock_values: vec![],
+        };
+        let mut heap = BinaryHeap::new();
+        heap.push(interior);
+        heap.push(boundary);
+        let top = heap.pop().unwrap();
+        assert_eq!(top.fitness, Some(BOUNDARY_FITNESS_FIRST));
+    }
+
+    // -----------------------------------------------------------------------
     // Property-based tests
     // -----------------------------------------------------------------------
 
@@ -2385,6 +2755,45 @@ mod tests {
                 for (i, batch) in batches.iter().enumerate() {
                     prop_assert_eq!(&all_constraints[i], batch);
                 }
+            }
+
+            /// classify_iteration_positions output length equals the number of
+            /// Branch events in scope_events.
+            #[test]
+            fn classify_output_length_equals_branch_count(
+                num_branches in 0..20usize,
+                num_loops in 0..5usize,
+            ) {
+                let mut events = Vec::new();
+                let mut branch_path = Vec::new();
+                let mut active_loops = Vec::new();
+
+                for loop_id in 0..num_loops as u32 {
+                    events.push(TraceEvent::Scope {
+                        event: ScopeEvent::LoopEnter { loop_id },
+                    });
+                    active_loops.push(loop_id);
+                }
+
+                for i in 0..num_branches {
+                    let bd = BranchDecision {
+                        branch_id: i as u32,
+                        line: (i * 10) as u32,
+                        taken: true,
+                        constraint: SymConstraint::default(),
+                    };
+                    events.push(TraceEvent::Branch { decision: bd.clone() });
+                    branch_path.push(bd);
+                }
+
+                for loop_id in active_loops.into_iter().rev() {
+                    events.push(TraceEvent::Scope {
+                        event: ScopeEvent::LoopExit { loop_id },
+                    });
+                }
+
+                let positions = classify_iteration_positions(&events, &branch_path);
+                prop_assert_eq!(positions.len(), num_branches);
             }
         }
     }
