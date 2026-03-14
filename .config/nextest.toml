@@ -1,0 +1,17 @@
+# cargo-nextest configuration
+# https://nexte.st/book/configuration
+
+[profile.default]
+# Local development: use all available threads, moderate timeout
+slow-timeout = { period = "60s", terminate-after = 2 }
+fail-fast = true
+status-level = "fail"
+final-status-level = "slow"
+
+[profile.ci]
+# CI: stricter timeouts, retry flaky tests once
+slow-timeout = { period = "60s", terminate-after = 2 }
+retries = 1
+fail-fast = false
+status-level = "fail"
+final-status-level = "flaky"
