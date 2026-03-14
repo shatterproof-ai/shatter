@@ -252,6 +252,16 @@ pub(crate) enum CliCommand {
         /// analysis with `shatter analyze`. One JSON file per function.
         #[arg(long)]
         observe_output: Option<PathBuf>,
+
+        /// Replay previously recorded mock fixtures from .shatter/recorded-mocks/.
+        /// When set, auto-detects recorded mocks for each file+function pair and
+        /// uses observed return values as seed mock configs.
+        #[arg(long)]
+        replay_recorded: bool,
+
+        /// Disable auto-detection of recorded mocks (overrides --replay-recorded).
+        #[arg(long)]
+        no_replay: bool,
     },
 
     /// Analyze Stage 1 (Observe) output: produce equivalence classes, behavior map,
@@ -1315,6 +1325,56 @@ mod tests {
         match cli.command {
             CliCommand::Explore { record, .. } => {
                 assert!(!record);
+            }
+            _ => panic!("expected Explore command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_explore_with_replay_recorded_flag() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "explore",
+            "--replay-recorded",
+            "test.ts:myFunc",
+        ]);
+        match cli.command {
+            CliCommand::Explore { replay_recorded, no_replay, .. } => {
+                assert!(replay_recorded);
+                assert!(!no_replay);
+            }
+            _ => panic!("expected Explore command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_explore_with_no_replay_flag() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "explore",
+            "--no-replay",
+            "test.ts:myFunc",
+        ]);
+        match cli.command {
+            CliCommand::Explore { replay_recorded, no_replay, .. } => {
+                assert!(!replay_recorded);
+                assert!(no_replay);
+            }
+            _ => panic!("expected Explore command"),
+        }
+    }
+
+    #[test]
+    fn cli_replay_recorded_defaults_to_false() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "explore",
+            "test.ts:myFunc",
+        ]);
+        match cli.command {
+            CliCommand::Explore { replay_recorded, no_replay, .. } => {
+                assert!(!replay_recorded);
+                assert!(!no_replay);
             }
             _ => panic!("expected Explore command"),
         }
