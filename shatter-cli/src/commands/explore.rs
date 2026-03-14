@@ -55,6 +55,8 @@ pub(crate) async fn run_explore(
     record: bool,
     meta_config: &shatter_core::strategy::MetaConfig,
     observe_output: Option<&Path>,
+    replay_recorded: bool,
+    no_replay: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let pool_path = if no_seeds { None } else { Some(seeds_dir.join("pool.json")) };
     let loop_buckets = parse_loop_buckets(loop_buckets_str)?;
@@ -335,12 +337,55 @@ pub(crate) async fn run_explore(
                 );
                 (passthrough, vec![])
             } else {
-                let mocks = shatter_core::auto_mock::generate_auto_mocks(
+                // Check for recorded mock fixtures to seed from prior --record runs.
+                let recorded_configs = if !no_replay {
+                    let shatter_dir = std::path::Path::new(".shatter");
+                    let should_replay = replay_recorded || shatter_dir.join(shatter_core::recorded_mocks::RECORDED_MOCKS_DIR).is_dir();
+                    if should_replay {
+                        if let Some(mock_path) = shatter_core::recorded_mocks::find_recorded_mocks(
+                            shatter_dir,
+                            &file_str,
+                            &func.name,
+                        ) {
+                            match shatter_core::recorded_mocks::load_recorded_mocks(&mock_path) {
+                                Ok(mock_file) => {
+                                    let configs = shatter_core::recorded_mocks::recorded_mocks_to_mock_configs(&mock_file);
+                                    log::info!(
+                                        "Loaded {} recorded mock(s) for {} from {}",
+                                        configs.len(),
+                                        func.name,
+                                        mock_path.display(),
+                                    );
+                                    configs
+                                }
+                                Err(e) => {
+                                    log::warn!(
+                                        "Failed to load recorded mocks for {} from {}: {e}",
+                                        func.name,
+                                        mock_path.display(),
+                                    );
+                                    vec![]
+                                }
+                            }
+                        } else {
+                            vec![]
+                        }
+                    } else {
+                        vec![]
+                    }
+                } else {
+                    vec![]
+                };
+
+                let auto_generated = shatter_core::auto_mock::generate_auto_mocks(
                     &func.dependencies,
                     None,
                     &resolved.mock_overrides,
-                    &[],
+                    &recorded_configs,
                 );
+                // Recorded configs first (higher priority), then auto-generated for remaining deps.
+                let mut mocks = recorded_configs;
+                mocks.extend(auto_generated);
                 let params = shatter_core::auto_mock::build_mock_params(
                     &func.dependencies,
                     &mocks,

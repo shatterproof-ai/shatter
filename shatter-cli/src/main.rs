@@ -80,6 +80,8 @@ async fn main() -> ExitCode {
             fail_on_setup_error: _,
             record,
             observe_output,
+            replay_recorded,
+            no_replay,
         } => {
             // Set SHATTER_SETUP_TIMEOUT env var for frontends if --setup-timeout provided.
             if let Some(secs) = setup_timeout {
@@ -140,6 +142,8 @@ async fn main() -> ExitCode {
                 record,
                 &meta_config,
                 observe_output.as_deref(),
+                replay_recorded,
+                no_replay,
             )
             .await
         }
