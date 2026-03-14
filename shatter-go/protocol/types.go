@@ -194,6 +194,8 @@ type CryptoBoundary struct {
 	Confidence   string            `json:"confidence,omitempty"`
 	ParamRoles   map[string]string `json:"param_roles,omitempty"`
 	CallSites    []int             `json:"call_sites"`
+	InputEntropy  *float64         `json:"input_entropy,omitempty"`
+	OutputEntropy *float64         `json:"output_entropy,omitempty"`
 }
 
 // FunctionAnalysis is the result of analyzing a single function.
