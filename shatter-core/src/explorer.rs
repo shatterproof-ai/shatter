@@ -1198,14 +1198,14 @@ mod tests {
             thrown_error: None, branch_path: vec![], lines_executed: vec![],
             calls_to_external: vec![], path_constraints: vec![], side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![],
+            capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![], connection_failures: vec![],
         };
         let r2 = ExecuteResult {
             return_value: Some(serde_json::json!("positive-even")),
             thrown_error: None, branch_path: vec![], lines_executed: vec![],
             calls_to_external: vec![], path_constraints: vec![], side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![],
+            capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![], connection_failures: vec![],
         };
         assert_ne!(path_hash(&r1, &no_buckets()), path_hash(&r2, &no_buckets()));
     }
@@ -1217,14 +1217,14 @@ mod tests {
             thrown_error: None, branch_path: vec![], lines_executed: vec![1, 2, 3],
             calls_to_external: vec![], path_constraints: vec![], side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![],
+            capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![], connection_failures: vec![],
         };
         let r2 = ExecuteResult {
             return_value: Some(serde_json::json!(99.0)),
             thrown_error: None, branch_path: vec![], lines_executed: vec![1, 2, 3],
             calls_to_external: vec![], path_constraints: vec![], side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![],
+            capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![], connection_failures: vec![],
         };
         assert_eq!(path_hash(&r1, &no_buckets()), path_hash(&r2, &no_buckets()));
     }
@@ -1236,14 +1236,14 @@ mod tests {
             thrown_error: None, branch_path: vec![], lines_executed: vec![1, 2, 3],
             calls_to_external: vec![], path_constraints: vec![], side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![],
+            capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![], connection_failures: vec![],
         };
         let r2 = ExecuteResult {
             return_value: Some(serde_json::json!("same")),
             thrown_error: None, branch_path: vec![], lines_executed: vec![1, 2, 4],
             calls_to_external: vec![], path_constraints: vec![], side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![],
+            capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![], connection_failures: vec![],
         };
         assert_ne!(path_hash(&r1, &no_buckets()), path_hash(&r2, &no_buckets()));
     }
@@ -1255,7 +1255,7 @@ mod tests {
             thrown_error: None, branch_path: vec![], lines_executed: vec![],
             calls_to_external: vec![], path_constraints: vec![], side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![],
+            capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![], connection_failures: vec![],
         };
         let err = ExecuteResult {
             return_value: None,
@@ -1263,7 +1263,7 @@ mod tests {
             branch_path: vec![], lines_executed: vec![],
             calls_to_external: vec![], path_constraints: vec![], side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![],
+            capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![], connection_failures: vec![],
         };
         assert_ne!(path_hash(&ok, &no_buckets()), path_hash(&err, &no_buckets()));
     }
@@ -1278,7 +1278,7 @@ mod tests {
                 constraint: SymConstraint::Unknown { hint: "test".into() },
             }],
             lines_executed: vec![], calls_to_external: vec![], path_constraints: vec![],
-            scope_events: vec![], side_effects: vec![], capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![],
+            scope_events: vec![], side_effects: vec![], capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![], connection_failures: vec![],
         };
         let r2 = ExecuteResult {
             return_value: Some(serde_json::json!("same")),
@@ -1288,7 +1288,7 @@ mod tests {
                 constraint: SymConstraint::Unknown { hint: "test".into() },
             }],
             lines_executed: vec![], calls_to_external: vec![], path_constraints: vec![],
-            scope_events: vec![], side_effects: vec![], capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![],
+            scope_events: vec![], side_effects: vec![], capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![], connection_failures: vec![],
         };
         assert_ne!(path_hash(&r1, &no_buckets()), path_hash(&r2, &no_buckets()));
     }
@@ -1341,7 +1341,7 @@ mod tests {
             path_constraints: vec![],
             scope_events: events,
             side_effects: vec![],
-            capture_truncation: None, discovered_dependencies: vec![],
+            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![],
             performance: empty_perf(),
         }
     }
@@ -1361,7 +1361,7 @@ mod tests {
             path_constraints: vec![],
             scope_events: vec![],
             side_effects: vec![],
-            capture_truncation: None, discovered_dependencies: vec![],
+            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![],
             performance: empty_perf(),
         };
         let hash1 = path_hash(&r, &no_buckets());
@@ -1884,7 +1884,7 @@ mod tests {
             path_constraints: vec![],
             side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, discovered_dependencies: vec![],
+            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![],
             performance: Default::default(),
         };
         let label = classify_error_intent(&result).unwrap();
@@ -1903,7 +1903,7 @@ mod tests {
             path_constraints: vec![],
             side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, discovered_dependencies: vec![],
+            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![],
             performance: Default::default(),
         };
         assert!(classify_error_intent(&result).is_none());
@@ -1934,7 +1934,7 @@ mod tests {
             path_constraints: vec![],
             side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, discovered_dependencies: vec![],
+            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![],
             performance: Default::default(),
         };
         let label = classify_error_intent(&result).unwrap();
@@ -2266,7 +2266,7 @@ mod tests {
                     scope_events: vec![],
                     side_effects: vec![],
                     performance: perf.clone(),
-                    capture_truncation: None, discovered_dependencies: vec![],
+                    capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![],
                 };
                 let flipped = crate::protocol::ExecuteResult {
                     branch_path: vec![crate::execution_record::BranchDecision {
@@ -2335,7 +2335,7 @@ mod tests {
             side_effects: vec![],
             scope_events: vec![],
             capture_truncation: None,
-            discovered_dependencies: vec![],
+            discovered_dependencies: vec![], connection_failures: vec![],
             performance: empty_perf(),
         };
         let obs = ObservationOutput {
@@ -2380,7 +2380,7 @@ mod tests {
                 side_effects: vec![],
                 scope_events: vec![],
                 capture_truncation: None,
-                discovered_dependencies: vec![],
+                discovered_dependencies: vec![], connection_failures: vec![],
                 performance: empty_perf(),
             }
         };

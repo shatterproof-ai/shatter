@@ -187,6 +187,7 @@ export interface ExecuteResponse extends BaseResponse {
   capture_truncation?: TruncationInfo;
   scope_events?: TraceEvent[];
   discovered_dependencies?: DiscoveredDependency[];
+  connection_failures?: ConnectionFailure[];
 }
 
 export interface SetupResponse extends BaseResponse {
@@ -364,6 +365,19 @@ export interface ExternalCall {
   symbol: string;
   args: unknown[];
   return_value: unknown;
+}
+
+export type ConnectionFailureKind =
+  | "connection_refused"
+  | "dns_failure"
+  | "auth_error"
+  | "timeout"
+  | "other";
+
+export interface ConnectionFailure {
+  symbol: string;
+  error_kind: ConnectionFailureKind;
+  message: string;
 }
 
 export type DepDetectionKind = "unmocked_import" | "subprocess_spawn";

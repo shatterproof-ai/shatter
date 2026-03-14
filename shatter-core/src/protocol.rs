@@ -411,6 +411,18 @@ pub struct DiscoveredDependency {
     pub is_subprocess_spawn: bool,
 }
 
+/// A connection failure detected during execution, enabling LiveFirst fallback.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConnectionFailure {
+    /// The external symbol (e.g. `"http:fetch"`) whose call failed.
+    pub symbol: String,
+    /// Failure category matching `ConnectionFailureKind` variants
+    /// (e.g. `"connection_refused"`, `"dns_failure"`, `"auth_error"`, `"timeout"`, `"other"`).
+    pub error_kind: String,
+    /// The original error message from the failing call.
+    pub message: String,
+}
+
 /// Result of executing an instrumented function.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExecuteResult {
@@ -445,6 +457,10 @@ pub struct ExecuteResult {
     /// Dependencies discovered at execution time that static analysis missed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub discovered_dependencies: Vec<DiscoveredDependency>,
+    /// Connection failures detected during mock/external calls, used to
+    /// trigger LiveFirst fallback in the core engine.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connection_failures: Vec<ConnectionFailure>,
 }
 
 /// Performance metrics from a single execution.
@@ -806,7 +822,7 @@ mod tests {
                     heap_used_bytes: 1024,
                     heap_allocated_bytes: 2048,
                 },
-                capture_truncation: None, discovered_dependencies: vec![],
+                capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![],
             })),
         ));
     }
@@ -835,9 +851,78 @@ mod tests {
                     heap_used_bytes: 256,
                     heap_allocated_bytes: 256,
                 },
-                capture_truncation: None, discovered_dependencies: vec![],
+                capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![],
             })),
         ));
+    }
+
+    #[test]
+    fn execute_response_with_connection_failures_round_trips() {
+        round_trip(&Response::new(
+            42,
+            ResponseResult::Execute(Box::new(ExecuteResult {
+                return_value: None,
+                thrown_error: Some(ErrorInfo {
+                    error_type: "Error".into(),
+                    message: "connect ECONNREFUSED 127.0.0.1:5432".into(),
+                    stack: None,
+                    error_category: Some("infrastructure".into()),
+                }),
+                branch_path: vec![],
+                lines_executed: vec![],
+                calls_to_external: vec![],
+                path_constraints: vec![],
+                side_effects: vec![],
+                scope_events: vec![],
+                performance: PerformanceMetrics::default(),
+                capture_truncation: None,
+                discovered_dependencies: vec![],
+                connection_failures: vec![
+                    ConnectionFailure {
+                        symbol: "pg:query".into(),
+                        error_kind: "connection_refused".into(),
+                        message: "connect ECONNREFUSED 127.0.0.1:5432".into(),
+                    },
+                    ConnectionFailure {
+                        symbol: "http:fetch".into(),
+                        error_kind: "dns_failure".into(),
+                        message: "getaddrinfo ENOTFOUND api.example.com".into(),
+                    },
+                ],
+            })),
+        ));
+    }
+
+    #[test]
+    fn connection_failure_struct_round_trips() {
+        round_trip(&ConnectionFailure {
+            symbol: "redis:connect".into(),
+            error_kind: "timeout".into(),
+            message: "ETIMEDOUT connecting to redis:6379".into(),
+        });
+    }
+
+    #[test]
+    fn execute_result_without_connection_failures_omits_field() {
+        let result = ExecuteResult {
+            return_value: Some(serde_json::json!(42)),
+            thrown_error: None,
+            branch_path: vec![],
+            lines_executed: vec![],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
+            scope_events: vec![],
+            performance: PerformanceMetrics::default(),
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+        };
+        let json = serde_json::to_string(&result).expect("serialize");
+        assert!(
+            !json.contains("connection_failures"),
+            "empty connection_failures should be omitted from JSON"
+        );
     }
 
     #[test]
@@ -1776,7 +1861,7 @@ mod tests {
             side_effects: vec![],
             scope_events: vec![],
             performance: PerformanceMetrics::default(),
-            capture_truncation: None, discovered_dependencies: vec![],
+            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![],
         };
         assert!(validate_execute_result(&result));
     }
@@ -1802,7 +1887,7 @@ mod tests {
             side_effects: vec![],
             scope_events: vec![],
             performance: PerformanceMetrics::default(),
-            capture_truncation: None, discovered_dependencies: vec![],
+            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![],
         };
         assert!(!validate_execute_result(&result));
     }

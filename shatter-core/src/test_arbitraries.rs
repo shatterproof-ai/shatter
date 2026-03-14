@@ -17,10 +17,10 @@ use crate::execution_record::{
 };
 use crate::invariants::{ComparisonOp, Invariant, InvariantKind, InvariantTarget, ClassifiedInvariant};
 use crate::protocol::{
-    BranchInfo, BranchType, Command, CryptoBoundary, DepDetectionKind, DependencyKind,
-    DiscoveredDependency, ErrorCode, ExecuteResult, ExternalDependency, FunctionAnalysis,
-    GeneratorKind, LiteralValue, MockBehavior, MockConfig, PerformanceMetrics, Request,
-    Response, ResponseResult, PROTOCOL_VERSION,
+    BranchInfo, BranchType, Command, ConnectionFailure, CryptoBoundary, DepDetectionKind,
+    DependencyKind, DiscoveredDependency, ErrorCode, ExecuteResult, ExternalDependency,
+    FunctionAnalysis, GeneratorKind, LiteralValue, MockBehavior, MockConfig, PerformanceMetrics,
+    Request, Response, ResponseResult, PROTOCOL_VERSION,
 };
 use crate::spec::{ConcreteExample, FunctionSpec, Postcondition, Provenance, SpecClass};
 use crate::sym_expr::{BinOpKind, ConstValue, SymExpr, UnOpKind};
@@ -513,6 +513,25 @@ pub fn arb_discovered_dependency() -> impl Strategy<Value = DiscoveredDependency
     )
 }
 
+pub fn arb_connection_failure() -> impl Strategy<Value = ConnectionFailure> {
+    (
+        arb_ident(),
+        prop_oneof![
+            Just("connection_refused".to_string()),
+            Just("dns_failure".to_string()),
+            Just("auth_error".to_string()),
+            Just("timeout".to_string()),
+            Just("other".to_string()),
+        ],
+        arb_short_string(),
+    )
+        .prop_map(|(symbol, error_kind, message)| ConnectionFailure {
+            symbol,
+            error_kind,
+            message,
+        })
+}
+
 pub fn arb_execute_result() -> impl Strategy<Value = ExecuteResult> {
     (
         proptest::option::of(arb_json_value_non_null()),
@@ -527,6 +546,7 @@ pub fn arb_execute_result() -> impl Strategy<Value = ExecuteResult> {
         (
             proptest::option::of(arb_truncation_info()),
             prop::collection::vec(arb_discovered_dependency(), 0..=3),
+            prop::collection::vec(arb_connection_failure(), 0..=3),
         ),
     )
         .prop_map(
@@ -540,7 +560,7 @@ pub fn arb_execute_result() -> impl Strategy<Value = ExecuteResult> {
                 scope_events,
                 side_effects,
                 performance,
-                (capture_truncation, discovered_dependencies),
+                (capture_truncation, discovered_dependencies, connection_failures),
             )| {
                 ExecuteResult {
                     return_value,
@@ -554,6 +574,7 @@ pub fn arb_execute_result() -> impl Strategy<Value = ExecuteResult> {
                     performance,
                     capture_truncation,
                     discovered_dependencies,
+                    connection_failures,
                 }
             },
         )
