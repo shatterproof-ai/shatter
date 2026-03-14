@@ -1,8 +1,0 @@
-[
-  {
-    "from": "team-lead",
-    "text": "You are working on issue str-3ky9.17: strace-based dep discovery tool.\n\n**Goal**: Add optional `shatter discover-deps --strace` command that uses strace to catalog all network syscalls (connect, sendto, sendmsg, socket ~10-15 syscalls) made by a function. One-shot diagnostic tool, not for runtime interception.\n\n**Acceptance criteria**:\n- strace-based discovery lists network syscalls with source info\n- Works on Linux\n- Clearly documented as diagnostic-only\n\n**Context**: This depends on str-3ky9.12 (Execution-time dep gap detection, done). This is a new CLI subcommand.\n\nRun `bd show str-3ky9.17` for full issue details. Study the existing CLI structure in shatter-cli/src/main.rs and how other subcommands are wired.\n\n**Your task**: Task #4 in the team task list. Claim it, plan your approach, implement, test, commit, and mark done. Follow all project conventions in CLAUDE.md (especially shatter-cli/CLAUDE.md). Update demo/walkthrough.sh if adding a new CLI command. Run clippy + tests before committing.",
-    "timestamp": "2026-03-12T04:41:51.142Z",
-    "read": false
-  }
-]

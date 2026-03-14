@@ -1,8 +1,0 @@
-[
-  {
-    "from": "team-lead",
-    "text": "You are working on task str-xooq: ExploreConfig model consolidation (P2).\n\n**Problem:** The project has multiple ExploreConfig models (explorer::ExploreConfig and orchestrator::ExploreConfig) with overlapping but different fields. CLI manually translates between them, increasing drift risk.\n\n**Steps:**\n1. Read shatter-core/src/explorer.rs ExploreConfig\n2. Read shatter-core/src/orchestrator.rs ExploreConfig\n3. Read shatter-cli/src/main.rs to find where CLI translates between them\n4. Either: (a) unify into a single ExploreConfig, or (b) create a typed adapter/From impl that ensures compile-time safety\n5. Replace ad-hoc field mapping in CLI with centralized conversion\n6. Add tests that fail when either model changes without adapter updates\n7. Run `cargo test --lib` and `cargo clippy -p shatter-core -p shatter-cli -- -D warnings`\n\nWhen done, mark: `bd close str-xooq -r \"description\"`",
-    "timestamp": "2026-03-10T22:35:18.810Z",
-    "read": true
-  }
-]

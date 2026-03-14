@@ -1,8 +1,0 @@
-{
-  "id": "5",
-  "subject": "str-b431: Frontend version check parity",
-  "description": "Define intended version compatibility rule in one place; update divergent frontend so both follow the same rule; add parity tests. Beads ID: str-b431. SEQUENCE: after str-8fcu (overlapping frontend files).",
-  "status": "pending",
-  "blocks": [],
-  "blockedBy": []
-}

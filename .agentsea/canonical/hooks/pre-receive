@@ -1,9 +1,0 @@
-#!/bin/bash
-while read oldrev newrev refname; do
-  if [[ "$refname" == "refs/heads/main" || "$refname" == "refs/heads/master" ]]; then
-    echo "ERROR: Direct pushes to main/master are not allowed."
-    echo "Push a feature branch and let the lead agent merge."
-    exit 1
-  fi
-done
-exit 0

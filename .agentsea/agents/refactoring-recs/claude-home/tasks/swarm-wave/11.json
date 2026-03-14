@@ -1,8 +1,0 @@
-{
-  "id": "11",
-  "subject": "[str-3ky9.17] strace-based dep discovery tool",
-  "description": "Add `shatter discover-deps --strace` command. Uses strace to catalog network syscalls (connect, sendto, sendmsg, socket, etc.). One-shot diagnostic, not runtime interception. Linux only. Branch: str-3ky9.17. See `bd show str-3ky9.17`.",
-  "status": "pending",
-  "blocks": [],
-  "blockedBy": []
-}

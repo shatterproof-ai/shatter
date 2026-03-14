@@ -1,9 +1,0 @@
-{
-  "id": "3",
-  "subject": "str-3ky9.16: Go frontend mock parity",
-  "description": "Extend Go generateMockFile for per-execution mock variation, ThrowError support (panic or error return), discovered_dependencies reporting, and custom generator integration. Go already receives mocks per Execute call so no architectural change needed. E2E test with Go function and dynamic mocks required. See `bd show str-3ky9.16` for full details.",
-  "activeForm": "Implementing Go frontend mock parity",
-  "status": "pending",
-  "blocks": [],
-  "blockedBy": []
-}

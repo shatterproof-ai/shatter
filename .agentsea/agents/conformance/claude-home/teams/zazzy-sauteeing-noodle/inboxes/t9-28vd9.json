@@ -1,8 +1,0 @@
-[
-  {
-    "from": "team-lead",
-    "text": "{\"type\":\"task_assignment\",\"taskId\":\"10\",\"subject\":\"str-28vd.9: Agent pre-completion workflow\",\"description\":\"Add project-local agent workflow/skill for pre-completion that invokes scripts/quality/pre-completion.sh. Beads ID: str-28vd.9\",\"assignedBy\":\"team-lead\",\"timestamp\":\"2026-03-11T14:05:50.522Z\"}",
-    "timestamp": "2026-03-11T14:05:50.522Z",
-    "read": false
-  }
-]

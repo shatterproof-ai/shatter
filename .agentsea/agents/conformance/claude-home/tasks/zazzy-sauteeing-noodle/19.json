@@ -1,8 +1,0 @@
-{
-  "id": "19",
-  "subject": "str-3ky9.14: User mock fixtures with MockValueSpace",
-  "description": "YAML fixture format for user-supplied mock return values with MockValueSpace policy. Beads ID: str-3ky9.14. SEQUENCE: first in mock chain.",
-  "status": "pending",
-  "blocks": [],
-  "blockedBy": []
-}

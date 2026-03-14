@@ -1,4 +1,0 @@
-*.retry
-__pycache__/
-.vagrant/
-ansible/vault/secrets.yml

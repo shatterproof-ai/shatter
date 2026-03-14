@@ -1,9 +1,0 @@
-{
-  "id": "5",
-  "subject": "str-28vd.1: CI integration docs",
-  "description": "Document how quality scripts should be used in CI. Cover PR, main-branch, scheduled jobs. Reference scripts/quality/ entrypoints. Beads ID: str-28vd.1",
-  "status": "in_progress",
-  "blocks": [],
-  "blockedBy": [],
-  "owner": "ci-docs"
-}

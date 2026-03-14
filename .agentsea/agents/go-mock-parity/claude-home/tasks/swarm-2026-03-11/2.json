@@ -1,8 +1,0 @@
-{
-  "id": "2",
-  "subject": "kapow-j2l.5: Static platform lists (UC, CSU, Florida)",
-  "description": "Implement platform/static.go with hardcoded institution lists for UC, CSU, Florida SUS.",
-  "status": "completed",
-  "blocks": [],
-  "blockedBy": []
-}

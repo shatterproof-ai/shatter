@@ -1,8 +1,0 @@
-{
-  "id": "1",
-  "subject": "Run sandbox isolation checks",
-  "description": "Run all 5 sandbox isolation checks (namespace, tmp isolation, home isolation, worktree, read-only root) and write results to smoke-results.txt",
-  "status": "pending",
-  "blocks": [],
-  "blockedBy": []
-}

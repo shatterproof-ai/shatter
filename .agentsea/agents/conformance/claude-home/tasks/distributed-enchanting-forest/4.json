@@ -1,9 +1,0 @@
-{
-  "id": "4",
-  "subject": "str-28vd.3: Quality script entrypoints",
-  "description": "Add scripts/quality/ with entrypoints for Rust, TS, Go, docs, meta, aggregate, and pre-completion checks. Add Makefile targets. Beads ID: str-28vd.3",
-  "owner": "quality-scripts",
-  "status": "completed",
-  "blocks": [],
-  "blockedBy": []
-}

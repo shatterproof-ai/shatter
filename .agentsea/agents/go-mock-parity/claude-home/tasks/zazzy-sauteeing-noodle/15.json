@@ -1,8 +1,0 @@
-{
-  "id": "15",
-  "subject": "str-in8d: Loop analysis: loop-invariant branch detection",
-  "description": "Detect invariant branches inside loops, skip redundant negation. Touch orchestrator.rs. Beads ID: str-in8d. SEQUENCE: after str-ztqi.",
-  "status": "pending",
-  "blocks": [],
-  "blockedBy": []
-}

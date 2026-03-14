@@ -1,8 +1,0 @@
-{
-  "id": "1",
-  "subject": "kapow-t77.2: Deadline data types and DB helpers",
-  "description": "Create tools/kapow/internal/deadlines/ package with core types and DB operations per issue spec.",
-  "status": "completed",
-  "blocks": [],
-  "blockedBy": []
-}

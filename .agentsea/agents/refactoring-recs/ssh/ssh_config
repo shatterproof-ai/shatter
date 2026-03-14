@@ -1,4 +1,0 @@
-Host *
-  IdentityFile /home/ketan/project/shatter/.agentsea/agents/refactoring-recs/ssh/deploy_key
-  IdentitiesOnly yes
-  StrictHostKeyChecking accept-new

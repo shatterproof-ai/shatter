@@ -1,8 +1,0 @@
-{
-  "id": "7",
-  "subject": "kapow-n92.4: Visible claim scanner",
-  "description": "Implement scanner for visible product claim sources that compares against contract registry.",
-  "status": "completed",
-  "blocks": [],
-  "blockedBy": []
-}

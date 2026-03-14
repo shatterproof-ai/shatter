@@ -1,9 +1,0 @@
-{
-  "id": "4",
-  "subject": "str-8fcu: Frontend teardown side-effect parity",
-  "description": "Add tests for teardown side effects in both TS and Go frontends; document intended teardown contract; update divergent behavior so semantics match. Beads ID: str-8fcu",
-  "owner": "t4-8fcu",
-  "status": "completed",
-  "blocks": [],
-  "blockedBy": []
-}

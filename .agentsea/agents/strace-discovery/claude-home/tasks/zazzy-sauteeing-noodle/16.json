@@ -1,8 +1,0 @@
-{
-  "id": "16",
-  "subject": "str-ny8a: Loop analysis: loop peeling",
-  "description": "Boost priority of loop boundary iteration negation candidates. Touch orchestrator.rs. Beads ID: str-ny8a. SEQUENCE: after str-in8d.",
-  "status": "pending",
-  "blocks": [],
-  "blockedBy": []
-}

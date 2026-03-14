@@ -1,8 +1,0 @@
-{
-  "id": "2",
-  "subject": "kapow-t77.10: Search fields and GraphQL for deadlines",
-  "description": "Add deadline search fields to registry, extend GraphQL schema, wire resolvers. Quality gate: make api-generate && make web-schema-sync && make api-test-unit && make api-lint",
-  "status": "pending",
-  "blocks": [],
-  "blockedBy": []
-}

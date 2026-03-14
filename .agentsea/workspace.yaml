@@ -1,7 +1,0 @@
-repo_url: git@github.com:shatterproof-ai/shatter.git
-project_path: /home/ketan/project/shatter
-default_branch: main
-extra_ro_mounts: []
-extra_rw_mounts: []
-agent_env: {}
-agent_profiles: {}

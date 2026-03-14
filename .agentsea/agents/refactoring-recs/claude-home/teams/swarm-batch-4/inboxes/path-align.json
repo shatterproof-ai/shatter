@@ -1,8 +1,0 @@
-[
-  {
-    "from": "team-lead",
-    "text": "You are working on task str-0p2j: Observe/explorer path alignment (P2).\n\n**Problem:** Stage-1 observe abstraction exists in observe.rs, but primary exploration still runs through explorer::explore_function with duplicated instrumentation/setup/execute lifecycle logic. This creates drift risk.\n\n**Steps:**\n1. Read shatter-core/src/observe.rs to understand the observe abstraction\n2. Read shatter-core/src/explorer.rs explore_function to understand the duplicated lifecycle\n3. Document the intended source-of-truth execution lifecycle\n4. Either: route explore_function through observe.rs, or document the relationship and add tests that catch divergence\n5. Add coverage that exercises the canonical path for instrumentation + setup/teardown semantics\n6. Run `cargo test --lib` and `cargo clippy -p shatter-core -- -D warnings`\n\nWhen done, mark: `bd close str-0p2j -r \"description\"`",
-    "timestamp": "2026-03-10T22:35:13.430Z",
-    "read": true
-  }
-]

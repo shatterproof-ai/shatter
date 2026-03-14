@@ -1,8 +1,0 @@
-{
-  "id": "14",
-  "subject": "str-ztqi: Loop analysis: coverage-guided diminishing returns",
-  "description": "Track per-loop branch coverage and suppress negation candidates for converged loops. Touch orchestrator.rs. Beads ID: str-ztqi. SEQUENCE: first in orchestrator chain.",
-  "status": "pending",
-  "blocks": [],
-  "blockedBy": []
-}
