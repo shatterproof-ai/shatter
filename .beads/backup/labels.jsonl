@@ -152,6 +152,15 @@
 {"issue_id":"str-3ky9.8","label":"test"}
 {"issue_id":"str-3ky9.9","label":"core"}
 {"issue_id":"str-3ky9.9","label":"mock"}
+{"issue_id":"str-3ky9.9.1","label":"core"}
+{"issue_id":"str-3ky9.9.1","label":"mock"}
+{"issue_id":"str-3ky9.9.1","label":"phase:in_progress"}
+{"issue_id":"str-3ky9.9.2","label":"core"}
+{"issue_id":"str-3ky9.9.2","label":"frontend"}
+{"issue_id":"str-3ky9.9.2","label":"mock"}
+{"issue_id":"str-3ky9.9.2","label":"phase:in_progress"}
+{"issue_id":"str-3ky9.9.3","label":"core"}
+{"issue_id":"str-3ky9.9.3","label":"mock"}
 {"issue_id":"str-4omc","label":"docs"}
 {"issue_id":"str-4u5f","label":"loop-analysis"}
 {"issue_id":"str-4u5f","label":"protocol"}
