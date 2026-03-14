@@ -15,20 +15,25 @@ DELAY=2
 DRY_RUN=false
 STEP_TIMEOUT=120  # seconds per step; 0 = no limit
 
-# Use temporary directories so the walkthrough never pollutes repo-local state.
-export SHATTER_CACHE_DIR SHATTER_SEEDS_DIR RUST_BACKTRACE XDG_CACHE_HOME GOCACHE CARGO_NET_OFFLINE
+# Use temporary directories so the walkthrough never pollutes repo-local state
+# and never contends with Cargo's workspace artifact lock (avoids silent stalls
+# when another cargo command is active).
+export SHATTER_CACHE_DIR SHATTER_SEEDS_DIR RUST_BACKTRACE XDG_CACHE_HOME GOCACHE CARGO_NET_OFFLINE CARGO_TARGET_DIR
 SHATTER_CACHE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/shatter-demo-cache.XXXXXX")"
 SHATTER_SEEDS_DIR="${SHATTER_CACHE_DIR}/seeds"
 RUST_BACKTRACE="${RUST_BACKTRACE:-1}"
 XDG_CACHE_HOME="${XDG_CACHE_HOME:-$(mktemp -d "${TMPDIR:-/tmp}/shatter-demo-xdg.XXXXXX")}"
 GOCACHE="${GOCACHE:-$(mktemp -d "${TMPDIR:-/tmp}/shatter-demo-gocache.XXXXXX")}"
 CARGO_NET_OFFLINE="${CARGO_NET_OFFLINE:-true}"
+# Isolate Cargo's target directory so the walkthrough doesn't contend with
+# concurrent cargo commands (e.g. cargo test) over the shared artifact lock.
+CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/shatter-demo-cargo-target.XXXXXX")}"
 
 # Error tracking: collect failures for a summary at the end.
 ERROR_LOG="$(mktemp "${TMPDIR:-/tmp}/shatter-walkthrough-errors.XXXXXX")"
 STEP_ERRORS=0
 
-cleanup() { rm -rf "$SHATTER_CACHE_DIR" "$ERROR_LOG" "$XDG_CACHE_HOME" "$GOCACHE" || true; }
+cleanup() { rm -rf "$SHATTER_CACHE_DIR" "$ERROR_LOG" "$XDG_CACHE_HOME" "$GOCACHE" "$CARGO_TARGET_DIR" || true; }
 trap cleanup EXIT
 
 # Ensure bindgen can find stdbool.h via GCC's include path (avoids requiring libclang-dev)
