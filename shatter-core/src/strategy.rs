@@ -8,7 +8,6 @@ use serde_json::Value;
 
 use crate::boundary_dict::generate_boundary_inputs;
 use crate::input_gen::{crossover_inputs, generate_random_inputs, literals_to_candidate_inputs, mutate_inputs};
-use crate::orchestrator::fuzz_inputs;
 use crate::execution_record::SymConstraint;
 use crate::orchestrator::FrontendCapabilities;
 use crate::protocol::{ExecuteResult, LiteralValue};
@@ -593,6 +592,9 @@ impl InputStrategy for PoolSeedsStrategy {
 /// Default per-parameter mutation probability for the fuzzer strategy.
 const FUZZER_MUTATION_RATE: f64 = 0.3;
 
+/// Lower mutation rate for diversity rounds (fewer parameters changed per candidate).
+const FUZZER_GENTLE_RATE: f64 = 0.1;
+
 /// Default crossover probability when two parents are available.
 const FUZZER_CROSSOVER_RATE: f64 = 0.7;
 
@@ -601,8 +603,8 @@ const FUZZER_CROSSOVER_RATE: f64 = 0.7;
 ///
 /// Feedback records interesting inputs (those reaching branches with no
 /// symbolic constraint, or discovering new coverage). `next()` draws from
-/// the interesting pool, generating mutations via `fuzz_inputs()`,
-/// `mutate_inputs()`, and `crossover_inputs()`.
+/// the interesting pool, generating mutations via `mutate_inputs()`
+/// and `crossover_inputs()`.
 pub struct FuzzerStrategy {
     rng: StdRng,
     /// Inputs that hit Unknown constraints or new paths — seeds for mutation.
@@ -633,13 +635,13 @@ impl FuzzerStrategy {
         let idx = self.rng.random_range(0..self.interesting.len());
         let base = self.interesting[idx].clone();
 
-        // 1. Simple value-level mutations (from orchestrator's fuzz_inputs).
-        for mutated in fuzz_inputs(&base) {
-            self.pending.push_back(mutated);
-        }
-
-        // 2. Type-aware mutation via input_gen.
         let params: Vec<ParamInfo> = ctx.params.clone();
+
+        // 1. Gentle type-aware mutation for diversity.
+        let gentle_mutated = mutate_inputs(&base, &params, FUZZER_GENTLE_RATE, &[], &mut self.rng);
+        self.pending.push_back(gentle_mutated);
+
+        // 2. Aggressive type-aware mutation via input_gen.
         let mutated = mutate_inputs(&base, &params, FUZZER_MUTATION_RATE, &[], &mut self.rng);
         self.pending.push_back(mutated);
 

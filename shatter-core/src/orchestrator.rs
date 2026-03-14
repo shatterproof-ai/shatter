@@ -19,6 +19,7 @@ use std::collections::{BinaryHeap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
+use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 
@@ -135,6 +136,15 @@ const MUTATE_RATE_UNKNOWN: f64 = 1.0;
 const BOUNDARY_FITNESS_FIRST: f64 = 1.0;
 /// Fitness boost for branches in the second loop iteration.
 const BOUNDARY_FITNESS_SECOND: f64 = 0.9;
+
+/// Gentler mutation rate for supplemental diversity rounds (0.0–1.0).
+const MUTATE_RATE_GENTLE: f64 = 0.3;
+
+/// Number of gentle-mutation rounds to supplement aggressive mutation.
+const GENTLE_MUTATE_ROUNDS: usize = 2;
+
+/// Crossover probability for recombining parent inputs on unknown constraints.
+const CROSSOVER_RATE_UNKNOWN: f64 = 0.7;
 
 impl Default for ExploreConfig {
     fn default() -> Self {
@@ -752,7 +762,7 @@ fn solve_and_generate(
         // Fall back to type-aware mutation if boundary search wasn't applicable.
         //
         // Uses input_gen::mutate_inputs (type-aware, respects param types) for
-        // several rounds, plus the legacy fuzz_inputs as a cheap supplement.
+        // several rounds at full rate, gentle rounds for diversity, plus crossover.
         if !boundary_attempted {
             for (i, constraint_opt) in sym_constraints.iter().enumerate() {
                 if constraint_opt.is_none() && i < obs.result.branch_path.len() {
@@ -784,15 +794,54 @@ fn solve_and_generate(
                         });
                         output.fuzz_count += 1;
                     }
-                    // Legacy deterministic fuzz as supplement.
-                    for fuzzed in fuzz_inputs(&obs.inputs) {
+                    // Gentle-rate mutations for diversity (complements aggressive rounds above).
+                    for _ in 0..GENTLE_MUTATE_ROUNDS {
+                        let mutated = input_gen::mutate_inputs(
+                            &obs.inputs,
+                            param_infos,
+                            MUTATE_RATE_GENTLE,
+                            &[],
+                            rng,
+                        );
+                        let mutated_mocks = if !mock_params.is_empty() {
+                            input_gen::mutate_mock_values(
+                                &obs.mock_values,
+                                mock_params,
+                                MUTATE_RATE_GENTLE,
+                                &[],
+                                rng,
+                            )
+                        } else {
+                            obs.mock_values.clone()
+                        };
                         output.candidates.push(WorklistEntry {
-                            inputs: fuzzed,
+                            inputs: mutated,
                             source: InputSource::Fuzzed,
                             fitness: None,
-                            mock_values: obs.mock_values.clone(),
+                            mock_values: mutated_mocks,
                         });
                         output.fuzz_count += 1;
+                    }
+                    // Crossover: recombine with a different observed input if available.
+                    if raw_results.len() >= 2 {
+                        let other_idx = rng.random_range(0..raw_results.len());
+                        let other_inputs = &raw_results[other_idx].0;
+                        let (child_a, child_b) = input_gen::crossover_inputs(
+                            &obs.inputs,
+                            other_inputs,
+                            param_infos,
+                            CROSSOVER_RATE_UNKNOWN,
+                            rng,
+                        );
+                        for child in [child_a, child_b] {
+                            output.candidates.push(WorklistEntry {
+                                inputs: child,
+                                source: InputSource::Fuzzed,
+                                fitness: None,
+                                mock_values: obs.mock_values.clone(),
+                            });
+                            output.fuzz_count += 1;
+                        }
                     }
                     // Only fuzz once per observation (avoid exponential blowup).
                     break;
@@ -1227,57 +1276,6 @@ pub async fn explore(
     })
 }
 
-/// Simple input fuzzing: produce a handful of variations on the base inputs.
-///
-/// For each JSON value in the input list, generate mutations:
-/// - Numbers: ±1, ×-1, 0, boundary values
-/// - Booleans: flip
-/// - Strings: empty string, "a"
-pub(crate) fn fuzz_inputs(base: &[serde_json::Value]) -> Vec<Vec<serde_json::Value>> {
-    let mut results = Vec::new();
-
-    for (idx, val) in base.iter().enumerate() {
-        let mutations = fuzz_single_value(val);
-        for mutated in mutations {
-            let mut new_inputs = base.to_vec();
-            new_inputs[idx] = mutated;
-            results.push(new_inputs);
-        }
-    }
-
-    results
-}
-
-pub(crate) fn fuzz_single_value(val: &serde_json::Value) -> Vec<serde_json::Value> {
-    match val {
-        serde_json::Value::Number(n) => {
-            let mut mutations = Vec::new();
-            if let Some(i) = n.as_i64() {
-                let candidates = [i + 1, i - 1, 0, -i];
-                for c in candidates {
-                    let json_val = serde_json::json!(c);
-                    if c != i && !mutations.contains(&json_val) {
-                        mutations.push(json_val);
-                    }
-                }
-            } else if let Some(f) = n.as_f64() {
-                let candidates = [f + 1.0, f - 1.0, 0.0];
-                for c in candidates {
-                    let json_val = serde_json::json!(c);
-                    if (c - f).abs() > f64::EPSILON && !mutations.contains(&json_val) {
-                        mutations.push(json_val);
-                    }
-                }
-            }
-            mutations
-        }
-        serde_json::Value::Bool(b) => vec![serde_json::json!(!b)],
-        serde_json::Value::String(_) => {
-            vec![serde_json::json!(""), serde_json::json!("a")]
-        }
-        _ => vec![],
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -1467,60 +1465,6 @@ mod tests {
 
         let result = overlay_solved_values(&base, &solved, &param_names);
         assert_eq!(result, base);
-    }
-
-    // -- fuzz_inputs tests --
-
-    #[test]
-    fn fuzz_integer_produces_mutations() {
-        let inputs = vec![serde_json::json!(5)];
-        let fuzzed = fuzz_inputs(&inputs);
-        // Should produce: 6, 4, 0, -5 = 4 mutations
-        assert_eq!(fuzzed.len(), 4);
-        assert!(fuzzed.contains(&vec![serde_json::json!(6)]));
-        assert!(fuzzed.contains(&vec![serde_json::json!(4)]));
-        assert!(fuzzed.contains(&vec![serde_json::json!(0)]));
-        assert!(fuzzed.contains(&vec![serde_json::json!(-5)]));
-    }
-
-    #[test]
-    fn fuzz_zero_produces_mutations() {
-        let inputs = vec![serde_json::json!(0)];
-        let fuzzed = fuzz_inputs(&inputs);
-        // Candidates: 1, -1, 0, 0. Skip 0 (== original), dedup → 1, -1
-        assert_eq!(fuzzed.len(), 2);
-    }
-
-    #[test]
-    fn fuzz_boolean_flips() {
-        let inputs = vec![serde_json::json!(true)];
-        let fuzzed = fuzz_inputs(&inputs);
-        assert_eq!(fuzzed.len(), 1);
-        assert_eq!(fuzzed[0], vec![serde_json::json!(false)]);
-    }
-
-    #[test]
-    fn fuzz_string_produces_mutations() {
-        let inputs = vec![serde_json::json!("hello")];
-        let fuzzed = fuzz_inputs(&inputs);
-        assert_eq!(fuzzed.len(), 2);
-        assert!(fuzzed.contains(&vec![serde_json::json!("")]));
-        assert!(fuzzed.contains(&vec![serde_json::json!("a")]));
-    }
-
-    #[test]
-    fn fuzz_null_produces_nothing() {
-        let inputs = vec![serde_json::Value::Null];
-        let fuzzed = fuzz_inputs(&inputs);
-        assert!(fuzzed.is_empty());
-    }
-
-    #[test]
-    fn fuzz_multiple_inputs_mutates_each() {
-        let inputs = vec![serde_json::json!(1), serde_json::json!(true)];
-        let fuzzed = fuzz_inputs(&inputs);
-        // 1 produces 3 mutations (2, 0, -1 after dedup) and true produces 1 (false) = 4
-        assert_eq!(fuzzed.len(), 4);
     }
 
     // -- WorklistEntry ordering tests --

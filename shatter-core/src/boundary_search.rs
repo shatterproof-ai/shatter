@@ -3,7 +3,7 @@
 //! When Z3 cannot solve a branch constraint (Unknown or timeout), and we have
 //! concrete inputs that took both sides of the branch, interpolate between
 //! those witnesses using binary-search-style narrowing to find the decision
-//! boundary. More effective than blind `fuzz_inputs()` because the search has
+//! boundary. More effective than blind mutation because the search has
 //! directional signal from observed branch outcomes.
 
 use serde_json::Value;
