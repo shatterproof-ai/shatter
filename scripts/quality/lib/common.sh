@@ -103,3 +103,121 @@ maybe_run_in_dir() {
     skip "${label} (missing ${cmd})"
   fi
 }
+
+# ---------------------------------------------------------------------------
+# Path-aware lane classification
+#
+# Analyzes changed files between the current branch and its merge base to
+# determine which quality lanes need to run. Sets global associative array
+# LANES with boolean values for each lane.
+#
+# Path rules:
+#   shatter-core/, shatter-cli/, shatter-rust/, shatter-rust-runtime/, Cargo.* → rust
+#   shatter-ts/                                                                → ts
+#   shatter-go/                                                                → go
+#   protocol/                  → schemas, conformance, AND all language lanes
+#   docs/, *.md, CLAUDE.md, AGENTS.md                                          → docs
+#   .github/, scripts/                                                         → meta
+#   examples/                                                                  → rust (E2E tests reference examples)
+#
+# Fallback: unknown paths or empty diff → all lanes enabled.
+# ---------------------------------------------------------------------------
+
+declare -gA LANES
+
+classify_changed_paths() {
+  # Initialize all lanes to false
+  LANES=(
+    [rust]=false
+    [ts]=false
+    [go]=false
+    [docs]=false
+    [schemas]=false
+    [conformance]=false
+    [meta]=false
+  )
+
+  local merge_base
+  merge_base="$(git merge-base HEAD origin/main 2>/dev/null || true)"
+
+  if [[ -z "${merge_base}" ]]; then
+    warn "Could not determine merge base — running all lanes"
+    _enable_all_lanes
+    return
+  fi
+
+  local changed_files
+  changed_files="$(git diff --name-only "${merge_base}..HEAD" 2>/dev/null || true)"
+
+  if [[ -z "${changed_files}" ]]; then
+    warn "No changed files detected — running all lanes"
+    _enable_all_lanes
+    return
+  fi
+
+  local has_unknown=false
+
+  while IFS= read -r file; do
+    case "${file}" in
+      shatter-core/* | shatter-cli/* | shatter-rust/* | shatter-rust-runtime/* | Cargo.*)
+        LANES[rust]=true
+        ;;
+      shatter-ts/*)
+        LANES[ts]=true
+        ;;
+      shatter-go/*)
+        LANES[go]=true
+        ;;
+      protocol/*)
+        # Protocol changes affect all language frontends plus schema/conformance
+        LANES[schemas]=true
+        LANES[conformance]=true
+        LANES[rust]=true
+        LANES[ts]=true
+        LANES[go]=true
+        ;;
+      docs/* | *.md)
+        LANES[docs]=true
+        ;;
+      .github/* | scripts/*)
+        LANES[meta]=true
+        ;;
+      examples/*)
+        # E2E tests reference example files
+        LANES[rust]=true
+        ;;
+      *)
+        has_unknown=true
+        ;;
+    esac
+  done <<< "${changed_files}"
+
+  if [[ "${has_unknown}" == "true" ]]; then
+    warn "Unclassified paths detected — running all lanes for safety"
+    _enable_all_lanes
+    return
+  fi
+
+  # Log which lanes are active
+  local active=()
+  local skipped=()
+  for lane in rust ts go docs schemas conformance meta; do
+    if [[ "${LANES[${lane}]}" == "true" ]]; then
+      active+=("${lane}")
+    else
+      skipped+=("${lane}")
+    fi
+  done
+
+  info "Path-aware gating: active=[${active[*]}] skipped=[${skipped[*]:-none}]"
+}
+
+_enable_all_lanes() {
+  for lane in rust ts go docs schemas conformance meta; do
+    LANES[${lane}]=true
+  done
+}
+
+lane_enabled() {
+  [[ "${LANES[${1}]:-true}" == "true" ]]
+}
