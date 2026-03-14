@@ -4,11 +4,18 @@ Automatic exploratory testing via concolic execution. Rust core engine with lang
 
 See `PLAN.md` for the full architecture and implementation roadmap.
 
+@.agents/rules/workflow.md
+@.agents/rules/testing.md
+@.agents/rules/code-quality.md
+@.agents/rules/beads.md
+
 ## Prerequisites
 
 For local dev: Rust toolchain, Node.js 22+, Go 1.24+, libclang. Run `./scripts/configure-bindgen.sh` if Z3 build fails. Devcontainer includes everything.
 
 ## Code Quality Standards
+
+Generic rules (magic numbers, hardcoded paths, parallel parity, file formats, security basics, inline documentation, bug-fix-test-first) are in the shared agent rules. Below are Shatter-specific standards only.
 
 - All Rust code must pass `cargo clippy` with no warnings
 - All TypeScript code must pass strict mode (`strict: true` in tsconfig)
@@ -19,69 +26,11 @@ For local dev: Rust toolchain, Node.js 22+, Go 1.24+, libclang. Run `./scripts/c
 - Integration tests use known-answer functions with expected branches and triggering inputs
 - Frontend protocol handlers have round-trip tests (serialize → deserialize → verify)
 - Regression snapshots are checked into the repo and verified in CI
-- **Bug fixes require a reproduction test first** — write an automated test that demonstrates the bug (must fail), then fix the code and verify the test passes. Never attempt a fix without a failing test.
-- **No magic numbers or string literals** — define named constants for default values, timeouts, error codes, capability lists, and any value that appears in both production code and tests. Tests must reference the constant, not duplicate the literal. Each language has a canonical location for constants (see per-language conventions below).
-- **No hardcoded absolute paths** — never write a literal absolute path (e.g. `"/home/user/project/..."`) in code, tests, output artifacts, or documentation. Runtime-computed absolute paths are fine and often necessary — use `path.resolve(...)` (TS), `filepath.Abs` (Go), or `canonicalize()` / `env::current_dir` (Rust). The rule prohibits hardcoded paths that bake in machine-specific locations, not absolute paths in general.
-- **Parallel code paths must maintain parity** — when two functions process the same domain (e.g. `buildSymExpr` and `buildSymExprWithFlow`, random explorer and concolic orchestrator, CLI wiring for `--concolic` vs default), they must handle the same cases. When adding a capability to one path, check the other. When adding a new AST node type, CLI flag, or config field, grep for the parallel code path and update it too.
+- **Parallel parity in this project** means: `buildSymExpr` / `buildSymExprWithFlow`, random explorer / concolic orchestrator, CLI wiring for `--concolic` vs default. When adding a new AST node type, CLI flag, or config field, grep for the parallel code path.
 - **Rust contracts (`#[requires]`, `#[ensures]`)** — use only where ALL THREE hold: (1) trust boundary (Z3 FFI, subprocess JSON, cross-collection indices), (2) type gap (can't encode as a type), (3) silent corruption (violation propagates as wrong results, not panics). Additionally, there must be a plausible bug the contract catches that proptest wouldn't. See `shatter-core/CLAUDE.md` for the full policy and qualifying sites.
+- **Known-answer test fixtures**: document expected branches, triggering inputs, and edge cases (see `examples/go/04-nested-control-flow.go` for the model)
 
 See `/rust-conventions`, `/ts-conventions`, `/go-conventions` skills for detailed per-language standards.
-
-### File Format Standards
-
-- **YAML** is the format of choice for structured data and configuration files (not TOML, JSON, or XML)
-- **Markdown** is the format of choice for formatted text (documentation, plans, notes, specs)
-
-### Inline Documentation
-
-Comments explain **why** or document **non-obvious contracts** — never restate what the code already says. If a name needs a comment, choose a better name first.
-
-**What to document:**
-- Public API contracts: preconditions, postconditions, error behavior, ownership semantics
-- Non-obvious design choices: why an algorithm was chosen, why a field exists, why ordering matters
-- Known-answer test fixtures: expected branches, triggering inputs, and edge cases (see `examples/go/04-nested-control-flow.go` for the model)
-- `#[allow(...)]` / `@ts-ignore`: always explain why the suppression is needed
-
-**What NOT to document:**
-- What the code does when the code already says it (`// returns the sum` above `fn sum()`)
-- Type information visible in the signature (`// takes a string` above `fn foo(s: string)`)
-- Existence of language constructs (`// uses a switch statement`, `// is a simple struct`)
-
-**The delete test:** If you can delete a comment and the code is equally clear, delete it.
-
-**Bad → Good examples (from this codebase):**
-
-```go
-// BAD: restates syntax
-// SwitchOnString uses a switch statement.
-func SwitchOnString(color string) int {
-
-// GOOD: documents the test contract
-// SwitchOnString — 4 branches: "red"→1, "green"→2, "blue"→3, default→0.
-// Analyzer should detect all four arms and the string-equality conditions.
-func SwitchOnString(color string) int {
-```
-
-```go
-// BAD: restates the type definition
-// Point is a simple struct.
-type Point struct {
-
-// GOOD: no comment (the struct is self-describing). Or if it's testdata:
-// Point — test fixture for struct-field access analysis.
-type Point struct {
-```
-
-```rust
-// BAD: restates the signature
-/// Returns boundary values for the given type.
-pub fn boundaries_for(ty: &ParamType) -> Vec<BoundaryValue> {
-
-// GOOD: documents the contract
-/// Returns boundary values applicable to `ty`, ordered by category
-/// (limits first, then zeroes, then special values like NaN/empty).
-pub fn boundaries_for(ty: &ParamType) -> Vec<BoundaryValue> {
-```
 
 ### Test Tiers
 
@@ -148,28 +97,22 @@ High bar. Use `#[requires]`/`#[ensures]` only where ALL THREE hold: (1) trust bo
 
 ### Completion Checklist
 
-Before declaring any feature or bug fix **done**, verify:
+In addition to the shared testing completion checklist (unit tests, linter, cross-boundary, E2E), Shatter requires:
 
-1. **Unit tests pass** — the module's own tests (Quick tier)
-2. **Clippy clean** — no warnings in the changed crate (Standard tier)
-3. **Property tests adequate** — if adding/modifying a public function, include proptest/fast-check/rapid properties covering its core invariants (not just serialization roundtrips)
-4. **Cross-language tests pass** — if touching protocol types (Full tier)
-5. **E2E pipeline works** — if touching any component in the analyze → instrument → execute → solve chain, run `cargo test --test e2e_concolic` and verify the pipeline still discovers expected branches
-6. **Walkthrough passes** — if touching CLI output or example files
+1. **Property tests adequate** — if adding/modifying a public function, include proptest/fast-check/rapid properties covering its core invariants (not just serialization roundtrips)
+2. **Cross-language tests pass** — if touching protocol types (Full tier)
+3. **E2E pipeline works** — if touching any component in the analyze → instrument → execute → solve chain, run `cargo test --test e2e_concolic` and verify the pipeline still discovers expected branches
+4. **Walkthrough passes** — if touching CLI output or example files
 
-**Why this matters:** This project has multiple code paths that process the same data (random explorer vs. concolic orchestrator, `buildSymExpr` vs. `buildSymExprWithFlow`, CLI wiring for different explorer modes). Features that work on one path are routinely broken on others. The E2E tests are the only reliable way to catch cross-path regressions.
-
-**A feature is not done until it works end-to-end.** Closing an issue based on unit tests alone has repeatedly led to silent pipeline breakages that compound over time. If the E2E tests don't cover your change, add a new E2E test case before closing.
+**Why E2E matters:** This project has multiple code paths that process the same data (random explorer vs. concolic orchestrator, `buildSymExpr` vs. `buildSymExprWithFlow`, CLI wiring for different explorer modes). Features that work on one path are routinely broken on others. Closing an issue based on unit tests alone has repeatedly led to silent pipeline breakages. If the E2E tests don't cover your change, add a new E2E test case before closing.
 
 ## What NOT to Do
 
+Security basics (secrets, build output, linter bypasses, hardcoded paths) are in the shared agent rules. Shatter-specific prohibitions:
+
 - **Never edit generated protocol bindings** manually — regenerate from the schema
-- **Never commit** `.env` or files containing secrets — only `.env.example`
-- **Never add** `node_modules/`, `dist/`, or `target/` to git
-- **Never bypass clippy warnings** with `#[allow(...)]` without a comment explaining why
 - **Never add a CLI command** without updating `demo/walkthrough.sh`
-- **Never close a pipeline feature based on unit tests alone** — run `cargo test --test e2e_concolic` to verify end-to-end behavior. Unit tests prove a module works in isolation; E2E tests prove it works in the pipeline. Both are required.
-- **Never hardcode absolute paths** — no literal paths like `"/home/user/..."` or `"/tmp/specific-dir/..."` in source, tests, or config. Runtime-computed absolute paths (from `canonicalize()`, `current_dir()`, `path.resolve()`, etc.) are fine.
+- **Never close a pipeline feature based on unit tests alone** — run `cargo test --test e2e_concolic` to verify end-to-end behavior
 - **Never add a capability to one explorer path without checking the other** — the random explorer (`explorer.rs`) and concolic orchestrator (`orchestrator.rs`) are wired differently in `main.rs`. A feature added to one is routinely missing from the other (see str-emw6). Grep for the parallel path before declaring done.
 
 ## Common Task Recipes
@@ -227,33 +170,9 @@ Update README.md when build/run/config procedures change.
 
 See `AGENTS.md` for issue tracking (beads), git workflow, and agent operational instructions.
 
-### Issue Decomposition
-
-When turning a plan into issues, follow the end-to-end vertical-slice rule in
-`AGENTS.md`.
-
-The short version: split feature work by user journey or observable capability,
-not by architecture layer. A feature issue may touch multiple layers if that is
-what makes the behavior usable end-to-end.
-
 ### Sprint Workflow
 
 When asked to work on ready issues in parallel, **invoke `/swarm`** (the global skill handles team/worktree/merge mechanics). For epic-based work or Shatter-specific quality gates, also invoke `/swarm-project` which adds wave scheduling via `bd swarm` and runs `/check-all` + `/walkthrough-review`.
-
-### Research Memory
-
-After researching codebase architecture or feature implementation status, save factual findings to project memory proactively — don't wait for the user to ask. Tag entries with date so stale facts can be identified later. This applies to any confirmed facts learned by reading code: what's implemented vs stubbed, how mechanisms work, which frontends support which features, etc.
-
-### Plans
-
-When a planning session produces a plan worth preserving, copy it from `~/.claude/plans/` into `docs/plans/` with a filename including the issue key and a descriptive name (e.g., `str-kapl-resilience-timeouts-memory.md`). Reference the plan from the relevant beads issue(s) via `--notes`.
-
-### Efficiency Rules
-
-- **Batch `bd show` calls**: `bd show X && echo --- && bd show Y && echo --- && bd show Z` — never sequential individual calls.
-- **Before `git merge`**: Always run `git branch --show-current` to verify you are on main. If not, `git checkout main` first.
-- **After context compaction**: Trust the summary. Do not re-run git status, git diff, git log, or test suites that the pre-compaction portion already completed.
-- **AskUserQuestion**: Only for decisions where the wrong choice requires significant rework. For preference questions, pick a sensible default and proceed.
 
 @shatter-core/CLAUDE.md
 @shatter-cli/CLAUDE.md

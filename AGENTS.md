@@ -1,15 +1,6 @@
 # Agent Instructions
 
-This project uses **bd** (beads) for issue tracking. Run `bd onboard` to get started.
-
-## Quick Reference
-
-```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --status in_progress  # Claim work
-bd close <id>         # Complete work
-```
+This project uses **bd** (beads) for issue tracking. See shared agent rules (`beads.md`) for basic commands, issue decomposition, batch commands, and git merge workflow. Below are Shatter-specific extensions.
 
 ## Issue Title Guidelines
 
@@ -54,46 +45,14 @@ is limited. The **first ~20 characters** must be meaningfully descriptive:
 
 ## Creating Issues
 
-### Issue Shape: Prefer End-to-End Value
+### Issue Shape: Shatter-Specific Examples
 
-When breaking down a plan, default to **vertical slices**, not layer slices.
-Each workable issue should deliver **one complete, testable unit of value**,
-even if that unit is very small.
+The shared rules cover end-to-end vertical slicing. Here are Shatter-specific examples:
 
-**The key test:** after merging this issue alone, can a user, teammate, or
-agent actually do something new end-to-end? If not, the issue is probably cut
-at the wrong seam.
-
-**Good issue shape:**
-- A thin end-to-end slice through the system for one narrow scenario
-- May touch multiple layers (storage, API, CLI/UI) if that is what makes the
-  scenario actually usable
-- Produces a behavior that can be demonstrated, tested, and described in one
-  sentence of user-facing value
-
-**Bad issue shape:**
-- One issue for database changes, one for API wiring, one for frontend wiring
-  when none of them is useful alone
-- Pure plumbing issues for a feature that only become valuable after several
-  sibling issues land
-- "First backend, then frontend, then integration" breakdowns for user-facing
-  work
-
-**Default rule:** if the work is a `feature`, split by **user journey, use case,
-or behavior**, not by architecture layer.
-
-**Examples:**
-
-| Layer-sliced breakdown | End-to-end breakdown |
+| Layer-sliced (bad) | End-to-end (good) |
 |---|---|
-| `Add DB schema for saved filters` + `Add saved filters API` + `Build saved filters UI` | `Create a saved filter`, `Rename a saved filter`, `Delete a saved filter` |
 | `Branch data Rust types` + `Branch data TS handler` + `Branch data Go handler` | `Scan shows branch source locations`, `Explore reports branch conditions`, `Export includes branch metadata` |
 | `Add parser support` + `Add core model` + `Add CLI flag` | `CLI accepts one new config option and applies it during scan` |
-
-**Exception:** layer- or infrastructure-shaped issues are acceptable only when
-there is genuinely no smaller end-to-end slice worth landing yet. Those should
-usually be `task` or narrowly scoped enabling work, not the default shape for a
-feature plan.
 
 ### Issue Sizing: Keep Issues Small
 
@@ -174,20 +133,6 @@ bd dep add str-child str-dependency   # str-child is blocked by str-dependency
 ```
 
 Only add dependencies where there is a real technical ordering constraint (e.g., "the executor cannot be built before the instrumentor exists"). Do not add dependencies for soft preferences or nice-to-have ordering.
-
-### Bug Fix Policy: Reproduce Before Fixing
-
-All bugs must be reproduced in a good automated test **before** attempting any fix.
-The workflow is:
-
-1. Write a test that demonstrates the bug (the test must **fail**)
-2. Verify the test fails for the right reason
-3. Implement the fix
-4. Verify the test now **passes**
-
-This ensures every bug fix is validated by a regression test and prevents
-"fixes" that don't actually address the root cause. Use **`/bugfix`** to be
-guided through this workflow step by step.
 
 ### Completing an Issue
 
@@ -376,89 +321,6 @@ directory yourself — the user is prompted to keep or remove it when the sessio
 ends. Manually removing the worktree mid-session can break the working directory
 and cause confusing errors.
 
-<!-- BEGIN BEADS INTEGRATION -->
-## Issue Tracking with bd (beads)
-
-**IMPORTANT**: This project uses **bd (beads)** for ALL issue tracking. Do NOT use markdown TODOs, task lists, or other tracking methods.
-
-### Why bd?
-
-- Dependency-aware: Track blockers and relationships between issues
-- Git-friendly: Auto-syncs to JSONL for version control
-- Agent-optimized: JSON output, ready work detection, discovered-from links
-- Prevents duplicate tracking systems and confusion
-
-### Quick Start
-
-**Check for ready work:**
-
-```bash
-bd ready --json
-```
-
-**Create new issues:**
-
-```bash
-bd create "Issue title" --description="Detailed context" -t feature -p 0-4 --json  # ALWAYS specify -t
-bd create "Issue title" --description="What this issue is about" -t bug -p 1 --deps discovered-from:bd-123 --json
-```
-
-**Claim and update:**
-
-```bash
-bd update bd-42 --status in_progress --json
-bd update bd-42 --priority 1 --json
-```
-
-**Complete work:**
-
-```bash
-bd close bd-42 --reason "Completed" --json
-```
-
-### Issue Types
-
-- `bug` - Something broken
-- `feature` - New functionality
-- `task` - Work item (tests, docs, refactoring)
-- `epic` - Large feature with subtasks
-- `chore` - Maintenance (dependencies, tooling)
-
-### Priorities
-
-- `0` - Critical (security, data loss, broken builds)
-- `1` - High (major features, important bugs)
-- `2` - Medium (default, nice-to-have)
-- `3` - Low (polish, optimization)
-- `4` - Backlog (future ideas)
-
-### Workflow for AI Agents
-
-1. **Check ready work**: `bd ready` shows unblocked issues
-2. **Claim your task**: `bd update <id> --status in_progress`
-3. **Work on it**: Implement, test, document
-4. **Discover new work?** Create linked issue:
-   - `bd create "Found bug" --description="Details about what was found" -p 1 --deps discovered-from:<parent-id>`
-5. **Complete**: `bd close <id> --reason "Done"`
-
-### Auto-Sync
-
-bd automatically syncs issue data to git:
-
-- Exports to `.beads/issues.jsonl` after changes (5s debounce)
-- Imports from JSONL when newer (e.g., after `git pull`)
-- No manual export/import needed — use `bd export` if you need a one-off export
-
-### Important Rules
-
-- ✅ Use bd for ALL task tracking
-- ✅ Always use `--json` flag for programmatic use
-- ✅ Link discovered work with `discovered-from` dependencies
-- ✅ Check `bd ready` before asking "what should I work on?"
-- ❌ Do NOT create markdown TODO lists
-- ❌ Do NOT use external issue trackers
-- ❌ Do NOT duplicate tracking systems
-
-For more details, see README.md.
-
-<!-- END BEADS INTEGRATION -->
+<!-- Beads commands, types, priorities, workflow, and auto-sync are in shared agent rules (beads.md).
+     Shatter-specific beads extensions: issue types always specify -t, use discovered-from for linked bugs,
+     always use --json for programmatic use. -->
