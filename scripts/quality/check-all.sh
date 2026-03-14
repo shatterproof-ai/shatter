@@ -1,5 +1,14 @@
 #!/usr/bin/env bash
 # Aggregate quality runner for local development and future CI jobs.
+#
+# Modes:
+#   --fast   Lightweight gate for routine pre-push: clippy + workspace cargo test,
+#            npm test (skip build if dist/ is fresh), go test (skip vet).
+#            Skips standalone Rust crates, docs, schemas, conformance, meta checks.
+#            Target: <60s on warm builds.
+#
+#   --full   (default, or no flag) Everything as today — the full suite.
+#            Use before merge, in CI, or with SHATTER_FULL_PUSH=1.
 
 set -euo pipefail
 
@@ -10,21 +19,30 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 STRICT_OPTIONAL=false
 WITH_E2E=false
 PATH_AWARE=false
+FAST_MODE=false
 
 usage() {
   cat <<'EOF'
 Usage: ./scripts/quality/check-all.sh [options]
 
 Options:
+  --fast              Lightweight gate (clippy + tests, skip docs/schemas/meta)
+  --full              Full suite (default; also disables --path-aware and --fast)
   --strict-optional   Fail if optional analysis tools are missing
   --e2e               Include the Rust e2e_concolic test target
   --path-aware        Only run lanes affected by changed files (vs merge base)
-  --full              Run all lanes (default; explicit override for --path-aware)
 EOF
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --fast)
+      FAST_MODE=true
+      ;;
+    --full)
+      FAST_MODE=false
+      PATH_AWARE=false
+      ;;
     --strict-optional)
       STRICT_OPTIONAL=true
       ;;
@@ -33,9 +51,6 @@ while [[ $# -gt 0 ]]; do
       ;;
     --path-aware)
       PATH_AWARE=true
-      ;;
-    --full)
-      PATH_AWARE=false
       ;;
     -h|--help)
       usage
@@ -47,6 +62,39 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
+
+if [[ "${FAST_MODE}" == "true" ]]; then
+  info "Running in FAST mode (lightweight pre-push gate)"
+
+  # Rust: clippy + workspace tests only (skip standalone crates)
+  run_cmd "Rust lint (cargo clippy)" cargo clippy -- -D warnings
+  run_cmd "Rust tests (cargo test)" cargo test
+
+  # TypeScript: skip build if dist/ is newer than src/
+  ts_dir="${REPO_ROOT}/shatter-ts"
+  if [[ -d "${ts_dir}/dist" ]]; then
+    # Find newest file in src/ and dist/ to decide whether to rebuild
+    src_newest=$(find "${ts_dir}/src" -type f -printf '%T@\n' 2>/dev/null | sort -rn | head -1)
+    dist_newest=$(find "${ts_dir}/dist" -type f -printf '%T@\n' 2>/dev/null | sort -rn | head -1)
+    if [[ -n "${dist_newest}" && -n "${src_newest}" ]] && \
+       awk "BEGIN {exit !(${dist_newest} >= ${src_newest})}"; then
+      skip "TypeScript build (dist/ is up to date)"
+    else
+      run_in_dir "shatter-ts" "TypeScript build" npm run build
+    fi
+  else
+    run_in_dir "shatter-ts" "TypeScript build" npm run build
+  fi
+  run_in_dir "shatter-ts" "TypeScript tests" npm test -- --runInBand
+
+  # Go: tests only (skip vet and optional linters)
+  run_in_dir "shatter-go" "Go tests" go test ./...
+
+  info "Fast checks complete"
+  exit 0
+fi
+
+# --- Full mode (default) ---
 
 tooling_args=()
 rust_args=()

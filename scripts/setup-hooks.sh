@@ -64,11 +64,27 @@ PRE_COMMIT_BODY='if [ -f "scripts/quality/check-rust.sh" ]; then
   scripts/quality/check-rust.sh 2>&1 || exit 1
 fi'
 
-# Pre-push: path-aware quality gates — only runs lanes affected by changed files.
-# Falls back to a full run when path classification is uncertain.
+# Pre-push: fast + path-aware by default, full suite for main branch pushes.
+# Set SHATTER_FULL_PUSH=1 to force the full suite on any push.
 PRE_PUSH_BODY='if [ -f "scripts/quality/check-all.sh" ]; then
-  echo "[shatter] Running quality gates before push..."
-  scripts/quality/check-all.sh --path-aware 2>&1 || exit 1
+  PUSH_MODE="--fast --path-aware"
+
+  # Full mode when: SHATTER_FULL_PUSH=1 or pushing to main/master
+  if [ "${SHATTER_FULL_PUSH:-0}" = "1" ]; then
+    PUSH_MODE="--full"
+  fi
+
+  # Detect the remote ref from stdin (pre-push hook receives lines on stdin)
+  while read -r local_ref local_sha remote_ref remote_sha; do
+    case "${remote_ref}" in
+      refs/heads/main|refs/heads/master)
+        PUSH_MODE="--full"
+        ;;
+    esac
+  done
+
+  echo "[shatter] Running quality gates before push (${PUSH_MODE})..."
+  scripts/quality/check-all.sh ${PUSH_MODE} 2>&1 || exit 1
 fi'
 
 MISSING=0
