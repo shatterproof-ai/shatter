@@ -445,6 +445,22 @@ pub struct ExecuteResult {
     /// Dependencies discovered at execution time that static analysis missed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub discovered_dependencies: Vec<DiscoveredDependency>,
+    /// Connection failures observed during external dependency calls.
+    /// Reported by frontends when a live call to a dependency fails due to
+    /// infrastructure issues (ECONNREFUSED, DNS failure, timeout, etc.).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connection_failures: Vec<ConnectionFailure>,
+}
+
+/// A connection failure observed during a live call to an external dependency.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConnectionFailure {
+    /// Fully qualified symbol name of the dependency that failed.
+    pub symbol: String,
+    /// Classified error kind (connection_refused, dns_failure, etc.).
+    pub error_kind: String,
+    /// Raw error message from the frontend.
+    pub message: String,
 }
 
 /// Performance metrics from a single execution.
@@ -806,7 +822,7 @@ mod tests {
                     heap_used_bytes: 1024,
                     heap_allocated_bytes: 2048,
                 },
-                capture_truncation: None, discovered_dependencies: vec![],
+                capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![],
             })),
         ));
     }
@@ -835,7 +851,7 @@ mod tests {
                     heap_used_bytes: 256,
                     heap_allocated_bytes: 256,
                 },
-                capture_truncation: None, discovered_dependencies: vec![],
+                capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![],
             })),
         ));
     }
@@ -1776,7 +1792,7 @@ mod tests {
             side_effects: vec![],
             scope_events: vec![],
             performance: PerformanceMetrics::default(),
-            capture_truncation: None, discovered_dependencies: vec![],
+            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![],
         };
         assert!(validate_execute_result(&result));
     }
@@ -1802,7 +1818,7 @@ mod tests {
             side_effects: vec![],
             scope_events: vec![],
             performance: PerformanceMetrics::default(),
-            capture_truncation: None, discovered_dependencies: vec![],
+            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![],
         };
         assert!(!validate_execute_result(&result));
     }

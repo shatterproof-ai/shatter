@@ -554,6 +554,7 @@ pub fn arb_execute_result() -> impl Strategy<Value = ExecuteResult> {
                     performance,
                     capture_truncation,
                     discovered_dependencies,
+                    connection_failures: vec![],
                 }
             },
         )

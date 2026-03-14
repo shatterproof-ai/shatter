@@ -16,6 +16,7 @@ use rand::SeedableRng;
 use crate::protocol::SetupLevel;
 use crate::auto_mock::MockParam;
 use crate::coverage_metrics::DiscoveryMethod;
+use crate::mock_value_space::{LiveCallOutcome, LiveFirstState, classify_connection_failure};
 use crate::frontend::{Frontend, FrontendError};
 use crate::input_gen::{
     generate_inputs_with_custom, generate_mock_values, generate_random_inputs,
@@ -475,6 +476,66 @@ pub(crate) fn frontend_supports(caps: &FrontendCapabilities, command: &str) -> b
     caps.commands.contains(command)
 }
 
+/// Transition per-dep `LiveFirstState` based on connection failures reported
+/// in an `ExecuteResult`. Deps with connection failures transition to
+/// `Unavailable`; deps that were called successfully (present in
+/// `calls_to_external` but absent from `connection_failures`) transition
+/// toward `Available`.
+pub(crate) fn update_live_first_states(
+    result: &ExecuteResult,
+    states: &mut HashMap<String, LiveFirstState>,
+) {
+    let failed_symbols: std::collections::HashSet<&str> = result
+        .connection_failures
+        .iter()
+        .map(|cf| cf.symbol.as_str())
+        .collect();
+
+    // Transition failed deps.
+    for cf in &result.connection_failures {
+        let kind = classify_connection_failure(&cf.message)
+            .unwrap_or(crate::mock_value_space::ConnectionFailureKind::Other);
+        let state = states.entry(cf.symbol.clone()).or_default();
+        let new_state = state.transition(&LiveCallOutcome::ConnectionFailure { kind });
+        if *state != new_state {
+            log::info!(
+                "External dep '{}' unavailable — switching to autonomous mocking",
+                cf.symbol
+            );
+            *state = new_state;
+        }
+    }
+
+    // Transition successful deps (called but not failed).
+    for call in &result.calls_to_external {
+        if !failed_symbols.contains(call.symbol.as_str()) {
+            let state = states.entry(call.symbol.clone()).or_default();
+            let new_state = state.transition(&LiveCallOutcome::Success);
+            *state = new_state;
+        }
+    }
+}
+
+/// Override mock behavior for deps whose `LiveFirstState` is `Unavailable`.
+///
+/// Passthrough mocks are switched to `ReturnGenerated` so the frontend
+/// produces autonomous values instead of attempting a live call.
+pub(crate) fn apply_live_first_overrides(
+    states: &HashMap<String, LiveFirstState>,
+    mocks: &mut [MockConfig],
+) {
+    use crate::protocol::MockBehavior;
+
+    for mock in mocks.iter_mut() {
+        if let Some(state) = states.get(&mock.symbol)
+            && !state.should_try_live()
+            && mock.default_behavior == MockBehavior::Passthrough
+        {
+            mock.default_behavior = MockBehavior::ReturnGenerated;
+        }
+    }
+}
+
 /// Send a Setup command to the frontend and return a `SetupContextStack`
 /// containing the returned context at the given level.
 pub(crate) async fn send_setup(
@@ -633,6 +694,11 @@ pub async fn explore_function(
     let mut raw_results: Vec<(Vec<serde_json::Value>, Vec<MockConfig>, ExecuteResult)> = Vec::new();
     let mut iterations: u32 = 0;
     let mut discoveries: Vec<(u32, DiscoveryMethod)> = Vec::new();
+
+    // Per-dependency LiveFirst state: track whether each external dep is
+    // reachable (live calls pass through) or unavailable (fall back to
+    // autonomous mocks). All deps start as Untried.
+    let mut live_first_states: HashMap<String, LiveFirstState> = HashMap::new();
 
     // --- Float probe phase ---
     // Probes consume from the iteration budget, contributing to obs_state and raw_results.
@@ -812,11 +878,16 @@ pub async fn explore_function(
         // --- Mock generation ---
         // When mock_params is non-empty, generate fresh mock values each iteration
         // to vary dependency behavior across exploration runs.
-        let iteration_mocks = if !config.mock_params.is_empty() {
+        let mut iteration_mocks = if !config.mock_params.is_empty() {
             generate_mock_values(&config.mock_params, &mut rng, Some(&config.capabilities))
         } else {
             config.mocks.clone()
         };
+
+        // --- LiveFirst mock adjustment ---
+        // For deps whose LiveFirstState is Unavailable, override their
+        // mock behavior from Passthrough to autonomous (ReturnGenerated).
+        apply_live_first_overrides(&live_first_states, &mut iteration_mocks);
 
         // --- Execute + classify via canonical observe primitive ---
         let obs = crate::observe::observe_single(
@@ -836,6 +907,11 @@ pub async fn explore_function(
                 ExploreError::UnexpectedResponse(msg)
             }
         })?;
+
+        // --- LiveFirst state transitions ---
+        // Check connection_failures reported by the frontend and transition
+        // per-dep states accordingly.
+        update_live_first_states(&obs.exec_result, &mut live_first_states);
 
         // --- Per-execution teardown ---
         if per_execution_setup && !skip_setup && frontend_supports(&config.capabilities, "teardown") {
@@ -1198,14 +1274,14 @@ mod tests {
             thrown_error: None, branch_path: vec![], lines_executed: vec![],
             calls_to_external: vec![], path_constraints: vec![], side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![],
+            capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![], connection_failures: vec![],
         };
         let r2 = ExecuteResult {
             return_value: Some(serde_json::json!("positive-even")),
             thrown_error: None, branch_path: vec![], lines_executed: vec![],
             calls_to_external: vec![], path_constraints: vec![], side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![],
+            capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![], connection_failures: vec![],
         };
         assert_ne!(path_hash(&r1, &no_buckets()), path_hash(&r2, &no_buckets()));
     }
@@ -1217,14 +1293,14 @@ mod tests {
             thrown_error: None, branch_path: vec![], lines_executed: vec![1, 2, 3],
             calls_to_external: vec![], path_constraints: vec![], side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![],
+            capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![], connection_failures: vec![],
         };
         let r2 = ExecuteResult {
             return_value: Some(serde_json::json!(99.0)),
             thrown_error: None, branch_path: vec![], lines_executed: vec![1, 2, 3],
             calls_to_external: vec![], path_constraints: vec![], side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![],
+            capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![], connection_failures: vec![],
         };
         assert_eq!(path_hash(&r1, &no_buckets()), path_hash(&r2, &no_buckets()));
     }
@@ -1236,14 +1312,14 @@ mod tests {
             thrown_error: None, branch_path: vec![], lines_executed: vec![1, 2, 3],
             calls_to_external: vec![], path_constraints: vec![], side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![],
+            capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![], connection_failures: vec![],
         };
         let r2 = ExecuteResult {
             return_value: Some(serde_json::json!("same")),
             thrown_error: None, branch_path: vec![], lines_executed: vec![1, 2, 4],
             calls_to_external: vec![], path_constraints: vec![], side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![],
+            capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![], connection_failures: vec![],
         };
         assert_ne!(path_hash(&r1, &no_buckets()), path_hash(&r2, &no_buckets()));
     }
@@ -1255,7 +1331,7 @@ mod tests {
             thrown_error: None, branch_path: vec![], lines_executed: vec![],
             calls_to_external: vec![], path_constraints: vec![], side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![],
+            capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![], connection_failures: vec![],
         };
         let err = ExecuteResult {
             return_value: None,
@@ -1263,7 +1339,7 @@ mod tests {
             branch_path: vec![], lines_executed: vec![],
             calls_to_external: vec![], path_constraints: vec![], side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![],
+            capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![], connection_failures: vec![],
         };
         assert_ne!(path_hash(&ok, &no_buckets()), path_hash(&err, &no_buckets()));
     }
@@ -1278,7 +1354,7 @@ mod tests {
                 constraint: SymConstraint::Unknown { hint: "test".into() },
             }],
             lines_executed: vec![], calls_to_external: vec![], path_constraints: vec![],
-            scope_events: vec![], side_effects: vec![], capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![],
+            scope_events: vec![], side_effects: vec![], capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![], connection_failures: vec![],
         };
         let r2 = ExecuteResult {
             return_value: Some(serde_json::json!("same")),
@@ -1288,7 +1364,7 @@ mod tests {
                 constraint: SymConstraint::Unknown { hint: "test".into() },
             }],
             lines_executed: vec![], calls_to_external: vec![], path_constraints: vec![],
-            scope_events: vec![], side_effects: vec![], capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![],
+            scope_events: vec![], side_effects: vec![], capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![], connection_failures: vec![],
         };
         assert_ne!(path_hash(&r1, &no_buckets()), path_hash(&r2, &no_buckets()));
     }
@@ -1341,7 +1417,7 @@ mod tests {
             path_constraints: vec![],
             scope_events: events,
             side_effects: vec![],
-            capture_truncation: None, discovered_dependencies: vec![],
+            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![],
             performance: empty_perf(),
         }
     }
@@ -1361,7 +1437,7 @@ mod tests {
             path_constraints: vec![],
             scope_events: vec![],
             side_effects: vec![],
-            capture_truncation: None, discovered_dependencies: vec![],
+            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![],
             performance: empty_perf(),
         };
         let hash1 = path_hash(&r, &no_buckets());
@@ -1884,7 +1960,7 @@ mod tests {
             path_constraints: vec![],
             side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, discovered_dependencies: vec![],
+            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![],
             performance: Default::default(),
         };
         let label = classify_error_intent(&result).unwrap();
@@ -1903,7 +1979,7 @@ mod tests {
             path_constraints: vec![],
             side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, discovered_dependencies: vec![],
+            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![],
             performance: Default::default(),
         };
         assert!(classify_error_intent(&result).is_none());
@@ -1934,7 +2010,7 @@ mod tests {
             path_constraints: vec![],
             side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, discovered_dependencies: vec![],
+            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![],
             performance: Default::default(),
         };
         let label = classify_error_intent(&result).unwrap();
@@ -2266,7 +2342,7 @@ mod tests {
                     scope_events: vec![],
                     side_effects: vec![],
                     performance: perf.clone(),
-                    capture_truncation: None, discovered_dependencies: vec![],
+                    capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![],
                 };
                 let flipped = crate::protocol::ExecuteResult {
                     branch_path: vec![crate::execution_record::BranchDecision {
@@ -2335,7 +2411,7 @@ mod tests {
             side_effects: vec![],
             scope_events: vec![],
             capture_truncation: None,
-            discovered_dependencies: vec![],
+            discovered_dependencies: vec![], connection_failures: vec![],
             performance: empty_perf(),
         };
         let obs = ObservationOutput {
@@ -2380,7 +2456,7 @@ mod tests {
                 side_effects: vec![],
                 scope_events: vec![],
                 capture_truncation: None,
-                discovered_dependencies: vec![],
+                discovered_dependencies: vec![], connection_failures: vec![],
                 performance: empty_perf(),
             }
         };
@@ -2410,5 +2486,187 @@ mod tests {
         assert!((profile.rarity(2) - 0.5).abs() < f64::EPSILON);
         // Branch 3: in 1/4 → freq 0.25, rarity 0.75
         assert!((profile.rarity(3) - 0.75).abs() < f64::EPSILON);
+    }
+
+    // -----------------------------------------------------------------------
+    // LiveFirst integration tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn update_live_first_states_transitions_on_connection_failure() {
+        use crate::protocol::ConnectionFailure;
+        use crate::execution_record::ExternalCall;
+
+        let mut states: HashMap<String, LiveFirstState> = HashMap::new();
+
+        let result = ExecuteResult {
+            return_value: None,
+            thrown_error: None,
+            branch_path: vec![],
+            lines_executed: vec![],
+            calls_to_external: vec![
+                ExternalCall {
+                    symbol: "db.query".into(),
+                    args: vec![],
+                    return_value: serde_json::json!(null),
+                },
+            ],
+            path_constraints: vec![],
+            scope_events: vec![],
+            side_effects: vec![],
+            performance: empty_perf(),
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![
+                ConnectionFailure {
+                    symbol: "db.query".into(),
+                    error_kind: "connection_refused".into(),
+                    message: "connect ECONNREFUSED 127.0.0.1:5432".into(),
+                },
+            ],
+        };
+
+        update_live_first_states(&result, &mut states);
+
+        assert_eq!(
+            states.get("db.query"),
+            Some(&LiveFirstState::Unavailable),
+            "dep with connection failure should transition to Unavailable"
+        );
+    }
+
+    #[test]
+    fn update_live_first_states_transitions_on_success() {
+        use crate::execution_record::ExternalCall;
+
+        let mut states: HashMap<String, LiveFirstState> = HashMap::new();
+
+        let result = ExecuteResult {
+            return_value: Some(serde_json::json!(42)),
+            thrown_error: None,
+            branch_path: vec![],
+            lines_executed: vec![],
+            calls_to_external: vec![
+                ExternalCall {
+                    symbol: "api.fetch".into(),
+                    args: vec![],
+                    return_value: serde_json::json!({"status": 200}),
+                },
+            ],
+            path_constraints: vec![],
+            scope_events: vec![],
+            side_effects: vec![],
+            performance: empty_perf(),
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+        };
+
+        update_live_first_states(&result, &mut states);
+
+        assert_eq!(
+            states.get("api.fetch"),
+            Some(&LiveFirstState::Available),
+            "dep with successful call should transition to Available"
+        );
+    }
+
+    #[test]
+    fn update_live_first_states_unavailable_is_terminal() {
+        use crate::execution_record::ExternalCall;
+
+        let mut states: HashMap<String, LiveFirstState> = HashMap::new();
+        states.insert("db.query".into(), LiveFirstState::Unavailable);
+
+        let result = ExecuteResult {
+            return_value: None,
+            thrown_error: None,
+            branch_path: vec![],
+            lines_executed: vec![],
+            calls_to_external: vec![
+                ExternalCall {
+                    symbol: "db.query".into(),
+                    args: vec![],
+                    return_value: serde_json::json!(null),
+                },
+            ],
+            path_constraints: vec![],
+            scope_events: vec![],
+            side_effects: vec![],
+            performance: empty_perf(),
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+        };
+
+        update_live_first_states(&result, &mut states);
+
+        assert_eq!(
+            states.get("db.query"),
+            Some(&LiveFirstState::Unavailable),
+            "Unavailable is terminal — success should not revive it"
+        );
+    }
+
+    #[test]
+    fn apply_live_first_overrides_switches_passthrough_to_generated() {
+        use crate::protocol::MockBehavior;
+
+        let mut states: HashMap<String, LiveFirstState> = HashMap::new();
+        states.insert("db.query".into(), LiveFirstState::Unavailable);
+        states.insert("api.fetch".into(), LiveFirstState::Available);
+
+        let mut mocks = vec![
+            MockConfig {
+                symbol: "db.query".into(),
+                return_values: vec![],
+                should_track_calls: true,
+                default_behavior: MockBehavior::Passthrough,
+            },
+            MockConfig {
+                symbol: "api.fetch".into(),
+                return_values: vec![],
+                should_track_calls: true,
+                default_behavior: MockBehavior::Passthrough,
+            },
+        ];
+
+        apply_live_first_overrides(&states, &mut mocks);
+
+        assert_eq!(
+            mocks[0].default_behavior,
+            MockBehavior::ReturnGenerated,
+            "Unavailable dep should switch from Passthrough to ReturnGenerated"
+        );
+        assert_eq!(
+            mocks[1].default_behavior,
+            MockBehavior::Passthrough,
+            "Available dep should remain Passthrough"
+        );
+    }
+
+    #[test]
+    fn apply_live_first_overrides_preserves_non_passthrough() {
+        use crate::protocol::MockBehavior;
+
+        let mut states: HashMap<String, LiveFirstState> = HashMap::new();
+        states.insert("db.query".into(), LiveFirstState::Unavailable);
+
+        let mut mocks = vec![
+            MockConfig {
+                symbol: "db.query".into(),
+                return_values: vec![serde_json::json!(42)],
+                should_track_calls: true,
+                default_behavior: MockBehavior::RepeatLast,
+            },
+        ];
+
+        apply_live_first_overrides(&states, &mut mocks);
+
+        assert_eq!(
+            mocks[0].default_behavior,
+            MockBehavior::RepeatLast,
+            "Non-Passthrough behavior should not be overridden"
+        );
     }
 }
