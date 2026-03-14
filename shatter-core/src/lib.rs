@@ -21,6 +21,7 @@ pub mod clustering;
 pub mod discovery;
 pub mod drilling;
 pub mod executability;
+pub mod entropy;
 pub mod equivalence;
 pub mod execution_record;
 pub mod explorer;

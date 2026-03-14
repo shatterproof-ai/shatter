@@ -642,6 +642,8 @@ pub fn arb_crypto_boundary() -> impl Strategy<Value = CryptoBoundary> {
             output,
             param_roles: std::collections::HashMap::new(),
             call_sites: vec![],
+            input_entropy: None,
+            output_entropy: None,
         })
 }
 

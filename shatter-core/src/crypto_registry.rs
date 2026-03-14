@@ -209,6 +209,8 @@ impl CryptoRegistry {
                         output: entry.output,
                         param_roles: entry.param_roles.clone(),
                         call_sites: dep.call_sites.clone(),
+                        input_entropy: None,
+                        output_entropy: None,
                     }
                 })
             })

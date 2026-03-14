@@ -374,6 +374,12 @@ pub struct CryptoBoundary {
     pub param_roles: HashMap<String, ParamRole>,
     /// Line numbers where this crypto API is called.
     pub call_sites: Vec<u32>,
+    /// Shannon entropy (bits/byte) of input buffer, measured at runtime.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_entropy: Option<f64>,
+    /// Shannon entropy (bits/byte) of output buffer, measured at runtime.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_entropy: Option<f64>,
 }
 
 /// The kind of external dependency.
@@ -1749,6 +1755,8 @@ mod tests {
             output: OutputSemantics::Plaintext,
             param_roles: roles,
             call_sites: vec![5, 12],
+            input_entropy: None,
+            output_entropy: None,
         });
     }
 
@@ -1777,6 +1785,8 @@ mod tests {
                 output: OutputSemantics::Plaintext,
                 param_roles: HashMap::new(),
                 call_sites: vec![3],
+                input_entropy: None,
+                output_entropy: None,
             }],
         });
     }

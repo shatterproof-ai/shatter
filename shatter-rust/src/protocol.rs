@@ -195,6 +195,10 @@ pub struct CryptoBoundary {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub param_roles: HashMap<String, String>,
     pub call_sites: Vec<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_entropy: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_entropy: Option<f64>,
 }
 
 /// Analysis result for a single function.
@@ -837,6 +841,8 @@ mod tests {
             output: "plaintext".into(),
             param_roles: roles,
             call_sites: vec![5, 12],
+            input_entropy: None,
+            output_entropy: None,
         });
     }
 

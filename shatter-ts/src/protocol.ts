@@ -247,6 +247,8 @@ export interface CryptoBoundary {
   output: "ciphertext" | "plaintext" | "key" | "hash" | "signature" | "verified";
   param_roles: Record<string, "key" | "data" | "iv" | "nonce" | "tag" | "aad" | "algorithm">;
   call_sites: number[];
+  input_entropy?: number;
+  output_entropy?: number;
 }
 
 export interface FunctionAnalysis {
