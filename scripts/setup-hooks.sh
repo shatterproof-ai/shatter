@@ -64,10 +64,11 @@ PRE_COMMIT_BODY='if [ -f "scripts/quality/check-rust.sh" ]; then
   scripts/quality/check-rust.sh 2>&1 || exit 1
 fi'
 
-# Pre-push: full quality gates via the aggregate runner
+# Pre-push: path-aware quality gates — only runs lanes affected by changed files.
+# Falls back to a full run when path classification is uncertain.
 PRE_PUSH_BODY='if [ -f "scripts/quality/check-all.sh" ]; then
   echo "[shatter] Running quality gates before push..."
-  scripts/quality/check-all.sh 2>&1 || exit 1
+  scripts/quality/check-all.sh --path-aware 2>&1 || exit 1
 fi'
 
 MISSING=0
