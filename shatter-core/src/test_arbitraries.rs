@@ -628,21 +628,34 @@ pub fn arb_branch_info() -> impl Strategy<Value = BranchInfo> {
         })
 }
 
+pub fn arb_confidence() -> impl Strategy<Value = crate::nondeterminism::Confidence> {
+    use crate::nondeterminism::Confidence;
+    prop_oneof![
+        Just(Confidence::Low),
+        Just(Confidence::Medium),
+        Just(Confidence::High),
+    ]
+}
+
 pub fn arb_crypto_boundary() -> impl Strategy<Value = CryptoBoundary> {
     (
         arb_ident(),
         arb_ident(),
         arb_crypto_direction(),
-        arb_output_semantics(),
+        proptest::option::of(arb_output_semantics()),
+        arb_confidence(),
     )
-        .prop_map(|(symbol, source_module, direction, output)| CryptoBoundary {
-            symbol,
-            source_module,
-            direction,
-            output,
-            param_roles: std::collections::HashMap::new(),
-            call_sites: vec![],
-        })
+        .prop_map(
+            |(symbol, source_module, direction, output, confidence)| CryptoBoundary {
+                symbol,
+                source_module,
+                direction,
+                output,
+                confidence,
+                param_roles: std::collections::HashMap::new(),
+                call_sites: vec![],
+            },
+        )
 }
 
 pub fn arb_external_dependency() -> impl Strategy<Value = ExternalDependency> {

@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::crypto_registry::{CryptoDirection, OutputSemantics, ParamRole};
+use crate::nondeterminism::Confidence;
 use crate::execution_record::{
     BranchDecision, ErrorInfo, ExternalCall, SideEffect, SymConstraint, TraceEvent,
     TruncationInfo,
@@ -356,7 +357,8 @@ pub struct ExternalDependency {
 
 /// A detected cryptographic API boundary within a function.
 ///
-/// Produced by matching `ExternalDependency` entries against the crypto registry.
+/// Produced by matching `ExternalDependency` entries against the crypto registry
+/// (Layer 1, High confidence) or naming heuristics (Layer 2, Medium/Low confidence).
 /// Carries the crypto-specific metadata (direction, param roles, output semantics)
 /// alongside the call site information from the dependency.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -367,13 +369,23 @@ pub struct CryptoBoundary {
     pub source_module: String,
     /// Whether this is an encrypt, decrypt, or both operation.
     pub direction: CryptoDirection,
-    /// What the output represents (ciphertext, plaintext, key, etc.).
-    pub output: OutputSemantics,
+    /// What the output represents. Always present for Layer 1 (registry) matches;
+    /// absent for Layer 2 (naming heuristic) matches where output semantics are unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<OutputSemantics>,
+    /// Detection confidence: High for registry matches, Medium for strong name
+    /// patterns (e.g. `decrypt*`), Low for ambiguous patterns needing context.
+    #[serde(default = "default_confidence")]
+    pub confidence: Confidence,
     /// Maps parameter positions to their cryptographic roles.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub param_roles: HashMap<String, ParamRole>,
     /// Line numbers where this crypto API is called.
     pub call_sites: Vec<u32>,
+}
+
+fn default_confidence() -> Confidence {
+    Confidence::High
 }
 
 /// The kind of external dependency.
@@ -1735,6 +1747,7 @@ mod tests {
     #[test]
     fn crypto_boundary_round_trips() {
         use crate::crypto_registry::{CryptoDirection, OutputSemantics, ParamRole};
+        use crate::nondeterminism::Confidence;
         use std::collections::HashMap;
 
         let mut roles = HashMap::new();
@@ -1746,15 +1759,40 @@ mod tests {
             symbol: "createDecipheriv".into(),
             source_module: "crypto".into(),
             direction: CryptoDirection::Decrypt,
-            output: OutputSemantics::Plaintext,
+            output: Some(OutputSemantics::Plaintext),
+            confidence: Confidence::High,
             param_roles: roles,
             call_sites: vec![5, 12],
         });
     }
 
     #[test]
+    fn crypto_boundary_heuristic_round_trips() {
+        use crate::crypto_registry::CryptoDirection;
+        use crate::nondeterminism::Confidence;
+
+        round_trip(&CryptoBoundary {
+            symbol: "encryptPayload".into(),
+            source_module: "my-custom-lib".into(),
+            direction: CryptoDirection::Encrypt,
+            output: None,
+            confidence: Confidence::Medium,
+            param_roles: HashMap::new(),
+            call_sites: vec![42],
+        });
+    }
+
+    #[test]
+    fn crypto_boundary_missing_confidence_defaults_to_high() {
+        let json = r#"{"symbol":"createDecipheriv","source_module":"crypto","direction":"decrypt","output":"plaintext","call_sites":[5]}"#;
+        let cb: CryptoBoundary = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(cb.confidence, Confidence::High);
+    }
+
+    #[test]
     fn function_analysis_with_crypto_boundaries_round_trips() {
         use crate::crypto_registry::{CryptoDirection, OutputSemantics};
+        use crate::nondeterminism::Confidence;
 
         round_trip(&FunctionAnalysis {
             name: "decrypt".into(),
@@ -1774,7 +1812,8 @@ mod tests {
                 symbol: "createDecipheriv".into(),
                 source_module: "crypto".into(),
                 direction: CryptoDirection::Decrypt,
-                output: OutputSemantics::Plaintext,
+                output: Some(OutputSemantics::Plaintext),
+                confidence: Confidence::High,
                 param_roles: HashMap::new(),
                 call_sites: vec![3],
             }],

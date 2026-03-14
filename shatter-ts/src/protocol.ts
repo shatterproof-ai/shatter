@@ -244,7 +244,8 @@ export interface CryptoBoundary {
   symbol: string;
   source_module: string;
   direction: "encrypt" | "decrypt" | "both";
-  output: "ciphertext" | "plaintext" | "key" | "hash" | "signature" | "verified";
+  output?: "ciphertext" | "plaintext" | "key" | "hash" | "signature" | "verified";
+  confidence?: "low" | "medium" | "high";
   param_roles: Record<string, "key" | "data" | "iv" | "nonce" | "tag" | "aad" | "algorithm">;
   call_sites: number[];
 }

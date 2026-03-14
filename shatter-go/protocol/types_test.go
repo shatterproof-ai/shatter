@@ -486,6 +486,7 @@ func TestCryptoBoundaryRoundTrip(t *testing.T) {
 		SourceModule: "crypto",
 		Direction:    "decrypt",
 		Output:       "plaintext",
+		Confidence:   "high",
 		ParamRoles:   map[string]string{"0": "algorithm", "1": "key", "2": "iv"},
 		CallSites:    []int{5, 12},
 	}
@@ -503,8 +504,39 @@ func TestCryptoBoundaryRoundTrip(t *testing.T) {
 	if decoded.Direction != cb.Direction {
 		t.Errorf("direction = %q, want %q", decoded.Direction, cb.Direction)
 	}
+	if decoded.Confidence != cb.Confidence {
+		t.Errorf("confidence = %q, want %q", decoded.Confidence, cb.Confidence)
+	}
 	if len(decoded.ParamRoles) != 3 {
 		t.Errorf("param_roles len = %d, want 3", len(decoded.ParamRoles))
+	}
+}
+
+func TestCryptoBoundaryHeuristicOmitsOutput(t *testing.T) {
+	cb := CryptoBoundary{
+		Symbol:       "encryptPayload",
+		SourceModule: "my-custom-lib",
+		Direction:    "encrypt",
+		Confidence:   "medium",
+		CallSites:    []int{42},
+	}
+	data, err := json.Marshal(cb)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal raw: %v", err)
+	}
+	if _, has := raw["output"]; has {
+		t.Error("empty output should be omitted from JSON")
+	}
+	var decoded CryptoBoundary
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.Confidence != "medium" {
+		t.Errorf("confidence = %q, want %q", decoded.Confidence, "medium")
 	}
 }
 
@@ -540,6 +572,7 @@ func TestFunctionAnalysisCryptoBoundariesRoundTrip(t *testing.T) {
 			SourceModule: "crypto",
 			Direction:    "decrypt",
 			Output:       "plaintext",
+			Confidence:   "high",
 			CallSites:    []int{3},
 		}},
 	}

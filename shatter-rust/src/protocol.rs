@@ -191,7 +191,10 @@ pub struct CryptoBoundary {
     pub symbol: String,
     pub source_module: String,
     pub direction: String,
-    pub output: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<String>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub param_roles: HashMap<String, String>,
     pub call_sites: Vec<u32>,
@@ -834,9 +837,23 @@ mod tests {
             symbol: "createDecipheriv".into(),
             source_module: "crypto".into(),
             direction: "decrypt".into(),
-            output: "plaintext".into(),
+            output: Some("plaintext".into()),
+            confidence: Some("high".into()),
             param_roles: roles,
             call_sites: vec![5, 12],
+        });
+    }
+
+    #[test]
+    fn crypto_boundary_heuristic_round_trips() {
+        round_trip(&CryptoBoundary {
+            symbol: "encryptPayload".into(),
+            source_module: "my-custom-lib".into(),
+            direction: "encrypt".into(),
+            output: None,
+            confidence: Some("medium".into()),
+            param_roles: HashMap::new(),
+            call_sites: vec![42],
         });
     }
 
