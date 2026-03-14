@@ -38,8 +38,14 @@ build-go: ## Build Go frontend
 
 test: test-full ## Run full test suite (default)
 
-test-quick: build ## Quick: cargo test only
-	cargo test
+test-quick: build ## Quick: cargo test (or nextest if available)
+	@if command -v cargo-nextest >/dev/null 2>&1; then \
+		echo "[info] Using cargo-nextest for parallel test execution"; \
+		cargo nextest run; \
+	else \
+		echo "[info] Using cargo test (install cargo-nextest for faster runs)"; \
+		cargo test; \
+	fi
 
 test-standard: build ## Standard: cargo test + clippy
 	cargo test
