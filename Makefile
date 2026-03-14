@@ -1,6 +1,6 @@
 .PHONY: help build build-rust build-core build-cli build-rust-frontend build-examples build-ts build-go \
        test test-quick test-standard test-full test-e2e \
-       check-tooling check-rust check-ts check-go check-docs check-meta check-all pre-completion \
+       check-tooling check-rust check-ts check-go check-docs check-meta check-all check-fast pre-completion \
        clean lint walkthrough
 
 # -- Build -------------------------------------------------------------------
@@ -74,8 +74,11 @@ check-docs: ## Run documentation quality gates
 check-meta: ## Run repository meta checks (workflow lint, Semgrep)
 	./scripts/quality/check-meta.sh
 
-check-all: ## Run the local/CI aggregate quality script
+check-all: ## Run the full aggregate quality script
 	./scripts/quality/check-all.sh
+
+check-fast: ## Run the fast quality gate (clippy + tests, skip docs/schemas/meta)
+	./scripts/quality/check-all.sh --fast
 
 pre-completion: ## Run the pre-completion quality script
 	./scripts/quality/pre-completion.sh
