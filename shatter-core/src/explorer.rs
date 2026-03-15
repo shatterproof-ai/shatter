@@ -117,6 +117,8 @@ pub struct ExploreConfig {
     pub timeout_explore: Option<Duration>,
     /// Strategy meta-configuration for adaptive selection.
     pub meta_config: crate::strategy::MetaConfig,
+    /// Maximum shrink attempts per discovered behavior. Set to 0 to disable.
+    pub shrink_budget: usize,
 }
 
 /// Summary of a single function execution during exploration.
@@ -169,6 +171,9 @@ pub struct ObservationOutput {
     /// Refined boundary witness pairs from post-discovery refinement phase.
     #[serde(default)]
     pub boundary_results: Vec<crate::boundary_search::BoundaryResult>,
+    /// Shrunk witnesses: maps branch_path hash to minimal inputs that reproduce the same path.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub shrunk_witnesses: std::collections::HashMap<u64, Vec<serde_json::Value>>,
 }
 
 /// Transitional alias: existing code that references `ExplorationResult`
@@ -945,6 +950,75 @@ pub async fn explore_function(
     let total_lines = instrumentable_line_count
         .unwrap_or_else(|| analysis.end_line.saturating_sub(analysis.start_line) + 1);
 
+    // -- Witness shrinking phase --
+    let mut shrunk_witnesses: std::collections::HashMap<u64, Vec<serde_json::Value>> =
+        std::collections::HashMap::new();
+    if config.shrink_budget > 0 {
+        let mut path_witnesses: std::collections::HashMap<
+            u64,
+            (Vec<serde_json::Value>, Vec<crate::protocol::MockConfig>),
+        > = std::collections::HashMap::new();
+        for (inputs, mocks, result) in &raw_results {
+            let ph = crate::orchestrator::hash_branch_path(&result.branch_path);
+            path_witnesses
+                .entry(ph)
+                .or_insert_with(|| (inputs.clone(), mocks.clone()));
+        }
+
+        for (ph, (witness, witness_mocks)) in &path_witnesses {
+            let effective_mocks = if witness_mocks.is_empty() {
+                config.mocks.clone()
+            } else {
+                witness_mocks.clone()
+            };
+
+            let mut current = witness.clone();
+            let mut attempts = 0usize;
+            let mut progress = true;
+
+            while progress && attempts < config.shrink_budget {
+                progress = false;
+                for i in 0..analysis.params.len().min(current.len()) {
+                    let candidates =
+                        crate::shrink::shrink_candidates(&current[i], &analysis.params[i].typ);
+                    for candidate in candidates {
+                        if attempts >= config.shrink_budget {
+                            break;
+                        }
+                        let mut trial = current.clone();
+                        trial[i] = candidate;
+                        attempts += 1;
+
+                        let resp = frontend
+                            .send(ProtoCommand::Execute {
+                                function: analysis.name.clone(),
+                                inputs: trial.clone(),
+                                mocks: effective_mocks.clone(),
+                                setup_context: None,
+                            })
+                            .await;
+
+                        if let Ok(resp) = resp
+                            && let ResponseResult::Execute(exec_res) = resp.result
+                            && crate::orchestrator::hash_branch_path(&exec_res.branch_path) == *ph
+                        {
+                            current = trial;
+                            progress = true;
+                            break;
+                        }
+                    }
+                    if attempts >= config.shrink_budget {
+                        break;
+                    }
+                }
+            }
+
+            if current != *witness {
+                shrunk_witnesses.insert(*ph, current);
+            }
+        }
+    }
+
     Ok(ObservationOutput {
         function_name: analysis.name.clone(),
         iterations,
@@ -957,6 +1031,7 @@ pub async fn explore_function(
         nondeterministic_fields: vec![],
         float_probe_results,
         boundary_results: vec![],
+        shrunk_witnesses,
     })
 }
 
@@ -1812,7 +1887,7 @@ mod tests {
                     return_value: Some(serde_json::json!("negative")),
                     thrown_error: None, lines_executed: vec![1, 4, 5], is_new_path: true, error_intent: None },
             ],
-            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![],
+            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
         };
         let report = format_exploration_report(&result, &ReportOptions::default());
         assert!(report.contains("classify"));
@@ -1833,7 +1908,7 @@ mod tests {
                 inputs: vec![serde_json::json!(10)],
                 return_value: Some(serde_json::json!(5)),
                 thrown_error: None, lines_executed: vec![1, 2, 3], is_new_path: true, error_intent: None }],
-            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![],
+            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
         };
         let report = format_exploration_report(&result, &ReportOptions {
             location: Some("src/math.ts:10-25".into()), ..Default::default()
@@ -1852,7 +1927,7 @@ mod tests {
                 return_value: None,
                 thrown_error: Some("TypeError: cannot read null".into()),
                 lines_executed: vec![], is_new_path: true, error_intent: None }],
-            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![],
+            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
         };
         let report = format_exploration_report(&result, &ReportOptions::default());
         assert!(report.contains("throws"));
@@ -1863,7 +1938,7 @@ mod tests {
     fn format_exploration_report_with_perf() {
         let result = ObservationOutput {
             function_name: "fast".into(), iterations: 10, unique_paths: 1,
-            lines_covered: 0, total_lines: 0, new_path_executions: vec![], raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![],
+            lines_covered: 0, total_lines: 0, new_path_executions: vec![], raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
         };
         let report = format_exploration_report(&result, &ReportOptions {
             show_perf: true, wall_time: Some(std::time::Duration::from_millis(42)),
@@ -1878,7 +1953,7 @@ mod tests {
     fn format_exploration_report_includes_coverage_metrics() {
         let result = ObservationOutput {
             function_name: "analyze".into(), iterations: 20, unique_paths: 3,
-            lines_covered: 8, total_lines: 10, new_path_executions: vec![], raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![],
+            lines_covered: 8, total_lines: 10, new_path_executions: vec![], raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
         };
         let metrics = crate::coverage_metrics::CoverageMetrics {
             total_branches: 4, z3_solved: 2, random_found: 1, user_provided: 0,
@@ -1902,7 +1977,7 @@ mod tests {
                 inputs: vec![serde_json::json!(1)],
                 return_value: Some(serde_json::json!("ok")),
                 thrown_error: None, lines_executed: vec![1, 2, 3, 4], is_new_path: true, error_intent: None }],
-            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![],
+            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
         };
         let report = format_exploration_report(&result, &ReportOptions {
             style: crate::report_style::ReportStyle::ansi(), ..Default::default()
@@ -1933,7 +2008,7 @@ mod tests {
                 inputs: vec![serde_json::json!(5)],
                 return_value: Some(serde_json::json!("positive-odd")),
                 thrown_error: None, lines_executed: vec![1, 2, 3], is_new_path: true, error_intent: None }],
-            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![],
+            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
         };
         let report = format_exploration_report_verbose(&result);
         assert!(report.contains("10 iteration(s)"));
@@ -2060,7 +2135,7 @@ mod tests {
             project_root: None,
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
-            meta_config: crate::strategy::MetaConfig::default(),
+            meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("should succeed with noop frontend");
@@ -2086,7 +2161,7 @@ mod tests {
             project_root: None,
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
-            meta_config: crate::strategy::MetaConfig::default(),
+            meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("per_function setup should succeed");
@@ -2112,7 +2187,7 @@ mod tests {
             project_root: None,
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
-            meta_config: crate::strategy::MetaConfig::default(),
+            meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("per_execution setup should succeed");
@@ -2137,7 +2212,7 @@ mod tests {
             project_root: None,
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
-            meta_config: crate::strategy::MetaConfig::default(),
+            meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("should succeed without setup capability");
@@ -2166,7 +2241,7 @@ mod tests {
             project_root: None,
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
-            meta_config: crate::strategy::MetaConfig::default(),
+            meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("generators should succeed");
@@ -2191,7 +2266,7 @@ mod tests {
             project_root: None,
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
-            meta_config: crate::strategy::MetaConfig::default(),
+            meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("no generators should succeed");
@@ -2215,7 +2290,7 @@ mod tests {
             project_root: None,
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
-            meta_config: crate::strategy::MetaConfig::default(),
+            meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("user seeds should succeed");
@@ -2242,7 +2317,7 @@ mod tests {
             project_root: None,
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
-            meta_config: crate::strategy::MetaConfig::default(),
+            meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("candidate inputs should succeed");
@@ -2281,7 +2356,7 @@ mod tests {
             project_root: None,
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
-            meta_config: crate::strategy::MetaConfig::default(),
+            meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("should succeed with noop frontend");
@@ -2384,7 +2459,7 @@ mod tests {
             raw_results: vec![],
             discoveries: vec![],
             nondeterministic_fields: vec![],
-            float_probe_results: vec![], boundary_results: vec![],
+            float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
         };
         let profile = collect_branch_profile(&obs);
         assert!(profile.is_empty());
@@ -2428,7 +2503,7 @@ mod tests {
             raw_results: vec![(vec![], vec![], result)],
             discoveries: vec![],
             nondeterministic_fields: vec![],
-            float_probe_results: vec![], boundary_results: vec![],
+            float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
         };
         let profile = collect_branch_profile(&obs);
         assert_eq!(profile.len(), 2);
@@ -2480,7 +2555,7 @@ mod tests {
             ],
             discoveries: vec![],
             nondeterministic_fields: vec![],
-            float_probe_results: vec![], boundary_results: vec![],
+            float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
         };
         let profile = collect_branch_profile(&obs);
 

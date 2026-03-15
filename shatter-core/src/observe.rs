@@ -415,6 +415,7 @@ pub async fn observe_function(
         discoveries: batch.discoveries,
         nondeterministic_fields: vec![],
         float_probe_results: vec![], boundary_results: vec![],
+        shrunk_witnesses: std::collections::HashMap::new(),
     })
 }
 
@@ -612,7 +613,7 @@ mod tests {
             project_root: Some("/project".to_string()),
             loop_buckets: LoopBuckets::default(),
             timeout_explore: Some(Duration::from_secs(30)),
-            meta_config: crate::strategy::MetaConfig::default(),
+            meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
         };
 
         let observe_config = ObserveConfig::from(&explore_config);

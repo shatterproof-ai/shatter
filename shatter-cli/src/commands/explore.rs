@@ -424,7 +424,7 @@ pub(crate) async fn run_explore(
                 project_root: project_root_str.clone(),
                 loop_buckets: loop_buckets.clone(),
                 timeout_explore: timeout_explore.map(Duration::from_secs_f64),
-                meta_config: meta_config.clone(),
+                meta_config: meta_config.clone(), shrink_budget: shatter_core::orchestrator::DEFAULT_SHRINK_BUDGET,
             };
 
             if !resolved.candidate_inputs.is_empty() {
@@ -473,6 +473,7 @@ pub(crate) async fn run_explore(
                     meta_config: meta_config.clone(),
                     loop_convergence_window: 3,
                     refine_budget: if refine_budget > 0 { Some(refine_budget) } else { None },
+                    shrink_budget: shatter_core::orchestrator::DEFAULT_SHRINK_BUDGET,
                 };
 
                 match shatter_core::orchestrator::explore(

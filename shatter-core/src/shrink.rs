@@ -6,7 +6,78 @@
 
 use serde_json::{json, Value};
 
-use crate::types::TypeInfo;
+use crate::orchestrator::hash_branch_path;
+use crate::protocol::ExecuteResult;
+use crate::types::{ParamInfo, TypeInfo};
+
+/// Result of shrinking a witness to its minimal form.
+#[derive(Debug, Clone)]
+pub struct ShrinkResult {
+    /// The (possibly reduced) inputs.
+    pub inputs: Vec<Value>,
+    /// Total execute calls made during shrinking.
+    pub attempts: usize,
+    /// Whether any parameter was actually shrunk smaller.
+    pub shrunk: bool,
+}
+
+/// Shrink a witness to the simplest inputs that still produce the same branch path.
+///
+/// Uses a QuickCheck-style strategy: try shrinking one parameter at a time,
+/// accepting the first candidate that preserves the target branch path.
+/// Repeats until no progress or budget exhausted.
+///
+/// `execute_fn` is called for each trial — it should run the function with
+/// the given inputs and return the `ExecuteResult`. Errors from `execute_fn`
+/// are treated as "candidate rejected" (the trial is skipped, not fatal).
+pub fn shrink_witness(
+    inputs: &[Value],
+    param_infos: &[ParamInfo],
+    target_path_hash: u64,
+    max_attempts: usize,
+    mut execute_fn: impl FnMut(&[Value]) -> Result<ExecuteResult, Box<dyn std::error::Error>>,
+) -> ShrinkResult {
+    let original = inputs.to_vec();
+    let mut current = original.clone();
+    let mut attempts = 0;
+    let mut progress = true;
+
+    while progress && attempts < max_attempts {
+        progress = false;
+        for i in 0..param_infos.len().min(current.len()) {
+            let candidates = shrink_candidates(&current[i], &param_infos[i].typ);
+            for candidate in candidates {
+                if attempts >= max_attempts {
+                    return ShrinkResult {
+                        shrunk: current != original,
+                        inputs: current,
+                        attempts,
+                    };
+                }
+                let mut trial = current.clone();
+                trial[i] = candidate;
+                attempts += 1;
+                match execute_fn(&trial) {
+                    Ok(result) if hash_branch_path(&result.branch_path) == target_path_hash => {
+                        current = trial;
+                        progress = true;
+                        break;
+                    }
+                    _ => {} // Candidate rejected or execution error — skip
+                }
+            }
+            if attempts >= max_attempts {
+                break;
+            }
+        }
+    }
+
+    ShrinkResult {
+        shrunk: current != original,
+        inputs: current,
+        attempts,
+    }
+}
 
 // Boundary values used as shrink targets for numeric types.
 const SHRINK_INT_ZERO: i64 = 0;
@@ -695,6 +766,307 @@ mod tests {
             };
             let candidates = shrink_candidates(&json!([]), &typ);
             assert!(candidates.is_empty());
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // shrink_witness tests
+    // -------------------------------------------------------------------
+
+    mod witness_tests {
+        use super::*;
+        use crate::execution_record::{BranchDecision, SymConstraint};
+        use crate::protocol::{ExecuteResult, PerformanceMetrics};
+        use serde_json::json;
+
+        fn empty_perf() -> PerformanceMetrics {
+            PerformanceMetrics {
+                wall_time_ms: 0.0,
+                cpu_time_us: 0,
+                heap_used_bytes: 0,
+                heap_allocated_bytes: 0,
+            }
+        }
+
+        fn make_result(branch_path: Vec<BranchDecision>) -> ExecuteResult {
+            ExecuteResult {
+                return_value: None,
+                thrown_error: None,
+                branch_path,
+                lines_executed: vec![],
+                calls_to_external: vec![],
+                path_constraints: vec![],
+                side_effects: vec![],
+                scope_events: vec![],
+                capture_truncation: None,
+                discovered_dependencies: vec![],
+                connection_failures: vec![],
+                performance: empty_perf(),
+            }
+        }
+
+        fn branch_taken() -> Vec<BranchDecision> {
+            vec![BranchDecision {
+                branch_id: 1,
+                line: 5,
+                taken: true,
+                constraint: SymConstraint::default(),
+            }]
+        }
+
+        fn branch_not_taken() -> Vec<BranchDecision> {
+            vec![BranchDecision {
+                branch_id: 1,
+                line: 5,
+                taken: false,
+                constraint: SymConstraint::default(),
+            }]
+        }
+
+        #[test]
+        fn shrink_int_toward_one() {
+            let target_path = branch_taken();
+            let target_hash = hash_branch_path(&target_path);
+
+            let params = vec![ParamInfo {
+                name: "x".into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            }];
+
+            let result = shrink_witness(
+                &[json!(100)],
+                &params,
+                target_hash,
+                50,
+                |inputs| {
+                    let x = inputs[0].as_i64().unwrap_or(0);
+                    if x > 0 {
+                        Ok(make_result(branch_taken()))
+                    } else {
+                        Ok(make_result(branch_not_taken()))
+                    }
+                },
+            );
+
+            assert!(result.shrunk);
+            assert_eq!(result.inputs[0], json!(1));
+            assert!(result.attempts <= 50);
+        }
+
+        #[test]
+        fn shrink_multi_param() {
+            let target_path = branch_taken();
+            let target_hash = hash_branch_path(&target_path);
+
+            let params = vec![
+                ParamInfo {
+                    name: "x".into(),
+                    typ: TypeInfo::Int,
+                    type_name: None,
+                },
+                ParamInfo {
+                    name: "s".into(),
+                    typ: TypeInfo::Str,
+                    type_name: None,
+                },
+            ];
+
+            let result = shrink_witness(
+                &[json!(100), json!("hello world")],
+                &params,
+                target_hash,
+                100,
+                |inputs| {
+                    let x = inputs[0].as_i64().unwrap_or(0);
+                    let s = inputs[1].as_str().unwrap_or("");
+                    if x > 0 && !s.is_empty() {
+                        Ok(make_result(branch_taken()))
+                    } else {
+                        Ok(make_result(branch_not_taken()))
+                    }
+                },
+            );
+
+            assert!(result.shrunk);
+            assert_eq!(result.inputs[0], json!(1));
+            // String should be shrunk to a single character
+            let s = result.inputs[1].as_str().unwrap();
+            assert!(s.len() <= 2, "expected short string, got {:?}", s);
+            assert!(!s.is_empty());
+        }
+
+        #[test]
+        fn shrink_already_minimal() {
+            let target_path = branch_taken();
+            let target_hash = hash_branch_path(&target_path);
+
+            let params = vec![ParamInfo {
+                name: "x".into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            }];
+
+            let result = shrink_witness(
+                &[json!(0)],
+                &params,
+                target_hash,
+                20,
+                |_inputs| Ok(make_result(branch_not_taken())),
+            );
+
+            assert!(!result.shrunk);
+            assert_eq!(result.inputs, vec![json!(0)]);
+        }
+
+        #[test]
+        fn shrink_respects_budget() {
+            let target_path = branch_taken();
+            let target_hash = hash_branch_path(&target_path);
+
+            let params = vec![ParamInfo {
+                name: "x".into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            }];
+
+            let result = shrink_witness(
+                &[json!(1000)],
+                &params,
+                target_hash,
+                3,
+                |_inputs| Ok(make_result(branch_not_taken())),
+            );
+
+            assert_eq!(result.attempts, 3);
+        }
+
+        #[test]
+        fn shrink_handles_execute_errors() {
+            let target_path = branch_taken();
+            let target_hash = hash_branch_path(&target_path);
+
+            let params = vec![ParamInfo {
+                name: "x".into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            }];
+
+            let result = shrink_witness(
+                &[json!(100)],
+                &params,
+                target_hash,
+                10,
+                |_inputs| -> Result<ExecuteResult, Box<dyn std::error::Error>> {
+                    Err("frontend crashed".into())
+                },
+            );
+
+            assert!(!result.shrunk);
+            assert!(result.attempts > 0);
+        }
+    }
+
+    mod witness_prop_tests {
+        use super::*;
+        use crate::execution_record::{BranchDecision, SymConstraint};
+        use crate::protocol::{ExecuteResult, PerformanceMetrics};
+        use proptest::prelude::*;
+
+        fn empty_perf() -> PerformanceMetrics {
+            PerformanceMetrics {
+                wall_time_ms: 0.0,
+                cpu_time_us: 0,
+                heap_used_bytes: 0,
+                heap_allocated_bytes: 0,
+            }
+        }
+
+        fn make_result(taken: bool) -> ExecuteResult {
+            ExecuteResult {
+                return_value: None,
+                thrown_error: None,
+                branch_path: vec![BranchDecision {
+                    branch_id: 1,
+                    line: 5,
+                    taken,
+                    constraint: SymConstraint::default(),
+                }],
+                lines_executed: vec![],
+                calls_to_external: vec![],
+                path_constraints: vec![],
+                side_effects: vec![],
+                scope_events: vec![],
+                capture_truncation: None,
+                discovered_dependencies: vec![],
+                connection_failures: vec![],
+                performance: empty_perf(),
+            }
+        }
+
+        proptest! {
+            #[test]
+            fn shrunk_witness_attempts_bounded(
+                max_attempts in 1..30usize,
+                start_val in 1..1000i64,
+            ) {
+                let target = make_result(true);
+                let target_hash = hash_branch_path(&target.branch_path);
+
+                let params = vec![ParamInfo {
+                    name: "x".into(),
+                    typ: TypeInfo::Int,
+                    type_name: None,
+                }];
+
+                let result = shrink_witness(
+                    &[json!(start_val)],
+                    &params,
+                    target_hash,
+                    max_attempts,
+                    |_| Ok(make_result(false)),
+                );
+
+                prop_assert!(
+                    result.attempts <= max_attempts,
+                    "attempts {} > budget {}",
+                    result.attempts,
+                    max_attempts
+                );
+            }
+
+            #[test]
+            fn shrunk_witness_preserves_path(start_val in 2..500i64) {
+                let target = make_result(true);
+                let target_hash = hash_branch_path(&target.branch_path);
+
+                let params = vec![ParamInfo {
+                    name: "x".into(),
+                    typ: TypeInfo::Int,
+                    type_name: None,
+                }];
+
+                let result = shrink_witness(
+                    &[json!(start_val)],
+                    &params,
+                    target_hash,
+                    50,
+                    |inputs| {
+                        let x = inputs[0].as_i64().unwrap_or(0);
+                        Ok(make_result(x > 0))
+                    },
+                );
+
+                if result.shrunk {
+                    let x = result.inputs[0].as_i64().unwrap_or(0);
+                    let final_result = make_result(x > 0);
+                    prop_assert_eq!(
+                        hash_branch_path(&final_result.branch_path),
+                        target_hash,
+                        "shrunk witness does not preserve branch path"
+                    );
+                }
+            }
         }
     }
 }
