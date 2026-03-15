@@ -38,6 +38,14 @@ async fn main() -> ExitCode {
     let use_color = cli.color.use_color();
     let colors = Colors::new(use_color);
 
+    // Show first-run telemetry notice (once) before command dispatch.
+    // Skip entirely if telemetry is disabled via env vars.
+    if shatter_core::telemetry::is_enabled()
+        && let Err(e) = shatter_core::telemetry::show_first_run_notice()
+    {
+        log::debug!("Failed to show telemetry notice: {e}");
+    }
+
     let result = match cli.command {
         CliCommand::Explore {
             targets,
