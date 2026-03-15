@@ -604,7 +604,7 @@ fn shatter_config_dir() -> Result<PathBuf, TelemetryError> {
 }
 
 /// Path to the telemetry config file.
-fn config_file_path() -> Result<PathBuf, TelemetryError> {
+pub fn config_file_path() -> Result<PathBuf, TelemetryError> {
     Ok(shatter_config_dir()?.join(CONFIG_FILENAME))
 }
 
@@ -616,8 +616,13 @@ fn shatter_data_dir() -> Result<PathBuf, TelemetryError> {
 }
 
 /// Path to the event queue file.
-fn queue_file_path() -> Result<PathBuf, TelemetryError> {
+pub fn queue_file_path() -> Result<PathBuf, TelemetryError> {
     Ok(shatter_data_dir()?.join(QUEUE_FILENAME))
+}
+
+/// Path to the persistent anonymous ID salt file.
+pub fn salt_file_path() -> Result<PathBuf, TelemetryError> {
+    Ok(shatter_config_dir()?.join(SALT_FILENAME))
 }
 
 // ── Errors ─────────────────────────────────────────────────────────────

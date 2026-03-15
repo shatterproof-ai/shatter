@@ -470,6 +470,7 @@ pub(crate) async fn run_explore(
                     timeout_explore: timeout_explore.map(Duration::from_secs_f64),
                     branch_profile: None, // standalone concolic has no prior random phase
                     meta_config: meta_config.clone(),
+                    loop_convergence_window: 3,
                 };
 
                 match shatter_core::orchestrator::explore(

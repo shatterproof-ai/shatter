@@ -19,7 +19,6 @@ use std::collections::{BinaryHeap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
-use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 
@@ -38,7 +37,10 @@ use crate::genetic_fitness::{FitnessContext, FitnessWeights};
 use crate::input_gen;
 use crate::protocol::{Command, ExecuteResult, MockConfig, ResponseResult, SetupContextStack};
 use crate::solver::{self, ConcreteValue, SolveResult};
-use crate::strategy::MetaStrategy;
+use crate::strategy::{
+    BoundarySeeds, FuzzerStrategy, InputStrategy, LiteralsStrategy, MetaStrategy, RandomStrategy,
+    StrategyContext,
+};
 use crate::sym_expr::SymExpr;
 use crate::triage::{TriageState, TriageVerdict};
 use crate::types::{ComplexKind, ParamInfo};
@@ -129,25 +131,10 @@ pub const DEFAULT_MAX_EXECUTIONS: usize = 500;
 /// Number of type-aware mutation rounds per unknown-constraint fuzz pass.
 const MUTATE_ROUNDS_PER_UNKNOWN: usize = 3;
 
-/// Mutation rate for type-aware fuzzing of unknown constraints (0.0–1.0).
-///
-/// Set high (1.0) because unknown constraints have no symbolic guidance,
-/// so aggressive mutation is needed to explore the input space.
-const MUTATE_RATE_UNKNOWN: f64 = 1.0;
-
 /// Fitness boost for branches in the first loop iteration.
 const BOUNDARY_FITNESS_FIRST: f64 = 1.0;
 /// Fitness boost for branches in the second loop iteration.
 const BOUNDARY_FITNESS_SECOND: f64 = 0.9;
-
-/// Gentler mutation rate for supplemental diversity rounds (0.0–1.0).
-const MUTATE_RATE_GENTLE: f64 = 0.3;
-
-/// Number of gentle-mutation rounds to supplement aggressive mutation.
-const GENTLE_MUTATE_ROUNDS: usize = 2;
-
-/// Crossover probability for recombining parent inputs on unknown constraints.
-const CROSSOVER_RATE_UNKNOWN: f64 = 0.7;
 
 /// Minimum observations of a loop-invariant branch before skipping redundant occurrences.
 const DEFAULT_MIN_INVARIANT_OBSERVATIONS: usize = 2;
@@ -940,10 +927,12 @@ fn solve_and_generate(
     target_branches: &HashSet<u32>,
     fitness_context: &mut FitnessContext,
     fitness_weights: &FitnessWeights,
-    mock_params: &[MockParam],
+    _mock_params: &[MockParam],
     branch_profile: Option<&crate::branch_profile::BranchProfile>,
     invariant_detector: &mut LoopInvariantDetector,
     loop_coverage_tracker: &mut LoopCoverageTracker,
+    meta_strategy: &mut MetaStrategy,
+    strategy_ctx: &StrategyContext,
 ) -> SolveOutput {
     let mut output = SolveOutput::default();
 
@@ -1050,92 +1039,30 @@ fn solve_and_generate(
             }
         }
 
-        // Fall back to type-aware mutation if boundary search wasn't applicable.
-        //
-        // Uses input_gen::mutate_inputs (type-aware, respects param types) for
-        // several rounds at full rate, gentle rounds for diversity, plus crossover.
+        // For Unknown constraints without boundary witnesses, use MetaStrategy
+        // to generate candidates instead of hardcoded fuzzing.
         if !boundary_attempted {
-            for (i, constraint_opt) in sym_constraints.iter().enumerate() {
-                if constraint_opt.is_none() && i < obs.result.branch_path.len() {
-                    // Type-aware mutations (3 rounds at full mutation rate).
-                    for _ in 0..MUTATE_ROUNDS_PER_UNKNOWN {
-                        let mutated = input_gen::mutate_inputs(
-                            &obs.inputs,
-                            param_infos,
-                            MUTATE_RATE_UNKNOWN,
-                            &[],
-                            rng,
-                        );
-                        let mutated_mocks = if !mock_params.is_empty() {
-                            input_gen::mutate_mock_values(
-                                &obs.mock_values,
-                                mock_params,
-                                MUTATE_RATE_UNKNOWN,
-                                &[],
-                                rng,
-                            )
-                        } else {
-                            obs.mock_values.clone()
+            let has_unknown = sym_constraints.iter().any(|c| c.is_none());
+            if has_unknown {
+                // Feed the current execution result to all strategies.
+                meta_strategy.feedback(&obs.inputs, &obs.result, obs.is_new_path);
+
+                // Generate candidates via meta-strategy.
+                for _ in 0..MUTATE_ROUNDS_PER_UNKNOWN {
+                    if let Some((inputs, strategy_idx)) = meta_strategy.next(strategy_ctx, rng) {
+                        let source = match meta_strategy.strategy_name(strategy_idx) {
+                            "boundary" => InputSource::BoundarySearch,
+                            "z3_solver" => InputSource::Z3Solved,
+                            _ => InputSource::Fuzzed,
                         };
                         output.candidates.push(WorklistEntry {
-                            inputs: mutated,
-                            source: InputSource::Fuzzed,
+                            inputs,
+                            source,
                             fitness: None,
-                            mock_values: mutated_mocks,
+                            mock_values: obs.mock_values.clone(),
                         });
                         output.fuzz_count += 1;
                     }
-                    // Gentle-rate mutations for diversity (complements aggressive rounds above).
-                    for _ in 0..GENTLE_MUTATE_ROUNDS {
-                        let mutated = input_gen::mutate_inputs(
-                            &obs.inputs,
-                            param_infos,
-                            MUTATE_RATE_GENTLE,
-                            &[],
-                            rng,
-                        );
-                        let mutated_mocks = if !mock_params.is_empty() {
-                            input_gen::mutate_mock_values(
-                                &obs.mock_values,
-                                mock_params,
-                                MUTATE_RATE_GENTLE,
-                                &[],
-                                rng,
-                            )
-                        } else {
-                            obs.mock_values.clone()
-                        };
-                        output.candidates.push(WorklistEntry {
-                            inputs: mutated,
-                            source: InputSource::Fuzzed,
-                            fitness: None,
-                            mock_values: mutated_mocks,
-                        });
-                        output.fuzz_count += 1;
-                    }
-                    // Crossover: recombine with a different observed input if available.
-                    if raw_results.len() >= 2 {
-                        let other_idx = rng.random_range(0..raw_results.len());
-                        let other_inputs = &raw_results[other_idx].0;
-                        let (child_a, child_b) = input_gen::crossover_inputs(
-                            &obs.inputs,
-                            other_inputs,
-                            param_infos,
-                            CROSSOVER_RATE_UNKNOWN,
-                            rng,
-                        );
-                        for child in [child_a, child_b] {
-                            output.candidates.push(WorklistEntry {
-                                inputs: child,
-                                source: InputSource::Fuzzed,
-                                fitness: None,
-                                mock_values: obs.mock_values.clone(),
-                            });
-                            output.fuzz_count += 1;
-                        }
-                    }
-                    // Only fuzz once per observation (avoid exponential blowup).
-                    break;
                 }
             }
         }
@@ -1282,10 +1209,22 @@ pub async fn explore(
     // Used by fitness scoring to compute proximity/coverage scores.
     let mut target_branches: HashSet<u32> = HashSet::new();
 
-    // MetaStrategy integration point: strategies will be registered here
-    // by a follow-up issue that replaces the hardcoded seed/fuzz/drill
-    // generation with adaptive strategy selection.
-    let _meta_strategy: MetaStrategy = MetaStrategy::new(vec![], Default::default());
+    // Build MetaStrategy with registered input generation strategies.
+    // Exhaustible strategies (boundary) go first; infinite strategies
+    // (random, fuzzer) provide ongoing coverage. User inputs and seeds
+    // are handled directly by the worklist, not through MetaStrategy.
+    let strategies: Vec<Box<dyn InputStrategy>> = vec![
+        Box::new(BoundarySeeds::new(param_infos)),
+        Box::new(LiteralsStrategy::new(param_infos, &[])),
+        Box::new(RandomStrategy::new(None)),
+        Box::new(FuzzerStrategy::new(None)),
+    ];
+    let mut meta_strategy = MetaStrategy::new(strategies, config.meta_config.clone());
+    let strategy_ctx = StrategyContext {
+        params: param_infos.to_vec(),
+        literals: vec![],
+        capabilities: FrontendCapabilities::default(),
+    };
 
     let mut invariant_detector = LoopInvariantDetector::new();
     let mut loop_coverage_tracker = LoopCoverageTracker::new(config.loop_convergence_window);
@@ -1459,6 +1398,9 @@ pub async fn explore(
         };
         raw_results.push((obs.inputs.clone(), recorded_mocks, obs.result.clone()));
 
+        // Feed execution result to MetaStrategy for adaptive scoring.
+        meta_strategy.feedback(&obs.inputs, &obs.result, obs.is_new_path);
+
         if !obs.is_new_path {
             plateau_counter += 1;
             continue;
@@ -1539,6 +1481,8 @@ pub async fn explore(
             config.branch_profile.as_ref(),
             &mut invariant_detector,
             &mut loop_coverage_tracker,
+            &mut meta_strategy,
+            &strategy_ctx,
         );
 
         z3_generated += solve_output.z3_count;
@@ -2141,6 +2085,8 @@ mod tests {
             None,
             &mut LoopInvariantDetector::new(),
             &mut LoopCoverageTracker::new(0),
+            &mut MetaStrategy::new(vec![], Default::default()),
+            &StrategyContext { params: vec![], literals: vec![], capabilities: FrontendCapabilities::default() },
         );
 
         assert!(output.candidates.is_empty());
@@ -2176,6 +2122,19 @@ mod tests {
         let mut frontier_set = FrontierSet::new();
         let mut rng = StdRng::seed_from_u64(42);
 
+        let mut meta = MetaStrategy::new(
+            vec![
+                Box::new(RandomStrategy::new(Some(42))),
+                Box::new(FuzzerStrategy::new(Some(42))),
+            ],
+            Default::default(),
+        );
+        let strat_ctx = StrategyContext {
+            params: param_infos.clone(),
+            literals: vec![],
+            capabilities: FrontendCapabilities::default(),
+        };
+
         let output = solve_and_generate(
             &[obs],
             &mut frontier_set,
@@ -2192,6 +2151,8 @@ mod tests {
             None,
             &mut LoopInvariantDetector::new(),
             &mut LoopCoverageTracker::new(0),
+            &mut meta,
+            &strat_ctx,
         );
 
         assert!(output.fuzz_count > 0, "should produce fuzz candidates for unknown constraints");
@@ -2254,6 +2215,8 @@ mod tests {
             None,
             &mut LoopInvariantDetector::new(),
             &mut LoopCoverageTracker::new(0),
+            &mut MetaStrategy::new(vec![], Default::default()),
+            &StrategyContext { params: vec![], literals: vec![], capabilities: FrontendCapabilities::default() },
         );
 
         assert!(output.z3_count > 0, "should produce Z3 candidates for solvable constraints");
@@ -2261,6 +2224,92 @@ mod tests {
             output.candidates.iter().any(|e| e.source == InputSource::Z3Solved),
             "at least one candidate should be Z3-solved"
         );
+    }
+
+    #[test]
+    fn meta_strategy_replaces_placeholder() {
+        let params = vec![ParamInfo {
+            name: "x".into(),
+            typ: crate::types::TypeInfo::Int,
+            type_name: None,
+        }];
+        let strategies: Vec<Box<dyn InputStrategy>> = vec![
+            Box::new(BoundarySeeds::new(&params)),
+            Box::new(RandomStrategy::new(Some(42))),
+            Box::new(FuzzerStrategy::new(Some(42))),
+        ];
+        let mut meta = MetaStrategy::new(strategies, Default::default());
+        let ctx = StrategyContext {
+            params: params.clone(),
+            literals: vec![],
+            capabilities: FrontendCapabilities::default(),
+        };
+        let mut rng = StdRng::seed_from_u64(0);
+
+        // Should produce at least one candidate.
+        let result = meta.next(&ctx, &mut rng);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn meta_strategy_exhaustible_strategies_exhaust() {
+        use crate::strategy::UserProvidedStrategy;
+
+        let params = vec![ParamInfo {
+            name: "x".into(),
+            typ: crate::types::TypeInfo::Int,
+            type_name: None,
+        }];
+        // Only exhaustible strategies.
+        let strategies: Vec<Box<dyn InputStrategy>> = vec![
+            Box::new(UserProvidedStrategy::new(vec![vec![serde_json::json!(1)]])),
+            Box::new(BoundarySeeds::new(&params)),
+        ];
+        let mut meta = MetaStrategy::new(strategies, Default::default());
+        let ctx = StrategyContext {
+            params: params.clone(),
+            literals: vec![],
+            capabilities: FrontendCapabilities::default(),
+        };
+        let mut rng = StdRng::seed_from_u64(0);
+
+        // Drain all candidates.
+        let mut count = 0;
+        while meta.next(&ctx, &mut rng).is_some() {
+            count += 1;
+            if count > 1000 {
+                panic!("Should have exhausted by now");
+            }
+        }
+        assert!(count > 0);
+    }
+
+    #[test]
+    fn meta_strategy_feedback_reaches_fuzzer() {
+        let strategies: Vec<Box<dyn InputStrategy>> = vec![
+            Box::new(FuzzerStrategy::new(Some(42))),
+        ];
+        let mut meta = MetaStrategy::new(strategies, Default::default());
+
+        let ctx = StrategyContext {
+            params: vec![ParamInfo {
+                name: "x".into(),
+                typ: crate::types::TypeInfo::Int,
+                type_name: None,
+            }],
+            literals: vec![],
+            capabilities: FrontendCapabilities::default(),
+        };
+        let mut rng = StdRng::seed_from_u64(0);
+
+        // Feed a new-path result so the fuzzer has interesting inputs to mutate.
+        let mut result = make_exec_result(vec![]);
+        result.return_value = Some(serde_json::json!(42));
+        meta.feedback(&[serde_json::json!(5)], &result, true);
+
+        // After feedback, fuzzer should produce mutations from the interesting input.
+        let candidate = meta.next(&ctx, &mut rng);
+        assert!(candidate.is_some());
     }
 
     // -- Integration tests with mock frontends --

@@ -3,6 +3,7 @@ use std::process::ExitCode;
 use clap::Parser;
 
 use shatter_core::log_level::LogLevel;
+use shatter_core::telemetry;
 
 mod args;
 mod commands;
@@ -13,9 +14,42 @@ mod helpers;
 use args::*;
 use helpers::*;
 
+/// Map clap's `ErrorKind` to a telemetry-friendly string.
+fn clap_error_kind_label(kind: clap::error::ErrorKind) -> &'static str {
+    use clap::error::ErrorKind;
+    match kind {
+        ErrorKind::UnknownArgument => "unknown_flag",
+        ErrorKind::InvalidSubcommand => "unknown_subcommand",
+        ErrorKind::MissingRequiredArgument => "missing_required",
+        ErrorKind::ValueValidation => "invalid_value",
+        ErrorKind::WrongNumberOfValues => "wrong_count",
+        _ => "other",
+    }
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse_from(std::env::args_os()) {
+        Ok(cli) => cli,
+        Err(clap_err) => {
+            if telemetry::is_enabled() {
+                let raw_args: Vec<String> = std::env::args().skip(1).collect();
+                let sanitized_args = telemetry::sanitize_args(&raw_args);
+                let error_kind = Some(clap_error_kind_label(clap_err.kind()).to_string());
+
+                if let Ok(event) = telemetry::new_event(
+                    "bad_cli_args",
+                    telemetry::EventPayload::BadCliArgs {
+                        sanitized_args,
+                        error_kind,
+                    },
+                ) {
+                    let _ = telemetry::queue_event(&event);
+                }
+            }
+            clap_err.exit();
+        }
+    };
     let log_level = cli.effective_log_level();
 
     // Initialize env_logger: CLI flags set the default, RUST_LOG can override.
@@ -478,6 +512,15 @@ async fn main() -> ExitCode {
                 }
                 Err(e) => Err(e),
             }
+        }
+        CliCommand::Telemetry { action } => {
+            return match commands::telemetry::run_telemetry(&action) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    ExitCode::FAILURE
+                }
+            };
         }
     };
 

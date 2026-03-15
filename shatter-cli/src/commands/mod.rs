@@ -7,4 +7,5 @@ pub(crate) mod revalidate;
 pub(crate) mod run;
 pub(crate) mod scan;
 pub(crate) mod stale;
+pub(crate) mod telemetry;
 pub(crate) mod test;

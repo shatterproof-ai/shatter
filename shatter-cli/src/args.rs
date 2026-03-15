@@ -791,6 +791,25 @@ pub(crate) enum CliCommand {
         #[arg(long, value_parser = parse_budget_flag)]
         budget: Option<std::time::Duration>,
     },
+
+    /// Manage anonymous usage telemetry.
+    Telemetry {
+        #[command(subcommand)]
+        action: TelemetryAction,
+    },
+}
+
+/// Sub-subcommands for `shatter telemetry`.
+#[derive(Debug, Clone, Subcommand)]
+pub(crate) enum TelemetryAction {
+    /// Show telemetry consent state, config location, and queue info.
+    Status,
+    /// Disable anonymous telemetry.
+    Off,
+    /// Enable anonymous telemetry.
+    On,
+    /// Regenerate the anonymous ID.
+    ResetId,
 }
 
 /// A parsed target: `<file>:<function>` for a single function, or `<file>` for all.
