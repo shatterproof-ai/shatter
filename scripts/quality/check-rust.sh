@@ -52,6 +52,9 @@ while [[ $# -gt 0 ]]; do
     --strict-optional)
       STRICT_OPTIONAL=true
       ;;
+    --precommit)
+      # Called from pre-commit hook; no special behavior needed.
+      ;;
     -h|--help)
       usage
       exit 0

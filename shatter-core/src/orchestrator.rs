@@ -118,7 +118,12 @@ pub struct ExploreConfig {
     pub branch_profile: Option<crate::branch_profile::BranchProfile>,
     /// Strategy meta-configuration for adaptive selection.
     pub meta_config: crate::strategy::MetaConfig,
+    /// Maximum shrink attempts per discovered behavior. Set to 0 to disable.
+    pub shrink_budget: usize,
 }
+
+/// Default shrink budget per behavior witness.
+pub const DEFAULT_SHRINK_BUDGET: usize = 20;
 
 /// Default maximum total executions before stopping exploration.
 pub const DEFAULT_MAX_EXECUTIONS: usize = 500;
@@ -161,6 +166,7 @@ impl Default for ExploreConfig {
             timeout_explore: None,
             branch_profile: None,
             meta_config: crate::strategy::MetaConfig::default(),
+            shrink_budget: DEFAULT_SHRINK_BUDGET,
         }
     }
 }
@@ -293,6 +299,8 @@ pub struct ExploreResult {
     pub nondeterministic_fields: Vec<crate::nondeterminism::NondeterministicField>,
     /// Float probe results classifying Float params as integer-treating or float-sensitive.
     pub float_probe_results: Vec<crate::float_probe::FloatProbeResult>,
+    /// Shrunk witnesses: maps branch_path hash to minimal inputs that reproduce the same path.
+    pub shrunk_witnesses: std::collections::HashMap<u64, Vec<serde_json::Value>>,
 }
 
 /// Errors that can occur during concolic exploration.
@@ -1402,6 +1410,77 @@ pub async fn explore(
         }
     }
 
+    // -- Witness shrinking phase --
+    // For each unique path, try to shrink the witness to simpler inputs.
+    let mut shrunk_witnesses: std::collections::HashMap<u64, Vec<serde_json::Value>> =
+        std::collections::HashMap::new();
+    if config.shrink_budget > 0 {
+        // Collect one witness per unique path hash.
+        let mut path_witnesses: std::collections::HashMap<
+            u64,
+            (Vec<serde_json::Value>, Vec<crate::protocol::MockConfig>),
+        > = std::collections::HashMap::new();
+        for (inputs, mocks, result) in &raw_results {
+            let ph = hash_branch_path(&result.branch_path);
+            path_witnesses
+                .entry(ph)
+                .or_insert_with(|| (inputs.clone(), mocks.clone()));
+        }
+
+        for (ph, (witness, witness_mocks)) in &path_witnesses {
+            let effective_mocks = if witness_mocks.is_empty() {
+                config.mocks.clone()
+            } else {
+                witness_mocks.clone()
+            };
+
+            let mut current = witness.clone();
+            let mut attempts = 0usize;
+            let mut progress = true;
+
+            while progress && attempts < config.shrink_budget {
+                progress = false;
+                for i in 0..param_infos.len().min(current.len()) {
+                    let candidates =
+                        crate::shrink::shrink_candidates(&current[i], &param_infos[i].typ);
+                    for candidate in candidates {
+                        if attempts >= config.shrink_budget {
+                            break;
+                        }
+                        let mut trial = current.clone();
+                        trial[i] = candidate;
+                        attempts += 1;
+
+                        let resp = frontend
+                            .send(Command::Execute {
+                                function: function_name.to_string(),
+                                inputs: trial.clone(),
+                                mocks: effective_mocks.clone(),
+                                setup_context: setup_context.clone(),
+                            })
+                            .await;
+
+                        if let Ok(resp) = resp
+                            && let ResponseResult::Execute(exec_res) = resp.result
+                            && hash_branch_path(&exec_res.branch_path) == *ph
+                        {
+                            current = trial;
+                            progress = true;
+                            break;
+                        }
+                    }
+                    if attempts >= config.shrink_budget {
+                        break;
+                    }
+                }
+            }
+
+            if current != *witness {
+                shrunk_witnesses.insert(*ph, current);
+            }
+        }
+    }
+
     let unique_paths = covered_paths.len();
     Ok(ExploreResult {
         function_name: function_name.to_string(),
@@ -1420,6 +1499,7 @@ pub async fn explore(
         triage_mispredictions,
         nondeterministic_fields: vec![],
         float_probe_results,
+        shrunk_witnesses,
     })
 }
 

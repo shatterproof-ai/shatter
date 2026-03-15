@@ -423,7 +423,7 @@ pub(crate) async fn run_explore(
                 project_root: project_root_str.clone(),
                 loop_buckets: loop_buckets.clone(),
                 timeout_explore: timeout_explore.map(Duration::from_secs_f64),
-                meta_config: meta_config.clone(),
+                meta_config: meta_config.clone(), shrink_budget: shatter_core::orchestrator::DEFAULT_SHRINK_BUDGET,
             };
 
             if !resolved.candidate_inputs.is_empty() {
@@ -469,7 +469,7 @@ pub(crate) async fn run_explore(
                     solver_timeout_ms: solver_timeout.map(|s| s * 1000),
                     timeout_explore: timeout_explore.map(Duration::from_secs_f64),
                     branch_profile: None, // standalone concolic has no prior random phase
-                    meta_config: meta_config.clone(),
+                    meta_config: meta_config.clone(), shrink_budget: shatter_core::orchestrator::DEFAULT_SHRINK_BUDGET,
                 };
 
                 match shatter_core::orchestrator::explore(
