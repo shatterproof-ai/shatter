@@ -494,11 +494,14 @@ async fn observe_one(
     }
 
     // Triage: predict whether this input will produce a novel path.
+    // Seeds are always sampled when triage predicts Skip — they are explicitly
+    // provided to exercise specific paths and are few in number, so the cost of
+    // executing them is low while the cost of a wrong skip is high.
     let is_sampled_skip = if entry.source != InputSource::UserProvided {
         let verdict = triage_state.triage_candidate(&entry.inputs, covered_paths);
         triage_state.record_verdict(&verdict);
         if verdict == TriageVerdict::Skip {
-            if triage_state.should_sample() {
+            if entry.source == InputSource::Seed || triage_state.should_sample() {
                 true
             } else {
                 return Ok(ObserveOneResult::TriageSkipped);
@@ -2811,7 +2814,7 @@ mod tests {
     /// After the first seed discovers the path, triage predicts Skip for
     /// all subsequent seeds with matching constraint evaluations.
     #[tokio::test]
-    async fn explore_triage_skips_redundant_seeds() {
+    async fn explore_triage_samples_redundant_seeds() {
         let config = config_for_script("fixed-branch-frontend.sh");
         let mut frontend = Frontend::spawn(&config).await.expect("spawn failed");
 
@@ -2823,9 +2826,9 @@ mod tests {
         };
 
         // All seeds have x=5, which evaluates x>0 to true (Taken) — matching
-        // the path discovered by the first execution. After the first seed
-        // discovers the path and updates triage, subsequent seeds predict the
-        // same covered path → Skip.
+        // the path discovered by the first execution. Seeds are always sampled
+        // (executed) when triage predicts Skip, so redundant seeds still run
+        // but produce no new unique paths.
         let seeds: Vec<Vec<serde_json::Value>> = (0..20)
             .map(|_| vec![serde_json::json!(5)])
             .collect();
@@ -2842,12 +2845,11 @@ mod tests {
         .await
         .expect("explore failed");
 
-        assert!(
-            result.triage_skipped > 0,
-            "expected triage to skip redundant inputs, but triage_skipped={}",
-            result.triage_skipped
-        );
+        // Seeds bypass triage skip (always sampled), so triage_skipped may be 0.
+        // The key invariant: redundant seeds don't inflate unique_paths.
         assert_eq!(result.unique_paths, 1);
+        // Triage predictions for identical seeds are correct — no mispredictions.
+        assert_eq!(result.triage_mispredictions, 0);
 
         frontend.shutdown().await.expect("shutdown failed");
     }
