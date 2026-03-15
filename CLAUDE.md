@@ -36,11 +36,11 @@ See `/rust-conventions`, `/ts-conventions`, `/go-conventions` skills for detaile
 
 | Tier | Command | Use when |
 |---|---|---|
-| Quick | `cargo test` | During development |
-| Standard | `cargo test && cargo clippy -- -D warnings` | Before committing |
-| Full | Standard + `cd shatter-ts && npm test` + `cd shatter-go && go test ./...` + `cd shatter-rust && cargo test` + `cd shatter-rust-runtime && cargo test` | Before merge or when touching protocol definitions |
-| E2E | Full + `cargo test --test e2e_concolic` | After changing solver, instrumentor, explorer, orchestrator, or string ops |
-| Walkthrough | `bash demo/walkthrough.sh --auto --delay 0` | After changing CLI output, protocol, frontend execution, or example files |
+| Quick | `npx task test-quick` | During development |
+| Standard | `npx task test-standard` | Before committing |
+| Full | `npx task check` | Before merge |
+| E2E | `npx task e2e` | After pipeline changes |
+| Walkthrough | `npx task walkthrough` | After CLI/protocol changes |
 
 **E2E gate**: The E2E concolic tests (`shatter-core/tests/e2e_concolic.rs`) run the real TS frontend subprocess through analyze → instrument → explore → Z3 solve. They are the **only tests that validate the full pipeline end-to-end**. Unit tests alone are insufficient — a module can pass all its own tests while being silently disconnected from the pipeline (see "Completion checklist" below). Run E2E tests after any change to:
 - Solver logic (`solver.rs`, `string-ops.yaml`, `build.rs`)

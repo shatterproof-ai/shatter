@@ -1,0 +1,29 @@
+version: '3'
+
+tasks:
+  build:
+    desc: Build Rust runtime
+    sources:
+      - src/**/*.rs
+      - Cargo.toml
+      - Cargo.lock
+    cmds:
+      - cargo build
+
+  test:
+    desc: Run tests
+    sources:
+      - src/**/*.rs
+      - Cargo.toml
+      - Cargo.lock
+    cmds:
+      - cargo test
+
+  clippy:
+    desc: Run clippy
+    sources:
+      - src/**/*.rs
+      - Cargo.toml
+      - Cargo.lock
+    cmds:
+      - cargo clippy -- -D warnings

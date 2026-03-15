@@ -6,6 +6,7 @@
 #
 # Usage:
 #   ./scripts/setup-hooks.sh          # install hooks
+#   ./scripts/setup-hooks.sh --force  # replace existing Shatter section
 #   ./scripts/setup-hooks.sh --check  # report status without modifying
 
 set -euo pipefail
@@ -15,9 +16,13 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 HOOKS_DIR="${REPO_ROOT}/.git/hooks"
 
 CHECK_ONLY=false
-if [[ "${1:-}" == "--check" ]]; then
-  CHECK_ONLY=true
-fi
+FORCE=false
+for arg in "$@"; do
+  case "${arg}" in
+    --check) CHECK_ONLY=true ;;
+    --force) FORCE=true ;;
+  esac
+done
 
 BEGIN_MARKER="# --- BEGIN SHATTER QUALITY ---"
 END_MARKER="# --- END SHATTER QUALITY ---"
@@ -30,6 +35,11 @@ install_hook() {
   local hook_name="$1"
   local hook_body="$2"
   local hook_file="${HOOKS_DIR}/${hook_name}"
+
+  # --force: strip existing section before re-adding
+  if [[ "${FORCE}" == "true" ]] && has_shatter_section "${hook_file}"; then
+    sed -i "/${BEGIN_MARKER}/,/${END_MARKER}/d" "${hook_file}"
+  fi
 
   if has_shatter_section "${hook_file}"; then
     echo "[ok]   ${hook_name}: Shatter quality section present"
@@ -59,32 +69,21 @@ HOOK
   echo "[add]  ${hook_name}: Shatter quality section installed"
 }
 
-# Pre-commit: lightweight checks (Rust clippy on staged files)
-PRE_COMMIT_BODY='if [ -f "scripts/quality/check-rust.sh" ]; then
-  scripts/quality/check-rust.sh --precommit 2>&1 || exit 1
+# Pre-commit: targeted Rust checks on staged files only
+PRE_COMMIT_BODY='if [ -f "scripts/precommit-rust.sh" ]; then
+  scripts/precommit-rust.sh 2>&1 || exit 1
 fi'
 
-# Pre-push: fast + path-aware by default, full suite for main branch pushes.
+# Pre-push: check-fast for feature branches, full check for main.
 # Set SHATTER_FULL_PUSH=1 to force the full suite on any push.
-PRE_PUSH_BODY='if [ -f "scripts/quality/check-all.sh" ]; then
-  PUSH_MODE="--fast --path-aware"
-
-  # Full mode when: SHATTER_FULL_PUSH=1 or pushing to main/master
-  if [ "${SHATTER_FULL_PUSH:-0}" = "1" ]; then
-    PUSH_MODE="--full"
-  fi
-
-  # Detect the remote ref from stdin (pre-push hook receives lines on stdin)
+PRE_PUSH_BODY='if [ -f "Taskfile.yml" ] && command -v npx >/dev/null 2>&1; then
+  PUSH_TASK="check-fast"
+  [ "${SHATTER_FULL_PUSH:-0}" = "1" ] && PUSH_TASK="check"
   while read -r local_ref local_sha remote_ref remote_sha; do
-    case "${remote_ref}" in
-      refs/heads/main|refs/heads/master)
-        PUSH_MODE="--full"
-        ;;
-    esac
+    case "${remote_ref}" in refs/heads/main|refs/heads/master) PUSH_TASK="check" ;; esac
   done
-
-  echo "[shatter] Running quality gates before push (${PUSH_MODE})..."
-  scripts/quality/check-all.sh ${PUSH_MODE} 2>&1 || exit 1
+  echo "[shatter] Running task ${PUSH_TASK}..."
+  npx task "${PUSH_TASK}" 2>&1 || exit 1
 fi'
 
 MISSING=0

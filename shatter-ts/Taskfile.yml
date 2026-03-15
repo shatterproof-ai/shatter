@@ -1,0 +1,40 @@
+version: '3'
+
+tasks:
+  install:
+    desc: Install TypeScript dependencies
+    sources:
+      - package.json
+      - package-lock.json
+    generates:
+      - node_modules/.package-lock.json
+    method: timestamp
+    cmds:
+      - npm install --silent
+
+  build:
+    desc: Build TypeScript frontend
+    deps: [install]
+    sources:
+      - src/**/*.ts
+      - tsconfig.json
+      - package.json
+    generates:
+      - dist/**/*.js
+      - dist/**/*.d.ts
+    cmds:
+      - npm run build
+
+  test:
+    desc: Run TypeScript tests
+    deps: [build]
+    sources:
+      - src/**/*.ts
+      - package.json
+      - tsconfig.json
+      - ../protocol/schemas/**/*.json
+      - ../protocol/fixtures/**/*.json
+      - ../protocol/registry.yaml
+      - ../shatter-core/src/protocol.rs
+    cmds:
+      - npm test -- --runInBand

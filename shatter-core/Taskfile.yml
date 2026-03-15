@@ -1,0 +1,47 @@
+version: '3'
+
+tasks:
+  build:
+    desc: Build shatter-core library
+    sources:
+      - src/**/*.rs
+      - Cargo.toml
+      - ../Cargo.lock
+      - build.rs
+    cmds:
+      - cargo build -p shatter-core
+
+  test:
+    desc: Run shatter-core tests
+    sources:
+      - src/**/*.rs
+      - tests/**/*.rs
+      - Cargo.toml
+      - ../Cargo.lock
+      - build.rs
+      - ../examples/**/*.ts
+      - ../examples/**/*.go
+      - ../examples/**/*.rs
+    cmds:
+      - cargo test -p shatter-core
+
+  test-ignored:
+    desc: Run shatter-core tests including slow/ignored tests
+    sources:
+      - src/**/*.rs
+      - tests/**/*.rs
+      - Cargo.toml
+      - ../Cargo.lock
+      - build.rs
+    cmds:
+      - cargo test -p shatter-core -- --include-ignored
+
+  clippy:
+    desc: Run clippy on shatter-core
+    sources:
+      - src/**/*.rs
+      - Cargo.toml
+      - ../Cargo.lock
+      - build.rs
+    cmds:
+      - cargo clippy -p shatter-core -- -D warnings

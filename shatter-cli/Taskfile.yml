@@ -1,0 +1,36 @@
+version: '3'
+
+tasks:
+  build:
+    desc: Build shatter CLI binary
+    sources:
+      - src/**/*.rs
+      - Cargo.toml
+      - ../Cargo.lock
+      - ../shatter-core/src/**/*.rs
+      - ../shatter-core/Cargo.toml
+      - ../shatter-core/build.rs
+    cmds:
+      - cargo build -p shatter-cli
+
+  test:
+    desc: Run shatter-cli tests
+    sources:
+      - src/**/*.rs
+      - Cargo.toml
+      - ../Cargo.lock
+      - ../shatter-core/src/**/*.rs
+      - ../shatter-core/Cargo.toml
+    cmds:
+      - cargo test -p shatter-cli
+
+  clippy:
+    desc: Run clippy on shatter-cli
+    sources:
+      - src/**/*.rs
+      - Cargo.toml
+      - ../Cargo.lock
+      - ../shatter-core/src/**/*.rs
+      - ../shatter-core/Cargo.toml
+    cmds:
+      - cargo clippy -p shatter-cli -- -D warnings

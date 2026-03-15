@@ -1,0 +1,7 @@
+{
+  "private": true,
+  "description": "Shatter monorepo — build orchestration only (not an npm package)",
+  "devDependencies": {
+    "@go-task/cli": "^3"
+  }
+}

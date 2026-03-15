@@ -1,0 +1,45 @@
+version: '3'
+
+tasks:
+  build:
+    desc: Build Go frontend
+    sources:
+      - '**/*.go'
+      - go.mod
+      - go.sum
+    cmds:
+      - go build ./...
+
+  test:
+    desc: Run Go tests
+    sources:
+      - '**/*.go'
+      - go.mod
+      - go.sum
+      - ../protocol/schemas/**/*.json
+      - ../protocol/fixtures/**/*.json
+      - ../protocol/registry.yaml
+      - ../shatter-core/src/protocol.rs
+    cmds:
+      - go test ./...
+
+  vet:
+    desc: Run go vet
+    sources:
+      - '**/*.go'
+      - go.mod
+      - go.sum
+    cmds:
+      - go vet ./...
+
+  lint:
+    desc: Run golangci-lint
+    preconditions:
+      - sh: command -v golangci-lint
+        msg: golangci-lint not installed (optional)
+    sources:
+      - '**/*.go'
+      - go.mod
+      - go.sum
+    cmds:
+      - golangci-lint run ./...

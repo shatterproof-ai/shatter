@@ -2,50 +2,50 @@
 
 ## Purpose
 
-This repository now exposes shell scripts intended to be the stable interface
-between local development, hooks, agent workflows, and a future CI system.
+This repository uses [Taskfile](https://taskfile.dev/) as the build and quality
+orchestration layer. All quality gates are defined as Taskfile tasks and serve as
+the stable interface between local development, hooks, agent workflows, and CI.
 
-The CI platform is intentionally unspecified. The scripts in `scripts/quality/` should
+The CI platform is intentionally unspecified. The `npx task` commands should
 therefore be treated as the canonical entrypoints, regardless of whether the
 eventual runner is GitHub Actions, Buildkite, Woodpecker, Jenkins, or another
 system.
 
-## Script Inventory
+## Task Inventory
 
 ### General
 
-- `scripts/quality/check-tooling.sh`
+- `npx task tooling`
   - reports required and optional tool availability
-- `scripts/quality/check-all.sh`
+- `npx task check`
   - aggregate quality runner
-- `scripts/quality/pre-completion.sh`
+- `npx task pre-completion`
   - local completion gate with git status summary
 
 ### Language-specific
 
-- `scripts/quality/check-rust.sh`
-- `scripts/quality/check-ts.sh`
-- `scripts/quality/check-go.sh`
+- `npx task core:test` / `npx task core:clippy`
+- `npx task ts:test`
+- `npx task go:test`
 
 ### Docs and repository metadata
 
-- `scripts/quality/check-docs.sh`
-- `scripts/quality/check-meta.sh`
+- `npx task docs`
+- `npx task meta`
 
-### Shared library
+### Protocol validation
 
-- `scripts/quality/lib/common.sh`
-  - color output, `require_cmd`, `has_cmd`, `maybe_run_cmd`, `run_in_dir`
-  - all scripts source this; CI images need only `bash` — no external framework
+- `npx task schemas`
+- `npx task conformance`
 
 ## Strict vs Permissive Mode
 
-The scripts operate in two modes, controlled by flags:
+Tasks operate in two modes, controlled by environment variables or flags:
 
-| Mode | Flag | Behavior when an optional tool is missing |
-|---|---|---|
-| **Permissive** (default) | _(none)_ | Print `[skip]` and continue — the check is silently omitted |
-| **Strict** | `--strict-optional` | Fail with a non-zero exit code |
+| Mode | Behavior when an optional tool is missing |
+|---|---|
+| **Permissive** (default) | Print `[skip]` and continue — the check is silently omitted |
+| **Strict** | Fail with a non-zero exit code |
 
 **When to use each:**
 
@@ -54,13 +54,6 @@ The scripts operate in two modes, controlled by flags:
   because the CI pipeline catches anything missed locally.
 - **CI pipelines**: strict. Once the CI image includes a tool, its absence is a
   signal that the image is broken — fail fast.
-
-`check-tooling.sh` accepts `--strict` (not `--strict-optional`) because its
-*only* job is tool detection — strict mode makes all optional tools required.
-
-`check-rust.sh` additionally accepts `--deny` which runs `cargo deny check`
-against the repository's `deny.toml` policy (license compliance, vulnerability
-advisories, source provenance). This is always recommended in CI.
 
 ## Recommended CI Stage Layout
 
@@ -73,17 +66,10 @@ Purpose:
 Recommended commands:
 
 ```bash
-./scripts/quality/check-tooling.sh --strict
-./scripts/quality/check-docs.sh --strict-optional
-./scripts/quality/check-meta.sh --strict-optional
+npx task tooling
+npx task docs
+npx task meta
 ```
-
-Notes:
-
-- `--strict` and `--strict-optional` are intended for CI. They convert missing
-  optional tools into failures once those tools are installed in the CI image.
-- Before `Semgrep CE` or docs tools are configured, either omit strict mode for
-  those specific scripts or install/configure the tools as part of CI bootstrap.
 
 ### Stage 2: Language quality gates
 
@@ -94,20 +80,20 @@ Purpose:
 Recommended commands:
 
 ```bash
-./scripts/quality/check-rust.sh --deny --strict-optional
-./scripts/quality/check-ts.sh
-./scripts/quality/check-go.sh --golangci-lint --staticcheck --govulncheck --strict-optional
+npx task core:test
+npx task core:clippy
+npx task ts:test
+npx task go:test
 ```
 
 Notes:
 
-- `scripts/quality/check-ts.sh` currently runs build plus tests. Dependency-cruiser and
+- TypeScript tasks currently run build plus tests. Dependency-cruiser and
   Knip should be added later once their configs are committed.
-- `scripts/quality/check-rust.sh` covers both the workspace crates (`shatter-core`,
+- Rust tasks cover both the workspace crates (`shatter-core`,
   `shatter-cli`) and the standalone Rust frontend crates (`shatter-rust`,
   `shatter-rust-runtime`) which are excluded from the Cargo workspace. Tests and
-  clippy run for all four crates. It also supports `cargo-nextest` and optional
-  dependency checks when those tools are present in CI.
+  clippy run for all four crates.
 
 ### Stage 3: Deep or slow checks
 
@@ -118,14 +104,14 @@ Purpose:
 Recommended commands:
 
 ```bash
-./scripts/quality/check-rust.sh --e2e
-bash demo/walkthrough.sh --auto --delay 0
+npx task e2e
+npx task walkthrough
 ```
 
 Notes:
 
 - Treat this as a separate job or nightly gate if runtime becomes expensive.
-- The walkthrough should remain outside the aggregate script because it is a
+- The walkthrough should remain outside the aggregate check because it is a
   substantially slower end-to-end workflow.
 
 ## Recommended CI Modes
@@ -135,10 +121,10 @@ Notes:
 Use:
 
 ```bash
-./scripts/quality/check-all.sh --strict-optional
+npx task check
 ```
 
-Add `--e2e` if the change touches:
+Add E2E if the change touches:
 
 - solver logic
 - explorer/orchestrator behavior
@@ -146,18 +132,23 @@ Add `--e2e` if the change touches:
 - frontend instrumentation
 - CLI wiring for explorer modes
 
+```bash
+npx task e2e
+```
+
 ### Main-branch protection
 
 Use:
 
 ```bash
-./scripts/quality/check-all.sh --strict-optional --e2e
+npx task check
+npx task e2e
 ```
 
 Optionally add:
 
 ```bash
-bash demo/walkthrough.sh --auto --delay 0
+npx task walkthrough
 ```
 
 ### Nightly or scheduled validation
@@ -173,7 +164,7 @@ Use the full quality stack, including:
 
 ### Required baseline tools
 
-The scripts assume the CI image provides:
+The tasks assume the CI image provides:
 
 - `bash`
 - `git`
@@ -202,7 +193,7 @@ To enable strict CI mode fully, install:
 ### 1. Keep CI YAML thin
 
 The CI configuration should select stages and install tools, but the actual
-check logic should remain in repository scripts.
+check logic should remain in Taskfile tasks.
 
 ### 2. Prefer parallel jobs by domain
 
@@ -221,40 +212,39 @@ used once the CI image is provisioned with the expected analyzer set.
 
 ### 4. Do not fork local and CI logic
 
-If a check is important enough for CI, it should have a repository script
+If a check is important enough for CI, it should have a Taskfile task
 entrypoint that developers and agents can also run locally.
 
 ## Hook Integration Guidance
 
-The same scripts should be used by local hooks:
+The same tasks should be used by local hooks:
 
 - `pre-commit`
-  - `scripts/quality/check-docs.sh`
-  - `scripts/quality/check-meta.sh`
+  - `npx task core:clippy`
+  - `npx task docs`
+  - `npx task meta`
 - `pre-push`
-  - `scripts/quality/check-rust.sh`
-  - `scripts/quality/check-ts.sh`
-  - `scripts/quality/check-go.sh`
+  - `npx task check`
 
 Avoid copying the underlying commands directly into hook configs. Call the
-scripts instead.
+tasks instead.
 
 ## Agent Workflow Guidance
 
-The same scripts should back Claude/agent workflows:
+The same tasks should back Claude/agent workflows:
 
 - bugfix workflow
   - targeted failing test first
   - targeted rerun
-  - `scripts/quality/pre-completion.sh`
+  - `npx task pre-completion`
 - review workflow
-  - targeted check script(s) for the area under review
+  - targeted check task(s) for the area under review
 - completion workflow
-  - `scripts/quality/pre-completion.sh`
+  - `npx task pre-completion`
 
 ## Go Analysis Tools
 
-Three Go-specific analysis tools are available via `check-go.sh`. Each serves a
+Three Go-specific analysis tools are available via `npx task go:test`. Each serves a
 different purpose and should be enabled at the appropriate CI stage.
 
 ### golangci-lint
@@ -267,10 +257,6 @@ of linters (errcheck, govet, staticcheck, gocritic, misspell, and others).
 **When to enable**: always — every PR and main-branch build. This is the primary
 Go linting tool and catches the broadest class of issues.
 
-```bash
-./scripts/quality/check-go.sh --golangci-lint --strict-optional
-```
-
 ### staticcheck
 
 **What it checks**: advanced static analysis (SA-class diagnostics). Many checks
@@ -279,10 +265,6 @@ ensures the full diagnostic set is applied.
 
 **When to enable**: every PR and main-branch build, same as golangci-lint. The
 marginal cost is low and it catches subtle bugs that other linters miss.
-
-```bash
-./scripts/quality/check-go.sh --staticcheck --strict-optional
-```
 
 ### govulncheck
 
@@ -293,22 +275,7 @@ Go vulnerability database.
 unless `go.mod` or `go.sum` changed — vulnerability checks are slow and only
 change when dependencies change.
 
-```bash
-./scripts/quality/check-go.sh --govulncheck --strict-optional
-```
-
-For PRs that modify dependency files, add govulncheck as a conditional step:
-
-```yaml
-# Pseudocode — adapt to your CI platform
-if changed("shatter-go/go.mod", "shatter-go/go.sum"):
-  run: ./scripts/quality/check-go.sh --govulncheck --strict-optional
-```
-
 ## Current Limitations
-
-These scripts intentionally do not install the optional tools. They provide the
-stable contract that hooks and CI jobs should call.
 
 **Configured tools** (config checked in, ready for CI):
 

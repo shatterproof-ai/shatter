@@ -1,0 +1,221 @@
+version: '3'
+
+includes:
+  core:
+    taskfile: ./shatter-core/Taskfile.yml
+    dir: ./shatter-core
+  cli:
+    taskfile: ./shatter-cli/Taskfile.yml
+    dir: ./shatter-cli
+  ts:
+    taskfile: ./shatter-ts/Taskfile.yml
+    dir: ./shatter-ts
+  go:
+    taskfile: ./shatter-go/Taskfile.yml
+    dir: ./shatter-go
+  rust-fe:
+    taskfile: ./shatter-rust/Taskfile.yml
+    dir: ./shatter-rust
+  rust-rt:
+    taskfile: ./shatter-rust-runtime/Taskfile.yml
+    dir: ./shatter-rust-runtime
+
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list
+
+  # --- Build (issue 2/4) ---
+
+  build:
+    desc: Build everything (Rust + TS + Go)
+    deps: [core:build, cli:build, ts:build, go:build, rust-fe:build, rust-rt:build]
+
+  build-rust:
+    desc: Build all Rust crates
+    deps: [core:build, cli:build, rust-fe:build, rust-rt:build]
+
+  build-examples:
+    desc: Build example targets
+    sources:
+      - examples/rust/src/**/*.rs
+      - examples/rust/Cargo.toml
+      - examples/generators/wasm-rust/src/**/*.rs
+      - examples/generators/wasm-rust/Cargo.toml
+      - examples/generators/wasm-adversarial/src/**/*.rs
+      - examples/generators/wasm-adversarial/Cargo.toml
+    cmds:
+      - cargo build --manifest-path examples/rust/Cargo.toml
+      - cargo build --manifest-path examples/generators/wasm-rust/Cargo.toml
+      - cargo build --manifest-path examples/generators/wasm-adversarial/Cargo.toml
+
+  # --- Test aggregation (issue 4) ---
+
+  test:
+    desc: Run all tests (all languages)
+    deps: [core:test, cli:test, ts:test, go:test, rust-fe:test, rust-rt:test]
+
+  test-quick:
+    desc: "Quick: cargo workspace tests only"
+    deps: [core:test, cli:test]
+
+  test-standard:
+    desc: "Standard: cargo tests + clippy"
+    deps: [core:test, cli:test, core:clippy, cli:clippy]
+
+  lint:
+    desc: Run all linters
+    deps: [core:clippy, cli:clippy, rust-fe:clippy, rust-rt:clippy, go:vet]
+
+  check-fast:
+    desc: "Fast quality gate (pre-push: clippy + tests + TS + Go)"
+    deps: [core:clippy, cli:clippy, core:test-ignored, cli:test, ts:test, go:test]
+
+  # --- Cross-cutting quality (issue 5) ---
+
+  schemas:
+    desc: Validate protocol schemas against fixtures
+    preconditions:
+      - sh: command -v python3
+        msg: "python3 not installed — skipping schema validation"
+      - sh: python3 -c "import jsonschema" 2>/dev/null
+        msg: "jsonschema not installed (pip install jsonschema)"
+    sources:
+      - protocol/schemas/**/*.json
+      - protocol/schemas/**/*.py
+      - protocol/fixtures/**/*.json
+      - protocol/registry.yaml
+    cmds:
+      - python3 protocol/schemas/test_schema_validation.py
+
+  conformance:
+    desc: Run protocol conformance tests across all frontends
+    deps: [ts:build, go:build, rust-fe:build]
+    preconditions:
+      - sh: command -v python3
+        msg: "python3 not installed"
+      - sh: python3 -c "import yaml" 2>/dev/null
+        msg: "pyyaml not installed (pip install pyyaml)"
+    sources:
+      - protocol/**/*
+      - shatter-ts/src/**/*.ts
+      - shatter-go/**/*.go
+      - shatter-rust/src/**/*.rs
+    cmds:
+      - python3 protocol/conformance/conformance_harness.py
+
+  docs:
+    desc: Run documentation quality checks
+    sources:
+      - "*.md"
+      - docs/**/*
+    cmds:
+      - |
+        test -f README.md || { echo "missing README.md"; exit 1; }
+        test -f AGENTS.md || { echo "missing AGENTS.md"; exit 1; }
+        test -f CLAUDE.md || { echo "missing CLAUDE.md"; exit 1; }
+        test -d docs || { echo "missing docs/"; exit 1; }
+        echo "[ok] core documentation files present"
+      - |
+        if command -v markdownlint-cli2 >/dev/null 2>&1; then
+          markdownlint-cli2 --config .markdownlint-cli2.yaml \
+            README.md AGENTS.md CLAUDE.md PLAN.md SPEC.md PROTOCOL.md PARITY.md docs
+        else echo "[skip] markdownlint-cli2 not installed"; fi
+      - |
+        if command -v vale >/dev/null 2>&1; then
+          vale README.md AGENTS.md CLAUDE.md PLAN.md SPEC.md PROTOCOL.md PARITY.md docs
+        else echo "[skip] vale not installed"; fi
+      - |
+        if command -v lychee >/dev/null 2>&1; then
+          lychee --config lychee.toml --no-progress \
+            README.md AGENTS.md CLAUDE.md PLAN.md SPEC.md PROTOCOL.md PARITY.md docs
+        else echo "[skip] lychee not installed"; fi
+
+  meta:
+    desc: Run repository meta checks (workflow lint, Semgrep)
+    sources:
+      - .github/workflows/**/*.yml
+      - .semgrep/**/*
+    cmds:
+      - |
+        if [ -d .github/workflows ] && command -v actionlint >/dev/null 2>&1; then
+          actionlint
+        else echo "[skip] actionlint not installed or no workflows"; fi
+      - |
+        cfg="${SEMGREP_CONFIG:-.semgrep/shatter.yml}"
+        if [ -f "$cfg" ] && command -v semgrep >/dev/null 2>&1; then
+          semgrep --config "$cfg" .
+        else echo "[skip] semgrep not installed or no config"; fi
+
+  tooling:
+    desc: Report available required and optional tools
+    cmds:
+      - |
+        echo "==> Required"
+        for t in git cargo node npm go; do
+          command -v "$t" >/dev/null && echo "  [ok] $t" || { echo "  [MISSING] $t"; exit 1; }
+        done
+        echo "==> Optional"
+        for t in bd semgrep pre-commit reviewdog actionlint lychee vale markdownlint-cli2 golangci-lint staticcheck govulncheck cargo-nextest cargo-deny cargo-udeps; do
+          command -v "$t" >/dev/null && echo "  [ok] $t" || echo "  [--] $t"
+        done
+
+  check:
+    desc: "Full quality suite"
+    deps:
+      - core:test-ignored
+      - cli:test
+      - core:clippy
+      - cli:clippy
+      - rust-fe:test
+      - rust-fe:clippy
+      - rust-rt:test
+      - rust-rt:clippy
+      - ts:test
+      - go:test
+      - go:vet
+      - schemas
+      - docs
+      - meta
+    cmds:
+      - task: conformance
+
+  # --- E2E, pre-completion, walkthrough, clean (issue 6) ---
+
+  e2e:
+    desc: Run E2E concolic pipeline tests
+    sources:
+      - shatter-core/tests/e2e_concolic.rs
+      - shatter-core/src/**/*.rs
+      - shatter-ts/src/**/*.ts
+      - examples/**/*
+    cmds:
+      - cargo test --test e2e_concolic
+
+  pre-completion:
+    desc: Pre-completion quality gate (full check + git status)
+    cmds:
+      - task: check
+      - git status --short
+
+  pre-completion-e2e:
+    desc: Pre-completion with E2E tests
+    cmds:
+      - task: check
+      - task: e2e
+      - git status --short
+
+  walkthrough:
+    desc: Run the demo walkthrough
+    deps: [build]
+    cmds:
+      - bash demo/walkthrough.sh --auto --delay 0
+
+  clean:
+    desc: Remove all build artifacts and checksum cache
+    cmds:
+      - cargo clean
+      - rm -rf shatter-ts/dist shatter-ts/node_modules
+      - cd shatter-go && go clean ./...
+      - rm -rf .task/

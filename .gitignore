@@ -146,9 +146,8 @@ dist
 # Shatter generated reports
 shatter-report/
 
-# Root npm artifacts (not a real npm project)
-/package.json
-/package-lock.json
+# Taskfile checksum cache
+.task/
 
 # Dolt database files (added by bd init)
 .dolt/

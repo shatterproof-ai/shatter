@@ -1,8 +1,7 @@
 # Local Git Hooks
 
 Shatter uses local git hooks to run quality gates before commits and pushes.
-Hooks delegate to the repo-owned scripts in `scripts/quality/` so check logic
-lives in one place.
+Hooks delegate to Taskfile tasks so check logic lives in one place.
 
 ## Setup
 
@@ -17,10 +16,10 @@ hooks without disturbing existing content (e.g. Beads integration).
 
 ## What the hooks run
 
-| Hook | Script | Scope |
-|------|--------|-------|
-| `pre-commit` | `scripts/quality/check-rust.sh` | Rust tests + clippy |
-| `pre-push` | `scripts/quality/check-all.sh` | All language quality gates |
+| Hook | Task | Scope |
+|------|------|-------|
+| `pre-commit` | `npx task core:clippy` | Rust tests + clippy |
+| `pre-push` | `npx task check` | All language quality gates |
 
 ## Skipping hooks
 

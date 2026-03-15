@@ -91,10 +91,10 @@ Verifies that fixtures conform to (or correctly violate) JSON schemas.
 python3 protocol/schemas/test_schema_validation.py
 ```
 
-Or via the quality script:
+Or via Taskfile:
 
 ```bash
-bash scripts/quality/check-schemas.sh
+npx task schemas
 ```
 
 ### Conformance testing
@@ -105,10 +105,10 @@ Spawns all frontends (noop, TypeScript, Go, Rust) and verifies structural parity
 python3 protocol/conformance/conformance_harness.py
 ```
 
-Or via the quality script:
+Or via Taskfile:
 
 ```bash
-bash scripts/quality/check-conformance.sh
+npx task conformance
 ```
 
 ### Per-language tests
@@ -123,10 +123,10 @@ cd shatter-go && go test ./...      # Go frontend
 
 The same checks run in CI via:
 
-- `scripts/quality/check-schemas.sh` — schema + fixture validation
-- `scripts/quality/check-conformance.sh` — cross-frontend conformance
+- `npx task schemas` — schema + fixture validation
+- `npx task conformance` — cross-frontend conformance
 
-Both scripts exit non-zero on failure and block merges.
+Both tasks exit non-zero on failure and block merges.
 
 ## Known Drifts
 
