@@ -1105,3 +1105,19 @@
 {"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-15T16:01:48Z","event_type":"created","id":1216,"issue_id":"str-sxjk","new_value":"","old_value":""}
 {"actor":"Ketan Gangatirkar","comment":"Added label: build","created_at":"2026-03-15T16:01:48Z","event_type":"label_added","id":1217,"issue_id":"str-sxjk","new_value":null,"old_value":null}
 {"actor":"Ketan Gangatirkar","comment":"Added label: infra","created_at":"2026-03-15T16:01:48Z","event_type":"label_added","id":1218,"issue_id":"str-sxjk","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-15T18:23:41Z","event_type":"closed","id":1219,"issue_id":"str-ciib","new_value":"Closed","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-15T18:23:41Z","event_type":"closed","id":1220,"issue_id":"str-cs2h","new_value":"Closed","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-15T18:23:41Z","event_type":"closed","id":1221,"issue_id":"str-mhc7","new_value":"Closed","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-15T18:23:41Z","event_type":"closed","id":1222,"issue_id":"str-3knm","new_value":"Closed","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-15T18:23:41Z","event_type":"closed","id":1223,"issue_id":"str-prv4","new_value":"Closed","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-15T18:23:41Z","event_type":"closed","id":1224,"issue_id":"str-1u7r","new_value":"Closed","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-15T18:23:41Z","event_type":"closed","id":1225,"issue_id":"str-6ehe","new_value":"Closed","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-15T18:23:42Z","event_type":"closed","id":1226,"issue_id":"str-sxjk","new_value":"Closed","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-15T18:23:42Z","event_type":"closed","id":1227,"issue_id":"str-o504","new_value":"Closed","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-15T18:23:42Z","event_type":"closed","id":1228,"issue_id":"str-kaer","new_value":"Closed","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-15T18:23:42Z","event_type":"closed","id":1229,"issue_id":"str-nmhp","new_value":"Closed","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-15T18:23:42Z","event_type":"closed","id":1230,"issue_id":"str-zbpr","new_value":"Closed","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-15T18:23:42Z","event_type":"closed","id":1231,"issue_id":"str-63nd","new_value":"Closed","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-15T18:23:42Z","event_type":"closed","id":1232,"issue_id":"str-fpw2","new_value":"Closed","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-15T18:23:42Z","event_type":"closed","id":1233,"issue_id":"str-iitm","new_value":"Closed","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-15T18:23:42Z","event_type":"closed","id":1234,"issue_id":"str-tre3","new_value":"Closed","old_value":""}
