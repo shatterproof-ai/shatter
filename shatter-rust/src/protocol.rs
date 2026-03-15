@@ -860,6 +860,8 @@ mod tests {
             confidence: Some("medium".into()),
             param_roles: HashMap::new(),
             call_sites: vec![42],
+            input_entropy: None,
+            output_entropy: None,
         });
     }
 

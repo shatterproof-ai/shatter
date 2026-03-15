@@ -22,11 +22,24 @@ fn wrap_in_module(source: &str) -> Result<String, ExecuteError> {
     let mut file = syn::parse_file(source)
         .map_err(|e| ExecuteError::InstrumentError(format!("parse error: {e}")))?;
 
+    // Build the `serde::Serialize` derive attribute to inject on structs/enums.
+    let serialize_derive: syn::Attribute = syn::parse_quote!(#[derive(serde::Serialize)]);
+
     for item in &mut file.items {
         match item {
             syn::Item::Fn(f) => f.vis = syn::Visibility::Public(syn::token::Pub::default()),
-            syn::Item::Struct(s) => s.vis = syn::Visibility::Public(syn::token::Pub::default()),
-            syn::Item::Enum(e) => e.vis = syn::Visibility::Public(syn::token::Pub::default()),
+            syn::Item::Struct(s) => {
+                s.vis = syn::Visibility::Public(syn::token::Pub::default());
+                if !has_serialize_derive(&s.attrs) {
+                    s.attrs.push(serialize_derive.clone());
+                }
+            }
+            syn::Item::Enum(e) => {
+                e.vis = syn::Visibility::Public(syn::token::Pub::default());
+                if !has_serialize_derive(&e.attrs) {
+                    e.attrs.push(serialize_derive.clone());
+                }
+            }
             syn::Item::Type(t) => t.vis = syn::Visibility::Public(syn::token::Pub::default()),
             syn::Item::Const(c) => c.vis = syn::Visibility::Public(syn::token::Pub::default()),
             syn::Item::Static(s) => s.vis = syn::Visibility::Public(syn::token::Pub::default()),
@@ -38,6 +51,20 @@ fn wrap_in_module(source: &str) -> Result<String, ExecuteError> {
 
     let tokens = file.to_token_stream().to_string();
     Ok(format!("#[allow(dead_code)]\nmod user_code {{\n{tokens}\n}}"))
+}
+
+/// Check whether a list of attributes already contains `#[derive(...Serialize...)]`.
+fn has_serialize_derive(attrs: &[syn::Attribute]) -> bool {
+    use quote::ToTokens;
+    for attr in attrs {
+        if attr.path().is_ident("derive") {
+            let tokens = attr.to_token_stream().to_string();
+            if tokens.contains("Serialize") {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Errors from the execute pipeline.
@@ -205,11 +232,38 @@ fn is_trait_object_type(ty: &str) -> bool {
     normalized.contains("dyn ")
 }
 
-fn owned_type_for_ref(ty: &str) -> Option<&'static str> {
+/// Map a reference parameter type to its owned equivalent for deserialization.
+///
+/// Returns `Some((owned_deser_type, owned_var_type, borrow_expr))` where:
+/// - `owned_deser_type` is the type to deserialize into
+/// - `owned_var_type` is the intermediate variable type (may differ for slices)
+/// - `borrow_expr` is how to convert the owned value to the reference the function expects
+///
+/// Simple cases like `&str` → `String` with `&name_owned`.
+/// Slice cases like `&[&str]` → `Vec<String>` need a two-step conversion.
+struct OwnedTypeMapping {
+    /// Type to deserialize into (e.g., `String`, `Vec<String>`)
+    deser_type: &'static str,
+    /// Whether the function call needs a slice borrow (e.g., `&name_owned` vs
+    /// a more complex conversion for `&[&str]`)
+    needs_slice_conversion: bool,
+}
+
+fn owned_type_for_ref(ty: &str) -> Option<OwnedTypeMapping> {
     let normalized = ty.replace(' ', "");
     match normalized.as_str() {
-        "&str" | "&'staticstr" => Some("String"),
-        "&String" | "&'staticString" => Some("String"),
+        "&str" | "&'staticstr" => Some(OwnedTypeMapping {
+            deser_type: "String",
+            needs_slice_conversion: false,
+        }),
+        "&String" | "&'staticString" => Some(OwnedTypeMapping {
+            deser_type: "String",
+            needs_slice_conversion: false,
+        }),
+        "&[&str]" | "&[&'staticstr]" => Some(OwnedTypeMapping {
+            deser_type: "Vec<String>",
+            needs_slice_conversion: true,
+        }),
         _ => None,
     }
 }
@@ -266,12 +320,21 @@ fn generate_harness(
     // Deserialize each input parameter.
     // Reference types like `&str` can't be deserialized directly — deserialize
     // to the owned type (e.g. `String`) and borrow in the function call.
+    // Slice references like `&[&str]` need a two-step conversion:
+    // deserialize to `Vec<String>`, then create a `Vec<&str>` of borrows.
     for (i, (name, ty)) in param_names.iter().zip(param_types.iter()).enumerate() {
         let clean_name = name.strip_prefix("mut ").unwrap_or(name).trim();
-        if let Some(owned_ty) = owned_type_for_ref(ty) {
+        if let Some(mapping) = owned_type_for_ref(ty) {
             h.push_str(&format!(
-                "    let {clean_name}_owned: {owned_ty} = serde_json::from_value(inputs[{i}].clone()).unwrap_or_default();\n"
+                "    let {clean_name}_owned: {} = serde_json::from_value(inputs[{i}].clone()).unwrap_or_default();\n",
+                mapping.deser_type
             ));
+            if mapping.needs_slice_conversion {
+                // Convert Vec<String> → Vec<&str> for the function call
+                h.push_str(&format!(
+                    "    let {clean_name}_refs: Vec<&str> = {clean_name}_owned.iter().map(|s| s.as_str()).collect();\n"
+                ));
+            }
         } else {
             h.push_str(&format!(
                 "    let {clean_name}: {ty} = serde_json::from_value(inputs[{i}].clone()).unwrap_or_default();\n"
@@ -280,14 +343,19 @@ fn generate_harness(
     }
     h.push('\n');
 
-    // Build the argument list — reference params use `&name_owned`
+    // Build the argument list — reference params use `&name_owned`,
+    // slice reference params use `&name_refs`
     let arg_list: Vec<String> = param_names
         .iter()
         .zip(param_types.iter())
         .map(|(n, ty)| {
             let clean = n.strip_prefix("mut ").unwrap_or(n).trim();
-            if owned_type_for_ref(ty).is_some() {
-                format!("&{clean}_owned")
+            if let Some(mapping) = owned_type_for_ref(ty) {
+                if mapping.needs_slice_conversion {
+                    format!("&{clean}_refs")
+                } else {
+                    format!("&{clean}_owned")
+                }
             } else {
                 clean.to_string()
             }
@@ -693,13 +761,19 @@ fn main() {
 
     #[test]
     fn owned_type_for_ref_maps_str_refs() {
-        assert_eq!(owned_type_for_ref("& str"), Some("String"));
-        assert_eq!(owned_type_for_ref("&str"), Some("String"));
-        assert_eq!(owned_type_for_ref("& 'static str"), Some("String"));
-        assert_eq!(owned_type_for_ref("&String"), Some("String"));
-        assert_eq!(owned_type_for_ref("& 'static String"), Some("String"));
-        assert_eq!(owned_type_for_ref("i32"), None);
-        assert_eq!(owned_type_for_ref("String"), None);
+        let check = |ty: &str, expected_deser: &str| {
+            let m = owned_type_for_ref(ty).unwrap_or_else(|| panic!("expected Some for {ty}"));
+            assert_eq!(m.deser_type, expected_deser, "deser_type mismatch for {ty}");
+        };
+        check("& str", "String");
+        check("&str", "String");
+        check("& 'static str", "String");
+        check("&String", "String");
+        check("& 'static String", "String");
+        check("& [& str]", "Vec<String>");
+        check("&[&str]", "Vec<String>");
+        assert!(owned_type_for_ref("i32").is_none());
+        assert!(owned_type_for_ref("String").is_none());
     }
 
     /// Reproduction test for str-jxap: `&str` parameters must deserialize
@@ -808,5 +882,54 @@ fn main() {
             "expected NonExecutable, got: {err:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Bug: `&[&str]` parameter causes compilation error because
+    /// `owned_type_for_ref` doesn't handle reference slices.
+    /// The harness must deserialize to `Vec<String>` and convert.
+    #[test]
+    fn generate_harness_slice_ref_param_deserializes_to_vec() {
+        let source = r#"fn negotiate(header: &str, supported: &[&str]) -> String { String::new() }"#;
+        let harness = generate_harness(
+            source,
+            "negotiate",
+            &["header".to_string(), "supported".to_string()],
+            &["& str".to_string(), "& [& str]".to_string()],
+            Some("String"),
+            r#"["en", ["en", "fr"]]"#,
+            "[]",
+        )
+        .unwrap();
+
+        // Should NOT contain `& [& str]` in deserialization (not DeserializeOwned)
+        assert!(
+            !harness.contains("supported: & [& str]"),
+            "should not deserialize to &[&str]\n\nharness:\n{harness}"
+        );
+        // Should deserialize to Vec<String> (owned)
+        assert!(
+            harness.contains("Vec<String>"),
+            "expected Vec<String> deserialization\n\nharness:\n{harness}"
+        );
+    }
+
+    /// Bug: user-defined return types without `Serialize` cause compilation
+    /// error when the harness tries `serde_json::to_value(&ret_val)`.
+    /// `wrap_in_module` must inject `#[derive(serde::Serialize)]` on user
+    /// structs and enums so the harness can serialize return values.
+    #[test]
+    fn wrap_in_module_injects_serialize_derive() {
+        let source = r#"
+#[derive(Debug)]
+struct MyResult { value: i32 }
+fn compute(n: i32) -> MyResult { MyResult { value: n } }
+"#;
+        let wrapped = wrap_in_module(source).unwrap();
+
+        // The wrapped module must add serde::Serialize to struct derives
+        assert!(
+            wrapped.contains("serde :: Serialize") || wrapped.contains("serde::Serialize"),
+            "wrap_in_module must inject Serialize derive on structs\n\nwrapped:\n{wrapped}"
+        );
     }
 }
