@@ -118,6 +118,9 @@ pub struct ExploreConfig {
     pub branch_profile: Option<crate::branch_profile::BranchProfile>,
     /// Strategy meta-configuration for adaptive selection.
     pub meta_config: crate::strategy::MetaConfig,
+    /// Number of consecutive no-new-coverage observations before suppressing
+    /// negation for branches in a converged loop. 0 disables convergence detection.
+    pub loop_convergence_window: usize,
 }
 
 /// Default maximum total executions before stopping exploration.
@@ -149,6 +152,9 @@ const CROSSOVER_RATE_UNKNOWN: f64 = 0.7;
 /// Minimum observations of a loop-invariant branch before skipping redundant occurrences.
 const DEFAULT_MIN_INVARIANT_OBSERVATIONS: usize = 2;
 
+/// Default number of consecutive no-new-coverage observations before marking a loop converged.
+const DEFAULT_LOOP_CONVERGENCE_WINDOW: usize = 3;
+
 impl Default for ExploreConfig {
     fn default() -> Self {
         Self {
@@ -161,6 +167,7 @@ impl Default for ExploreConfig {
             timeout_explore: None,
             branch_profile: None,
             meta_config: crate::strategy::MetaConfig::default(),
+            loop_convergence_window: DEFAULT_LOOP_CONVERGENCE_WINDOW,
         }
     }
 }
@@ -785,6 +792,134 @@ impl LoopInvariantDetector {
     }
 }
 
+/// Map each branch in scope_events to its enclosing loop ID(s).
+///
+/// Returns a map from branch_id to the set of loop_ids that enclose it.
+/// If scope_events is empty, returns an empty map.
+pub(crate) fn extract_loop_context(
+    scope_events: &[TraceEvent],
+) -> HashMap<u32, HashSet<u32>> {
+    let mut loop_stack: Vec<u32> = Vec::new();
+    let mut context: HashMap<u32, HashSet<u32>> = HashMap::new();
+
+    for ev in scope_events {
+        match ev {
+            TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id } } => {
+                loop_stack.push(*loop_id);
+            }
+            TraceEvent::Scope { event: ScopeEvent::LoopExit { loop_id } } => {
+                loop_stack.retain(|id| id != loop_id);
+            }
+            TraceEvent::Branch { decision } => {
+                for &loop_id in &loop_stack {
+                    context
+                        .entry(decision.branch_id)
+                        .or_default()
+                        .insert(loop_id);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    context
+}
+
+/// Tracks per-loop branch coverage and detects convergence (no new coverage
+/// for `window` consecutive observations).
+///
+/// When a loop converges, branches enclosed by it are candidates for negation
+/// suppression — further Z3 solving on those branches is unlikely to discover
+/// new paths.
+pub(crate) struct LoopCoverageTracker {
+    /// Per loop_id: set of (branch_id, taken) pairs observed.
+    coverage: HashMap<u32, HashSet<(u32, bool)>>,
+    /// Per loop_id: consecutive observations with no new coverage.
+    stale_count: HashMap<u32, usize>,
+    /// Loops that have converged (stale_count >= window).
+    converged: HashSet<u32>,
+    /// Convergence window (0 = disabled).
+    window: usize,
+}
+
+impl LoopCoverageTracker {
+    pub(crate) fn new(window: usize) -> Self {
+        Self {
+            coverage: HashMap::new(),
+            stale_count: HashMap::new(),
+            converged: HashSet::new(),
+            window,
+        }
+    }
+
+    /// Observe branch decisions in the context of their enclosing loops.
+    /// Updates coverage sets and stale counters. Marks loops as converged
+    /// when stale_count reaches the window.
+    pub(crate) fn observe(
+        &mut self,
+        loop_context: &HashMap<u32, HashSet<u32>>,
+        branch_path: &[BranchDecision],
+    ) {
+        if self.window == 0 {
+            return;
+        }
+
+        // Collect all loop_ids mentioned in this trace.
+        let mut loops_in_trace: HashSet<u32> = HashSet::new();
+        for loop_ids in loop_context.values() {
+            loops_in_trace.extend(loop_ids);
+        }
+
+        // For each loop, check if any new (branch_id, taken) pair appeared.
+        let mut new_coverage_per_loop: HashMap<u32, bool> = HashMap::new();
+
+        for bd in branch_path {
+            if let Some(loop_ids) = loop_context.get(&bd.branch_id) {
+                for &loop_id in loop_ids {
+                    let pair = (bd.branch_id, bd.taken);
+                    let coverage_set = self.coverage.entry(loop_id).or_default();
+                    if coverage_set.insert(pair) {
+                        new_coverage_per_loop.insert(loop_id, true);
+                    } else {
+                        new_coverage_per_loop.entry(loop_id).or_insert(false);
+                    }
+                }
+            }
+        }
+
+        // Update stale counts.
+        for &loop_id in &loops_in_trace {
+            let had_new = new_coverage_per_loop.get(&loop_id).copied().unwrap_or(false);
+            if had_new {
+                self.stale_count.insert(loop_id, 0);
+                self.converged.remove(&loop_id);
+            } else {
+                let count = self.stale_count.entry(loop_id).or_insert(0);
+                *count += 1;
+                if *count >= self.window {
+                    self.converged.insert(loop_id);
+                }
+            }
+        }
+    }
+
+    /// Returns true if the branch's enclosing loop has converged.
+    pub(crate) fn should_skip_branch(
+        &self,
+        branch_id: u32,
+        loop_context: &HashMap<u32, HashSet<u32>>,
+    ) -> bool {
+        if self.window == 0 {
+            return false;
+        }
+        if let Some(loop_ids) = loop_context.get(&branch_id) {
+            loop_ids.iter().any(|id| self.converged.contains(id))
+        } else {
+            false
+        }
+    }
+}
+
 /// Solve/Generate phase: process new-path observations and produce candidate inputs.
 ///
 /// For each new-path observation:
@@ -808,6 +943,7 @@ fn solve_and_generate(
     mock_params: &[MockParam],
     branch_profile: Option<&crate::branch_profile::BranchProfile>,
     invariant_detector: &mut LoopInvariantDetector,
+    loop_coverage_tracker: &mut LoopCoverageTracker,
 ) -> SolveOutput {
     let mut output = SolveOutput::default();
 
@@ -830,11 +966,22 @@ fn solve_and_generate(
             &obs.result.branch_path,
         );
 
+        // Coverage-guided diminishing returns: build loop context and observe.
+        let loop_context = extract_loop_context(&obs.result.scope_events);
+        loop_coverage_tracker.observe(&loop_context, &obs.result.branch_path);
+
         // Try to negate each branch constraint with Z3.
         if !solvable.is_empty() {
             for (solve_idx, &(branch_idx, _)) in solvable_with_idx.iter().enumerate() {
                 // Skip redundant later occurrences of loop-invariant branches.
                 if invariant_skip.contains(&branch_idx) {
+                    continue;
+                }
+                // Skip branches in converged loops.
+                if loop_coverage_tracker.should_skip_branch(
+                    obs.result.branch_path.get(branch_idx).map_or(0, |bd| bd.branch_id),
+                    &loop_context,
+                ) {
                     continue;
                 }
                 match solver::solve_for_new_path(&solvable, solve_idx, config.solver_timeout_ms, param_infos) {
@@ -1141,6 +1288,7 @@ pub async fn explore(
     let _meta_strategy: MetaStrategy = MetaStrategy::new(vec![], Default::default());
 
     let mut invariant_detector = LoopInvariantDetector::new();
+    let mut loop_coverage_tracker = LoopCoverageTracker::new(config.loop_convergence_window);
 
     // Generate initial mock values when mock_params are configured.
     let initial_mocks = if !config.mock_params.is_empty() {
@@ -1390,6 +1538,7 @@ pub async fn explore(
             &config.mock_params,
             config.branch_profile.as_ref(),
             &mut invariant_detector,
+            &mut loop_coverage_tracker,
         );
 
         z3_generated += solve_output.z3_count;
@@ -1991,6 +2140,7 @@ mod tests {
             &[],
             None,
             &mut LoopInvariantDetector::new(),
+            &mut LoopCoverageTracker::new(0),
         );
 
         assert!(output.candidates.is_empty());
@@ -2041,6 +2191,7 @@ mod tests {
             &[],
             None,
             &mut LoopInvariantDetector::new(),
+            &mut LoopCoverageTracker::new(0),
         );
 
         assert!(output.fuzz_count > 0, "should produce fuzz candidates for unknown constraints");
@@ -2102,6 +2253,7 @@ mod tests {
             &[],
             None,
             &mut LoopInvariantDetector::new(),
+            &mut LoopCoverageTracker::new(0),
         );
 
         assert!(output.z3_count > 0, "should produce Z3 candidates for solvable constraints");
@@ -2756,6 +2908,72 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Coverage-guided diminishing returns tests (str-ztqi)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn loop_coverage_tracker_detects_convergence() {
+        let mut tracker = LoopCoverageTracker::new(2);
+        let mut loop_context: HashMap<u32, HashSet<u32>> = HashMap::new();
+        loop_context.insert(10, [1].into_iter().collect());
+
+        // First observation: new coverage.
+        let bp1 = vec![BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default() }];
+        tracker.observe(&loop_context, &bp1);
+        assert!(!tracker.should_skip_branch(10, &loop_context));
+
+        // Second observation: same coverage — stale=1, not converged yet.
+        tracker.observe(&loop_context, &bp1);
+        assert!(!tracker.should_skip_branch(10, &loop_context));
+
+        // Third observation: same again — stale=2 >= window=2 → converged.
+        tracker.observe(&loop_context, &bp1);
+        assert!(tracker.should_skip_branch(10, &loop_context));
+    }
+
+    #[test]
+    fn loop_coverage_tracker_resets_on_new_coverage() {
+        let mut tracker = LoopCoverageTracker::new(2);
+        let mut loop_context: HashMap<u32, HashSet<u32>> = HashMap::new();
+        loop_context.insert(10, [1].into_iter().collect());
+
+        let bp1 = vec![BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default() }];
+        tracker.observe(&loop_context, &bp1);
+        tracker.observe(&loop_context, &bp1); // stale=1
+
+        // New coverage resets stale count.
+        let bp2 = vec![BranchDecision { branch_id: 10, line: 5, taken: false, constraint: SymConstraint::default() }];
+        tracker.observe(&loop_context, &bp2);
+        assert!(!tracker.should_skip_branch(10, &loop_context));
+    }
+
+    #[test]
+    fn loop_coverage_tracker_disabled_when_window_zero() {
+        let mut tracker = LoopCoverageTracker::new(0);
+        let mut loop_context: HashMap<u32, HashSet<u32>> = HashMap::new();
+        loop_context.insert(10, [1].into_iter().collect());
+
+        let bp = vec![BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default() }];
+        for _ in 0..10 {
+            tracker.observe(&loop_context, &bp);
+        }
+        assert!(!tracker.should_skip_branch(10, &loop_context));
+    }
+
+    #[test]
+    fn extract_loop_context_maps_branches_to_loops() {
+        let events = vec![
+            TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id: 1 } },
+            TraceEvent::Branch { decision: BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default() } },
+            TraceEvent::Scope { event: ScopeEvent::LoopExit { loop_id: 1 } },
+            TraceEvent::Branch { decision: BranchDecision { branch_id: 20, line: 15, taken: false, constraint: SymConstraint::default() } },
+        ];
+        let ctx = extract_loop_context(&events);
+        assert!(ctx.get(&10).unwrap().contains(&1));
+        assert!(!ctx.contains_key(&20)); // branch 20 is outside all loops
+    }
+
+    // -----------------------------------------------------------------------
     // Property-based tests
     // -----------------------------------------------------------------------
 
@@ -2951,6 +3169,38 @@ mod tests {
 
                 let positions = classify_iteration_positions(&events, &branch_path);
                 prop_assert_eq!(positions.len(), num_branches);
+            }
+
+            /// extract_loop_context output keys are a subset of branch_ids in the trace.
+            #[test]
+            fn extract_loop_context_keys_subset_of_branches(
+                num_branches in 0..15usize,
+                num_loops in 0..5u32,
+            ) {
+                let mut events = Vec::new();
+                let mut branch_ids = HashSet::new();
+
+                // Open loops
+                for loop_id in 0..num_loops {
+                    events.push(TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id } });
+                }
+                // Branches
+                for i in 0..num_branches {
+                    let bid = i as u32;
+                    branch_ids.insert(bid);
+                    events.push(TraceEvent::Branch {
+                        decision: BranchDecision { branch_id: bid, line: bid * 10, taken: true, constraint: SymConstraint::default() },
+                    });
+                }
+                // Close loops
+                for loop_id in (0..num_loops).rev() {
+                    events.push(TraceEvent::Scope { event: ScopeEvent::LoopExit { loop_id } });
+                }
+
+                let ctx = extract_loop_context(&events);
+                for key in ctx.keys() {
+                    prop_assert!(branch_ids.contains(key));
+                }
             }
 
             /// A branch that varies across observations is never marked invariant.
