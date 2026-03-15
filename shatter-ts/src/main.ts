@@ -21,6 +21,18 @@ function sendResponse(response: Response): void {
 function main(): void {
   logger.debug("Starting TypeScript frontend (protocol 0.1.0)");
 
+  // Handle EPIPE on stdout gracefully.  When the core drops us after a
+  // timeout it closes the pipe reader, and the next write emits an 'error'
+  // event.  Without this handler Node crashes with an unhandled error.
+  process.stdout.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code === "EPIPE") {
+      // Pipe closed by the core — exit silently.
+      process.exit(0);
+    }
+    // Re-throw unexpected errors so they aren't silently swallowed.
+    throw err;
+  });
+
   const rl = readline.createInterface({
     input: process.stdin,
     terminal: false,
