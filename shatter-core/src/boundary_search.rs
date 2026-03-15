@@ -6,6 +6,7 @@
 //! boundary. More effective than blind mutation because the search has
 //! directional signal from observed branch outcomes.
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::protocol::{ExecuteResult, MockConfig};
@@ -309,6 +310,119 @@ fn interpolate_union(
     Vec::new()
 }
 
+/// Result of boundary refinement for a single branch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BoundaryResult {
+    /// The branch that was refined.
+    pub branch_id: u32,
+    /// Closest known input that takes the true side.
+    pub true_witness: Vec<Value>,
+    /// Closest known input that takes the false side.
+    pub false_witness: Vec<Value>,
+    /// Number of executions used during refinement.
+    pub executions_used: usize,
+}
+
+/// Default refinement budget per boundary.
+pub const DEFAULT_REFINE_BUDGET: usize = 20;
+
+/// Execution function type for boundary refinement.
+/// Execution function type for boundary refinement. Returns `None` on error
+/// (refinement stops for this boundary).
+type ExecuteFn = dyn FnMut(&[Value], &[MockConfig]) -> Option<ExecuteResult>;
+
+/// Run post-discovery boundary refinement on all branches that have witnesses
+/// on both sides. For each such branch, binary-searches between the witness
+/// pair to find the precise transition point, using a separate per-boundary
+/// execution budget.
+///
+/// `execute_fn` is called with `(inputs, mocks)` and must return the execution
+/// result. The mocks from the first matching raw result are used.
+pub fn refine_boundaries(
+    raw_results: &[(Vec<Value>, Vec<MockConfig>, ExecuteResult)],
+    param_infos: &[ParamInfo],
+    refine_budget_per_boundary: usize,
+    execute_fn: &mut ExecuteFn,
+) -> Vec<BoundaryResult> {
+    if refine_budget_per_boundary == 0 {
+        return Vec::new();
+    }
+
+    // Collect all branch IDs that have witnesses on both sides.
+    let mut branch_ids: Vec<u32> = Vec::new();
+    let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    for (_inputs, _mocks, result) in raw_results {
+        for decision in &result.branch_path {
+            seen.insert(decision.branch_id);
+        }
+    }
+    for &bid in &seen {
+        if find_witness_pair(raw_results, bid).is_some() {
+            branch_ids.push(bid);
+        }
+    }
+    branch_ids.sort_unstable();
+
+    let mut results = Vec::new();
+
+    for branch_id in branch_ids {
+        let (mut tw, mut fw) = match find_witness_pair(raw_results, branch_id) {
+            Some(pair) => pair,
+            None => continue,
+        };
+
+        // Find mock values from the first raw result (use empty if none).
+        let mocks: Vec<MockConfig> = raw_results
+            .first()
+            .map(|(_, m, _)| m.clone())
+            .unwrap_or_default();
+
+        let mut executions_used = 0;
+
+        for _ in 0..refine_budget_per_boundary {
+            // Generate midpoint candidates between the current witness pair.
+            let candidates = interpolate_inputs(&tw, &fw, param_infos, 1);
+            if candidates.is_empty() {
+                break; // Converged — no more midpoints possible.
+            }
+
+            let candidate = &candidates[0];
+            let exec_result = match execute_fn(candidate, &mocks) {
+                Some(r) => r,
+                None => break,
+            };
+            executions_used += 1;
+
+            // Determine which side of this branch the candidate took.
+            let mut took_side: Option<bool> = None;
+            for decision in &exec_result.branch_path {
+                if decision.branch_id == branch_id {
+                    took_side = Some(decision.taken);
+                    break;
+                }
+            }
+
+            match took_side {
+                Some(true) => tw = candidate.clone(),
+                Some(false) => fw = candidate.clone(),
+                None => {
+                    // Branch not encountered in this execution — skip.
+                    continue;
+                }
+            }
+        }
+
+        results.push(BoundaryResult {
+            branch_id,
+            true_witness: tw,
+            false_witness: fw,
+            executions_used,
+        });
+    }
+
+    results
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -578,6 +692,101 @@ mod tests {
     fn interpolate_union_no_match() {
         let variants = vec![TypeInfo::Str];
         let results = interpolate_union(&json!(0), &json!(100), &variants, 4);
+        assert!(results.is_empty());
+    }
+
+    // --- refine_boundaries tests ---
+
+    /// Mock execute function: simulates `x >= threshold` branch.
+    fn mock_threshold_execute(
+        threshold: i64,
+        branch_id: u32,
+    ) -> impl FnMut(&[Value], &[MockConfig]) -> Option<ExecuteResult> {
+        move |inputs: &[Value], _mocks: &[MockConfig]| {
+            let x = inputs[0].as_i64().unwrap_or(0);
+            let taken = x >= threshold;
+            Some(make_execute_result(branch_id, taken))
+        }
+    }
+
+    #[test]
+    fn refine_narrows_boundary() {
+        // Discovery found x=0 (false) and x=100 (true) for threshold=10.
+        let raw = vec![
+            (vec![json!(0)], vec![], make_execute_result(0, false)),
+            (vec![json!(100)], vec![], make_execute_result(0, true)),
+        ];
+        let params = vec![make_param("x", TypeInfo::Int)];
+
+        let mut exec_fn = mock_threshold_execute(10, 0);
+        let results = refine_boundaries(&raw, &params, 20, &mut exec_fn);
+
+        assert_eq!(results.len(), 1);
+        let r = &results[0];
+        assert_eq!(r.branch_id, 0);
+
+        // After refinement, witnesses should be much closer to 10 than 0 and 100.
+        let tw_val = r.true_witness[0].as_i64().unwrap();
+        let fw_val = r.false_witness[0].as_i64().unwrap();
+        assert!(tw_val >= 10, "true witness {} should be >= 10", tw_val);
+        assert!(fw_val < 10, "false witness {} should be < 10", fw_val);
+        // The gap should be narrow (at most a few apart).
+        assert!(
+            (tw_val - fw_val).abs() <= 2,
+            "witnesses {} and {} should be close to boundary",
+            tw_val,
+            fw_val
+        );
+    }
+
+    #[test]
+    fn refine_budget_enforcement() {
+        let raw = vec![
+            (vec![json!(0)], vec![], make_execute_result(0, false)),
+            (vec![json!(1000)], vec![], make_execute_result(0, true)),
+        ];
+        let params = vec![make_param("x", TypeInfo::Int)];
+
+        let mut exec_fn = mock_threshold_execute(10, 0);
+
+        let budget = 5;
+        let results = refine_boundaries(&raw, &params, budget, &mut exec_fn);
+
+        assert_eq!(results.len(), 1);
+        assert!(
+            results[0].executions_used <= budget,
+            "used {} executions, budget was {}",
+            results[0].executions_used,
+            budget
+        );
+    }
+
+    #[test]
+    fn refine_skips_one_sided_branches() {
+        // Only true side observed — no refinement possible.
+        let raw = vec![
+            (vec![json!(5)], vec![], make_execute_result(0, true)),
+            (vec![json!(10)], vec![], make_execute_result(0, true)),
+        ];
+        let params = vec![make_param("x", TypeInfo::Int)];
+
+        let mut exec_fn = mock_threshold_execute(10, 0);
+        let results = refine_boundaries(&raw, &params, 20, &mut exec_fn);
+
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn refine_zero_budget_returns_empty() {
+        let raw = vec![
+            (vec![json!(0)], vec![], make_execute_result(0, false)),
+            (vec![json!(100)], vec![], make_execute_result(0, true)),
+        ];
+        let params = vec![make_param("x", TypeInfo::Int)];
+
+        let mut exec_fn = mock_threshold_execute(10, 0);
+        let results = refine_boundaries(&raw, &params, 0, &mut exec_fn);
+
         assert!(results.is_empty());
     }
 }

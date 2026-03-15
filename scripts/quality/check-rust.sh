@@ -13,6 +13,7 @@ RUN_DENY=false
 RUN_UDEPS=false
 USE_NEXTEST=auto
 STRICT_OPTIONAL=false
+LIB_ONLY=false
 
 usage() {
   cat <<'EOF'
@@ -52,6 +53,11 @@ while [[ $# -gt 0 ]]; do
     --strict-optional)
       STRICT_OPTIONAL=true
       ;;
+    --precommit)
+      # Called from the pre-commit hook; run only lib tests (skip E2E integration
+      # tests that require built frontends, which may not be available in worktrees).
+      LIB_ONLY=true
+      ;;
     -h|--help)
       usage
       exit 0
@@ -75,19 +81,25 @@ if [[ "${USE_NEXTEST}" == "auto" ]]; then
   USE_NEXTEST="${HAS_NEXTEST}"
 fi
 
+# When --precommit, run only lib tests (skip integration tests that need built frontends).
+LIB_FLAG=""
+if [[ "${LIB_ONLY}" == "true" ]]; then
+  LIB_FLAG="--lib"
+fi
+
 if [[ "${USE_NEXTEST}" == "true" ]]; then
   if [[ "${HAS_NEXTEST}" == "true" ]]; then
     info "Using cargo-nextest for parallel test execution"
-    run_cmd "Rust tests (cargo nextest)" cargo nextest run
+    run_cmd "Rust tests (cargo nextest)" cargo nextest run ${LIB_FLAG}
   elif [[ "${STRICT_OPTIONAL}" == "true" ]]; then
     die "cargo-nextest requested but not installed"
   else
     warn "cargo-nextest not installed; falling back to cargo test"
-    run_cmd "Rust tests (cargo test)" cargo test
+    run_cmd "Rust tests (cargo test)" cargo test ${LIB_FLAG}
   fi
 else
   info "Using cargo test (install cargo-nextest for faster runs)"
-  run_cmd "Rust tests (cargo test)" cargo test
+  run_cmd "Rust tests (cargo test)" cargo test ${LIB_FLAG}
 fi
 
 if [[ "${RUN_CLIPPY}" == "true" ]]; then

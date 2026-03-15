@@ -227,6 +227,7 @@ impl From<crate::orchestrator::ExploreResult> for ObservationOutput {
             discoveries: r.discoveries,
             nondeterministic_fields: r.nondeterministic_fields,
             float_probe_results: r.float_probe_results,
+            boundary_results: r.boundary_results,
         }
     }
 }
@@ -309,7 +310,7 @@ mod tests {
             new_path_executions: vec![],
             raw_results: vec![(vec![json!(5)], vec![], exec_result)],
             discoveries: vec![(0, DiscoveryMethod::Random)],
-            nondeterministic_fields: vec![], float_probe_results: vec![],
+            nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![],
         };
 
         let analysis = stub_analysis("classify", 2);
@@ -334,7 +335,7 @@ mod tests {
             new_path_executions: vec![],
             raw_results: vec![],
             discoveries: vec![],
-            nondeterministic_fields: vec![], float_probe_results: vec![],
+            nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![],
         };
 
         let analysis = stub_analysis("empty", 3);
@@ -400,7 +401,7 @@ mod tests {
                 (vec![json!(3)], vec![], make_result(json!("c"))),
             ],
             discoveries: vec![(0, DiscoveryMethod::Random)],
-            nondeterministic_fields: vec![], float_probe_results: vec![],
+            nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![],
         };
 
         let analysis = stub_analysis("dedup_test", 2);
@@ -432,7 +433,7 @@ mod tests {
                 evidence: vec![NondeterminismEvidence::ObservedWithinRun],
                 confidence: Confidence::High,
             }],
-            float_probe_results: vec![],
+            float_probe_results: vec![], boundary_results: vec![],
         };
 
         let analysis = stub_analysis("nondet_fn", 0);
@@ -457,7 +458,7 @@ mod tests {
             raw_results: vec![],
             discoveries: vec![],
             nondeterministic_fields: vec![],
-            float_probe_results: vec![],
+            float_probe_results: vec![], boundary_results: vec![],
         };
         let analysis = stub_analysis("test_fn", 1);
         let stage = ObserveStageOutput {
@@ -484,7 +485,7 @@ mod tests {
             raw_results: vec![],
             discoveries: vec![],
             nondeterministic_fields: vec![],
-            float_probe_results: vec![],
+            float_probe_results: vec![], boundary_results: vec![],
         };
         let analysis = stub_analysis("roundtrip", 2);
         let output = analyze(&observe, &analysis);
@@ -508,7 +509,7 @@ mod tests {
             raw_results: vec![],
             discoveries: vec![],
             nondeterministic_fields: vec![],
-            float_probe_results: vec![],
+            float_probe_results: vec![], boundary_results: vec![],
         };
         let analysis = stub_analysis("stage_rt", 1);
         let analyze_out = analyze(&observe, &analysis);
@@ -561,7 +562,7 @@ mod tests {
             ],
             discoveries: vec![],
             nondeterministic_fields: vec![],
-            float_probe_results: vec![],
+            float_probe_results: vec![], boundary_results: vec![],
         };
         let analysis = stub_analysis("bounded", 1);
         let output = analyze(&observe, &analysis);
@@ -590,7 +591,7 @@ mod tests {
             discoveries: vec![(0, DiscoveryMethod::Random)],
             triage_skipped: 0,
             triage_mispredictions: 0,
-            nondeterministic_fields: vec![], float_probe_results: vec![],
+            nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![],
         };
 
         let output: ObservationOutput = concolic.into();
