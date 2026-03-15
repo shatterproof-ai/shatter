@@ -123,6 +123,10 @@ pub struct ExploreConfig {
     /// Number of consecutive no-new-coverage observations before suppressing
     /// negation for branches in a converged loop. 0 disables convergence detection.
     pub loop_convergence_window: usize,
+    /// Per-boundary refinement budget (executions). After the discovery loop,
+    /// a separate refinement phase binary-searches between witness pairs.
+    /// `None` or `Some(0)` disables refinement.
+    pub refine_budget: Option<usize>,
 }
 
 /// Default maximum total executions before stopping exploration.
@@ -155,6 +159,7 @@ impl Default for ExploreConfig {
             branch_profile: None,
             meta_config: crate::strategy::MetaConfig::default(),
             loop_convergence_window: DEFAULT_LOOP_CONVERGENCE_WINDOW,
+            refine_budget: None,
         }
     }
 }
@@ -287,6 +292,8 @@ pub struct ExploreResult {
     pub nondeterministic_fields: Vec<crate::nondeterminism::NondeterministicField>,
     /// Float probe results classifying Float params as integer-treating or float-sensitive.
     pub float_probe_results: Vec<crate::float_probe::FloatProbeResult>,
+    /// Refined boundary witness pairs from post-discovery refinement phase.
+    pub boundary_results: Vec<crate::boundary_search::BoundaryResult>,
 }
 
 /// Errors that can occur during concolic exploration.
@@ -1156,6 +1163,99 @@ fn solve_and_generate(
     output
 }
 
+/// Async boundary refinement: binary-searches between witness pairs using the
+/// frontend for execution. Runs after discovery with its own per-boundary budget.
+async fn refine_boundaries_async(
+    frontend: &mut Frontend,
+    function_name: &str,
+    raw_results: &[(Vec<serde_json::Value>, Vec<MockConfig>, ExecuteResult)],
+    param_infos: &[ParamInfo],
+    budget_per_boundary: usize,
+    setup_context: &Option<SetupContextStack>,
+) -> Vec<boundary_search::BoundaryResult> {
+    // Collect branch IDs with witnesses on both sides.
+    let mut branch_ids: Vec<u32> = Vec::new();
+    let mut seen: HashSet<u32> = HashSet::new();
+    for (_inputs, _mocks, result) in raw_results {
+        for decision in &result.branch_path {
+            seen.insert(decision.branch_id);
+        }
+    }
+    for &bid in &seen {
+        if boundary_search::find_witness_pair(raw_results, bid).is_some() {
+            branch_ids.push(bid);
+        }
+    }
+    branch_ids.sort_unstable();
+
+    let mocks: Vec<MockConfig> = raw_results
+        .first()
+        .map(|(_, m, _)| m.clone())
+        .unwrap_or_default();
+
+    let mut results = Vec::new();
+
+    for branch_id in branch_ids {
+        let (mut tw, mut fw) = match boundary_search::find_witness_pair(raw_results, branch_id) {
+            Some(pair) => pair,
+            None => continue,
+        };
+
+        let mut executions_used = 0;
+
+        for _ in 0..budget_per_boundary {
+            let candidates =
+                boundary_search::interpolate_inputs(&tw, &fw, param_infos, 1);
+            if candidates.is_empty() {
+                break; // Converged.
+            }
+
+            let candidate = &candidates[0];
+            let response = match frontend
+                .send(Command::Execute {
+                    function: function_name.to_string(),
+                    inputs: candidate.clone(),
+                    mocks: mocks.clone(),
+                    setup_context: setup_context.clone(),
+                })
+                .await
+            {
+                Ok(r) => r,
+                Err(_) => break,
+            };
+
+            let exec_result = match response.result {
+                ResponseResult::Execute(result) => *result,
+                _ => break,
+            };
+            executions_used += 1;
+
+            let mut took_side: Option<bool> = None;
+            for decision in &exec_result.branch_path {
+                if decision.branch_id == branch_id {
+                    took_side = Some(decision.taken);
+                    break;
+                }
+            }
+
+            match took_side {
+                Some(true) => tw = candidate.clone(),
+                Some(false) => fw = candidate.clone(),
+                None => continue,
+            }
+        }
+
+        results.push(boundary_search::BoundaryResult {
+            branch_id,
+            true_witness: tw,
+            false_witness: fw,
+            executions_used,
+        });
+    }
+
+    results
+}
+
 /// Run the concolic exploration loop on a function via a frontend subprocess.
 ///
 /// The loop alternates between two phases per round:
@@ -1495,6 +1595,25 @@ pub async fn explore(
         }
     }
 
+    // --- Refinement phase: binary-search between witness pairs ---
+    let boundary_results = if let Some(budget) = config.refine_budget {
+        if budget > 0 {
+            refine_boundaries_async(
+                frontend,
+                function_name,
+                &raw_results,
+                param_infos,
+                budget,
+                &setup_context,
+            )
+            .await
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
+
     let unique_paths = covered_paths.len();
     Ok(ExploreResult {
         function_name: function_name.to_string(),
@@ -1513,6 +1632,7 @@ pub async fn explore(
         triage_mispredictions,
         nondeterministic_fields: vec![],
         float_probe_results,
+        boundary_results,
     })
 }
 

@@ -57,6 +57,7 @@ pub(crate) async fn run_explore(
     observe_output: Option<&Path>,
     replay_recorded: bool,
     no_replay: bool,
+    refine_budget: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let pool_path = if no_seeds { None } else { Some(seeds_dir.join("pool.json")) };
     let loop_buckets = parse_loop_buckets(loop_buckets_str)?;
@@ -471,6 +472,7 @@ pub(crate) async fn run_explore(
                     branch_profile: None, // standalone concolic has no prior random phase
                     meta_config: meta_config.clone(),
                     loop_convergence_window: 3,
+                    refine_budget: if refine_budget > 0 { Some(refine_budget) } else { None },
                 };
 
                 match shatter_core::orchestrator::explore(

@@ -414,7 +414,7 @@ pub async fn observe_function(
         raw_results: batch.raw_results,
         discoveries: batch.discoveries,
         nondeterministic_fields: vec![],
-        float_probe_results: vec![],
+        float_probe_results: vec![], boundary_results: vec![],
     })
 }
 

@@ -262,6 +262,12 @@ pub(crate) enum CliCommand {
         /// Disable auto-detection of recorded mocks (overrides --replay-recorded).
         #[arg(long)]
         no_replay: bool,
+
+        /// Per-boundary refinement budget (number of executions). After discovery,
+        /// binary-searches between witness pairs to find precise transition points.
+        /// Set to 0 to disable. Default: 20.
+        #[arg(long, default_value_t = 20)]
+        refine_budget: usize,
     },
 
     /// Analyze Stage 1 (Observe) output: produce equivalence classes, behavior map,

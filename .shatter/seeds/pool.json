@@ -1,6 +1,117 @@
 {
   "bucket_cap": 50,
   "buckets": {
+    "{\"kind\":\"array\",\"element\":{\"kind\":\"str\"}}": [
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "negotiate_language",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "element": {
+            "kind": "str"
+          },
+          "kind": "array"
+        },
+        "value": [
+          "true"
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 10,
+            "function": "negotiate_language",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "element": {
+            "kind": "str"
+          },
+          "kind": "array"
+        },
+        "value": [
+          " "
+        ]
+      }
+    ],
+    "{\"kind\":\"array\",\"element\":{\"kind\":\"unknown\"}}": [
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "negotiate_language",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          "*",
+          []
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "negotiate_language",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          " ",
+          [
+            "true"
+          ]
+        ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 10,
+            "function": "negotiate_language",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          "hello",
+          [
+            " "
+          ]
+        ]
+      }
+    ],
     "{\"kind\":\"float\"}": [
       {
         "behaviors": [
@@ -511,6 +622,53 @@
           "kind": "float"
         },
         "value": -558.5257100676913
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "safe_divide",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": 363.70200629764895
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "safe_divide",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": -6.0
+      }
+    ],
+    "{\"kind\":\"int\"}": [
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "classify_number",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "int"
+        },
+        "value": -46
       }
     ],
     "{\"kind\":\"object\",\"fields\":[[\"name\",{\"kind\":\"str\"}],[\"age\",{\"kind\":\"float\"}],[\"isVerified\",{\"kind\":\"bool\"}],[\"role\",{\"kind\":\"str\"}]]}": [
@@ -2840,6 +2998,51 @@
           "kind": "str"
         },
         "value": "http"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "negotiate_language",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "str"
+        },
+        "value": "*"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 10,
+            "function": "negotiate_language",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "str"
+        },
+        "value": "hello"
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 4,
+            "function": "classify_string",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "str"
+        },
+        "value": "empty"
       }
     ]
   },
