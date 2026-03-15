@@ -729,6 +729,7 @@ describe("scope events in execution", () => {
         { type: "scope" as const, event: { kind: "call_exit" as const, call_site_id: 0 } },
       ],
       discovered_dependencies: [],
+      connection_failures: [],
     };
     const response = buildExecuteResponse(1, "0.6.0", raw);
     expect(response.scope_events).toHaveLength(2);
