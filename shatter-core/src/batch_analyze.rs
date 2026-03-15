@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::analysis_cache::AnalysisCache;
-use crate::crypto_registry::CryptoRegistry;
+use crate::crypto_registry::{CryptoDetectionSummary, CryptoRegistry};
 use crate::discovery::Language;
 use crate::frontend::{Frontend, FrontendError};
 use crate::protocol::{
@@ -230,9 +230,21 @@ fn function_entry_from_analysis(
     language: &str,
 ) -> FunctionEntry {
     let branch_count = analysis.branches.len();
-    let crypto_boundaries = crypto_registry
+    let raw_boundaries = crypto_registry
         .map(|r| r.classify_all_dependencies(&analysis.dependencies, language))
         .unwrap_or_default();
+
+    let summary = CryptoDetectionSummary::from_boundaries(raw_boundaries);
+    if !summary.boundaries.is_empty() {
+        log::debug!(
+            "crypto detection for {}: {} boundaries, layers {:?}, {} high-confidence",
+            analysis.name,
+            summary.boundaries.len(),
+            summary.layers_used,
+            summary.high_confidence_count,
+        );
+    }
+
     FunctionEntry {
         file_path,
         name: analysis.name,
@@ -240,7 +252,7 @@ fn function_entry_from_analysis(
         params: analysis.params,
         return_type: analysis.return_type,
         dependencies: analysis.dependencies,
-        crypto_boundaries,
+        crypto_boundaries: summary.boundaries,
         branch_count,
         start_line: analysis.start_line,
         end_line: analysis.end_line,

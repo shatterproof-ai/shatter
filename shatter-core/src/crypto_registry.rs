@@ -13,6 +13,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::entropy::classify_entropy_delta;
 use crate::nondeterminism::Confidence;
 use crate::protocol::{CryptoBoundary, ExternalDependency};
 
@@ -309,6 +310,87 @@ impl CryptoRegistry {
                 classify_by_name(dep)
             })
             .collect()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Layer 3: Entropy-based confidence adjustment
+// ---------------------------------------------------------------------------
+
+/// Adjust a `CryptoBoundary`'s confidence using measured entropy values.
+///
+/// If entropy analysis confirms crypto behaviour (significant entropy delta),
+/// the confidence is upgraded: Medium → High, Low → Medium.
+/// If entropy contradicts (no significant delta), naming-heuristic results
+/// (Medium/Low) are downgraded; Layer 1 High-confidence results are left
+/// untouched since the static registry is authoritative.
+pub fn confirm_with_entropy(
+    boundary: &CryptoBoundary,
+    input_entropy: f64,
+    output_entropy: f64,
+) -> CryptoBoundary {
+    let entropy_direction = classify_entropy_delta(input_entropy, output_entropy);
+
+    let new_confidence = match (boundary.confidence, entropy_direction.is_some()) {
+        // Entropy confirms crypto → upgrade.
+        (Confidence::Medium, true) => Confidence::High,
+        (Confidence::Low, true) => Confidence::Medium,
+        // High stays High regardless (Layer 1 is authoritative).
+        (Confidence::High, _) => Confidence::High,
+        // Entropy contradicts → downgrade naming-heuristic results.
+        (Confidence::Medium, false) => Confidence::Low,
+        (Confidence::Low, false) => Confidence::Low,
+    };
+
+    CryptoBoundary {
+        confidence: new_confidence,
+        input_entropy: Some(input_entropy),
+        output_entropy: Some(output_entropy),
+        ..boundary.clone()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Detection summary
+// ---------------------------------------------------------------------------
+
+/// Aggregated crypto detection results for a single function.
+#[derive(Debug, Clone)]
+pub struct CryptoDetectionSummary {
+    /// All detected crypto boundaries.
+    pub boundaries: Vec<CryptoBoundary>,
+    /// Which detection layers contributed (1 = registry, 2 = naming heuristic).
+    pub layers_used: Vec<u8>,
+    /// Number of boundaries with High confidence.
+    pub high_confidence_count: usize,
+}
+
+impl CryptoDetectionSummary {
+    /// Build a summary from a list of classified boundaries.
+    ///
+    /// Layer assignment: boundaries with `output` semantics (set only by Layer 1)
+    /// are tagged as layer 1; the rest come from Layer 2 naming heuristics.
+    pub fn from_boundaries(boundaries: Vec<CryptoBoundary>) -> Self {
+        let mut layers = Vec::new();
+        let mut high_count = 0;
+
+        for b in &boundaries {
+            let layer: u8 = if b.output.is_some() { 1 } else { 2 };
+            if !layers.contains(&layer) {
+                layers.push(layer);
+            }
+            if b.confidence == Confidence::High {
+                high_count += 1;
+            }
+        }
+
+        layers.sort_unstable();
+
+        Self {
+            boundaries,
+            layers_used: layers,
+            high_confidence_count: high_count,
+        }
     }
 }
 
@@ -693,5 +775,316 @@ output = "plaintext"
             boundaries[0].output.is_none(),
             "Layer 2 results should not have output semantics"
         );
+    }
+
+    // -- Layer 3: entropy confirmation tests --
+
+    #[test]
+    fn confirm_entropy_upgrades_medium_to_high() {
+        let boundary = CryptoBoundary {
+            symbol: "encryptData".into(),
+            source_module: "my-lib".into(),
+            direction: CryptoDirection::Encrypt,
+            output: None,
+            confidence: Confidence::Medium,
+            param_roles: HashMap::new(),
+            call_sites: vec![10],
+            input_entropy: None,
+            output_entropy: None,
+        };
+        // Large entropy increase confirms encryption.
+        let confirmed = confirm_with_entropy(&boundary, 2.0, 7.8);
+        assert_eq!(confirmed.confidence, Confidence::High);
+        assert_eq!(confirmed.input_entropy, Some(2.0));
+        assert_eq!(confirmed.output_entropy, Some(7.8));
+    }
+
+    #[test]
+    fn confirm_entropy_upgrades_low_to_medium() {
+        let boundary = CryptoBoundary {
+            symbol: "open".into(),
+            source_module: "crypto/box".into(),
+            direction: CryptoDirection::Decrypt,
+            output: None,
+            confidence: Confidence::Low,
+            param_roles: HashMap::new(),
+            call_sites: vec![5],
+            input_entropy: None,
+            output_entropy: None,
+        };
+        // Large entropy decrease confirms decryption.
+        let confirmed = confirm_with_entropy(&boundary, 7.5, 3.0);
+        assert_eq!(confirmed.confidence, Confidence::Medium);
+    }
+
+    #[test]
+    fn confirm_entropy_downgrades_medium_to_low() {
+        let boundary = CryptoBoundary {
+            symbol: "encryptData".into(),
+            source_module: "my-lib".into(),
+            direction: CryptoDirection::Encrypt,
+            output: None,
+            confidence: Confidence::Medium,
+            param_roles: HashMap::new(),
+            call_sites: vec![10],
+            input_entropy: None,
+            output_entropy: None,
+        };
+        // No significant entropy delta → contradicts.
+        let confirmed = confirm_with_entropy(&boundary, 5.0, 5.5);
+        assert_eq!(confirmed.confidence, Confidence::Low);
+    }
+
+    #[test]
+    fn confirm_entropy_does_not_downgrade_high() {
+        let boundary = CryptoBoundary {
+            symbol: "createDecipheriv".into(),
+            source_module: "crypto".into(),
+            direction: CryptoDirection::Decrypt,
+            output: Some(OutputSemantics::Plaintext),
+            confidence: Confidence::High,
+            param_roles: HashMap::new(),
+            call_sites: vec![1],
+            input_entropy: None,
+            output_entropy: None,
+        };
+        // No entropy delta, but High (Layer 1) stays High.
+        let confirmed = confirm_with_entropy(&boundary, 5.0, 5.0);
+        assert_eq!(confirmed.confidence, Confidence::High);
+        assert_eq!(confirmed.input_entropy, Some(5.0));
+    }
+
+    #[test]
+    fn confirm_entropy_low_stays_low_on_contradiction() {
+        let boundary = CryptoBoundary {
+            symbol: "seal".into(),
+            source_module: "nacl".into(),
+            direction: CryptoDirection::Encrypt,
+            output: None,
+            confidence: Confidence::Low,
+            param_roles: HashMap::new(),
+            call_sites: vec![3],
+            input_entropy: None,
+            output_entropy: None,
+        };
+        let confirmed = confirm_with_entropy(&boundary, 4.0, 4.5);
+        assert_eq!(confirmed.confidence, Confidence::Low);
+    }
+
+    // -- Integration: all 3 layers --
+
+    #[test]
+    fn integration_all_layers() {
+        let registry = CryptoRegistry::load().unwrap();
+        let deps = vec![
+            // Layer 1: known crypto API → High.
+            ExternalDependency {
+                kind: DependencyKind::FunctionCall,
+                symbol: "createDecipheriv".to_string(),
+                source_module: "crypto".to_string(),
+                return_type: crate::types::TypeInfo::Unknown,
+                param_types: vec![],
+                call_sites: vec![5],
+            },
+            // Layer 2: naming heuristic → Medium.
+            ExternalDependency {
+                kind: DependencyKind::FunctionCall,
+                symbol: "decryptPayload".to_string(),
+                source_module: "my-custom-lib".to_string(),
+                return_type: crate::types::TypeInfo::Unknown,
+                param_types: vec![],
+                call_sites: vec![15],
+            },
+            // Non-crypto dependency → no match.
+            ExternalDependency {
+                kind: DependencyKind::FunctionCall,
+                symbol: "readFile".to_string(),
+                source_module: "fs".to_string(),
+                return_type: crate::types::TypeInfo::Unknown,
+                param_types: vec![],
+                call_sites: vec![20],
+            },
+        ];
+
+        let boundaries = registry.classify_all_dependencies(&deps, "typescript");
+        assert_eq!(boundaries.len(), 2);
+
+        // Layer 1 result.
+        let layer1 = boundaries.iter().find(|b| b.symbol == "createDecipheriv").unwrap();
+        assert_eq!(layer1.confidence, Confidence::High);
+        assert_eq!(layer1.output, Some(OutputSemantics::Plaintext));
+
+        // Layer 2 result.
+        let layer2 = boundaries.iter().find(|b| b.symbol == "decryptPayload").unwrap();
+        assert_eq!(layer2.confidence, Confidence::Medium);
+        assert!(layer2.output.is_none());
+
+        // Layer 3: entropy confirmation upgrades Layer 2 result.
+        let upgraded = confirm_with_entropy(layer2, 7.8, 3.0);
+        assert_eq!(upgraded.confidence, Confidence::High);
+    }
+
+    // -- CryptoDetectionSummary tests --
+
+    #[test]
+    fn summary_from_empty_boundaries() {
+        let summary = CryptoDetectionSummary::from_boundaries(vec![]);
+        assert!(summary.boundaries.is_empty());
+        assert!(summary.layers_used.is_empty());
+        assert_eq!(summary.high_confidence_count, 0);
+    }
+
+    #[test]
+    fn summary_tracks_layers_and_counts() {
+        let boundaries = vec![
+            CryptoBoundary {
+                symbol: "createDecipheriv".into(),
+                source_module: "crypto".into(),
+                direction: CryptoDirection::Decrypt,
+                output: Some(OutputSemantics::Plaintext),
+                confidence: Confidence::High,
+                param_roles: HashMap::new(),
+                call_sites: vec![1],
+                input_entropy: None,
+                output_entropy: None,
+            },
+            CryptoBoundary {
+                symbol: "encryptData".into(),
+                source_module: "my-lib".into(),
+                direction: CryptoDirection::Encrypt,
+                output: None,
+                confidence: Confidence::Medium,
+                param_roles: HashMap::new(),
+                call_sites: vec![10],
+                input_entropy: None,
+                output_entropy: None,
+            },
+        ];
+        let summary = CryptoDetectionSummary::from_boundaries(boundaries);
+        assert_eq!(summary.boundaries.len(), 2);
+        assert_eq!(summary.layers_used, vec![1, 2]);
+        assert_eq!(summary.high_confidence_count, 1);
+    }
+
+    #[test]
+    fn summary_single_layer() {
+        let boundaries = vec![CryptoBoundary {
+            symbol: "decryptPayload".into(),
+            source_module: "utils".into(),
+            direction: CryptoDirection::Decrypt,
+            output: None,
+            confidence: Confidence::Medium,
+            param_roles: HashMap::new(),
+            call_sites: vec![5],
+            input_entropy: None,
+            output_entropy: None,
+        }];
+        let summary = CryptoDetectionSummary::from_boundaries(boundaries);
+        assert_eq!(summary.layers_used, vec![2]);
+        assert_eq!(summary.high_confidence_count, 0);
+    }
+
+    // -- Property tests --
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn arb_dependency() -> impl Strategy<Value = ExternalDependency> {
+            (
+                prop::sample::select(vec![
+                    DependencyKind::FunctionCall,
+                    DependencyKind::MethodCall,
+                ]),
+                "[a-zA-Z_][a-zA-Z0-9_.]{0,30}",
+                "[a-zA-Z_/][a-zA-Z0-9_/.@-]{0,30}",
+                proptest::collection::vec(any::<u32>(), 0..5),
+            )
+                .prop_map(|(kind, symbol, source_module, call_sites)| ExternalDependency {
+                    kind,
+                    symbol,
+                    source_module,
+                    return_type: crate::types::TypeInfo::Unknown,
+                    param_types: vec![],
+                    call_sites,
+                })
+        }
+
+        proptest! {
+            #[test]
+            fn classify_all_never_panics(
+                deps in proptest::collection::vec(arb_dependency(), 0..20),
+                language in prop::sample::select(vec!["typescript", "go", "rust"]),
+            ) {
+                let registry = CryptoRegistry::load().expect("registry should load");
+                let boundaries = registry.classify_all_dependencies(&deps, language);
+                // Every boundary must have a valid confidence.
+                for b in &boundaries {
+                    prop_assert!(
+                        matches!(b.confidence, Confidence::High | Confidence::Medium | Confidence::Low)
+                    );
+                }
+            }
+
+            #[test]
+            fn confirm_entropy_preserves_symbol(
+                input_e in 0.0f64..=8.0,
+                output_e in 0.0f64..=8.0,
+            ) {
+                let boundary = CryptoBoundary {
+                    symbol: "testSymbol".into(),
+                    source_module: "test-mod".into(),
+                    direction: CryptoDirection::Encrypt,
+                    output: None,
+                    confidence: Confidence::Medium,
+                    param_roles: HashMap::new(),
+                    call_sites: vec![1],
+                    input_entropy: None,
+                    output_entropy: None,
+                };
+                let confirmed = confirm_with_entropy(&boundary, input_e, output_e);
+                prop_assert_eq!(&confirmed.symbol, "testSymbol");
+                prop_assert_eq!(&confirmed.source_module, "test-mod");
+                prop_assert_eq!(confirmed.input_entropy, Some(input_e));
+                prop_assert_eq!(confirmed.output_entropy, Some(output_e));
+            }
+
+            #[test]
+            fn summary_high_count_matches_boundaries(
+                n_high in 0usize..5,
+                n_medium in 0usize..5,
+            ) {
+                let mut boundaries = Vec::new();
+                for i in 0..n_high {
+                    boundaries.push(CryptoBoundary {
+                        symbol: format!("high_{i}"),
+                        source_module: "crypto".into(),
+                        direction: CryptoDirection::Encrypt,
+                        output: Some(OutputSemantics::Ciphertext),
+                        confidence: Confidence::High,
+                        param_roles: HashMap::new(),
+                        call_sites: vec![],
+                        input_entropy: None,
+                        output_entropy: None,
+                    });
+                }
+                for i in 0..n_medium {
+                    boundaries.push(CryptoBoundary {
+                        symbol: format!("medium_{i}"),
+                        source_module: "lib".into(),
+                        direction: CryptoDirection::Decrypt,
+                        output: None,
+                        confidence: Confidence::Medium,
+                        param_roles: HashMap::new(),
+                        call_sites: vec![],
+                        input_entropy: None,
+                        output_entropy: None,
+                    });
+                }
+                let summary = CryptoDetectionSummary::from_boundaries(boundaries);
+                prop_assert_eq!(summary.high_confidence_count, n_high);
+                prop_assert_eq!(summary.boundaries.len(), n_high + n_medium);
+            }
+        }
     }
 }
