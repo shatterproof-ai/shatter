@@ -82,7 +82,7 @@ if [[ "${FAST_MODE}" == "true" ]]; then
 
   # Rust: clippy + workspace tests only (skip standalone crates)
   run_cmd "Rust lint (cargo clippy)" cargo clippy -- -D warnings
-  run_cmd "Rust tests (cargo test)" cargo test
+  run_cmd "Rust tests (cargo test)" cargo test -- --include-ignored
 
   # TypeScript: skip build if dist/ is newer than src/
   ts_dir="${REPO_ROOT}/shatter-ts"
@@ -129,6 +129,9 @@ fi
 if [[ "${WITH_E2E}" == "true" ]]; then
   rust_args+=(--e2e)
 fi
+
+# Full mode always runs ignored (slow) tests — they were skipped in pre-commit.
+rust_args+=(--include-ignored)
 
 # When --path-aware is set, classify changed paths and skip unaffected lanes.
 # Otherwise (default / --full), all lanes run.

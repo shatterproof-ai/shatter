@@ -33,6 +33,7 @@ fn self_hosting_file() -> PathBuf {
 ///
 /// Extracted from shatter-core::float_probe::classify.
 #[tokio::test]
+#[ignore = "slow: spawns Rust frontend subprocess"]
 async fn self_hosting_classify_float() {
     with_rust_frontend_test_lock(async {
         let file = self_hosting_file();
@@ -123,6 +124,7 @@ async fn self_hosting_classify_float() {
 ///
 /// Extracted from shatter-core::coverage_metrics::CoverageMetrics::percentages.
 #[tokio::test]
+#[ignore = "slow: spawns Rust frontend subprocess"]
 async fn self_hosting_coverage_percentages() {
     with_rust_frontend_test_lock(async {
         let file = self_hosting_file();
@@ -204,6 +206,7 @@ async fn self_hosting_coverage_percentages() {
 ///
 /// Extracted from shatter-core::coverage_metrics::CoverageMetrics::symexpr_ratio.
 #[tokio::test]
+#[ignore = "slow: spawns Rust frontend subprocess"]
 async fn self_hosting_symexpr_ratio() {
     with_rust_frontend_test_lock(async {
         let file = self_hosting_file();
@@ -261,6 +264,7 @@ async fn self_hosting_symexpr_ratio() {
 ///
 /// Simplified from shatter-core::float_probe::executions_agree.
 #[tokio::test]
+#[ignore = "slow: spawns Rust frontend subprocess"]
 async fn self_hosting_executions_agree() {
     with_rust_frontend_test_lock(async {
         let file = self_hosting_file();

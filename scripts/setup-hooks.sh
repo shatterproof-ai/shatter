@@ -61,7 +61,7 @@ HOOK
 
 # Pre-commit: lightweight checks (Rust clippy on staged files)
 PRE_COMMIT_BODY='if [ -f "scripts/quality/check-rust.sh" ]; then
-  scripts/quality/check-rust.sh 2>&1 || exit 1
+  scripts/quality/check-rust.sh --precommit 2>&1 || exit 1
 fi'
 
 # Pre-push: fast + path-aware by default, full suite for main branch pushes.

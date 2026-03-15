@@ -30,6 +30,7 @@ fn rust_examples_dir() -> std::path::PathBuf {
 /// classify_number — 4 branches: n<0 -> "negative", n==0 -> "zero",
 /// n<=100 -> "small positive", n>100 -> "large positive".
 #[tokio::test]
+#[ignore = "slow: spawns Rust frontend subprocess"]
 async fn rust_explore_classify_number() {
     with_rust_frontend_test_lock(async {
         let file = rust_examples_dir().join("arithmetic.rs");
@@ -107,6 +108,7 @@ async fn rust_explore_classify_number() {
 /// classify_temperature — 4 branches: temp<0.0 -> "freezing", temp<20.0 -> "cold",
 /// temp<35.0 -> "comfortable", temp>=35.0 -> "hot".
 #[tokio::test]
+#[ignore = "slow: spawns Rust frontend subprocess"]
 async fn rust_explore_classify_temperature() {
     with_rust_frontend_test_lock(async {
         let file = rust_examples_dir().join("arithmetic.rs");
@@ -175,6 +177,7 @@ async fn rust_explore_classify_temperature() {
 /// owned types for deserialization). The harness generates
 /// `let s: &str = serde_json::from_value(...)` which fails at compile time.
 #[tokio::test]
+#[ignore = "slow: spawns Rust frontend subprocess"]
 async fn rust_explore_classify_greeting_analyze_instrument() {
     with_rust_frontend_test_lock(async {
         let file = rust_examples_dir().join("strings.rs");
@@ -218,6 +221,7 @@ async fn rust_explore_classify_greeting_analyze_instrument() {
 /// classify_option — 3 branches: Some(n) where n>0 -> "positive: {n}",
 /// Some(n) where n<=0 -> "non-positive: {n}", None -> "absent".
 #[tokio::test]
+#[ignore = "slow: spawns Rust frontend subprocess"]
 async fn rust_explore_classify_option() {
     with_rust_frontend_test_lock(async {
         let file = rust_examples_dir().join("enums.rs");
@@ -280,6 +284,7 @@ async fn rust_explore_classify_option() {
 /// takes `&str` which the harness cannot deserialize from JSON (see
 /// rust_explore_classify_greeting_analyze_instrument for details).
 #[tokio::test]
+#[ignore = "slow: spawns Rust frontend subprocess"]
 async fn rust_explore_parse_config_line_analyze_instrument() {
     with_rust_frontend_test_lock(async {
         let file = rust_examples_dir().join("error_propagation.rs");
