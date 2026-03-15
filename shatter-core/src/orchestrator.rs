@@ -3210,6 +3210,106 @@ mod tests {
         assert!(!tracker.should_skip_branch(10, &loop_context));
     }
 
+    /// Integration test: enabling loop_convergence_window reduces Z3 solve attempts
+    /// for branches in converged loops without reducing coverage of non-loop paths.
+    ///
+    /// Scenario: f(x) has a loop (loop_id=1) containing branch 0 (`x > 10`, always
+    /// taken=true). Five new-path observations all produce the same loop coverage.
+    /// With window=3, the loop is marked converged on the 4th observation and Z3
+    /// negation is suppressed for observations 4 and 5.
+    #[test]
+    fn loop_convergence_suppresses_z3_for_converged_loop() {
+        use crate::sym_expr::SymExpr;
+        let x_gt_10 = SymExpr::BinOp {
+            op: BinOpKind::Gt,
+            left: Box::new(SymExpr::Param { name: "x".into(), path: vec![] }),
+            right: Box::new(SymExpr::Const(ConstValue::Int(10))),
+        };
+        let loop_branch = BranchDecision {
+            branch_id: 0,
+            line: 5,
+            taken: true,
+            constraint: SymConstraint::Expr { expr: x_gt_10 },
+        };
+        // scope_events encode branch 0 as inside loop 1.
+        let scope_events_with_loop = vec![
+            TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id: 1 } },
+            TraceEvent::Branch { decision: loop_branch.clone() },
+            TraceEvent::Scope { event: ScopeEvent::LoopExit { loop_id: 1 } },
+        ];
+        let param_infos = vec![ParamInfo {
+            name: "x".into(),
+            typ: crate::types::TypeInfo::Int,
+            type_name: None,
+        }];
+        let param_names = vec!["x".to_string()];
+        // 5 observations, all new-path, with the same loop branch coverage.
+        let observations: Vec<Observation> = (0..5u64)
+            .map(|i| Observation {
+                inputs: vec![serde_json::json!(15i64)],
+                result: ExecuteResult {
+                    branch_path: vec![loop_branch.clone()],
+                    scope_events: scope_events_with_loop.clone(),
+                    return_value: None,
+                    thrown_error: None,
+                    lines_executed: vec![],
+                    calls_to_external: vec![],
+                    path_constraints: vec![],
+                    side_effects: vec![],
+                    capture_truncation: None,
+                    discovered_dependencies: vec![],
+                    connection_failures: vec![],
+                    performance: empty_perf(),
+                },
+                source: InputSource::Seed,
+                path_id: i, // unique path_id per observation
+                is_new_path: true,
+                is_sampled_skip: false,
+                mock_values: vec![],
+            })
+            .collect();
+
+        let call_solve = |window: usize| {
+            let cfg = ExploreConfig { loop_convergence_window: window, ..Default::default() };
+            solve_and_generate(
+                &observations,
+                &mut FrontierSet::new(),
+                &param_infos,
+                &param_names,
+                &[],
+                &std::collections::HashSet::new(),
+                &cfg,
+                &mut StdRng::seed_from_u64(42),
+                &HashSet::new(),
+                &mut FitnessContext::new(),
+                &FitnessWeights::default(),
+                &[],
+                None,
+                &mut LoopInvariantDetector::new(),
+                &mut LoopCoverageTracker::new(window),
+                &mut MetaStrategy::new(vec![], Default::default()),
+                &StrategyContext {
+                    params: vec![],
+                    literals: vec![],
+                    capabilities: FrontendCapabilities::default(),
+                },
+            )
+        };
+
+        let out_no_conv = call_solve(0);
+        let out_conv = call_solve(3);
+
+        // Without convergence: all 5 observations attempt Z3.
+        assert_eq!(out_no_conv.z3_count, 5, "window=0 should attempt Z3 for all 5 observations");
+        // With window=3: obs 1–3 attempt Z3; obs 4 triggers convergence and is skipped;
+        // obs 5 is already converged → skipped. Net: 3 Z3 attempts.
+        assert_eq!(out_conv.z3_count, 3, "window=3 should skip obs 4 and 5 after loop converges");
+        assert!(
+            out_conv.z3_count < out_no_conv.z3_count,
+            "convergence should reduce Z3 candidates for saturated loop branches"
+        );
+    }
+
     #[test]
     fn extract_loop_context_maps_branches_to_loops() {
         let events = vec![
