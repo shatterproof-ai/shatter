@@ -832,7 +832,7 @@ mod proptests {
             let mut prev_paths_count = 0;
 
             for r in &results {
-                let prev_branch_count = state.seen_branch_ids.len();
+                let _prev_branch_count = state.seen_branch_ids.len();
 
                 // Simulate observe_single's tracking logic
                 for &line in &r.lines_executed {

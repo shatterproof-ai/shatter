@@ -697,7 +697,8 @@ mod tests {
         let path = std::path::Path::new("/nonexistent/pool.json");
         let result = load_pool(path).expect("should not error");
         assert!(result.is_none());
-    
+    }
+
     #[test]
     fn values_for_type_returns_matching_entries() {
         let mut pool = InterestingPool::default();
@@ -910,5 +911,4 @@ mod tests {
         assert_eq!(pool.buckets[&key].len(), 1);
         assert_eq!(pool.buckets[&key][0].behaviors.len(), 2);
     }
-}
 }

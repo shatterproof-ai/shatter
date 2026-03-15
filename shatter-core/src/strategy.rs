@@ -1607,7 +1607,6 @@ mod tests {
 
     #[test]
     fn z3_solver_solvable_constraint_queues_input() {
-        use crate::execution_record::BranchDecision;
         use crate::sym_expr::{BinOpKind, ConstValue, SymExpr};
 
         let mut s = make_z3_solver(vec![int_param("x")]);
@@ -1739,7 +1738,7 @@ mod tests {
 
     mod z3_solver_proptests {
         use super::*;
-        use crate::test_arbitraries::{arb_execute_result, arb_param_info};
+        use crate::test_arbitraries::arb_execute_result;
         use proptest::prelude::*;
 
         proptest! {

@@ -3,6 +3,8 @@
 //! Shared across test modules to avoid duplicating complex recursive generators.
 //! All strategies use bounded depth/size to keep generation tractable.
 
+#![allow(dead_code)]
+
 use proptest::prelude::*;
 use serde_json::json;
 

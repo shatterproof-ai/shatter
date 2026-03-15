@@ -516,7 +516,6 @@ mod tests {
 
     #[test]
     fn dispatcher_handles_empty_string() {
-        let mut rng = SmallRng::seed_from_u64(0);
         // Run all strategies — none should panic on empty input
         for seed in 0..100 {
             let mut r = SmallRng::seed_from_u64(seed);
