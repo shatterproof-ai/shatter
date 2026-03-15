@@ -80,6 +80,9 @@ async fn main() -> ExitCode {
         log::debug!("Failed to show telemetry notice: {e}");
     }
 
+    let subcommand_name = subcommand_label(&cli.command);
+    let cmd_start = std::time::Instant::now();
+
     let result = match cli.command {
         CliCommand::Explore {
             targets,
@@ -370,11 +373,9 @@ async fn main() -> ExitCode {
         } => {
             match commands::diff::run_diff(&snapshot, &current, json, use_color) {
                 Ok(has_regressions) => {
-                    return if has_regressions {
-                        ExitCode::FAILURE
-                    } else {
-                        ExitCode::SUCCESS
-                    };
+                    let code = if has_regressions { 1 } else { 0 };
+                    queue_command_run_event(&subcommand_name, cmd_start.elapsed().as_millis() as u64, code);
+                    return if has_regressions { ExitCode::FAILURE } else { ExitCode::SUCCESS };
                 }
                 Err(e) => Err(e),
             }
@@ -382,11 +383,9 @@ async fn main() -> ExitCode {
         CliCommand::SpecDiff { old, new, json } => {
             match commands::diff::run_spec_diff(&old, &new, json, use_color) {
                 Ok(has_regressions) => {
-                    return if has_regressions {
-                        ExitCode::FAILURE
-                    } else {
-                        ExitCode::SUCCESS
-                    };
+                    let code = if has_regressions { 1 } else { 0 };
+                    queue_command_run_event(&subcommand_name, cmd_start.elapsed().as_millis() as u64, code);
+                    return if has_regressions { ExitCode::FAILURE } else { ExitCode::SUCCESS };
                 }
                 Err(e) => Err(e),
             }
@@ -405,6 +404,7 @@ async fn main() -> ExitCode {
         } => {
             if !strace {
                 eprintln!("Error: --strace flag is required. Currently strace is the only supported discovery method.");
+                queue_command_run_event(&subcommand_name, cmd_start.elapsed().as_millis() as u64, 1);
                 return ExitCode::FAILURE;
             }
             match shatter_core::strace_discovery::discover_network_deps(
@@ -440,11 +440,9 @@ async fn main() -> ExitCode {
         } => {
             match commands::test::run_test(all, record, tier, &base, include_untracked, dry_run, prioritize, budget, use_color) {
                 Ok(success) => {
-                    return if success {
-                        ExitCode::SUCCESS
-                    } else {
-                        ExitCode::FAILURE
-                    };
+                    let code = if success { 0 } else { 1 };
+                    queue_command_run_event(&subcommand_name, cmd_start.elapsed().as_millis() as u64, code);
+                    return if success { ExitCode::SUCCESS } else { ExitCode::FAILURE };
                 }
                 Err(e) => Err(e),
             }
@@ -476,10 +474,9 @@ async fn main() -> ExitCode {
             .await
             {
                 Ok(all_fresh) => {
-                    if all_fresh {
-                        return ExitCode::SUCCESS;
-                    }
-                    return ExitCode::FAILURE;
+                    let code = if all_fresh { 0 } else { 1 };
+                    queue_command_run_event(&subcommand_name, cmd_start.elapsed().as_millis() as u64, code);
+                    return if all_fresh { ExitCode::SUCCESS } else { ExitCode::FAILURE };
                 }
                 Err(e) => Err(e),
             }
@@ -507,30 +504,108 @@ async fn main() -> ExitCode {
             .await
             {
                 Ok(all_confirmed) => {
-                    if all_confirmed {
-                        return ExitCode::SUCCESS;
-                    }
-                    return ExitCode::FAILURE;
+                    let code = if all_confirmed { 0 } else { 1 };
+                    queue_command_run_event(&subcommand_name, cmd_start.elapsed().as_millis() as u64, code);
+                    return if all_confirmed { ExitCode::SUCCESS } else { ExitCode::FAILURE };
                 }
                 Err(e) => Err(e),
             }
         }
         CliCommand::Telemetry { action } => {
+            let dm = cmd_start.elapsed().as_millis() as u64;
             return match commands::telemetry::run_telemetry(&action) {
-                Ok(()) => ExitCode::SUCCESS,
+                Ok(()) => {
+                    queue_command_run_event(&subcommand_name, dm, 0);
+                    ExitCode::SUCCESS
+                }
                 Err(e) => {
                     eprintln!("Error: {e}");
+                    queue_command_error_event(&subcommand_name, &*e);
+                    queue_command_run_event(&subcommand_name, dm, 1);
                     ExitCode::FAILURE
                 }
             };
         }
     };
 
+    let duration_ms = cmd_start.elapsed().as_millis() as u64;
+
     match result {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(()) => {
+            queue_command_run_event(&subcommand_name, duration_ms, 0);
+            ExitCode::SUCCESS
+        }
         Err(e) => {
             eprintln!("Error: {e}");
+            queue_command_error_event(&subcommand_name, &*e);
+            queue_command_run_event(&subcommand_name, duration_ms, 1);
             ExitCode::FAILURE
         }
+    }
+}
+
+/// Extract a stable label from the command variant for telemetry.
+fn subcommand_label(cmd: &CliCommand) -> String {
+    // Use Debug formatting and take the first word (variant name).
+    let debug = format!("{cmd:?}");
+    debug.split_whitespace()
+        .next()
+        .unwrap_or("unknown")
+        .to_lowercase()
+}
+
+/// Categorize an error for telemetry without leaking paths or messages.
+fn categorize_error(err: &dyn std::fmt::Display) -> &'static str {
+    let msg = err.to_string().to_lowercase();
+    if msg.contains("no such file") || msg.contains("not found") && !msg.contains("directory") {
+        "file_not_found"
+    } else if msg.contains("permission denied") {
+        "permission_denied"
+    } else if msg.contains("directory") && (msg.contains("not found") || msg.contains("does not exist")) {
+        "dir_not_found"
+    } else if msg.contains("timed out") || msg.contains("timeout") {
+        "timeout"
+    } else if msg.contains("spawn") || msg.contains("frontend") {
+        "frontend_spawn"
+    } else if msg.contains("config") && msg.contains("parse") {
+        "config_parse"
+    } else {
+        "other"
+    }
+}
+
+/// Queue a command_run telemetry event (best-effort).
+fn queue_command_run_event(subcommand: &str, duration_ms: u64, exit_code: i32) {
+    if !telemetry::is_enabled() {
+        return;
+    }
+    let raw_args: Vec<String> = std::env::args().skip(1).collect();
+    let sanitized_args = telemetry::sanitize_args(&raw_args);
+    if let Ok(event) = telemetry::new_event(
+        "command_run",
+        telemetry::EventPayload::CommandRun {
+            subcommand: subcommand.to_string(),
+            sanitized_args,
+            duration_ms,
+            exit_code,
+        },
+    ) {
+        let _ = telemetry::queue_event(&event);
+    }
+}
+
+/// Queue a command_error telemetry event (best-effort).
+fn queue_command_error_event(subcommand: &str, err: &dyn std::error::Error) {
+    if !telemetry::is_enabled() {
+        return;
+    }
+    if let Ok(event) = telemetry::new_event(
+        "command_error",
+        telemetry::EventPayload::CommandError {
+            subcommand: subcommand.to_string(),
+            error_category: categorize_error(err).to_string(),
+        },
+    ) {
+        let _ = telemetry::queue_event(&event);
     }
 }
