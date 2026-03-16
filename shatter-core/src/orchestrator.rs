@@ -3158,6 +3158,137 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Loop-invariant branch detection integration tests (str-in8d)
+    // -----------------------------------------------------------------------
+
+    /// Integration test: solver negates an invariant loop branch exactly once,
+    /// not once per loop iteration.
+    ///
+    /// Key design: each iteration uses a DIFFERENT threshold (x > 10, x > 20, x > 30)
+    /// so that without invariant detection all 3 would produce independent SAT results
+    /// (10<x≤20, 20<x≤30, etc.). With invariant detection, only the first occurrence
+    /// is solved — z3_count drops from 3 to 1.
+    ///
+    /// The "without detection" baseline uses empty scope_events (no loop context →
+    /// invariant detector is a no-op per early-return guard in observe()).
+    #[test]
+    fn loop_invariant_branch_solved_once_not_n_times() {
+        use crate::sym_expr::SymExpr;
+
+        // 3 iterations of branch B0, all taken=true.
+        // Each iteration has a stricter threshold so each negation is independently SAT.
+        let n_iters: usize = 3;
+        let thresholds: Vec<i64> = vec![10, 20, 30];
+
+        let make_branch_decisions = |thresholds: &[i64]| -> (Vec<BranchDecision>, Vec<TraceEvent>) {
+            let mut bp = Vec::new();
+            let mut scope_evts = Vec::new();
+            for &thresh in thresholds {
+                let expr = SymExpr::BinOp {
+                    op: BinOpKind::Gt,
+                    left: Box::new(SymExpr::Param { name: "x".into(), path: vec![] }),
+                    right: Box::new(SymExpr::Const(ConstValue::Int(thresh))),
+                };
+                let bd = BranchDecision {
+                    branch_id: 0, // same branch_id → invariant detector tracks it
+                    line: 5,
+                    taken: true,
+                    constraint: SymConstraint::Expr { expr },
+                };
+                scope_evts.push(TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id: 1 } });
+                scope_evts.push(TraceEvent::Branch { decision: bd.clone() });
+                bp.push(bd);
+            }
+            scope_evts.push(TraceEvent::Scope { event: ScopeEvent::LoopExit { loop_id: 1 } });
+            (bp, scope_evts)
+        };
+
+        let (bp, scope_evts) = make_branch_decisions(&thresholds);
+        let param_infos = vec![ParamInfo {
+            name: "x".into(),
+            typ: crate::types::TypeInfo::Int,
+            type_name: None,
+        }];
+        let param_names = vec!["x".to_string()];
+
+        let make_obs = |scope_events: Vec<TraceEvent>| Observation {
+            inputs: vec![serde_json::json!(35i64)],
+            result: ExecuteResult {
+                branch_path: bp.clone(),
+                scope_events,
+                return_value: None,
+                thrown_error: None,
+                lines_executed: vec![],
+                calls_to_external: vec![],
+                path_constraints: vec![],
+                side_effects: vec![],
+                capture_truncation: None,
+                discovered_dependencies: vec![],
+                connection_failures: vec![],
+                performance: empty_perf(),
+            },
+            source: InputSource::Seed,
+            path_id: 42,
+            is_new_path: true,
+            is_sampled_skip: false,
+            mock_values: vec![],
+        };
+
+        let call_solve = |obs: &[Observation]| {
+            solve_and_generate(
+                obs,
+                &mut FrontierSet::new(),
+                &param_infos,
+                &param_names,
+                &[],
+                &std::collections::HashSet::new(),
+                &ExploreConfig::default(),
+                &mut StdRng::seed_from_u64(42),
+                &HashSet::new(),
+                &mut FitnessContext::new(),
+                &FitnessWeights::default(),
+                &[],
+                None,
+                &mut LoopInvariantDetector::new(),
+                &mut LoopCoverageTracker::new(0),
+                &mut MetaStrategy::new(vec![], Default::default()),
+                &StrategyContext {
+                    params: vec![],
+                    literals: vec![],
+                    capabilities: FrontendCapabilities::default(),
+                },
+            )
+        };
+
+        // WITH loop scope_events: invariant detector fires (3 ≥ min_observations=2,
+        // all taken=true → invariant). skip_indices returns {1, 2}. Only idx=0 gets Z3.
+        let obs_with_scope = make_obs(scope_evts);
+        let out_with_detection = call_solve(&[obs_with_scope]);
+        assert_eq!(
+            out_with_detection.z3_count, 1,
+            "invariant detection: should solve only the first occurrence; got z3_count={}",
+            out_with_detection.z3_count,
+        );
+
+        // WITHOUT loop scope_events: invariant detector observe() is a no-op (early
+        // return when scope_events is empty). All 3 iterations get Z3 attempted.
+        // idx=0: NOT(x>10) → SAT (x=5). idx=1: x>10 AND NOT(x>20) → SAT (x=15).
+        // idx=2: x>10 AND x>20 AND NOT(x>30) → SAT (x=25). Total: z3_count=3.
+        let obs_no_scope = make_obs(vec![]);
+        let out_no_detection = call_solve(&[obs_no_scope]);
+        assert_eq!(
+            out_no_detection.z3_count, n_iters,
+            "no invariant detection: should solve all {n_iters} iterations; got z3_count={}",
+            out_no_detection.z3_count,
+        );
+
+        assert!(
+            out_with_detection.z3_count < out_no_detection.z3_count,
+            "invariant detection should reduce Z3 attempts for a loop-invariant branch"
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // Coverage-guided diminishing returns tests (str-ztqi)
     // -----------------------------------------------------------------------
 
