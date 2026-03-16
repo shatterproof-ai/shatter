@@ -3094,6 +3094,115 @@ mod tests {
         assert_eq!(top.fitness, Some(BOUNDARY_FITNESS_FIRST));
     }
 
+    /// Integration test: loop peeling boost propagates through solve_and_generate.
+    ///
+    /// Scenario: a 1-iteration loop (LoopEnter + Branch + LoopExit). The branch
+    /// is classified as `FirstExit` and receives `BOUNDARY_FITNESS_FIRST`. A
+    /// second observation with the same branch but empty scope_events is classified
+    /// as `NonLoop` and receives no boost (fitness stays None).
+    #[test]
+    fn loop_peeling_fitness_boost_propagates_through_solve_and_generate() {
+        use crate::sym_expr::SymExpr;
+
+        let x_gt_10 = SymExpr::BinOp {
+            op: BinOpKind::Gt,
+            left: Box::new(SymExpr::Param { name: "x".into(), path: vec![] }),
+            right: Box::new(SymExpr::Const(ConstValue::Int(10))),
+        };
+        let branch = BranchDecision {
+            branch_id: 0,
+            line: 5,
+            taken: true,
+            constraint: SymConstraint::Expr { expr: x_gt_10 },
+        };
+        let param_infos = vec![ParamInfo {
+            name: "x".into(),
+            typ: crate::types::TypeInfo::Int,
+            type_name: None,
+        }];
+        let param_names = vec!["x".to_string()];
+
+        let make_obs = |scope_events: Vec<TraceEvent>| Observation {
+            inputs: vec![serde_json::json!(15i64)],
+            result: ExecuteResult {
+                branch_path: vec![branch.clone()],
+                scope_events,
+                return_value: None,
+                thrown_error: None,
+                lines_executed: vec![],
+                calls_to_external: vec![],
+                path_constraints: vec![],
+                side_effects: vec![],
+                capture_truncation: None,
+                discovered_dependencies: vec![],
+                connection_failures: vec![],
+                performance: empty_perf(),
+            },
+            source: InputSource::Seed,
+            path_id: 1,
+            is_new_path: true,
+            is_sampled_skip: false,
+            mock_values: vec![],
+        };
+
+        let call_solve = |obs: Observation| {
+            solve_and_generate(
+                &[obs],
+                &mut FrontierSet::new(),
+                &param_infos,
+                &param_names,
+                &[],
+                &std::collections::HashSet::new(),
+                &ExploreConfig::default(),
+                &mut StdRng::seed_from_u64(42),
+                &HashSet::new(),
+                &mut FitnessContext::new(),
+                &FitnessWeights::default(),
+                &[],
+                None,
+                &mut LoopInvariantDetector::new(),
+                &mut LoopCoverageTracker::new(0),
+                &mut MetaStrategy::new(vec![], Default::default()),
+                &StrategyContext {
+                    params: vec![],
+                    literals: vec![],
+                    capabilities: FrontendCapabilities::default(),
+                },
+            )
+        };
+
+        // Observation with 1-iteration loop: branch is FirstExit → gets BOUNDARY_FITNESS_FIRST.
+        let scope_with_loop = vec![
+            TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id: 1 } },
+            TraceEvent::Branch { decision: branch.clone() },
+            TraceEvent::Scope { event: ScopeEvent::LoopExit { loop_id: 1 } },
+        ];
+        let out_boundary = call_solve(make_obs(scope_with_loop));
+        assert!(
+            !out_boundary.candidates.is_empty(),
+            "boundary observation should produce Z3 candidates (NOT x>10 is SAT)"
+        );
+        assert!(
+            out_boundary.candidates.iter().all(|c| c.fitness == Some(BOUNDARY_FITNESS_FIRST)),
+            "all candidates from a boundary (FirstExit) observation should get BOUNDARY_FITNESS_FIRST boost; \
+             got fitnesses: {:?}",
+            out_boundary.candidates.iter().map(|c| c.fitness).collect::<Vec<_>>(),
+        );
+
+        // Observation with no loop context: branch is NonLoop → no boost, fitness stays None.
+        let out_no_boost = call_solve(make_obs(vec![]));
+        assert!(
+            !out_no_boost.candidates.is_empty(),
+            "non-loop observation should also produce Z3 candidates"
+        );
+        assert!(
+            out_no_boost.candidates.iter().all(|c| c.fitness.is_none()),
+            "candidates from a non-loop observation should have no fitness boost; \
+             got fitnesses: {:?}",
+            out_no_boost.candidates.iter().map(|c| c.fitness).collect::<Vec<_>>(),
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Loop-invariant detector tests
     // -----------------------------------------------------------------------
