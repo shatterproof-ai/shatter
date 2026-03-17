@@ -274,6 +274,14 @@ tasks:
     cmds:
       - python3 scripts/perf_runner.py run --scenario "{{.SCENARIO}}" --profiler pprof
 
+  perf-report:
+    desc: Generate markdown and JSON summaries from perf artifacts
+    preconditions:
+      - sh: command -v python3 >/dev/null 2>&1
+        msg: "python3 not installed"
+    cmds:
+      - python3 scripts/perf_report.py
+
   clean:
     desc: Remove all build artifacts and checksum cache
     cmds:
