@@ -262,6 +262,18 @@ tasks:
     cmds:
       - python3 scripts/perf_runner.py run --scenario "{{.SCENARIO}}" --profiler perf-record
 
+  pprof-scenario:
+    desc: Run one Go-focused scenario with pprof (set SCENARIO=<id>)
+    preconditions:
+      - sh: test -n "{{.SCENARIO}}"
+        msg: "set SCENARIO=<id>"
+      - sh: command -v python3 >/dev/null 2>&1
+        msg: "python3 not installed"
+      - sh: command -v go >/dev/null 2>&1
+        msg: "go not installed"
+    cmds:
+      - python3 scripts/perf_runner.py run --scenario "{{.SCENARIO}}" --profiler pprof
+
   clean:
     desc: Remove all build artifacts and checksum cache
     cmds:

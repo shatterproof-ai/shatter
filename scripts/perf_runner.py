@@ -117,6 +117,47 @@ def parse_perf_stat(raw_text: str) -> dict[str, Any]:
     return {"events": counters}
 
 
+def translate_go_test_args(command: list[str]) -> tuple[Path, str, list[str]]:
+    if len(command) < 3 or command[0] != "go" or command[1] != "test":
+        raise SystemExit("pprof requires a go test scenario")
+    package = ""
+    translated: list[str] = []
+    index = 2
+    while index < len(command):
+        token = command[index]
+        if token.startswith("./") or token.startswith("../") or "/" in token:
+            if package:
+                raise SystemExit("pprof supports exactly one go test package per scenario")
+            package = token
+            index += 1
+            continue
+        if token == "-run" and index + 1 < len(command):
+            translated.extend(["-test.run", command[index + 1]])
+            index += 2
+            continue
+        if token.startswith("-run="):
+            translated.append("-test.run=" + token.split("=", 1)[1])
+            index += 1
+            continue
+        if token == "-count" and index + 1 < len(command):
+            translated.extend(["-test.count", command[index + 1]])
+            index += 2
+            continue
+        if token.startswith("-count="):
+            translated.append("-test.count=" + token.split("=", 1)[1])
+            index += 1
+            continue
+        raise SystemExit(f"unsupported go test argument for pprof: {token}")
+    if not package:
+        raise SystemExit("pprof requires a go test package path in the scenario command")
+    go_workdir = REPO_ROOT
+    normalized_package = package
+    if package.startswith("./shatter-go/"):
+        go_workdir = REPO_ROOT / "shatter-go"
+        normalized_package = "./" + package.removeprefix("./shatter-go/")
+    return go_workdir, normalized_package, translated
+
+
 def run_once(
     scenario: Scenario,
     run_dir: Path,
@@ -145,6 +186,8 @@ def run_once(
     started = time.perf_counter()
     perf_stat_path = run_dir / "perf-stat.txt"
     perf_record_path = run_dir / "perf.data"
+    pprof_binary_path = run_dir / "go-test-binary"
+    pprof_profile_path = run_dir / "cpu.pprof"
     command = scenario.command
     if profiler == "perf-stat":
         command = [
@@ -168,6 +211,44 @@ def run_once(
             str(perf_record_path),
             "--",
             *scenario.command,
+        ]
+    elif profiler == "pprof":
+        go_workdir, package, translated_args = translate_go_test_args(scenario.command)
+        build_command = ["go", "test", "-c", "-o", str(pprof_binary_path), package]
+        build = subprocess.run(
+            build_command,
+            cwd=go_workdir,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        if build.returncode != 0:
+            (run_dir / "stdout.log").write_text(build.stdout, encoding="utf-8")
+            (run_dir / "stderr.log").write_text(build.stderr, encoding="utf-8")
+            result = {
+                "sequence": sequence,
+                "mode": mode,
+                "scenario_id": scenario.id,
+                "command": scenario.command,
+                "executed_command": build_command,
+                "workdir": str(scenario.workdir.relative_to(REPO_ROOT)),
+                "cache_mode": scenario.cache_mode,
+                "cache_dir": str(cache_dir.relative_to(REPO_ROOT)),
+                "started_at": datetime.now(UTC).isoformat(),
+                "duration_seconds": 0.0,
+                "exit_code": build.returncode,
+                "stdout_path": str((run_dir / "stdout.log").relative_to(REPO_ROOT)),
+                "stderr_path": str((run_dir / "stderr.log").relative_to(REPO_ROOT)),
+                "profiler": profiler,
+            }
+            (run_dir / "result.json").write_text(json.dumps(result, indent=2) + "\n")
+            return result
+        command = [
+            str(pprof_binary_path),
+            *translated_args,
+            f"-test.cpuprofile={pprof_profile_path}",
         ]
     with stdout_path.open("w", encoding="utf-8") as stdout_file, stderr_path.open(
         "w", encoding="utf-8"
@@ -208,6 +289,9 @@ def run_once(
         result["perf_stat"] = parsed_perf
     elif profiler == "perf-record":
         result["perf_record_path"] = str(perf_record_path.relative_to(REPO_ROOT))
+    elif profiler == "pprof":
+        result["pprof_binary_path"] = str(pprof_binary_path.relative_to(REPO_ROOT))
+        result["pprof_profile_path"] = str(pprof_profile_path.relative_to(REPO_ROOT))
     (run_dir / "result.json").write_text(json.dumps(result, indent=2) + "\n")
     return result
 
@@ -253,6 +337,15 @@ def summarize(
         summary["perf_record_paths"] = [
             entry["perf_record_path"] for entry in measured if "perf_record_path" in entry
         ]
+    elif profiler == "pprof":
+        summary["pprof_profiles"] = [
+            {
+                "binary": entry["pprof_binary_path"],
+                "profile": entry["pprof_profile_path"],
+            }
+            for entry in measured
+            if "pprof_profile_path" in entry
+        ]
     return summary
 
 
@@ -274,6 +367,9 @@ def print_summary(summary: dict[str, Any], result_root: Path) -> None:
             )
     if summary.get("perf_record_paths"):
         print(f"  perf-record: {summary['perf_record_paths'][0]}")
+    if summary.get("pprof_profiles"):
+        first = summary["pprof_profiles"][0]
+        print(f"  pprof: {first['profile']} ({first['binary']})")
 
 
 def select_scenarios(
@@ -365,7 +461,7 @@ def parse_args() -> argparse.Namespace:
     run_parser.add_argument("--dry-run", action="store_true", help="Print commands only")
     run_parser.add_argument(
         "--profiler",
-        choices=["perf-stat", "perf-record"],
+        choices=["perf-stat", "perf-record", "pprof"],
         help="External profiler wrapper to apply",
     )
     run_parser.add_argument(
@@ -403,8 +499,10 @@ def main() -> int:
         return 0
 
     selected = select_scenarios(scenarios, args.scenario, args.all)
-    if args.profiler and not args.dry_run and shutil.which("perf") is None:
+    if args.profiler in {"perf-stat", "perf-record"} and not args.dry_run and shutil.which("perf") is None:
         raise SystemExit("perf not found in PATH")
+    if args.profiler == "pprof" and shutil.which("go") is None:
+        raise SystemExit("go not found in PATH")
     results_dir = Path(args.results_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
     for scenario in selected:

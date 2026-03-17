@@ -21,3 +21,8 @@ Each scenario declares:
 The initial corpus focuses on real user-facing paths from the walkthrough plus
 one Go-isolated package test that can be profiled with `pprof` without changing
 Shatter source.
+
+Use `perf` first when you need a consistent whole-command view across the mixed
+Rust, Go, and TypeScript stack. Use `pprof` only for scenarios that isolate the
+Go frontend and need Go-runtime-specific attribution such as goroutine or test
+binary hotspots.
