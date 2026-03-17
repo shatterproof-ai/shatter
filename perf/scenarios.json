@@ -1,0 +1,154 @@
+{
+  "version": 1,
+  "defaults": {
+    "workdir": ".",
+    "warmups": 1,
+    "iterations": 5,
+    "timeout_seconds": 300,
+    "env": {
+      "CARGO_NET_OFFLINE": "true"
+    }
+  },
+  "scenarios": [
+    {
+      "id": "walkthrough-auto-cold",
+      "kind": "walkthrough",
+      "description": "Full automated walkthrough with isolated cold caches.",
+      "command": ["bash", "demo/walkthrough.sh", "--auto", "--delay", "0"],
+      "cache_mode": "cold",
+      "warmups": 0,
+      "iterations": 3,
+      "timeout_seconds": 900,
+      "profilers": ["perf-stat", "perf-record"]
+    },
+    {
+      "id": "walkthrough-auto-warm",
+      "kind": "walkthrough",
+      "description": "Repeat walkthrough after the harness has populated build and cache state.",
+      "command": ["bash", "demo/walkthrough.sh", "--auto", "--delay", "0"],
+      "cache_mode": "warm",
+      "iterations": 3,
+      "timeout_seconds": 900,
+      "profilers": ["perf-stat"]
+    },
+    {
+      "id": "explore-ts-arithmetic-cold",
+      "kind": "command",
+      "description": "Representative TypeScript explore path from the walkthrough.",
+      "command": [
+        "target/debug/shatter",
+        "explore",
+        "examples/standalone/ts/01-arithmetic.ts:classifyNumber"
+      ],
+      "cache_mode": "cold",
+      "iterations": 5,
+      "timeout_seconds": 180,
+      "profilers": ["perf-stat", "perf-record"]
+    },
+    {
+      "id": "explore-ts-arithmetic-warm",
+      "kind": "command",
+      "description": "Repeated TypeScript explore run to measure cache and startup reuse.",
+      "command": [
+        "target/debug/shatter",
+        "explore",
+        "examples/standalone/ts/01-arithmetic.ts:classifyNumber"
+      ],
+      "cache_mode": "warm",
+      "iterations": 5,
+      "timeout_seconds": 180,
+      "profilers": ["perf-stat"]
+    },
+    {
+      "id": "explore-go-language-cold",
+      "kind": "command",
+      "description": "Representative Go explore path from the walkthrough.",
+      "command": [
+        "target/debug/shatter",
+        "explore",
+        "--max-iterations",
+        "3",
+        "--timeout-explore",
+        "25",
+        "examples/standalone/go/18-accept-language.go:NegotiateLanguage"
+      ],
+      "cache_mode": "cold",
+      "iterations": 5,
+      "timeout_seconds": 240,
+      "profilers": ["perf-stat", "perf-record"]
+    },
+    {
+      "id": "explore-rust-language-cold",
+      "kind": "command",
+      "description": "Representative Rust frontend explore path from the walkthrough.",
+      "command": [
+        "target/debug/shatter",
+        "explore",
+        "--max-iterations",
+        "3",
+        "--timeout-explore",
+        "25",
+        "examples/standalone/rust/18_accept_language.rs:negotiate_language"
+      ],
+      "cache_mode": "cold",
+      "iterations": 5,
+      "timeout_seconds": 240,
+      "profilers": ["perf-stat", "perf-record"]
+    },
+    {
+      "id": "scan-standalone-ts-cold",
+      "kind": "command",
+      "description": "Directory scan over standalone TypeScript examples.",
+      "command": [
+        "target/debug/shatter",
+        "scan",
+        "--parallelism",
+        "2",
+        "--timeout-per-fn",
+        "30",
+        "examples/standalone/ts"
+      ],
+      "cache_mode": "cold",
+      "iterations": 3,
+      "timeout_seconds": 420,
+      "profilers": ["perf-stat", "perf-record"]
+    },
+    {
+      "id": "scan-standalone-ts-warm",
+      "kind": "command",
+      "description": "Repeat TypeScript scan with warm cache state.",
+      "command": [
+        "target/debug/shatter",
+        "scan",
+        "--parallelism",
+        "2",
+        "--timeout-per-fn",
+        "30",
+        "examples/standalone/ts"
+      ],
+      "cache_mode": "warm",
+      "iterations": 3,
+      "timeout_seconds": 420,
+      "profilers": ["perf-stat"]
+    },
+    {
+      "id": "go-frontend-instrument-tests",
+      "kind": "go_test",
+      "description": "Go-isolated frontend package tests suitable for pprof follow-up without source changes.",
+      "command": [
+        "go",
+        "test",
+        "./shatter-go/instrument",
+        "-run",
+        "TestExecutor",
+        "-count=1"
+      ],
+      "workdir": ".",
+      "cache_mode": "warm",
+      "warmups": 0,
+      "iterations": 3,
+      "timeout_seconds": 180,
+      "profilers": ["perf-stat", "pprof"]
+    }
+  ]
+}
