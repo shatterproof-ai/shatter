@@ -4,6 +4,7 @@ use clap::Parser;
 
 use shatter_core::log_level::LogLevel;
 use shatter_core::telemetry;
+use shatter_core::timing::{self, TimingConfig, TimingRun};
 
 mod args;
 mod commands;
@@ -51,6 +52,17 @@ async fn main() -> ExitCode {
         }
     };
     let log_level = cli.effective_log_level();
+    let timing_config = match cli.timing_config() {
+        Ok(config) => config,
+        Err(err) => {
+            eprintln!("Error: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if timing_config.perf_alias_used {
+        eprintln!("Warning: --perf is deprecated; use --timing summary instead.");
+    }
 
     // Initialize env_logger: CLI flags set the default, RUST_LOG can override.
     let log_filter = match log_level {
@@ -82,6 +94,7 @@ async fn main() -> ExitCode {
 
     let subcommand_name = subcommand_label(&cli.command);
     let cmd_start = std::time::Instant::now();
+    let timing_start_unix_ms = timing::unix_timestamp_ms_now();
 
     let result = match cli.command {
         CliCommand::Explore {
@@ -170,7 +183,7 @@ async fn main() -> ExitCode {
                 config_path.as_deref(),
                 output.as_deref(),
                 log_level,
-                cli.perf,
+                timing_config.show_text_summary(),
                 &colors,
                 spec || spec_json || output.is_some() || invariants,
                 spec_json || output.is_some(),
@@ -374,8 +387,7 @@ async fn main() -> ExitCode {
             match commands::diff::run_diff(&snapshot, &current, json, use_color) {
                 Ok(has_regressions) => {
                     let code = if has_regressions { 1 } else { 0 };
-                    queue_command_run_event(&subcommand_name, cmd_start.elapsed().as_millis() as u64, code);
-                    return if has_regressions { ExitCode::FAILURE } else { ExitCode::SUCCESS };
+                    return finalize_exit_code(&subcommand_name, cmd_start.elapsed().as_millis() as u64, code, &timing_config, timing_start_unix_ms);
                 }
                 Err(e) => Err(e),
             }
@@ -384,8 +396,7 @@ async fn main() -> ExitCode {
             match commands::diff::run_spec_diff(&old, &new, json, use_color) {
                 Ok(has_regressions) => {
                     let code = if has_regressions { 1 } else { 0 };
-                    queue_command_run_event(&subcommand_name, cmd_start.elapsed().as_millis() as u64, code);
-                    return if has_regressions { ExitCode::FAILURE } else { ExitCode::SUCCESS };
+                    return finalize_exit_code(&subcommand_name, cmd_start.elapsed().as_millis() as u64, code, &timing_config, timing_start_unix_ms);
                 }
                 Err(e) => Err(e),
             }
@@ -404,8 +415,7 @@ async fn main() -> ExitCode {
         } => {
             if !strace {
                 eprintln!("Error: --strace flag is required. Currently strace is the only supported discovery method.");
-                queue_command_run_event(&subcommand_name, cmd_start.elapsed().as_millis() as u64, 1);
-                return ExitCode::FAILURE;
+                return finalize_exit_code(&subcommand_name, cmd_start.elapsed().as_millis() as u64, 1, &timing_config, timing_start_unix_ms);
             }
             match shatter_core::strace_discovery::discover_network_deps(
                 &command,
@@ -441,8 +451,7 @@ async fn main() -> ExitCode {
             match commands::test::run_test(all, record, tier, &base, include_untracked, dry_run, prioritize, budget, use_color) {
                 Ok(success) => {
                     let code = if success { 0 } else { 1 };
-                    queue_command_run_event(&subcommand_name, cmd_start.elapsed().as_millis() as u64, code);
-                    return if success { ExitCode::SUCCESS } else { ExitCode::FAILURE };
+                    return finalize_exit_code(&subcommand_name, cmd_start.elapsed().as_millis() as u64, code, &timing_config, timing_start_unix_ms);
                 }
                 Err(e) => Err(e),
             }
@@ -475,8 +484,7 @@ async fn main() -> ExitCode {
             {
                 Ok(all_fresh) => {
                     let code = if all_fresh { 0 } else { 1 };
-                    queue_command_run_event(&subcommand_name, cmd_start.elapsed().as_millis() as u64, code);
-                    return if all_fresh { ExitCode::SUCCESS } else { ExitCode::FAILURE };
+                    return finalize_exit_code(&subcommand_name, cmd_start.elapsed().as_millis() as u64, code, &timing_config, timing_start_unix_ms);
                 }
                 Err(e) => Err(e),
             }
@@ -505,8 +513,7 @@ async fn main() -> ExitCode {
             {
                 Ok(all_confirmed) => {
                     let code = if all_confirmed { 0 } else { 1 };
-                    queue_command_run_event(&subcommand_name, cmd_start.elapsed().as_millis() as u64, code);
-                    return if all_confirmed { ExitCode::SUCCESS } else { ExitCode::FAILURE };
+                    return finalize_exit_code(&subcommand_name, cmd_start.elapsed().as_millis() as u64, code, &timing_config, timing_start_unix_ms);
                 }
                 Err(e) => Err(e),
             }
@@ -514,15 +521,11 @@ async fn main() -> ExitCode {
         CliCommand::Telemetry { action } => {
             let dm = cmd_start.elapsed().as_millis() as u64;
             return match commands::telemetry::run_telemetry(&action) {
-                Ok(()) => {
-                    queue_command_run_event(&subcommand_name, dm, 0);
-                    ExitCode::SUCCESS
-                }
+                Ok(()) => finalize_exit_code(&subcommand_name, dm, 0, &timing_config, timing_start_unix_ms),
                 Err(e) => {
                     eprintln!("Error: {e}");
                     queue_command_error_event(&subcommand_name, &*e);
-                    queue_command_run_event(&subcommand_name, dm, 1);
-                    ExitCode::FAILURE
+                    finalize_exit_code(&subcommand_name, dm, 1, &timing_config, timing_start_unix_ms)
                 }
             };
         }
@@ -531,16 +534,51 @@ async fn main() -> ExitCode {
     let duration_ms = cmd_start.elapsed().as_millis() as u64;
 
     match result {
-        Ok(()) => {
-            queue_command_run_event(&subcommand_name, duration_ms, 0);
-            ExitCode::SUCCESS
-        }
+        Ok(()) => finalize_exit_code(&subcommand_name, duration_ms, 0, &timing_config, timing_start_unix_ms),
         Err(e) => {
             eprintln!("Error: {e}");
             queue_command_error_event(&subcommand_name, &*e);
-            queue_command_run_event(&subcommand_name, duration_ms, 1);
-            ExitCode::FAILURE
+            finalize_exit_code(&subcommand_name, duration_ms, 1, &timing_config, timing_start_unix_ms)
         }
+    }
+}
+
+fn finalize_exit_code(
+    subcommand: &str,
+    duration_ms: u64,
+    exit_code: i32,
+    timing_config: &TimingConfig,
+    timing_start_unix_ms: u128,
+) -> ExitCode {
+    queue_command_run_event(subcommand, duration_ms, exit_code);
+    persist_timing_run(subcommand, duration_ms, exit_code, timing_config, timing_start_unix_ms);
+    if exit_code == 0 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+fn persist_timing_run(
+    subcommand: &str,
+    duration_ms: u64,
+    exit_code: i32,
+    timing_config: &TimingConfig,
+    timing_start_unix_ms: u128,
+) {
+    let Some(output) = timing_config.output.as_ref() else {
+        return;
+    };
+
+    let run = TimingRun::command_only(
+        subcommand.to_string(),
+        timing_config,
+        timing_start_unix_ms,
+        duration_ms,
+        exit_code,
+    );
+    if let Err(err) = run.persist(output) {
+        eprintln!("Warning: failed to write timing output: {err}");
     }
 }
 
