@@ -238,6 +238,18 @@ tasks:
     cmds:
       - python3 scripts/perf_runner.py run --all
 
+  perf-stat-scenario:
+    desc: Run one scenario under perf stat (set SCENARIO=<id>)
+    preconditions:
+      - sh: test -n "{{.SCENARIO}}"
+        msg: "set SCENARIO=<id>"
+      - sh: command -v python3 >/dev/null 2>&1
+        msg: "python3 not installed"
+      - sh: command -v perf >/dev/null 2>&1
+        msg: "perf not installed"
+    cmds:
+      - python3 scripts/perf_runner.py run --scenario "{{.SCENARIO}}" --profiler perf-stat
+
   clean:
     desc: Remove all build artifacts and checksum cache
     cmds:

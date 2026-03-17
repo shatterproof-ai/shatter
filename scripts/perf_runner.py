@@ -21,6 +21,14 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCENARIO_FILE = REPO_ROOT / "perf" / "scenarios.json"
 DEFAULT_RESULTS_DIR = REPO_ROOT / "perf" / "results"
+PERF_STAT_EVENTS = [
+    "task-clock",
+    "cycles",
+    "instructions",
+    "branches",
+    "branch-misses",
+    "cache-misses",
+]
 
 
 @dataclass
@@ -78,12 +86,44 @@ def make_cache_env(base_dir: Path) -> dict[str, str]:
     }
 
 
+def parse_perf_stat(raw_text: str) -> dict[str, Any]:
+    counters: dict[str, dict[str, Any]] = {}
+    for line in raw_text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        fields = stripped.split(",")
+        if len(fields) < 3:
+            continue
+        raw_value = fields[0].strip()
+        unit = fields[1].strip()
+        event = fields[2].strip()
+        if event not in PERF_STAT_EVENTS:
+            continue
+        normalized = raw_value.replace("<not counted>", "").replace("<not supported>", "")
+        value: float | None
+        if normalized:
+            try:
+                value = float(normalized)
+            except ValueError:
+                value = None
+        else:
+            value = None
+        counters[event] = {
+            "value": value,
+            "unit": unit,
+            "raw": raw_value,
+        }
+    return {"events": counters}
+
+
 def run_once(
     scenario: Scenario,
     run_dir: Path,
     cache_dir: Path,
     mode: str,
     sequence: int,
+    profiler: str | None,
 ) -> dict[str, Any]:
     env = os.environ.copy()
     env.update(scenario.env)
@@ -103,11 +143,25 @@ def run_once(
     stderr_path = run_dir / "stderr.log"
     started_at = datetime.now(UTC)
     started = time.perf_counter()
+    perf_stat_path = run_dir / "perf-stat.txt"
+    command = scenario.command
+    if profiler == "perf-stat":
+        command = [
+            "perf",
+            "stat",
+            "-x,",
+            "-o",
+            str(perf_stat_path),
+            "-e",
+            ",".join(PERF_STAT_EVENTS),
+            "--",
+            *scenario.command,
+        ]
     with stdout_path.open("w", encoding="utf-8") as stdout_file, stderr_path.open(
         "w", encoding="utf-8"
     ) as stderr_file:
         completed = subprocess.run(
-            scenario.command,
+            command,
             cwd=scenario.workdir,
             env=env,
             stdout=stdout_file,
@@ -121,6 +175,7 @@ def run_once(
         "mode": mode,
         "scenario_id": scenario.id,
         "command": scenario.command,
+        "executed_command": command,
         "workdir": str(scenario.workdir.relative_to(REPO_ROOT)),
         "cache_mode": scenario.cache_mode,
         "cache_dir": str(cache_dir.relative_to(REPO_ROOT)),
@@ -129,25 +184,58 @@ def run_once(
         "exit_code": completed.returncode,
         "stdout_path": str(stdout_path.relative_to(REPO_ROOT)),
         "stderr_path": str(stderr_path.relative_to(REPO_ROOT)),
+        "profiler": profiler,
     }
+    if profiler == "perf-stat":
+        raw_perf = perf_stat_path.read_text(encoding="utf-8") if perf_stat_path.exists() else ""
+        parsed_perf = parse_perf_stat(raw_perf)
+        perf_json_path = run_dir / "perf-stat.json"
+        perf_json_path.write_text(json.dumps(parsed_perf, indent=2) + "\n")
+        result["perf_stat_path"] = str(perf_stat_path.relative_to(REPO_ROOT))
+        result["perf_stat_json_path"] = str(perf_json_path.relative_to(REPO_ROOT))
+        result["perf_stat"] = parsed_perf
     (run_dir / "result.json").write_text(json.dumps(result, indent=2) + "\n")
     return result
 
 
-def summarize(scenario: Scenario, measured: list[dict[str, Any]]) -> dict[str, Any]:
+def summarize(
+    scenario: Scenario, measured: list[dict[str, Any]], profiler: str | None
+) -> dict[str, Any]:
     durations = [entry["duration_seconds"] for entry in measured]
-    return {
+    summary = {
         "scenario_id": scenario.id,
         "description": scenario.description,
         "iterations": len(measured),
         "cache_mode": scenario.cache_mode,
         "profilers": scenario.profilers,
+        "active_profiler": profiler,
         "min_seconds": round(min(durations), 6),
         "median_seconds": round(statistics.median(durations), 6),
         "max_seconds": round(max(durations), 6),
         "mean_seconds": round(statistics.fmean(durations), 6),
         "exit_codes": [entry["exit_code"] for entry in measured],
     }
+    if profiler == "perf-stat":
+        event_summary: dict[str, dict[str, Any]] = {}
+        for event in PERF_STAT_EVENTS:
+            values = [
+                entry["perf_stat"]["events"][event]["value"]
+                for entry in measured
+                if event in entry.get("perf_stat", {}).get("events", {})
+                and entry["perf_stat"]["events"][event]["value"] is not None
+            ]
+            if not values:
+                continue
+            unit = measured[0]["perf_stat"]["events"][event]["unit"]
+            event_summary[event] = {
+                "unit": unit,
+                "min": min(values),
+                "median": statistics.median(values),
+                "max": max(values),
+                "mean": statistics.fmean(values),
+            }
+        summary["perf_stat"] = event_summary
+    return summary
 
 
 def print_summary(summary: dict[str, Any], result_root: Path) -> None:
@@ -156,6 +244,16 @@ def print_summary(summary: dict[str, Any], result_root: Path) -> None:
         f"min={summary['min_seconds']:.3f}s max={summary['max_seconds']:.3f}s "
         f"runs={summary['iterations']} results={result_root.relative_to(REPO_ROOT)}"
     )
+    if summary.get("perf_stat"):
+        for event in PERF_STAT_EVENTS:
+            metric = summary["perf_stat"].get(event)
+            if metric is None:
+                continue
+            unit = metric["unit"] or "count"
+            print(
+                f"  {event}: median={metric['median']:.3f} {unit} "
+                f"mean={metric['mean']:.3f} {unit}"
+            )
 
 
 def select_scenarios(
@@ -173,7 +271,9 @@ def select_scenarios(
     return selected
 
 
-def run_scenario(scenario: Scenario, results_dir: Path, dry_run: bool) -> None:
+def run_scenario(
+    scenario: Scenario, results_dir: Path, dry_run: bool, profiler: str | None
+) -> None:
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     result_root = results_dir / scenario.id / timestamp
     result_root.mkdir(parents=True, exist_ok=True)
@@ -211,7 +311,7 @@ def run_scenario(scenario: Scenario, results_dir: Path, dry_run: bool) -> None:
         else:
             cache_dir = cache_root
 
-        result = run_once(scenario, run_dir, cache_dir, mode, index + 1)
+        result = run_once(scenario, run_dir, cache_dir, mode, index + 1, profiler)
         if scenario.cache_mode == "cold":
             shutil.rmtree(cache_dir, ignore_errors=True)
 
@@ -222,7 +322,7 @@ def run_scenario(scenario: Scenario, results_dir: Path, dry_run: bool) -> None:
         if mode == "measured":
             measured.append(result)
 
-    summary = summarize(scenario, measured)
+    summary = summarize(scenario, measured, profiler)
     summary_path = result_root / "summary.json"
     summary_path.write_text(json.dumps(summary, indent=2) + "\n")
     print_summary(summary, result_root)
@@ -243,6 +343,11 @@ def parse_args() -> argparse.Namespace:
     )
     run_parser.add_argument("--all", action="store_true", help="Run the full corpus")
     run_parser.add_argument("--dry-run", action="store_true", help="Print commands only")
+    run_parser.add_argument(
+        "--profiler",
+        choices=["perf-stat"],
+        help="External profiler wrapper to apply",
+    )
     run_parser.add_argument(
         "--results-dir",
         default=str(DEFAULT_RESULTS_DIR),
@@ -278,10 +383,16 @@ def main() -> int:
         return 0
 
     selected = select_scenarios(scenarios, args.scenario, args.all)
+    if args.profiler and shutil.which("perf") is None:
+        raise SystemExit("perf not found in PATH")
     results_dir = Path(args.results_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
     for scenario in selected:
-        run_scenario(scenario, results_dir, args.dry_run)
+        if args.profiler and args.profiler not in scenario.profilers:
+            raise SystemExit(
+                f"scenario {scenario.id} does not allow profiler {args.profiler}"
+            )
+        run_scenario(scenario, results_dir, args.dry_run, args.profiler)
     return 0
 
 
