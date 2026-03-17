@@ -1,0 +1,289 @@
+#!/usr/bin/env python3
+"""Run external profiling scenarios and capture repeatable timing artifacts."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import statistics
+import subprocess
+import sys
+import tempfile
+import time
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+SCENARIO_FILE = REPO_ROOT / "perf" / "scenarios.json"
+DEFAULT_RESULTS_DIR = REPO_ROOT / "perf" / "results"
+
+
+@dataclass
+class Scenario:
+    id: str
+    kind: str
+    description: str
+    command: list[str]
+    workdir: Path
+    env: dict[str, str]
+    cache_mode: str
+    warmups: int
+    iterations: int
+    timeout_seconds: int
+    profilers: list[str]
+
+
+def load_scenarios() -> dict[str, Scenario]:
+    payload = json.loads(SCENARIO_FILE.read_text())
+    defaults = payload.get("defaults", {})
+    scenarios: dict[str, Scenario] = {}
+    for raw in payload["scenarios"]:
+        merged_env = dict(defaults.get("env", {}))
+        merged_env.update(raw.get("env", {}))
+        scenario = Scenario(
+            id=raw["id"],
+            kind=raw["kind"],
+            description=raw["description"],
+            command=list(raw["command"]),
+            workdir=REPO_ROOT / raw.get("workdir", defaults.get("workdir", ".")),
+            env=merged_env,
+            cache_mode=raw.get("cache_mode", defaults.get("cache_mode", "cold")),
+            warmups=int(raw.get("warmups", defaults.get("warmups", 0))),
+            iterations=int(raw.get("iterations", defaults.get("iterations", 1))),
+            timeout_seconds=int(
+                raw.get("timeout_seconds", defaults.get("timeout_seconds", 300))
+            ),
+            profilers=list(raw.get("profilers", [])),
+        )
+        scenarios[scenario.id] = scenario
+    return scenarios
+
+
+def format_command(command: list[str]) -> str:
+    return " ".join(subprocess.list2cmdline([part]) for part in command)
+
+
+def make_cache_env(base_dir: Path) -> dict[str, str]:
+    return {
+        "SHATTER_CACHE_DIR": str(base_dir / "shatter-cache"),
+        "SHATTER_SEEDS_DIR": str(base_dir / "shatter-cache" / "seeds"),
+        "XDG_CACHE_HOME": str(base_dir / "xdg-cache"),
+        "GOCACHE": str(base_dir / "go-cache"),
+        "CARGO_TARGET_DIR": str(base_dir / "cargo-target"),
+    }
+
+
+def run_once(
+    scenario: Scenario,
+    run_dir: Path,
+    cache_dir: Path,
+    mode: str,
+    sequence: int,
+) -> dict[str, Any]:
+    env = os.environ.copy()
+    env.update(scenario.env)
+    env.update(make_cache_env(cache_dir))
+    env["SHATTER_PERF_SCENARIO"] = scenario.id
+
+    for key in (
+        "SHATTER_CACHE_DIR",
+        "SHATTER_SEEDS_DIR",
+        "XDG_CACHE_HOME",
+        "GOCACHE",
+        "CARGO_TARGET_DIR",
+    ):
+        Path(env[key]).mkdir(parents=True, exist_ok=True)
+
+    stdout_path = run_dir / "stdout.log"
+    stderr_path = run_dir / "stderr.log"
+    started_at = datetime.now(UTC)
+    started = time.perf_counter()
+    with stdout_path.open("w", encoding="utf-8") as stdout_file, stderr_path.open(
+        "w", encoding="utf-8"
+    ) as stderr_file:
+        completed = subprocess.run(
+            scenario.command,
+            cwd=scenario.workdir,
+            env=env,
+            stdout=stdout_file,
+            stderr=stderr_file,
+            timeout=scenario.timeout_seconds,
+            check=False,
+        )
+    duration_seconds = time.perf_counter() - started
+    result = {
+        "sequence": sequence,
+        "mode": mode,
+        "scenario_id": scenario.id,
+        "command": scenario.command,
+        "workdir": str(scenario.workdir.relative_to(REPO_ROOT)),
+        "cache_mode": scenario.cache_mode,
+        "cache_dir": str(cache_dir.relative_to(REPO_ROOT)),
+        "started_at": started_at.isoformat(),
+        "duration_seconds": round(duration_seconds, 6),
+        "exit_code": completed.returncode,
+        "stdout_path": str(stdout_path.relative_to(REPO_ROOT)),
+        "stderr_path": str(stderr_path.relative_to(REPO_ROOT)),
+    }
+    (run_dir / "result.json").write_text(json.dumps(result, indent=2) + "\n")
+    return result
+
+
+def summarize(scenario: Scenario, measured: list[dict[str, Any]]) -> dict[str, Any]:
+    durations = [entry["duration_seconds"] for entry in measured]
+    return {
+        "scenario_id": scenario.id,
+        "description": scenario.description,
+        "iterations": len(measured),
+        "cache_mode": scenario.cache_mode,
+        "profilers": scenario.profilers,
+        "min_seconds": round(min(durations), 6),
+        "median_seconds": round(statistics.median(durations), 6),
+        "max_seconds": round(max(durations), 6),
+        "mean_seconds": round(statistics.fmean(durations), 6),
+        "exit_codes": [entry["exit_code"] for entry in measured],
+    }
+
+
+def print_summary(summary: dict[str, Any], result_root: Path) -> None:
+    print(
+        f"{summary['scenario_id']}: median={summary['median_seconds']:.3f}s "
+        f"min={summary['min_seconds']:.3f}s max={summary['max_seconds']:.3f}s "
+        f"runs={summary['iterations']} results={result_root.relative_to(REPO_ROOT)}"
+    )
+
+
+def select_scenarios(
+    scenarios: dict[str, Scenario], scenario_ids: list[str] | None, run_all: bool
+) -> list[Scenario]:
+    if run_all:
+        return list(scenarios.values())
+    if not scenario_ids:
+        raise SystemExit("pass --scenario <id> or --all")
+    selected = []
+    for scenario_id in scenario_ids:
+        if scenario_id not in scenarios:
+            raise SystemExit(f"unknown scenario: {scenario_id}")
+        selected.append(scenarios[scenario_id])
+    return selected
+
+
+def run_scenario(scenario: Scenario, results_dir: Path, dry_run: bool) -> None:
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    result_root = results_dir / scenario.id / timestamp
+    result_root.mkdir(parents=True, exist_ok=True)
+    cache_root = result_root / "cache"
+    if scenario.cache_mode == "warm":
+        cache_root.mkdir(parents=True, exist_ok=True)
+
+    manifest = {
+        "scenario_id": scenario.id,
+        "kind": scenario.kind,
+        "description": scenario.description,
+        "command": scenario.command,
+        "workdir": str(scenario.workdir.relative_to(REPO_ROOT)),
+        "cache_mode": scenario.cache_mode,
+        "warmups": scenario.warmups,
+        "iterations": scenario.iterations,
+        "timeout_seconds": scenario.timeout_seconds,
+        "profilers": scenario.profilers,
+    }
+    (result_root / "scenario.json").write_text(json.dumps(manifest, indent=2) + "\n")
+
+    if dry_run:
+        print(f"[dry-run] {scenario.id}: {format_command(scenario.command)}")
+        return
+
+    measured: list[dict[str, Any]] = []
+    total_runs = scenario.warmups + scenario.iterations
+    for index in range(total_runs):
+        mode = "warmup" if index < scenario.warmups else "measured"
+        run_dir = result_root / f"run-{index + 1:03d}"
+        run_dir.mkdir(parents=True, exist_ok=True)
+
+        if scenario.cache_mode == "cold":
+            cache_dir = Path(tempfile.mkdtemp(prefix=f"{scenario.id}-", dir=run_dir))
+        else:
+            cache_dir = cache_root
+
+        result = run_once(scenario, run_dir, cache_dir, mode, index + 1)
+        if scenario.cache_mode == "cold":
+            shutil.rmtree(cache_dir, ignore_errors=True)
+
+        if result["exit_code"] != 0:
+            raise SystemExit(
+                f"{scenario.id} failed on run {index + 1} with exit code {result['exit_code']}"
+            )
+        if mode == "measured":
+            measured.append(result)
+
+    summary = summarize(scenario, measured)
+    summary_path = result_root / "summary.json"
+    summary_path.write_text(json.dumps(summary, indent=2) + "\n")
+    print_summary(summary, result_root)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    list_parser = subparsers.add_parser("list", help="List available scenarios")
+    list_parser.add_argument("--json", action="store_true", help="Emit JSON")
+
+    run_parser = subparsers.add_parser("run", help="Run one or more scenarios")
+    run_parser.add_argument(
+        "--scenario",
+        action="append",
+        help="Scenario ID to run. May be passed multiple times.",
+    )
+    run_parser.add_argument("--all", action="store_true", help="Run the full corpus")
+    run_parser.add_argument("--dry-run", action="store_true", help="Print commands only")
+    run_parser.add_argument(
+        "--results-dir",
+        default=str(DEFAULT_RESULTS_DIR),
+        help="Directory for captured artifacts",
+    )
+
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    scenarios = load_scenarios()
+
+    if args.command == "list":
+        payload = [
+            {
+                "id": scenario.id,
+                "kind": scenario.kind,
+                "description": scenario.description,
+                "cache_mode": scenario.cache_mode,
+                "profilers": scenario.profilers,
+            }
+            for scenario in scenarios.values()
+        ]
+        if args.json:
+            print(json.dumps(payload, indent=2))
+        else:
+            for scenario in payload:
+                print(
+                    f"{scenario['id']}: {scenario['kind']} "
+                    f"[{scenario['cache_mode']}] {scenario['description']}"
+                )
+        return 0
+
+    selected = select_scenarios(scenarios, args.scenario, args.all)
+    results_dir = Path(args.results_dir)
+    results_dir.mkdir(parents=True, exist_ok=True)
+    for scenario in selected:
+        run_scenario(scenario, results_dir, args.dry_run)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

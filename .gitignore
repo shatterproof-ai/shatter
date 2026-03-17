@@ -149,6 +149,9 @@ shatter-report/
 # Taskfile checksum cache
 .task/
 
+# External profiling artifacts
+perf/results/
+
 # Dolt database files (added by bd init)
 .dolt/
 *.db

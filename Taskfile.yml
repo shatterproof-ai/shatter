@@ -212,6 +212,32 @@ tasks:
     cmds:
       - bash demo/walkthrough.sh --auto --delay 0
 
+  perf-list:
+    desc: List external profiling scenarios
+    preconditions:
+      - sh: command -v python3 >/dev/null 2>&1
+        msg: "python3 not installed"
+    cmds:
+      - python3 scripts/perf_runner.py list
+
+  perf-scenario:
+    desc: Run one named external profiling scenario (set SCENARIO=<id>)
+    preconditions:
+      - sh: test -n "{{.SCENARIO}}"
+        msg: "set SCENARIO=<id>"
+      - sh: command -v python3 >/dev/null 2>&1
+        msg: "python3 not installed"
+    cmds:
+      - python3 scripts/perf_runner.py run --scenario "{{.SCENARIO}}"
+
+  perf-baseline:
+    desc: Run the full external profiling corpus
+    preconditions:
+      - sh: command -v python3 >/dev/null 2>&1
+        msg: "python3 not installed"
+    cmds:
+      - python3 scripts/perf_runner.py run --all
+
   clean:
     desc: Remove all build artifacts and checksum cache
     cmds:
