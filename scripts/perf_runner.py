@@ -144,6 +144,7 @@ def run_once(
     started_at = datetime.now(UTC)
     started = time.perf_counter()
     perf_stat_path = run_dir / "perf-stat.txt"
+    perf_record_path = run_dir / "perf.data"
     command = scenario.command
     if profiler == "perf-stat":
         command = [
@@ -154,6 +155,17 @@ def run_once(
             str(perf_stat_path),
             "-e",
             ",".join(PERF_STAT_EVENTS),
+            "--",
+            *scenario.command,
+        ]
+    elif profiler == "perf-record":
+        command = [
+            "perf",
+            "record",
+            "--call-graph",
+            "dwarf",
+            "-o",
+            str(perf_record_path),
             "--",
             *scenario.command,
         ]
@@ -194,6 +206,8 @@ def run_once(
         result["perf_stat_path"] = str(perf_stat_path.relative_to(REPO_ROOT))
         result["perf_stat_json_path"] = str(perf_json_path.relative_to(REPO_ROOT))
         result["perf_stat"] = parsed_perf
+    elif profiler == "perf-record":
+        result["perf_record_path"] = str(perf_record_path.relative_to(REPO_ROOT))
     (run_dir / "result.json").write_text(json.dumps(result, indent=2) + "\n")
     return result
 
@@ -235,6 +249,10 @@ def summarize(
                 "mean": statistics.fmean(values),
             }
         summary["perf_stat"] = event_summary
+    elif profiler == "perf-record":
+        summary["perf_record_paths"] = [
+            entry["perf_record_path"] for entry in measured if "perf_record_path" in entry
+        ]
     return summary
 
 
@@ -254,6 +272,8 @@ def print_summary(summary: dict[str, Any], result_root: Path) -> None:
                 f"  {event}: median={metric['median']:.3f} {unit} "
                 f"mean={metric['mean']:.3f} {unit}"
             )
+    if summary.get("perf_record_paths"):
+        print(f"  perf-record: {summary['perf_record_paths'][0]}")
 
 
 def select_scenarios(
@@ -345,7 +365,7 @@ def parse_args() -> argparse.Namespace:
     run_parser.add_argument("--dry-run", action="store_true", help="Print commands only")
     run_parser.add_argument(
         "--profiler",
-        choices=["perf-stat"],
+        choices=["perf-stat", "perf-record"],
         help="External profiler wrapper to apply",
     )
     run_parser.add_argument(
@@ -383,7 +403,7 @@ def main() -> int:
         return 0
 
     selected = select_scenarios(scenarios, args.scenario, args.all)
-    if args.profiler and shutil.which("perf") is None:
+    if args.profiler and not args.dry_run and shutil.which("perf") is None:
         raise SystemExit("perf not found in PATH")
     results_dir = Path(args.results_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
