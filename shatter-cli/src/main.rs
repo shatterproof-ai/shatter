@@ -4,7 +4,7 @@ use clap::Parser;
 
 use shatter_core::log_level::LogLevel;
 use shatter_core::telemetry;
-use shatter_core::timing::{self, TimingConfig, TimingRun};
+use shatter_core::timing::{self, TimingConfig, TimingHandle, TimingRun};
 
 mod args;
 mod commands;
@@ -95,6 +95,15 @@ async fn main() -> ExitCode {
     let subcommand_name = subcommand_label(&cli.command);
     let cmd_start = std::time::Instant::now();
     let timing_start_unix_ms = timing::unix_timestamp_ms_now();
+    let timing_handle = if timing_config.mode.is_enabled() {
+        let handle = TimingHandle::default();
+        if let Err(err) = handle.install_global() {
+            eprintln!("Warning: failed to install tracing timing collector: {err}");
+        }
+        Some(handle)
+    } else {
+        None
+    };
 
     let result = match cli.command {
         CliCommand::Explore {
@@ -387,7 +396,7 @@ async fn main() -> ExitCode {
             match commands::diff::run_diff(&snapshot, &current, json, use_color) {
                 Ok(has_regressions) => {
                     let code = if has_regressions { 1 } else { 0 };
-                    return finalize_exit_code(&subcommand_name, cmd_start.elapsed().as_millis() as u64, code, &timing_config, timing_start_unix_ms);
+                    return finalize_exit_code(&subcommand_name, cmd_start.elapsed().as_millis() as u64, code, &timing_config, timing_start_unix_ms, timing_handle.as_ref());
                 }
                 Err(e) => Err(e),
             }
@@ -396,7 +405,7 @@ async fn main() -> ExitCode {
             match commands::diff::run_spec_diff(&old, &new, json, use_color) {
                 Ok(has_regressions) => {
                     let code = if has_regressions { 1 } else { 0 };
-                    return finalize_exit_code(&subcommand_name, cmd_start.elapsed().as_millis() as u64, code, &timing_config, timing_start_unix_ms);
+                    return finalize_exit_code(&subcommand_name, cmd_start.elapsed().as_millis() as u64, code, &timing_config, timing_start_unix_ms, timing_handle.as_ref());
                 }
                 Err(e) => Err(e),
             }
@@ -415,7 +424,7 @@ async fn main() -> ExitCode {
         } => {
             if !strace {
                 eprintln!("Error: --strace flag is required. Currently strace is the only supported discovery method.");
-                return finalize_exit_code(&subcommand_name, cmd_start.elapsed().as_millis() as u64, 1, &timing_config, timing_start_unix_ms);
+                return finalize_exit_code(&subcommand_name, cmd_start.elapsed().as_millis() as u64, 1, &timing_config, timing_start_unix_ms, timing_handle.as_ref());
             }
             match shatter_core::strace_discovery::discover_network_deps(
                 &command,
@@ -451,7 +460,7 @@ async fn main() -> ExitCode {
             match commands::test::run_test(all, record, tier, &base, include_untracked, dry_run, prioritize, budget, use_color) {
                 Ok(success) => {
                     let code = if success { 0 } else { 1 };
-                    return finalize_exit_code(&subcommand_name, cmd_start.elapsed().as_millis() as u64, code, &timing_config, timing_start_unix_ms);
+                    return finalize_exit_code(&subcommand_name, cmd_start.elapsed().as_millis() as u64, code, &timing_config, timing_start_unix_ms, timing_handle.as_ref());
                 }
                 Err(e) => Err(e),
             }
@@ -484,7 +493,7 @@ async fn main() -> ExitCode {
             {
                 Ok(all_fresh) => {
                     let code = if all_fresh { 0 } else { 1 };
-                    return finalize_exit_code(&subcommand_name, cmd_start.elapsed().as_millis() as u64, code, &timing_config, timing_start_unix_ms);
+                    return finalize_exit_code(&subcommand_name, cmd_start.elapsed().as_millis() as u64, code, &timing_config, timing_start_unix_ms, timing_handle.as_ref());
                 }
                 Err(e) => Err(e),
             }
@@ -513,7 +522,7 @@ async fn main() -> ExitCode {
             {
                 Ok(all_confirmed) => {
                     let code = if all_confirmed { 0 } else { 1 };
-                    return finalize_exit_code(&subcommand_name, cmd_start.elapsed().as_millis() as u64, code, &timing_config, timing_start_unix_ms);
+                    return finalize_exit_code(&subcommand_name, cmd_start.elapsed().as_millis() as u64, code, &timing_config, timing_start_unix_ms, timing_handle.as_ref());
                 }
                 Err(e) => Err(e),
             }
@@ -521,11 +530,11 @@ async fn main() -> ExitCode {
         CliCommand::Telemetry { action } => {
             let dm = cmd_start.elapsed().as_millis() as u64;
             return match commands::telemetry::run_telemetry(&action) {
-                Ok(()) => finalize_exit_code(&subcommand_name, dm, 0, &timing_config, timing_start_unix_ms),
+                Ok(()) => finalize_exit_code(&subcommand_name, dm, 0, &timing_config, timing_start_unix_ms, timing_handle.as_ref()),
                 Err(e) => {
                     eprintln!("Error: {e}");
                     queue_command_error_event(&subcommand_name, &*e);
-                    finalize_exit_code(&subcommand_name, dm, 1, &timing_config, timing_start_unix_ms)
+                    finalize_exit_code(&subcommand_name, dm, 1, &timing_config, timing_start_unix_ms, timing_handle.as_ref())
                 }
             };
         }
@@ -534,11 +543,11 @@ async fn main() -> ExitCode {
     let duration_ms = cmd_start.elapsed().as_millis() as u64;
 
     match result {
-        Ok(()) => finalize_exit_code(&subcommand_name, duration_ms, 0, &timing_config, timing_start_unix_ms),
+        Ok(()) => finalize_exit_code(&subcommand_name, duration_ms, 0, &timing_config, timing_start_unix_ms, timing_handle.as_ref()),
         Err(e) => {
             eprintln!("Error: {e}");
             queue_command_error_event(&subcommand_name, &*e);
-            finalize_exit_code(&subcommand_name, duration_ms, 1, &timing_config, timing_start_unix_ms)
+            finalize_exit_code(&subcommand_name, duration_ms, 1, &timing_config, timing_start_unix_ms, timing_handle.as_ref())
         }
     }
 }
@@ -549,9 +558,11 @@ fn finalize_exit_code(
     exit_code: i32,
     timing_config: &TimingConfig,
     timing_start_unix_ms: u128,
+    timing_handle: Option<&TimingHandle>,
 ) -> ExitCode {
+    let _finalize_span = tracing::info_span!("cli.finalize_command").entered();
     queue_command_run_event(subcommand, duration_ms, exit_code);
-    persist_timing_run(subcommand, duration_ms, exit_code, timing_config, timing_start_unix_ms);
+    persist_timing_run(subcommand, duration_ms, exit_code, timing_config, timing_start_unix_ms, timing_handle);
     if exit_code == 0 {
         ExitCode::SUCCESS
     } else {
@@ -565,17 +576,20 @@ fn persist_timing_run(
     exit_code: i32,
     timing_config: &TimingConfig,
     timing_start_unix_ms: u128,
+    timing_handle: Option<&TimingHandle>,
 ) {
     let Some(output) = timing_config.output.as_ref() else {
         return;
     };
 
-    let run = TimingRun::command_only(
+    let phases = timing_handle.map_or_else(Vec::new, TimingHandle::snapshot);
+    let run = TimingRun::from_phase_summaries(
         subcommand.to_string(),
         timing_config,
         timing_start_unix_ms,
         duration_ms,
         exit_code,
+        phases,
     );
     if let Err(err) = run.persist(output) {
         eprintln!("Warning: failed to write timing output: {err}");

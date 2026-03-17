@@ -1,8 +1,14 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use tracing::subscriber::SetGlobalDefaultError;
+use tracing_subscriber::layer::{Context, Layer};
+use tracing_subscriber::prelude::*;
+use tracing_subscriber::registry::{LookupSpan, Registry};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -138,6 +144,145 @@ impl TimingRun {
         std::fs::write(&path, json)?;
         Ok(path)
     }
+
+    pub fn from_phase_summaries(
+        command: impl Into<String>,
+        config: &TimingConfig,
+        started_at_unix_ms: u128,
+        duration_ms: u64,
+        exit_code: i32,
+        mut phases: Vec<TimingPhaseSummary>,
+    ) -> Self {
+        let command = command.into();
+        if phases.iter().all(|phase| phase.phase_path != "cli.command") {
+            let mut attributes = BTreeMap::new();
+            attributes.insert("command".into(), command.clone());
+            attributes.insert("exit_code".into(), exit_code.to_string());
+            phases.push(TimingPhaseSummary {
+                phase_path: "cli.command".into(),
+                total_ms: duration_ms as f64,
+                self_ms: duration_ms as f64,
+                count: 1,
+                attributes,
+            });
+        }
+
+        phases.sort_by(|a, b| a.phase_path.cmp(&b.phase_path));
+        Self {
+            schema_version: 1,
+            run_id: Uuid::new_v4().to_string(),
+            command,
+            mode: config.mode,
+            format: config.format,
+            started_at_unix_ms,
+            duration_ms,
+            exit_code,
+            phases,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TimingHandle {
+    inner: Arc<Mutex<BTreeMap<String, TimingPhaseSummary>>>,
+}
+
+impl TimingHandle {
+    pub fn dispatch(&self) -> tracing::Dispatch {
+        tracing::Dispatch::new(Registry::default().with(TimingLayer::new(self.clone())))
+    }
+
+    pub fn install_global(&self) -> Result<(), SetGlobalDefaultError> {
+        tracing::subscriber::set_global_default(Registry::default().with(TimingLayer::new(self.clone())))
+    }
+
+    pub fn snapshot(&self) -> Vec<TimingPhaseSummary> {
+        self.inner.lock().unwrap().values().cloned().collect()
+    }
+
+    fn record(&self, phase_path: String, total_ms: f64, self_ms: f64) {
+        let mut guard = self.inner.lock().unwrap();
+        let entry = guard.entry(phase_path.clone()).or_insert_with(|| TimingPhaseSummary {
+            phase_path,
+            total_ms: 0.0,
+            self_ms: 0.0,
+            count: 0,
+            attributes: BTreeMap::new(),
+        });
+        entry.total_ms += total_ms;
+        entry.self_ms += self_ms;
+        entry.count += 1;
+    }
+}
+
+#[derive(Debug)]
+struct SpanTimingData {
+    phase_path: String,
+    start: Instant,
+    child_ms: f64,
+}
+
+#[derive(Debug, Clone)]
+struct TimingLayer {
+    handle: TimingHandle,
+}
+
+impl TimingLayer {
+    fn new(handle: TimingHandle) -> Self {
+        Self { handle }
+    }
+}
+
+impl<S> Layer<S> for TimingLayer
+where
+    S: tracing::Subscriber + for<'a> LookupSpan<'a>,
+{
+    fn on_new_span(
+        &self,
+        _attrs: &tracing::span::Attributes<'_>,
+        id: &tracing::span::Id,
+        ctx: Context<'_, S>,
+    ) {
+        let Some(span) = ctx.span(id) else {
+            return;
+        };
+        let parent_path = span.parent().and_then(|parent| {
+            parent
+                .extensions()
+                .get::<SpanTimingData>()
+                .map(|data| data.phase_path.clone())
+        });
+        let phase_path = match parent_path {
+            Some(parent) => format!("{parent}.{}", span.metadata().name()),
+            None => span.metadata().name().to_string(),
+        };
+        span.extensions_mut().insert(SpanTimingData {
+            phase_path,
+            start: Instant::now(),
+            child_ms: 0.0,
+        });
+    }
+
+    fn on_close(&self, id: tracing::span::Id, ctx: Context<'_, S>) {
+        let Some(span) = ctx.span(&id) else {
+            return;
+        };
+        let parent = span.parent().map(|parent| parent.id());
+        let Some(data) = span.extensions_mut().remove::<SpanTimingData>() else {
+            return;
+        };
+
+        let total_ms = data.start.elapsed().as_secs_f64() * 1000.0;
+        let self_ms = (total_ms - data.child_ms).max(0.0);
+        self.handle.record(data.phase_path, total_ms, self_ms);
+
+        if let Some(parent_id) = parent
+            && let Some(parent_span) = ctx.span(&parent_id)
+            && let Some(parent_data) = parent_span.extensions_mut().get_mut::<SpanTimingData>()
+        {
+            parent_data.child_ms += total_ms;
+        }
+    }
 }
 
 pub fn unix_timestamp_ms_now() -> u128 {
@@ -204,5 +349,21 @@ mod tests {
         let data = std::fs::read_to_string(path).unwrap();
         assert!(data.contains("\"command\": \"explore\""));
         assert!(data.contains("\"phase_path\": \"cli.command\""));
+    }
+
+    #[test]
+    fn tracing_handle_aggregates_nested_spans() {
+        let handle = TimingHandle::default();
+        let dispatch = handle.dispatch();
+        tracing::dispatcher::with_default(&dispatch, || {
+            let outer = tracing::info_span!("cli.command");
+            let _outer_entered = outer.enter();
+            let inner = tracing::info_span!("core.explore");
+            let _inner_entered = inner.enter();
+        });
+
+        let phases = handle.snapshot();
+        assert!(phases.iter().any(|phase| phase.phase_path == "cli.command"));
+        assert!(phases.iter().any(|phase| phase.phase_path == "cli.command.core.explore"));
     }
 }
