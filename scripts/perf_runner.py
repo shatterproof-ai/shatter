@@ -373,10 +373,21 @@ def print_summary(summary: dict[str, Any], result_root: Path) -> None:
 
 
 def select_scenarios(
-    scenarios: dict[str, Scenario], scenario_ids: list[str] | None, run_all: bool
+    scenarios: dict[str, Scenario],
+    scenario_ids: list[str] | None,
+    scenario_file: str | None,
+    run_all: bool,
 ) -> list[Scenario]:
     if run_all:
         return list(scenarios.values())
+    if scenario_file:
+        scenario_path = Path(scenario_file)
+        scenario_ids = scenario_ids or []
+        for line in scenario_path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            scenario_ids.append(stripped)
     if not scenario_ids:
         raise SystemExit("pass --scenario <id> or --all")
     selected = []
@@ -457,6 +468,10 @@ def parse_args() -> argparse.Namespace:
         action="append",
         help="Scenario ID to run. May be passed multiple times.",
     )
+    run_parser.add_argument(
+        "--scenario-file",
+        help="File containing one scenario ID per line",
+    )
     run_parser.add_argument("--all", action="store_true", help="Run the full corpus")
     run_parser.add_argument("--dry-run", action="store_true", help="Print commands only")
     run_parser.add_argument(
@@ -498,7 +513,7 @@ def main() -> int:
                 )
         return 0
 
-    selected = select_scenarios(scenarios, args.scenario, args.all)
+    selected = select_scenarios(scenarios, args.scenario, args.scenario_file, args.all)
     if args.profiler in {"perf-stat", "perf-record"} and not args.dry_run and shutil.which("perf") is None:
         raise SystemExit("perf not found in PATH")
     if args.profiler == "pprof" and shutil.which("go") is None:
