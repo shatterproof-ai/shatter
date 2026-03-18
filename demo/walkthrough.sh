@@ -14,6 +14,7 @@ MODE="auto"
 DELAY=2
 DRY_RUN=false
 STEP_TIMEOUT=120  # seconds per step; 0 = no limit
+TIMING_DIR=""
 
 # Use temporary directories so the walkthrough never pollutes repo-local state
 # and never contends with Cargo's workspace artifact lock (avoids silent stalls
@@ -89,6 +90,7 @@ ${BOLD}OPTIONS${RESET}
     --auto          (no-op, auto is the default)
     --delay N       Seconds between steps in auto mode (default: 2)
     --step-timeout N  Per-step timeout in seconds (default: 120, 0 = no limit)
+    --timing-dir DIR  Persist timing artifacts there and print a 3-line summary per shatter step
     --dry-run       Print commands without executing them
     --help, -h      Show this help
 
@@ -107,6 +109,7 @@ while [[ $# -gt 0 ]]; do
         --interactive) MODE="interactive"; shift ;;
         --delay)   DELAY="$2"; shift 2 ;;
         --step-timeout) STEP_TIMEOUT="$2"; shift 2 ;;
+        --timing-dir) TIMING_DIR="$2"; shift 2 ;;
         --dry-run) DRY_RUN=true; shift ;;
         --help|-h) usage ;;
         *)         echo "${RED}Unknown option: $1${RESET}"; echo "Run with --help for usage."; exit 1 ;;
@@ -128,6 +131,15 @@ run_cmd() {
     echo "${DIM}\$${RESET} ${YELLOW}$*${RESET}"
     echo ""
 
+    local wants_timing=false
+    local latest_timing_file=""
+    local cmd=("$@")
+    if [[ -n "$TIMING_DIR" && ${#cmd[@]} -ge 2 && "${cmd[0]}" == "$SHATTER" ]]; then
+        mkdir -p "$TIMING_DIR"
+        cmd=("$SHATTER" --timing summary --timing-format json --timing-output-dir "$TIMING_DIR" "${cmd[@]:1}")
+        wants_timing=true
+    fi
+
     if [[ "$DRY_RUN" == true ]]; then
         echo "${DIM}  (dry-run: skipped)${RESET}"
     else
@@ -135,9 +147,8 @@ run_cmd() {
         # We scan the captured output afterward for error indicators.
         local output_tmp
         output_tmp="$(mktemp)"
-        local cmd=("$@")
         if [[ "$STEP_TIMEOUT" -gt 0 ]]; then
-            cmd=(timeout --signal=TERM --kill-after=10 "$STEP_TIMEOUT" "$@")
+            cmd=(timeout --signal=TERM --kill-after=10 "$STEP_TIMEOUT" "${cmd[@]}")
         fi
         if "${cmd[@]}" </dev/null > >(tee -a "$output_tmp") 2> >(tee -a "$output_tmp" >&2); then
             true
@@ -162,6 +173,54 @@ run_cmd() {
             grep -iE "$error_pattern" "$output_tmp" \
                 | sed 's/^/    /' >> "$ERROR_LOG"
             STEP_ERRORS=$((STEP_ERRORS + 1))
+        fi
+        if [[ "$wants_timing" == true ]]; then
+            latest_timing_file="$(find "$TIMING_DIR" -maxdepth 1 -name '*.timing.json' -type f -printf '%T@ %p\n' | sort -nr | head -n1 | cut -d' ' -f2-)"
+            if [[ -n "$latest_timing_file" && -f "$latest_timing_file" ]]; then
+                python3 - "$latest_timing_file" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as fh:
+    data = json.load(fh)
+
+phases = data.get("phases", [])
+phase_map = {phase["phase_path"]: phase for phase in phases}
+
+total_ms = phase_map.get("cli.command", {}).get("total_ms", float(data.get("duration_ms", 0)))
+code_under_test_ms = 0.0
+for name, phase in phase_map.items():
+    if name.startswith("frontend.remote.execute.invoke_function") or name.startswith("frontend.remote.execute.await_result"):
+        code_under_test_ms += float(phase.get("total_ms", 0.0))
+
+shatter_overhead_ms = max(0.0, total_ms - code_under_test_ms)
+
+top_candidates = []
+skip_top_phase_names = {
+    "cli.command",
+    "cli.finalize_command",
+    "core.explore_command",
+    "core.scan_command",
+    "core.run_command",
+    "core.export_tests_command",
+    "core.revalidate_command",
+    "core.stale_command",
+    "core.spec_diff_command",
+}
+for phase in phases:
+    name = phase["phase_path"]
+    if name in skip_top_phase_names:
+        continue
+    top_candidates.append((float(phase.get("total_ms", 0.0)), name))
+top_candidates.sort(reverse=True)
+top_labels = ", ".join(f"{name} {total:.1f}ms" for total, name in top_candidates[:2]) or "no phase data"
+
+print(f"  Timing: total {total_ms:.1f}ms")
+print(f"  Timing: shatter {shatter_overhead_ms:.1f}ms | code under test {code_under_test_ms:.1f}ms")
+print(f"  Timing: top phases {top_labels}")
+PY
+            fi
         fi
         rm -f "$output_tmp"
     fi
@@ -225,6 +284,9 @@ echo "${BOLD}${GREEN}Shatter Walkthrough${RESET}"
 echo "${DIM}Exercising shatter's pipeline against ${#EXAMPLES[@]} TS + ${#GO_EXAMPLES[@]} Go + ${#RUST_EXAMPLES[@]} Rust example functions${RESET}"
 if [[ "$DRY_RUN" == true ]]; then
     echo "${YELLOW}(dry-run mode: commands will not be executed)${RESET}"
+fi
+if [[ -n "$TIMING_DIR" ]]; then
+    echo "${DIM}Timing summaries enabled; artifacts will be written to ${TIMING_DIR}${RESET}"
 fi
 
 # TypeScript frontend is embedded in the shatter binary — no manual build needed.
@@ -323,8 +385,8 @@ step 17 $TOTAL "User-Provided Inputs via Config" \
 
 # Stage 18: Performance stats
 step 18 $TOTAL "Performance Stats" \
-    "Show per-function timing data with --perf" \
-    $SHATTER explore --perf "${EXAMPLES[@]}"
+    "Show walkthrough timing summaries using structured timing artifacts" \
+    $SHATTER explore "${EXAMPLES[@]}"
 
 # Stage 19: Parallel scan with worker pool
 step 19 $TOTAL "Parallel Scan" \
