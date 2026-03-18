@@ -10,20 +10,22 @@ use serde_json::json;
 
 use crate::auto_mock::{IoCategory, MockParam, ValueSource};
 use crate::behavior::{Behavior, BehaviorMap};
-use crate::protocol::{SetupContextEntry, SetupContextStack, SetupLevel};
 use crate::crypto_registry::{CryptoDirection, OutputSemantics, ParamRole};
 use crate::equivalence::{BranchPath, BranchStep, Precondition};
 use crate::execution_record::{
     BranchDecision, ErrorInfo, ExternalCall, ScopeEvent, SideEffect, SymConstraint, TraceEvent,
     TruncationInfo,
 };
-use crate::invariants::{ComparisonOp, Invariant, InvariantKind, InvariantTarget, ClassifiedInvariant};
+use crate::invariants::{
+    ClassifiedInvariant, ComparisonOp, Invariant, InvariantKind, InvariantTarget,
+};
 use crate::protocol::{
     BranchInfo, BranchType, Command, ConnectionFailure, CryptoBoundary, DepDetectionKind,
     DependencyKind, DiscoveredDependency, ErrorCode, ExecuteResult, ExternalDependency,
     FunctionAnalysis, GeneratorKind, LiteralValue, MockBehavior, MockConfig, PerformanceMetrics,
-    Request, Response, ResponseResult, PROTOCOL_VERSION,
+    Request, Response, ResponseResult, TimingPhaseSummary, TimingSummary, PROTOCOL_VERSION,
 };
+use crate::protocol::{SetupContextEntry, SetupContextStack, SetupLevel};
 use crate::spec::{ConcreteExample, FunctionSpec, Postcondition, Provenance, SpecClass};
 use crate::sym_expr::{BinOpKind, ConstValue, SymExpr, UnOpKind};
 use crate::triage::{BranchPrediction, TriageDisableReason, TriageVerdict};
@@ -191,10 +193,8 @@ pub fn arb_setup_level() -> impl Strategy<Value = SetupLevel> {
 }
 
 pub fn arb_setup_context_entry() -> impl Strategy<Value = SetupContextEntry> {
-    (arb_setup_level(), arb_json_value()).prop_map(|(level, context)| SetupContextEntry {
-        level,
-        context,
-    })
+    (arb_setup_level(), arb_json_value())
+        .prop_map(|(level, context)| SetupContextEntry { level, context })
 }
 
 pub fn arb_setup_context_stack() -> impl Strategy<Value = SetupContextStack> {
@@ -212,7 +212,10 @@ pub fn arb_mock_behavior() -> impl Strategy<Value = MockBehavior> {
 }
 
 pub fn arb_generator_kind() -> impl Strategy<Value = GeneratorKind> {
-    prop_oneof![Just(GeneratorKind::TypeName), Just(GeneratorKind::ParamName),]
+    prop_oneof![
+        Just(GeneratorKind::TypeName),
+        Just(GeneratorKind::ParamName),
+    ]
 }
 
 pub fn arb_dependency_kind() -> impl Strategy<Value = DependencyKind> {
@@ -442,23 +445,36 @@ pub fn arb_side_effect() -> impl Strategy<Value = SideEffect> {
             .prop_map(|(level, message)| SideEffect::ConsoleOutput { level, message }),
         (arb_ident(), proptest::option::of(arb_short_string()))
             .prop_map(|(path, content)| SideEffect::FileWrite { path, content }),
-        (arb_ident(), arb_short_string(), proptest::option::of(arb_json_value_non_null()))
-            .prop_map(|(method, url, body)| SideEffect::NetworkRequest { method, url, body }),
+        (
+            arb_ident(),
+            arb_short_string(),
+            proptest::option::of(arb_json_value_non_null())
+        )
+            .prop_map(|(method, url, body)| SideEffect::NetworkRequest {
+                method,
+                url,
+                body
+            }),
         (arb_ident(), proptest::option::of(arb_short_string()))
             .prop_map(|(variable, value)| SideEffect::EnvironmentRead { variable, value }),
         arb_ident().prop_map(|name| SideEffect::GlobalMutation { name }),
-        (arb_ident(), arb_short_string(), proptest::option::of(arb_short_string()))
+        (
+            arb_ident(),
+            arb_short_string(),
+            proptest::option::of(arb_short_string())
+        )
             .prop_map(|(error_type, message, stack)| SideEffect::ThrownError {
                 error_type,
                 message,
                 stack,
             }),
-        (arb_ident(), arb_json_value(), arb_json_value())
-            .prop_map(|(variable, before, after)| SideEffect::GlobalStateChange {
+        (arb_ident(), arb_json_value(), arb_json_value()).prop_map(|(variable, before, after)| {
+            SideEffect::GlobalStateChange {
                 variable,
                 before,
                 after,
-            }),
+            }
+        }),
     ]
 }
 
@@ -487,14 +503,20 @@ pub fn arb_truncation_info() -> impl Strategy<Value = TruncationInfo> {
 
 pub fn arb_performance_metrics() -> impl Strategy<Value = PerformanceMetrics> {
     // Use integer-valued f64 for wall_time_ms to avoid JSON round-trip precision loss.
-    (0..10000u64, 0..10_000_000u64, 0..100_000_000u64, 0..100_000_000u64).prop_map(
-        |(wall_ms, cpu_time_us, heap_used_bytes, heap_allocated_bytes)| PerformanceMetrics {
-            wall_time_ms: wall_ms as f64,
-            cpu_time_us,
-            heap_used_bytes,
-            heap_allocated_bytes,
-        },
+    (
+        0..10000u64,
+        0..10_000_000u64,
+        0..100_000_000u64,
+        0..100_000_000u64,
     )
+        .prop_map(
+            |(wall_ms, cpu_time_us, heap_used_bytes, heap_allocated_bytes)| PerformanceMetrics {
+                wall_time_ms: wall_ms as f64,
+                cpu_time_us,
+                heap_used_bytes,
+                heap_allocated_bytes,
+            },
+        )
 }
 
 pub fn arb_dep_detection_kind() -> impl Strategy<Value = DepDetectionKind> {
@@ -505,14 +527,20 @@ pub fn arb_dep_detection_kind() -> impl Strategy<Value = DepDetectionKind> {
 }
 
 pub fn arb_discovered_dependency() -> impl Strategy<Value = DiscoveredDependency> {
-    (arb_ident(), arb_ident(), arb_dep_detection_kind(), any::<bool>()).prop_map(
-        |(symbol, source_module, kind, is_subprocess_spawn)| DiscoveredDependency {
-            symbol,
-            source_module,
-            kind,
-            is_subprocess_spawn,
-        },
+    (
+        arb_ident(),
+        arb_ident(),
+        arb_dep_detection_kind(),
+        any::<bool>(),
     )
+        .prop_map(
+            |(symbol, source_module, kind, is_subprocess_spawn)| DiscoveredDependency {
+                symbol,
+                source_module,
+                kind,
+                is_subprocess_spawn,
+            },
+        )
 }
 
 pub fn arb_connection_failure() -> impl Strategy<Value = ConnectionFailure> {
@@ -606,7 +634,9 @@ pub fn arb_mock_config() -> impl Strategy<Value = MockConfig> {
 pub fn arb_literal_value() -> impl Strategy<Value = LiteralValue> {
     prop_oneof![
         (-1000i64..1000).prop_map(|value| LiteralValue::Int { value }),
-        (-1000i32..1000).prop_map(|n| LiteralValue::Float { value: f64::from(n) }),
+        (-1000i32..1000).prop_map(|n| LiteralValue::Float {
+            value: f64::from(n)
+        }),
         arb_short_string().prop_map(|value| LiteralValue::Str { value }),
         any::<bool>().prop_map(|value| LiteralValue::Bool { value }),
         arb_short_string().prop_map(|pattern| LiteralValue::Regex { pattern }),
@@ -621,13 +651,15 @@ pub fn arb_branch_info() -> impl Strategy<Value = BranchInfo> {
         proptest::option::of(arb_sym_expr(2)),
         arb_branch_type(),
     )
-        .prop_map(|(id, line, condition_text, condition, branch_type)| BranchInfo {
-            id,
-            line,
-            condition_text,
-            condition,
-            branch_type,
-        })
+        .prop_map(
+            |(id, line, condition_text, condition, branch_type)| BranchInfo {
+                id,
+                line,
+                condition_text,
+                condition,
+                branch_type,
+            },
+        )
 }
 
 pub fn arb_confidence() -> impl Strategy<Value = crate::nondeterminism::Confidence> {
@@ -753,12 +785,14 @@ pub fn arb_command() -> impl Strategy<Value = Command> {
             prop::collection::vec(arb_mock_config(), 0..=2),
             proptest::option::of(arb_setup_context_stack()),
         )
-            .prop_map(|(function, inputs, mocks, setup_context)| Command::Execute {
-                function,
-                inputs,
-                mocks,
-                setup_context,
-            }),
+            .prop_map(
+                |(function, inputs, mocks, setup_context)| Command::Execute {
+                    function,
+                    inputs,
+                    mocks,
+                    setup_context,
+                }
+            ),
         (arb_ident(), arb_ident(), arb_setup_level()).prop_map(|(file, scope, level)| {
             Command::Setup {
                 file,
@@ -785,16 +819,25 @@ pub fn arb_command() -> impl Strategy<Value = Command> {
 
 pub fn arb_response_result() -> impl Strategy<Value = ResponseResult> {
     prop_oneof![
-        (arb_ident(), arb_ident(), prop::collection::vec(arb_ident(), 0..=3)).prop_map(
-            |(frontend_version, language, capabilities)| ResponseResult::Handshake {
-                frontend_version,
-                language,
-                capabilities,
-            }
-        ),
+        (
+            arb_ident(),
+            arb_ident(),
+            prop::collection::vec(arb_ident(), 0..=3)
+        )
+            .prop_map(|(frontend_version, language, capabilities)| {
+                ResponseResult::Handshake {
+                    frontend_version,
+                    language,
+                    capabilities,
+                }
+            }),
         prop::collection::vec(arb_function_analysis(), 0..=3)
             .prop_map(|functions| ResponseResult::Analyze { functions }),
-        (any::<bool>(), proptest::option::of(arb_ident()), proptest::option::of(1..500u32))
+        (
+            any::<bool>(),
+            proptest::option::of(arb_ident()),
+            proptest::option::of(1..500u32)
+        )
             .prop_map(|(instrumented, output_file, instrumentable_line_count)| {
                 ResponseResult::Instrument {
                     instrumented,
@@ -802,11 +845,8 @@ pub fn arb_response_result() -> impl Strategy<Value = ResponseResult> {
                     instrumentable_line_count,
                 }
             }),
-        arb_execute_result()
-            .prop_map(|er| ResponseResult::Execute(Box::new(er))),
-        arb_json_value().prop_map(|ctx| ResponseResult::Setup {
-            setup_context: ctx,
-        }),
+        arb_execute_result().prop_map(|er| ResponseResult::Execute(Box::new(er))),
+        arb_json_value().prop_map(|ctx| ResponseResult::Setup { setup_context: ctx }),
         Just(ResponseResult::TeardownAck),
         (arb_json_value_non_null(), arb_ident()).prop_map(|(value, generator_id)| {
             ResponseResult::Generate {
@@ -835,11 +875,41 @@ pub fn arb_request() -> impl Strategy<Value = Request> {
 }
 
 pub fn arb_response() -> impl Strategy<Value = Response> {
-    (0..1000u64, arb_response_result()).prop_map(|(id, result)| Response {
-        protocol_version: PROTOCOL_VERSION.to_string(),
-        id,
-        result,
-    })
+    (
+        0..1000u64,
+        arb_response_result(),
+        proptest::option::of(arb_timing_summary()),
+    )
+        .prop_map(|(id, result, timing)| Response {
+            protocol_version: PROTOCOL_VERSION.to_string(),
+            id,
+            timing,
+            result,
+        })
+}
+
+pub fn arb_timing_summary() -> impl Strategy<Value = TimingSummary> {
+    prop::collection::vec(arb_timing_phase_summary(), 0..=4)
+        .prop_map(|phases| TimingSummary { phases })
+}
+
+pub fn arb_timing_phase_summary() -> impl Strategy<Value = TimingPhaseSummary> {
+    (
+        arb_ident(),
+        0u32..10_000,
+        0u32..10_000,
+        1u64..10,
+        prop::collection::btree_map(arb_ident(), arb_ident(), 0..=3),
+    )
+        .prop_map(
+            |(phase_path, total_ms, self_ms, count, attributes)| TimingPhaseSummary {
+                phase_path,
+                total_ms: total_ms as f64,
+                self_ms: self_ms as f64,
+                count,
+                attributes,
+            },
+        )
 }
 
 // ---------------------------------------------------------------------------
@@ -865,39 +935,47 @@ fn arb_json_path() -> impl Strategy<Value = Vec<String>> {
 
 pub fn arb_invariant_kind() -> impl Strategy<Value = InvariantKind> {
     prop_oneof![
-        (arb_json_path(), arb_comparison_op(), -1000i32..1000i32)
-            .prop_map(|(path, op, v)| InvariantKind::NumericComparison {
+        (arb_json_path(), arb_comparison_op(), -1000i32..1000i32).prop_map(|(path, op, v)| {
+            InvariantKind::NumericComparison {
                 path,
                 op,
                 value: f64::from(v),
-            }),
-        (arb_json_path(), -1000i32..1000i32)
-            .prop_map(|(path, v)| InvariantKind::NumericConstant {
-                path,
-                value: f64::from(v),
-            }),
+            }
+        }),
+        (arb_json_path(), -1000i32..1000i32).prop_map(|(path, v)| InvariantKind::NumericConstant {
+            path,
+            value: f64::from(v),
+        }),
         arb_json_path().prop_map(|path| InvariantKind::NotNull { path }),
         arb_json_path().prop_map(|path| InvariantKind::IsNull { path }),
         arb_json_path().prop_map(|path| InvariantKind::StringNonEmpty { path }),
         (arb_json_path(), arb_comparison_op(), 0..100usize)
             .prop_map(|(path, op, value)| InvariantKind::StringLength { path, op, value }),
-        (arb_json_path(), 0..5usize, arb_json_path())
-            .prop_map(|(output_path, param_index, input_path)| {
-                InvariantKind::OutputEqualsInput { output_path, param_index, input_path }
-            }),
+        (arb_json_path(), 0..5usize, arb_json_path()).prop_map(
+            |(output_path, param_index, input_path)| {
+                InvariantKind::OutputEqualsInput {
+                    output_path,
+                    param_index,
+                    input_path,
+                }
+            }
+        ),
         arb_json_path().prop_map(|path| InvariantKind::AlwaysTrue { path }),
         arb_json_path().prop_map(|path| InvariantKind::AlwaysFalse { path }),
     ]
 }
 
 pub fn arb_invariant() -> impl Strategy<Value = Invariant> {
-    (arb_short_string(), arb_invariant_target(), arb_invariant_kind()).prop_map(
-        |(description, target, kind)| Invariant {
+    (
+        arb_short_string(),
+        arb_invariant_target(),
+        arb_invariant_kind(),
+    )
+        .prop_map(|(description, target, kind)| Invariant {
             description,
             target,
             kind,
-        },
-    )
+        })
 }
 
 pub fn arb_classified_invariant() -> impl Strategy<Value = ClassifiedInvariant> {
@@ -911,7 +989,8 @@ pub fn arb_classified_invariant() -> impl Strategy<Value = ClassifiedInvariant> 
     )
         .prop_map(|(invariant, target, label, conf_pct, total_count)| {
             let confidence = f64::from(conf_pct) / 100.0;
-            let satisfied_count = ((confidence * total_count as f64).round() as usize).min(total_count);
+            let satisfied_count =
+                ((confidence * total_count as f64).round() as usize).min(total_count);
             ClassifiedInvariant {
                 invariant,
                 target,
@@ -1071,16 +1150,14 @@ pub fn arb_behavior() -> impl Strategy<Value = Behavior> {
 }
 
 pub fn arb_behavior_map() -> impl Strategy<Value = BehaviorMap> {
-    (
-        arb_ident(),
-        prop::collection::vec(arb_behavior(), 0..=5),
-    )
-        .prop_map(|(function_id, behaviors)| BehaviorMap {
+    (arb_ident(), prop::collection::vec(arb_behavior(), 0..=5)).prop_map(
+        |(function_id, behaviors)| BehaviorMap {
             function_id,
             behaviors,
             fingerprint: None,
             nondeterministic_fields: vec![],
-        })
+        },
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1113,15 +1190,15 @@ pub fn arb_mock_param() -> impl Strategy<Value = MockParam> {
         1..10u32,
         arb_value_source(),
     )
-        .prop_map(|(symbol, return_type, category, call_count_estimate, value_source)| {
-            MockParam {
+        .prop_map(
+            |(symbol, return_type, category, call_count_estimate, value_source)| MockParam {
                 symbol,
                 return_type,
                 category,
                 call_count_estimate,
                 value_source,
-            }
-        })
+            },
+        )
 }
 
 // ---------------------------------------------------------------------------
@@ -1139,11 +1216,12 @@ pub fn arb_branch_prediction() -> impl Strategy<Value = BranchPrediction> {
 pub fn arb_triage_verdict() -> impl Strategy<Value = TriageVerdict> {
     prop_oneof![
         Just(TriageVerdict::Skip),
-        (1..20usize, 0..10usize)
-            .prop_map(|(novel_count, first_novel_depth)| TriageVerdict::Execute {
+        (1..20usize, 0..10usize).prop_map(|(novel_count, first_novel_depth)| {
+            TriageVerdict::Execute {
                 novel_count,
                 first_novel_depth,
-            }),
+            }
+        }),
         Just(TriageVerdict::Indeterminate),
     ]
 }

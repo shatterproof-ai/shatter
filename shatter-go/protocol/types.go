@@ -87,9 +87,10 @@ type Request struct {
 // Response is a message from the frontend to the core engine.
 // Only fields relevant to the given status are populated.
 type Response struct {
-	ProtocolVersion string `json:"protocol_version"`
-	ID              int    `json:"id"`
-	Status          string `json:"status"`
+	ProtocolVersion string         `json:"protocol_version"`
+	ID              int            `json:"id"`
+	Status          string         `json:"status"`
+	Timing          *TimingSummary `json:"timing,omitempty"`
 
 	// Handshake
 	FrontendVersion string   `json:"frontend_version,omitempty"`
@@ -100,22 +101,22 @@ type Response struct {
 	Functions []FunctionAnalysis `json:"functions"`
 
 	// Instrument
-	Instrumented           *bool   `json:"instrumented,omitempty"`
-	OutputFile             *string `json:"output_file,omitempty"`
-	InstrumentableLineCount *int   `json:"instrumentable_line_count,omitempty"`
+	Instrumented            *bool   `json:"instrumented,omitempty"`
+	OutputFile              *string `json:"output_file,omitempty"`
+	InstrumentableLineCount *int    `json:"instrumentable_line_count,omitempty"`
 
 	// Execute
-	ReturnValue       json.RawMessage   `json:"return_value,omitempty"`
-	ThrownError       *ErrorInfo        `json:"thrown_error,omitempty"`
-	BranchPath        []BranchDecision  `json:"branch_path,omitempty"`
-	LinesExecuted     []int             `json:"lines_executed,omitempty"`
+	ReturnValue            json.RawMessage        `json:"return_value,omitempty"`
+	ThrownError            *ErrorInfo             `json:"thrown_error,omitempty"`
+	BranchPath             []BranchDecision       `json:"branch_path,omitempty"`
+	LinesExecuted          []int                  `json:"lines_executed,omitempty"`
 	CallsToExternal        []ExternalCall         `json:"calls_to_external,omitempty"`
 	DiscoveredDependencies []DiscoveredDependency `json:"discovered_dependencies,omitempty"`
 	PathConstraints        []SymConstraint        `json:"path_constraints,omitempty"`
-	SideEffects       []SideEffect      `json:"side_effects,omitempty"`
-	ScopeEvents       []json.RawMessage `json:"scope_events,omitempty"`
-	CaptureTruncation *TruncationInfo   `json:"capture_truncation,omitempty"`
-	Performance       *PerfMetrics      `json:"performance,omitempty"`
+	SideEffects            []SideEffect           `json:"side_effects,omitempty"`
+	ScopeEvents            []json.RawMessage      `json:"scope_events,omitempty"`
+	CaptureTruncation      *TruncationInfo        `json:"capture_truncation,omitempty"`
+	Performance            *PerfMetrics           `json:"performance,omitempty"`
 
 	// Setup
 	SetupContext *json.RawMessage `json:"setup_context,omitempty"`
@@ -187,29 +188,29 @@ type LiteralValue struct {
 // CryptoBoundary represents a detected cryptographic API boundary within a function.
 // Populated by core after analysis; frontends leave this empty.
 type CryptoBoundary struct {
-	Symbol       string            `json:"symbol"`
-	SourceModule string            `json:"source_module"`
-	Direction    string            `json:"direction"`
-	Output       string            `json:"output,omitempty"`
-	Confidence   string            `json:"confidence,omitempty"`
-	ParamRoles   map[string]string `json:"param_roles,omitempty"`
-	CallSites    []int             `json:"call_sites"`
-	InputEntropy  *float64         `json:"input_entropy,omitempty"`
-	OutputEntropy *float64         `json:"output_entropy,omitempty"`
+	Symbol        string            `json:"symbol"`
+	SourceModule  string            `json:"source_module"`
+	Direction     string            `json:"direction"`
+	Output        string            `json:"output,omitempty"`
+	Confidence    string            `json:"confidence,omitempty"`
+	ParamRoles    map[string]string `json:"param_roles,omitempty"`
+	CallSites     []int             `json:"call_sites"`
+	InputEntropy  *float64          `json:"input_entropy,omitempty"`
+	OutputEntropy *float64          `json:"output_entropy,omitempty"`
 }
 
 // FunctionAnalysis is the result of analyzing a single function.
 type FunctionAnalysis struct {
-	Name              string               `json:"name"`
-	Exported          bool                 `json:"exported,omitempty"`
-	Params            []ParamInfo          `json:"params"`
-	Branches          []BranchInfo         `json:"branches"`
-	Dependencies      []ExternalDependency `json:"dependencies"`
-	ReturnType        TypeInfo             `json:"return_type"`
-	StartLine         int                  `json:"start_line"`
-	EndLine           int                  `json:"end_line"`
-	Literals          []LiteralValue       `json:"literals,omitempty"`
-	CryptoBoundaries  []CryptoBoundary     `json:"crypto_boundaries,omitempty"`
+	Name             string               `json:"name"`
+	Exported         bool                 `json:"exported,omitempty"`
+	Params           []ParamInfo          `json:"params"`
+	Branches         []BranchInfo         `json:"branches"`
+	Dependencies     []ExternalDependency `json:"dependencies"`
+	ReturnType       TypeInfo             `json:"return_type"`
+	StartLine        int                  `json:"start_line"`
+	EndLine          int                  `json:"end_line"`
+	Literals         []LiteralValue       `json:"literals,omitempty"`
+	CryptoBoundaries []CryptoBoundary     `json:"crypto_boundaries,omitempty"`
 }
 
 // BranchInfo describes a branch point in the source code.
@@ -325,4 +326,18 @@ type PerfMetrics struct {
 	CPUTimeUs          int     `json:"cpu_time_us"`
 	HeapUsedBytes      int     `json:"heap_used_bytes"`
 	HeapAllocatedBytes int     `json:"heap_allocated_bytes"`
+}
+
+// TimingSummary captures aggregated phase timings for a frontend command.
+type TimingSummary struct {
+	Phases []TimingPhaseSummary `json:"phases,omitempty"`
+}
+
+// TimingPhaseSummary captures one named timing phase.
+type TimingPhaseSummary struct {
+	PhasePath  string            `json:"phase_path"`
+	TotalMs    float64           `json:"total_ms"`
+	SelfMs     float64           `json:"self_ms"`
+	Count      int               `json:"count"`
+	Attributes map[string]string `json:"attributes,omitempty"`
 }
