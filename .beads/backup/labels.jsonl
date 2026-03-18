@@ -64,6 +64,9 @@
 {"issue_id":"str-19pm","label":"explore"}
 {"issue_id":"str-19pm","label":"perf"}
 {"issue_id":"str-19pm","label":"scheduling"}
+{"issue_id":"str-19pm.1","label":"explore"}
+{"issue_id":"str-19pm.1","label":"perf"}
+{"issue_id":"str-19pm.1","label":"scheduling"}
 {"issue_id":"str-1a1z","label":"perf"}
 {"issue_id":"str-1a1z","label":"tooling"}
 {"issue_id":"str-1a1z.1","label":"perf"}
