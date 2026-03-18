@@ -233,6 +233,46 @@ async fn main() -> ExitCode {
                 use_color,
             )
         }
+        CliCommand::Observe {
+            target,
+            concolic,
+            max_iterations,
+            timeout,
+            request_timeout,
+            exec_timeout,
+            build_timeout,
+            output,
+            memory_limit,
+        } => {
+            commands::observe::run_observe(
+                &target,
+                concolic,
+                max_iterations,
+                timeout,
+                request_timeout,
+                exec_timeout,
+                build_timeout,
+                output.as_deref(),
+                log_level,
+                memory_limit,
+                cli.project_dir.as_deref(),
+            )
+            .await
+        }
+        CliCommand::Specify {
+            observation_file,
+            analyze_file,
+            json,
+            invariants,
+            output,
+        } => commands::specify::run_specify(
+            &observation_file,
+            analyze_file.as_deref(),
+            json,
+            invariants,
+            output.as_deref(),
+            use_color,
+        ),
         CliCommand::Scan {
             directory,
             language,

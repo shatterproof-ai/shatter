@@ -370,6 +370,71 @@ pub(crate) enum CliCommand {
         invariants: bool,
     },
 
+    /// Run the observation stage: execute a function with generated inputs and write
+    /// ObserveStageOutput JSON to a file or stdout. Use `shatter analyze` to process
+    /// the output offline, or `shatter specify` to build a behavioral spec.
+    Observe {
+        /// Target: <file>:<function>. The function name is required.
+        #[arg(required = true, value_name = "TARGET")]
+        target: String,
+
+        /// Use concolic (Z3-backed) exploration instead of random.
+        #[arg(long)]
+        concolic: bool,
+
+        /// Maximum number of iterations.
+        #[arg(long, default_value_t = 100)]
+        max_iterations: u32,
+
+        /// Total timeout in seconds.
+        #[arg(long, default_value_t = 60)]
+        timeout: u64,
+
+        /// Per-request timeout in seconds.
+        #[arg(long, default_value_t = 30)]
+        request_timeout: u64,
+
+        /// Per-execution timeout in seconds.
+        #[arg(long, default_value_t = 30)]
+        exec_timeout: u64,
+
+        /// Build timeout in seconds.
+        #[arg(long, default_value_t = 60)]
+        build_timeout: u64,
+
+        /// Write ObserveStageOutput JSON to this file. If omitted, writes to stdout.
+        #[arg(long, short = 'o', value_name = "FILE")]
+        output: Option<PathBuf>,
+
+        /// Memory limit in MB for the frontend process.
+        #[arg(long)]
+        memory_limit: Option<u64>,
+    },
+
+    /// Build a FunctionSpec from an observation file produced by `shatter observe`.
+    Specify {
+        /// Path to an ObserveStageOutput JSON file.
+        #[arg(value_name = "OBSERVATION_FILE")]
+        observation_file: PathBuf,
+
+        /// Path to an AnalyzeStageOutput JSON file from `shatter analyze --output`.
+        /// If omitted, the analyze stage runs inline.
+        #[arg(long, value_name = "FILE")]
+        analyze_file: Option<PathBuf>,
+
+        /// Output spec as JSON instead of markdown.
+        #[arg(long)]
+        json: bool,
+
+        /// Detect and include function-wide invariants.
+        #[arg(long)]
+        invariants: bool,
+
+        /// Write spec to this file. If omitted, writes to stdout.
+        #[arg(long, short = 'o', value_name = "FILE")]
+        output: Option<PathBuf>,
+    },
+
     /// Scan a directory for source files, analyze and explore all functions in
     /// dependency order, using behavior maps as mocks.
     Scan {

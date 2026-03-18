@@ -216,7 +216,7 @@ RUST_EXAMPLES=(
     "examples/standalone/rust/18_accept_language.rs:negotiate_language"
 )
 
-TOTAL=44
+TOTAL=47
 
 # ─── Walkthrough ──────────────────────────────────────────────────────
 
@@ -469,6 +469,22 @@ step 44 $TOTAL "Setup Fail-on-Error" \
     $SHATTER explore --config examples/typescript/.shatter/config.yaml \
     --setup-timeout 10 --fail-on-setup-error \
     "examples/standalone/ts/01-arithmetic.ts:classifyNumber"
+
+# Stage 45: Observe command — run observation stage, write ObserveStageOutput JSON
+step 45 $TOTAL "Observe Stage" \
+    "Run observation stage only for classifyNumber, write to temp file" \
+    $SHATTER observe --output /tmp/shatter-observe.json \
+    "examples/standalone/ts/01-arithmetic.ts:classifyNumber"
+
+# Stage 46: Analyze observe output — offline analysis, no frontend needed
+step 46 $TOTAL "Analyze Observe Output" \
+    "Read observation output and run offline analysis stage" \
+    $SHATTER analyze /tmp/shatter-observe.json
+
+# Stage 47: Specify from observation — build FunctionSpec markdown
+step 47 $TOTAL "Specify from Observation" \
+    "Build FunctionSpec markdown from observation output" \
+    $SHATTER specify /tmp/shatter-observe.json
 
 # ─── Error Summary ────────────────────────────────────────────────────
 if [[ -s "$ERROR_LOG" ]]; then
