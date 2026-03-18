@@ -84,6 +84,7 @@ pub(crate) fn frontend_config(
     build_timeout: u64,
     memory_limit: Option<u64>,
     shatter_dir: Option<&Path>,
+    timing_enabled: bool,
 ) -> Result<FrontendConfig, String> {
     let (command, mut args) = match language {
         Language::TypeScript => {
@@ -138,6 +139,9 @@ pub(crate) fn frontend_config(
     config.args = args;
     config.request_timeout = timeout;
     apply_frontend_env(&mut config, log_level, exec_timeout, build_timeout);
+    if timing_enabled {
+        config.capabilities.push("timing".to_string());
+    }
 
     if let Some(mb) = memory_limit
         && language == Language::Go
@@ -272,7 +276,7 @@ mod tests {
 
     #[test]
     fn frontend_config_typescript_uses_embedded_bundle() {
-        let config = frontend_config(Language::TypeScript, shatter_core::frontend::DEFAULT_REQUEST_TIMEOUT, LogLevel::Info, 10, 30, None, None).unwrap();
+        let config = frontend_config(Language::TypeScript, shatter_core::frontend::DEFAULT_REQUEST_TIMEOUT, LogLevel::Info, 10, 30, None, None, false).unwrap();
         assert_eq!(config.command, PathBuf::from("node"));
         assert_eq!(config.request_timeout, shatter_core::frontend::DEFAULT_REQUEST_TIMEOUT);
         // First arg suppresses Node warnings, second is the extracted bundle
@@ -287,7 +291,7 @@ mod tests {
 
     #[test]
     fn frontend_config_go_uses_embedded_binary() {
-        let config = frontend_config(Language::Go, Duration::from_secs(45), LogLevel::Info, 10, 30, None, None).unwrap();
+        let config = frontend_config(Language::Go, Duration::from_secs(45), LogLevel::Info, 10, 30, None, None, false).unwrap();
         assert_eq!(config.request_timeout, Duration::from_secs(45));
         assert!(config.args.is_empty());
         // The command should point to the extracted binary, not a relative dev path
@@ -296,6 +300,22 @@ mod tests {
             cmd_str.contains("go-frontend-"),
             "expected embedded binary path, got: {cmd_str}",
         );
+    }
+
+    #[test]
+    fn frontend_config_adds_timing_capability_when_enabled() {
+        let config = frontend_config(
+            Language::TypeScript,
+            shatter_core::frontend::DEFAULT_REQUEST_TIMEOUT,
+            LogLevel::Info,
+            10,
+            30,
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+        assert!(config.capabilities.iter().any(|cap| cap == "timing"));
     }
 
     #[test]

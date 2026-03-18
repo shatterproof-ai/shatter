@@ -31,6 +31,7 @@ import type {
 import { RECORD_FUNCTION, BRANCH_FUNCTION, SCOPE_EVENT_FUNCTION, MOCK_REGISTRY, MOCK_CALL_FUNCTION } from "./instrumentor.js";
 import type { MockConfig, ExternalCall } from "./protocol.js";
 import { REACT_MODULE_NAMES, getReactShim } from "./react-shim.js";
+import type { TimingCollector } from "./timing.js";
 
 export const DEFAULT_EXEC_TIMEOUT_MS = 15_000;
 
@@ -300,7 +301,7 @@ interface MeasuredExecution {
  * and heap delta via process.memoryUsage(). Optionally runs GC before measurement
  * if --expose-gc is enabled.
  */
-async function measureExecution(fn: () => unknown): Promise<MeasuredExecution> {
+async function measureExecution(fn: () => unknown, timing?: TimingCollector): Promise<MeasuredExecution> {
   tryGc();
 
   const startMem = process.memoryUsage();
@@ -311,16 +312,21 @@ async function measureExecution(fn: () => unknown): Promise<MeasuredExecution> {
   let thrownError: ErrorInfo | null = null;
 
   try {
-    const syncResult = fn();
+    const syncResult = timing
+      ? timing.sync("execute.invoke_function", fn)
+      : fn();
     // If the function returned a Promise (async function), await it with timeout
     if (syncResult != null && typeof (syncResult as PromiseLike<unknown>).then === 'function') {
       const timeoutMs = getExecTimeoutMs();
-      returnValue = await Promise.race([
+      const awaitResult = () => Promise.race([
         syncResult as Promise<unknown>,
         new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error("async execution timed out")), timeoutMs)
         ),
       ]);
+      returnValue = timing
+        ? await timing.async("execute.await_result", awaitResult)
+        : await awaitResult();
     } else {
       returnValue = syncResult;
     }
@@ -578,8 +584,11 @@ export async function executeFunction(
   filePath: string,
   functionRef: string,
   inputs: unknown[],
+  timing?: TimingCollector,
 ): Promise<RawExecuteResult> {
-  const fn = resolveFunction(filePath, functionRef);
+  const fn = timing
+    ? timing.sync("execute.module_load", () => resolveFunction(filePath, functionRef))
+    : resolveFunction(filePath, functionRef);
 
   const sideEffects: SideEffect[] = [];
   const previousTarget = consoleTarget;
@@ -588,7 +597,7 @@ export async function executeFunction(
   let metrics: MeasuredExecution;
   try {
     const reconstructedInputs = inputs.map(reconstructValue);
-    metrics = await measureExecution(() => fn(...reconstructedInputs));
+    metrics = await measureExecution(() => fn(...reconstructedInputs), timing);
   } finally {
     consoleTarget = previousTarget;
   }
@@ -630,9 +639,10 @@ export async function executeInstrumented(
   inputs: unknown[],
   mocks: MockConfig[] = [],
   sourceFilePath?: string,
+  timing?: TimingCollector,
 ): Promise<RawExecuteResult> {
   // Transpile instrumented TS to JS
-  const jsResult = ts.transpileModule(instrumentedSource, {
+  const transpile = () => ts.transpileModule(instrumentedSource, {
     compilerOptions: {
       target: ts.ScriptTarget.ES2022,
       module: ts.ModuleKind.CommonJS,
@@ -642,6 +652,9 @@ export async function executeInstrumented(
     },
     ...(sourceFilePath ? { fileName: sourceFilePath } : {}),
   });
+  const jsResult = timing
+    ? timing.sync("execute.transpile", transpile)
+    : transpile();
 
   const linesExecuted: number[] = [];
   const branchDecisions: BranchDecision[] = [];
@@ -817,7 +830,14 @@ export async function executeInstrumented(
     [MOCK_CALL_FUNCTION]: mockCallFn,
   });
 
-  vm.runInContext(jsResult.outputText, sandbox, { filename: sourceFilePath ?? "instrumented.js", timeout: getExecTimeoutMs() });
+  const loadModule = (): void => {
+    vm.runInContext(jsResult.outputText, sandbox, { filename: sourceFilePath ?? "instrumented.js", timeout: getExecTimeoutMs() });
+  };
+  if (timing) {
+    timing.sync("execute.module_load", loadModule);
+  } else {
+    loadModule();
+  }
 
   // Resolve the function from the module exports
   const finalExports = (sandbox as Record<string, unknown>)["module"] as { exports: Record<string, unknown> };
@@ -843,6 +863,7 @@ export async function executeInstrumented(
   const reconstructedInputs = inputs.map(reconstructValue);
   const metrics = await measureExecution(
     () => (fn as (...args: unknown[]) => unknown)(...reconstructedInputs),
+    timing,
   );
 
   if (metrics.thrownError) {
@@ -904,8 +925,11 @@ export function buildExecuteResponse(
   id: number,
   protocolVersion: string,
   rawResult: RawExecuteResult,
+  timing?: TimingCollector,
 ): ExecuteResponse {
-  const { effects, truncation } = truncateSideEffects(rawResult.side_effects);
+  const { effects, truncation } = timing
+    ? timing.sync("execute.trace_capture", () => truncateSideEffects(rawResult.side_effects))
+    : truncateSideEffects(rawResult.side_effects);
 
   const response: ExecuteResponse = {
     protocol_version: protocolVersion,

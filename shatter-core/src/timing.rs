@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -10,6 +10,8 @@ use tracing_subscriber::layer::{Context, Layer};
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::registry::{LookupSpan, Registry};
 use uuid::Uuid;
+
+static GLOBAL_TIMING_HANDLE: OnceLock<TimingHandle> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -193,6 +195,7 @@ impl TimingHandle {
     }
 
     pub fn install_global(&self) -> Result<(), SetGlobalDefaultError> {
+        let _ = GLOBAL_TIMING_HANDLE.set(self.clone());
         tracing::subscriber::set_global_default(Registry::default().with(TimingLayer::new(self.clone())))
     }
 
@@ -212,6 +215,42 @@ impl TimingHandle {
         entry.total_ms += total_ms;
         entry.self_ms += self_ms;
         entry.count += 1;
+    }
+
+    fn record_summary(&self, summary: TimingPhaseSummary) {
+        let mut guard = self.inner.lock().unwrap();
+        let entry = guard
+            .entry(summary.phase_path.clone())
+            .or_insert_with(|| TimingPhaseSummary {
+                phase_path: summary.phase_path.clone(),
+                total_ms: 0.0,
+                self_ms: 0.0,
+                count: 0,
+                attributes: BTreeMap::new(),
+            });
+        entry.total_ms += summary.total_ms;
+        entry.self_ms += summary.self_ms;
+        entry.count += summary.count;
+        for (key, value) in summary.attributes {
+            entry.attributes.entry(key).or_insert(value);
+        }
+    }
+}
+
+pub fn record_protocol_timing(summary: &crate::protocol::TimingSummary) {
+    let Some(handle) = GLOBAL_TIMING_HANDLE.get() else {
+        return;
+    };
+
+    for phase in &summary.phases {
+        let phase_path = format!("frontend.remote.{}", phase.phase_path);
+        handle.record_summary(TimingPhaseSummary {
+            phase_path,
+            total_ms: phase.total_ms,
+            self_ms: phase.self_ms,
+            count: phase.count,
+            attributes: phase.attributes.clone(),
+        });
     }
 }
 

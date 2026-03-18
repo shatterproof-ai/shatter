@@ -239,6 +239,10 @@ impl Frontend {
                 });
             }
 
+            if let Some(timing) = &response.timing {
+                crate::timing::record_protocol_timing(timing);
+            }
+
             Ok(response)
         };
 

@@ -47,6 +47,7 @@ pub(crate) async fn run_revalidate(
         build_timeout,
         memory_limit,
         None,
+        false,
     )?;
     let mut frontend = Frontend::spawn(&config).await.map_err(|e| {
         format!("failed to spawn {} frontend: {e}", target.language.label())
