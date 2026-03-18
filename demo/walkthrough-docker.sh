@@ -191,30 +191,33 @@ skip() {
     echo ""
 }
 
+SAMPLE_MANIFEST="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/benchmarks/sample-manifest.json"
+
+load_sample_group() {
+    local key="$1"
+    python3 - "$SAMPLE_MANIFEST" "$key" <<'PY'
+import json
+import sys
+
+manifest_path, dotted_key = sys.argv[1], sys.argv[2]
+with open(manifest_path, "r", encoding="utf-8") as fh:
+    data = json.load(fh)
+
+value = data
+for part in dotted_key.split("."):
+    value = value[part]
+
+for item in value:
+    print(item)
+PY
+}
+
 # ─── Example targets ─────────────────────────────────────────────────
 # Include one branch-dense "advanced" example in the guided demo. The other
 # new mirrored examples stay in scan coverage to keep the walkthrough readable.
-EXAMPLES=(
-    "examples/standalone/ts/01-arithmetic.ts:classifyNumber"
-    "examples/standalone/ts/02-strings.ts:classifyString"
-    "examples/standalone/ts/03-objects.ts:categorizeUser"
-    "examples/standalone/ts/04-errors.ts:safeDivide"
-    "examples/standalone/ts/18-accept-language.ts:negotiateLanguage"
-)
-
-GO_EXAMPLES=(
-    "examples/standalone/go/01-arithmetic.go:ClassifyNumber"
-    "examples/standalone/go/02-strings.go:ClassifyString"
-    "examples/standalone/go/04-errors.go:SafeDivide"
-    "examples/standalone/go/18-accept-language.go:NegotiateLanguage"
-)
-
-RUST_EXAMPLES=(
-    "examples/standalone/rust/01_arithmetic.rs:classify_number"
-    "examples/standalone/rust/02_strings.rs:classify_string"
-    "examples/standalone/rust/04_errors.rs:safe_divide"
-    "examples/standalone/rust/18_accept_language.rs:negotiate_language"
-)
+mapfile -t EXAMPLES < <(load_sample_group "walkthrough.typescript")
+mapfile -t GO_EXAMPLES < <(load_sample_group "walkthrough.go")
+mapfile -t RUST_EXAMPLES < <(load_sample_group "walkthrough.rust")
 
 TOTAL=42
 
