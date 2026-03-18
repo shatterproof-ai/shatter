@@ -11,7 +11,13 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_RESULTS_DIR = REPO_ROOT / "perf" / "results"
+
+
+def display_path(path: Path) -> str:
+    try:
+        return str(path.relative_to(REPO_ROOT))
+    except ValueError:
+        return str(path)
 
 
 @dataclass
@@ -92,14 +98,14 @@ def build_report(results_dir: Path) -> dict[str, Any]:
             "regression_pct": regression_pct,
             "unstable": is_unstable(current.summary),
             "active_profiler": current.summary.get("active_profiler"),
-            "summary_path": str(current.summary_path.relative_to(REPO_ROOT)),
+            "summary_path": display_path(current.summary_path),
             "perf_record_paths": current.summary.get("perf_record_paths", []),
             "pprof_profiles": current.summary.get("pprof_profiles", []),
             "next_step": choose_next_step(current.summary, regression_pct),
         }
         scenarios.append(scenario_report)
     scenarios.sort(key=lambda item: item["median_seconds"], reverse=True)
-    return {"results_dir": str(results_dir.relative_to(REPO_ROOT)), "scenarios": scenarios}
+    return {"results_dir": display_path(results_dir), "scenarios": scenarios}
 
 
 def render_markdown(report: dict[str, Any]) -> str:
@@ -139,18 +145,16 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--results-dir",
-        default=str(DEFAULT_RESULTS_DIR),
+        required=True,
         help="Directory containing perf runner artifacts",
     )
     parser.add_argument(
         "--markdown-out",
-        default=str(DEFAULT_RESULTS_DIR / "report-latest.md"),
-        help="Markdown output path",
+        help="Markdown output path (defaults to <results-dir>/report-latest.md)",
     )
     parser.add_argument(
         "--json-out",
-        default=str(DEFAULT_RESULTS_DIR / "report-latest.json"),
-        help="JSON output path",
+        help="JSON output path (defaults to <results-dir>/report-latest.json)",
     )
     return parser.parse_args()
 
@@ -161,15 +165,23 @@ def main() -> int:
     report = build_report(results_dir)
     markdown = render_markdown(report)
 
-    markdown_out = Path(args.markdown_out)
-    json_out = Path(args.json_out)
+    markdown_out = (
+        Path(args.markdown_out)
+        if args.markdown_out
+        else results_dir / "report-latest.md"
+    )
+    json_out = (
+        Path(args.json_out)
+        if args.json_out
+        else results_dir / "report-latest.json"
+    )
     markdown_out.parent.mkdir(parents=True, exist_ok=True)
     json_out.parent.mkdir(parents=True, exist_ok=True)
     markdown_out.write_text(markdown, encoding="utf-8")
     json_out.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 
-    print(f"wrote {markdown_out.relative_to(REPO_ROOT)}")
-    print(f"wrote {json_out.relative_to(REPO_ROOT)}")
+    print(f"wrote {display_path(markdown_out)}")
+    print(f"wrote {display_path(json_out)}")
     return 0
 
 

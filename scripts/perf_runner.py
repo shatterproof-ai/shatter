@@ -20,7 +20,7 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCENARIO_FILE = REPO_ROOT / "perf" / "scenarios.json"
-DEFAULT_RESULTS_DIR = REPO_ROOT / "perf" / "results"
+SAMPLE_MANIFEST = REPO_ROOT / "benchmarks" / "sample-manifest.json"
 PERF_STAT_EVENTS = [
     "task-clock",
     "cycles",
@@ -44,11 +44,28 @@ class Scenario:
     iterations: int
     timeout_seconds: int
     profilers: list[str]
+    language: str | None
+    sample_ref: str | None
+    timing_target: str
+
+
+def load_sample_refs() -> set[str]:
+    if not SAMPLE_MANIFEST.exists():
+        return set()
+
+    payload = json.loads(SAMPLE_MANIFEST.read_text(encoding="utf-8"))
+    refs: set[str] = set()
+    walkthrough = payload.get("walkthrough", {})
+    for language, targets in walkthrough.items():
+        for index, _target in enumerate(targets):
+            refs.add(f"walkthrough.{language}[{index}]")
+    return refs
 
 
 def load_scenarios() -> dict[str, Scenario]:
     payload = json.loads(SCENARIO_FILE.read_text())
     defaults = payload.get("defaults", {})
+    sample_refs = load_sample_refs()
     scenarios: dict[str, Scenario] = {}
     for raw in payload["scenarios"]:
         merged_env = dict(defaults.get("env", {}))
@@ -67,13 +84,27 @@ def load_scenarios() -> dict[str, Scenario]:
                 raw.get("timeout_seconds", defaults.get("timeout_seconds", 300))
             ),
             profilers=list(raw.get("profilers", [])),
+            language=raw.get("language"),
+            sample_ref=raw.get("sample_ref"),
+            timing_target=raw.get("timing_target", "none"),
         )
+        if sample_refs and scenario.sample_ref and scenario.sample_ref not in sample_refs:
+            raise SystemExit(
+                f"scenario {scenario.id} refers to unknown sample_ref {scenario.sample_ref}"
+            )
         scenarios[scenario.id] = scenario
     return scenarios
 
 
 def format_command(command: list[str]) -> str:
     return " ".join(subprocess.list2cmdline([part]) for part in command)
+
+
+def display_path(path: Path) -> str:
+    try:
+        return str(path.relative_to(REPO_ROOT))
+    except ValueError:
+        return str(path)
 
 
 def make_cache_env(base_dir: Path) -> dict[str, str]:
@@ -115,6 +146,127 @@ def parse_perf_stat(raw_text: str) -> dict[str, Any]:
             "raw": raw_value,
         }
     return {"events": counters}
+
+
+def inject_timing_command(scenario: Scenario, run_dir: Path) -> tuple[list[str], Path | None]:
+    command = list(scenario.command)
+    timing_dir = run_dir / "timing"
+
+    if scenario.timing_target == "shatter":
+        if not command:
+            raise SystemExit(f"scenario {scenario.id} has empty command")
+        command = [
+            command[0],
+            "--timing",
+            "summary",
+            "--timing-format",
+            "json",
+            "--timing-output-dir",
+            str(timing_dir),
+            *command[1:],
+        ]
+        return command, timing_dir
+
+    if scenario.timing_target == "walkthrough":
+        command = [*command, "--timing-dir", str(timing_dir)]
+        return command, timing_dir
+
+    return command, None
+
+
+def load_timing_run(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    phases = payload.get("phases", [])
+    phase_map = {phase["phase_path"]: phase for phase in phases}
+
+    total_ms = float(phase_map.get("cli.command", {}).get("total_ms", payload.get("duration_ms", 0.0)))
+    code_under_test_ms = 0.0
+    for name, phase in phase_map.items():
+        if name.startswith("frontend.remote.execute.invoke_function") or name.startswith(
+            "frontend.remote.execute.await_result"
+        ):
+            code_under_test_ms += float(phase.get("total_ms", 0.0))
+
+    top_candidates: list[tuple[float, str]] = []
+    for phase in phases:
+        name = phase["phase_path"]
+        if name == "cli.command":
+            continue
+        top_candidates.append((float(phase.get("total_ms", 0.0)), name))
+    top_candidates.sort(reverse=True)
+
+    return {
+        "path": display_path(path),
+        "command": payload.get("command"),
+        "duration_ms": float(payload.get("duration_ms", 0.0)),
+        "total_ms": total_ms,
+        "code_under_test_ms": code_under_test_ms,
+        "shatter_overhead_ms": max(0.0, total_ms - code_under_test_ms),
+        "top_phases": [
+            {"phase_path": name, "total_ms": total}
+            for total, name in top_candidates[:5]
+        ],
+        "phases": [
+            {
+                "phase_path": phase["phase_path"],
+                "total_ms": float(phase.get("total_ms", 0.0)),
+                "self_ms": float(phase.get("self_ms", 0.0)),
+                "count": int(phase.get("count", 0)),
+            }
+            for phase in phases
+        ],
+    }
+
+
+def summarize_timing_runs(measured: list[dict[str, Any]]) -> dict[str, Any] | None:
+    timing_runs = [
+        timing_run
+        for entry in measured
+        for timing_run in entry.get("timing_runs", [])
+    ]
+    if not timing_runs:
+        return None
+
+    metric_names = ("total_ms", "shatter_overhead_ms", "code_under_test_ms")
+    metrics: dict[str, dict[str, float]] = {}
+    for metric_name in metric_names:
+        values = [float(run[metric_name]) for run in timing_runs]
+        metrics[metric_name] = {
+            "min": round(min(values), 3),
+            "median": round(statistics.median(values), 3),
+            "max": round(max(values), 3),
+            "mean": round(statistics.fmean(values), 3),
+        }
+
+    phase_values: dict[str, list[float]] = {}
+    phase_counts: dict[str, int] = {}
+    for run in timing_runs:
+        seen_in_run: set[str] = set()
+        for phase in run["phases"]:
+            phase_values.setdefault(phase["phase_path"], []).append(float(phase["total_ms"]))
+            if phase["phase_path"] not in seen_in_run:
+                phase_counts[phase["phase_path"]] = phase_counts.get(phase["phase_path"], 0) + 1
+                seen_in_run.add(phase["phase_path"])
+
+    phases = [
+        {
+            "phase_path": phase_path,
+            "samples": phase_counts.get(phase_path, 0),
+            "min_ms": round(min(values), 3),
+            "median_ms": round(statistics.median(values), 3),
+            "max_ms": round(max(values), 3),
+            "mean_ms": round(statistics.fmean(values), 3),
+        }
+        for phase_path, values in phase_values.items()
+    ]
+    phases.sort(key=lambda phase: (-phase["median_ms"], phase["phase_path"]))
+
+    return {
+        "timing_run_count": len(timing_runs),
+        "commands": sorted({str(run["command"]) for run in timing_runs}),
+        "metrics_ms": metrics,
+        "phases": phases,
+    }
 
 
 def translate_go_test_args(command: list[str]) -> tuple[Path, str, list[str]]:
@@ -188,7 +340,7 @@ def run_once(
     perf_record_path = run_dir / "perf.data"
     pprof_binary_path = run_dir / "go-test-binary"
     pprof_profile_path = run_dir / "cpu.pprof"
-    command = scenario.command
+    command, timing_dir = inject_timing_command(scenario, run_dir)
     if profiler == "perf-stat":
         command = [
             "perf",
@@ -233,14 +385,14 @@ def run_once(
                 "scenario_id": scenario.id,
                 "command": scenario.command,
                 "executed_command": build_command,
-                "workdir": str(scenario.workdir.relative_to(REPO_ROOT)),
+                "workdir": display_path(scenario.workdir),
                 "cache_mode": scenario.cache_mode,
-                "cache_dir": str(cache_dir.relative_to(REPO_ROOT)),
+                "cache_dir": display_path(cache_dir),
                 "started_at": datetime.now(UTC).isoformat(),
                 "duration_seconds": 0.0,
                 "exit_code": build.returncode,
-                "stdout_path": str((run_dir / "stdout.log").relative_to(REPO_ROOT)),
-                "stderr_path": str((run_dir / "stderr.log").relative_to(REPO_ROOT)),
+                "stdout_path": display_path(run_dir / "stdout.log"),
+                "stderr_path": display_path(run_dir / "stderr.log"),
                 "profiler": profiler,
             }
             (run_dir / "result.json").write_text(json.dumps(result, indent=2) + "\n")
@@ -269,29 +421,34 @@ def run_once(
         "scenario_id": scenario.id,
         "command": scenario.command,
         "executed_command": command,
-        "workdir": str(scenario.workdir.relative_to(REPO_ROOT)),
+        "workdir": display_path(scenario.workdir),
         "cache_mode": scenario.cache_mode,
-        "cache_dir": str(cache_dir.relative_to(REPO_ROOT)),
+        "cache_dir": display_path(cache_dir),
         "started_at": started_at.isoformat(),
         "duration_seconds": round(duration_seconds, 6),
         "exit_code": completed.returncode,
-        "stdout_path": str(stdout_path.relative_to(REPO_ROOT)),
-        "stderr_path": str(stderr_path.relative_to(REPO_ROOT)),
+        "stdout_path": display_path(stdout_path),
+        "stderr_path": display_path(stderr_path),
         "profiler": profiler,
     }
+    if timing_dir is not None:
+        result["timing_dir"] = display_path(timing_dir)
+        timing_paths = sorted(timing_dir.glob("*.timing.json")) if timing_dir.exists() else []
+        result["timing_paths"] = [display_path(path) for path in timing_paths]
+        result["timing_runs"] = [load_timing_run(path) for path in timing_paths]
     if profiler == "perf-stat":
         raw_perf = perf_stat_path.read_text(encoding="utf-8") if perf_stat_path.exists() else ""
         parsed_perf = parse_perf_stat(raw_perf)
         perf_json_path = run_dir / "perf-stat.json"
         perf_json_path.write_text(json.dumps(parsed_perf, indent=2) + "\n")
-        result["perf_stat_path"] = str(perf_stat_path.relative_to(REPO_ROOT))
-        result["perf_stat_json_path"] = str(perf_json_path.relative_to(REPO_ROOT))
+        result["perf_stat_path"] = display_path(perf_stat_path)
+        result["perf_stat_json_path"] = display_path(perf_json_path)
         result["perf_stat"] = parsed_perf
     elif profiler == "perf-record":
-        result["perf_record_path"] = str(perf_record_path.relative_to(REPO_ROOT))
+        result["perf_record_path"] = display_path(perf_record_path)
     elif profiler == "pprof":
-        result["pprof_binary_path"] = str(pprof_binary_path.relative_to(REPO_ROOT))
-        result["pprof_profile_path"] = str(pprof_profile_path.relative_to(REPO_ROOT))
+        result["pprof_binary_path"] = display_path(pprof_binary_path)
+        result["pprof_profile_path"] = display_path(pprof_profile_path)
     (run_dir / "result.json").write_text(json.dumps(result, indent=2) + "\n")
     return result
 
@@ -307,12 +464,17 @@ def summarize(
         "cache_mode": scenario.cache_mode,
         "profilers": scenario.profilers,
         "active_profiler": profiler,
+        "language": scenario.language,
+        "sample_ref": scenario.sample_ref,
         "min_seconds": round(min(durations), 6),
         "median_seconds": round(statistics.median(durations), 6),
         "max_seconds": round(max(durations), 6),
         "mean_seconds": round(statistics.fmean(durations), 6),
         "exit_codes": [entry["exit_code"] for entry in measured],
     }
+    timing_summary = summarize_timing_runs(measured)
+    if timing_summary is not None:
+        summary["timing"] = timing_summary
     if profiler == "perf-stat":
         event_summary: dict[str, dict[str, Any]] = {}
         for event in PERF_STAT_EVENTS:
@@ -353,7 +515,7 @@ def print_summary(summary: dict[str, Any], result_root: Path) -> None:
     print(
         f"{summary['scenario_id']}: median={summary['median_seconds']:.3f}s "
         f"min={summary['min_seconds']:.3f}s max={summary['max_seconds']:.3f}s "
-        f"runs={summary['iterations']} results={result_root.relative_to(REPO_ROOT)}"
+        f"runs={summary['iterations']} results={display_path(result_root)}"
     )
     if summary.get("perf_stat"):
         for event in PERF_STAT_EVENTS:
@@ -370,6 +532,17 @@ def print_summary(summary: dict[str, Any], result_root: Path) -> None:
     if summary.get("pprof_profiles"):
         first = summary["pprof_profiles"][0]
         print(f"  pprof: {first['profile']} ({first['binary']})")
+    timing = summary.get("timing")
+    if timing:
+        total = timing["metrics_ms"]["total_ms"]["median"]
+        overhead = timing["metrics_ms"]["shatter_overhead_ms"]["median"]
+        code_under_test = timing["metrics_ms"]["code_under_test_ms"]["median"]
+        print(
+            "  timing: "
+            f"median total={total:.1f}ms "
+            f"shatter={overhead:.1f}ms "
+            f"code-under-test={code_under_test:.1f}ms"
+        )
 
 
 def select_scenarios(
@@ -413,12 +586,18 @@ def run_scenario(
         "kind": scenario.kind,
         "description": scenario.description,
         "command": scenario.command,
-        "workdir": str(scenario.workdir.relative_to(REPO_ROOT)),
+        "workdir": display_path(scenario.workdir),
         "cache_mode": scenario.cache_mode,
         "warmups": scenario.warmups,
         "iterations": scenario.iterations,
         "timeout_seconds": scenario.timeout_seconds,
         "profilers": scenario.profilers,
+        "language": scenario.language,
+        "sample_ref": scenario.sample_ref,
+        "timing_target": scenario.timing_target,
+        "sample_manifest_path": (
+            display_path(SAMPLE_MANIFEST) if SAMPLE_MANIFEST.exists() else None
+        ),
     }
     (result_root / "scenario.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
@@ -481,7 +660,7 @@ def parse_args() -> argparse.Namespace:
     )
     run_parser.add_argument(
         "--results-dir",
-        default=str(DEFAULT_RESULTS_DIR),
+        required=True,
         help="Directory for captured artifacts",
     )
 

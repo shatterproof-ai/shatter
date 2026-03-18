@@ -5,6 +5,7 @@
     "warmups": 1,
     "iterations": 5,
     "timeout_seconds": 300,
+    "timing_target": "none",
     "env": {
       "CARGO_NET_OFFLINE": "true"
     }
@@ -15,6 +16,7 @@
       "kind": "walkthrough",
       "description": "Full automated walkthrough with isolated cold caches.",
       "command": ["bash", "demo/walkthrough.sh", "--auto", "--delay", "0"],
+      "timing_target": "walkthrough",
       "cache_mode": "cold",
       "warmups": 0,
       "iterations": 3,
@@ -26,6 +28,7 @@
       "kind": "walkthrough",
       "description": "Repeat walkthrough after the harness has populated build and cache state.",
       "command": ["bash", "demo/walkthrough.sh", "--auto", "--delay", "0"],
+      "timing_target": "walkthrough",
       "cache_mode": "warm",
       "iterations": 3,
       "timeout_seconds": 900,
@@ -40,6 +43,9 @@
         "explore",
         "examples/standalone/ts/01-arithmetic.ts:classifyNumber"
       ],
+      "language": "typescript",
+      "sample_ref": "walkthrough.typescript[0]",
+      "timing_target": "shatter",
       "cache_mode": "cold",
       "iterations": 5,
       "timeout_seconds": 180,
@@ -54,6 +60,9 @@
         "explore",
         "examples/standalone/ts/01-arithmetic.ts:classifyNumber"
       ],
+      "language": "typescript",
+      "sample_ref": "walkthrough.typescript[0]",
+      "timing_target": "shatter",
       "cache_mode": "warm",
       "iterations": 5,
       "timeout_seconds": 180,
@@ -72,6 +81,9 @@
         "25",
         "examples/standalone/go/18-accept-language.go:NegotiateLanguage"
       ],
+      "language": "go",
+      "sample_ref": "walkthrough.go[3]",
+      "timing_target": "shatter",
       "cache_mode": "cold",
       "iterations": 5,
       "timeout_seconds": 240,
@@ -90,6 +102,9 @@
         "25",
         "examples/standalone/rust/18_accept_language.rs:negotiate_language"
       ],
+      "language": "rust",
+      "sample_ref": "walkthrough.rust[3]",
+      "timing_target": "shatter",
       "cache_mode": "cold",
       "iterations": 5,
       "timeout_seconds": 240,
@@ -108,6 +123,8 @@
         "30",
         "examples/standalone/ts"
       ],
+      "language": "typescript",
+      "timing_target": "shatter",
       "cache_mode": "cold",
       "iterations": 3,
       "timeout_seconds": 420,
@@ -126,6 +143,8 @@
         "30",
         "examples/standalone/ts"
       ],
+      "language": "typescript",
+      "timing_target": "shatter",
       "cache_mode": "warm",
       "iterations": 3,
       "timeout_seconds": 420,
