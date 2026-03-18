@@ -1296,3 +1296,29 @@
 {"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-17T21:43:16Z","event_type":"claimed","id":1411,"issue_id":"str-9hwp.6","new_value":"{\"assignee\":\"Ketan Gangatirkar\",\"status\":\"in_progress\"}","old_value":"{\"id\":\"str-9hwp.6\",\"title\":\"TS frontend timing\",\"description\":\"Add TypeScript frontend timing collection and emit protocol timing payloads for the major analysis and execution phases.\",\"acceptance_criteria\":\"Timing collection is quiet unless requested by the core and merges cleanly into the unified run dataset.\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"feature\",\"owner\":\"33678+ketang@users.noreply.github.com\",\"created_at\":\"2026-03-17T04:14:14Z\",\"created_by\":\"Ketan Gangatirkar\",\"updated_at\":\"2026-03-17T04:14:14Z\"}"}
 {"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-17T21:57:28Z","event_type":"closed","id":1412,"issue_id":"str-0of9","new_value":"Closed","old_value":""}
 {"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-17T21:57:28Z","event_type":"closed","id":1413,"issue_id":"str-19nf","new_value":"Closed","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-17T22:01:29Z","event_type":"created","id":1414,"issue_id":"str-6wmm","new_value":"","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":"Added label: epic","created_at":"2026-03-17T22:01:29Z","event_type":"label_added","id":1415,"issue_id":"str-6wmm","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":"Added label: mcdc","created_at":"2026-03-17T22:01:29Z","event_type":"label_added","id":1416,"issue_id":"str-6wmm","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-17T22:01:50Z","event_type":"created","id":1417,"issue_id":"str-6wmm.1","new_value":"","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":"Added label: mcdc","created_at":"2026-03-17T22:01:50Z","event_type":"label_added","id":1418,"issue_id":"str-6wmm.1","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":"Added label: epic","created_at":"2026-03-17T22:01:50Z","event_type":"label_added","id":1419,"issue_id":"str-6wmm.1","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-17T22:03:39Z","event_type":"created","id":1420,"issue_id":"str-6wmm.2","new_value":"","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":"Added label: mcdc","created_at":"2026-03-17T22:03:39Z","event_type":"label_added","id":1421,"issue_id":"str-6wmm.2","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":"Added label: epic","created_at":"2026-03-17T22:03:39Z","event_type":"label_added","id":1422,"issue_id":"str-6wmm.2","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-17T22:07:20Z","event_type":"created","id":1423,"issue_id":"str-6wmm.3","new_value":"","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":"Added label: mcdc","created_at":"2026-03-17T22:07:20Z","event_type":"label_added","id":1424,"issue_id":"str-6wmm.3","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":"Added label: typescript","created_at":"2026-03-17T22:07:20Z","event_type":"label_added","id":1425,"issue_id":"str-6wmm.3","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":"Added label: epic","created_at":"2026-03-17T22:07:20Z","event_type":"label_added","id":1426,"issue_id":"str-6wmm.3","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-17T22:08:39Z","event_type":"created","id":1427,"issue_id":"str-6wmm.4","new_value":"","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":"Added label: mcdc","created_at":"2026-03-17T22:08:39Z","event_type":"label_added","id":1428,"issue_id":"str-6wmm.4","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":"Added label: rust","created_at":"2026-03-17T22:08:39Z","event_type":"label_added","id":1429,"issue_id":"str-6wmm.4","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":"Added label: epic","created_at":"2026-03-17T22:08:39Z","event_type":"label_added","id":1430,"issue_id":"str-6wmm.4","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-17T22:13:06Z","event_type":"created","id":1431,"issue_id":"str-6wmm.5","new_value":"","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":"Added label: mcdc","created_at":"2026-03-17T22:13:06Z","event_type":"label_added","id":1432,"issue_id":"str-6wmm.5","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":"Added label: rust","created_at":"2026-03-17T22:13:06Z","event_type":"label_added","id":1433,"issue_id":"str-6wmm.5","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":"Added label: epic","created_at":"2026-03-17T22:13:06Z","event_type":"label_added","id":1434,"issue_id":"str-6wmm.5","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-17T22:17:08Z","event_type":"created","id":1435,"issue_id":"str-6wmm.6","new_value":"","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":"Added label: mcdc","created_at":"2026-03-17T22:17:08Z","event_type":"label_added","id":1436,"issue_id":"str-6wmm.6","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":"Added label: rust","created_at":"2026-03-17T22:17:08Z","event_type":"label_added","id":1437,"issue_id":"str-6wmm.6","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":"Added label: epic","created_at":"2026-03-17T22:17:08Z","event_type":"label_added","id":1438,"issue_id":"str-6wmm.6","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-17T22:17:08Z","event_type":"closed","id":1439,"issue_id":"str-9hwp.6","new_value":"Closed","old_value":""}
