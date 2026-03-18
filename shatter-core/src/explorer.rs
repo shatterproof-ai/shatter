@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use rand::rngs::StdRng;
 use rand::SeedableRng;
+use tracing::Instrument;
 
 use crate::protocol::SetupLevel;
 use crate::auto_mock::MockParam;
@@ -617,6 +618,7 @@ pub async fn explore_function(
             mocks: config.mocks.clone(),
             project_root: config.project_root.clone(),
         })
+        .instrument(tracing::info_span!("explore.instrument"))
         .await?;
 
     let instrumentable_line_count = match instrument_response.result {
@@ -659,7 +661,10 @@ pub async fn explore_function(
     if per_function_setup && !skip_setup
         && let Some(ref setup_file) = config.setup_file
     {
-        match send_setup(frontend, setup_file, &analysis.name, config.setup_level, config.project_root.clone()).await? {
+        match send_setup(frontend, setup_file, &analysis.name, config.setup_level, config.project_root.clone())
+            .instrument(tracing::info_span!("setup.function"))
+            .await?
+        {
             Some(ctx) => {
                 if let Some(ref mut mgr) = setup_mgr
                     && let Some(entry) = ctx.contexts.first()
@@ -688,6 +693,7 @@ pub async fn explore_function(
 
     let mut prefetched = if use_generators {
         prefetch_custom_values(&config.value_sources, frontend, config.max_iterations as usize)
+            .instrument(tracing::info_span!("input_gen.prefetch"))
             .await
             .unwrap_or_else(|e| {
                 log::debug!("prefetch failed, falling back to built-in: {e}");
@@ -834,7 +840,10 @@ pub async fn explore_function(
         if per_execution_setup && !skip_setup
             && let Some(ref setup_file) = config.setup_file
         {
-            match send_setup(frontend, setup_file, &analysis.name, config.setup_level, config.project_root.clone()).await? {
+            match send_setup(frontend, setup_file, &analysis.name, config.setup_level, config.project_root.clone())
+                .instrument(tracing::info_span!("setup.execution"))
+                .await?
+            {
                 Some(ctx) => {
                     if let Some(ref mut mgr) = setup_mgr
                         && let Some(entry) = ctx.contexts.first()
@@ -856,31 +865,34 @@ pub async fn explore_function(
 
         // --- Input generation ---
         // Priority: user seeds → literals → candidate inputs → pool seeds → custom generators → random.
-        let inputs = if let Some(user_inputs) = user_iter.next() {
-            user_inputs
-        } else if let Some(lit_inputs) = literal_iter.next() {
-            lit_inputs
-        } else if let Some(cand_inputs) = candidate_iter.next() {
-            cand_inputs
-        } else if let Some(pool_inputs) = pool_iter.next() {
-            pool_inputs
-        } else if use_generators {
-            generate_inputs_with_custom(
-                &analysis.params,
-                &config.value_sources,
-                &mut prefetched,
-                &mut rng,
-                Some(&config.capabilities),
-            )
-        } else if has_integer_treating {
-            crate::input_gen::generate_random_inputs_with_float_bias(
-                &analysis.params,
-                &float_bias,
-                &mut rng,
-                None,
-            )
-        } else {
-            generate_random_inputs(&analysis.params, &mut rng, None)
+        let inputs = {
+            let _input_gen_span = tracing::info_span!("input_gen").entered();
+            if let Some(user_inputs) = user_iter.next() {
+                user_inputs
+            } else if let Some(lit_inputs) = literal_iter.next() {
+                lit_inputs
+            } else if let Some(cand_inputs) = candidate_iter.next() {
+                cand_inputs
+            } else if let Some(pool_inputs) = pool_iter.next() {
+                pool_inputs
+            } else if use_generators {
+                generate_inputs_with_custom(
+                    &analysis.params,
+                    &config.value_sources,
+                    &mut prefetched,
+                    &mut rng,
+                    Some(&config.capabilities),
+                )
+            } else if has_integer_treating {
+                crate::input_gen::generate_random_inputs_with_float_bias(
+                    &analysis.params,
+                    &float_bias,
+                    &mut rng,
+                    None,
+                )
+            } else {
+                generate_random_inputs(&analysis.params, &mut rng, None)
+            }
         };
 
         // --- Mock generation ---
@@ -907,6 +919,7 @@ pub async fn explore_function(
             &config.loop_buckets,
             &mut obs_state,
         )
+        .instrument(tracing::info_span!("explore.execute_round_trip"))
         .await
         .map_err(|e| match e {
             crate::observe::ObserveError::Frontend(fe) => ExploreError::Frontend(fe),
@@ -923,7 +936,9 @@ pub async fn explore_function(
 
         // --- Per-execution teardown ---
         if per_execution_setup && !skip_setup && frontend_supports(&config.capabilities, "teardown") {
-            send_teardown(frontend, &analysis.name, config.setup_level).await?;
+            send_teardown(frontend, &analysis.name, config.setup_level)
+                .instrument(tracing::info_span!("teardown.execution"))
+                .await?;
             if let Some(ref mut mgr) = setup_mgr {
                 mgr.teardown(config.setup_level, &analysis.name);
             }
@@ -941,7 +956,9 @@ pub async fn explore_function(
 
     // --- Per-function teardown ---
     if per_function_setup && !skip_setup && frontend_supports(&config.capabilities, "teardown") {
-        send_teardown(frontend, &analysis.name, config.setup_level).await?;
+        send_teardown(frontend, &analysis.name, config.setup_level)
+            .instrument(tracing::info_span!("teardown.function"))
+            .await?;
         if let Some(ref mut mgr) = setup_mgr {
             mgr.teardown(config.setup_level, &analysis.name);
         }
@@ -996,6 +1013,7 @@ pub async fn explore_function(
                                 mocks: effective_mocks.clone(),
                                 setup_context: None,
                             })
+                            .instrument(tracing::info_span!("shrink.execute_round_trip"))
                             .await;
 
                         if let Ok(resp) = resp

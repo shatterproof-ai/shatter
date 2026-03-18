@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
+use tracing::Instrument;
 
 use crate::protocol::{Command as ProtoCommand, Request, Response, ResponseResult, PROTOCOL_VERSION};
 
@@ -122,15 +123,18 @@ impl Frontend {
     ///
     /// Returns a ready-to-use `Frontend` after verifying protocol compatibility.
     pub async fn spawn(config: &FrontendConfig) -> Result<Self, FrontendError> {
-        let mut cmd = Command::new(&config.command);
-        cmd.args(&config.args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
-        for (key, value) in &config.env_vars {
-            cmd.env(key, value);
-        }
-        let mut child = cmd.spawn().map_err(FrontendError::Spawn)?;
+        let mut child = {
+            let _spawn_span = tracing::info_span!("frontend.spawn").entered();
+            let mut cmd = Command::new(&config.command);
+            cmd.args(&config.args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit());
+            for (key, value) in &config.env_vars {
+                cmd.env(key, value);
+            }
+            cmd.spawn().map_err(FrontendError::Spawn)?
+        };
 
         let stdin = child.stdin.take().expect("stdin was piped");
         let stdout = child.stdout.take().expect("stdout was piped");
@@ -145,7 +149,10 @@ impl Frontend {
             language: None,
         };
 
-        frontend.handshake(&config.capabilities).await?;
+        frontend
+            .handshake(&config.capabilities)
+            .instrument(tracing::info_span!("frontend.handshake"))
+            .await?;
 
         Ok(frontend)
     }
@@ -196,6 +203,7 @@ impl Frontend {
     ///
     /// Automatically assigns a request ID and enforces the configured timeout.
     pub async fn send(&mut self, command: ProtoCommand) -> Result<Response, FrontendError> {
+        let span = request_span(&command);
         let id = self.next_id;
         self.next_id += 1;
 
@@ -235,6 +243,7 @@ impl Frontend {
         };
 
         tokio::time::timeout(self.request_timeout, write_and_read)
+            .instrument(span)
             .await
             .map_err(|_| FrontendError::Timeout(self.request_timeout))?
     }
@@ -249,6 +258,7 @@ impl Frontend {
         &mut self,
         mut request: serde_json::Value,
     ) -> Result<Response, FrontendError> {
+        let span = tracing::info_span!("frontend.request.raw");
         let id = self.next_id;
         self.next_id += 1;
 
@@ -289,6 +299,7 @@ impl Frontend {
         };
 
         tokio::time::timeout(self.request_timeout, write_and_read)
+            .instrument(span)
             .await
             .map_err(|_| FrontendError::Timeout(self.request_timeout))?
     }
@@ -338,6 +349,19 @@ impl Frontend {
     /// The language reported by the frontend during handshake.
     pub fn language(&self) -> Option<&str> {
         self.language.as_deref()
+    }
+}
+
+fn request_span(command: &ProtoCommand) -> tracing::Span {
+    match command {
+        ProtoCommand::Handshake { .. } => tracing::info_span!("frontend.request.handshake"),
+        ProtoCommand::Analyze { .. } => tracing::info_span!("frontend.request.analyze"),
+        ProtoCommand::Instrument { .. } => tracing::info_span!("frontend.request.instrument"),
+        ProtoCommand::Execute { .. } => tracing::info_span!("frontend.request.execute"),
+        ProtoCommand::Setup { .. } => tracing::info_span!("frontend.request.setup"),
+        ProtoCommand::Teardown { .. } => tracing::info_span!("frontend.request.teardown"),
+        ProtoCommand::Generate { .. } => tracing::info_span!("frontend.request.generate"),
+        ProtoCommand::Shutdown => tracing::info_span!("frontend.request.shutdown"),
     }
 }
 
@@ -543,6 +567,39 @@ mod tests {
     #[test]
     fn major_minor_handles_no_dots() {
         assert_eq!(super::major_minor("1"), "1");
+    }
+
+    #[test]
+    fn request_spans_flow_into_expected_phase_names() {
+        let handle = crate::timing::TimingHandle::default();
+        let dispatch = handle.dispatch();
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            {
+                let _handshake = super::request_span(&ProtoCommand::Handshake {
+                    capabilities: vec!["analyze".into()],
+                })
+                .entered();
+            }
+            {
+                let _execute = super::request_span(&ProtoCommand::Execute {
+                    function: "f".into(),
+                    inputs: vec![],
+                    mocks: vec![],
+                    setup_context: None,
+                })
+                .entered();
+            }
+        });
+
+        let phase_paths: Vec<String> = handle
+            .snapshot()
+            .into_iter()
+            .map(|summary| summary.phase_path)
+            .collect();
+
+        assert!(phase_paths.iter().any(|phase| phase == "frontend.request.handshake"));
+        assert!(phase_paths.iter().any(|phase| phase == "frontend.request.execute"));
     }
 
     #[tokio::test]

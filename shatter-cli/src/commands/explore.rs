@@ -12,6 +12,7 @@ use shatter_core::log_level::LogLevel;
 use shatter_core::protocol::{Command as ProtoCommand, ResponseResult};
 use shatter_core::scope::{ScopeConfig, ScopeMatcher};
 use shatter_core::spec::FileSpecBundle;
+use tracing::Instrument;
 
 use crate::args::*;
 use crate::helpers::*;
@@ -145,6 +146,7 @@ pub(crate) async fn run_explore(
                 function: target.function.clone(),
                 project_root: project_root_str.clone(),
             })
+            .instrument(tracing::info_span!("frontend.analyze"))
             .await
             .map_err(|e| format!("analyze failed: {e}"))?;
 
@@ -197,7 +199,10 @@ pub(crate) async fn run_explore(
         }
 
         // Load cached fingerprints for cross-file dependencies.
-        let external_fingerprints = load_external_fingerprints(&functions, cache.as_ref());
+        let external_fingerprints = {
+            let _cache_load_span = tracing::info_span!("cache.load_external_fingerprints").entered();
+            load_external_fingerprints(&functions, cache.as_ref())
+        };
 
         // Incremental plan: compare fingerprints against existing spec when --output is set
         let incremental_plan = if let Some(out) = output_path
@@ -499,7 +504,9 @@ pub(crate) async fn run_explore(
                     }
                 }
             } else {
-                explorer::explore_function(&mut frontend, func, &explore_config, None).await
+                explorer::explore_function(&mut frontend, func, &explore_config, None)
+                    .instrument(tracing::info_span!("explore.function"))
+                    .await
             };
 
             match explore_result {
@@ -565,7 +572,10 @@ pub(crate) async fn run_explore(
                     total_lines += result.total_lines;
 
                     // Run the Analyze stage to get coverage metrics and eq classes.
-                    let analyze_output = shatter_core::pipeline::analyze(&result, func);
+                    let analyze_output = {
+                        let _pipeline_analyze_span = tracing::info_span!("pipeline.analyze").entered();
+                        shatter_core::pipeline::analyze(&result, func)
+                    };
 
                     // Save raw observation data for offline analysis if requested.
                     if let Some(obs_dir) = observe_output {
@@ -593,7 +603,11 @@ pub(crate) async fn run_explore(
 
                     if log::log_enabled!(log::Level::Info) {
                         if log::log_enabled!(log::Level::Trace) {
-                            print!("{}", explorer::format_exploration_report_verbose(&result));
+                            let report = {
+                                let _report_span = tracing::info_span!("report.render").entered();
+                                explorer::format_exploration_report_verbose(&result)
+                            };
+                            print!("{report}");
                         } else {
                             let report_opts = ReportOptions {
                                 location: Some(format!("{file_str}:{}-{}", func.start_line, func.end_line)),
@@ -602,7 +616,11 @@ pub(crate) async fn run_explore(
                                 coverage_metrics: Some(analyze_output.coverage_metrics.clone()),
                                 style: report_style.clone(),
                             };
-                            print!("{}", explorer::format_exploration_report(&result, &report_opts));
+                            let report = {
+                                let _report_span = tracing::info_span!("report.render").entered();
+                                explorer::format_exploration_report(&result, &report_opts)
+                            };
+                            print!("{report}");
                         }
                         if !mock_symbols.is_empty() {
                             println!("  Mocks used: {}", mock_symbols.join(", "));
@@ -621,12 +639,15 @@ pub(crate) async fn run_explore(
                         // Use deep fingerprint (call-graph-aware) for spec output.
                         let fingerprint = deep_fingerprints.get(&func.name).cloned();
 
-                        let spec = if detect_invariants {
-                            shatter_core::spec::build_spec_with_invariants(
-                                &result, eq_classes, location, fingerprint,
-                            )
-                        } else {
-                            shatter_core::spec::build_spec(&result, eq_classes, location, fingerprint)
+                        let spec = {
+                            let _spec_span = tracing::info_span!("spec.build").entered();
+                            if detect_invariants {
+                                shatter_core::spec::build_spec_with_invariants(
+                                    &result, eq_classes, location, fingerprint,
+                                )
+                            } else {
+                                shatter_core::spec::build_spec(&result, eq_classes, location, fingerprint)
+                            }
                         };
                         if output_path.is_some() {
                             // Collect for file-level bundle output
@@ -643,10 +664,14 @@ pub(crate) async fn run_explore(
 
                     let behavior_map =
                         BehaviorMap::from_exploration_result(&func.name, &result);
-                    if let Some(ref cache) = cache
-                        && let Err(e) = cache.store(&behavior_map)
-                    {
-                        log::warn!("failed to cache behavior map for {}: {e}", func.name);
+                    if let Some(ref cache) = cache {
+                        let cache_result = {
+                            let _cache_store_span = tracing::info_span!("cache.store").entered();
+                            cache.store(&behavior_map)
+                        };
+                        if let Err(e) = cache_result {
+                            log::warn!("failed to cache behavior map for {}: {e}", func.name);
+                        }
                     }
                 }
                 Err(e) => {
@@ -717,8 +742,11 @@ pub(crate) async fn run_explore(
         && !file_spec_bundles.is_empty()
     {
         // Single-target is the primary Make use case; write the first bundle.
-        shatter_core::spec::write_file_spec_bundle(&file_spec_bundles[0], out)
-            .map_err(|e| format!("failed to write spec bundle to {}: {e}", out.display()))?;
+        {
+            let _spec_write_span = tracing::info_span!("spec.write_bundle").entered();
+            shatter_core::spec::write_file_spec_bundle(&file_spec_bundles[0], out)
+                .map_err(|e| format!("failed to write spec bundle to {}: {e}", out.display()))?;
+        }
         log::info!(
             "Wrote spec bundle ({} function(s)) to {}",
             file_spec_bundles[0].functions.len(),
