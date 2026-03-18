@@ -4,16 +4,16 @@
 //! [`Request`] messages to frontends and receives [`Response`] messages back.
 //! Every message includes a protocol version for compatibility checking.
 
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
 use crate::crypto_registry::{CryptoDirection, OutputSemantics, ParamRole};
-use crate::nondeterminism::Confidence;
 use crate::execution_record::{
-    BranchDecision, ErrorInfo, ExternalCall, SideEffect, SymConstraint, TraceEvent,
-    TruncationInfo,
+    BranchDecision, ErrorInfo, ExternalCall, SideEffect, SymConstraint, TraceEvent, TruncationInfo,
 };
+use crate::nondeterminism::Confidence;
 use crate::sym_expr::SymExpr;
 use crate::types::{ParamInfo, TypeInfo};
 
@@ -198,6 +198,9 @@ pub struct Response {
     pub protocol_version: String,
     /// Request ID this response corresponds to.
     pub id: u64,
+    /// Optional timing summary for this frontend command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timing: Option<TimingSummary>,
     /// The response payload.
     #[serde(flatten)]
     pub result: ResponseResult,
@@ -272,12 +275,22 @@ pub enum ResponseResult {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LiteralValue {
-    Int { value: i64 },
-    Float { value: f64 },
-    Str { value: String },
-    Bool { value: bool },
+    Int {
+        value: i64,
+    },
+    Float {
+        value: f64,
+    },
+    Str {
+        value: String,
+    },
+    Bool {
+        value: bool,
+    },
     /// Regex pattern string (source text, no delimiters or flags).
-    Regex { pattern: String },
+    Regex {
+        pattern: String,
+    },
 }
 
 /// Analysis result for a single function.
@@ -494,6 +507,36 @@ pub struct PerformanceMetrics {
     pub heap_allocated_bytes: u64,
 }
 
+/// Optional timing summary emitted by a frontend command.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct TimingSummary {
+    /// Aggregated phase timings for the command.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub phases: Vec<TimingPhaseSummary>,
+}
+
+/// Aggregated timing metrics for one named phase.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct TimingPhaseSummary {
+    /// Stable dotted phase path, e.g. `frontend.request.execute`.
+    pub phase_path: String,
+    /// Total inclusive wall time spent in this phase.
+    pub total_ms: f64,
+    /// Exclusive wall time excluding nested child phases.
+    #[serde(default)]
+    pub self_ms: f64,
+    /// Number of times this phase occurred.
+    #[serde(default = "default_timing_count")]
+    pub count: u64,
+    /// Optional phase metadata for filtering or grouping.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub attributes: BTreeMap<String, String>,
+}
+
+fn default_timing_count() -> u64 {
+    1
+}
+
 /// Machine-readable error codes for protocol errors.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -543,6 +586,7 @@ impl Response {
         Self {
             protocol_version: PROTOCOL_VERSION.to_string(),
             id,
+            timing: None,
             result,
         }
     }
@@ -568,9 +612,10 @@ fn execute_result_is_valid(result: &ExecuteResult) -> bool {
     // Branch path with all-unknown constraints causes silent hash collisions
     // because the path hash depends on constraint content.
     if !result.branch_path.is_empty() {
-        let all_unknown = result.branch_path.iter().all(|bd| {
-            matches!(bd.constraint, SymConstraint::Unknown { .. })
-        });
+        let all_unknown = result
+            .branch_path
+            .iter()
+            .all(|bd| matches!(bd.constraint, SymConstraint::Unknown { .. }));
         // All-unknown is valid for frontends without symbolic analysis (Go),
         // but path_constraints should then also be empty.
         if all_unknown && !result.path_constraints.is_empty() {
@@ -722,9 +767,12 @@ mod tests {
                         name: "order".into(),
                         typ: TypeInfo::Object {
                             fields: vec![
-                                ("items".into(), TypeInfo::Array {
-                                    element: Box::new(TypeInfo::Int),
-                                }),
+                                (
+                                    "items".into(),
+                                    TypeInfo::Array {
+                                        element: Box::new(TypeInfo::Int),
+                                    },
+                                ),
                                 ("priority".into(), TypeInfo::Str),
                             ],
                         },
@@ -840,7 +888,9 @@ mod tests {
                     heap_used_bytes: 1024,
                     heap_allocated_bytes: 2048,
                 },
-                capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![],
+                capture_truncation: None,
+                discovered_dependencies: vec![],
+                connection_failures: vec![],
             })),
         ));
     }
@@ -869,7 +919,9 @@ mod tests {
                     heap_used_bytes: 256,
                     heap_allocated_bytes: 256,
                 },
-                capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![],
+                capture_truncation: None,
+                discovered_dependencies: vec![],
+                connection_failures: vec![],
             })),
         ));
     }
@@ -1130,6 +1182,42 @@ mod tests {
     }
 
     #[test]
+    fn timing_summary_round_trips() {
+        round_trip(&TimingSummary {
+            phases: vec![TimingPhaseSummary {
+                phase_path: "frontend.request.execute".into(),
+                total_ms: 2.5,
+                self_ms: 1.5,
+                count: 3,
+                attributes: BTreeMap::from([
+                    ("language".into(), "typescript".into()),
+                    ("command".into(), "execute".into()),
+                ]),
+            }],
+        });
+    }
+
+    #[test]
+    fn response_with_timing_round_trips() {
+        let mut response = Response::new(
+            42,
+            ResponseResult::Analyze {
+                functions: Vec::new(),
+            },
+        );
+        response.timing = Some(TimingSummary {
+            phases: vec![TimingPhaseSummary {
+                phase_path: "frontend.request.analyze".into(),
+                total_ms: 4.0,
+                self_ms: 4.0,
+                count: 1,
+                attributes: BTreeMap::new(),
+            }],
+        });
+        round_trip(&response);
+    }
+
+    #[test]
     fn function_analysis_minimal_round_trips() {
         round_trip(&FunctionAnalysis {
             name: "identity".into(),
@@ -1190,10 +1278,7 @@ mod tests {
             10,
             Command::Execute {
                 function: "processOrder".into(),
-                inputs: vec![
-                    serde_json::json!({"id": 1}),
-                    serde_json::json!("express"),
-                ],
+                inputs: vec![serde_json::json!({"id": 1}), serde_json::json!("express")],
                 mocks: vec![
                     MockConfig {
                         symbol: "db.save".into(),
@@ -1275,7 +1360,10 @@ mod tests {
         let resp: Response = serde_json::from_str(json).expect("deserialize noop execute");
         assert_eq!(resp.id, 3);
         if let ResponseResult::Execute(result) = &resp.result {
-            assert!(result.return_value.is_none() || result.return_value == Some(serde_json::Value::Null));
+            assert!(
+                result.return_value.is_none()
+                    || result.return_value == Some(serde_json::Value::Null)
+            );
             assert!(result.branch_path.is_empty());
         } else {
             panic!("expected Execute response");
@@ -1300,7 +1388,8 @@ mod tests {
     #[test]
     fn instrument_response_with_line_count_deserializes() {
         let json = r#"{"protocol_version":"0.1.0","id":4,"status":"instrument","instrumented":true,"output_file":null,"instrumentable_line_count":9}"#;
-        let resp: Response = serde_json::from_str(json).expect("deserialize instrument with line count");
+        let resp: Response =
+            serde_json::from_str(json).expect("deserialize instrument with line count");
         assert_eq!(
             resp.result,
             ResponseResult::Instrument {
@@ -1342,8 +1431,16 @@ mod tests {
                         name: "add".into(),
                         exported: true,
                         params: vec![
-                            ParamInfo { name: "a".into(), typ: TypeInfo::Int, type_name: None },
-                            ParamInfo { name: "b".into(), typ: TypeInfo::Int, type_name: None },
+                            ParamInfo {
+                                name: "a".into(),
+                                typ: TypeInfo::Int,
+                                type_name: None,
+                            },
+                            ParamInfo {
+                                name: "b".into(),
+                                typ: TypeInfo::Int,
+                                type_name: None,
+                            },
                         ],
                         branches: vec![],
                         dependencies: vec![],
@@ -1357,8 +1454,16 @@ mod tests {
                         name: "divide".into(),
                         exported: true,
                         params: vec![
-                            ParamInfo { name: "a".into(), typ: TypeInfo::Float, type_name: None },
-                            ParamInfo { name: "b".into(), typ: TypeInfo::Float, type_name: None },
+                            ParamInfo {
+                                name: "a".into(),
+                                typ: TypeInfo::Float,
+                                type_name: None,
+                            },
+                            ParamInfo {
+                                name: "b".into(),
+                                typ: TypeInfo::Float,
+                                type_name: None,
+                            },
                         ],
                         branches: vec![BranchInfo {
                             id: 0,
@@ -1584,7 +1689,10 @@ mod tests {
             },
         );
         let json = serde_json::to_value(&req).expect("serialize");
-        assert!(!json.as_object().expect("object").contains_key("setup_context"));
+        assert!(!json
+            .as_object()
+            .expect("object")
+            .contains_key("setup_context"));
     }
 
     #[test]
@@ -1653,9 +1761,13 @@ mod tests {
         round_trip(&LiteralValue::Int { value: 42 });
         round_trip(&LiteralValue::Int { value: -1 });
         round_trip(&LiteralValue::Float { value: 3.14 });
-        round_trip(&LiteralValue::Str { value: "express".into() });
+        round_trip(&LiteralValue::Str {
+            value: "express".into(),
+        });
         round_trip(&LiteralValue::Bool { value: true });
-        round_trip(&LiteralValue::Regex { pattern: "\\d+".into() });
+        round_trip(&LiteralValue::Regex {
+            pattern: "\\d+".into(),
+        });
     }
 
     #[test]
@@ -1663,16 +1775,24 @@ mod tests {
         round_trip(&FunctionAnalysis {
             name: "classify".into(),
             exported: true,
-            params: vec![ParamInfo { name: "s".into(), typ: TypeInfo::Str, type_name: None }],
+            params: vec![ParamInfo {
+                name: "s".into(),
+                typ: TypeInfo::Str,
+                type_name: None,
+            }],
             branches: vec![],
             dependencies: vec![],
             return_type: TypeInfo::Str,
             start_line: 1,
             end_line: 10,
             literals: vec![
-                LiteralValue::Str { value: "express".into() },
+                LiteralValue::Str {
+                    value: "express".into(),
+                },
                 LiteralValue::Int { value: 100 },
-                LiteralValue::Regex { pattern: "\\d{5}".into() },
+                LiteralValue::Regex {
+                    pattern: "\\d{5}".into(),
+                },
             ],
             crypto_boundaries: vec![],
         });
@@ -1682,7 +1802,10 @@ mod tests {
     fn function_analysis_without_literals_field_deserializes_as_empty() {
         let json = r#"{"name":"stub","params":[],"branches":[],"dependencies":[],"return_type":{"kind":"unknown"},"start_line":1,"end_line":1}"#;
         let fa: FunctionAnalysis = serde_json::from_str(json).expect("deserialize");
-        assert!(fa.literals.is_empty(), "missing field should default to empty");
+        assert!(
+            fa.literals.is_empty(),
+            "missing field should default to empty"
+        );
     }
 
     #[test]
@@ -1912,7 +2035,9 @@ mod tests {
             side_effects: vec![],
             scope_events: vec![],
             performance: PerformanceMetrics::default(),
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
         };
         assert!(validate_execute_result(&result));
     }
@@ -1938,7 +2063,9 @@ mod tests {
             side_effects: vec![],
             scope_events: vec![],
             performance: PerformanceMetrics::default(),
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
         };
         assert!(!validate_execute_result(&result));
     }

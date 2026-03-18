@@ -153,6 +153,7 @@ interface BaseResponse {
   protocol_version: string;
   id: number;
   status: ResponseStatus;
+  timing?: TimingSummary;
 }
 
 export interface HandshakeResponse extends BaseResponse {
@@ -436,4 +437,16 @@ export interface PerformanceMetrics {
   cpu_time_us: number;
   heap_used_bytes: number;
   heap_allocated_bytes: number;
+}
+
+export interface TimingSummary {
+  phases: TimingPhaseSummary[];
+}
+
+export interface TimingPhaseSummary {
+  phase_path: string;
+  total_ms: number;
+  self_ms: number;
+  count: number;
+  attributes?: Record<string, string>;
 }

@@ -16,17 +16,38 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ComplexKind {
-    Date, DateTime, Time, Duration,
-    RegExp, Char, Symbol,
-    BigInt, BigDecimal, Complex, Rational, Range,
-    Buffer, BitSet,
-    Error, Option, Result,
-    Closure, Iterator,
-    Url, IpAddress,
+    Date,
+    DateTime,
+    Time,
+    Duration,
+    RegExp,
+    Char,
+    Symbol,
+    BigInt,
+    BigDecimal,
+    Complex,
+    Rational,
+    Range,
+    Buffer,
+    BitSet,
+    Error,
+    Option,
+    Result,
+    Closure,
+    Iterator,
+    Url,
+    IpAddress,
     Uuid,
     Path,
-    Money, SemVer, Email, MimeType, Color, GeoPoint, Locale,
-    Rune, GoByte,
+    Money,
+    SemVer,
+    Email,
+    MimeType,
+    Color,
+    GeoPoint,
+    Locale,
+    Rune,
+    GoByte,
 }
 
 /// Describes the type of a value, as reported by a language frontend.
@@ -38,10 +59,18 @@ pub enum TypeInfo {
     Float,
     Str,
     Bool,
-    Array { element: Box<TypeInfo> },
-    Object { fields: Vec<(String, TypeInfo)> },
-    Union { variants: Vec<TypeInfo> },
-    Nullable { inner: Box<TypeInfo> },
+    Array {
+        element: Box<TypeInfo>,
+    },
+    Object {
+        fields: Vec<(String, TypeInfo)>,
+    },
+    Union {
+        variants: Vec<TypeInfo>,
+    },
+    Nullable {
+        inner: Box<TypeInfo>,
+    },
     Complex {
         #[serde(rename = "complex_kind")]
         kind: ComplexKind,
@@ -60,11 +89,24 @@ pub enum TypeInfo {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BinOpKind {
-    Eq, Ne, Lt, Le, Gt, Ge,
-    Add, Sub, Mul, Div, Mod,
-    And, Or,
-    BitwiseAnd, BitwiseOr, BitwiseXor,
-    In, InstanceOf,
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    And,
+    Or,
+    BitwiseAnd,
+    BitwiseOr,
+    BitwiseXor,
+    In,
+    InstanceOf,
 }
 
 /// Unary operation kind for symbolic expressions.
@@ -246,10 +288,17 @@ pub const ERR_NOT_SUPPORTED: &str = "not_supported";
 
 /// All valid error codes for parity testing.
 pub const ALL_ERROR_CODES: [&str; 11] = [
-    ERR_FILE_NOT_FOUND, ERR_FUNCTION_NOT_FOUND, ERR_PARSE_ERROR,
-    ERR_INSTRUMENTATION_FAILED, ERR_EXECUTION_TIMEOUT, ERR_EXECUTION_CRASH,
-    ERR_VERSION_MISMATCH, ERR_INVALID_REQUEST, ERR_COMPILATION_ERROR,
-    ERR_INTERNAL_ERROR, ERR_NOT_SUPPORTED,
+    ERR_FILE_NOT_FOUND,
+    ERR_FUNCTION_NOT_FOUND,
+    ERR_PARSE_ERROR,
+    ERR_INSTRUMENTATION_FAILED,
+    ERR_EXECUTION_TIMEOUT,
+    ERR_EXECUTION_CRASH,
+    ERR_VERSION_MISMATCH,
+    ERR_INVALID_REQUEST,
+    ERR_COMPILATION_ERROR,
+    ERR_INTERNAL_ERROR,
+    ERR_NOT_SUPPORTED,
 ];
 
 /// Granularity level for setup/teardown lifecycle management.
@@ -343,6 +392,8 @@ pub struct Response {
     pub protocol_version: String,
     pub id: u64,
     pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timing: Option<TimingSummary>,
 
     // Handshake fields
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -401,6 +452,28 @@ pub struct Response {
     pub message: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct TimingSummary {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub phases: Vec<TimingPhaseSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct TimingPhaseSummary {
+    pub phase_path: String,
+    pub total_ms: f64,
+    #[serde(default)]
+    pub self_ms: f64,
+    #[serde(default = "default_timing_count")]
+    pub count: u64,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub attributes: std::collections::BTreeMap<String, String>,
+}
+
+fn default_timing_count() -> u64 {
+    1
+}
+
 impl Response {
     /// Create a base response with protocol version and request ID.
     pub fn base(id: u64) -> Self {
@@ -408,6 +481,7 @@ impl Response {
             protocol_version: PROTOCOL_VERSION.to_string(),
             id,
             status: String::new(),
+            timing: None,
             frontend_version: None,
             language: None,
             capabilities: None,
@@ -570,7 +644,8 @@ mod tests {
     #[test]
     fn setup_request_with_parent_context_deserializes() {
         let json = r#"{"protocol_version":"0.1.0","id":21,"command":"setup","file":"./setup.rs","scope":"myFunc","level":"execution","parent_context":{"contexts":[{"level":"session","context":{"db":"conn_42"}}]}}"#;
-        let req: Request = serde_json::from_str(json).expect("deserialize setup with parent_context");
+        let req: Request =
+            serde_json::from_str(json).expect("deserialize setup with parent_context");
         assert_eq!(req.level, Some(SetupLevel::Execution));
         let parent = req.parent_context.expect("parent_context present");
         assert_eq!(parent.contexts.len(), 1);
@@ -633,17 +708,22 @@ mod tests {
     #[test]
     fn execute_request_with_setup_context_deserializes() {
         let json = r#"{"protocol_version":"0.1.0","id":25,"command":"execute","function":"fn1","inputs":[1],"mocks":[],"setup_context":{"contexts":[{"level":"session","context":{"db":"conn_42"}}]}}"#;
-        let req: Request = serde_json::from_str(json).expect("deserialize execute with setup_context");
+        let req: Request =
+            serde_json::from_str(json).expect("deserialize execute with setup_context");
         let ctx = req.setup_context.expect("setup_context present");
         assert_eq!(ctx.contexts.len(), 1);
         assert_eq!(ctx.contexts[0].level, SetupLevel::Session);
-        assert_eq!(ctx.contexts[0].context, serde_json::json!({"db": "conn_42"}));
+        assert_eq!(
+            ctx.contexts[0].context,
+            serde_json::json!({"db": "conn_42"})
+        );
     }
 
     #[test]
     fn execute_request_without_setup_context_defaults_to_none() {
         let json = r#"{"protocol_version":"0.1.0","id":26,"command":"execute","function":"fn1","inputs":[],"mocks":[]}"#;
-        let req: Request = serde_json::from_str(json).expect("deserialize execute without setup_context");
+        let req: Request =
+            serde_json::from_str(json).expect("deserialize execute without setup_context");
         assert_eq!(req.setup_context, None);
     }
 
@@ -655,6 +735,7 @@ mod tests {
             protocol_version: PROTOCOL_VERSION.to_string(),
             id: 20,
             status: "setup".to_string(),
+            timing: None,
             frontend_version: None,
             language: None,
             capabilities: None,
@@ -686,6 +767,7 @@ mod tests {
             protocol_version: PROTOCOL_VERSION.to_string(),
             id: 22,
             status: "generate".to_string(),
+            timing: None,
             frontend_version: None,
             language: None,
             capabilities: None,
@@ -717,6 +799,7 @@ mod tests {
             protocol_version: PROTOCOL_VERSION.to_string(),
             id: 99,
             status: "error".to_string(),
+            timing: None,
             frontend_version: None,
             language: None,
             capabilities: None,
@@ -748,6 +831,7 @@ mod tests {
             protocol_version: PROTOCOL_VERSION.to_string(),
             id: 1,
             status: "handshake".to_string(),
+            timing: None,
             frontend_version: Some(FRONTEND_VERSION.to_string()),
             language: Some(FRONTEND_LANGUAGE.to_string()),
             capabilities: Some(vec!["analyze".to_string()]),
@@ -779,9 +863,13 @@ mod tests {
     fn literal_value_all_variants_round_trip() {
         round_trip(&LiteralValue::Int { value: 42 });
         round_trip(&LiteralValue::Float { value: 3.14 });
-        round_trip(&LiteralValue::Str { value: "express".into() });
+        round_trip(&LiteralValue::Str {
+            value: "express".into(),
+        });
         round_trip(&LiteralValue::Bool { value: true });
-        round_trip(&LiteralValue::Regex { pattern: "\\d+".into() });
+        round_trip(&LiteralValue::Regex {
+            pattern: "\\d+".into(),
+        });
     }
 
     #[test]
@@ -789,15 +877,23 @@ mod tests {
         round_trip(&FunctionAnalysis {
             name: "classify".into(),
             exported: true,
-            params: vec![ParamInfo { name: "s".into(), typ: TypeInfo::Str, type_name: None }],
+            params: vec![ParamInfo {
+                name: "s".into(),
+                typ: TypeInfo::Str,
+                type_name: None,
+            }],
             branches: vec![],
             dependencies: vec![],
             return_type: TypeInfo::Str,
             start_line: 1,
             end_line: 10,
             literals: vec![
-                LiteralValue::Str { value: "express".into() },
-                LiteralValue::Regex { pattern: "\\d{5}".into() },
+                LiteralValue::Str {
+                    value: "express".into(),
+                },
+                LiteralValue::Regex {
+                    pattern: "\\d{5}".into(),
+                },
             ],
             crypto_boundaries: vec![],
         });
