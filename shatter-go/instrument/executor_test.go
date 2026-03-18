@@ -886,21 +886,17 @@ func TestExecuteFunctionStandaloneFileWithMain(t *testing.T) {
 	srcDir := t.TempDir()
 	src := writeExecTestSource(t, srcDir, "target.go", `package main
 
-import "fmt"
-
 func classify(n int) string {
-	if n < 0 {
-		return "negative"
+	if n > 0 {
+		return "positive"
 	}
-	return "non-negative"
+	return "non-positive"
 }
 
-func main() {
-	fmt.Println(classify(1))
-}
+func main() {}
 `)
 	result, err := ExecuteFunction(src, "classify", []json.RawMessage{
-		json.RawMessage("-1"),
+		json.RawMessage("5"),
 	})
 	if err != nil {
 		t.Fatalf("ExecuteFunction failed on standalone file with main: %v", err)

@@ -70,7 +70,14 @@ Run the appropriate language-specific gates based on what changed, plus E2E test
 
 ### Always required:
 
-5. **E2E concolic tests** — always run regardless of what changed:
+5. **Smoke test** — always run regardless of what changed:
+   ```bash
+   npx task smoke
+   ```
+   Fast (~15s) pipeline check covering TS and Go frontends. Catches gross
+   pipeline breakages before the slower E2E tests.
+
+6. **E2E concolic tests** — always run regardless of what changed:
    ```bash
    cargo test --test e2e_concolic
    ```
@@ -79,11 +86,11 @@ Run the appropriate language-specific gates based on what changed, plus E2E test
 
 ### Conditional:
 
-6. **Protocol sync** (if `protocol` changed):
+7. **Protocol sync** (if `protocol` changed):
    - Verify protocol types are consistent across all languages.
    - Run cross-language tests (Full tier).
 
-7. **Walkthrough** (if `cli-output` changed):
+8. **Walkthrough** (if `cli-output` changed):
    ```bash
    bash demo/walkthrough.sh --auto --delay 0
    ```
