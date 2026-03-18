@@ -174,12 +174,12 @@ pub(crate) enum CliCommand {
         targets: Vec<String>,
 
         /// Maximum number of iterations for the concolic loop.
-        #[arg(long, default_value_t = 100)]
-        max_iterations: u32,
+        #[arg(long)]
+        max_iterations: Option<u32>,
 
         /// Timeout in seconds for the entire exploration.
-        #[arg(long, default_value_t = 60)]
-        timeout: u64,
+        #[arg(long)]
+        timeout: Option<u64>,
 
         /// Per-function exploration wall-clock timeout in seconds. If both
         /// --max-iterations and --timeout-explore are set, whichever triggers
@@ -357,6 +357,13 @@ pub(crate) enum CliCommand {
         /// Set to 0 to disable. Default: 20.
         #[arg(long, default_value_t = 20)]
         refine_budget: usize,
+
+        /// Enable MC/DC (Modified Condition/Decision Coverage) analysis.
+        /// Decomposes compound boolean decisions into individual conditions
+        /// and targets condition-independence witnesses. Implies increased
+        /// iteration/execution/plateau budgets.
+        #[arg(long)]
+        mcdc: bool,
     },
 
     /// Analyze Stage 1 (Observe) output: produce equivalence classes, behavior map,
@@ -1242,8 +1249,8 @@ mod tests {
                 ..
             } => {
                 assert_eq!(targets, vec!["test.ts:myFunc"]);
-                assert_eq!(max_iterations, 100);
-                assert_eq!(timeout, 60);
+                assert_eq!(max_iterations, None);
+                assert_eq!(timeout, None);
                 assert!(scope.is_none());
                 assert!(!analyze_only);
                 assert!(!show_clusters);
@@ -1300,8 +1307,8 @@ mod tests {
                 ..
             } => {
                 assert_eq!(targets, vec!["a.ts:fn1", "b.go:Fn2"]);
-                assert_eq!(max_iterations, 50);
-                assert_eq!(timeout, 120);
+                assert_eq!(max_iterations, Some(50));
+                assert_eq!(timeout, Some(120));
                 assert!(scope.is_none());
                 assert!(analyze_only);
                 assert!(!show_clusters);
@@ -1357,7 +1364,7 @@ mod tests {
         match cli.command {
             CliCommand::Explore { request_timeout, timeout, .. } => {
                 assert_eq!(request_timeout, 10);
-                assert_eq!(timeout, 60);
+                assert_eq!(timeout, None);
             }
             _ => panic!("expected Explore command"),
         }

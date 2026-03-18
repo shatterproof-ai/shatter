@@ -129,6 +129,10 @@ pub struct ExploreConfig {
     pub refine_budget: Option<usize>,
     /// Maximum shrink attempts per discovered behavior. Set to 0 to disable.
     pub shrink_budget: usize,
+    /// Enable MC/DC coverage analysis. When true, the orchestrator tracks
+    /// per-condition independence and generates targeted Z3 queries for
+    /// missing MC/DC pairs.
+    pub mcdc: bool,
 }
 
 /// Default shrink budget per behavior witness.
@@ -166,6 +170,7 @@ impl Default for ExploreConfig {
             loop_convergence_window: DEFAULT_LOOP_CONVERGENCE_WINDOW,
             refine_budget: None,
             shrink_budget: DEFAULT_SHRINK_BUDGET,
+            mcdc: false,
         }
     }
 }
