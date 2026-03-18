@@ -216,7 +216,7 @@ RUST_EXAMPLES=(
     "examples/standalone/rust/18_accept_language.rs:negotiate_language"
 )
 
-TOTAL=48
+TOTAL=44
 
 # ─── Walkthrough ──────────────────────────────────────────────────────
 
@@ -421,76 +421,54 @@ step 36 $TOTAL "Concolic String CLI Preview (Z3)" \
     "Preview the current Z3-backed CLI path on string-method guards" \
     $SHATTER explore --concolic "examples/standalone/ts/02-strings.ts:classifyString"
 
-# Stage 37: Custom build-frontend help
-step 37 $TOTAL "Custom Build Frontend" \
-    "Show the build-frontend subcommand for compiling native generators into a custom frontend binary" \
-    $SHATTER build-frontend --help
-
-# Stage 38: Spec output to file (--output)
-step 38 $TOTAL "Spec Output to File" \
+# Stage 37: Spec output to file (--output)
+step 37 $TOTAL "Spec Output to File" \
     "Write a spec bundle to a JSON file with --output (includes fingerprints)" \
     $SHATTER explore --output /tmp/shatter-spec.json "${EXAMPLES[0]}"
 
-# Stage 39: Incremental re-run (skips fresh functions)
-step 39 $TOTAL "Incremental Re-run" \
+# Stage 38: Incremental re-run (skips fresh functions)
+step 38 $TOTAL "Incremental Re-run" \
     "Re-run with --output against existing spec — unchanged functions are skipped" \
     $SHATTER explore --output /tmp/shatter-spec.json "${EXAMPLES[0]}"
 
-# Stage 40: Dry-run mode
-step 40 $TOTAL "Dry-Run Mode" \
+# Stage 39: Dry-run mode
+step 39 $TOTAL "Dry-Run Mode" \
     "Use --dry-run to preview which functions would be re-explored without actually exploring" \
     $SHATTER explore --output /tmp/shatter-spec.json --dry-run "${EXAMPLES[0]}"
 
-# Stage 41: Clean re-exploration
-step 41 $TOTAL "Clean Re-exploration" \
+# Stage 40: Clean re-exploration
+step 40 $TOTAL "Clean Re-exploration" \
     "Use --clean to force full re-exploration, ignoring the existing spec" \
     $SHATTER explore --output /tmp/shatter-spec.json --clean "${EXAMPLES[0]}"
 
-# Stage 42: Save Stage 1 (observe) output
-step 42 $TOTAL "Save Observation Output" \
-    "Use --observe-output to save Stage 1 data for offline analysis" \
-    $SHATTER explore --observe-output /tmp/shatter-observe "${EXAMPLES[0]}"
-
-# Stage 43: Offline analysis from Stage 1 output
-step 43 $TOTAL "Offline Analyze (Stage 2)" \
-    "Run shatter analyze on saved observation data — no frontend needed" \
-    $SHATTER analyze /tmp/shatter-observe/classifyNumber.observe.json --spec
-
-# Stage 44: Stale command
-# The spec from step 38 only explored classifyNumber. The file also exports
+# Stage 41: Stale command
+# The spec from step 37 only explored classifyNumber. The file also exports
 # compareMagnitudes, so `stale` correctly reports it as stale. Exit code 1
 # means "some functions are stale or removed" — this is informational, not a failure.
-step 44 $TOTAL "Stale Check" \
-    "Check staleness relative to spec from step 38 (exit 1 = stale found, expected here)" \
-    bash -c "$SHATTER stale 'examples/standalone/ts/01-arithmetic.ts' /tmp/shatter-spec.json; echo '(exit code 1 is expected: compareMagnitudes was not in the spec from step 38)'"
+step 41 $TOTAL "Stale Check" \
+    "Check staleness relative to spec from step 37 (exit 1 = stale found, expected here)" \
+    bash -c "$SHATTER stale 'examples/standalone/ts/01-arithmetic.ts' /tmp/shatter-spec.json; echo '(exit code 1 is expected: compareMagnitudes was not in the spec from step 37)'"
 
-# Stage 45: Revalidate command
+# Stage 42: Revalidate command
 # Re-execute cached behaviors to check for drift/regressions. Uses cache
 # populated by earlier explore steps. Exit code 0 = no regressions found.
-step 45 $TOTAL "Revalidate" \
+step 42 $TOTAL "Revalidate" \
     "Revalidate cached behaviors for the arithmetic example" \
     $SHATTER revalidate 'examples/standalone/ts/01-arithmetic.ts'
 
-# Stage 46: Multi-level setup/teardown
-step 46 $TOTAL "Multi-Level Setup/Teardown" \
+# Stage 43: Multi-level setup/teardown
+step 43 $TOTAL "Multi-Level Setup/Teardown" \
     "Explore with session + file level setup/teardown from .shatter/config.yaml" \
     $SHATTER explore --config examples/typescript/.shatter/config.yaml \
     --setup-timeout 30 \
     "examples/standalone/ts/01-arithmetic.ts:classifyNumber"
 
-# Stage 47: Setup with --fail-on-setup-error
-step 47 $TOTAL "Setup Fail-on-Error" \
+# Stage 44: Setup with --fail-on-setup-error
+step 44 $TOTAL "Setup Fail-on-Error" \
     "Use --fail-on-setup-error to abort immediately on setup failures" \
     $SHATTER explore --config examples/typescript/.shatter/config.yaml \
     --setup-timeout 10 --fail-on-setup-error \
     "examples/standalone/ts/01-arithmetic.ts:classifyNumber"
-
-# Stage 46: Discover deps (strace, Linux-only diagnostic)
-# On non-Linux or when strace is missing, this will print a clear error message.
-# We use `true` to swallow the expected non-zero exit on non-Linux/no-strace.
-step 48 $TOTAL "Discover Dependencies (strace)" \
-    "Run strace-based network dependency discovery (Linux-only diagnostic tool)" \
-    bash -c "$SHATTER discover-deps --strace -- echo hello; true"
 
 # ─── Error Summary ────────────────────────────────────────────────────
 if [[ -s "$ERROR_LOG" ]]; then
