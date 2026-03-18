@@ -59,6 +59,7 @@ pub(crate) async fn run_explore(
     no_replay: bool,
     refine_budget: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let _explore_span = tracing::info_span!("core.explore_command").entered();
     let pool_path = if no_seeds { None } else { Some(seeds_dir.join("pool.json")) };
     let loop_buckets = parse_loop_buckets(loop_buckets_str)?;
     let scope_config = match scope_path {
