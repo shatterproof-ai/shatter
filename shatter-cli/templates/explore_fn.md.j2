@@ -1,0 +1,14 @@
+## `{{ result.function_name }}`{{ result.location }}
+
+{{ result.summary }}
+
+{% if result.paths -%}
+| # | Call | Outcome |
+|---|---|---|
+{% for path in result.paths -%}
+| {{ path.index }} | `{{ path.call }}` | {{ path.outcome }} |
+{% endfor -%}
+{% endif -%}
+{% for extra in result.extras -%}
+- *{{ extra }}*
+{% endfor -%}

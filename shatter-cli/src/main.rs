@@ -11,6 +11,7 @@ mod commands;
 mod embedded_frontend;
 mod embedded_go_frontend;
 mod helpers;
+mod render;
 
 use args::*;
 use helpers::*;
@@ -214,6 +215,7 @@ async fn main() -> ExitCode {
                 replay_recorded,
                 no_replay,
                 refine_budget,
+                cli.format,
             )
             .await
         }
@@ -288,7 +290,7 @@ async fn main() -> ExitCode {
             parallelism,
             mock_config,
             output,
-            format,
+            report_format,
             emit_tests,
             dry_run,
             resume,
@@ -352,7 +354,7 @@ async fn main() -> ExitCode {
                 timeout_per_fn,
                 timeout_explore,
                 output.as_deref(),
-                &format,
+                &report_format,
                 progress,
                 emit_tests.as_deref(),
                 dry_run,
@@ -366,6 +368,7 @@ async fn main() -> ExitCode {
                 memory_limit,
                 cli.project_dir.as_deref(),
                 use_color,
+                cli.format,
                 &seeds_dir,
                 no_seeds,
             )
@@ -509,7 +512,7 @@ async fn main() -> ExitCode {
         CliCommand::Stale {
             source,
             spec,
-            format,
+            output_format,
             request_timeout,
             exec_timeout,
             build_timeout,
@@ -520,7 +523,7 @@ async fn main() -> ExitCode {
             match commands::stale::run_stale(
                 &source,
                 &spec,
-                &format,
+                &output_format,
                 request_timeout,
                 exec_timeout,
                 build_timeout,
@@ -546,12 +549,12 @@ async fn main() -> ExitCode {
             exec_timeout,
             build_timeout,
             memory_limit,
-            format,
+            output_format,
         } => {
             match commands::revalidate::run_revalidate(
                 &source,
                 cache_dir.as_deref(),
-                &format,
+                &output_format,
                 request_timeout,
                 exec_timeout,
                 build_timeout,

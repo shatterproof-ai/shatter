@@ -7,6 +7,16 @@ use shatter_core::explorer;
 use shatter_core::log_level::LogLevel;
 use shatter_core::timing::{TimingConfig, TimingFormat, TimingMode, TimingOutput};
 
+/// Terminal output format.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+pub(crate) enum OutputFormat {
+    /// Markdown rendered via termimad (default). Use `--color never` for raw Markdown.
+    #[default]
+    Md,
+    /// Legacy plain ANSI text output (deprecated).
+    Plain,
+}
+
 /// Shatter: automatic exploratory testing via concolic execution.
 #[derive(Parser, Debug)]
 #[command(name = "shatter", version, about)]
@@ -51,6 +61,10 @@ pub(crate) struct Cli {
     /// Respects the NO_COLOR environment variable (auto treats it as never).
     #[arg(long, global = true, default_value = "auto", value_name = "WHEN")]
     pub(crate) color: ColorMode,
+
+    /// Terminal output format: md (default, rendered via termimad) or plain (legacy ANSI).
+    #[arg(long, global = true, default_value = "md", value_name = "FORMAT")]
+    pub(crate) format: OutputFormat,
 
     #[command(subcommand)]
     pub(crate) command: CliCommand,
@@ -497,8 +511,8 @@ pub(crate) enum CliCommand {
         output: Option<PathBuf>,
 
         /// Report format: json (default), markdown, or both.
-        #[arg(long, default_value = "json")]
-        format: String,
+        #[arg(long = "report-format", default_value = "json")]
+        report_format: String,
 
         /// Generate test files after scan. Framework: jest, vitest, or gotest.
         #[arg(long)]
@@ -835,8 +849,8 @@ pub(crate) enum CliCommand {
         spec: PathBuf,
 
         /// Output format: "text" (default) or "json".
-        #[arg(long, default_value = "text")]
-        format: String,
+        #[arg(long = "output-format", default_value = "text")]
+        output_format: String,
 
         /// Per-request timeout in seconds for frontend communication.
         #[arg(long, default_value_t = 30)]
@@ -895,8 +909,8 @@ pub(crate) enum CliCommand {
         memory_limit: Option<u64>,
 
         /// Output format: "text" (default) or "json".
-        #[arg(long, default_value = "text")]
-        format: String,
+        #[arg(long = "output-format", default_value = "text")]
+        output_format: String,
     },
 
     /// Run tests with impact analysis: only execute tests affected by changed files.
@@ -2074,7 +2088,7 @@ mod tests {
             "shatter",
             "scan",
             "--progress",
-            "--format", "markdown",
+            "--report-format", "markdown",
             "--resume", "/tmp/state.json",
             "--mock-config", "/tmp/mocks.yaml",
             "src/",
@@ -2082,13 +2096,13 @@ mod tests {
         match cli.command {
             CliCommand::Scan {
                 progress,
-                format,
+                report_format,
                 resume,
                 mock_config,
                 ..
             } => {
                 assert!(progress);
-                assert_eq!(format, "markdown");
+                assert_eq!(report_format, "markdown");
                 assert_eq!(resume, Some(PathBuf::from("/tmp/state.json")));
                 assert_eq!(mock_config, Some(PathBuf::from("/tmp/mocks.yaml")));
             }
@@ -2323,10 +2337,10 @@ mod tests {
             "spec.json",
         ]);
         match cli.command {
-            CliCommand::Stale { source, spec, format, request_timeout, .. } => {
+            CliCommand::Stale { source, spec, output_format, request_timeout, .. } => {
                 assert_eq!(source, "src/math.ts");
                 assert_eq!(spec, PathBuf::from("spec.json"));
-                assert_eq!(format, "text");
+                assert_eq!(output_format, "text");
                 assert_eq!(request_timeout, 30);
             }
             _ => panic!("expected Stale command"),
@@ -2338,13 +2352,13 @@ mod tests {
         let cli = Cli::parse_from([
             "shatter",
             "stale",
-            "--format", "json",
+            "--output-format", "json",
             "src/math.ts",
             "spec.json",
         ]);
         match cli.command {
-            CliCommand::Stale { format, .. } => {
-                assert_eq!(format, "json");
+            CliCommand::Stale { output_format, .. } => {
+                assert_eq!(output_format, "json");
             }
             _ => panic!("expected Stale command"),
         }

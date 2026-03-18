@@ -60,6 +60,7 @@ pub(crate) async fn run_explore(
     replay_recorded: bool,
     no_replay: bool,
     refine_budget: usize,
+    output_format: crate::args::OutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let _explore_span = tracing::info_span!("core.explore_command").entered();
     let pool_path = if no_seeds { None } else { Some(seeds_dir.join("pool.json")) };
@@ -296,11 +297,15 @@ pub(crate) async fn run_explore(
 
         // Print header on first non-analyze-only target.
         if !analyze_only && !header_printed && log::log_enabled!(log::Level::Info) {
-            print!(
-                "\n{bold}\u{2550}\u{2550}\u{2550} Shatter Explore \u{2550}\u{2550}\u{2550}{reset}\n\n",
-                bold = report_style.bold,
-                reset = report_style.reset,
-            );
+            if output_format == crate::args::OutputFormat::Md {
+                print_markdown("# Shatter Explore\n\n", use_color);
+            } else {
+                print!(
+                    "\n{bold}\u{2550}\u{2550}\u{2550} Shatter Explore \u{2550}\u{2550}\u{2550}{reset}\n\n",
+                    bold = report_style.bold,
+                    reset = report_style.reset,
+                );
+            }
             header_printed = true;
         }
 
@@ -609,6 +614,22 @@ pub(crate) async fn run_explore(
                                 explorer::format_exploration_report_verbose(&result)
                             };
                             print!("{report}");
+                        } else if output_format == crate::args::OutputFormat::Md {
+                            let location =
+                                format!("{file_str}:{}-{}", func.start_line, func.end_line);
+                            let view = crate::render::explore_fn_view(
+                                &result,
+                                crate::render::ExploreRenderOpts {
+                                    location: Some(&location),
+                                    mocks_used: &mock_symbols,
+                                    is_concolic: use_concolic,
+                                },
+                            );
+                            let md = {
+                                let _report_span = tracing::info_span!("report.render").entered();
+                                crate::render::render_explore_fn(&view)
+                            };
+                            print_markdown(&md, use_color);
                         } else {
                             let report_opts = ReportOptions {
                                 location: Some(format!("{file_str}:{}-{}", func.start_line, func.end_line)),
@@ -622,12 +643,12 @@ pub(crate) async fn run_explore(
                                 explorer::format_exploration_report(&result, &report_opts)
                             };
                             print!("{report}");
-                        }
-                        if !mock_symbols.is_empty() {
-                            println!("  Mocks used: {}", mock_symbols.join(", "));
-                        }
-                        if use_concolic {
-                            println!("  Explorer: concolic (Z3-backed)");
+                            if !mock_symbols.is_empty() {
+                                println!("  Mocks used: {}", mock_symbols.join(", "));
+                            }
+                            if use_concolic {
+                                println!("  Explorer: concolic (Z3-backed)");
+                            }
                         }
                         println!();
                     }
@@ -726,16 +747,34 @@ pub(crate) async fn run_explore(
 
     // Print summary footer.
     if header_printed && log::log_enabled!(log::Level::Info) {
-        print!(
-            "{}",
-            explorer::format_explore_footer(
-                total_paths,
-                total_function_count,
-                total_covered,
-                total_lines,
-                &report_style,
-            )
-        );
+        if output_format == crate::args::OutputFormat::Md {
+            let coverage_suffix = if total_lines > 0 {
+                let pct = ((total_covered as f64 / total_lines as f64) * 100.0)
+                    .min(100.0)
+                    .round() as u32;
+                format!(" · **{pct}%** coverage ({total_covered}/{total_lines} lines)")
+            } else {
+                String::new()
+            };
+            print_markdown(
+                &format!(
+                    "\n---\n\n**Summary:** {total_paths} path(s) across \
+                     {total_function_count} function(s){coverage_suffix}\n"
+                ),
+                use_color,
+            );
+        } else {
+            print!(
+                "{}",
+                explorer::format_explore_footer(
+                    total_paths,
+                    total_function_count,
+                    total_covered,
+                    total_lines,
+                    &report_style,
+                )
+            );
+        }
     }
 
     // Write collected file spec bundles to the output path as a single bundle.
