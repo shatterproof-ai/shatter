@@ -38,6 +38,7 @@ import {
   runWasmGenerator,
   clearWasmCache,
 } from "./wasm-generator.js";
+import { TimingCollector } from "./timing.js";
 
 /** Supported capabilities for this frontend. */
 const SUPPORTED_CAPABILITIES = [
@@ -74,6 +75,29 @@ function setupContextKey(level: SetupLevel, scope: string): string {
   return `${level}:${scope}`;
 }
 
+let timingEnabled = false;
+
+function wantsTimingFromHandshake(request: Request): boolean {
+  return request.command === "handshake" && request.capabilities.includes("timing");
+}
+
+function maybeTimingCollector(): TimingCollector | undefined {
+  return timingEnabled ? new TimingCollector() : undefined;
+}
+
+function finalizeResponse<T extends Response>(response: T, timing?: TimingCollector): T {
+  if (!timing) {
+    return response;
+  }
+
+  const finalized = timing.sync("serialize.response", () => response);
+  const summary = timing.toSummary();
+  if (summary) {
+    finalized.timing = summary;
+  }
+  return finalized;
+}
+
 /**
  * Dispatch a parsed request to the appropriate handler.
  *
@@ -91,19 +115,21 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
 
   switch (request.command) {
     case "handshake":
+      timingEnabled = wantsTimingFromHandshake(request);
       return {
-        response: {
+        response: finalizeResponse({
           protocol_version: PROTOCOL_VERSION,
           id: request.id,
           status: "handshake",
           frontend_version: PROTOCOL_VERSION,
           language: FRONTEND_LANGUAGE,
           capabilities: SUPPORTED_CAPABILITIES,
-        },
+        }, timingEnabled ? new TimingCollector() : undefined),
         shutdown: false,
       };
 
     case "analyze": {
+      const timing = maybeTimingCollector();
       if (!fs.existsSync(request.file)) {
         return {
           response: errorResponse(request.id, "file_not_found", `File not found: ${request.file}`),
@@ -113,7 +139,10 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
 
       lastAnalyzedFile = path.resolve(request.file);
       setProjectRoot(request.project_root);
-      const functions = analyzeFile(request.file, request.function, request.project_root);
+      const functions = timing
+        ? timing.sync("analyze.total", () =>
+          analyzeFile(request.file, request.function, request.project_root, timing))
+        : analyzeFile(request.file, request.function, request.project_root);
 
       if (request.function != null && functions.length === 0) {
         return {
@@ -127,17 +156,18 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
       }
 
       return {
-        response: {
+        response: finalizeResponse({
           protocol_version: PROTOCOL_VERSION,
           id: request.id,
           status: "analyze",
           functions,
-        },
+        }, timing),
         shutdown: false,
       };
     }
 
     case "instrument": {
+      const timing = maybeTimingCollector();
       if (!fs.existsSync(request.file)) {
         return {
           response: errorResponse(request.id, "file_not_found", `File not found: ${request.file}`),
@@ -146,7 +176,10 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
       }
 
       const source = fs.readFileSync(request.file, "utf-8");
-      const result = instrumentFunction(source, request.function, request.file, request.mocks ?? []);
+      const result = timing
+        ? timing.sync("instrument.total", () =>
+          instrumentFunction(source, request.function, request.file, request.mocks ?? [], timing))
+        : instrumentFunction(source, request.function, request.file, request.mocks ?? []);
 
       if ("error" in result) {
         return {
@@ -162,19 +195,20 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
       lastAnalyzedFile = path.resolve(request.file);
 
       return {
-        response: {
+        response: finalizeResponse({
           protocol_version: PROTOCOL_VERSION,
           id: request.id,
           status: "instrument",
           instrumented: true,
           output_file: null,
           instrumentable_line_count: result.instrumentableLineCount,
-        },
+        }, timing),
         shutdown: false,
       };
     }
 
     case "execute": {
+      const timing = maybeTimingCollector();
       const funcRef = request.function;
       const fileForExec = resolveFileForExecute(funcRef);
 
@@ -197,13 +231,18 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
 
         let rawResult;
         if (instrumentedSource) {
-          rawResult = await executeInstrumented(instrumentedSource, funcName, request.inputs, request.mocks ?? [], fileForExec);
+          rawResult = timing
+            ? await timing.async("execute.total", () =>
+              executeInstrumented(instrumentedSource, funcName, request.inputs, request.mocks ?? [], fileForExec, timing))
+            : await executeInstrumented(instrumentedSource, funcName, request.inputs, request.mocks ?? [], fileForExec);
         } else {
-          rawResult = await executeFunction(fileForExec, funcRef, request.inputs);
+          rawResult = timing
+            ? await timing.async("execute.total", () => executeFunction(fileForExec, funcRef, request.inputs, timing))
+            : await executeFunction(fileForExec, funcRef, request.inputs);
         }
 
         return {
-          response: buildExecuteResponse(request.id, PROTOCOL_VERSION, rawResult),
+          response: finalizeResponse(buildExecuteResponse(request.id, PROTOCOL_VERSION, rawResult, timing), timing),
           shutdown: false,
         };
       } catch (e: unknown) {
@@ -216,6 +255,7 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
     }
 
     case "setup": {
+      const timing = maybeTimingCollector();
       if (!fs.existsSync(request.file)) {
         return {
           response: errorResponse(request.id, "file_not_found", `File not found: ${request.file}`),
@@ -226,23 +266,27 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
       try {
         let setupModule = loadedSetupModules.get(request.file);
         if (!setupModule) {
-          setupModule = loadSetupModule(request.file);
+          setupModule = timing
+            ? timing.sync("setup.module_load", () => loadSetupModule(request.file))
+            : loadSetupModule(request.file);
           loadedSetupModules.set(request.file, setupModule);
         }
 
-        const setupContext = await runSetup(
-          setupModule, request.scope, request.level, request.parent_context,
-        );
+        const setupContext = timing
+          ? await timing.async("setup.run", () => runSetup(
+            setupModule!, request.scope, request.level, request.parent_context,
+          ))
+          : await runSetup(setupModule, request.scope, request.level, request.parent_context);
         const ctxKey = setupContextKey(request.level, request.scope);
         setupContexts.set(ctxKey, { module: setupModule, context: setupContext });
 
         return {
-          response: {
+          response: finalizeResponse({
             protocol_version: PROTOCOL_VERSION,
             id: request.id,
             status: "setup",
             setup_context: setupContext,
-          },
+          }, timing),
           shutdown: false,
         };
       } catch (e: unknown) {
@@ -255,6 +299,7 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
     }
 
     case "teardown": {
+      const timing = maybeTimingCollector();
       try {
         const ctxKey = setupContextKey(request.level, request.scope);
         const stored = setupContexts.get(ctxKey);
@@ -269,17 +314,21 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
           };
         }
 
-        await runTeardown(stored.module, request.scope, stored.context);
+        if (timing) {
+          await timing.async("teardown.run", () => runTeardown(stored.module, request.scope, stored.context));
+        } else {
+          await runTeardown(stored.module, request.scope, stored.context);
+        }
         setupContexts.delete(ctxKey);
         instrumentedSources.clear();
         clearModuleCache();
 
         return {
-          response: {
+          response: finalizeResponse({
             protocol_version: PROTOCOL_VERSION,
             id: request.id,
             status: "teardown_ack",
-          },
+          }, timing),
           shutdown: false,
         };
       } catch (e: unknown) {
@@ -292,6 +341,7 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
     }
 
     case "generate": {
+      const timing = maybeTimingCollector();
       if (!fs.existsSync(request.file)) {
         return {
           response: errorResponse(request.id, "file_not_found", `File not found: ${request.file}`),
@@ -301,33 +351,41 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
 
       try {
         if (request.file.endsWith(".wasm")) {
-          const plugin = await loadWasmPlugin(request.file);
-          const result = await runWasmGenerator(plugin, request.name, request.recipe);
+          const plugin = timing
+            ? await timing.async("generate.module_load", () => loadWasmPlugin(request.file))
+            : await loadWasmPlugin(request.file);
+          const result = timing
+            ? await timing.async("generate.run", () => runWasmGenerator(plugin, request.name, request.recipe))
+            : await runWasmGenerator(plugin, request.name, request.recipe);
 
           return {
-            response: {
+            response: finalizeResponse({
               protocol_version: PROTOCOL_VERSION,
               id: request.id,
               status: "generate",
               value: result.value,
               generator_id: result.id,
               ...(result.recipe !== undefined ? { recipe: result.recipe } : {}),
-            },
+            }, timing),
             shutdown: false,
           };
         }
 
-        const generatorModule = loadGeneratorModule(request.file);
-        const value = runGenerator(generatorModule, request.name, request.kind);
+        const generatorModule = timing
+          ? timing.sync("generate.module_load", () => loadGeneratorModule(request.file))
+          : loadGeneratorModule(request.file);
+        const value = timing
+          ? timing.sync("generate.run", () => runGenerator(generatorModule, request.name, request.kind))
+          : runGenerator(generatorModule, request.name, request.kind);
 
         return {
-          response: {
+          response: finalizeResponse({
             protocol_version: PROTOCOL_VERSION,
             id: request.id,
             status: "generate",
             value,
             generator_id: "generated",
-          },
+          }, timing),
           shutdown: false,
         };
       } catch (e: unknown) {

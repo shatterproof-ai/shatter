@@ -188,6 +188,7 @@ async fn main() -> ExitCode {
                 request_timeout,
                 exec_timeout,
                 build_timeout,
+                timing_config.mode.is_enabled(),
                 inputs.as_deref(),
                 config_path.as_deref(),
                 output.as_deref(),

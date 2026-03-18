@@ -34,6 +34,7 @@ pub(crate) async fn run_explore(
     request_timeout: u64,
     exec_timeout: u64,
     build_timeout: u64,
+    timing_enabled: bool,
     inputs_path: Option<&Path>,
     config_path: Option<&Path>,
     output_path: Option<&Path>,
@@ -126,7 +127,7 @@ pub(crate) async fn run_explore(
             target.language.label()
         );
 
-        let config = frontend_config(target.language, req_timeout, log_level, exec_timeout, build_timeout, memory_limit, None)?;
+        let config = frontend_config(target.language, req_timeout, log_level, exec_timeout, build_timeout, memory_limit, None, timing_enabled)?;
         let mut frontend = Frontend::spawn(&config).await.map_err(|e| {
             format!(
                 "failed to spawn {} frontend: {e}",

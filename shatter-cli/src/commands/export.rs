@@ -62,7 +62,7 @@ pub(crate) async fn run_export_tests(
 
         log::info!("Exploring {file_str}:{func_display} for test export...");
 
-        let config = frontend_config(target.language, req_timeout, LogLevel::Warn, exec_timeout, build_timeout, memory_limit, None)?;
+        let config = frontend_config(target.language, req_timeout, LogLevel::Warn, exec_timeout, build_timeout, memory_limit, None, false)?;
         let mut frontend = Frontend::spawn(&config).await.map_err(|e| {
             format!("failed to spawn {} frontend: {e}", target.language.label())
         })?;

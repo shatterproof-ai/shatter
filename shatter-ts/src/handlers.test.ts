@@ -157,6 +157,20 @@ describe("handleRequest", () => {
         expect(response.capabilities).toContain("instrument");
       }
     });
+
+    it("does not emit timing unless the core requests it", async () => {
+      const { response } = await handleRequest(
+        makeRequest({ command: "handshake", capabilities: ["analyze"] })
+      );
+      expect(response.timing).toBeUndefined();
+    });
+
+    it("enables timing emission when the core advertises timing capability", async () => {
+      const { response } = await handleRequest(
+        makeRequest({ command: "handshake", capabilities: ["analyze", "timing"] })
+      );
+      expect(response.timing).toBeUndefined();
+    });
   });
 
   describe("version mismatch", () => {
@@ -189,6 +203,20 @@ describe("handleRequest", () => {
       if (response.status === "error") {
         expect(response.code).toBe("file_not_found");
       }
+    });
+
+    it("emits timing when timing capability was requested in handshake", async () => {
+      await handleRequest(
+        makeRequest({ command: "handshake", capabilities: ["analyze", "timing"] })
+      );
+      const fixtureFile = path.resolve(__dirname, "__fixtures__", "simple.ts");
+      const { response } = await handleRequest(
+        makeRequest({ command: "analyze", file: fixtureFile })
+      );
+      expect(response.timing?.phases.some((phase) => phase.phase_path === "analyze.total")).toBe(true);
+      expect(response.timing?.phases.some((phase) => phase.phase_path === "analyze.ast")).toBe(true);
+      expect(response.timing?.phases.some((phase) => phase.phase_path === "analyze.walk")).toBe(true);
+      expect(response.timing?.phases.some((phase) => phase.phase_path === "serialize.response")).toBe(true);
     });
 
     it("returns function_not_found error for missing function in existing file", async () => {
@@ -978,4 +1006,3 @@ describe("protocol round-trip", () => {
   });
 
 });
-

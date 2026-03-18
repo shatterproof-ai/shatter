@@ -13,6 +13,7 @@
 
 import ts from "typescript";
 import type { SymExpr, BinOpKind, UnOpKind, MockConfig } from "./protocol.js";
+import type { TimingCollector } from "./timing.js";
 
 /** Result of instrumenting a source file. */
 export interface InstrumentResult {
@@ -87,45 +88,60 @@ export function instrumentFunction(
   functionName: string,
   fileName = "input.ts",
   mocks: MockConfig[] = [],
+  timing?: TimingCollector,
 ): InstrumentResult | { error: string } {
   const scriptKind = fileName.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
-  const sourceFile = ts.createSourceFile(
-    fileName,
-    source,
-    ts.ScriptTarget.Latest,
-    true,
-    scriptKind,
-  );
+  const sourceFile = timing
+    ? timing.sync("instrument.parse", () => ts.createSourceFile(
+      fileName,
+      source,
+      ts.ScriptTarget.Latest,
+      true,
+      scriptKind,
+    ))
+    : ts.createSourceFile(
+      fileName,
+      source,
+      ts.ScriptTarget.Latest,
+      true,
+      scriptKind,
+    );
 
   const targetFunction = findFunction(sourceFile, functionName);
   if (targetFunction === undefined) {
     return { error: `Function '${functionName}' not found` };
   }
 
-  const paramNames = extractParamNames(targetFunction, sourceFile);
-  const dataFlowMap = buildDataFlowMap(targetFunction, sourceFile, paramNames);
+  const finalizeInstrumentation = (): InstrumentResult => {
+    const paramNames = extractParamNames(targetFunction, sourceFile);
+    const dataFlowMap = buildDataFlowMap(targetFunction, sourceFile, paramNames);
 
-  // Shared mutable branch counter — captured by the transformer closure.
-  const branchState = { nextBranchId: 0 };
-  const instrumentableLines = new Set<number>();
+    // Shared mutable branch counter — captured by the transformer closure.
+    const branchState = { nextBranchId: 0 };
+    const instrumentableLines = new Set<number>();
 
-  // Build mock lookup for import rewriting
-  const mocksBySymbol = buildMockLookup(mocks);
+    // Build mock lookup for import rewriting
+    const mocksBySymbol = buildMockLookup(mocks);
 
-  const printer = ts.createPrinter({ newLine: ts.NewLineKind.LineFeed });
-  const transformed = ts.transform(sourceFile, [
-    createInstrumentationTransformer(functionName, paramNames, branchState, dataFlowMap, mocksBySymbol, instrumentableLines),
-  ]);
-  const result = printer.printFile(transformed.transformed[0] as ts.SourceFile);
-  transformed.dispose();
+    const printer = ts.createPrinter({ newLine: ts.NewLineKind.LineFeed });
+    const transformed = ts.transform(sourceFile, [
+      createInstrumentationTransformer(functionName, paramNames, branchState, dataFlowMap, mocksBySymbol, instrumentableLines),
+    ]);
+    const result = printer.printFile(transformed.transformed[0] as ts.SourceFile);
+    transformed.dispose();
 
-  return {
-    instrumentedSource: result,
-    recordFunctionName: RECORD_FUNCTION,
-    branchFunctionName: BRANCH_FUNCTION,
-    branchCount: branchState.nextBranchId,
-    instrumentableLineCount: instrumentableLines.size,
+    return {
+      instrumentedSource: result,
+      recordFunctionName: RECORD_FUNCTION,
+      branchFunctionName: BRANCH_FUNCTION,
+      branchCount: branchState.nextBranchId,
+      instrumentableLineCount: instrumentableLines.size,
+    };
   };
+
+  return timing
+    ? timing.sync("instrument.transform", finalizeInstrumentation)
+    : finalizeInstrumentation();
 }
 
 /**

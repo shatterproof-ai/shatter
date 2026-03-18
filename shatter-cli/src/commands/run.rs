@@ -108,7 +108,7 @@ pub(crate) async fn run_run(
     for lang in &needed_langs {
         let cli_lang = discovery_lang_to_cli_lang(*lang)
             .ok_or_else(|| format!("no frontend for {lang:?}"))?;
-        let config = frontend_config(cli_lang, req_timeout, log_level, exec_timeout, build_timeout, memory_limit, None)?;
+        let config = frontend_config(cli_lang, req_timeout, log_level, exec_timeout, build_timeout, memory_limit, None, false)?;
         let frontend = Frontend::spawn(&config).await.map_err(|e| {
             format!("failed to spawn {lang:?} frontend: {e}")
         })?;

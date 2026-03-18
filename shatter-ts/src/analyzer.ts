@@ -20,6 +20,7 @@ import type {
   DependencyKind,
   LiteralValue,
 } from "./protocol.js";
+import type { TimingCollector } from "./timing.js";
 
 function hasExportModifier(node: ts.Node): boolean {
   const modifiers = ts.canHaveModifiers(node) ? ts.getModifiers(node) : undefined;
@@ -75,10 +76,17 @@ function loadCompilerOptions(absoluteFilePath: string, projectRoot?: string): ts
  * If `functionName` is provided, only that function is returned.
  * Otherwise, all top-level exported functions are returned.
  */
-export function analyzeFile(filePath: string, functionName?: string | null, projectRoot?: string | null): FunctionAnalysis[] {
+export function analyzeFile(
+  filePath: string,
+  functionName?: string | null,
+  projectRoot?: string | null,
+  timing?: TimingCollector,
+): FunctionAnalysis[] {
   const absolutePath = path.resolve(filePath);
   const compilerOptions = loadCompilerOptions(absolutePath, projectRoot ?? undefined);
-  const program = ts.createProgram([absolutePath], compilerOptions);
+  const program = timing
+    ? timing.sync("analyze.ast", () => ts.createProgram([absolutePath], compilerOptions))
+    : ts.createProgram([absolutePath], compilerOptions);
 
   const sourceFile = program.getSourceFile(absolutePath);
   if (!sourceFile) {
@@ -91,73 +99,81 @@ export function analyzeFile(filePath: string, functionName?: string | null, proj
   // Collect CommonJS-exported names so we can mark them as exported
   const commonJsExportedNames = collectCommonJsExports(sourceFile);
 
-  ts.forEachChild(sourceFile, (node) => {
-    if (ts.isFunctionDeclaration(node)) {
-      if (node.name) {
-        const name = node.name.text;
-        if (functionName != null && name !== functionName) {
-          return;
-        }
-        const exported = hasExportModifier(node) || commonJsExportedNames.has(name);
-        const analysis = analyzeFunctionDeclaration(node, checker, sourceFile, exported);
-        if (analysis) {
-          results.push(analysis);
-        }
-      } else if (hasExportModifier(node)) {
-        // Unnamed default export: export default function(...) {}
-        const syntheticName = "<default>";
-        if (functionName != null && syntheticName !== functionName) {
-          return;
-        }
-        const analysis = analyzeFunctionDeclarationUnnamed(node, syntheticName, checker, sourceFile);
-        if (analysis) {
-          results.push(analysis);
-        }
-      }
-      return;
-    }
-
-    if (ts.isVariableStatement(node)) {
-      const exported = hasExportModifier(node);
-      for (const decl of node.declarationList.declarations) {
-        if (!ts.isIdentifier(decl.name)) continue;
-        const name = decl.name.text;
-        if (functionName != null && name !== functionName) continue;
-
-        if (decl.initializer && ts.isArrowFunction(decl.initializer)) {
-          const analysis = analyzeArrowFunction(name, decl.initializer, checker, sourceFile, exported);
+  const walk = (): void => {
+    ts.forEachChild(sourceFile, (node) => {
+      if (ts.isFunctionDeclaration(node)) {
+        if (node.name) {
+          const name = node.name.text;
+          if (functionName != null && name !== functionName) {
+            return;
+          }
+          const exported = hasExportModifier(node) || commonJsExportedNames.has(name);
+          const analysis = analyzeFunctionDeclaration(node, checker, sourceFile, exported);
           if (analysis) {
             results.push(analysis);
           }
-        } else if (decl.initializer && ts.isFunctionExpression(decl.initializer)) {
-          const analysis = analyzeFunctionExpression(name, decl.initializer, checker, sourceFile, exported);
+        } else if (hasExportModifier(node)) {
+          // Unnamed default export: export default function(...) {}
+          const syntheticName = "<default>";
+          if (functionName != null && syntheticName !== functionName) {
+            return;
+          }
+          const analysis = analyzeFunctionDeclarationUnnamed(node, syntheticName, checker, sourceFile);
           if (analysis) {
             results.push(analysis);
           }
         }
+        return;
       }
-      return;
-    }
 
-    // CommonJS: exports.foo = function(...) {}
-    if (ts.isExpressionStatement(node) && ts.isBinaryExpression(node.expression)) {
-      const bin = node.expression;
-      if (bin.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-          ts.isPropertyAccessExpression(bin.left) &&
-          ts.isIdentifier(bin.left.expression) &&
-          bin.left.expression.text === "exports") {
-        const name = bin.left.name.text;
-        if (functionName != null && name !== functionName) return;
-        if (ts.isFunctionExpression(bin.right)) {
-          const analysis = analyzeFunctionExpression(name, bin.right, checker, sourceFile, true);
-          if (analysis) results.push(analysis);
-        } else if (ts.isArrowFunction(bin.right)) {
-          const analysis = analyzeArrowFunction(name, bin.right, checker, sourceFile, true);
-          if (analysis) results.push(analysis);
+      if (ts.isVariableStatement(node)) {
+        const exported = hasExportModifier(node);
+        for (const decl of node.declarationList.declarations) {
+          if (!ts.isIdentifier(decl.name)) continue;
+          const name = decl.name.text;
+          if (functionName != null && name !== functionName) continue;
+
+          if (decl.initializer && ts.isArrowFunction(decl.initializer)) {
+            const analysis = analyzeArrowFunction(name, decl.initializer, checker, sourceFile, exported);
+            if (analysis) {
+              results.push(analysis);
+            }
+          } else if (decl.initializer && ts.isFunctionExpression(decl.initializer)) {
+            const analysis = analyzeFunctionExpression(name, decl.initializer, checker, sourceFile, exported);
+            if (analysis) {
+              results.push(analysis);
+            }
+          }
+        }
+        return;
+      }
+
+      // CommonJS: exports.foo = function(...) {}
+      if (ts.isExpressionStatement(node) && ts.isBinaryExpression(node.expression)) {
+        const bin = node.expression;
+        if (bin.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+            ts.isPropertyAccessExpression(bin.left) &&
+            ts.isIdentifier(bin.left.expression) &&
+            bin.left.expression.text === "exports") {
+          const name = bin.left.name.text;
+          if (functionName != null && name !== functionName) return;
+          if (ts.isFunctionExpression(bin.right)) {
+            const analysis = analyzeFunctionExpression(name, bin.right, checker, sourceFile, true);
+            if (analysis) results.push(analysis);
+          } else if (ts.isArrowFunction(bin.right)) {
+            const analysis = analyzeArrowFunction(name, bin.right, checker, sourceFile, true);
+            if (analysis) results.push(analysis);
+          }
         }
       }
-    }
-  });
+    });
+  };
+
+  if (timing) {
+    timing.sync("analyze.walk", walk);
+  } else {
+    walk();
+  }
 
   return results;
 }
