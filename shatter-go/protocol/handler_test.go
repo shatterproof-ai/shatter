@@ -67,6 +67,17 @@ func conversation(t *testing.T, requests ...string) []Response {
 	return responses
 }
 
+func timingPhaseNames(resp Response) map[string]bool {
+	phases := map[string]bool{}
+	if resp.Timing == nil {
+		return phases
+	}
+	for _, phase := range resp.Timing.Phases {
+		phases[phase.PhasePath] = true
+	}
+	return phases
+}
+
 func TestHandshakeResponse(t *testing.T) {
 	resp := sendRecv(t, reqJSON(42, "handshake", `"capabilities":["analyze"]`))
 	if resp.Status != "handshake" {
@@ -92,6 +103,13 @@ func TestHandshakeResponse(t *testing.T) {
 		if !caps[want] {
 			t.Errorf("missing capability %q in %v", want, resp.Capabilities)
 		}
+	}
+}
+
+func TestHandshakeWithTimingCapabilityDoesNotEmitTiming(t *testing.T) {
+	resp := sendRecv(t, reqJSON(42, "handshake", `"capabilities":["analyze","timing"]`))
+	if resp.Timing != nil {
+		t.Fatalf("handshake timing = %+v, want nil", resp.Timing)
 	}
 }
 
@@ -152,13 +170,13 @@ func TestIsVersionCompatible(t *testing.T) {
 		version string
 		want    bool
 	}{
-		{ProtocolVersion, true},   // exact match
-		{"0.1.999", true},         // patch difference
-		{"0.1", true},             // no patch
-		{"0.2.0", false},          // minor mismatch
-		{"1.1.0", false},          // major mismatch
-		{"99.0.0", false},         // completely different
-		{"bad", false},            // malformed
+		{ProtocolVersion, true}, // exact match
+		{"0.1.999", true},       // patch difference
+		{"0.1", true},           // no patch
+		{"0.2.0", false},        // minor mismatch
+		{"1.1.0", false},        // major mismatch
+		{"99.0.0", false},       // completely different
+		{"bad", false},          // malformed
 	}
 	for _, tt := range tests {
 		got := isVersionCompatible(tt.version)
@@ -211,6 +229,34 @@ func TestAnalyzeWithExistingFileReturnsEmptyFunctions(t *testing.T) {
 	resp := sendRecv(t, req)
 	if resp.Status != "analyze" {
 		t.Errorf("status = %q, want analyze", resp.Status)
+	}
+}
+
+func TestAnalyzeEmitsTimingWhenRequested(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "target.go")
+	if err := os.WriteFile(tmp, []byte("package main\n\nfunc Add(a int, b int) int { return a + b }\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	responses := conversation(t,
+		reqJSON(1, "handshake", `"capabilities":["analyze","timing"]`),
+		reqJSON(2, "analyze", fmt.Sprintf(`"file":"%s","function":"Add"`, tmp)),
+	)
+	if len(responses) != 2 {
+		t.Fatalf("got %d responses, want 2", len(responses))
+	}
+
+	phases := timingPhaseNames(responses[1])
+	for _, want := range []string{
+		"analyze.total",
+		"analyze.parse",
+		"analyze.typecheck",
+		"analyze.walk",
+		"serialize.response",
+	} {
+		if !phases[want] {
+			t.Errorf("missing timing phase %q in %+v", want, responses[1].Timing)
+		}
 	}
 }
 
@@ -529,6 +575,45 @@ func add(a int, b int) int {
 	}
 	if responses[2].Status != "shutdown_ack" {
 		t.Errorf("response[2].status = %q, want shutdown_ack", responses[2].Status)
+	}
+}
+
+func TestExecuteEmitsTimingWhenRequested(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "target.go")
+	src := `package main
+
+func add(a int, b int) int {
+	return a + b
+}
+`
+	if err := os.WriteFile(tmp, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	responses := conversation(t,
+		reqJSON(1, "handshake", `"capabilities":["instrument","execute","timing"]`),
+		reqJSON(2, "execute", fmt.Sprintf(`"file":"%s","function":"add","inputs":[3,4]`, tmp)),
+	)
+	if len(responses) != 2 {
+		t.Fatalf("got %d responses, want 2", len(responses))
+	}
+	if responses[1].Status != "execute" {
+		t.Fatalf("status = %q, want execute (message: %s)", responses[1].Status, responses[1].Message)
+	}
+
+	phases := timingPhaseNames(responses[1])
+	for _, want := range []string{
+		"execute.total",
+		"execute.analyze",
+		"execute.instrument",
+		"execute.build",
+		"execute.run",
+		"execute.parse_perf",
+		"serialize.response",
+	} {
+		if !phases[want] {
+			t.Errorf("missing timing phase %q in %+v", want, responses[1].Timing)
+		}
 	}
 }
 

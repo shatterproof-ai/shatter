@@ -18,6 +18,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	frontendtiming "github.com/shatter-dev/shatter/shatter-go/timing"
 )
 
 const defaultExecTimeout = 5 * time.Second
@@ -160,8 +162,15 @@ func flattenMocks(mocks [][]MockConfig) []MockConfig {
 // runs, and returns the collected results.
 // The mocks parameter provides mock configurations for external dependencies.
 func ExecuteFunction(sourcePath, funcName string, inputs []json.RawMessage, mocks ...[]MockConfig) (*ExecuteResult, error) {
+	return ExecuteFunctionWithTiming(sourcePath, funcName, inputs, nil, mocks...)
+}
+
+// ExecuteFunctionWithTiming instruments and executes a Go function while recording timing phases when requested.
+func ExecuteFunctionWithTiming(sourcePath, funcName string, inputs []json.RawMessage, timing *frontendtiming.Collector, mocks ...[]MockConfig) (*ExecuteResult, error) {
 	// Analyze the function to get parameter types
+	finishAnalyze := timing.Start("execute.analyze")
 	params, returnInfo, err := analyzeForExecution(sourcePath, funcName)
+	finishAnalyze()
 	if err != nil {
 		return nil, fmt.Errorf("analyzing function: %w", err)
 	}
@@ -171,16 +180,21 @@ func ExecuteFunction(sourcePath, funcName string, inputs []json.RawMessage, mock
 	}
 
 	// Instrument the file
-	outputDir, err := InstrumentFile(sourcePath, &funcName, nil)
+	finishInstrument := timing.Start("execute.instrument")
+	outputDir, err := InstrumentFileWithTiming(sourcePath, &funcName, nil, timing)
+	finishInstrument()
 	if err != nil {
 		return nil, fmt.Errorf("instrumenting: %w", err)
 	}
 	defer os.RemoveAll(outputDir)
 
 	// Rewrite all Go files in the output dir to package main so the harness can call them.
+	finishRewrite := timing.Start("execute.rewrite_package")
 	if err := rewritePackageToMain(outputDir); err != nil {
+		finishRewrite()
 		return nil, fmt.Errorf("rewriting package: %w", err)
 	}
+	finishRewrite()
 
 	// Generate mock support file if mocks are provided.
 	activeMocks := flattenMocks(mocks)
@@ -188,24 +202,32 @@ func ExecuteFunction(sourcePath, funcName string, inputs []json.RawMessage, mock
 	if len(activeMocks) > 0 {
 		mockSource := generateMockFile(activeMocks, mocksPath)
 		mockFilePath := filepath.Join(outputDir, "shatter_mocks.go")
+		finishWriteMocks := timing.Start("execute.write_mocks")
 		if err := os.WriteFile(mockFilePath, []byte(mockSource), 0644); err != nil {
+			finishWriteMocks()
 			return nil, fmt.Errorf("writing shatter_mocks.go: %w", err)
 		}
+		finishWriteMocks()
 	}
 
 	// Generate the main harness
 	resultsPath := filepath.Join(outputDir, "shatter_results.json")
 	returnPath := filepath.Join(outputDir, "shatter_return.json")
 	perfPath := filepath.Join(outputDir, "shatter_perf.json")
+	finishHarness := timing.Start("execute.generate_harness")
 	harness, err := generateHarness(funcName, params, returnInfo, inputs, resultsPath, returnPath, perfPath, len(activeMocks) > 0)
+	finishHarness()
 	if err != nil {
 		return nil, fmt.Errorf("generating harness: %w", err)
 	}
 
 	mainPath := filepath.Join(outputDir, "main.go")
+	finishWriteHarness := timing.Start("execute.write_harness")
 	if err := os.WriteFile(mainPath, []byte(harness), 0644); err != nil {
+		finishWriteHarness()
 		return nil, fmt.Errorf("writing main.go: %w", err)
 	}
+	finishWriteHarness()
 
 	// Build the binary
 	binaryName := "shatter_run"
@@ -217,11 +239,14 @@ func ExecuteFunction(sourcePath, funcName string, inputs []json.RawMessage, mock
 	buildCtx, buildCancel := context.WithTimeout(context.Background(), buildTimeout())
 	defer buildCancel()
 
+	finishBuild := timing.Start("execute.build")
 	buildCmd := exec.CommandContext(buildCtx, "go", "build", "-o", binaryPath, ".")
 	buildCmd.Dir = outputDir
 	if buildOut, err := buildCmd.CombinedOutput(); err != nil {
+		finishBuild()
 		return nil, fmt.Errorf("build failed: %w\n%s", err, buildOut)
 	}
+	finishBuild()
 
 	// Run the binary with a timeout
 	start := time.Now()
@@ -229,12 +254,14 @@ func ExecuteFunction(sourcePath, funcName string, inputs []json.RawMessage, mock
 	runCtx, runCancel := context.WithTimeout(context.Background(), execDur)
 	defer runCancel()
 
+	finishRun := timing.Start("execute.run")
 	runCmd := exec.CommandContext(runCtx, binaryPath)
 	runCmd.Dir = outputDir
 	var stdoutBuf, stderrBuf strings.Builder
 	runCmd.Stdout = &stdoutBuf
 	runCmd.Stderr = &stderrBuf
 	runErr := runCmd.Run()
+	finishRun()
 	wallTime := time.Since(start)
 
 	// Parse results even if the run failed (panic may have happened after some recording)
@@ -259,6 +286,7 @@ func ExecuteFunction(sourcePath, funcName string, inputs []json.RawMessage, mock
 	}
 
 	// Try to parse the shatter recording results
+	finishParseResults := timing.Start("execute.parse_results")
 	if data, err := os.ReadFile(resultsPath); err == nil {
 		var recorded struct {
 			LinesExecuted []int             `json:"lines_executed"`
@@ -271,28 +299,36 @@ func ExecuteFunction(sourcePath, funcName string, inputs []json.RawMessage, mock
 			result.ScopeEvents = recorded.ScopeEvents
 		}
 	}
+	finishParseResults()
 
 	// Try to parse the return value
+	finishParseReturn := timing.Start("execute.parse_return")
 	if data, err := os.ReadFile(returnPath); err == nil {
 		result.ReturnValue = json.RawMessage(data)
 	}
+	finishParseReturn()
 
 	// Try to parse external call records from mock execution
 	if len(activeMocks) > 0 {
+		finishParseMockCalls := timing.Start("execute.parse_mock_calls")
 		if data, err := os.ReadFile(mocksPath); err == nil {
 			var calls []ExternalCall
 			if err := json.Unmarshal(data, &calls); err == nil {
 				result.ExternalCalls = calls
 			}
 		}
+		finishParseMockCalls()
 	}
 
 	// Discover unmocked dependencies from source imports.
+	finishDiscoverDeps := timing.Start("execute.discover_dependencies")
 	if discovered := discoverDependencies(sourcePath, activeMocks); len(discovered) > 0 {
 		result.DiscoveredDependencies = discovered
 	}
+	finishDiscoverDeps()
 
 	// Try to parse performance metrics from the harness
+	finishParsePerf := timing.Start("execute.parse_perf")
 	if data, err := os.ReadFile(perfPath); err == nil {
 		var perf struct {
 			CPUTimeUs          int `json:"cpu_time_us"`
@@ -305,6 +341,7 @@ func ExecuteFunction(sourcePath, funcName string, inputs []json.RawMessage, mock
 			result.Performance.HeapAllocatedBytes = perf.HeapAllocatedBytes
 		}
 	}
+	finishParsePerf()
 
 	// Handle execution errors
 	if runErr != nil {

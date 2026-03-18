@@ -7,6 +7,8 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+
+	frontendtiming "github.com/shatter-dev/shatter/shatter-go/timing"
 )
 
 // InstrumentFile parses and instruments a Go source file, writing the output
@@ -15,14 +17,23 @@ import (
 // from that directory instead of walking up from the source file.
 // Returns the output directory path.
 func InstrumentFile(sourcePath string, funcName *string, projectRoot *string) (string, error) {
+	return InstrumentFileWithTiming(sourcePath, funcName, projectRoot, nil)
+}
+
+// InstrumentFileWithTiming instruments a Go source file and records stable phase timings when requested.
+func InstrumentFileWithTiming(sourcePath string, funcName *string, projectRoot *string, timing *frontendtiming.Collector) (string, error) {
 	fset := token.NewFileSet()
+	finishParse := timing.Start("instrument.parse")
 	file, err := parser.ParseFile(fset, sourcePath, nil, parser.ParseComments)
+	finishParse()
 	if err != nil {
 		return "", fmt.Errorf("parsing %s: %w", sourcePath, err)
 	}
 
 	packageName := file.Name.Name
+	finishTransform := timing.Start("instrument.transform")
 	transformFile(fset, file, funcName)
+	finishTransform()
 
 	outputDir, err := os.MkdirTemp("", "shatter-instrument-*")
 	if err != nil {
@@ -32,27 +43,37 @@ func InstrumentFile(sourcePath string, funcName *string, projectRoot *string) (s
 	// Write transformed source
 	sourceName := filepath.Base(sourcePath)
 	outPath := filepath.Join(outputDir, sourceName)
+	finishWriteSource := timing.Start("instrument.write_source")
 	outFile, err := os.Create(outPath)
 	if err != nil {
+		finishWriteSource()
 		return "", fmt.Errorf("creating output file: %w", err)
 	}
 	defer outFile.Close()
 
 	if err := printer.Fprint(outFile, fset, file); err != nil {
+		finishWriteSource()
 		return "", fmt.Errorf("printing transformed AST: %w", err)
 	}
+	finishWriteSource()
 
 	// Write recorder
 	recorderPath := filepath.Join(outputDir, "shatter_recorder.go")
 	recorderSource := generateRecorder(packageName)
+	finishWriteRecorder := timing.Start("instrument.write_recorder")
 	if err := os.WriteFile(recorderPath, []byte(recorderSource), 0644); err != nil {
+		finishWriteRecorder()
 		return "", fmt.Errorf("writing recorder: %w", err)
 	}
+	finishWriteRecorder()
 
 	// Write go.mod (and go.sum if present)
+	finishWriteGoMod := timing.Start("instrument.write_go_mod")
 	if err := writeGoMod(outputDir, sourcePath, projectRoot); err != nil {
+		finishWriteGoMod()
 		return "", fmt.Errorf("writing go.mod: %w", err)
 	}
+	finishWriteGoMod()
 
 	return outputDir, nil
 }
