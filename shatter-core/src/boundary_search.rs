@@ -441,6 +441,7 @@ mod tests {
                 constraint: SymConstraint::Unknown {
                     hint: "test".into(),
                 },
+                conditions: None,
             }],
             lines_executed: vec![],
             calls_to_external: vec![],

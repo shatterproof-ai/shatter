@@ -1449,6 +1449,7 @@ mod tests {
             branch_path: vec![BranchDecision {
                 branch_id: 0, line: 10, taken: true,
                 constraint: SymConstraint::Unknown { hint: "test".into() },
+                conditions: None,
             }],
             lines_executed: vec![], calls_to_external: vec![], path_constraints: vec![],
             scope_events: vec![], side_effects: vec![], capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![], connection_failures: vec![],
@@ -1459,6 +1460,7 @@ mod tests {
             branch_path: vec![BranchDecision {
                 branch_id: 0, line: 10, taken: false,
                 constraint: SymConstraint::Unknown { hint: "test".into() },
+                conditions: None,
             }],
             lines_executed: vec![], calls_to_external: vec![], path_constraints: vec![],
             scope_events: vec![], side_effects: vec![], capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![], connection_failures: vec![],
@@ -1483,6 +1485,7 @@ mod tests {
                 line: 0,
                 taken,
                 constraint: SymConstraint::Unknown { hint: String::new() },
+                conditions: None,
             },
         }
     }
@@ -1528,6 +1531,7 @@ mod tests {
             branch_path: vec![BranchDecision {
                 branch_id: 0, line: 10, taken: true,
                 constraint: SymConstraint::Unknown { hint: "test".into() },
+                conditions: None,
             }],
             lines_executed: vec![],
             calls_to_external: vec![],
@@ -1975,7 +1979,7 @@ mod tests {
         };
         let metrics = crate::coverage_metrics::CoverageMetrics {
             total_branches: 4, z3_solved: 2, random_found: 1, user_provided: 0,
-            uncovered: 1, symexpr_count: 3, unknown_count: 1,
+            uncovered: 1, symexpr_count: 3, unknown_count: 1, mcdc_metrics: None,
         };
         let report = format_exploration_report(&result, &ReportOptions {
             coverage_metrics: Some(metrics), ..Default::default()
@@ -2051,6 +2055,7 @@ mod tests {
                 line: 5,
                 taken: true,
                 constraint: SymConstraint::Unknown { hint: String::new() },
+                conditions: None,
             }],
             lines_executed: vec![1, 5, 6],
             calls_to_external: vec![],
@@ -2091,6 +2096,7 @@ mod tests {
                 line: 10 + i,
                 taken: true,
                 constraint: SymConstraint::Unknown { hint: String::new() },
+                conditions: None,
             })
             .collect();
         let result = crate::protocol::ExecuteResult {
@@ -2432,6 +2438,7 @@ mod tests {
                         line,
                         taken: true,
                         constraint: constraint.clone(),
+                        conditions: None,
                     }],
                     lines_executed: vec![],
                     calls_to_external: vec![],
@@ -2447,6 +2454,7 @@ mod tests {
                         line,
                         taken: false,
                         constraint,
+                        conditions: None,
                     }],
                     performance: perf,
                     ..base.clone()
@@ -2494,12 +2502,14 @@ mod tests {
                     line: 10,
                     taken: true,
                     constraint: SymConstraint::Unknown { hint: "".into() },
+                    conditions: None,
                 },
                 BranchDecision {
                     branch_id: 2,
                     line: 20,
                     taken: false,
                     constraint: SymConstraint::Unknown { hint: "".into() },
+                    conditions: None,
                 },
             ],
             lines_executed: vec![],
@@ -2545,6 +2555,7 @@ mod tests {
                         line: id * 10,
                         taken: true,
                         constraint: SymConstraint::Unknown { hint: "".into() },
+                        conditions: None,
                     })
                     .collect(),
                 lines_executed: vec![],

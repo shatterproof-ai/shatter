@@ -222,12 +222,23 @@ type BranchInfo struct {
 	BranchType    string   `json:"branch_type"`
 }
 
+// ConditionOutcome records the outcome of an individual condition within a compound decision.
+type ConditionOutcome struct {
+	ConditionIndex int            `json:"condition_index"`
+	Value          *bool          `json:"value"` // nil if masked by short-circuit
+	Masked         bool           `json:"masked,omitempty"`
+	Constraint     *SymConstraint `json:"constraint"`
+}
+
 // BranchDecision records which way a branch was taken during execution.
 type BranchDecision struct {
-	BranchID   int            `json:"branch_id"`
-	Line       int            `json:"line"`
-	Taken      bool           `json:"taken"`
-	Constraint *SymConstraint `json:"constraint"`
+	BranchID   int                `json:"branch_id"`
+	Line       int                `json:"line"`
+	Taken      bool               `json:"taken"`
+	Constraint *SymConstraint     `json:"constraint"`
+	// Conditions holds per-condition outcomes for MC/DC analysis.
+	// Present only when MC/DC mode is enabled and the decision is compound.
+	Conditions []ConditionOutcome `json:"conditions,omitempty"`
 }
 
 // SymExpr is a symbolic expression representing a constraint on inputs.

@@ -510,6 +510,7 @@ mod tests {
                     constraint: SymConstraint::Unknown {
                         hint: String::new(),
                     },
+                    conditions: None,
                 })
                 .collect(),
             lines_executed: lines.to_vec(),
@@ -707,6 +708,7 @@ mod proptests {
             constraint: SymConstraint::Unknown {
                 hint: String::new(),
             },
+            conditions: None,
         })
     }
 

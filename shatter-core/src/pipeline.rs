@@ -287,6 +287,7 @@ mod tests {
                 line: 10,
                 taken: true,
                 constraint: SymConstraint::Unknown { hint: "test".into() },
+                conditions: None,
             },
         ];
         let exec_result = ExecuteResult {
@@ -364,6 +365,7 @@ mod tests {
                             path: vec![],
                         },
                     },
+                    conditions: None,
                 },
                 BranchDecision {
                     branch_id: 1,
@@ -372,6 +374,7 @@ mod tests {
                     constraint: SymConstraint::Unknown {
                         hint: "opaque".into(),
                     },
+                    conditions: None,
                 },
             ]
         };
@@ -532,10 +535,12 @@ mod tests {
         let branch_path_a = vec![BranchDecision {
             branch_id: 0, line: 10, taken: true,
             constraint: SymConstraint::Unknown { hint: "t".into() },
+            conditions: None,
         }];
         let branch_path_b = vec![BranchDecision {
             branch_id: 0, line: 10, taken: false,
             constraint: SymConstraint::Unknown { hint: "t".into() },
+            conditions: None,
         }];
         let make_result = |bp: Vec<BranchDecision>| ExecuteResult {
             return_value: Some(json!(1)),

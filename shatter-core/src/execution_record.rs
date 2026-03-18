@@ -31,6 +31,20 @@ impl Default for SymConstraint {
     }
 }
 
+/// Outcome of an individual condition within a compound decision.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConditionOutcome {
+    /// Index within the parent decision's condition list (source order).
+    pub condition_index: u32,
+    /// Concrete truth value. None if masked by short-circuit.
+    pub value: Option<bool>,
+    /// Whether short-circuit evaluation prevented observation.
+    #[serde(default)]
+    pub masked: bool,
+    /// Symbolic constraint for this individual condition.
+    pub constraint: SymConstraint,
+}
+
 /// A single branch decision recorded during execution.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BranchDecision {
@@ -44,6 +58,10 @@ pub struct BranchDecision {
     /// Defaults to `Unknown` when omitted (e.g. Go frontend has no symbolic analysis).
     #[serde(default)]
     pub constraint: SymConstraint,
+    /// Per-condition outcomes for MC/DC. Present only in MC/DC mode
+    /// for compound decisions (those with && or ||).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conditions: Option<Vec<ConditionOutcome>>,
 }
 
 /// Scope boundary event marking loop/call enter and exit in the execution trace.
@@ -220,6 +238,7 @@ mod tests {
                     right: Box::new(SymExpr::Const(ConstValue::Str("active".into()))),
                 },
             },
+            conditions: None,
         });
     }
 
@@ -261,6 +280,7 @@ mod tests {
                 constraint: SymConstraint::Unknown {
                     hint: "test".into(),
                 },
+                conditions: None,
             },
         });
     }
@@ -379,6 +399,89 @@ mod tests {
     }
 
     #[test]
+    fn condition_outcome_round_trips() {
+        round_trip(&ConditionOutcome {
+            condition_index: 0,
+            value: Some(true),
+            masked: false,
+            constraint: SymConstraint::Expr {
+                expr: SymExpr::BinOp {
+                    op: BinOpKind::Gt,
+                    left: Box::new(SymExpr::Param {
+                        name: "x".into(),
+                        path: vec![],
+                    }),
+                    right: Box::new(SymExpr::Const(ConstValue::Int(0))),
+                },
+            },
+        });
+        // Masked condition
+        round_trip(&ConditionOutcome {
+            condition_index: 1,
+            value: None,
+            masked: true,
+            constraint: SymConstraint::Unknown {
+                hint: "masked by short-circuit".into(),
+            },
+        });
+    }
+
+    #[test]
+    fn condition_outcome_masked_default_false() {
+        let json = r#"{"condition_index":0,"value":true,"constraint":{"kind":"unknown","hint":"test"}}"#;
+        let co: ConditionOutcome = serde_json::from_str(json).expect("deserialize");
+        assert!(!co.masked, "masked should default to false when absent");
+    }
+
+    #[test]
+    fn branch_decision_with_conditions_round_trips() {
+        round_trip(&BranchDecision {
+            branch_id: 5,
+            line: 20,
+            taken: true,
+            constraint: SymConstraint::Unknown { hint: String::new() },
+            conditions: Some(vec![
+                ConditionOutcome {
+                    condition_index: 0,
+                    value: Some(true),
+                    masked: false,
+                    constraint: SymConstraint::Expr {
+                        expr: SymExpr::BinOp {
+                            op: BinOpKind::Gt,
+                            left: Box::new(SymExpr::Param {
+                                name: "a".into(),
+                                path: vec![],
+                            }),
+                            right: Box::new(SymExpr::Const(ConstValue::Int(0))),
+                        },
+                    },
+                },
+                ConditionOutcome {
+                    condition_index: 1,
+                    value: None,
+                    masked: true,
+                    constraint: SymConstraint::Unknown {
+                        hint: "masked by short-circuit".into(),
+                    },
+                },
+            ]),
+        });
+    }
+
+    #[test]
+    fn branch_decision_conditions_none_omitted_in_json() {
+        let bd = BranchDecision {
+            branch_id: 1,
+            line: 5,
+            taken: false,
+            constraint: SymConstraint::Unknown { hint: String::new() },
+            conditions: None,
+        };
+        let json = serde_json::to_string(&bd).expect("serialize");
+        assert!(!json.contains("conditions"), "None conditions must not appear in JSON");
+    }
+
+    #[test]
     fn external_call_round_trips() {
         round_trip(&ExternalCall {
             symbol: "rateService.getExpressRate".into(),
@@ -408,6 +511,7 @@ mod tests {
                             right: Box::new(SymExpr::Const(ConstValue::Int(5))),
                         },
                     },
+                    conditions: None,
                 },
                 BranchDecision {
                     branch_id: 1,
@@ -416,6 +520,7 @@ mod tests {
                     constraint: SymConstraint::Unknown {
                         hint: "regex validation".into(),
                     },
+                    conditions: None,
                 },
             ],
             scope_events: vec![],
