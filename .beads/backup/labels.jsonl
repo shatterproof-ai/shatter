@@ -213,6 +213,14 @@
 {"issue_id":"str-6wmm.6","label":"epic"}
 {"issue_id":"str-6wmm.6","label":"mcdc"}
 {"issue_id":"str-6wmm.6","label":"rust"}
+{"issue_id":"str-6wmm.7","label":"epic"}
+{"issue_id":"str-6wmm.7","label":"go"}
+{"issue_id":"str-6wmm.7","label":"mcdc"}
+{"issue_id":"str-6wmm.8","label":"epic"}
+{"issue_id":"str-6wmm.8","label":"mcdc"}
+{"issue_id":"str-6wmm.8","label":"rust"}
+{"issue_id":"str-6wmm.9","label":"epic"}
+{"issue_id":"str-6wmm.9","label":"mcdc"}
 {"issue_id":"str-77sk","label":"architecture"}
 {"issue_id":"str-77sk","label":"cli"}
 {"issue_id":"str-8fcu","label":"go"}
