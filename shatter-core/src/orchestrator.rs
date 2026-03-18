@@ -1764,6 +1764,7 @@ mod tests {
                 constraint: SymConstraint::Unknown {
                     hint: "x".into(),
                 },
+                conditions: None,
             },
             BranchDecision {
                 branch_id: 1,
@@ -1772,6 +1773,7 @@ mod tests {
                 constraint: SymConstraint::Unknown {
                     hint: "y".into(),
                 },
+                conditions: None,
             },
         ];
         assert_eq!(hash_branch_path(&path), hash_branch_path(&path));
@@ -1786,6 +1788,7 @@ mod tests {
             constraint: SymConstraint::Unknown {
                 hint: "x".into(),
             },
+            conditions: None,
         }];
         let path_b = vec![BranchDecision {
             branch_id: 0,
@@ -1794,6 +1797,7 @@ mod tests {
             constraint: SymConstraint::Unknown {
                 hint: "x".into(),
             },
+            conditions: None,
         }];
         assert_ne!(hash_branch_path(&path_a), hash_branch_path(&path_b));
     }
@@ -1824,6 +1828,7 @@ mod tests {
                 constraint: SymConstraint::Expr {
                     expr: x_gt_10.clone(),
                 },
+                conditions: None,
             },
             BranchDecision {
                 branch_id: 1,
@@ -1832,6 +1837,7 @@ mod tests {
                 constraint: SymConstraint::Unknown {
                     hint: "regex".into(),
                 },
+                conditions: None,
             },
         ]);
 
@@ -2307,6 +2313,7 @@ mod tests {
                 constraint: SymConstraint::Unknown {
                     hint: "opaque".into(),
                 },
+                conditions: None,
             }]),
             source: InputSource::Seed,
             path_id: 456,
@@ -2384,6 +2391,7 @@ mod tests {
                 constraint: SymConstraint::Expr {
                     expr: x_gt_10,
                 },
+                conditions: None,
             }]),
             source: InputSource::Seed,
             path_id: 789,
@@ -2866,12 +2874,14 @@ mod tests {
                 line: 10,
                 taken: true,
                 constraint: SymConstraint::default(),
+                conditions: None,
             },
             BranchDecision {
                 branch_id: 2,
                 line: 20,
                 taken: false,
                 constraint: SymConstraint::default(),
+                conditions: None,
             },
         ];
         let positions = classify_iteration_positions(&[], &branch_path);
@@ -2891,6 +2901,7 @@ mod tests {
                     line: 5,
                     taken: true,
                     constraint: SymConstraint::default(),
+                    conditions: None,
                 },
             },
             TraceEvent::Scope {
@@ -2902,6 +2913,7 @@ mod tests {
             line: 5,
             taken: true,
             constraint: SymConstraint::default(),
+            conditions: None,
         }];
         let positions = classify_iteration_positions(&scope_events, &branch_path);
         assert_eq!(positions, vec![IterationPosition::FirstExit]);
@@ -2919,6 +2931,7 @@ mod tests {
                     line: 5,
                     taken: true,
                     constraint: SymConstraint::default(),
+                    conditions: None,
                 },
             },
             TraceEvent::Scope {
@@ -2930,6 +2943,7 @@ mod tests {
                     line: 5,
                     taken: true,
                     constraint: SymConstraint::default(),
+                    conditions: None,
                 },
             },
             TraceEvent::Scope {
@@ -2942,12 +2956,14 @@ mod tests {
                 line: 5,
                 taken: true,
                 constraint: SymConstraint::default(),
+                conditions: None,
             },
             BranchDecision {
                 branch_id: 10,
                 line: 5,
                 taken: true,
                 constraint: SymConstraint::default(),
+                conditions: None,
             },
         ];
         let positions = classify_iteration_positions(&scope_events, &branch_path);
@@ -2969,6 +2985,7 @@ mod tests {
                     line: 5,
                     taken: true,
                     constraint: SymConstraint::default(),
+                    conditions: None,
                 },
             },
             TraceEvent::Scope {
@@ -2980,6 +2997,7 @@ mod tests {
                     line: 5,
                     taken: true,
                     constraint: SymConstraint::default(),
+                    conditions: None,
                 },
             },
             TraceEvent::Scope {
@@ -2991,6 +3009,7 @@ mod tests {
                     line: 5,
                     taken: true,
                     constraint: SymConstraint::default(),
+                    conditions: None,
                 },
             },
             TraceEvent::Scope {
@@ -3003,18 +3022,21 @@ mod tests {
                 line: 5,
                 taken: true,
                 constraint: SymConstraint::default(),
+                conditions: None,
             },
             BranchDecision {
                 branch_id: 10,
                 line: 5,
                 taken: true,
                 constraint: SymConstraint::default(),
+                conditions: None,
             },
             BranchDecision {
                 branch_id: 10,
                 line: 5,
                 taken: true,
                 constraint: SymConstraint::default(),
+                conditions: None,
             },
         ];
         let positions = classify_iteration_positions(&scope_events, &branch_path);
@@ -3037,6 +3059,7 @@ mod tests {
                     line: 3,
                     taken: false,
                     constraint: SymConstraint::default(),
+                    conditions: None,
                 },
             },
             TraceEvent::Scope {
@@ -3048,6 +3071,7 @@ mod tests {
                     line: 5,
                     taken: true,
                     constraint: SymConstraint::default(),
+                    conditions: None,
                 },
             },
             TraceEvent::Scope {
@@ -3060,12 +3084,14 @@ mod tests {
                 line: 3,
                 taken: false,
                 constraint: SymConstraint::default(),
+                conditions: None,
             },
             BranchDecision {
                 branch_id: 10,
                 line: 5,
                 taken: true,
                 constraint: SymConstraint::default(),
+                conditions: None,
             },
         ];
         let positions = classify_iteration_positions(&scope_events, &branch_path);
@@ -3114,6 +3140,7 @@ mod tests {
             line: 5,
             taken: true,
             constraint: SymConstraint::Expr { expr: x_gt_10 },
+            conditions: None,
         };
         let param_infos = vec![ParamInfo {
             name: "x".into(),
@@ -3212,14 +3239,14 @@ mod tests {
         let mut detector = LoopInvariantDetector::new();
         let events = vec![
             TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id: 1 } },
-            TraceEvent::Branch { decision: BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default() } },
+            TraceEvent::Branch { decision: BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default(), conditions: None } },
             TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id: 1 } },
-            TraceEvent::Branch { decision: BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default() } },
+            TraceEvent::Branch { decision: BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default(), conditions: None } },
             TraceEvent::Scope { event: ScopeEvent::LoopExit { loop_id: 1 } },
         ];
         let bp = vec![
-            BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default() },
-            BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default() },
+            BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default(), conditions: None },
+            BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default(), conditions: None },
         ];
         detector.observe(&events, &bp);
         let skip = detector.skip_indices(&events, &bp);
@@ -3232,25 +3259,25 @@ mod tests {
         let mut detector = LoopInvariantDetector::new();
         let events1 = vec![
             TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id: 1 } },
-            TraceEvent::Branch { decision: BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default() } },
+            TraceEvent::Branch { decision: BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default(), conditions: None } },
             TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id: 1 } },
-            TraceEvent::Branch { decision: BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default() } },
+            TraceEvent::Branch { decision: BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default(), conditions: None } },
             TraceEvent::Scope { event: ScopeEvent::LoopExit { loop_id: 1 } },
         ];
         let bp1 = vec![
-            BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default() },
-            BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default() },
+            BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default(), conditions: None },
+            BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default(), conditions: None },
         ];
         detector.observe(&events1, &bp1);
         assert!(!detector.skip_indices(&events1, &bp1).is_empty());
 
         let events2 = vec![
             TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id: 1 } },
-            TraceEvent::Branch { decision: BranchDecision { branch_id: 10, line: 5, taken: false, constraint: SymConstraint::default() } },
+            TraceEvent::Branch { decision: BranchDecision { branch_id: 10, line: 5, taken: false, constraint: SymConstraint::default(), conditions: None } },
             TraceEvent::Scope { event: ScopeEvent::LoopExit { loop_id: 1 } },
         ];
         let bp2 = vec![
-            BranchDecision { branch_id: 10, line: 5, taken: false, constraint: SymConstraint::default() },
+            BranchDecision { branch_id: 10, line: 5, taken: false, constraint: SymConstraint::default(), conditions: None },
         ];
         detector.observe(&events2, &bp2);
         let skip = detector.skip_indices(&events1, &bp1);
@@ -3261,7 +3288,7 @@ mod tests {
     fn invariant_detector_empty_events_no_skip() {
         let detector = LoopInvariantDetector::new();
         let bp = vec![
-            BranchDecision { branch_id: 1, line: 5, taken: true, constraint: SymConstraint::default() },
+            BranchDecision { branch_id: 1, line: 5, taken: true, constraint: SymConstraint::default(), conditions: None },
         ];
         assert!(detector.skip_indices(&[], &bp).is_empty());
     }
@@ -3303,6 +3330,7 @@ mod tests {
                     line: 5,
                     taken: true,
                     constraint: SymConstraint::Expr { expr },
+                    conditions: None,
                 };
                 scope_evts.push(TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id: 1 } });
                 scope_evts.push(TraceEvent::Branch { decision: bd.clone() });
@@ -3408,7 +3436,7 @@ mod tests {
         loop_context.insert(10, [1].into_iter().collect());
 
         // First observation: new coverage.
-        let bp1 = vec![BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default() }];
+        let bp1 = vec![BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default(), conditions: None }];
         tracker.observe(&loop_context, &bp1);
         assert!(!tracker.should_skip_branch(10, &loop_context));
 
@@ -3427,12 +3455,12 @@ mod tests {
         let mut loop_context: HashMap<u32, HashSet<u32>> = HashMap::new();
         loop_context.insert(10, [1].into_iter().collect());
 
-        let bp1 = vec![BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default() }];
+        let bp1 = vec![BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default(), conditions: None }];
         tracker.observe(&loop_context, &bp1);
         tracker.observe(&loop_context, &bp1); // stale=1
 
         // New coverage resets stale count.
-        let bp2 = vec![BranchDecision { branch_id: 10, line: 5, taken: false, constraint: SymConstraint::default() }];
+        let bp2 = vec![BranchDecision { branch_id: 10, line: 5, taken: false, constraint: SymConstraint::default(), conditions: None }];
         tracker.observe(&loop_context, &bp2);
         assert!(!tracker.should_skip_branch(10, &loop_context));
     }
@@ -3443,7 +3471,7 @@ mod tests {
         let mut loop_context: HashMap<u32, HashSet<u32>> = HashMap::new();
         loop_context.insert(10, [1].into_iter().collect());
 
-        let bp = vec![BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default() }];
+        let bp = vec![BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default(), conditions: None }];
         for _ in 0..10 {
             tracker.observe(&loop_context, &bp);
         }
@@ -3470,6 +3498,7 @@ mod tests {
             line: 5,
             taken: true,
             constraint: SymConstraint::Expr { expr: x_gt_10 },
+            conditions: None,
         };
         // scope_events encode branch 0 as inside loop 1.
         let scope_events_with_loop = vec![
@@ -3554,9 +3583,9 @@ mod tests {
     fn extract_loop_context_maps_branches_to_loops() {
         let events = vec![
             TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id: 1 } },
-            TraceEvent::Branch { decision: BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default() } },
+            TraceEvent::Branch { decision: BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default(), conditions: None } },
             TraceEvent::Scope { event: ScopeEvent::LoopExit { loop_id: 1 } },
-            TraceEvent::Branch { decision: BranchDecision { branch_id: 20, line: 15, taken: false, constraint: SymConstraint::default() } },
+            TraceEvent::Branch { decision: BranchDecision { branch_id: 20, line: 15, taken: false, constraint: SymConstraint::default(), conditions: None } },
         ];
         let ctx = extract_loop_context(&events);
         assert!(ctx.get(&10).unwrap().contains(&1));
@@ -3746,6 +3775,7 @@ mod tests {
                         line: (i * 10) as u32,
                         taken: true,
                         constraint: SymConstraint::default(),
+                        conditions: None,
                     };
                     events.push(TraceEvent::Branch { decision: bd.clone() });
                     branch_path.push(bd);
@@ -3779,7 +3809,7 @@ mod tests {
                     let bid = i as u32;
                     branch_ids.insert(bid);
                     events.push(TraceEvent::Branch {
-                        decision: BranchDecision { branch_id: bid, line: bid * 10, taken: true, constraint: SymConstraint::default() },
+                        decision: BranchDecision { branch_id: bid, line: bid * 10, taken: true, constraint: SymConstraint::default(), conditions: None },
                     });
                 }
                 // Close loops
@@ -3802,24 +3832,24 @@ mod tests {
                 let mut detector = LoopInvariantDetector::new();
                 let events_true = vec![
                     TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id } },
-                    TraceEvent::Branch { decision: BranchDecision { branch_id, line: 1, taken: true, constraint: SymConstraint::default() } },
+                    TraceEvent::Branch { decision: BranchDecision { branch_id, line: 1, taken: true, constraint: SymConstraint::default() , conditions: None } },
                     TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id } },
-                    TraceEvent::Branch { decision: BranchDecision { branch_id, line: 1, taken: true, constraint: SymConstraint::default() } },
+                    TraceEvent::Branch { decision: BranchDecision { branch_id, line: 1, taken: true, constraint: SymConstraint::default() , conditions: None } },
                     TraceEvent::Scope { event: ScopeEvent::LoopExit { loop_id } },
                 ];
                 let bp_true = vec![
-                    BranchDecision { branch_id, line: 1, taken: true, constraint: SymConstraint::default() },
-                    BranchDecision { branch_id, line: 1, taken: true, constraint: SymConstraint::default() },
+                    BranchDecision { branch_id, line: 1, taken: true, constraint: SymConstraint::default() , conditions: None },
+                    BranchDecision { branch_id, line: 1, taken: true, constraint: SymConstraint::default() , conditions: None },
                 ];
                 detector.observe(&events_true, &bp_true);
 
                 let events_false = vec![
                     TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id } },
-                    TraceEvent::Branch { decision: BranchDecision { branch_id, line: 1, taken: false, constraint: SymConstraint::default() } },
+                    TraceEvent::Branch { decision: BranchDecision { branch_id, line: 1, taken: false, constraint: SymConstraint::default() , conditions: None } },
                     TraceEvent::Scope { event: ScopeEvent::LoopExit { loop_id } },
                 ];
                 let bp_false = vec![
-                    BranchDecision { branch_id, line: 1, taken: false, constraint: SymConstraint::default() },
+                    BranchDecision { branch_id, line: 1, taken: false, constraint: SymConstraint::default() , conditions: None },
                 ];
                 detector.observe(&events_false, &bp_false);
 

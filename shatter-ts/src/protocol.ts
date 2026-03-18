@@ -344,11 +344,20 @@ export type BinOpKind =
 
 export type UnOpKind = "not" | "neg" | "bitwise_not" | "typeof";
 
+export interface ConditionOutcome {
+  condition_index: number;
+  value: boolean | null;
+  masked?: boolean;
+  constraint: SymConstraint;
+}
+
 export interface BranchDecision {
   branch_id: number;
   line: number;
   taken: boolean;
   constraint: SymConstraint;
+  /** Per-condition outcomes for MC/DC. Present only in MC/DC mode for compound decisions. */
+  conditions?: ConditionOutcome[];
 }
 
 export type ScopeEvent =

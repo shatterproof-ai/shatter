@@ -243,6 +243,7 @@ impl TriageState {
                     line: decision.line,
                     taken: predicted_taken,
                     constraint: decision.constraint.clone(),
+                    conditions: None,
                 });
             }
 
@@ -1430,6 +1431,7 @@ mod tests {
             line: branch_id * 10,
             taken,
             constraint: SymConstraint::Expr { expr },
+            conditions: None,
         }
     }
 
@@ -1441,6 +1443,7 @@ mod tests {
             constraint: SymConstraint::Unknown {
                 hint: "opaque".into(),
             },
+            conditions: None,
         }
     }
 
@@ -1547,6 +1550,7 @@ mod tests {
             line: 10,
             taken: true,
             constraint: SymConstraint::Expr { expr: x_gt_0() },
+            conditions: None,
         }];
         let path_hash = hash_branch_path(&predicted);
         let mut covered = HashSet::new();

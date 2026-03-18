@@ -229,6 +229,7 @@ mod tests {
                 uncovered: branches.saturating_sub(z3),
                 symexpr_count: branches,
                 unknown_count: 0,
+                mcdc_metrics: None,
             },
             skipped_count: 0,
             timestamp: 1000,

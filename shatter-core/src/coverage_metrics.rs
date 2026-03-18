@@ -43,6 +43,25 @@ pub struct MethodPercentages {
     pub uncovered_pct: f64,
 }
 
+/// MC/DC coverage metrics for a function.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct McdcMetrics {
+    /// Total number of compound decisions tracked for MC/DC.
+    pub total_decisions: usize,
+    /// Total number of individual conditions across all tracked decisions.
+    pub total_conditions: usize,
+    /// Conditions that have a verified independence pair.
+    pub independent_conditions: usize,
+    /// Conditions that were always masked and could not be verified.
+    pub opaque_conditions: usize,
+    /// Conditions that appear in the decision list but were never observed
+    /// (either always short-circuited away or never reached).
+    pub always_masked: usize,
+    /// Percentage of conditions with independence pairs: independent / (total - opaque) * 100.
+    /// 0.0 when there are no verifiable conditions.
+    pub mcdc_percentage: f64,
+}
+
 /// Coverage metrics summarizing how effective the concolic approach was.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CoverageMetrics {
@@ -60,6 +79,9 @@ pub struct CoverageMetrics {
     pub symexpr_count: usize,
     /// Number of branch constraints that were Unknown (opaque to solver).
     pub unknown_count: usize,
+    /// MC/DC coverage metrics. Present when MC/DC mode is enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcdc_metrics: Option<McdcMetrics>,
 }
 
 impl CoverageMetrics {
@@ -142,6 +164,7 @@ impl CoverageMetrics {
             uncovered,
             symexpr_count,
             unknown_count,
+            mcdc_metrics: None,
         }
     }
 
@@ -149,6 +172,8 @@ impl CoverageMetrics {
     ///
     /// Each counter is summed. The caller must ensure no double-counting
     /// (e.g., each function appears in exactly one batch).
+    /// MC/DC metrics are merged additively; if only one side has MC/DC data
+    /// the result contains an `McdcMetrics` with just that side's counts.
     pub fn merge(&mut self, other: &CoverageMetrics) {
         self.total_branches += other.total_branches;
         self.z3_solved += other.z3_solved;
@@ -157,6 +182,25 @@ impl CoverageMetrics {
         self.uncovered += other.uncovered;
         self.symexpr_count += other.symexpr_count;
         self.unknown_count += other.unknown_count;
+        match (&mut self.mcdc_metrics, &other.mcdc_metrics) {
+            (Some(a), Some(b)) => {
+                a.total_decisions += b.total_decisions;
+                a.total_conditions += b.total_conditions;
+                a.independent_conditions += b.independent_conditions;
+                a.opaque_conditions += b.opaque_conditions;
+                a.always_masked += b.always_masked;
+                let verifiable = a.total_conditions.saturating_sub(a.opaque_conditions);
+                a.mcdc_percentage = if verifiable == 0 {
+                    0.0
+                } else {
+                    a.independent_conditions as f64 / verifiable as f64 * 100.0
+                };
+            }
+            (None, Some(b)) => {
+                self.mcdc_metrics = Some(b.clone());
+            }
+            _ => {}
+        }
     }
 }
 
@@ -558,11 +602,67 @@ mod tests {
             uncovered: 2,
             symexpr_count: 7,
             unknown_count: 3,
+            mcdc_metrics: None,
         };
         let json = serde_json::to_string(&metrics).expect("serialize");
         let deserialized: CoverageMetrics =
             serde_json::from_str(&json).expect("deserialize");
         assert_eq!(metrics, deserialized);
+    }
+
+    #[test]
+    fn mcdc_metrics_serialization_round_trips() {
+        let metrics = McdcMetrics {
+            total_decisions: 3,
+            total_conditions: 7,
+            independent_conditions: 5,
+            opaque_conditions: 1,
+            always_masked: 0,
+            mcdc_percentage: 83.33,
+        };
+        let json = serde_json::to_string(&metrics).expect("serialize");
+        let deserialized: McdcMetrics = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(metrics, deserialized);
+    }
+
+    #[test]
+    fn coverage_metrics_with_mcdc_round_trips() {
+        let metrics = CoverageMetrics {
+            total_branches: 5,
+            z3_solved: 2,
+            random_found: 1,
+            user_provided: 0,
+            uncovered: 2,
+            symexpr_count: 3,
+            unknown_count: 2,
+            mcdc_metrics: Some(McdcMetrics {
+                total_decisions: 2,
+                total_conditions: 4,
+                independent_conditions: 3,
+                opaque_conditions: 0,
+                always_masked: 0,
+                mcdc_percentage: 75.0,
+            }),
+        };
+        let json = serde_json::to_string(&metrics).expect("serialize");
+        let deserialized: CoverageMetrics = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(metrics, deserialized);
+    }
+
+    #[test]
+    fn coverage_metrics_mcdc_none_omitted_in_json() {
+        let metrics = CoverageMetrics {
+            total_branches: 2,
+            z3_solved: 1,
+            random_found: 0,
+            user_provided: 0,
+            uncovered: 1,
+            symexpr_count: 1,
+            unknown_count: 1,
+            mcdc_metrics: None,
+        };
+        let json = serde_json::to_string(&metrics).expect("serialize");
+        assert!(!json.contains("mcdc_metrics"), "None mcdc_metrics must not appear in JSON");
     }
 
     // --- extract_targets tests ---
@@ -660,12 +760,14 @@ mod tests {
                 line: 5,
                 taken: true,
                 constraint: SymConstraint::Expr { expr: expr.clone() },
+                conditions: None,
             },
             BranchDecision {
                 branch_id: 1,
                 line: 10,
                 taken: true,
                 constraint: SymConstraint::Expr { expr },
+                conditions: None,
             },
         ]);
         let raw_results = vec![(vec![serde_json::json!(5)], vec![], exec)];
@@ -698,6 +800,7 @@ mod tests {
                 constraint: SymConstraint::Unknown {
                     hint: "dynamic validation call".to_string(),
                 },
+                conditions: None,
             },
         ]);
         let raw_results = vec![(vec![serde_json::json!(10)], vec![], exec)];
@@ -742,6 +845,7 @@ mod tests {
                 constraint: SymConstraint::Unknown {
                     hint: "runtime opaque hint".to_string(),
                 },
+                conditions: None,
             },
         ]);
         let raw_results = vec![(vec![serde_json::json!(1)], vec![], exec)];
@@ -822,6 +926,7 @@ mod tests {
             uncovered: 4,
             symexpr_count: 6,
             unknown_count: 4,
+            mcdc_metrics: None,
         };
         let b = CoverageMetrics {
             total_branches: 8,
@@ -831,6 +936,7 @@ mod tests {
             uncovered: 3,
             symexpr_count: 5,
             unknown_count: 3,
+            mcdc_metrics: None,
         };
         a.merge(&b);
         assert_eq!(a.total_branches, 18);
@@ -852,6 +958,7 @@ mod tests {
             uncovered: 1,
             symexpr_count: 3,
             unknown_count: 2,
+            mcdc_metrics: None,
         };
         let mut merged = CoverageMetrics::default();
         merged.merge(&original);
@@ -868,6 +975,7 @@ mod tests {
             uncovered: 2,
             symexpr_count: 2,
             unknown_count: 2,
+            mcdc_metrics: None,
         };
         let c = CoverageMetrics {
             total_branches: 6,
@@ -877,6 +985,7 @@ mod tests {
             uncovered: 1,
             symexpr_count: 4,
             unknown_count: 2,
+            mcdc_metrics: None,
         };
         // Merge B then C
         let mut sequential = CoverageMetrics::default();

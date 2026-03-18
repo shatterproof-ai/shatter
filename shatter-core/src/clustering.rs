@@ -216,6 +216,7 @@ mod tests {
                 constraint: SymConstraint::Unknown {
                     hint: format!("branch_{id}"),
                 },
+                conditions: None,
             })
             .collect();
 

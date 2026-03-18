@@ -174,6 +174,21 @@ pub enum BranchType {
     For,
 }
 
+/// Outcome of an individual condition within a compound decision.
+/// Embedded in `BranchDecision::conditions` when MC/DC mode is enabled.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConditionOutcome {
+    /// Index within the parent decision's condition list (source order).
+    pub condition_index: u32,
+    /// Concrete truth value. None if masked by short-circuit.
+    pub value: Option<bool>,
+    /// Whether short-circuit evaluation prevented observation.
+    #[serde(default)]
+    pub masked: bool,
+    /// Symbolic constraint for this individual condition.
+    pub constraint: serde_json::Value,
+}
+
 /// A branch point in a function's control flow.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BranchInfo {

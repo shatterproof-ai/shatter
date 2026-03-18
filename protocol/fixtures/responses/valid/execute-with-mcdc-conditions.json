@@ -1,0 +1,69 @@
+{
+  "protocol_version": "0.1.0",
+  "id": 5,
+  "status": "execute",
+  "return_value": true,
+  "thrown_error": null,
+  "branch_path": [
+    {
+      "branch_id": 0,
+      "line": 5,
+      "taken": true,
+      "constraint": {
+        "kind": "expr",
+        "expr": {
+          "kind": "bin_op",
+          "op": "and",
+          "left": {
+            "kind": "bin_op",
+            "op": "gt",
+            "left": { "kind": "param", "name": "x", "path": [] },
+            "right": { "kind": "const", "type": "int", "value": 0 }
+          },
+          "right": {
+            "kind": "bin_op",
+            "op": "lt",
+            "left": { "kind": "param", "name": "y", "path": [] },
+            "right": { "kind": "const", "type": "int", "value": 100 }
+          }
+        }
+      },
+      "conditions": [
+        {
+          "condition_index": 0,
+          "value": true,
+          "masked": false,
+          "constraint": {
+            "kind": "expr",
+            "expr": {
+              "kind": "bin_op",
+              "op": "gt",
+              "left": { "kind": "param", "name": "x", "path": [] },
+              "right": { "kind": "const", "type": "int", "value": 0 }
+            }
+          }
+        },
+        {
+          "condition_index": 1,
+          "value": null,
+          "masked": true,
+          "constraint": {
+            "kind": "unknown",
+            "hint": "masked by short-circuit"
+          }
+        }
+      ]
+    }
+  ],
+  "lines_executed": [1, 2, 5, 6],
+  "calls_to_external": [],
+  "path_constraints": [],
+  "side_effects": [],
+  "performance": {
+    "wall_time_ms": 1.2,
+    "cpu_time_us": 800,
+    "heap_used_bytes": 2048,
+    "heap_allocated_bytes": 4096
+  },
+  "capture_truncation": null
+}

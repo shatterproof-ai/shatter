@@ -1,0 +1,33 @@
+{
+  "protocol_version": "0.1.0",
+  "id": 7,
+  "status": "execute",
+  "return_value": true,
+  "thrown_error": null,
+  "branch_path": [
+    {
+      "branch_id": 0,
+      "line": 5,
+      "taken": true,
+      "constraint": { "kind": "unknown", "hint": "compound condition" },
+      "conditions": [
+        {
+          "condition_index": -1,
+          "value": true,
+          "masked": false,
+          "constraint": { "kind": "unknown", "hint": "test" }
+        }
+      ]
+    }
+  ],
+  "lines_executed": [5],
+  "calls_to_external": [],
+  "path_constraints": [],
+  "side_effects": [],
+  "performance": {
+    "wall_time_ms": 0.1,
+    "cpu_time_us": 50,
+    "heap_used_bytes": 512,
+    "heap_allocated_bytes": 1024
+  }
+}

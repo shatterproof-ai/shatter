@@ -399,6 +399,7 @@ pub fn arb_branch_decision() -> impl Strategy<Value = BranchDecision> {
             line,
             taken,
             constraint,
+            conditions: None,
         },
     )
 }

@@ -811,6 +811,7 @@ mod tests {
                 line: 5,
                 taken: true,
                 constraint: SymConstraint::default(),
+                conditions: None,
             }]
         }
 
@@ -820,6 +821,7 @@ mod tests {
                 line: 5,
                 taken: false,
                 constraint: SymConstraint::default(),
+                conditions: None,
             }]
         }
 
@@ -991,6 +993,7 @@ mod tests {
                     line: 5,
                     taken,
                     constraint: SymConstraint::default(),
+                    conditions: None,
                 }],
                 lines_executed: vec![],
                 calls_to_external: vec![],
