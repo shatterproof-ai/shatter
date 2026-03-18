@@ -833,6 +833,8 @@ func discoverDependencies(sourcePath string, mocks []MockConfig) []DiscoveredDep
 
 // rewritePackageToMain rewrites the package declaration in all Go files in dir
 // to "package main", so the harness main.go can call functions from those files.
+// Any existing func main() in source files is also stripped to avoid a redeclaration
+// conflict with the harness main.go.
 func rewritePackageToMain(dir string) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -848,10 +850,23 @@ func rewritePackageToMain(dir string) error {
 		if err != nil {
 			continue // skip unparseable files
 		}
-		if f.Name.Name == "main" {
+
+		needsRewrite := f.Name.Name != "main"
+		f.Name.Name = "main"
+
+		// Rename any func main() — the harness supplies its own. Renaming rather
+		// than removing preserves imports that the original main may have used.
+		for _, decl := range f.Decls {
+			fd, ok := decl.(*ast.FuncDecl)
+			if ok && fd.Name.Name == "main" && fd.Recv == nil {
+				fd.Name.Name = "_shatter_main_"
+				needsRewrite = true
+			}
+		}
+
+		if !needsRewrite {
 			continue
 		}
-		f.Name.Name = "main"
 		out, err := os.Create(path)
 		if err != nil {
 			return err

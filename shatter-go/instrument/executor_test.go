@@ -877,3 +877,35 @@ func TestGenerateMockFilePerExecutionVariation(t *testing.T) {
 		t.Error("expected 99 in second mock file")
 	}
 }
+
+// TestExecuteFunctionStandaloneFileWithMain verifies that a source file containing
+// a func main() can be executed — the instrumentation must strip the existing main
+// to avoid a redeclaration conflict with the harness main.go.
+// Regression test for: build failed: main redeclared in this block
+func TestExecuteFunctionStandaloneFileWithMain(t *testing.T) {
+	srcDir := t.TempDir()
+	src := writeExecTestSource(t, srcDir, "target.go", `package main
+
+import "fmt"
+
+func classify(n int) string {
+	if n < 0 {
+		return "negative"
+	}
+	return "non-negative"
+}
+
+func main() {
+	fmt.Println(classify(1))
+}
+`)
+	result, err := ExecuteFunction(src, "classify", []json.RawMessage{
+		json.RawMessage("-1"),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteFunction failed on standalone file with main: %v", err)
+	}
+	if result.ReturnValue == nil {
+		t.Fatal("expected non-nil return value")
+	}
+}

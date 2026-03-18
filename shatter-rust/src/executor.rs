@@ -517,6 +517,7 @@ pub fn execute_function(
     let build_output = Command::new("cargo")
         .args(["build", "--release"])
         .current_dir(&temp_dir)
+        .env("CARGO_TARGET_DIR", temp_dir.join("target"))
         .output()
         .map_err(|e| ExecuteError::CompilationFailed(format!("failed to run cargo: {e}")))?;
 
