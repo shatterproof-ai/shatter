@@ -3410,6 +3410,7 @@ mod tests {
             timeout_explore: None,
             setup_manager: None,
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
+            isolation: IsolationMode::None,
         };
 
         let result = parallel_scan(&fe_config, &[analysis], &config)
@@ -3505,6 +3506,7 @@ mod tests {
             timeout_explore: None,
             setup_manager: None,
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
+            isolation: IsolationMode::None,
         };
 
         let analyses = vec![warm_analysis, stale_analysis];
@@ -3571,6 +3573,7 @@ mod tests {
             timeout_explore: None,
             setup_manager: None,
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
+            isolation: IsolationMode::None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -3639,6 +3642,7 @@ mod tests {
             timeout_explore: None,
             setup_manager: None,
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
+            isolation: IsolationMode::None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -3735,6 +3739,7 @@ mod tests {
             timeout_explore: None,
             setup_manager: None,
             policy: SchedulerPolicy::Serial,
+            isolation: IsolationMode::None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
