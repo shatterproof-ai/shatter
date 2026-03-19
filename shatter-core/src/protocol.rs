@@ -108,6 +108,11 @@ pub enum Command {
         /// Stack of active setup contexts from enclosing Setup commands, if any.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         setup_context: Option<SetupContextStack>,
+        /// When false, the frontend skips side-effect capture (console/process interception)
+        /// for lower per-execute overhead. Defaults to true. Non-capture outputs
+        /// (branch_path, lines_executed, return_value, thrown_error) remain correct.
+        #[serde(default = "default_true", skip_serializing_if = "is_true")]
+        capture: bool,
     },
     /// Run a setup file to initialize state before function execution.
     Setup {
@@ -405,6 +410,14 @@ pub struct CryptoBoundary {
 
 fn default_confidence() -> Confidence {
     Confidence::High
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn is_true(v: &bool) -> bool {
+    *v
 }
 
 /// The kind of external dependency.
@@ -732,6 +745,7 @@ mod tests {
                 inputs: vec![serde_json::json!({"items": [1, 2, 3], "priority": "express"})],
                 mocks: vec![],
                 setup_context: None,
+                capture: true,
             },
         ));
     }
@@ -1295,6 +1309,7 @@ mod tests {
                     },
                 ],
                 setup_context: None,
+                capture: true,
             },
         ));
     }
@@ -1661,6 +1676,7 @@ mod tests {
                         context: serde_json::json!({"db_handle": "conn_42"}),
                     }],
                 }),
+                capture: true,
             },
         ));
     }
@@ -1687,6 +1703,7 @@ mod tests {
                 inputs: vec![serde_json::json!(1)],
                 mocks: vec![],
                 setup_context: None,
+                capture: true,
             },
         );
         let json = serde_json::to_value(&req).expect("serialize");
@@ -1694,6 +1711,74 @@ mod tests {
             .as_object()
             .expect("object")
             .contains_key("setup_context"));
+    }
+
+    #[test]
+    fn execute_no_capture_round_trips() {
+        round_trip(&Request::new(
+            50,
+            Command::Execute {
+                function: "myFunc".into(),
+                inputs: vec![serde_json::json!(1)],
+                mocks: vec![],
+                setup_context: None,
+                capture: false,
+            },
+        ));
+    }
+
+    #[test]
+    fn execute_without_capture_field_defaults_to_true() {
+        // Verify that JSON without the capture field deserializes with capture = true.
+        let json = r#"{"protocol_version":"0.1.0","id":51,"command":"execute","function":"myFunc","inputs":[1],"mocks":[]}"#;
+        let req: Request = serde_json::from_str(json).expect("deserialize");
+        if let Command::Execute { capture, .. } = &req.command {
+            assert!(*capture, "capture should default to true when absent");
+        } else {
+            panic!("expected Execute command");
+        }
+    }
+
+    #[test]
+    fn execute_capture_true_omits_field_in_json() {
+        // capture: true is the default — should be omitted from serialized JSON.
+        let req = Request::new(
+            52,
+            Command::Execute {
+                function: "myFunc".into(),
+                inputs: vec![serde_json::json!(1)],
+                mocks: vec![],
+                setup_context: None,
+                capture: true,
+            },
+        );
+        let json = serde_json::to_value(&req).expect("serialize");
+        assert!(
+            !json.as_object().expect("object").contains_key("capture"),
+            "capture: true should be omitted from JSON (default)"
+        );
+    }
+
+    #[test]
+    fn execute_capture_false_included_in_json() {
+        // capture: false is non-default — should be present in serialized JSON.
+        let req = Request::new(
+            53,
+            Command::Execute {
+                function: "myFunc".into(),
+                inputs: vec![serde_json::json!(1)],
+                mocks: vec![],
+                setup_context: None,
+                capture: false,
+            },
+        );
+        let json = serde_json::to_value(&req).expect("serialize");
+        let obj = json.as_object().expect("object");
+        assert!(
+            obj.contains_key("capture"),
+            "capture: false should be present in JSON"
+        );
+        assert_eq!(obj["capture"], serde_json::json!(false));
     }
 
     #[test]

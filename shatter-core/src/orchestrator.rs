@@ -542,6 +542,7 @@ async fn observe_one(
             inputs: entry.inputs.clone(),
             mocks: effective_mocks.clone(),
             setup_context: setup_context.clone(),
+            capture: true,
         })
         .await?;
 
@@ -1243,6 +1244,7 @@ async fn refine_boundaries_async(
                     inputs: candidate.clone(),
                     mocks: mocks.clone(),
                     setup_context: setup_context.clone(),
+                    capture: false,
                 })
                 .await
             {
@@ -1432,6 +1434,7 @@ pub async fn explore(
                         inputs: float_inputs.clone(),
                         mocks: config.mocks.clone(),
                         setup_context: setup_context.clone(),
+                        capture: false,
                     })
                     .await?;
 
@@ -1441,6 +1444,7 @@ pub async fn explore(
                         inputs: floor_inputs,
                         mocks: config.mocks.clone(),
                         setup_context: setup_context.clone(),
+                        capture: false,
                     })
                     .await?;
 
@@ -1839,6 +1843,7 @@ pub async fn explore(
                                 inputs: trial.clone(),
                                 mocks: effective_mocks.clone(),
                                 setup_context: setup_context.clone(),
+                                capture: false,
                             })
                             .await;
 

@@ -614,6 +614,7 @@ async fn setup_session_context_flows_to_execute() {
                     context: setup_ctx.clone(),
                 }],
             }),
+            capture: true,
         })
         .await
         .expect("execute with setup context failed");

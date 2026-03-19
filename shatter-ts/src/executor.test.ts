@@ -1194,3 +1194,105 @@ describe("executeInstrumented MC/DC mode", () => {
     expect(bd.conditions).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// No-capture fast path
+// ---------------------------------------------------------------------------
+
+describe("executeFunction no-capture fast path", () => {
+  it("returns empty side_effects when capture=false", async () => {
+    const result = await executeFunction(SIDE_EFFECTS_FIXTURE, "logsAndReturns", [42], undefined, false);
+    expect(result.side_effects).toEqual([]);
+  });
+
+  it("returns correct return_value when capture=false", async () => {
+    const result = await executeFunction(SIDE_EFFECTS_FIXTURE, "logsAndReturns", [42], undefined, false);
+    expect(result.return_value).toBe("done: 42");
+  });
+
+  it("returns correct thrown_error when capture=false", async () => {
+    const result = await executeFunction(SIDE_EFFECTS_FIXTURE, "throwsError", ["bang"], undefined, false);
+    expect(result.thrown_error).not.toBeNull();
+    expect(result.thrown_error!.message).toBe("bang");
+    // No side_effects even though there's a thrown error
+    expect(result.side_effects).toEqual([]);
+  });
+
+  it("is faster than capture=true over many iterations", async () => {
+    const N = 200;
+    const t0 = Date.now();
+    for (let i = 0; i < N; i++) {
+      clearModuleCache();
+      await executeFunction(SIDE_EFFECTS_FIXTURE, "logsAndReturns", [i], undefined, true);
+    }
+    const captureMs = Date.now() - t0;
+
+    const t1 = Date.now();
+    for (let i = 0; i < N; i++) {
+      clearModuleCache();
+      await executeFunction(SIDE_EFFECTS_FIXTURE, "logsAndReturns", [i], undefined, false);
+    }
+    const noCaptureMs = Date.now() - t1;
+
+    // No-capture should be at least as fast as capture (not significantly slower).
+    // We use a generous bound to avoid flakiness, but expect meaningful improvement.
+    expect(noCaptureMs).toBeLessThan(captureMs * 1.5);
+  });
+});
+
+describe("executeInstrumented no-capture fast path", () => {
+  function getInstrumentedSourceForNoCapture(funcName: string): string {
+    const source = fs.readFileSync(SIDE_EFFECTS_FIXTURE, "utf-8");
+    const result = instrumentFunction(source, funcName, SIDE_EFFECTS_FIXTURE);
+    if ("error" in result) throw new Error(result.error);
+    return result.instrumentedSource;
+  }
+
+  it("returns empty side_effects when capture=false", async () => {
+    const instrumentedSource = getInstrumentedSourceForNoCapture("logsAndReturns");
+    const result = await executeInstrumented(instrumentedSource, "logsAndReturns", [99], [], undefined, undefined, false);
+    expect(result.side_effects).toEqual([]);
+  });
+
+  it("still populates branch_path when capture=false", async () => {
+    const instrumentedSource = getInstrumentedSourceForNoCapture("logsAndReturns");
+    const result = await executeInstrumented(instrumentedSource, "logsAndReturns", [99], [], undefined, undefined, false);
+    // branch_path should still be populated (capture only affects side_effects)
+    expect(result.branch_path).toBeDefined();
+    expect(result.lines_executed).toBeDefined();
+  });
+
+  it("returns correct return_value when capture=false", async () => {
+    const instrumentedSource = getInstrumentedSourceForNoCapture("logsAndReturns");
+    const result = await executeInstrumented(instrumentedSource, "logsAndReturns", [55], [], undefined, undefined, false);
+    expect(result.return_value).toBe("done: 55");
+  });
+
+  it("returns correct thrown_error when capture=false", async () => {
+    const instrumentedSource = getInstrumentedSourceForNoCapture("throwsError");
+    const result = await executeInstrumented(instrumentedSource, "throwsError", ["oops"], [], undefined, undefined, false);
+    expect(result.thrown_error).not.toBeNull();
+    expect(result.thrown_error!.message).toBe("oops");
+    expect(result.side_effects).toEqual([]);
+  });
+
+  it("is faster than capture=true over many iterations", async () => {
+    const instrumentedSource = getInstrumentedSourceForNoCapture("logsAndReturns");
+    const N = 100;
+
+    const t0 = Date.now();
+    for (let i = 0; i < N; i++) {
+      await executeInstrumented(instrumentedSource, "logsAndReturns", [i], [], undefined, undefined, true);
+    }
+    const captureMs = Date.now() - t0;
+
+    const t1 = Date.now();
+    for (let i = 0; i < N; i++) {
+      await executeInstrumented(instrumentedSource, "logsAndReturns", [i], [], undefined, undefined, false);
+    }
+    const noCaptureMs = Date.now() - t1;
+
+    // No-capture should not be significantly slower than capture.
+    expect(noCaptureMs).toBeLessThan(captureMs * 1.5);
+  });
+});

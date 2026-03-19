@@ -154,6 +154,7 @@ async fn probe_for_base_cases(
                 inputs: inputs.clone(),
                 mocks: vec![],
                 setup_context: None,
+                capture: true,
             })
             .await?;
 
@@ -241,6 +242,7 @@ pub async fn explore_recursive(
                     inputs: inputs.clone(),
                     mocks: vec![mock.clone()],
                     setup_context: None,
+                    capture: true,
                 })
                 .await?;
 
@@ -374,6 +376,7 @@ pub async fn explore_mutual_group(
                     inputs: inputs.clone(),
                     mocks: vec![],
                     setup_context: None,
+                    capture: true,
                 })
                 .await?;
 
@@ -449,6 +452,7 @@ pub async fn explore_mutual_group(
                         inputs: inputs.clone(),
                         mocks: mocks.clone(),
                         setup_context: None,
+                        capture: true,
                     })
                     .await?;
 

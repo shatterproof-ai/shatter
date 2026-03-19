@@ -104,6 +104,11 @@
           "type": "array",
           "items": { "$ref": "mock-config.schema.json" },
           "description": "Mock configurations for external dependencies."
+        },
+        "capture": {
+          "type": "boolean",
+          "description": "When false, the frontend skips side-effect capture (console/process interception) for lower per-execute overhead. Defaults to true. Non-capture outputs (branch_path, lines_executed, return_value, thrown_error) remain correct.",
+          "default": true
         }
       },
       "required": ["command", "function", "inputs", "mocks"]

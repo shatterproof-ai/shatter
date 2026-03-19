@@ -469,6 +469,7 @@ mod tests {
                 inputs: vec![serde_json::json!(42)],
                 mocks: vec![],
                 setup_context: None,
+                capture: true,
             })
             .await
             .expect("execute failed");
@@ -553,6 +554,7 @@ mod tests {
                 inputs: vec![serde_json::json!(1), serde_json::json!("hello")],
                 mocks: vec![],
                 setup_context: None,
+                capture: true,
             })
             .await
             .expect("execute failed");
@@ -591,6 +593,7 @@ mod tests {
                     inputs: vec![],
                     mocks: vec![],
                     setup_context: None,
+                    capture: true,
                 })
                 .entered();
             }
