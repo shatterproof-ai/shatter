@@ -2185,6 +2185,7 @@ mod tests {
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
             meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
+            isolation: IsolationMode::None,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("should succeed with noop frontend");
@@ -2211,6 +2212,7 @@ mod tests {
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
             meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
+            isolation: IsolationMode::None,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("per_function setup should succeed");
@@ -2237,6 +2239,7 @@ mod tests {
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
             meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
+            isolation: IsolationMode::None,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("per_execution setup should succeed");
@@ -2262,6 +2265,7 @@ mod tests {
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
             meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
+            isolation: IsolationMode::None,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("should succeed without setup capability");
@@ -2291,6 +2295,7 @@ mod tests {
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
             meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
+            isolation: IsolationMode::None,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("generators should succeed");
@@ -2316,6 +2321,7 @@ mod tests {
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
             meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
+            isolation: IsolationMode::None,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("no generators should succeed");
@@ -2340,6 +2346,7 @@ mod tests {
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
             meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
+            isolation: IsolationMode::None,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("user seeds should succeed");
@@ -2367,6 +2374,7 @@ mod tests {
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
             meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
+            isolation: IsolationMode::None,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("candidate inputs should succeed");
@@ -2406,6 +2414,7 @@ mod tests {
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
             meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
+            isolation: IsolationMode::None,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("should succeed with noop frontend");

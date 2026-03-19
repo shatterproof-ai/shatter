@@ -2209,6 +2209,7 @@ mod tests {
             config_dir: None,
             timeout_explore: None,
             setup_manager: None,
+            isolation: IsolationMode::None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2280,6 +2281,7 @@ mod tests {
             config_dir: None,
             timeout_explore: None,
             setup_manager: None,
+            isolation: IsolationMode::None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2347,6 +2349,7 @@ mod tests {
             config_dir: None,
             timeout_explore: None,
             setup_manager: None,
+            isolation: IsolationMode::None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2431,6 +2434,7 @@ mod tests {
             config_dir: None,
             timeout_explore: None,
             setup_manager: None,
+            isolation: IsolationMode::None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2525,6 +2529,7 @@ mod tests {
             config_dir: None,
             timeout_explore: None,
             setup_manager: None,
+            isolation: IsolationMode::None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2603,6 +2608,7 @@ mod tests {
             config_dir: None,
             timeout_explore: None,
             setup_manager: None,
+            isolation: IsolationMode::None,
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -2655,6 +2661,7 @@ mod tests {
             config_dir: None,
             timeout_explore: None,
             setup_manager: None,
+            isolation: IsolationMode::None,
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -2691,6 +2698,7 @@ mod tests {
             config_dir: None,
             timeout_explore: None,
             setup_manager: None,
+            isolation: IsolationMode::None,
         };
 
         let plan = format_dry_run_plan(&analyses, &skipped, &config).expect("should succeed");
@@ -2717,6 +2725,7 @@ mod tests {
             config_dir: None,
             timeout_explore: None,
             setup_manager: None,
+            isolation: IsolationMode::None,
         };
 
         let plan = format_dry_run_plan(&[], &[], &config).expect("should succeed");
