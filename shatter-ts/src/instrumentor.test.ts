@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-non-null-assertion */
 import ts from "typescript";
-import { instrumentFunction, buildSymExpr, RECORD_FUNCTION, BRANCH_FUNCTION, SCOPE_EVENT_FUNCTION, MOCK_REGISTRY, MOCK_CALL_FUNCTION } from "./instrumentor";
-import type { SymExpr, BranchDecision, SymConstraint, MockConfig, TraceEvent, ScopeEvent } from "./protocol";
+import { instrumentFunction, buildSymExpr, RECORD_FUNCTION, BRANCH_FUNCTION, SCOPE_EVENT_FUNCTION, MOCK_REGISTRY, MOCK_CALL_FUNCTION, MCDC_RECORD_FUNCTION, MCDC_BRANCH_FUNCTION, flattenConditions } from "./instrumentor";
+import type { SymExpr, BranchDecision, SymConstraint, MockConfig, TraceEvent, ScopeEvent, ConditionOutcome } from "./protocol";
 
 /** Transpile TypeScript to JavaScript so it can be executed with new Function(). */
 function transpileToJs(tsSource: string): string {
@@ -1578,5 +1578,144 @@ describe("scope events", () => {
     );
     expect(loopEvents.filter((e) => e.event.kind === "loop_enter")).toHaveLength(3);
     expect(loopEvents.filter((e) => e.event.kind === "loop_exit")).toHaveLength(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MC/DC instrumentor tests
+// ---------------------------------------------------------------------------
+
+describe("MC/DC instrumentation (SHATTER_MCDC=1)", () => {
+  afterEach(() => {
+    delete process.env["SHATTER_MCDC"];
+  });
+
+  it("does not emit MC/DC calls when SHATTER_MCDC is not set", () => {
+    delete process.env["SHATTER_MCDC"];
+    const source = `function check(a: number, b: number): boolean {
+  if (a > 0 && b < 10) {
+    return true;
+  }
+  return false;
+}`;
+    const result = instrumentFunction(source, "check");
+    expect("error" in result).toBe(false);
+    if ("error" in result) return;
+
+    expect(result.instrumentedSource).toContain(BRANCH_FUNCTION);
+    expect(result.instrumentedSource).not.toContain(MCDC_RECORD_FUNCTION);
+    expect(result.instrumentedSource).not.toContain(MCDC_BRANCH_FUNCTION);
+  });
+
+  it("emits MC/DC calls for compound && when SHATTER_MCDC=1", () => {
+    process.env["SHATTER_MCDC"] = "1";
+    const source = `function check(a: number, b: number): boolean {
+  if (a > 0 && b < 10) {
+    return true;
+  }
+  return false;
+}`;
+    const result = instrumentFunction(source, "check");
+    expect("error" in result).toBe(false);
+    if ("error" in result) return;
+
+    expect(result.instrumentedSource).toContain(MCDC_RECORD_FUNCTION);
+    expect(result.instrumentedSource).toContain(MCDC_BRANCH_FUNCTION);
+    // IIFE pattern: should use arrow function wrapper
+    expect(result.instrumentedSource).toContain("=>");
+    // Operator should be embedded
+    expect(result.instrumentedSource).toContain('"and"');
+  });
+
+  it("emits MC/DC calls for compound || when SHATTER_MCDC=1", () => {
+    process.env["SHATTER_MCDC"] = "1";
+    const source = `function check(x: boolean, y: boolean): boolean {
+  if (x || y) {
+    return true;
+  }
+  return false;
+}`;
+    const result = instrumentFunction(source, "check");
+    expect("error" in result).toBe(false);
+    if ("error" in result) return;
+
+    expect(result.instrumentedSource).toContain(MCDC_RECORD_FUNCTION);
+    expect(result.instrumentedSource).toContain('"or"');
+  });
+
+  it("does NOT emit MC/DC calls for simple non-compound condition even when SHATTER_MCDC=1", () => {
+    process.env["SHATTER_MCDC"] = "1";
+    const source = `function check(a: number): boolean {
+  if (a > 0) {
+    return true;
+  }
+  return false;
+}`;
+    const result = instrumentFunction(source, "check");
+    expect("error" in result).toBe(false);
+    if ("error" in result) return;
+
+    // Simple condition: no MC/DC decomposition
+    expect(result.instrumentedSource).not.toContain(MCDC_RECORD_FUNCTION);
+    expect(result.instrumentedSource).not.toContain(MCDC_BRANCH_FUNCTION);
+    expect(result.instrumentedSource).toContain(BRANCH_FUNCTION);
+  });
+
+  it("generates thunks for each leaf condition (arrow functions in the thunk array)", () => {
+    process.env["SHATTER_MCDC"] = "1";
+    const source = `function check(a: number, b: number, c: number): boolean {
+  if (a > 0 && b < 10 && c !== 5) {
+    return true;
+  }
+  return false;
+}`;
+    const result = instrumentFunction(source, "check");
+    expect("error" in result).toBe(false);
+    if ("error" in result) return;
+
+    expect(result.instrumentedSource).toContain(MCDC_RECORD_FUNCTION);
+    // Three conditions: three thunks in the array
+    // Each thunk is wrapped in double-not for boolean coercion: !!
+    const occurrences = (result.instrumentedSource.match(/!!/g) ?? []).length;
+    expect(occurrences).toBeGreaterThanOrEqual(3);
+  });
+
+  it("flattenConditions: returns null for single-condition expression", () => {
+    const params = new Set(["a"]);
+    const flow = new Map<string, SymExpr>();
+    const sourceFile = ts.createSourceFile("test.ts", "a > 0", ts.ScriptTarget.Latest, true);
+    const expr = (sourceFile.statements[0] as ts.ExpressionStatement).expression;
+    expect(flattenConditions(expr, params, flow)).toBeNull();
+  });
+
+  it("flattenConditions: returns two conditions for a && b", () => {
+    const params = new Set(["a", "b"]);
+    const flow = new Map<string, SymExpr>();
+    const sourceFile = ts.createSourceFile("test.ts", "a && b", ts.ScriptTarget.Latest, true);
+    const expr = (sourceFile.statements[0] as ts.ExpressionStatement).expression;
+    const result = flattenConditions(expr, params, flow);
+    expect(result).not.toBeNull();
+    expect(result!.operator).toBe("and");
+    expect(result!.conditions.length).toBe(2);
+  });
+
+  it("flattenConditions: flattens a && b && c to three conditions", () => {
+    const params = new Set(["a", "b", "c"]);
+    const flow = new Map<string, SymExpr>();
+    const sourceFile = ts.createSourceFile("test.ts", "a && b && c", ts.ScriptTarget.Latest, true);
+    const expr = (sourceFile.statements[0] as ts.ExpressionStatement).expression;
+    const result = flattenConditions(expr, params, flow);
+    expect(result).not.toBeNull();
+    expect(result!.conditions.length).toBe(3);
+  });
+
+  it("flattenConditions: returns null for > 16 conditions", () => {
+    const names = Array.from({ length: 17 }, (_, i) => `v${i}`);
+    const params = new Set(names);
+    const flow = new Map<string, SymExpr>();
+    const chain = names.join(" && ");
+    const sourceFile = ts.createSourceFile("test.ts", chain, ts.ScriptTarget.Latest, true);
+    const expr = (sourceFile.statements[0] as ts.ExpressionStatement).expression;
+    expect(flattenConditions(expr, params, flow)).toBeNull();
   });
 });
