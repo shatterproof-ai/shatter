@@ -134,3 +134,53 @@ func mustJSON(v any) string {
 	}
 	return string(data)
 }
+
+// FuzzConditionOutcomeDeserialization verifies that ConditionOutcome JSON
+// deserialization never panics on arbitrary input. This guards the boundary
+// where the instrumented binary writes MC/DC outcomes and ExecuteFunction reads
+// them.
+func FuzzConditionOutcomeDeserialization(f *testing.F) {
+	// Seed corpus from valid and edge-case ConditionOutcome JSON.
+	seeds := []string{
+		`{"condition_index":0,"value":true}`,
+		`{"condition_index":1,"value":false,"masked":false}`,
+		`{"condition_index":2,"value":null,"masked":true}`,
+		`{"condition_index":0,"value":null,"masked":true,"constraint_json":"{\"kind\":\"unknown\"}"}`,
+		`{}`,
+		`{"condition_index":-1}`,
+		`{"condition_index":0,"value":"not-a-bool"}`,
+		`null`,
+		`[]`,
+		`{"condition_index":0,"value":true,"extra_field":"ignored"}`,
+	}
+	for _, s := range seeds {
+		f.Add(s)
+	}
+
+	f.Fuzz(func(t *testing.T, data string) {
+		var outcome ConditionOutcome
+		// Must not panic; errors are expected for malformed input.
+		_ = json.Unmarshal([]byte(data), &outcome)
+	})
+}
+
+// FuzzBranchDecisionDeserialization verifies that BranchDecision JSON
+// deserialization (including the conditions array) never panics.
+func FuzzBranchDecisionDeserialization(f *testing.F) {
+	seeds := []string{
+		`{"branch_id":0,"line":5,"taken":true}`,
+		`{"branch_id":1,"line":10,"taken":false,"conditions":[{"condition_index":0,"value":false}]}`,
+		`{"branch_id":0,"line":1,"taken":true,"conditions":[{"condition_index":0,"value":null,"masked":true}]}`,
+		`{}`,
+		`{"branch_id":0,"conditions":null}`,
+		`{"conditions":[null,{},{"condition_index":0}]}`,
+	}
+	for _, s := range seeds {
+		f.Add(s)
+	}
+
+	f.Fuzz(func(t *testing.T, data string) {
+		var decision BranchDecision
+		_ = json.Unmarshal([]byte(data), &decision)
+	})
+}
