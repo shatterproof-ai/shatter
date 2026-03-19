@@ -791,7 +791,7 @@ pub fn execute_function_with_timing(
     }
 
     // Parse the JSON output from stdout
-    let result: ExecuteResult = if let Some(timing) = timing.as_deref_mut() {
+    let result: ExecuteResult = if let Some(timing) = timing.as_mut() {
         timing.record("execute.parse_result", |_| {
             serde_json::from_str(stdout.trim()).map_err(|e| {
                 ExecuteError::OutputParseError(format!(
