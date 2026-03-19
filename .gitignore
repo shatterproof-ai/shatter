@@ -151,6 +151,7 @@ shatter-report/
 
 # External profiling artifacts
 perf/results/
+.shatter/perf-runs/
 
 # Dolt database files (added by bd init)
 .dolt/

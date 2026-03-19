@@ -33,6 +33,15 @@ use. The harness stores both coarse wall-clock summaries and any structured
 timing JSON emitted by Shatter in the same result bundle so downstream tools can
 build phase breakdown charts and time-series comparisons from one dataset.
 
+Artifact retention policy:
+
+- Default to untracked output directories for local and CI perf runs.
+- The recommended local destination is `.shatter/perf-runs/`.
+- Treat `perf/results/` as a legacy path, not the preferred default.
+- Only record into a tracked directory when you are intentionally blessing a
+  curated baseline snapshot.
+- The only recommended tracked location is `benchmarks/baselines/`.
+
 Use `perf` first when you need a consistent whole-command view across the mixed
 Rust, Go, and TypeScript stack. Use `pprof` only for scenarios that isolate the
 Go frontend and need Go-runtime-specific attribution such as goroutine or test
