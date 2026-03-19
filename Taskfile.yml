@@ -302,6 +302,18 @@ tasks:
     cmds:
       - python3 scripts/perf_report.py --results-dir "{{.RESULTS_DIR}}"
 
+  perf-compare:
+    desc: Compare two perf result directories (set BASELINE_DIR and CANDIDATE_DIR)
+    preconditions:
+      - sh: test -n "{{.BASELINE_DIR}}"
+        msg: "set BASELINE_DIR=<dir>"
+      - sh: test -n "{{.CANDIDATE_DIR}}"
+        msg: "set CANDIDATE_DIR=<dir>"
+      - sh: command -v python3 >/dev/null 2>&1
+        msg: "python3 not installed"
+    cmds:
+      - python3 scripts/perf_compare.py --baseline-dir "{{.BASELINE_DIR}}" --candidate-dir "{{.CANDIDATE_DIR}}"
+
   perf-ci:
     desc: Run the stable weekly profiling subset and refresh the latest summary
     preconditions:

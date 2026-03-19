@@ -37,3 +37,9 @@ Use `perf` first when you need a consistent whole-command view across the mixed
 Rust, Go, and TypeScript stack. Use `pprof` only for scenarios that isolate the
 Go frontend and need Go-runtime-specific attribution such as goroutine or test
 binary hotspots.
+
+Use `scripts/perf_compare.py` or `task perf-compare` when you need a repeatable
+baseline-versus-candidate comparison. The compare tool reads two result
+directories, flags scenario-level regressions using absolute and percentage
+thresholds, and also reports timing-metric and phase-level regressions when the
+artifacts include structured timing summaries.
