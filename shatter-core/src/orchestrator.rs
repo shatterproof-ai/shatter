@@ -1689,8 +1689,52 @@ pub async fn explore(
                                 tracing::debug!(
                                     branch_id = goal.branch_id,
                                     condition_index = goal.target_condition_index,
-                                    "mcdc_goal: condition lacks independence pair"
+                                    "mcdc_goal: condition lacks independence pair, invoking solver"
                                 );
+                                // Call the MC/DC targeted solver to find inputs that
+                                // flip the target condition while holding all others constant.
+                                match solver::solve_for_mcdc_independence(
+                                    &goal.prefix_constraints,
+                                    &goal.condition_exprs,
+                                    &goal.observed_values,
+                                    goal.target_condition_index,
+                                    config.solver_timeout_ms,
+                                    param_infos,
+                                ) {
+                                    Ok(SolveResult::Sat(values)) => {
+                                        let new_inputs = overlay_solved_values(
+                                            &obs.inputs,
+                                            &values,
+                                            &param_names,
+                                        );
+                                        worklist.push(WorklistEntry {
+                                            inputs: new_inputs,
+                                            source: InputSource::McdcTarget,
+                                            fitness: None,
+                                            mock_values: obs.mock_values.clone(),
+                                        });
+                                        tracing::debug!(
+                                            branch_id = goal.branch_id,
+                                            condition_index = goal.target_condition_index,
+                                            "mcdc_goal: solver SAT — added worklist entry"
+                                        );
+                                    }
+                                    Ok(SolveResult::Unsat) => {
+                                        tracing::debug!(
+                                            branch_id = goal.branch_id,
+                                            condition_index = goal.target_condition_index,
+                                            "mcdc_goal: solver UNSAT — independence pair infeasible"
+                                        );
+                                    }
+                                    Err(e) => {
+                                        tracing::debug!(
+                                            branch_id = goal.branch_id,
+                                            condition_index = goal.target_condition_index,
+                                            error = %e,
+                                            "mcdc_goal: solver error"
+                                        );
+                                    }
+                                }
                             }
                         }
                 }

@@ -959,6 +959,110 @@ fn to_z3_bool_constraint(
     }
 }
 
+/// Solve for a condition-independence witness.
+///
+/// Given a decision's constraints and a target condition index, find inputs
+/// where the target condition flips while all other conditions remain at
+/// their observed values.
+///
+/// `prefix` — path constraints leading up to this decision (asserted as-is)
+/// `conditions` — per-condition SymExprs for the compound decision
+/// `observed` — observed truth values from a prior execution (None = masked)
+/// `target_index` — which condition to flip
+/// `solver_timeout_ms` — per-query Z3 timeout
+/// `param_infos` — parameter type information
+///
+/// Returns `SolverError::Unsupported` if the target condition is `Unknown`
+/// or if `target_index >= conditions.len()`. Returns `SolveResult::Unsat`
+/// when no inputs can satisfy the independence constraint.
+pub fn solve_for_mcdc_independence(
+    prefix: &[SymExpr],
+    conditions: &[SymExpr],
+    observed: &[Option<bool>],
+    target_index: usize,
+    solver_timeout_ms: Option<u64>,
+    param_infos: &[ParamInfo],
+) -> Result<SolveResult, SolverError> {
+    if target_index >= conditions.len() {
+        return Err(SolverError::Unsupported(format!(
+            "target_index {target_index} out of bounds (conditions len={})",
+            conditions.len()
+        )));
+    }
+
+    // The observed slice may be shorter than conditions if some conditions were
+    // added after the observation was recorded. Treat out-of-range as None.
+    let target_observed = observed.get(target_index).copied().flatten();
+
+    // Can't flip a masked (unobserved) condition — no prior value to invert.
+    let Some(_target_val) = target_observed else {
+        return Err(SolverError::Unsupported(format!(
+            "target condition {target_index} was masked (no observed value to flip)"
+        )));
+    };
+
+    // Skip if target condition is Unknown — can't assert it in Z3.
+    if matches!(conditions[target_index], SymExpr::Unknown) {
+        return Err(SolverError::Unsupported(
+            "target condition is Unknown; MC/DC analysis not possible for opaque conditions"
+                .into(),
+        ));
+    }
+
+    let mut cfg = Config::new();
+    if let Some(ms) = solver_timeout_ms {
+        cfg.set_timeout_msec(ms);
+    }
+    let param_sorts = build_param_sorts(param_infos);
+
+    z3::with_z3_config(&cfg, || {
+        let solver = Solver::new();
+        let mut vars = VarTable::new(param_sorts.clone());
+
+        // Assert all prefix constraints (path leading up to this decision).
+        for constraint in prefix {
+            let sort = infer_operand_sort(constraint);
+            let bool_expr = to_z3_bool_constraint(&mut vars, constraint, sort)?;
+            solver.assert(&bool_expr);
+        }
+
+        // For each non-target condition: pin it to its observed value.
+        // Skip Unknown conditions and masked (None) conditions.
+        for (j, condition) in conditions.iter().enumerate() {
+            if j == target_index {
+                continue;
+            }
+            if matches!(condition, SymExpr::Unknown) {
+                continue;
+            }
+            let Some(val) = observed.get(j).copied().flatten() else {
+                continue;
+            };
+            let sort = infer_operand_sort(condition);
+            let bool_expr = to_z3_bool_constraint(&mut vars, condition, sort)?;
+            if val {
+                solver.assert(&bool_expr);
+            } else {
+                solver.assert(bool_expr.not());
+            }
+        }
+
+        // For the target condition: assert the OPPOSITE of the observed value.
+        let target_condition = &conditions[target_index];
+        let sort = infer_operand_sort(target_condition);
+        let target_bool = to_z3_bool_constraint(&mut vars, target_condition, sort)?;
+        // target_val is Some(_) — confirmed above; flip it.
+        let target_val = target_observed.expect("checked above");
+        if target_val {
+            solver.assert(target_bool.not());
+        } else {
+            solver.assert(&target_bool);
+        }
+
+        check_and_extract(&solver, &vars)
+    })
+}
+
 fn check_and_extract(solver: &Solver, vars: &VarTable) -> Result<SolveResult, SolverError> {
     match solver.check() {
         SatResult::Sat => {
@@ -2718,5 +2822,283 @@ mod tests {
             type_name: None,
         }];
         assert!(solved_values_match_param_types(result.as_ref(), &params));
+    }
+
+    // ── solve_for_mcdc_independence tests ────────────────────────────────────
+
+    /// Conditions: [x > 0, y < 10], observed [true, true], target=0
+    /// Expected: x <= 0 (flipped), y < 10 (pinned).
+    #[test]
+    fn mcdc_flip_first_condition() {
+        // x > 0
+        let cond_x = SymExpr::BinOp {
+            op: BinOpKind::Gt,
+            left: Box::new(SymExpr::Param { name: "x".into(), path: vec![] }),
+            right: Box::new(SymExpr::Const(ConstValue::Int(0))),
+        };
+        // y < 10
+        let cond_y = SymExpr::BinOp {
+            op: BinOpKind::Lt,
+            left: Box::new(SymExpr::Param { name: "y".into(), path: vec![] }),
+            right: Box::new(SymExpr::Const(ConstValue::Int(10))),
+        };
+        let conditions = vec![cond_x, cond_y];
+        let observed = vec![Some(true), Some(true)];
+
+        let result = solve_for_mcdc_independence(
+            &[],
+            &conditions,
+            &observed,
+            0,
+            None,
+            &[],
+        )
+        .expect("solver should not error");
+
+        match result {
+            SolveResult::Sat(values) => {
+                let x = match values.get("x") {
+                    Some(ConcreteValue::Int(v)) => *v,
+                    other => panic!("expected Int for x, got {other:?}"),
+                };
+                let y = match values.get("y") {
+                    Some(ConcreteValue::Int(v)) => *v,
+                    other => panic!("expected Int for y, got {other:?}"),
+                };
+                // target (x > 0) was true → should now be false: x <= 0
+                assert!(x <= 0, "expected x <= 0 (flipped condition), got x={x}");
+                // non-target (y < 10) was true → should remain true: y < 10
+                assert!(y < 10, "expected y < 10 (pinned condition), got y={y}");
+            }
+            SolveResult::Unsat => panic!("expected SAT, got UNSAT"),
+        }
+    }
+
+    /// Conditions: [x > 0, y < 10], observed [true, true], target=1
+    /// Expected: x > 0 (pinned), y >= 10 (flipped).
+    #[test]
+    fn mcdc_flip_second_condition() {
+        let cond_x = SymExpr::BinOp {
+            op: BinOpKind::Gt,
+            left: Box::new(SymExpr::Param { name: "x".into(), path: vec![] }),
+            right: Box::new(SymExpr::Const(ConstValue::Int(0))),
+        };
+        let cond_y = SymExpr::BinOp {
+            op: BinOpKind::Lt,
+            left: Box::new(SymExpr::Param { name: "y".into(), path: vec![] }),
+            right: Box::new(SymExpr::Const(ConstValue::Int(10))),
+        };
+        let conditions = vec![cond_x, cond_y];
+        let observed = vec![Some(true), Some(true)];
+
+        let result = solve_for_mcdc_independence(
+            &[],
+            &conditions,
+            &observed,
+            1,
+            None,
+            &[],
+        )
+        .expect("solver should not error");
+
+        match result {
+            SolveResult::Sat(values) => {
+                let x = match values.get("x") {
+                    Some(ConcreteValue::Int(v)) => *v,
+                    other => panic!("expected Int for x, got {other:?}"),
+                };
+                let y = match values.get("y") {
+                    Some(ConcreteValue::Int(v)) => *v,
+                    other => panic!("expected Int for y, got {other:?}"),
+                };
+                // non-target (x > 0) was true → pinned true: x > 0
+                assert!(x > 0, "expected x > 0 (pinned), got x={x}");
+                // target (y < 10) was true → flipped: y >= 10
+                assert!(y >= 10, "expected y >= 10 (flipped), got y={y}");
+            }
+            SolveResult::Unsat => panic!("expected SAT, got UNSAT"),
+        }
+    }
+
+    /// Coupled conditions (x > 0) and (x > 5): if observed both true and we
+    /// try to flip (x > 5) while pinning (x > 0 = true), we need x <= 5 AND x > 0,
+    /// which is satisfiable (e.g. x = 3).
+    #[test]
+    fn mcdc_coupled_conditions_sat() {
+        // x > 0
+        let cond_a = SymExpr::BinOp {
+            op: BinOpKind::Gt,
+            left: Box::new(SymExpr::Param { name: "x".into(), path: vec![] }),
+            right: Box::new(SymExpr::Const(ConstValue::Int(0))),
+        };
+        // x > 5
+        let cond_b = SymExpr::BinOp {
+            op: BinOpKind::Gt,
+            left: Box::new(SymExpr::Param { name: "x".into(), path: vec![] }),
+            right: Box::new(SymExpr::Const(ConstValue::Int(5))),
+        };
+        let conditions = vec![cond_a, cond_b];
+        // Both observed true (x > 5 implies x > 0).
+        let observed = vec![Some(true), Some(true)];
+
+        // Flip target=1 (x > 5): assert x > 0 (pinned) AND NOT (x > 5).
+        // Satisfiable: 0 < x <= 5.
+        let result = solve_for_mcdc_independence(
+            &[],
+            &conditions,
+            &observed,
+            1,
+            None,
+            &[],
+        )
+        .expect("solver should not error");
+
+        match result {
+            SolveResult::Sat(values) => {
+                let x = match values.get("x") {
+                    Some(ConcreteValue::Int(v)) => *v,
+                    other => panic!("expected Int for x, got {other:?}"),
+                };
+                assert!(x > 0 && x <= 5, "expected 0 < x <= 5, got x={x}");
+            }
+            SolveResult::Unsat => panic!("expected SAT for 0 < x <= 5"),
+        }
+    }
+
+    /// True UNSAT case: conditions (x > 0) and (x <= 0) with both observed true —
+    /// impossible, but we test by requiring them both pinned to impossible values.
+    /// Flip target=0: assert NOT (x > 0) [flip], AND (x <= 0) [pin true].
+    /// NOT (x > 0) ≡ x <= 0, AND x <= 0 is just x <= 0 — SAT.
+    /// Instead use a tighter UNSAT: conditions [x > 10, x < 5], observed [true, true].
+    /// Pin x < 5 = true and flip x > 10 to NOT (x > 10) = x <= 10 → 0 < x < 5 SAT.
+    /// For a genuine UNSAT: conditions [x == 3, x != 3], observed [true, false].
+    /// target=0: flip (x == 3) to NOT (x == 3), pin (x != 3) = false → assert x == 3 AND x != 3 → UNSAT.
+    #[test]
+    fn mcdc_unsat_contradictory_pin_and_flip() {
+        // x == 3
+        let cond_eq = SymExpr::BinOp {
+            op: BinOpKind::Eq,
+            left: Box::new(SymExpr::Param { name: "x".into(), path: vec![] }),
+            right: Box::new(SymExpr::Const(ConstValue::Int(3))),
+        };
+        // x != 3
+        let cond_ne = SymExpr::BinOp {
+            op: BinOpKind::Ne,
+            left: Box::new(SymExpr::Param { name: "x".into(), path: vec![] }),
+            right: Box::new(SymExpr::Const(ConstValue::Int(3))),
+        };
+        let conditions = vec![cond_eq, cond_ne];
+        // observed: cond_eq = true (x==3), cond_ne = false (x==3 so x!=3 is false)
+        let observed = vec![Some(true), Some(false)];
+
+        // target=0: flip (x==3) to NOT(x==3)=x!=3, pin (x!=3) as false → assert x==3 AND x!=3 → UNSAT
+        let result = solve_for_mcdc_independence(
+            &[],
+            &conditions,
+            &observed,
+            0,
+            None,
+            &[],
+        )
+        .expect("solver should not error");
+
+        assert!(
+            matches!(result, SolveResult::Unsat),
+            "expected UNSAT for contradictory pin+flip, got {result:?}"
+        );
+    }
+
+    /// Masked target: observed[target] is None → should return error.
+    #[test]
+    fn mcdc_masked_target_returns_error() {
+        let cond = SymExpr::BinOp {
+            op: BinOpKind::Gt,
+            left: Box::new(SymExpr::Param { name: "x".into(), path: vec![] }),
+            right: Box::new(SymExpr::Const(ConstValue::Int(0))),
+        };
+        let conditions = vec![cond];
+        let observed = vec![None]; // masked
+
+        let result = solve_for_mcdc_independence(
+            &[],
+            &conditions,
+            &observed,
+            0,
+            None,
+            &[],
+        );
+        assert!(
+            result.is_err(),
+            "expected error for masked target, got {result:?}"
+        );
+    }
+
+    /// Out-of-bounds target_index returns error.
+    #[test]
+    fn mcdc_out_of_bounds_target_returns_error() {
+        let cond = SymExpr::BinOp {
+            op: BinOpKind::Gt,
+            left: Box::new(SymExpr::Param { name: "x".into(), path: vec![] }),
+            right: Box::new(SymExpr::Const(ConstValue::Int(0))),
+        };
+        let conditions = vec![cond];
+        let observed = vec![Some(true)];
+
+        let result = solve_for_mcdc_independence(
+            &[],
+            &conditions,
+            &observed,
+            5, // out of bounds
+            None,
+            &[],
+        );
+        assert!(result.is_err(), "expected error for OOB target, got {result:?}");
+    }
+
+    /// Proptest: valid inputs (non-masked target, non-Unknown conditions) never panic.
+    #[cfg(test)]
+    mod mcdc_proptest {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn arb_simple_condition(param: &'static str) -> impl Strategy<Value = SymExpr> {
+            (any::<i64>()).prop_map(move |k| SymExpr::BinOp {
+                op: BinOpKind::Gt,
+                left: Box::new(SymExpr::Param { name: param.into(), path: vec![] }),
+                right: Box::new(SymExpr::Const(ConstValue::Int(k))),
+            })
+        }
+
+        proptest! {
+            #[test]
+            fn no_panic_on_valid_conditions(
+                val_a in any::<bool>(),
+                val_b in any::<bool>(),
+                target in 0usize..2,
+                k in any::<i64>(),
+            ) {
+                let cond_a = SymExpr::BinOp {
+                    op: BinOpKind::Gt,
+                    left: Box::new(SymExpr::Param { name: "a".into(), path: vec![] }),
+                    right: Box::new(SymExpr::Const(ConstValue::Int(k))),
+                };
+                let cond_b = SymExpr::BinOp {
+                    op: BinOpKind::Lt,
+                    left: Box::new(SymExpr::Param { name: "b".into(), path: vec![] }),
+                    right: Box::new(SymExpr::Const(ConstValue::Int(k))),
+                };
+                let conditions = vec![cond_a, cond_b];
+                let observed = vec![Some(val_a), Some(val_b)];
+                // Should not panic — result may be SAT, UNSAT, or error.
+                let _ = solve_for_mcdc_independence(
+                    &[],
+                    &conditions,
+                    &observed,
+                    target,
+                    Some(1_000),
+                    &[],
+                );
+            }
+        }
     }
 }
