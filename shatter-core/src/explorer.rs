@@ -975,15 +975,21 @@ pub async fn explore_function(
     let mut shrunk_witnesses: std::collections::HashMap<u64, Vec<serde_json::Value>> =
         std::collections::HashMap::new();
     if config.shrink_budget > 0 {
+        // Collect the lowest-complexity witness per unique path.
+        // Starting from the simplest witness reduces shrink iterations needed.
         let mut path_witnesses: std::collections::HashMap<
             u64,
             (Vec<serde_json::Value>, Vec<crate::protocol::MockConfig>),
         > = std::collections::HashMap::new();
         for (inputs, mocks, result) in &raw_results {
             let ph = crate::orchestrator::hash_branch_path(&result.branch_path);
-            path_witnesses
+            let complexity = crate::shrink::witness_complexity(inputs);
+            let entry = path_witnesses
                 .entry(ph)
                 .or_insert_with(|| (inputs.clone(), mocks.clone()));
+            if complexity < crate::shrink::witness_complexity(&entry.0) {
+                *entry = (inputs.clone(), mocks.clone());
+            }
         }
 
         for (ph, (witness, witness_mocks)) in &path_witnesses {

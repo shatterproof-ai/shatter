@@ -88,6 +88,35 @@ const SHRINK_FLOAT_ZERO: f64 = 0.0;
 const SHRINK_FLOAT_ONE: f64 = 1.0;
 const SHRINK_FLOAT_NEG_ONE: f64 = -1.0;
 
+/// Score a witness by total input complexity; lower = simpler.
+///
+/// Used to select the best starting witness per path before shrinking:
+/// starting from a simpler witness reduces the number of shrink iterations
+/// required to reach a minimal form.
+#[must_use]
+pub fn witness_complexity(inputs: &[Value]) -> usize {
+    inputs.iter().map(value_complexity).sum()
+}
+
+fn value_complexity(v: &Value) -> usize {
+    match v {
+        Value::Null => 0,
+        Value::Bool(_) => 1,
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                i.unsigned_abs() as usize
+            } else if let Some(f) = n.as_f64() {
+                f.abs() as usize
+            } else {
+                1
+            }
+        }
+        Value::String(s) => s.len(),
+        Value::Array(arr) => arr.len() + arr.iter().map(value_complexity).sum::<usize>(),
+        Value::Object(obj) => obj.len() + obj.values().map(value_complexity).sum::<usize>(),
+    }
+}
+
 /// Produce simpler variants of `value` that still conform to `type_info`.
 ///
 /// Never includes the original value. Returns an empty vec for types that
@@ -766,6 +795,117 @@ mod tests {
             };
             let candidates = shrink_candidates(&json!([]), &typ);
             assert!(candidates.is_empty());
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // witness_complexity tests
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn complexity_null_and_bool() {
+        assert_eq!(witness_complexity(&[json!(null)]), 0);
+        assert_eq!(witness_complexity(&[json!(false)]), 1);
+        assert_eq!(witness_complexity(&[json!(true)]), 1);
+    }
+
+    #[test]
+    fn complexity_numbers() {
+        assert_eq!(witness_complexity(&[json!(0)]), 0);
+        assert_eq!(witness_complexity(&[json!(1)]), 1);
+        assert_eq!(witness_complexity(&[json!(-1)]), 1);
+        assert_eq!(witness_complexity(&[json!(42)]), 42);
+        assert_eq!(witness_complexity(&[json!(-42)]), 42);
+    }
+
+    #[test]
+    fn complexity_strings() {
+        assert_eq!(witness_complexity(&[json!("")]), 0);
+        assert_eq!(witness_complexity(&[json!("hi")]), 2);
+        assert_eq!(witness_complexity(&[json!("hello world")]), 11);
+    }
+
+    #[test]
+    fn complexity_ordering() {
+        // Simpler witnesses score lower (or equal for already-minimal values).
+        // Empty inputs and [0] both score 0 (both are fully minimal).
+        let empty: Vec<serde_json::Value> = vec![];
+        assert!(witness_complexity(&empty) <= witness_complexity(&[json!(0)]));
+        assert!(witness_complexity(&[json!(0)]) < witness_complexity(&[json!(1)]));
+        assert!(witness_complexity(&[json!(1)]) < witness_complexity(&[json!("hello")]));
+        assert!(
+            witness_complexity(&[json!("hello")]) < witness_complexity(&[json!([1i64, 2, 3])])
+        );
+    }
+
+    #[test]
+    fn complexity_selects_best_witness() {
+        // Simulate: two witnesses for the same path, one simpler than the other.
+        let complex = vec![json!("hello world"), json!(42i64)]; // 11 + 42 = 53
+        let simple = vec![json!("hi"), json!(1i64)]; // 2 + 1 = 3
+        let witnesses: Vec<(Vec<serde_json::Value>, Vec<()>)> =
+            vec![(complex.clone(), vec![]), (simple.clone(), vec![])];
+        let best = witnesses
+            .into_iter()
+            .min_by_key(|(inputs, _)| witness_complexity(inputs))
+            .unwrap();
+        assert_eq!(best.0, simple, "should select the simpler witness");
+    }
+
+    #[test]
+    fn complexity_multi_param_sum() {
+        // Multi-param witnesses sum across all params.
+        assert_eq!(
+            witness_complexity(&[json!("hi"), json!(3i64)]),
+            2 + 3, // "hi".len() + abs(3)
+        );
+    }
+
+    mod witness_complexity_prop_tests {
+        use super::{json, witness_complexity};
+        use proptest::prelude::*;
+
+        #[test]
+        fn complexity_empty_inputs_is_zero() {
+            assert_eq!(witness_complexity(&[]), 0);
+        }
+
+        proptest! {
+            #[test]
+            fn complexity_null_is_zero(count in 1..5usize) {
+                let inputs: Vec<serde_json::Value> = (0..count).map(|_| json!(null)).collect();
+                prop_assert_eq!(witness_complexity(&inputs), 0);
+            }
+
+            #[test]
+            fn complexity_int_equals_abs(n in -10_000i64..10_000i64) {
+                let c = witness_complexity(&[json!(n)]);
+                prop_assert_eq!(c, n.unsigned_abs() as usize);
+            }
+
+            #[test]
+            fn complexity_string_equals_len(s in ".{0,50}") {
+                let c = witness_complexity(&[json!(s.as_str())]);
+                prop_assert_eq!(c, s.len());
+            }
+
+            #[test]
+            fn simpler_witness_wins(
+                a in 1i64..100i64,
+                b in 200i64..300i64,
+            ) {
+                // witness with smaller int always scores lower
+                let w_a = vec![json!(a)];
+                let w_b = vec![json!(b)];
+                prop_assert!(witness_complexity(&w_a) < witness_complexity(&w_b));
+                let winners: Vec<(Vec<serde_json::Value>, Vec<()>)> =
+                    vec![(w_a.clone(), vec![]), (w_b, vec![])];
+                let best = winners
+                    .into_iter()
+                    .min_by_key(|(inputs, _)| witness_complexity(inputs))
+                    .unwrap();
+                prop_assert_eq!(best.0, w_a);
+            }
         }
     }
 
