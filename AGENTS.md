@@ -166,6 +166,8 @@ agents is the primary cause of duplicate commits and orphan branches.
 - **Merge one branch at a time** — merge branch A to `main`, push, then merge branch B. Never batch-merge multiple branches in a single operation.
 - Merge to `main` directly — do NOT create pull requests
 - After merge, delete the feature branch both locally and remotely
+- **Never delete an unmerged branch without explicit user approval.** If a branch
+  is not fully merged, stop and ask before deleting it locally or remotely.
 - Work is complete when changes are on `main` and pushed, not when a branch is pushed
 - **Never cherry-pick commits.** Cherry-picking creates duplicate commits with
   different SHAs, making history confusing and leaving orphan branches that
@@ -265,6 +267,9 @@ After all teammates finish and their branches are merged, the team lead must:
 1. Delete all merged worktree branches: `git branch -d <branch>`
 2. Verify no orphan branches remain: `git branch --no-merged main`
 3. Clean up worktree directories if any remain under `.claude/worktrees/`
+
+If any branch appears in `git branch --no-merged main`, do not delete it unless
+the user explicitly approves that deletion.
 
 Orphan branches from interrupted swarms create confusion — they appear unmerged
 but contain duplicate work that already landed on `main` via a different branch.
