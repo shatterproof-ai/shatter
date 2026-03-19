@@ -253,6 +253,9 @@
 {"issue_id":"str-6wmm.9","label":"mcdc"}
 {"issue_id":"str-77sk","label":"architecture"}
 {"issue_id":"str-77sk","label":"cli"}
+{"issue_id":"str-7jgm","label":"frontend"}
+{"issue_id":"str-7jgm","label":"governance"}
+{"issue_id":"str-7jgm","label":"protocol"}
 {"issue_id":"str-8fcu","label":"go"}
 {"issue_id":"str-8fcu","label":"protocol"}
 {"issue_id":"str-8fcu","label":"ts"}
