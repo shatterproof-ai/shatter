@@ -275,7 +275,7 @@ RUST_EXAMPLES=(
     "examples/standalone/rust/18_accept_language.rs:negotiate_language"
 )
 
-TOTAL=47
+TOTAL=48
 
 # ─── Walkthrough ──────────────────────────────────────────────────────
 
@@ -483,68 +483,73 @@ step 36 $TOTAL "Concolic String CLI Preview (Z3)" \
     "Preview the current Z3-backed CLI path on string-method guards" \
     $SHATTER explore --concolic "examples/standalone/ts/02-strings.ts:classifyString"
 
-# Stage 37: Spec output to file (--output)
-step 37 $TOTAL "Spec Output to File" \
+# Stage 37: MC/DC coverage analysis
+step 37 $TOTAL "MC/DC Coverage Analysis" \
+    "Enable Modified Condition/Decision Coverage for compound boolean decisions" \
+    $SHATTER explore --mcdc "examples/standalone/ts/13-mcdc-compound.ts:compoundAnd"
+
+# Stage 38: Spec output to file (--output)
+step 38 $TOTAL "Spec Output to File" \
     "Write a spec bundle to a JSON file with --output (includes fingerprints)" \
     $SHATTER explore --output /tmp/shatter-spec.json "${EXAMPLES[0]}"
 
-# Stage 38: Incremental re-run (skips fresh functions)
-step 38 $TOTAL "Incremental Re-run" \
+# Stage 39: Incremental re-run (skips fresh functions)
+step 39 $TOTAL "Incremental Re-run" \
     "Re-run with --output against existing spec — unchanged functions are skipped" \
     $SHATTER explore --output /tmp/shatter-spec.json "${EXAMPLES[0]}"
 
-# Stage 39: Dry-run mode
-step 39 $TOTAL "Dry-Run Mode" \
+# Stage 40: Dry-run mode
+step 40 $TOTAL "Dry-Run Mode" \
     "Use --dry-run to preview which functions would be re-explored without actually exploring" \
     $SHATTER explore --output /tmp/shatter-spec.json --dry-run "${EXAMPLES[0]}"
 
-# Stage 40: Clean re-exploration
-step 40 $TOTAL "Clean Re-exploration" \
+# Stage 41: Clean re-exploration
+step 41 $TOTAL "Clean Re-exploration" \
     "Use --clean to force full re-exploration, ignoring the existing spec" \
     $SHATTER explore --output /tmp/shatter-spec.json --clean "${EXAMPLES[0]}"
 
-# Stage 41: Stale command
-# The spec from step 37 only explored classifyNumber. The file also exports
+# Stage 42: Stale command
+# The spec from step 38 only explored classifyNumber. The file also exports
 # compareMagnitudes, so `stale` correctly reports it as stale. Exit code 1
 # means "some functions are stale or removed" — this is informational, not a failure.
-step 41 $TOTAL "Stale Check" \
-    "Check staleness relative to spec from step 37 (exit 1 = stale found, expected here)" \
-    bash -c "$SHATTER stale 'examples/standalone/ts/01-arithmetic.ts' /tmp/shatter-spec.json; echo '(exit code 1 is expected: compareMagnitudes was not in the spec from step 37)'"
+step 42 $TOTAL "Stale Check" \
+    "Check staleness relative to spec from step 38 (exit 1 = stale found, expected here)" \
+    bash -c "$SHATTER stale 'examples/standalone/ts/01-arithmetic.ts' /tmp/shatter-spec.json; echo '(exit code 1 is expected: compareMagnitudes was not in the spec from step 38)'"
 
-# Stage 42: Revalidate command
+# Stage 43: Revalidate command
 # Re-execute cached behaviors to check for drift/regressions. Uses cache
 # populated by earlier explore steps. Exit code 0 = no regressions found.
-step 42 $TOTAL "Revalidate" \
+step 43 $TOTAL "Revalidate" \
     "Revalidate cached behaviors for the arithmetic example" \
     $SHATTER revalidate 'examples/standalone/ts/01-arithmetic.ts'
 
-# Stage 43: Multi-level setup/teardown
-step 43 $TOTAL "Multi-Level Setup/Teardown" \
+# Stage 44: Multi-level setup/teardown
+step 44 $TOTAL "Multi-Level Setup/Teardown" \
     "Explore with session + file level setup/teardown from .shatter/config.yaml" \
     $SHATTER explore --config examples/typescript/.shatter/config.yaml \
     --setup-timeout 30 \
     "examples/standalone/ts/01-arithmetic.ts:classifyNumber"
 
-# Stage 44: Setup with --fail-on-setup-error
-step 44 $TOTAL "Setup Fail-on-Error" \
+# Stage 45: Setup with --fail-on-setup-error
+step 45 $TOTAL "Setup Fail-on-Error" \
     "Use --fail-on-setup-error to abort immediately on setup failures" \
     $SHATTER explore --config examples/typescript/.shatter/config.yaml \
     --setup-timeout 10 --fail-on-setup-error \
     "examples/standalone/ts/01-arithmetic.ts:classifyNumber"
 
-# Stage 45: Observe command — run observation stage, write ObserveStageOutput JSON
-step 45 $TOTAL "Observe Stage" \
+# Stage 46: Observe command — run observation stage, write ObserveStageOutput JSON
+step 46 $TOTAL "Observe Stage" \
     "Run observation stage only for classifyNumber, write to temp file" \
     $SHATTER observe --output /tmp/shatter-observe.json \
     "examples/standalone/ts/01-arithmetic.ts:classifyNumber"
 
-# Stage 46: Analyze observe output — offline analysis, no frontend needed
-step 46 $TOTAL "Analyze Observe Output" \
+# Stage 47: Analyze observe output — offline analysis, no frontend needed
+step 47 $TOTAL "Analyze Observe Output" \
     "Read observation output and run offline analysis stage" \
     $SHATTER analyze /tmp/shatter-observe.json
 
-# Stage 47: Specify from observation — build FunctionSpec markdown
-step 47 $TOTAL "Specify from Observation" \
+# Stage 48: Specify from observation — build FunctionSpec markdown
+step 48 $TOTAL "Specify from Observation" \
     "Build FunctionSpec markdown from observation output" \
     $SHATTER specify /tmp/shatter-observe.json
 

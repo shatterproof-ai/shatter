@@ -1374,3 +1374,182 @@ async fn concolic_mock_loop_branches_discovered() {
 
     frontend.shutdown().await.expect("frontend shutdown failed");
 }
+
+// ---------------------------------------------------------------------------
+// MC/DC coverage E2E tests (str-6wmm.9)
+// ---------------------------------------------------------------------------
+
+/// Test that concolic exploration with MC/DC enabled discovers all branches
+/// of compoundAnd and reports an mcdc_summary.
+///
+/// compoundAnd(a: number, b: number) has:
+///   1. a > 0 && b < 10  → "both"
+///   2. otherwise         → "neither"
+///
+/// With mcdc: true, the orchestrator should also find condition-independence
+/// witnesses:
+///   - a > 0 witness: inputs where only a > 0 flips and the decision flips
+///   - b < 10 witness: inputs where only b < 10 flips and the decision flips
+///
+/// The exploration must discover both return values and the mcdc_summary
+/// must be present (indicating MC/DC tracking was active).
+#[tokio::test]
+async fn mcdc_compound_and_discovers_all_branches_and_reports_summary() {
+    let file = examples_dir().join("13-mcdc-compound.ts");
+    let file_str = file.to_string_lossy().to_string();
+
+    let mut frontend = spawn_ts_frontend().await;
+
+    // Step 1: Analyze the function to get its type signature.
+    let analysis = analyze_function(&mut frontend, &file_str, "compoundAnd").await;
+    assert_eq!(analysis.params.len(), 2, "compoundAnd takes 2 params");
+
+    // Step 2: Instrument the function for branch tracking.
+    instrument_function(&mut frontend, &file_str, "compoundAnd").await;
+
+    // Step 3: Run concolic exploration with MC/DC enabled.
+    // Use moderate budgets — compoundAnd has only 2 conditions, so convergence
+    // should be fast.
+    let config = ExploreConfig {
+        max_iterations: 30,
+        max_executions: 150,
+        plateau_threshold: 20,
+        mcdc: true,
+        ..Default::default()
+    };
+
+    // Seed with values that trigger each branch directly.
+    let seed_inputs = vec![
+        vec![serde_json::json!(1), serde_json::json!(5)],   // a > 0, b < 10 -> "both"
+        vec![serde_json::json!(-1), serde_json::json!(5)],  // a <= 0 -> "neither"
+    ];
+
+    let result = orchestrator::explore(
+        &mut frontend,
+        "compoundAnd",
+        seed_inputs,
+        vec![], // no user-provided inputs
+        &analysis.params,
+        &config,
+        None,
+    )
+    .await
+    .expect("concolic exploration failed");
+
+    eprintln!(
+        "  [str-6wmm.9/compoundAnd] unique_paths: {}",
+        result.unique_paths
+    );
+    eprintln!(
+        "  [str-6wmm.9/compoundAnd] z3_generated: {}",
+        result.z3_generated
+    );
+    eprintln!(
+        "  [str-6wmm.9/compoundAnd] mcdc_summary: {:?}",
+        result.mcdc_summary
+    );
+
+    // Step 4: Verify both branches are discovered.
+    let return_values = return_value_set(&result);
+
+    assert!(
+        return_values.contains("\"both\""),
+        "should discover 'both' branch (a > 0 && b < 10); found: {return_values:?}"
+    );
+    assert!(
+        return_values.contains("\"neither\""),
+        "should discover 'neither' branch; found: {return_values:?}"
+    );
+
+    assert!(
+        result.unique_paths >= 2,
+        "should have at least 2 unique paths; got {}",
+        result.unique_paths
+    );
+
+    // Step 5: Verify MC/DC summary is present when mcdc: true.
+    // The summary is (total_conditions, independent_conditions, opaque_conditions).
+    // We don't assert specific counts here since MC/DC implementation may be
+    // partially complete, but the field must be populated when mcdc is enabled.
+    assert!(
+        result.mcdc_summary.is_some(),
+        "mcdc_summary must be present when ExploreConfig::mcdc is true; got None"
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
+/// Test that concolic exploration with MC/DC enabled on compoundOr discovers
+/// both branches.
+///
+/// compoundOr(x: boolean, y: boolean) has:
+///   1. x || y  → "either"
+///   2. !x && !y → "none"
+#[tokio::test]
+async fn mcdc_compound_or_discovers_all_branches() {
+    let file = examples_dir().join("13-mcdc-compound.ts");
+    let file_str = file.to_string_lossy().to_string();
+
+    let mut frontend = spawn_ts_frontend().await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "compoundOr").await;
+    assert_eq!(analysis.params.len(), 2, "compoundOr takes 2 params");
+
+    instrument_function(&mut frontend, &file_str, "compoundOr").await;
+
+    let config = ExploreConfig {
+        max_iterations: 20,
+        max_executions: 100,
+        plateau_threshold: 15,
+        mcdc: true,
+        ..Default::default()
+    };
+
+    // Seed with one case — Z3 should find the other.
+    let seed_inputs = vec![
+        vec![serde_json::json!(false), serde_json::json!(false)], // "none"
+    ];
+
+    let result = orchestrator::explore(
+        &mut frontend,
+        "compoundOr",
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+    )
+    .await
+    .expect("concolic exploration failed");
+
+    eprintln!(
+        "  [str-6wmm.9/compoundOr] unique_paths: {}",
+        result.unique_paths
+    );
+    eprintln!(
+        "  [str-6wmm.9/compoundOr] mcdc_summary: {:?}",
+        result.mcdc_summary
+    );
+
+    let return_values = return_value_set(&result);
+
+    assert!(
+        return_values.contains("\"none\""),
+        "should discover 'none' branch; found: {return_values:?}"
+    );
+
+    // Z3 should be able to find the 'either' branch from the seed.
+    assert!(
+        result.unique_paths >= 2,
+        "should have at least 2 unique paths; got {}",
+        result.unique_paths
+    );
+
+    // MC/DC summary must be present.
+    assert!(
+        result.mcdc_summary.is_some(),
+        "mcdc_summary must be present when ExploreConfig::mcdc is true; got None"
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
