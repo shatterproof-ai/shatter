@@ -59,6 +59,19 @@ export const BRANCH_FUNCTION = "__shatter_branch";
  */
 export const SCOPE_EVENT_FUNCTION = "__shatter_scope_event";
 
+/**
+ * The name of the MC/DC condition-recording function inserted into instrumented code.
+ * Signature: __shatter_mcdc_record(branchId, symExprs, operator, thunks)
+ *   → { decision: boolean; conditions: ConditionOutcome[] }
+ */
+export const MCDC_RECORD_FUNCTION = "__shatter_mcdc_record";
+
+/**
+ * The name of the MC/DC branch-recording function inserted into instrumented code.
+ * Signature: __shatter_branch_mcdc(branchId, line, decision, symExpr, conditions) → boolean
+ */
+export const MCDC_BRANCH_FUNCTION = "__shatter_branch_mcdc";
+
 /** Mutable state threaded through the instrumentation pass. */
 interface InstrumentationContext {
   sourceFile: ts.SourceFile;
@@ -932,13 +945,107 @@ function wrapCallbackFnExprWithScope(
 }
 
 /**
+ * Return true when MC/DC mode is enabled (SHATTER_MCDC=1).
+ * Placed here to avoid a circular dependency with executor.ts.
+ */
+function isMcdcEnabled(): boolean {
+  return process.env["SHATTER_MCDC"] === "1";
+}
+
+/**
+ * Result of flattening a pure && or || boolean expression tree.
+ */
+export interface FlattenedConditions {
+  /** Leaf conditions extracted left-to-right from the expression. */
+  conditions: Array<{ expr: ts.Expression; symExpr: SymExpr }>;
+  /** The logical operator connecting all conditions (must be uniform). */
+  operator: "and" | "or";
+}
+
+/**
+ * Flatten a pure && or || expression tree into a list of leaf conditions.
+ *
+ * Returns non-null only for compound decisions with a uniform top-level
+ * operator (pure && chains or pure || chains). Returns null for:
+ * - Non-binary expressions (identifiers, comparisons, calls, etc.)
+ * - Mixed operators like `(A && B) || C`
+ * - Single-condition decisions (no compound operator at the top level)
+ * - Chains with more than 16 conditions
+ *
+ * Recursion into nested same-operator chains: `A && B && C` → [A, B, C].
+ */
+export function flattenConditions(
+  expr: ts.Expression,
+  paramNames: Set<string>,
+  dataFlowMap: Map<string, SymExpr>,
+): FlattenedConditions | null {
+  // Unwrap parentheses
+  if (ts.isParenthesizedExpression(expr)) {
+    return flattenConditions(expr.expression, paramNames, dataFlowMap);
+  }
+
+  if (!ts.isBinaryExpression(expr)) {
+    return null;
+  }
+
+  const isAnd = expr.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken;
+  const isOr = expr.operatorToken.kind === ts.SyntaxKind.BarBarToken;
+
+  if (!isAnd && !isOr) {
+    return null;
+  }
+
+  const operator: "and" | "or" = isAnd ? "and" : "or";
+
+  // Recursively collect leaves, ensuring uniform operator throughout
+  const leaves: Array<{ expr: ts.Expression; symExpr: SymExpr }> = [];
+
+  function collect(node: ts.Expression): boolean {
+    // Unwrap parentheses without changing semantics
+    if (ts.isParenthesizedExpression(node)) {
+      return collect(node.expression);
+    }
+
+    if (ts.isBinaryExpression(node)) {
+      const nodeIsAnd = node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken;
+      const nodeIsOr = node.operatorToken.kind === ts.SyntaxKind.BarBarToken;
+
+      if (nodeIsAnd && operator === "and") {
+        // Same operator — recurse into both sides
+        return collect(node.left) && collect(node.right);
+      }
+      if (nodeIsOr && operator === "or") {
+        return collect(node.left) && collect(node.right);
+      }
+      // Different or mixed operator — treat whole sub-expression as a leaf
+    }
+
+    // Leaf condition
+    const symExpr = buildSymExpr(node, paramNames, dataFlowMap);
+    leaves.push({ expr: node, symExpr });
+    return true;
+  }
+
+  const ok = collect(expr);
+  if (!ok) return null;
+
+  // Must be genuinely compound (at least 2 conditions) and within the cap
+  if (leaves.length < 2) return null;
+  if (leaves.length > 16) return null;
+
+  return { conditions: leaves, operator };
+}
+
+/**
  * Wrap a branch condition expression with a __shatter_branch() call.
  *
- * Transforms `condition` into:
- *   __shatter_branch(branchId, line, condition, symExprLiteral)
+ * When MC/DC mode is enabled and the condition is a compound && or || chain,
+ * generates:
+ *   const __mcdcN = __shatter_mcdc_record(branchId, [symExprs], "and"|"or", [() => !!(cond), ...]);
+ *   __shatter_branch_mcdc(branchId, line, __mcdcN.decision, symExprFull, __mcdcN.conditions)
  *
- * The __shatter_branch function evaluates the condition (passed as a boolean),
- * records the branch decision, and returns the boolean result.
+ * Otherwise (non-MC/DC or simple condition):
+ *   __shatter_branch(branchId, line, !!(condition), symExprLiteral)
  */
 function wrapBranchCondition(
   condition: ts.Expression,
@@ -949,6 +1056,15 @@ function wrapBranchCondition(
   const symExpr = buildSymExpr(condition, ctx.paramNames, ctx.dataFlowMap);
   const symExprLiteral = valueToAstLiteral(symExpr, ctx.factory);
 
+  // MC/DC path: compound && or || chain
+  if (isMcdcEnabled()) {
+    const flattened = flattenConditions(condition, ctx.paramNames, ctx.dataFlowMap);
+    if (flattened !== null) {
+      return buildMcdcBranchCall(branchId, line, condition, flattened, symExprLiteral, ctx);
+    }
+  }
+
+  // Default path: simple branch recording
   return ctx.factory.createCallExpression(
     ctx.factory.createIdentifier(BRANCH_FUNCTION),
     undefined,
@@ -965,6 +1081,119 @@ function wrapBranchCondition(
       symExprLiteral,
     ],
   );
+}
+
+/**
+ * Build the MC/DC instrumented branch call for a compound condition.
+ *
+ * Generates:
+ *   (() => {
+ *     const __mcdcN = __shatter_mcdc_record(branchId, [symExprs], "and"|"or",
+ *       [() => !!(cond0), () => !!(cond1), ...]);
+ *     return __shatter_branch_mcdc(branchId, line, __mcdcN.decision, symExprFull, __mcdcN.conditions);
+ *   })()
+ *
+ * The IIFE is used so we can declare the __mcdcN variable and still produce an expression.
+ */
+function buildMcdcBranchCall(
+  branchId: number,
+  line: number,
+  fullCondition: ts.Expression,
+  flattened: FlattenedConditions,
+  symExprFullLiteral: ts.Expression,
+  ctx: InstrumentationContext,
+): ts.Expression {
+  const factory = ctx.factory;
+
+  // Build array of per-condition SymExpr literals: [symExpr0, symExpr1, ...]
+  const symExprArrayElems = flattened.conditions.map(({ symExpr }) =>
+    valueToAstLiteral(symExpr, factory),
+  );
+  const symExprArray = factory.createArrayLiteralExpression(symExprArrayElems);
+
+  // Build operator string literal: "and" or "or"
+  const operatorLiteral = factory.createStringLiteral(flattened.operator);
+
+  // Build thunk array: [() => !!(cond0), () => !!(cond1), ...]
+  const thunkElems = flattened.conditions.map(({ expr: condExpr }) => {
+    const doubleNot = factory.createPrefixUnaryExpression(
+      ts.SyntaxKind.ExclamationToken,
+      factory.createPrefixUnaryExpression(ts.SyntaxKind.ExclamationToken, condExpr),
+    );
+    return factory.createArrowFunction(
+      undefined,
+      undefined,
+      [],
+      undefined,
+      factory.createToken(ts.SyntaxKind.EqualsGreaterThanToken),
+      doubleNot,
+    );
+  });
+  const thunkArray = factory.createArrayLiteralExpression(thunkElems);
+
+  // Name for the MC/DC result variable (unique per branch)
+  const mcdcVarName = `__mcdc${branchId}`;
+
+  // const __mcdcN = __shatter_mcdc_record(branchId, symExprArray, operator, thunkArray);
+  const mcdcVarDecl = factory.createVariableStatement(
+    undefined,
+    factory.createVariableDeclarationList(
+      [factory.createVariableDeclaration(
+        factory.createIdentifier(mcdcVarName),
+        undefined,
+        undefined,
+        factory.createCallExpression(
+          factory.createIdentifier(MCDC_RECORD_FUNCTION),
+          undefined,
+          [
+            factory.createNumericLiteral(branchId),
+            symExprArray,
+            operatorLiteral,
+            thunkArray,
+          ],
+        ),
+      )],
+      ts.NodeFlags.Const,
+    ),
+  );
+
+  // __shatter_branch_mcdc(branchId, line, __mcdcN.decision, symExprFull, __mcdcN.conditions)
+  const mcdcBranchCall = factory.createCallExpression(
+    factory.createIdentifier(MCDC_BRANCH_FUNCTION),
+    undefined,
+    [
+      factory.createNumericLiteral(branchId),
+      factory.createNumericLiteral(line),
+      factory.createPropertyAccessExpression(factory.createIdentifier(mcdcVarName), "decision"),
+      symExprFullLiteral,
+      factory.createPropertyAccessExpression(factory.createIdentifier(mcdcVarName), "conditions"),
+    ],
+  );
+
+  // Wrap in IIFE so we can declare a variable and return an expression:
+  // (() => { const __mcdcN = ...; return __shatter_branch_mcdc(...); })()
+  const iife = factory.createCallExpression(
+    factory.createParenthesizedExpression(
+      factory.createArrowFunction(
+        undefined,
+        undefined,
+        [],
+        undefined,
+        factory.createToken(ts.SyntaxKind.EqualsGreaterThanToken),
+        factory.createBlock(
+          [
+            mcdcVarDecl,
+            factory.createReturnStatement(mcdcBranchCall),
+          ],
+          /* multiLine */ true,
+        ),
+      ),
+    ),
+    undefined,
+    [],
+  );
+
+  return iife;
 }
 
 // ---------------------------------------------------------------------------
