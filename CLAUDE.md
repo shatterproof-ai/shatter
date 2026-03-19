@@ -42,6 +42,7 @@ See `/rust-conventions`, `/ts-conventions`, `/go-conventions` skills for detaile
 | E2E | `npx task e2e` | After pipeline changes |
 | Smoke | `npx task smoke` | Before closing any issue |
 | Walkthrough | `npx task walkthrough` | After CLI/protocol changes |
+| Parity | `npx task parity` | After changing frontend capability declarations, protocol registry, or adding a command handler |
 
 **E2E gate**: The E2E concolic tests (`shatter-core/tests/e2e_concolic.rs`) run the real TS frontend subprocess through analyze → instrument → explore → Z3 solve. They are the **only tests that validate the full pipeline end-to-end**. Unit tests alone are insufficient — a module can pass all its own tests while being silently disconnected from the pipeline (see "Completion checklist" below). Run E2E tests after any change to:
 - Solver logic (`solver.rs`, `string-ops.yaml`, `build.rs`)
@@ -104,7 +105,7 @@ In addition to the shared testing completion checklist (unit tests, linter, cros
 2. **Cross-language tests pass** — if touching protocol types (Full tier)
 3. **E2E pipeline works** — if touching any component in the analyze → instrument → execute → solve chain, run `cargo test --test e2e_concolic` and verify the pipeline still discovers expected branches
 4. **Walkthrough passes** — if touching CLI output or example files
-5. **Parity contract updated** — if making a protocol-visible frontend change (new command handler, response field, error code, capability, or any observable behavior change), update the parity contract in the affected frontend's `CLAUDE.md` and add or adjust parity tests. *Output parity* (JSON wire format, response structure, error codes, observable behavior) is required across all frontends. *Implementation details* (internal types, helper functions, data structure choices) may differ between frontends. Run `npx task conformance` to verify no unexpected drift.
+5. **Parity contract updated** — if making a protocol-visible frontend change (new command handler, response field, error code, capability, or any observable behavior change), update the parity contract in the affected frontend's `CLAUDE.md` and add or adjust parity tests. *Output parity* (JSON wire format, response structure, error codes, observable behavior) is required across all frontends. *Implementation details* (internal types, helper functions, data structure choices) may differ between frontends. Run `npx task parity` (registry consistency + capability contract) and `npx task conformance` (wire format parity) to verify no unexpected drift.
 
 **Why E2E matters:** This project has multiple code paths that process the same data (random explorer vs. concolic orchestrator, `buildSymExpr` vs. `buildSymExprWithFlow`, CLI wiring for different explorer modes). Features that work on one path are routinely broken on others. Closing an issue based on unit tests alone has repeatedly led to silent pipeline breakages. If the E2E tests don't cover your change, add a new E2E test case before closing.
 

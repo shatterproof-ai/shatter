@@ -124,6 +124,33 @@ tasks:
     cmds:
       - python3 protocol/conformance/conformance_harness.py
 
+  parity:
+    desc: Validate frontend feature parity (registry consistency + capability contract)
+    deps: [ts:build, go:build, rust-fe:build]
+    preconditions:
+      - sh: command -v python3
+        msg: "python3 not installed"
+    sources:
+      - protocol/registry.yaml
+      - scripts/validate-protocol-registry.py
+      - shatter-ts/src/**/*.ts
+      - shatter-go/**/*.go
+      - shatter-rust/src/**/*.rs
+    cmds:
+      - python3 scripts/validate-protocol-registry.py
+      - |
+        if [ -f scripts/validate-parity.py ]; then
+          python3 scripts/validate-parity.py
+        else
+          echo "[skip] validate-parity.py not present (pending str-7jgm.2)"
+        fi
+      - |
+        if [ -f protocol/parity/run-tests.py ]; then
+          python3 protocol/parity/run-tests.py
+        else
+          echo "[skip] parity golden tests not present (pending str-7jgm.3)"
+        fi
+
   docs:
     desc: Run documentation quality checks
     sources:
@@ -200,6 +227,7 @@ tasks:
       - meta
     cmds:
       - task: conformance
+      - task: parity
 
   # --- E2E, pre-completion, walkthrough, clean (issue 6) ---
 
