@@ -905,3 +905,183 @@ func main() {}
 		t.Fatal("expected non-nil return value")
 	}
 }
+
+// --- Global state capture tests ---
+
+func TestExecuteFunctionCapturesGlobalStateChange(t *testing.T) {
+	srcDir := t.TempDir()
+	src := writeExecTestSource(t, srcDir, "target.go", `package main
+
+// Counter is an exported package-level variable.
+// Expected: incremented from 0 to 1 by increment().
+var Counter int = 0
+
+func increment() int {
+	Counter++
+	return Counter
+}
+`)
+	result, err := ExecuteFunction(src, "increment", []json.RawMessage{})
+	if err != nil {
+		t.Fatalf("ExecuteFunction: %v", err)
+	}
+	if result.ThrownError != nil {
+		t.Fatalf("unexpected error: %+v", result.ThrownError)
+	}
+
+	var stateChanges []SideEffect
+	for _, se := range result.SideEffects {
+		if se.Kind == "global_state_change" {
+			stateChanges = append(stateChanges, se)
+		}
+	}
+	if len(stateChanges) != 1 {
+		t.Fatalf("expected 1 global_state_change side effect, got %d (all side effects: %+v)", len(stateChanges), result.SideEffects)
+	}
+	sc := stateChanges[0]
+	if sc.Variable != "Counter" {
+		t.Errorf("expected variable=Counter, got %q", sc.Variable)
+	}
+	if sc.Before == nil || string(*sc.Before) != "0" {
+		t.Errorf("expected before=0, got %v", sc.Before)
+	}
+	if sc.After == nil || string(*sc.After) != "1" {
+		t.Errorf("expected after=1, got %v", sc.After)
+	}
+}
+
+func TestExecuteFunctionDoesNotReportUnchangedGlobals(t *testing.T) {
+	srcDir := t.TempDir()
+	src := writeExecTestSource(t, srcDir, "target.go", `package main
+
+// Unchanged is never modified by readOnly().
+var Unchanged int = 42
+
+func readOnly() int {
+	return Unchanged
+}
+`)
+	result, err := ExecuteFunction(src, "readOnly", []json.RawMessage{})
+	if err != nil {
+		t.Fatalf("ExecuteFunction: %v", err)
+	}
+
+	for _, se := range result.SideEffects {
+		if se.Kind == "global_state_change" {
+			t.Errorf("unexpected global_state_change for unmodified var: %+v", se)
+		}
+	}
+}
+
+func TestExecuteFunctionDoesNotReportUnexportedGlobals(t *testing.T) {
+	srcDir := t.TempDir()
+	src := writeExecTestSource(t, srcDir, "target.go", `package main
+
+// unexported is not visible to protocol consumers.
+var unexported int = 0
+
+func bumpUnexported() int {
+	unexported++
+	return unexported
+}
+`)
+	result, err := ExecuteFunction(src, "bumpUnexported", []json.RawMessage{})
+	if err != nil {
+		t.Fatalf("ExecuteFunction: %v", err)
+	}
+
+	for _, se := range result.SideEffects {
+		if se.Kind == "global_state_change" {
+			t.Errorf("unexpected global_state_change for unexported var: %+v", se)
+		}
+	}
+}
+
+func TestExecuteFunctionCapturesMultipleGlobalStateChanges(t *testing.T) {
+	srcDir := t.TempDir()
+	src := writeExecTestSource(t, srcDir, "target.go", `package main
+
+// Expected: both X and Y are modified by bumpBoth().
+var X int = 10
+var Y string = "hello"
+
+func bumpBoth() string {
+	X = X + 1
+	Y = Y + "!"
+	return Y
+}
+`)
+	result, err := ExecuteFunction(src, "bumpBoth", []json.RawMessage{})
+	if err != nil {
+		t.Fatalf("ExecuteFunction: %v", err)
+	}
+
+	changes := make(map[string]SideEffect)
+	for _, se := range result.SideEffects {
+		if se.Kind == "global_state_change" {
+			changes[se.Variable] = se
+		}
+	}
+
+	if len(changes) != 2 {
+		t.Fatalf("expected 2 global_state_change entries, got %d: %+v", len(changes), changes)
+	}
+	if xSE, ok := changes["X"]; !ok {
+		t.Error("missing global_state_change for X")
+	} else {
+		if string(*xSE.Before) != "10" {
+			t.Errorf("X before: want 10, got %s", string(*xSE.Before))
+		}
+		if string(*xSE.After) != "11" {
+			t.Errorf("X after: want 11, got %s", string(*xSE.After))
+		}
+	}
+	if ySE, ok := changes["Y"]; !ok {
+		t.Error("missing global_state_change for Y")
+	} else {
+		if string(*ySE.Before) != `"hello"` {
+			t.Errorf("Y before: want \"hello\", got %s", string(*ySE.Before))
+		}
+		if string(*ySE.After) != `"hello!"` {
+			t.Errorf("Y after: want \"hello!\", got %s", string(*ySE.After))
+		}
+	}
+}
+
+// TestAnalyzeGlobalVars verifies the AST-based extractor finds only exported vars.
+func TestAnalyzeGlobalVars(t *testing.T) {
+	srcDir := t.TempDir()
+	src := writeExecTestSource(t, srcDir, "target.go", `package main
+
+var Exported int = 0
+var AlsoExported string = "x"
+var unexported float64 = 3.14
+
+const SomeConst = 42
+
+func someFunc() {}
+`)
+	vars, err := analyzeGlobalVars(src)
+	if err != nil {
+		t.Fatalf("analyzeGlobalVars: %v", err)
+	}
+	names := make(map[string]bool)
+	for _, v := range vars {
+		names[v.Name] = true
+	}
+	if !names["Exported"] {
+		t.Error("expected Exported to be detected")
+	}
+	if !names["AlsoExported"] {
+		t.Error("expected AlsoExported to be detected")
+	}
+	if names["unexported"] {
+		t.Error("unexported should not be detected")
+	}
+	if names["SomeConst"] {
+		t.Error("constants should not be detected")
+	}
+	if names["someFunc"] {
+		t.Error("functions should not be detected")
+	}
+}

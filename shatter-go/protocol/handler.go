@@ -460,9 +460,12 @@ func convertSideEffects(effects []instrument.SideEffect) []SideEffect {
 	result := make([]SideEffect, len(effects))
 	for i, e := range effects {
 		result[i] = SideEffect{
-			Kind:    e.Kind,
-			Level:   e.Level,
-			Message: e.Message,
+			Kind:     e.Kind,
+			Level:    e.Level,
+			Message:  e.Message,
+			Variable: e.Variable,
+			Before:   (*json.RawMessage)(e.Before),
+			After:    (*json.RawMessage)(e.After),
 		}
 	}
 	return result

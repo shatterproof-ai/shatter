@@ -84,9 +84,17 @@ func parseTimeoutEnv(key string) (time.Duration, bool) {
 
 // SideEffect represents an observable side effect during execution.
 type SideEffect struct {
-	Kind    string `json:"kind"`
-	Level   string `json:"level,omitempty"`
-	Message string `json:"message,omitempty"`
+	Kind     string           `json:"kind"`
+	Level    string           `json:"level,omitempty"`
+	Message  string           `json:"message,omitempty"`
+	Variable string           `json:"variable,omitempty"`
+	Before   *json.RawMessage `json:"before,omitempty"`
+	After    *json.RawMessage `json:"after,omitempty"`
+}
+
+// globalVarInfo holds the name of an exported package-level variable to track.
+type globalVarInfo struct {
+	Name string
 }
 
 // DiscoveredDependency represents a dependency found at execution time
@@ -185,12 +193,18 @@ func ExecuteFunction(sourcePath, funcName string, inputs []json.RawMessage, mock
 
 // ExecuteFunctionWithTiming instruments and executes a Go function while recording timing phases when requested.
 func ExecuteFunctionWithTiming(sourcePath, funcName string, inputs []json.RawMessage, timing *frontendtiming.Collector, mocks ...[]MockConfig) (*ExecuteResult, error) {
-	// Analyze the function to get parameter types
+	// Analyze the function to get parameter types and global variables.
 	finishAnalyze := timing.Start("execute.analyze")
 	params, returnInfo, err := analyzeForExecution(sourcePath, funcName)
+	if err != nil {
+		finishAnalyze()
+		return nil, fmt.Errorf("analyzing function: %w", err)
+	}
+	globalVars, err := analyzeGlobalVars(sourcePath)
 	finishAnalyze()
 	if err != nil {
-		return nil, fmt.Errorf("analyzing function: %w", err)
+		// Non-fatal: global var analysis failure doesn't block execution.
+		globalVars = nil
 	}
 
 	if len(inputs) != len(params) {
@@ -232,8 +246,9 @@ func ExecuteFunctionWithTiming(sourcePath, funcName string, inputs []json.RawMes
 	resultsPath := filepath.Join(outputDir, "shatter_results.json")
 	returnPath := filepath.Join(outputDir, "shatter_return.json")
 	perfPath := filepath.Join(outputDir, "shatter_perf.json")
+	globalsPath := filepath.Join(outputDir, "shatter_globals.json")
 	finishHarness := timing.Start("execute.generate_harness")
-	harness, err := generateHarness(funcName, params, returnInfo, inputs, resultsPath, returnPath, perfPath, len(activeMocks) > 0)
+	harness, err := generateHarness(funcName, params, returnInfo, inputs, resultsPath, returnPath, perfPath, globalsPath, globalVars, len(activeMocks) > 0)
 	finishHarness()
 	if err != nil {
 		return nil, fmt.Errorf("generating harness: %w", err)
@@ -361,6 +376,30 @@ func ExecuteFunctionWithTiming(sourcePath, funcName string, inputs []json.RawMes
 	}
 	finishParsePerf()
 
+	// Parse global state changes written by the harness.
+	if len(globalVars) > 0 {
+		if data, err := os.ReadFile(globalsPath); err == nil {
+			var changes []struct {
+				Kind     string          `json:"kind"`
+				Variable string          `json:"variable"`
+				Before   json.RawMessage `json:"before"`
+				After    json.RawMessage `json:"after"`
+			}
+			if err := json.Unmarshal(data, &changes); err == nil {
+				for _, c := range changes {
+					before := json.RawMessage(c.Before)
+					after := json.RawMessage(c.After)
+					result.SideEffects = append(result.SideEffects, SideEffect{
+						Kind:     "global_state_change",
+						Variable: c.Variable,
+						Before:   &before,
+						After:    &after,
+					})
+				}
+			}
+		}
+	}
+
 	// Handle execution errors
 	if runErr != nil {
 		if runCtx.Err() == context.DeadlineExceeded {
@@ -431,6 +470,38 @@ func analyzeForExecution(sourcePath, funcName string) ([]paramInfo, returnTypeIn
 	}
 
 	return nil, returnTypeInfo{}, fmt.Errorf("function not found: %s", funcName)
+}
+
+// analyzeGlobalVars returns the exported (capitalized) package-level var declarations
+// in the source file. These are candidates for global_state_change tracking.
+// Constants, functions, and unexported vars are excluded.
+func analyzeGlobalVars(sourcePath string) ([]globalVarInfo, error) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, sourcePath, nil, 0)
+	if err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", sourcePath, err)
+	}
+
+	var vars []globalVarInfo
+	for _, decl := range file.Decls {
+		genDecl, ok := decl.(*ast.GenDecl)
+		if !ok || genDecl.Tok != token.VAR {
+			continue
+		}
+		for _, spec := range genDecl.Specs {
+			valSpec, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for _, name := range valSpec.Names {
+				// Only track exported (capitalized) names.
+				if len(name.Name) > 0 && name.Name[0] >= 'A' && name.Name[0] <= 'Z' {
+					vars = append(vars, globalVarInfo{Name: name.Name})
+				}
+			}
+		}
+	}
+	return vars, nil
 }
 
 func extractParamInfo(fn *ast.FuncDecl, info *types.Info, pkgName string) []paramInfo {
@@ -520,8 +591,8 @@ func astTypeString(expr ast.Expr) string {
 }
 
 // generateHarness creates a main.go that deserializes inputs, calls the function,
-// captures results, and writes output files.
-func generateHarness(funcName string, params []paramInfo, retInfo returnTypeInfo, inputs []json.RawMessage, resultsPath, returnPath, perfPath string, hasMocks bool) (string, error) {
+// captures results (including global state changes), and writes output files.
+func generateHarness(funcName string, params []paramInfo, retInfo returnTypeInfo, inputs []json.RawMessage, resultsPath, returnPath, perfPath, globalsPath string, globalVars []globalVarInfo, hasMocks bool) (string, error) {
 	var b strings.Builder
 
 	b.WriteString("package main\n\n")
@@ -559,6 +630,17 @@ func generateHarness(funcName string, params []paramInfo, retInfo returnTypeInfo
 	}
 
 	b.WriteString("\n")
+
+	// Snapshot exported global variables before the function call.
+	if len(globalVars) > 0 {
+		for _, v := range globalVars {
+			b.WriteString(fmt.Sprintf("\t_shatter_before_%s, _shatter_ok_%s := func() (json.RawMessage, bool) {\n", v.Name, v.Name))
+			b.WriteString(fmt.Sprintf("\t\t_b, _err := json.Marshal(%s)\n", v.Name))
+			b.WriteString("\t\treturn _b, _err == nil\n")
+			b.WriteString("\t}()\n")
+		}
+		b.WriteString("\n")
+	}
 
 	// Call the function
 	argList := make([]string, len(params))
@@ -609,6 +691,30 @@ func generateHarness(funcName string, params []paramInfo, retInfo returnTypeInfo
 	}
 
 	b.WriteString("\n")
+
+	// Compare global variables after the call and write global_state_change entries.
+	if len(globalVars) > 0 {
+		globalsPathEscaped := strings.ReplaceAll(globalsPath, `\`, `\\`)
+		b.WriteString("\ttype _shatterGlobalChange struct {\n")
+		b.WriteString("\t\tKind     string          `json:\"kind\"`\n")
+		b.WriteString("\t\tVariable string          `json:\"variable\"`\n")
+		b.WriteString("\t\tBefore   json.RawMessage `json:\"before\"`\n")
+		b.WriteString("\t\tAfter    json.RawMessage `json:\"after\"`\n")
+		b.WriteString("\t}\n")
+		b.WriteString("\tvar _shatterGlobals []_shatterGlobalChange\n")
+		for _, v := range globalVars {
+			b.WriteString(fmt.Sprintf("\tif _shatter_ok_%s {\n", v.Name))
+			b.WriteString(fmt.Sprintf("\t\tif _after_%s, _err := json.Marshal(%s); _err == nil {\n", v.Name, v.Name))
+			b.WriteString(fmt.Sprintf("\t\t\tif string(_after_%s) != string(_shatter_before_%s) {\n", v.Name, v.Name))
+			b.WriteString(fmt.Sprintf("\t\t\t\t_shatterGlobals = append(_shatterGlobals, _shatterGlobalChange{Kind: \"global_state_change\", Variable: %q, Before: _shatter_before_%s, After: _after_%s})\n", v.Name, v.Name, v.Name))
+			b.WriteString("\t\t\t}\n")
+			b.WriteString("\t\t}\n")
+			b.WriteString("\t}\n")
+		}
+		b.WriteString(fmt.Sprintf("\tif _gd, _err := json.Marshal(_shatterGlobals); _err == nil {\n"))
+		b.WriteString(fmt.Sprintf("\t\tos.WriteFile(%q, _gd, 0644)\n", globalsPathEscaped))
+		b.WriteString("\t}\n\n")
+	}
 
 	// Dump shatter recording results
 	resultsPathEscaped := strings.ReplaceAll(resultsPath, `\`, `\\`)
