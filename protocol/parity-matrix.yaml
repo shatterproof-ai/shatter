@@ -1,96 +1,208 @@
 # Shatter Frontend Parity Matrix
 #
-# Checked-in contract for which capabilities each frontend must implement.
-# Consumed by: python3 scripts/validate-parity.py (CI: npx task parity)
-# Schema:      protocol/parity-matrix.schema.yaml
+# Machine-readable parity contract consumed by scripts/validate-parity.py.
+# CI task: npx task parity
 #
 # Ownership: str-7jgm.1 (parity contract spec) populates and maintains this.
-# Do not edit by hand without understanding the validator detection strategy
-# documented in parity-matrix.schema.yaml.
+# Bootstrap version reflects actual code state as of protocol version 0.1.0.
+#
+# Validator failure conditions:
+#   MISSING_REQUIRED — matrix says implemented but code doesn't advertise it
+#   UNDOCUMENTED     — code advertises it but matrix says not_implemented
 #
 # To update after a capability change:
-#   1. Edit required/optional lists for the affected frontend(s)
+#   1. Edit this file to match the new expected state
 #   2. Run: python3 scripts/validate-parity.py --verbose
 #   3. Commit both the source change and this file together
 
-schema_version: "1"
-protocol_version: "0.1.0"
+# --- Commands ---
+#
+# status: required         All frontends in the frontends map are expected to comply
+# status: optional         Frontends may choose to implement; no failure for absence
+# status: frontend_specific Only certain frontends expected to implement
+#
+# frontends:
+#   <frontend>: implemented    | must be advertised in handshake capabilities
+#               not_implemented| must NOT be advertised in handshake capabilities
+#               partial        | advertised but functionally incomplete (informational only)
 
-frontends:
+commands:
+  handshake:
+    status: required
+    frontends:
+      typescript: implemented
+      go: implemented
+      rust: implemented
+    notes: "Always handled; not listed in capabilities list (implicit)"
 
-  typescript:
-    # Commands MUST be advertised by the TS frontend's handshake response.
-    # Detected from: SUPPORTED_CAPABILITIES in shatter-ts/src/handlers.ts
-    required:
-      commands:
-        - analyze
-        - execute
-        - generate
-        - instrument
-        - setup
-      complex_types: []
-    # Commands and types the TS frontend may implement but is not required to.
-    optional:
-      commands:
-        - teardown
-      complex_types:
-        - big_int
-        - buffer
-        - date
-        - date_time
-        - duration
-        - error
-        - reg_exp
-        - symbol
-        - url
-    # Coded default in shatter-ts/src/executor.ts: DEFAULT_EXEC_TIMEOUT_MS = 15_000
-    default_timeout_seconds: 15
+  analyze:
+    status: required
+    frontends:
+      typescript: implemented
+      go: implemented
+      rust: partial
+    notes: "Rust advertises analyze in capabilities but returns not_supported; tracked pending full implementation"
 
-  go:
-    # Commands MUST be advertised by the Go frontend's handshake response.
-    # Detected from: CommandCapabilities in shatter-go/protocol/constants.go
-    required:
-      commands:
-        - analyze
-        - execute
-        - generate
-        - instrument
-        - setup
-        - teardown
-      complex_types: []
-    # Complex types the Go frontend may implement but is not required to.
-    optional:
-      commands: []
-      complex_types:
-        - big_decimal
-        - big_int
-        - date
-        - duration
-        - error
-        - ip_address
-        - rational
-        - reg_exp
-        - url
-    # Coded default in shatter-go/instrument/executor.go: defaultExecTimeout = 5 * time.Second
-    default_timeout_seconds: 5
+  instrument:
+    status: required
+    frontends:
+      typescript: implemented
+      go: implemented
+      rust: partial
+    notes: "Rust advertises instrument in capabilities but returns not_supported; tracked pending full implementation"
 
-  rust:
-    # Commands MUST be advertised by the Rust frontend's handshake response.
-    # Detected from: resp.capabilities = Some(vec![...]) in shatter-rust/src/handler.rs
-    # Note: most commands are protocol-complete but functionally unimplemented (return
-    # not_supported). The parity contract tracks protocol-level advertisement, not
-    # functional completeness. See shatter-rust/CLAUDE.md for implementation status.
-    required:
-      commands:
-        - analyze
-        - execute
-        - generate
-        - instrument
-        - setup
-        - teardown
-      complex_types: []
-    optional:
-      commands: []
-      complex_types: []
-    # Coded default in shatter-rust/src/handler.rs: DEFAULT_EXEC_TIMEOUT_MS = 5000
-    default_timeout_seconds: 5
+  execute:
+    status: required
+    frontends:
+      typescript: implemented
+      go: implemented
+      rust: partial
+    notes: "Rust advertises execute in capabilities but returns not_supported; tracked pending full implementation"
+
+  setup:
+    status: required
+    frontends:
+      typescript: implemented
+      go: implemented
+      rust: partial
+    notes: "Rust advertises setup in capabilities but returns not_supported; tracked pending full implementation"
+
+  teardown:
+    status: optional
+    frontends:
+      typescript: not_implemented
+      go: implemented
+      rust: partial
+    notes: "TypeScript does not advertise teardown. Rust advertises but returns not_supported."
+
+  generate:
+    status: required
+    frontends:
+      typescript: implemented
+      go: implemented
+      rust: partial
+    notes: "Rust advertises generate in capabilities but returns not_supported; tracked pending full implementation"
+
+  shutdown:
+    status: required
+    frontends:
+      typescript: implemented
+      go: implemented
+      rust: implemented
+    notes: "Always handled; not listed in capabilities list (implicit)"
+
+# --- Complex type capabilities ---
+#
+# status: optional   Frontends may choose to implement
+#
+# frontends:
+#   <frontend>: supported     | advertised in handshake capabilities
+#               not_supported | not advertised in handshake capabilities
+#
+# language_affinity: languages where this type maps naturally to native types
+
+complex_type_capabilities:
+  date:
+    status: optional
+    frontends:
+      typescript: supported
+      go: supported
+      rust: not_supported
+    language_affinity: [ts, go]
+
+  date_time:
+    status: optional
+    frontends:
+      typescript: supported
+      go: not_supported
+      rust: not_supported
+    language_affinity: [ts]
+
+  duration:
+    status: optional
+    frontends:
+      typescript: supported
+      go: supported
+      rust: not_supported
+    language_affinity: [ts, go]
+
+  reg_exp:
+    status: optional
+    frontends:
+      typescript: supported
+      go: supported
+      rust: not_supported
+    language_affinity: [ts, go]
+
+  url:
+    status: optional
+    frontends:
+      typescript: supported
+      go: supported
+      rust: not_supported
+    language_affinity: [ts, go]
+
+  big_int:
+    status: optional
+    frontends:
+      typescript: supported
+      go: supported
+      rust: not_supported
+    language_affinity: [ts, go]
+
+  buffer:
+    status: optional
+    frontends:
+      typescript: supported
+      go: not_supported
+      rust: not_supported
+    language_affinity: [ts]
+
+  error:
+    status: optional
+    frontends:
+      typescript: supported
+      go: supported
+      rust: not_supported
+    language_affinity: [ts, go]
+
+  symbol:
+    status: optional
+    frontends:
+      typescript: supported
+      go: not_supported
+      rust: not_supported
+    language_affinity: [ts]
+
+  ip_address:
+    status: optional
+    frontends:
+      typescript: not_supported
+      go: supported
+      rust: not_supported
+    language_affinity: [go]
+
+  rational:
+    status: optional
+    frontends:
+      typescript: not_supported
+      go: supported
+      rust: not_supported
+    language_affinity: [go]
+
+  big_decimal:
+    status: optional
+    frontends:
+      typescript: not_supported
+      go: supported
+      rust: not_supported
+    language_affinity: [go]
+
+# --- Allowed divergences ---
+#
+# Document known, intentional drift between frontends.
+# status: tracked  — known, under investigation or deferred
+# status: accepted — intentional long-term divergence
+# status: resolved — no longer a divergence; remove when matrix is updated
+
+allowed_divergences: []
