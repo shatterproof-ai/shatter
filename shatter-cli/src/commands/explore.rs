@@ -61,6 +61,7 @@ pub(crate) async fn run_explore(
     no_replay: bool,
     refine_budget: usize,
     mcdc: bool,
+    isolation: shatter_core::explorer::IsolationMode,
     output_format: crate::args::OutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let _explore_span = tracing::info_span!("core.explore_command").entered();
@@ -440,7 +441,9 @@ pub(crate) async fn run_explore(
                 project_root: project_root_str.clone(),
                 loop_buckets: loop_buckets.clone(),
                 timeout_explore: timeout_explore.map(Duration::from_secs_f64),
-                meta_config: meta_config.clone(), shrink_budget: shatter_core::orchestrator::DEFAULT_SHRINK_BUDGET,
+                meta_config: meta_config.clone(),
+                shrink_budget: shatter_core::orchestrator::DEFAULT_SHRINK_BUDGET,
+                isolation,
             };
 
             if !resolved.candidate_inputs.is_empty() {

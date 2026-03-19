@@ -7,6 +7,31 @@ use shatter_core::explorer;
 use shatter_core::log_level::LogLevel;
 use shatter_core::timing::{TimingConfig, TimingFormat, TimingMode, TimingOutput};
 
+/// Execution isolation level for `--isolation`.
+///
+/// Controls how function executions are isolated from each other.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+pub(crate) enum IsolationModeArg {
+    /// No isolation (default). All executions share a single frontend process.
+    /// Assumes functions are side-effect-safe and stateless.
+    #[default]
+    None,
+    /// Each function invocation gets a fresh execution context (new process or sandbox).
+    Function,
+    /// Functions run sequentially (no parallelism), sharing a single process.
+    Serial,
+}
+
+impl From<IsolationModeArg> for shatter_core::explorer::IsolationMode {
+    fn from(value: IsolationModeArg) -> Self {
+        match value {
+            IsolationModeArg::None => Self::None,
+            IsolationModeArg::Function => Self::Function,
+            IsolationModeArg::Serial => Self::Serial,
+        }
+    }
+}
+
 /// Terminal output format.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 pub(crate) enum OutputFormat {
@@ -355,6 +380,15 @@ pub(crate) enum CliCommand {
         /// iteration/execution/plateau budgets.
         #[arg(long)]
         mcdc: bool,
+
+        /// Execution isolation level.
+        ///
+        /// - none     (default): executions share a single frontend process; assumes
+        ///   functions are side-effect-safe and stateless.
+        /// - function: each function invocation gets a fresh execution context.
+        /// - serial:  functions run sequentially (no parallelism) in a shared process.
+        #[arg(long, value_enum, default_value = "none")]
+        isolation: IsolationModeArg,
     },
 
     /// Analyze Stage 1 (Observe) output: produce equivalence classes, behavior map,
@@ -650,6 +684,15 @@ pub(crate) enum CliCommand {
         /// Treat setup failures as fatal errors (abort scan immediately).
         #[arg(long)]
         fail_on_setup_error: bool,
+
+        /// Execution isolation level.
+        ///
+        /// - none     (default): executions share a single frontend process; assumes
+        ///   functions are side-effect-safe and stateless.
+        /// - function: each function invocation gets a fresh execution context.
+        /// - serial:  functions run sequentially (no parallelism) in a shared process.
+        #[arg(long, value_enum, default_value = "none")]
+        isolation: IsolationModeArg,
     },
 
     /// Export generated tests from behavior maps produced by exploration.

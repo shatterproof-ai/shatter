@@ -77,6 +77,24 @@ impl Default for LoopBuckets {
     }
 }
 
+/// Execution isolation level for function exploration.
+///
+/// Controls whether function invocations share a process or are isolated from each other.
+/// The default (`None`) assumes side-effect-safe, stateless functions and offers the
+/// best throughput by sharing a single frontend process across all executions.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum IsolationMode {
+    /// No isolation (default). All executions share a single frontend process.
+    /// Assumes functions are side-effect-safe and stateless.
+    #[default]
+    None,
+    /// Each function invocation gets a fresh execution context (new process or sandbox).
+    Function,
+    /// Functions run sequentially (no parallelism), sharing a single process.
+    Serial,
+}
+
 /// Configuration for an exploration run.
 #[derive(Debug, Clone)]
 pub struct ExploreConfig {
@@ -120,6 +138,8 @@ pub struct ExploreConfig {
     pub meta_config: crate::strategy::MetaConfig,
     /// Maximum shrink attempts per discovered behavior. Set to 0 to disable.
     pub shrink_budget: usize,
+    /// Execution isolation level. Defaults to `IsolationMode::None` (stateless/shared process).
+    pub isolation: IsolationMode,
 }
 
 /// Summary of a single function execution during exploration.

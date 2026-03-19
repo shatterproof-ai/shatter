@@ -148,6 +148,7 @@ async fn main() -> ExitCode {
             no_replay,
             refine_budget,
             mcdc,
+            isolation,
         } => {
             // Set SHATTER_SETUP_TIMEOUT env var for frontends if --setup-timeout provided.
             if let Some(secs) = setup_timeout {
@@ -218,6 +219,7 @@ async fn main() -> ExitCode {
                 no_replay,
                 refine_budget,
                 mcdc,
+                isolation.into(),
                 cli.format,
             )
             .await
@@ -325,6 +327,7 @@ async fn main() -> ExitCode {
             no_seeds,
             setup_timeout,
             fail_on_setup_error: _,
+            isolation,
         } => {
             // Set SHATTER_SETUP_TIMEOUT env var for frontends if --setup-timeout provided.
             if let Some(secs) = setup_timeout {
@@ -374,6 +377,7 @@ async fn main() -> ExitCode {
                 cli.format,
                 &seeds_dir,
                 no_seeds,
+                isolation.into(),
             )
             .await
         }
