@@ -4,6 +4,11 @@
  * Each handler receives a typed request and returns a typed response.
  * The instrument handler stores instrumented source in memory so the
  * execute handler can use it for branch-recording execution.
+ *
+ * Heavy modules (executor, instrumentor, setup-loader, wasm-generator) are
+ * loaded lazily on first use. Analyze-only sessions never pay the cost of
+ * loading executor (~206ms), instrumentor (~185ms), setup-loader (~186ms),
+ * or wasm-generator (~8ms).
  */
 
 import * as fs from "node:fs";
@@ -17,28 +22,9 @@ import {
   type SetupLevel,
 } from "./protocol.js";
 import { analyzeFile } from "./analyzer.js";
-import { instrumentFunction } from "./instrumentor.js";
-import {
-  executeFunction,
-  executeInstrumented,
-  buildExecuteResponse,
-  setProjectRoot,
-  clearModuleCache,
-} from "./executor.js";
-import {
-  loadSetupModule,
-  runSetup,
-  runTeardown,
-  loadGeneratorModule,
-  runGenerator,
-  type SetupModule,
-} from "./setup-loader.js";
-import {
-  loadWasmPlugin,
-  runWasmGenerator,
-  clearWasmCache,
-} from "./wasm-generator.js";
 import { TimingCollector } from "./timing.js";
+// Type-only imports for lazy-loaded modules — erased at compile time, no runtime cost.
+import type { SetupModule } from "./setup-loader.js";
 
 /** Supported capabilities for this frontend. */
 const SUPPORTED_CAPABILITIES = [
@@ -48,8 +34,56 @@ const SUPPORTED_CAPABILITIES = [
   "complex_type:buffer", "complex_type:error", "complex_type:symbol",
 ];
 
+// ---------------------------------------------------------------------------
+// Lazy module loaders
+//
+// Each heavy module is loaded on first use and cached. For analyze-only
+// sessions (handshake + analyze), none of these are ever loaded.
+// ---------------------------------------------------------------------------
+
+type ExecutorMod = typeof import('./executor.js');
+type InstrumentorMod = typeof import('./instrumentor.js');
+type SetupLoaderMod = typeof import('./setup-loader.js');
+type WasmGeneratorMod = typeof import('./wasm-generator.js');
+
+let _executor: ExecutorMod | null = null;
+let _instrumentor: InstrumentorMod | null = null;
+let _setupLoader: SetupLoaderMod | null = null;
+let _wasmGenerator: WasmGeneratorMod | null = null;
+
+async function getExecutor(): Promise<ExecutorMod> {
+  if (!_executor) _executor = await import('./executor.js');
+  return _executor;
+}
+
+async function getInstrumentor(): Promise<InstrumentorMod> {
+  if (!_instrumentor) _instrumentor = await import('./instrumentor.js');
+  return _instrumentor;
+}
+
+async function getSetupLoader(): Promise<SetupLoaderMod> {
+  if (!_setupLoader) _setupLoader = await import('./setup-loader.js');
+  return _setupLoader;
+}
+
+async function getWasmGenerator(): Promise<WasmGeneratorMod> {
+  if (!_wasmGenerator) _wasmGenerator = await import('./wasm-generator.js');
+  return _wasmGenerator;
+}
+
+// ---------------------------------------------------------------------------
+// Handler state
+// ---------------------------------------------------------------------------
+
 /** Track the last analyzed file so execute can resolve function references. */
 let lastAnalyzedFile: string | null = null;
+
+/**
+ * Project root from the last analyze request.
+ * Passed to executor.setProjectRoot() on first execute (deferred to avoid
+ * loading executor during analyze-only sessions).
+ */
+let lastProjectRoot: string | undefined;
 
 /**
  * Stored instrumented sources, keyed by "file:function".
@@ -138,7 +172,8 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
       }
 
       lastAnalyzedFile = path.resolve(request.file);
-      setProjectRoot(request.project_root);
+      // Cache project_root for use by execute (deferred to avoid loading executor here).
+      lastProjectRoot = request.project_root ?? undefined;
       const functions = timing
         ? timing.sync("analyze.total", () =>
           analyzeFile(request.file, request.function, request.project_root, timing))
@@ -175,6 +210,7 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
         };
       }
 
+      const { instrumentFunction } = await getInstrumentor();
       const source = fs.readFileSync(request.file, "utf-8");
       const result = timing
         ? timing.sync("instrument.total", () =>
@@ -224,6 +260,12 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
       }
 
       try {
+        const executor = await getExecutor();
+        // Apply project root that was cached from the last analyze request.
+        if (lastProjectRoot !== undefined) {
+          executor.setProjectRoot(lastProjectRoot);
+        }
+
         // Check if we have instrumented source for this function
         const funcName = funcRef.includes(":") ? funcRef.split(":").pop()! : funcRef;
         const instrumentKey = `${fileForExec}:${funcName}`;
@@ -233,16 +275,16 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
         if (instrumentedSource) {
           rawResult = timing
             ? await timing.async("execute.total", () =>
-              executeInstrumented(instrumentedSource, funcName, request.inputs, request.mocks ?? [], fileForExec, timing))
-            : await executeInstrumented(instrumentedSource, funcName, request.inputs, request.mocks ?? [], fileForExec);
+              executor.executeInstrumented(instrumentedSource, funcName, request.inputs, request.mocks ?? [], fileForExec, timing))
+            : await executor.executeInstrumented(instrumentedSource, funcName, request.inputs, request.mocks ?? [], fileForExec);
         } else {
           rawResult = timing
-            ? await timing.async("execute.total", () => executeFunction(fileForExec, funcRef, request.inputs, timing))
-            : await executeFunction(fileForExec, funcRef, request.inputs);
+            ? await timing.async("execute.total", () => executor.executeFunction(fileForExec, funcRef, request.inputs, timing))
+            : await executor.executeFunction(fileForExec, funcRef, request.inputs);
         }
 
         return {
-          response: finalizeResponse(buildExecuteResponse(request.id, PROTOCOL_VERSION, rawResult, timing), timing),
+          response: finalizeResponse(executor.buildExecuteResponse(request.id, PROTOCOL_VERSION, rawResult, timing), timing),
           shutdown: false,
         };
       } catch (e: unknown) {
@@ -264,6 +306,7 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
       }
 
       try {
+        const { loadSetupModule, runSetup } = await getSetupLoader();
         let setupModule = loadedSetupModules.get(request.file);
         if (!setupModule) {
           setupModule = timing
@@ -314,6 +357,7 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
           };
         }
 
+        const { runTeardown } = await getSetupLoader();
         if (timing) {
           await timing.async("teardown.run", () => runTeardown(stored.module, request.scope, stored.context));
         } else {
@@ -321,7 +365,8 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
         }
         setupContexts.delete(ctxKey);
         instrumentedSources.clear();
-        clearModuleCache();
+        // Only clear executor module cache if executor was loaded this session.
+        if (_executor) _executor.clearModuleCache();
 
         return {
           response: finalizeResponse({
@@ -351,6 +396,7 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
 
       try {
         if (request.file.endsWith(".wasm")) {
+          const { loadWasmPlugin, runWasmGenerator } = await getWasmGenerator();
           const plugin = timing
             ? await timing.async("generate.module_load", () => loadWasmPlugin(request.file))
             : await loadWasmPlugin(request.file);
@@ -371,6 +417,7 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
           };
         }
 
+        const { loadGeneratorModule, runGenerator } = await getSetupLoader();
         const generatorModule = timing
           ? timing.sync("generate.module_load", () => loadGeneratorModule(request.file))
           : loadGeneratorModule(request.file);
@@ -398,9 +445,10 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
     }
 
     case "shutdown":
-      await clearWasmCache();
+      // Only invoke cleanup on modules that were actually loaded this session.
+      if (_wasmGenerator) await _wasmGenerator.clearWasmCache();
       instrumentedSources.clear();
-      clearModuleCache();
+      if (_executor) _executor.clearModuleCache();
       return {
         response: {
           protocol_version: PROTOCOL_VERSION,
@@ -502,11 +550,16 @@ export function parseRequest(line: string): { request: Request } | { error: Erro
 
 /**
  * Clear stored instrumented sources and setup state. Useful for testing.
+ * Also resets lazy module caches so tests get a clean slate.
  */
 export function clearInstrumentedSources(): void {
   instrumentedSources.clear();
   loadedSetupModules.clear();
   setupContexts.clear();
+  _executor = null;
+  _instrumentor = null;
+  _setupLoader = null;
+  _wasmGenerator = null;
 }
 
 /** Number of cached instrumented sources. Exposed for testing. */
@@ -517,4 +570,17 @@ export function instrumentedSourcesSize(): number {
 /** Number of cached setup contexts. Exposed for testing. */
 export function setupContextsSize(): number {
   return setupContexts.size;
+}
+
+/**
+ * Names of heavy modules loaded so far this session.
+ * Used in tests to verify analyze-only paths do not load executor/instrumentor/etc.
+ */
+export function getLoadedModuleNames(): string[] {
+  const loaded: string[] = [];
+  if (_executor) loaded.push("executor");
+  if (_instrumentor) loaded.push("instrumentor");
+  if (_setupLoader) loaded.push("setupLoader");
+  if (_wasmGenerator) loaded.push("wasmGenerator");
+  return loaded;
 }

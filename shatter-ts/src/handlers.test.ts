@@ -1,5 +1,5 @@
 import * as path from "node:path";
-import { handleRequest, parseRequest, clearInstrumentedSources, instrumentedSourcesSize, setupContextsSize } from "./handlers.js";
+import { handleRequest, parseRequest, clearInstrumentedSources, instrumentedSourcesSize, setupContextsSize, getLoadedModuleNames } from "./handlers.js";
 import { clearModuleCache, compiledModuleCacheSize } from "./executor.js";
 import {
   PROTOCOL_VERSION,
@@ -771,6 +771,44 @@ describe("handleRequest", () => {
         expect(response.protocol_version).toBe(PROTOCOL_VERSION);
         expect(response.id).toBe(1);
       }
+    });
+  });
+
+  describe("analyze-only startup", () => {
+    it("does not load executor, instrumentor, setup-loader, or wasm-generator after handshake+analyze", async () => {
+      clearInstrumentedSources(); // reset lazy module caches
+      await handleRequest(makeRequest({ command: "handshake", capabilities: ["analyze"] }));
+      const fixtureFile = path.resolve(__dirname, "__fixtures__", "simple.ts");
+      await handleRequest(makeRequest({ command: "analyze", file: fixtureFile }));
+      const loaded = getLoadedModuleNames();
+      expect(loaded).not.toContain("executor");
+      expect(loaded).not.toContain("instrumentor");
+      expect(loaded).not.toContain("setupLoader");
+      expect(loaded).not.toContain("wasmGenerator");
+    });
+
+    it("loads executor only when execute is first called", async () => {
+      clearInstrumentedSources();
+      await handleRequest(makeRequest({ command: "handshake", capabilities: [] }));
+      expect(getLoadedModuleNames()).not.toContain("executor");
+      const fixtureFile = path.resolve(__dirname, "__fixtures__", "primitives.ts");
+      await handleRequest(makeRequest({ command: "analyze", file: fixtureFile }));
+      expect(getLoadedModuleNames()).not.toContain("executor");
+      // After execute, executor must be loaded
+      await handleRequest(makeRequest({ command: "execute", function: "add", inputs: [{ kind: "number", value: 1 }, { kind: "number", value: 2 }] }));
+      expect(getLoadedModuleNames()).toContain("executor");
+    });
+
+    it("loads instrumentor only when instrument is first called", async () => {
+      clearInstrumentedSources();
+      await handleRequest(makeRequest({ command: "handshake", capabilities: [] }));
+      expect(getLoadedModuleNames()).not.toContain("instrumentor");
+      const fixtureFile = path.resolve(__dirname, "__fixtures__", "primitives.ts");
+      await handleRequest(makeRequest({ command: "analyze", file: fixtureFile }));
+      expect(getLoadedModuleNames()).not.toContain("instrumentor");
+      // After instrument, instrumentor must be loaded
+      await handleRequest(makeRequest({ command: "instrument", file: fixtureFile, function: "add", mocks: [] }));
+      expect(getLoadedModuleNames()).toContain("instrumentor");
     });
   });
 });
