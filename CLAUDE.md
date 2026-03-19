@@ -104,6 +104,7 @@ In addition to the shared testing completion checklist (unit tests, linter, cros
 2. **Cross-language tests pass** — if touching protocol types (Full tier)
 3. **E2E pipeline works** — if touching any component in the analyze → instrument → execute → solve chain, run `cargo test --test e2e_concolic` and verify the pipeline still discovers expected branches
 4. **Walkthrough passes** — if touching CLI output or example files
+5. **Parity contract updated** — if making a protocol-visible frontend change (new command handler, response field, error code, capability, or any observable behavior change), update the parity contract in the affected frontend's `CLAUDE.md` and add or adjust parity tests. *Output parity* (JSON wire format, response structure, error codes, observable behavior) is required across all frontends. *Implementation details* (internal types, helper functions, data structure choices) may differ between frontends. Run `npx task conformance` to verify no unexpected drift.
 
 **Why E2E matters:** This project has multiple code paths that process the same data (random explorer vs. concolic orchestrator, `buildSymExpr` vs. `buildSymExprWithFlow`, CLI wiring for different explorer modes). Features that work on one path are routinely broken on others. Closing an issue based on unit tests alone has repeatedly led to silent pipeline breakages. If the E2E tests don't cover your change, add a new E2E test case before closing.
 
@@ -115,6 +116,7 @@ Security basics (secrets, build output, linter bypasses, hardcoded paths) are in
 - **Never add a CLI command** without updating `demo/walkthrough.sh`
 - **Never close a pipeline feature based on unit tests alone** — run `cargo test --test e2e_concolic` to verify end-to-end behavior
 - **Never add a capability to one explorer path without checking the other** — the random explorer (`explorer.rs`) and concolic orchestrator (`orchestrator.rs`) are wired differently in `main.rs`. A feature added to one is routinely missing from the other (see str-emw6). Grep for the parallel path before declaring done.
+- **Never change protocol-visible frontend behavior without updating the parity contract** — if a frontend change affects JSON output, error codes, response fields, or any observable behavior, update the parity contract in that frontend's `CLAUDE.md` and verify conformance (`npx task conformance`) before closing the issue. Internal refactors that leave JSON output identical do not require parity contract updates.
 
 ## Common Task Recipes
 
@@ -133,7 +135,8 @@ Follow the full checklist in [`protocol/GOVERNANCE.md`](protocol/GOVERNANCE.md).
    - Rust: `shatter-rust/src/protocol.rs`
 7. Add round-trip tests in each frontend (serialize → deserialize → verify)
 8. Update conformance cases if adding a new command
-9. Run all four validation checks (see governance doc)
+9. **Update parity contracts** — if the new message type has any observable behavior difference or known drift across frontends, add a note to the parity contract in the relevant frontend `CLAUDE.md` files and document the drift in `protocol/conformance/conformance_cases.yaml` under `known_drifts`
+10. Run all four validation checks (see governance doc), including `npx task conformance` to verify output parity
 
 ### Add a new CLI command
 

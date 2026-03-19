@@ -148,6 +148,8 @@ Beyond passing `/pre-completion`, an issue is not complete until:
 4. The issue is closed with `bd close <id>`
 5. Changes are pushed to remote with `git push`
 
+**For issues touching protocol-visible frontend behavior**: before declaring complete, verify the parity contract is up to date in the relevant `CLAUDE.md` files and parity tests pass (`npx task conformance`). *Output parity* (JSON wire format, response structure, error codes) must match across frontends. *Implementation details* (internal types, helper functions) may differ and do not require parity updates.
+
 Do not leave stale branches. Merge and delete promptly.
 
 **Never** combine work for multiple issues on one branch. If you discover
