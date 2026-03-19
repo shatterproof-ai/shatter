@@ -1,35 +1,30 @@
 # Shatter Frontend Parity Matrix
 #
-# Machine-readable classification of all protocol-visible capabilities by parity
-# status and per-frontend implementation state.
+# Machine-readable parity contract consumed by scripts/validate-parity.py.
+# CI task: npx task parity
 #
-# Version tracks the protocol version this matrix was generated against.
-# Update this file whenever registry.yaml changes.
+# Ownership: str-7jgm.1 (parity contract spec) seeds and maintains this file.
+# This bootstrap version reflects actual code state as of protocol version 0.1.0.
+# Merge note: reconcile with str-7jgm.1's version; this file is the source of
+# truth for validator CI — it must match what frontend handler code actually does.
 #
-# Status values:
-#   required         — every conforming frontend must implement
-#   optional         — frontend advertises via handshake; core gates calls on presence
-#   frontend_specific — meaningful only in a particular language's ecosystem
-#
-# Implementation values:
-#   implemented      — fully working
-#   partial          — handler exists but behavior is incomplete (see notes)
-#   not_implemented  — not supported; must not be advertised in capabilities
-#
-# Human-readable companion: protocol/PARITY.md
+# To update after a capability change:
+#   1. Edit this file to match the new expected state
+#   2. Run: python3 scripts/validate-parity.py --verbose
+#   3. Commit both the source change and this file together
 
 version: "0.1.0"
 
-# ---------------------------------------------------------------------------
-# Commands
-# ---------------------------------------------------------------------------
+# --- Commands ---
 #
-# handshake and shutdown are not listed in the capabilities section of
-# registry.yaml because they are base-protocol commands — every frontend must
-# handle them regardless of what it advertises in the handshake response.
+# status: required         All frontends must implement
+# status: optional         Frontends may choose to implement
+# status: frontend_specific Only certain frontends expected to implement
 #
-# All other commands are capability-gated: core checks the frontend's
-# advertised capabilities before sending them.
+# frontends.<name>:
+#   implemented     must be advertised in handshake capabilities; validator FAILS if absent
+#   not_implemented must NOT be advertised in handshake; validator FAILS if present
+#   partial         advertised but functionally incomplete — informational only, not checked
 
 commands:
   handshake:
@@ -59,9 +54,9 @@ commands:
   execute:
     status: required
     notes: >
-      All frontends advertise this capability. Rust handler parses execute
-      requests but execution logic is not yet implemented
-      (see allowed_divergences: rust-execute-unimplemented).
+      All frontends advertise execute. Rust execute handler compiles and runs
+      code but returns not_supported for NonExecutable inputs
+      (see allowed_divergences: rust-execute-partial).
     frontends:
       typescript: implemented
       go: implemented
@@ -78,46 +73,39 @@ commands:
   instrument:
     status: optional
     notes: >
-      Advertised by TypeScript and Go; Rust does not support instrumentation.
-      Core checks capabilities before sending.
+      TypeScript and Go instrument for symbolic tracking. Rust instruments
+      Rust source for branch recording. Core checks capabilities before sending.
     frontends:
       typescript: implemented
       go: implemented
-      rust: not_implemented
+      rust: implemented
 
   setup:
     status: optional
     notes: >
-      Advertised by TypeScript and Go; Rust does not support state setup.
-      Core checks capabilities before sending.
+      TypeScript and Go support state setup. Rust also implements setup
+      (compiles and runs setup functions from source). Core checks capabilities.
     frontends:
       typescript: implemented
       go: implemented
-      rust: not_implemented
+      rust: implemented
 
   teardown:
     status: optional
     notes: >
-      Only Go advertises and implements teardown. TypeScript relies on
-      process-level cleanup instead (see allowed_divergences: ts-missing-teardown).
-      Rust does not support state setup so teardown is also not applicable.
-      Core checks capabilities before sending.
+      Go and Rust implement teardown. TypeScript relies on process-level cleanup
+      and does not advertise teardown (see allowed_divergences: ts-missing-teardown).
     frontends:
       typescript: not_implemented
       go: implemented
-      rust: not_implemented
+      rust: implemented
 
-# ---------------------------------------------------------------------------
-# Complex Type Capabilities
-# ---------------------------------------------------------------------------
+# --- Complex type capabilities ---
 #
 # All complex_type capabilities are optional. Frontends advertise which types
 # they can generate; core only requests generation for advertised types.
-# Many types are language-ecosystem-specific and are not expected in other
-# frontends (e.g. rune/go_byte are Go-only; symbol/buffer are TypeScript-only).
 #
-# language_affinity lists the language(s) where this type is native. A frontend
-# from a different ecosystem is not expected to support it.
+# language_affinity lists the language(s) where this type is native.
 
 complex_type_capabilities:
   date:
@@ -380,97 +368,22 @@ complex_type_capabilities:
       go: not_supported
       rust: not_supported
 
-# ---------------------------------------------------------------------------
-# Branch Types
-# ---------------------------------------------------------------------------
+# --- Allowed divergences ---
 #
-# Most branch types are universal. The select type is Go-specific and is
-# declared language_specific in registry.yaml.
-
-branch_types:
-  if:
-    status: required
-    language_specific: []
-  else_if:
-    status: required
-    language_specific: []
-  switch:
-    status: required
-    language_specific: []
-  ternary:
-    status: required
-    language_specific: []
-  logical_and:
-    status: required
-    language_specific: []
-  logical_or:
-    status: required
-    language_specific: []
-  while:
-    status: required
-    language_specific: []
-  for:
-    status: required
-    language_specific: []
-  select:
-    status: frontend_specific
-    language_specific: [go]
-    notes: "Go select statement for channel operations; not applicable to TypeScript or Rust."
-
-# ---------------------------------------------------------------------------
-# Protocol Behaviors
-# ---------------------------------------------------------------------------
-
-protocol_behaviors:
-  execution_timeout:
-    env_var: SHATTER_EXEC_TIMEOUT
-    unit: seconds
-    notes: "Invalid values (non-numeric, zero, negative) silently fall back to default."
-    frontends:
-      typescript:
-        default_s: 15
-        implementation: "getExecTimeoutMs() in shatter-ts/src/executor.ts"
-      go:
-        default_s: 5
-        implementation: "execTimeout() in shatter-go/instrument/executor.go"
-      rust:
-        default_s: 5
-        implementation: "exec_timeout_from_env() in shatter-rust/src/handler.rs"
-        notes: "Value is stored but not yet applied; execute is unimplemented."
-
-  version_compatibility:
-    strategy: major_minor_match
-    mismatch_error_code: version_mismatch
-    notes: "Patch-level differences are tolerated. Minor bumps may add optional fields."
-
-# ---------------------------------------------------------------------------
-# Allowed Divergences
-# ---------------------------------------------------------------------------
+# Known, intentional drift between frontends. These produce warnings (not
+# failures) in the validator when the affected (frontend, command) pair
+# is found in violation.
 #
-# Cross-frontend mismatches that are known, tracked, and temporarily accepted.
-# These produce warnings (not failures) in the conformance harness.
-#
-# Status values:
-#   tracked   — known mismatch with a resolution plan; warning in CI
-#   accepted  — intentional permanent divergence; no resolution planned
-#   resolved  — mismatch has been fixed; entry kept for history
+# status: tracked  — known, deferred or under investigation
+# status: accepted — intentional permanent divergence
+# status: resolved — no longer a divergence; remove entry when matrix is updated
 
 allowed_divergences:
-  - id: go-extra-functions-field
-    description: >
-      The Go handler includes an extra 'functions' field in all responses.
-      TypeScript and Rust do not emit this field.
-    affected_frontends: [go]
-    affected_commands: [all]
-    status: tracked
-    conformance_pattern: ".functions: missing in"
-    resolution: "Remove the extra field from Go responses in a future cleanup pass."
-
   - id: ts-missing-teardown
     description: >
-      TypeScript does not advertise the teardown capability and does not implement
-      a teardown handler. State initialized via setup in a TypeScript session cannot
-      be explicitly torn down via protocol; the frontend relies on process-level cleanup.
+      TypeScript does not advertise the teardown capability. State initialized
+      via setup in a TypeScript session is cleaned up at the process level
+      rather than via an explicit teardown call.
     affected_frontends: [typescript]
     affected_commands: [teardown]
     status: tracked
@@ -478,14 +391,14 @@ allowed_divergences:
       Implement teardown in the TypeScript frontend and add 'teardown' to
       SUPPORTED_CAPABILITIES in shatter-ts/src/handlers.ts.
 
-  - id: rust-execute-unimplemented
+  - id: rust-execute-partial
     description: >
-      The Rust frontend advertises the execute capability in handshake but the
-      execution logic in the handler is not implemented. Execute requests are
-      parsed but the function is not actually called.
+      The Rust execute handler compiles and runs Rust code but returns
+      not_supported for NonExecutable inputs (e.g. functions requiring
+      dynamic dispatch). Full execution parity with TypeScript and Go is pending.
     affected_frontends: [rust]
     affected_commands: [execute]
     status: tracked
     resolution: >
-      Implement the execute handler in shatter-rust/src/handler.rs and apply
-      the stored exec timeout value from exec_timeout_from_env().
+      Expand the Rust executor to handle all input types that TS/Go handle,
+      removing the NonExecutable early-exit path.
