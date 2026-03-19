@@ -60,7 +60,7 @@ See [SPEC.md §1.3](SPEC.md#13-supported-languages) for the canonical language s
 
 All commands accept targets in `<file>:<function>` format (e.g., `src/math.ts:add`) or `<file>` to target all functions. File extension determines the language frontend (`.ts` = TypeScript, `.go` = Go).
 
-**Global options:** `--log-level <LEVEL>` (error/warn/info/debug/trace), `-v` (debug), `-vv` (trace), `-q` (quiet), `--perf` (show timing stats), `--project-dir <DIR>` (override project root), `--color <WHEN>` (always/auto/never).
+**Global options:** `--log-level <LEVEL>` (error/warn/info/debug/trace), `-v` (debug), `-vv` (trace), `-q` (quiet), `--timing <MODE>` (show timing stats), `--project-dir <DIR>` (override project root), `--color <WHEN>` (always/auto/never).
 
 See [`SPEC.md`](SPEC.md) for the full behavioral specification.
 

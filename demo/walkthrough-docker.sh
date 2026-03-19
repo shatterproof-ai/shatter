@@ -312,8 +312,8 @@ skip 17 $TOTAL "User-Provided Inputs via Config" "config dir not mounted"
 
 # Stage 18: Performance stats
 step 18 $TOTAL "Performance Stats" \
-    "Show per-function timing data with --perf" \
-    explore --perf "${EXAMPLES[@]}"
+    "Show per-function timing data with --timing summary" \
+    explore --timing summary "${EXAMPLES[@]}"
 
 # Stage 19: Parallel scan
 step 19 $TOTAL "Parallel Scan" \
