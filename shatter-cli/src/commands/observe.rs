@@ -109,6 +109,7 @@ pub(crate) async fn run_observe(
                 loop_convergence_window: 3,
                 refine_budget: None,
                 shrink_budget: shatter_core::orchestrator::DEFAULT_SHRINK_BUDGET,
+                mcdc: false,
             };
             match shatter_core::orchestrator::explore(
                 &mut frontend,

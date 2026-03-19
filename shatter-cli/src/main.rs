@@ -151,6 +151,7 @@ async fn main() -> ExitCode {
             replay_recorded,
             no_replay,
             refine_budget,
+            mcdc,
         } => {
             // Set SHATTER_SETUP_TIMEOUT env var for frontends if --setup-timeout provided.
             if let Some(secs) = setup_timeout {
@@ -176,10 +177,15 @@ async fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
+
+            // Apply MC/DC budget multipliers for parameters not explicitly provided.
+            // User-provided values always win; multipliers only expand the defaults.
+            let budgets = resolve_mcdc_budgets(max_iterations, timeout, solver_timeout, mcdc);
+
             commands::explore::run_explore(
                 &targets,
-                max_iterations,
-                timeout,
+                budgets.max_iterations,
+                budgets.timeout,
                 timeout_explore,
                 scope.as_deref(),
                 analyze_only,
@@ -200,7 +206,7 @@ async fn main() -> ExitCode {
                 spec_json || output.is_some(),
                 invariants,
                 concolic,
-                solver_timeout,
+                budgets.solver_timeout,
                 memory_limit,
                 clean,
                 dry_run,
@@ -215,6 +221,7 @@ async fn main() -> ExitCode {
                 replay_recorded,
                 no_replay,
                 refine_budget,
+                mcdc,
                 cli.format,
             )
             .await

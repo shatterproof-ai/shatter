@@ -60,6 +60,7 @@ pub(crate) async fn run_explore(
     replay_recorded: bool,
     no_replay: bool,
     refine_budget: usize,
+    mcdc: bool,
     output_format: crate::args::OutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let _explore_span = tracing::info_span!("core.explore_command").entered();
@@ -128,7 +129,10 @@ pub(crate) async fn run_explore(
             target.language.label()
         );
 
-        let config = frontend_config(target.language, req_timeout, log_level, exec_timeout, build_timeout, memory_limit, None, timing_enabled)?;
+        let mut config = frontend_config(target.language, req_timeout, log_level, exec_timeout, build_timeout, memory_limit, None, timing_enabled)?;
+        if mcdc {
+            config.env_vars.push(("SHATTER_MCDC".to_string(), "1".to_string()));
+        }
         let mut frontend = Frontend::spawn(&config).await.map_err(|e| {
             format!(
                 "failed to spawn {} frontend: {e}",
@@ -476,7 +480,7 @@ pub(crate) async fn run_explore(
                 let concolic_config = shatter_core::orchestrator::ExploreConfig {
                     max_iterations: explore_config.max_iterations as usize,
                     max_executions: (explore_config.max_iterations as usize) * 5,
-                    plateau_threshold: 20,
+                    plateau_threshold: if mcdc { 60 } else { 20 },
                     mocks: explore_config.mocks.clone(),
                     mock_params: explore_config.mock_params.clone(),
                     solver_timeout_ms: solver_timeout.map(|s| s * 1000),
@@ -486,6 +490,7 @@ pub(crate) async fn run_explore(
                     loop_convergence_window: 3,
                     refine_budget: if refine_budget > 0 { Some(refine_budget) } else { None },
                     shrink_budget: shatter_core::orchestrator::DEFAULT_SHRINK_BUDGET,
+                    mcdc,
                 };
 
                 match shatter_core::orchestrator::explore(
