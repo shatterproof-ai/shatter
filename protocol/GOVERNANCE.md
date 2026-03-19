@@ -21,6 +21,8 @@ Any modification to:
 - Setup levels, generator kinds, or branch types
 - Versioning or compatibility policy
 
+When filing an issue for a protocol change, use the template at [`protocol/frontend-issue-template.md`](frontend-issue-template.md). It captures parity impact, default behavior, and the required test checklist in a standard format.
+
 ## Required Update Steps
 
 When making a protocol change, complete **every applicable step** in order:

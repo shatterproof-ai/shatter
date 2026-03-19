@@ -45,6 +45,10 @@ is limited. The **first ~20 characters** must be meaningfully descriptive:
 
 ## Creating Issues
 
+### Frontend and Protocol Issues
+
+When creating an issue that touches a frontend, protocol message, or parallel code path, fill in the fields from [`protocol/frontend-issue-template.md`](protocol/frontend-issue-template.md) as the issue description. The template captures protocol-visible behavior changes, parity impact (which parallel paths need updating), default on/off state, and required test and contract updates — so reviewers can verify completeness without re-reading the diff.
+
 ### Issue Shape: Shatter-Specific Examples
 
 The shared rules cover end-to-end vertical slicing. Here are Shatter-specific examples:
