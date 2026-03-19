@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use crate::instrument;
+use crate::timing::TimingCollector;
 
 /// Wrap instrumented source in `mod user_code { ... }` with all top-level items
 /// made `pub`, so the harness `main()` can call the target function without
@@ -50,7 +51,9 @@ fn wrap_in_module(source: &str) -> Result<String, ExecuteError> {
     }
 
     let tokens = file.to_token_stream().to_string();
-    Ok(format!("#[allow(dead_code)]\nmod user_code {{\n{tokens}\n}}"))
+    Ok(format!(
+        "#[allow(dead_code)]\nmod user_code {{\n{tokens}\n}}"
+    ))
 }
 
 /// Check whether a list of attributes already contains `#[derive(...Serialize...)]`.
@@ -161,10 +164,7 @@ struct FnSignature {
 }
 
 /// Extract parameter info from a Rust source file for a specific function.
-fn extract_fn_signature(
-    source: &str,
-    function_name: &str,
-) -> Result<FnSignature, ExecuteError> {
+fn extract_fn_signature(source: &str, function_name: &str) -> Result<FnSignature, ExecuteError> {
     use quote::ToTokens;
 
     let file = syn::parse_file(source)
@@ -191,7 +191,11 @@ fn extract_fn_signature(
                 syn::ReturnType::Type(_, ty) => Some(ty.to_token_stream().to_string()),
             };
 
-            return Ok(FnSignature { param_names, param_types, return_type });
+            return Ok(FnSignature {
+                param_names,
+                param_types,
+                return_type,
+            });
         }
     }
 
@@ -289,28 +293,22 @@ fn generate_harness(
     h.push_str("\n\nfn main() {\n");
 
     // Parse inputs
-    h.push_str(&format!(
-        "    let inputs_json = r#\"{}\"#;\n",
-        inputs_json
-    ));
+    h.push_str(&format!("    let inputs_json = r#\"{}\"#;\n", inputs_json));
     h.push_str(
         "    let inputs: Vec<Value> = serde_json::from_str(inputs_json).unwrap_or_default();\n\n",
     );
 
     // Parse and register mocks
-    h.push_str(&format!(
-        "    let mocks_json = r#\"{}\"#;\n",
-        mocks_json
-    ));
-    h.push_str("    let mocks: Vec<Value> = serde_json::from_str(mocks_json).unwrap_or_default();\n");
+    h.push_str(&format!("    let mocks_json = r#\"{}\"#;\n", mocks_json));
+    h.push_str(
+        "    let mocks: Vec<Value> = serde_json::from_str(mocks_json).unwrap_or_default();\n",
+    );
     h.push_str("    for mock in &mocks {\n");
     h.push_str("        if let (Some(symbol), Some(return_values)) = (\n");
     h.push_str("            mock.get(\"symbol\").and_then(|s| s.as_str()),\n");
     h.push_str("            mock.get(\"return_values\").and_then(|v| v.as_array()),\n");
     h.push_str("        ) {\n");
-    h.push_str(
-        "            shatter_rust_runtime::register_mock(symbol, return_values.clone());\n",
-    );
+    h.push_str("            shatter_rust_runtime::register_mock(symbol, return_values.clone());\n");
     h.push_str("        }\n");
     h.push_str("    }\n\n");
 
@@ -371,9 +369,7 @@ fn generate_harness(
     h.push_str("    let wall_time_ms = start.elapsed().as_secs_f64() * 1000.0;\n\n");
 
     // Flush runtime results
-    h.push_str(
-        "    let runtime_json = shatter_rust_runtime::flush_results();\n",
-    );
+    h.push_str("    let runtime_json = shatter_rust_runtime::flush_results();\n");
     h.push_str(
         "    let mut exec_result: Value = serde_json::from_str(&runtime_json).unwrap_or(Value::Object(Default::default()));\n",
     );
@@ -436,6 +432,17 @@ pub fn execute_function(
     mocks: &[Value],
     timeout_ms: u64,
 ) -> Result<ExecuteResult, ExecuteError> {
+    execute_function_with_timing(file_path, function_name, inputs, mocks, timeout_ms, None)
+}
+
+pub fn execute_function_with_timing(
+    file_path: &str,
+    function_name: &str,
+    inputs: &[Value],
+    mocks: &[Value],
+    timeout_ms: u64,
+    mut timing: Option<&mut TimingCollector>,
+) -> Result<ExecuteResult, ExecuteError> {
     let path = Path::new(file_path);
     if !path.exists() {
         return Err(ExecuteError::FileError(format!(
@@ -443,11 +450,24 @@ pub fn execute_function(
         )));
     }
 
-    let source = std::fs::read_to_string(path)
-        .map_err(|e| ExecuteError::FileError(format!("cannot read {file_path}: {e}")))?;
+    let source = if let Some(timing) = timing.as_deref_mut() {
+        timing.record("execute.read_source", |_| {
+            std::fs::read_to_string(path)
+                .map_err(|e| ExecuteError::FileError(format!("cannot read {file_path}: {e}")))
+        })?
+    } else {
+        std::fs::read_to_string(path)
+            .map_err(|e| ExecuteError::FileError(format!("cannot read {file_path}: {e}")))?
+    };
 
     // Extract function signature for harness generation
-    let sig = extract_fn_signature(&source, function_name)?;
+    let sig = if let Some(timing) = timing.as_deref_mut() {
+        timing.record("execute.extract_signature", |_| {
+            extract_fn_signature(&source, function_name)
+        })?
+    } else {
+        extract_fn_signature(&source, function_name)?
+    };
 
     // Reject trait object parameters — they cannot be deserialized from JSON.
     for (name, ty) in sig.param_names.iter().zip(sig.param_types.iter()) {
@@ -467,28 +487,65 @@ pub fn execute_function(
     }
 
     // Instrument the source targeting the specific function
-    let instr_result = instrument::instrument_source(&source, Some(function_name))
-        .map_err(|e| ExecuteError::InstrumentError(e.to_string()))?;
+    let instr_result = if let Some(timing) = timing.as_deref_mut() {
+        timing.record("execute.instrument", |timing| {
+            instrument::instrument_source_with_timing(&source, Some(function_name), Some(timing))
+                .map_err(|e| ExecuteError::InstrumentError(e.to_string()))
+        })?
+    } else {
+        instrument::instrument_source(&source, Some(function_name))
+            .map_err(|e| ExecuteError::InstrumentError(e.to_string()))?
+    };
 
     // Find the runtime crate
     let runtime_path = find_runtime_crate_path()?;
 
     // Serialize inputs and mocks for embedding
-    let inputs_json = serde_json::to_string(inputs)
-        .map_err(|e| ExecuteError::InstrumentError(format!("cannot serialize inputs: {e}")))?;
-    let mocks_json = serde_json::to_string(mocks)
-        .map_err(|e| ExecuteError::InstrumentError(format!("cannot serialize mocks: {e}")))?;
+    let (inputs_json, mocks_json) = if let Some(timing) = timing.as_deref_mut() {
+        timing.record("execute.serialize_inputs", |_| {
+            let inputs_json = serde_json::to_string(inputs).map_err(|e| {
+                ExecuteError::InstrumentError(format!("cannot serialize inputs: {e}"))
+            })?;
+            let mocks_json = serde_json::to_string(mocks).map_err(|e| {
+                ExecuteError::InstrumentError(format!("cannot serialize mocks: {e}"))
+            })?;
+            Ok::<_, ExecuteError>((inputs_json, mocks_json))
+        })?
+    } else {
+        (
+            serde_json::to_string(inputs).map_err(|e| {
+                ExecuteError::InstrumentError(format!("cannot serialize inputs: {e}"))
+            })?,
+            serde_json::to_string(mocks).map_err(|e| {
+                ExecuteError::InstrumentError(format!("cannot serialize mocks: {e}"))
+            })?,
+        )
+    };
 
     // Generate the harness
-    let harness = generate_harness(
-        &instr_result.source,
-        function_name,
-        &sig.param_names,
-        &sig.param_types,
-        sig.return_type.as_deref(),
-        &inputs_json,
-        &mocks_json,
-    )?;
+    let harness = if let Some(timing) = timing.as_deref_mut() {
+        timing.record("execute.generate_harness", |_| {
+            generate_harness(
+                &instr_result.source,
+                function_name,
+                &sig.param_names,
+                &sig.param_types,
+                sig.return_type.as_deref(),
+                &inputs_json,
+                &mocks_json,
+            )
+        })?
+    } else {
+        generate_harness(
+            &instr_result.source,
+            function_name,
+            &sig.param_names,
+            &sig.param_types,
+            sig.return_type.as_deref(),
+            &inputs_json,
+            &mocks_json,
+        )?
+    };
 
     // Create temp directory with unique name
     let temp_dir = std::env::temp_dir().join(format!(
@@ -499,12 +556,26 @@ pub fn execute_function(
             .map(|d| d.as_millis())
             .unwrap_or(0)
     ));
-    std::fs::create_dir_all(temp_dir.join("src"))?;
+    if let Some(timing) = timing.as_deref_mut() {
+        timing.record("execute.write_project", |_| {
+            std::fs::create_dir_all(temp_dir.join("src"))
+        })?;
+    } else {
+        std::fs::create_dir_all(temp_dir.join("src"))?;
+    }
 
     // Write project files
     let cargo_toml = generate_cargo_toml(&runtime_path);
-    std::fs::write(temp_dir.join("Cargo.toml"), cargo_toml)?;
-    std::fs::write(temp_dir.join("src/main.rs"), &harness)?;
+    if let Some(timing) = timing.as_deref_mut() {
+        timing.record("execute.write_project", |_| {
+            std::fs::write(temp_dir.join("Cargo.toml"), &cargo_toml)?;
+            std::fs::write(temp_dir.join("src/main.rs"), &harness)?;
+            Ok::<_, io::Error>(())
+        })?;
+    } else {
+        std::fs::write(temp_dir.join("Cargo.toml"), cargo_toml)?;
+        std::fs::write(temp_dir.join("src/main.rs"), &harness)?;
+    }
 
     // Compile
     let build_timeout_secs = std::env::var("SHATTER_BUILD_TIMEOUT")
@@ -514,12 +585,23 @@ pub fn execute_function(
         .unwrap_or(DEFAULT_BUILD_TIMEOUT_SECS);
     let build_timeout = Duration::from_secs(build_timeout_secs);
     let build_start = Instant::now();
-    let build_output = Command::new("cargo")
-        .args(["build", "--release"])
-        .current_dir(&temp_dir)
-        .env("CARGO_TARGET_DIR", temp_dir.join("target"))
-        .output()
-        .map_err(|e| ExecuteError::CompilationFailed(format!("failed to run cargo: {e}")))?;
+    let build_output = if let Some(timing) = timing.as_deref_mut() {
+        timing.record("execute.build", |_| {
+            Command::new("cargo")
+                .args(["build", "--release"])
+                .current_dir(&temp_dir)
+                .env("CARGO_TARGET_DIR", temp_dir.join("target"))
+                .output()
+                .map_err(|e| ExecuteError::CompilationFailed(format!("failed to run cargo: {e}")))
+        })?
+    } else {
+        Command::new("cargo")
+            .args(["build", "--release"])
+            .current_dir(&temp_dir)
+            .env("CARGO_TARGET_DIR", temp_dir.join("target"))
+            .output()
+            .map_err(|e| ExecuteError::CompilationFailed(format!("failed to run cargo: {e}")))?
+    };
 
     if build_start.elapsed() > build_timeout {
         let _ = std::fs::remove_dir_all(&temp_dir);
@@ -552,13 +634,25 @@ pub fn execute_function(
     // Run the binary with timeout
     let exec_timeout = Duration::from_millis(timeout_ms);
     let run_start = Instant::now();
-    let run_output = Command::new(&binary_path)
-        .current_dir(&temp_dir)
-        .output()
-        .map_err(|e| {
-            let _ = std::fs::remove_dir_all(&temp_dir);
-            ExecuteError::OutputParseError(format!("failed to run binary: {e}"))
-        })?;
+    let run_output = if let Some(timing) = timing.as_deref_mut() {
+        timing.record("execute.run", |_| {
+            Command::new(&binary_path)
+                .current_dir(&temp_dir)
+                .output()
+                .map_err(|e| {
+                    let _ = std::fs::remove_dir_all(&temp_dir);
+                    ExecuteError::OutputParseError(format!("failed to run binary: {e}"))
+                })
+        })?
+    } else {
+        Command::new(&binary_path)
+            .current_dir(&temp_dir)
+            .output()
+            .map_err(|e| {
+                let _ = std::fs::remove_dir_all(&temp_dir);
+                ExecuteError::OutputParseError(format!("failed to run binary: {e}"))
+            })?
+    };
     let wall_time_ms = run_start.elapsed().as_secs_f64() * 1000.0;
 
     // Clean up temp dir
@@ -617,11 +711,21 @@ pub fn execute_function(
     }
 
     // Parse the JSON output from stdout
-    let result: ExecuteResult = serde_json::from_str(stdout.trim()).map_err(|e| {
-        ExecuteError::OutputParseError(format!(
-            "failed to parse execute result: {e}\nstdout: {stdout}\nstderr: {stderr_str}"
-        ))
-    })?;
+    let result: ExecuteResult = if let Some(timing) = timing.as_deref_mut() {
+        timing.record("execute.parse_result", |_| {
+            serde_json::from_str(stdout.trim()).map_err(|e| {
+                ExecuteError::OutputParseError(format!(
+                    "failed to parse execute result: {e}\nstdout: {stdout}\nstderr: {stderr_str}"
+                ))
+            })
+        })?
+    } else {
+        serde_json::from_str(stdout.trim()).map_err(|e| {
+            ExecuteError::OutputParseError(format!(
+                "failed to parse execute result: {e}\nstdout: {stdout}\nstderr: {stderr_str}"
+            ))
+        })?
+    };
 
     Ok(result)
 }
@@ -702,16 +806,7 @@ mod tests {
 
     #[test]
     fn generate_harness_void_function() {
-        let harness = generate_harness(
-            "fn noop() {}",
-            "noop",
-            &[],
-            &[],
-            None,
-            "[]",
-            "[]",
-        )
-        .unwrap();
+        let harness = generate_harness("fn noop() {}", "noop", &[], &[], None, "[]", "[]").unwrap();
         assert!(harness.contains("user_code::noop()"));
         assert!(harness.contains("Ok(())"));
     }
@@ -750,7 +845,8 @@ fn main() {
             .filter(|line| {
                 let trimmed = line.trim();
                 // Top-level main: starts at column 0 (not indented inside mod)
-                !line.starts_with(' ') && !line.starts_with('\t')
+                !line.starts_with(' ')
+                    && !line.starts_with('\t')
                     && (trimmed == "fn main() {" || trimmed.starts_with("fn main()"))
             })
             .count();
@@ -890,7 +986,8 @@ fn main() {
     /// The harness must deserialize to `Vec<String>` and convert.
     #[test]
     fn generate_harness_slice_ref_param_deserializes_to_vec() {
-        let source = r#"fn negotiate(header: &str, supported: &[&str]) -> String { String::new() }"#;
+        let source =
+            r#"fn negotiate(header: &str, supported: &[&str]) -> String { String::new() }"#;
         let harness = generate_harness(
             source,
             "negotiate",

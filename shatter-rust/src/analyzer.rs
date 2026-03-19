@@ -22,9 +22,10 @@ use quote::ToTokens;
 use syn::spanned::Spanned;
 
 use crate::protocol::{
-    BinOpKind, BranchInfo, BranchType, ComplexKind, ConstValue, DependencyKind,
-    ExternalDependency, FunctionAnalysis, LiteralValue, ParamInfo, SymExpr, TypeInfo, UnOpKind,
+    BinOpKind, BranchInfo, BranchType, ComplexKind, ConstValue, DependencyKind, ExternalDependency,
+    FunctionAnalysis, LiteralValue, ParamInfo, SymExpr, TypeInfo, UnOpKind,
 };
+use crate::timing::TimingCollector;
 
 /// Error type for analysis failures.
 #[derive(Debug)]
@@ -51,16 +52,27 @@ pub fn analyze_file(
     file_path: &Path,
     function_name: Option<&str>,
 ) -> Result<Vec<FunctionAnalysis>, AnalyzeError> {
+    analyze_file_with_timing(file_path, function_name, None)
+}
+
+pub fn analyze_file_with_timing(
+    file_path: &Path,
+    function_name: Option<&str>,
+    mut timing: Option<&mut TimingCollector>,
+) -> Result<Vec<FunctionAnalysis>, AnalyzeError> {
     if !file_path.exists() {
-        return Err(AnalyzeError::FileNotFound(
-            file_path.display().to_string(),
-        ));
+        return Err(AnalyzeError::FileNotFound(file_path.display().to_string()));
     }
 
-    let source = std::fs::read_to_string(file_path)
-        .map_err(|e| AnalyzeError::ReadError(e.to_string()))?;
+    let source = if let Some(timing) = timing.as_deref_mut() {
+        timing.record("analyze.read", |_| {
+            std::fs::read_to_string(file_path).map_err(|e| AnalyzeError::ReadError(e.to_string()))
+        })?
+    } else {
+        std::fs::read_to_string(file_path).map_err(|e| AnalyzeError::ReadError(e.to_string()))?
+    };
 
-    analyze_source(&source, function_name)
+    analyze_source_with_timing(&source, function_name, timing)
 }
 
 /// Analyze Rust source code from a string.
@@ -68,28 +80,65 @@ pub fn analyze_source(
     source: &str,
     function_name: Option<&str>,
 ) -> Result<Vec<FunctionAnalysis>, AnalyzeError> {
-    let file = syn::parse_file(source)
-        .map_err(|e| AnalyzeError::ParseError(e.to_string()))?;
+    analyze_source_with_timing(source, function_name, None)
+}
 
-    // Collect struct and enum definitions in this file for type resolution.
-    let structs = collect_struct_defs(&file);
-    let enums = collect_enum_defs(&file);
+pub fn analyze_source_with_timing(
+    source: &str,
+    function_name: Option<&str>,
+    mut timing: Option<&mut TimingCollector>,
+) -> Result<Vec<FunctionAnalysis>, AnalyzeError> {
+    let file = if let Some(timing) = timing.as_deref_mut() {
+        timing.record("analyze.parse", |_| {
+            syn::parse_file(source).map_err(|e| AnalyzeError::ParseError(e.to_string()))
+        })?
+    } else {
+        syn::parse_file(source).map_err(|e| AnalyzeError::ParseError(e.to_string()))?
+    };
 
-    let mut results = Vec::new();
+    let results = if let Some(timing) = timing.as_deref_mut() {
+        timing.record("analyze.walk", |_| {
+            let structs = collect_struct_defs(&file);
+            let enums = collect_enum_defs(&file);
+            let mut results = Vec::new();
 
-    for item in &file.items {
-        if let syn::Item::Fn(item_fn) = item {
-            let name = item_fn.sig.ident.to_string();
+            for item in &file.items {
+                if let syn::Item::Fn(item_fn) = item {
+                    let name = item_fn.sig.ident.to_string();
 
-            if let Some(target) = function_name
-                && name != target
-            {
-                continue;
+                    if let Some(target) = function_name
+                        && name != target
+                    {
+                        continue;
+                    }
+
+                    results.push(analyze_function(item_fn, &structs, &enums));
+                }
             }
 
-            results.push(analyze_function(item_fn, &structs, &enums));
+            results
+        })
+    } else {
+        let structs = collect_struct_defs(&file);
+        let enums = collect_enum_defs(&file);
+        let mut results = Vec::new();
+
+        for item in &file.items {
+            if let syn::Item::Fn(item_fn) = item {
+                let name = item_fn.sig.ident.to_string();
+
+                if let Some(target) = function_name
+                    && name != target
+                {
+                    continue;
+                }
+
+                results.push(analyze_function(item_fn, &structs, &enums));
+            }
         }
-    }
+
+        results
+    };
 
     if function_name.is_some() && results.is_empty() {
         return Err(AnalyzeError::FunctionNotFound(
@@ -115,9 +164,7 @@ fn collect_struct_defs(file: &syn::File) -> StructDefs {
             let field_list: Vec<(String, syn::Type)> = fields
                 .named
                 .iter()
-                .filter_map(|f| {
-                    f.ident.as_ref().map(|id| (id.to_string(), f.ty.clone()))
-                })
+                .filter_map(|f| f.ident.as_ref().map(|id| (id.to_string(), f.ty.clone())))
                 .collect();
             defs.insert(s.ident.to_string(), field_list);
         }
@@ -294,11 +341,22 @@ fn extract_type_name(ty: &syn::Type) -> Option<String> {
 fn is_primitive_name(name: &str) -> bool {
     matches!(
         name,
-        "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
-            | "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
-            | "f32" | "f64"
+        "i8" | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "isize"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "usize"
+            | "f32"
+            | "f64"
             | "bool"
-            | "String" | "str"
+            | "String"
+            | "str"
             | "char"
     )
 }
@@ -306,8 +364,16 @@ fn is_primitive_name(name: &str) -> bool {
 fn is_well_known_generic(name: &str) -> bool {
     matches!(
         name,
-        "Vec" | "Option" | "Result" | "Box" | "Arc" | "Rc"
-            | "HashMap" | "HashSet" | "BTreeMap" | "BTreeSet"
+        "Vec"
+            | "Option"
+            | "Result"
+            | "Box"
+            | "Arc"
+            | "Rc"
+            | "HashMap"
+            | "HashSet"
+            | "BTreeMap"
+            | "BTreeSet"
     )
 }
 
@@ -407,8 +473,8 @@ fn convert_type_path(
 
     match name.as_str() {
         // Integer types
-        "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32" | "u64"
-        | "u128" | "usize" => TypeInfo::Int,
+        "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32" | "u64" | "u128"
+        | "usize" => TypeInfo::Int,
 
         // Float types
         "f32" | "f64" => TypeInfo::Float,
@@ -428,8 +494,7 @@ fn convert_type_path(
 
         // Vec<T> → Array
         "Vec" => {
-            let inner =
-                extract_first_generic_arg(seg, structs, enums, generic_params, converting);
+            let inner = extract_first_generic_arg(seg, structs, enums, generic_params, converting);
             TypeInfo::Array {
                 element: Box::new(inner),
             }
@@ -437,8 +502,7 @@ fn convert_type_path(
 
         // Option<T> → Nullable
         "Option" => {
-            let inner =
-                extract_first_generic_arg(seg, structs, enums, generic_params, converting);
+            let inner = extract_first_generic_arg(seg, structs, enums, generic_params, converting);
             TypeInfo::Nullable {
                 inner: Box::new(inner),
             }
@@ -470,8 +534,7 @@ fn convert_type_path(
 
         // HashSet/BTreeSet → Array
         "HashSet" | "BTreeSet" => {
-            let inner =
-                extract_first_generic_arg(seg, structs, enums, generic_params, converting);
+            let inner = extract_first_generic_arg(seg, structs, enums, generic_params, converting);
             TypeInfo::Array {
                 element: Box::new(inner),
             }
@@ -632,7 +695,13 @@ fn extract_generic_args(
             .iter()
             .filter_map(|a| {
                 if let syn::GenericArgument::Type(ty) = a {
-                    Some(convert_type_inner(ty, structs, enums, generic_params, converting))
+                    Some(convert_type_inner(
+                        ty,
+                        structs,
+                        enums,
+                        generic_params,
+                        converting,
+                    ))
                 } else {
                     None
                 }
@@ -807,10 +876,7 @@ fn walk_expr_for_branches(
 
         syn::Expr::Try(expr_try) => {
             let line = expr_try.question_token.span.start().line as u32;
-            let condition_text = format!(
-                "{}?",
-                expr_try.expr.to_token_stream()
-            );
+            let condition_text = format!("{}?", expr_try.expr.to_token_stream());
 
             branches.push(BranchInfo {
                 id: *next_id,
@@ -941,10 +1007,7 @@ fn build_sym_expr(expr: &syn::Expr, param_names: &HashSet<String>) -> SymExpr {
             if let Some(ident) = expr_path.path.get_ident() {
                 let name = ident.to_string();
                 if param_names.contains(&name) {
-                    return SymExpr::Param {
-                        name,
-                        path: vec![],
-                    };
+                    return SymExpr::Param { name, path: vec![] };
                 }
             }
             SymExpr::Unknown
@@ -1035,7 +1098,10 @@ fn build_sym_expr(expr: &syn::Expr, param_names: &HashSet<String>) -> SymExpr {
     }
 }
 
-fn resolve_field_chain(expr: &syn::Expr, param_names: &HashSet<String>) -> Option<(String, Vec<String>)> {
+fn resolve_field_chain(
+    expr: &syn::Expr,
+    param_names: &HashSet<String>,
+) -> Option<(String, Vec<String>)> {
     match expr {
         syn::Expr::Field(field) => {
             let field_name = match &field.member {
@@ -1259,12 +1325,8 @@ fn convert_bin_op(op: &syn::BinOp) -> Option<BinOpKind> {
 
 fn convert_lit(lit: &syn::Lit) -> ConstValue {
     match lit {
-        syn::Lit::Int(li) => {
-            ConstValue::Int(li.base10_parse::<i64>().unwrap_or(0))
-        }
-        syn::Lit::Float(lf) => {
-            ConstValue::Float(lf.base10_parse::<f64>().unwrap_or(0.0))
-        }
+        syn::Lit::Int(li) => ConstValue::Int(li.base10_parse::<i64>().unwrap_or(0)),
+        syn::Lit::Float(lf) => ConstValue::Float(lf.base10_parse::<f64>().unwrap_or(0.0)),
         syn::Lit::Str(ls) => ConstValue::Str(ls.value()),
         syn::Lit::Bool(lb) => ConstValue::Bool(lb.value),
         syn::Lit::Char(lc) => ConstValue::Int(lc.value() as i64),
@@ -1354,16 +1416,16 @@ fn walk_expr_for_deps(
                     .map(|s| Spanned::span(&s.ident).start().line as u32)
                     .unwrap_or(0);
 
-                let entry = acc.entry(symbol.clone()).or_insert_with(|| {
-                    ExternalDependency {
+                let entry = acc
+                    .entry(symbol.clone())
+                    .or_insert_with(|| ExternalDependency {
                         kind: DependencyKind::FunctionCall,
                         symbol,
                         source_module,
                         return_type: TypeInfo::Unknown,
                         param_types: vec![],
                         call_sites: vec![],
-                    }
-                });
+                    });
                 entry.call_sites.push(line);
             }
 
@@ -1380,16 +1442,16 @@ fn walk_expr_for_deps(
                 let name = mc.method.to_string();
                 let line = Spanned::span(&mc.method).start().line as u32;
 
-                let entry = acc.entry(name.clone()).or_insert_with(|| {
-                    ExternalDependency {
+                let entry = acc
+                    .entry(name.clone())
+                    .or_insert_with(|| ExternalDependency {
                         kind: DependencyKind::MethodCall,
                         symbol: name,
                         source_module: String::new(),
                         return_type: TypeInfo::Unknown,
                         param_types: vec![],
                         call_sites: vec![],
-                    }
-                });
+                    });
                 entry.call_sites.push(line);
             }
 
@@ -1488,11 +1550,10 @@ fn walk_expr_for_deps(
 
 fn is_param_based_expr(expr: &syn::Expr, param_names: &HashSet<String>) -> bool {
     match expr {
-        syn::Expr::Path(p) => {
-            p.path
-                .get_ident()
-                .is_some_and(|id| param_names.contains(&id.to_string()))
-        }
+        syn::Expr::Path(p) => p
+            .path
+            .get_ident()
+            .is_some_and(|id| param_names.contains(&id.to_string())),
         syn::Expr::Field(f) => is_param_based_expr(&f.base, param_names),
         syn::Expr::Reference(r) => is_param_based_expr(&r.expr, param_names),
         syn::Expr::Paren(p) => is_param_based_expr(&p.expr, param_names),
@@ -1534,10 +1595,22 @@ fn extract_literals(block: &syn::Block) -> Vec<LiteralValue> {
                     add(LiteralValue::Bool { value: lb.value }, seen, results);
                 }
                 syn::Lit::Byte(lb) => {
-                    add(LiteralValue::Int { value: lb.value() as i64 }, seen, results);
+                    add(
+                        LiteralValue::Int {
+                            value: lb.value() as i64,
+                        },
+                        seen,
+                        results,
+                    );
                 }
                 syn::Lit::Char(lc) => {
-                    add(LiteralValue::Int { value: lc.value() as i64 }, seen, results);
+                    add(
+                        LiteralValue::Int {
+                            value: lc.value() as i64,
+                        },
+                        seen,
+                        results,
+                    );
                 }
                 _ => {}
             },
@@ -1567,19 +1640,26 @@ fn extract_literals(block: &syn::Block) -> Vec<LiteralValue> {
                 }
                 // Detect Regex::new("pattern")
                 if let syn::Expr::Path(path_expr) = &*ec.func {
-                    let seg_names: Vec<String> =
-                        path_expr.path.segments.iter().map(|s| s.ident.to_string()).collect();
+                    let seg_names: Vec<String> = path_expr
+                        .path
+                        .segments
+                        .iter()
+                        .map(|s| s.ident.to_string())
+                        .collect();
                     let is_regex_new = seg_names.last().map(|s| s == "new").unwrap_or(false)
                         && seg_names.iter().any(|s| s == "Regex");
                     if is_regex_new
                         && ec.args.len() == 1
                         && let syn::Expr::Lit(syn::ExprLit {
-                            lit: syn::Lit::Str(ls), ..
+                            lit: syn::Lit::Str(ls),
+                            ..
                         }) = &ec.args[0]
                     {
                         let key = format!("regex:{}", ls.value());
                         if seen.insert(key) {
-                            results.push(LiteralValue::Regex { pattern: ls.value() });
+                            results.push(LiteralValue::Regex {
+                                pattern: ls.value(),
+                            });
                         }
                     }
                 }
@@ -1630,7 +1710,10 @@ fn extract_literals(block: &syn::Block) -> Vec<LiteralValue> {
         match pat {
             syn::Pat::Lit(pl) => {
                 // PatLit holds a Lit, not an Expr; convert to ExprLit for walk_expr
-                let expr_lit = syn::ExprLit { attrs: vec![], lit: pl.lit.clone() };
+                let expr_lit = syn::ExprLit {
+                    attrs: vec![],
+                    lit: pl.lit.clone(),
+                };
                 walk_expr(&syn::Expr::Lit(expr_lit), seen, results);
             }
             syn::Pat::Range(pr) => {
@@ -1667,11 +1750,7 @@ fn extract_literals(block: &syn::Block) -> Vec<LiteralValue> {
         }
     }
 
-    fn walk_block(
-        block: &syn::Block,
-        seen: &mut HashSet<String>,
-        results: &mut Vec<LiteralValue>,
-    ) {
+    fn walk_block(block: &syn::Block, seen: &mut HashSet<String>, results: &mut Vec<LiteralValue>) {
         for stmt in &block.stmts {
             walk_stmt(stmt, seen, results);
         }
@@ -2241,8 +2320,16 @@ mod tests {
             }"#,
             "classify",
         );
-        let strs: Vec<&str> = f.literals.iter()
-            .filter_map(|l| if let LiteralValue::Str { value } = l { Some(value.as_str()) } else { None })
+        let strs: Vec<&str> = f
+            .literals
+            .iter()
+            .filter_map(|l| {
+                if let LiteralValue::Str { value } = l {
+                    Some(value.as_str())
+                } else {
+                    None
+                }
+            })
             .collect();
         assert!(strs.contains(&"express"), "should find 'express'");
         assert!(strs.contains(&"fast"), "should find 'fast'");
@@ -2261,8 +2348,16 @@ mod tests {
             }"#,
             "grade",
         );
-        let ints: Vec<i64> = f.literals.iter()
-            .filter_map(|l| if let LiteralValue::Int { value } = l { Some(*value) } else { None })
+        let ints: Vec<i64> = f
+            .literals
+            .iter()
+            .filter_map(|l| {
+                if let LiteralValue::Int { value } = l {
+                    Some(*value)
+                } else {
+                    None
+                }
+            })
             .collect();
         assert!(ints.contains(&90));
         assert!(ints.contains(&70));
@@ -2276,7 +2371,9 @@ mod tests {
             }"#,
             "f",
         );
-        let ok_count = f.literals.iter()
+        let ok_count = f
+            .literals
+            .iter()
             .filter(|l| matches!(l, LiteralValue::Str { value } if value == "ok"))
             .count();
         assert_eq!(ok_count, 1);
@@ -2284,20 +2381,18 @@ mod tests {
 
     #[test]
     fn extract_literals_empty_for_no_literals() {
-        let f = analyze_fn(
-            r#"pub fn identity(x: i32) -> i32 { x }"#,
-            "identity",
-        );
+        let f = analyze_fn(r#"pub fn identity(x: i32) -> i32 { x }"#, "identity");
         assert!(f.literals.is_empty());
     }
 
     #[test]
     fn extract_literals_finds_bool() {
-        let f = analyze_fn(
-            r#"pub fn check() -> bool { true }"#,
-            "check",
+        let f = analyze_fn(r#"pub fn check() -> bool { true }"#, "check");
+        assert!(
+            f.literals
+                .iter()
+                .any(|l| matches!(l, LiteralValue::Bool { value: true }))
         );
-        assert!(f.literals.iter().any(|l| matches!(l, LiteralValue::Bool { value: true })));
     }
 
     // ── Enum type mapping tests ──
@@ -2401,10 +2496,7 @@ mod tests {
 
     #[test]
     fn generic_param_with_bounds_maps_to_unknown() {
-        let f = analyze_fn(
-            "fn f<T: std::fmt::Display + Clone>(x: T) {}",
-            "f",
-        );
+        let f = analyze_fn("fn f<T: std::fmt::Display + Clone>(x: T) {}", "f");
         assert_eq!(f.params[0].typ, TypeInfo::Unknown);
     }
 
@@ -2581,10 +2673,7 @@ mod tests {
 
     #[test]
     fn match_wildcard_no_condition() {
-        let f = analyze_fn(
-            r#"fn f(x: i32) -> i32 { match x { _ => 0 } }"#,
-            "f",
-        );
+        let f = analyze_fn(r#"fn f(x: i32) -> i32 { match x { _ => 0 } }"#, "f");
         let switch: Vec<_> = f
             .branches
             .iter()
@@ -2700,10 +2789,7 @@ mod tests {
 
     #[test]
     fn dyn_trait_with_multiple_bounds_maps_to_opaque() {
-        let f = analyze_fn(
-            "fn f(x: &(dyn std::fmt::Debug + Send)) {}",
-            "f",
-        );
+        let f = analyze_fn("fn f(x: &(dyn std::fmt::Debug + Send)) {}", "f");
         assert_eq!(
             f.params[0].typ,
             TypeInfo::Opaque {

@@ -2,10 +2,11 @@ use std::io::{self, BufRead, BufReader};
 
 use crate::generators::NativeRegistry;
 use crate::protocol::{
-    self, Request, Response, FRONTEND_LANGUAGE, FRONTEND_VERSION, PROTOCOL_VERSION,
-    ERR_COMPILATION_ERROR, ERR_FILE_NOT_FOUND, ERR_FUNCTION_NOT_FOUND, ERR_INTERNAL_ERROR,
+    self, ERR_COMPILATION_ERROR, ERR_FILE_NOT_FOUND, ERR_FUNCTION_NOT_FOUND, ERR_INTERNAL_ERROR,
     ERR_INVALID_REQUEST, ERR_NOT_SUPPORTED, ERR_PARSE_ERROR, ERR_VERSION_MISMATCH,
+    FRONTEND_LANGUAGE, FRONTEND_VERSION, PROTOCOL_VERSION, Request, Response,
 };
+use crate::timing::TimingCollector;
 use crate::wasm_generator::WasmCache;
 
 /// Log level for the frontend, controlled by SHATTER_LOG_LEVEL env var.
@@ -50,10 +51,7 @@ fn exec_timeout_from_env() -> u64 {
 
 /// Write instrumented source to a temp directory and return the output path.
 fn write_instrumented_temp(filename: &str, source: &str) -> io::Result<String> {
-    let dir = std::env::temp_dir().join(format!(
-        "shatter-instrument-{}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("shatter-instrument-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
     let out_path = dir.join(filename);
     std::fs::write(&out_path, source)?;
@@ -72,6 +70,7 @@ pub struct Handler<R, W, L> {
     /// Remembered from the most recent Analyze or Instrument request so Execute
     /// can fall back when the core omits the file field (which it always does).
     last_file: Option<String>,
+    timing_enabled: bool,
 }
 
 impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
@@ -85,6 +84,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             wasm_cache: WasmCache::new(),
             native_registry: None,
             last_file: None,
+            timing_enabled: false,
         }
     }
 
@@ -104,6 +104,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             wasm_cache: WasmCache::new(),
             native_registry: Some(registry),
             last_file: None,
+            timing_enabled: false,
         }
     }
 
@@ -119,14 +120,16 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             wasm_cache: WasmCache::new(),
             native_registry: None,
             last_file: None,
+            timing_enabled: false,
         }
     }
 
     /// Process requests until shutdown or EOF. Returns Ok(()) on clean shutdown.
     pub fn run(mut self) -> io::Result<()> {
-        self.log_at(FrontendLogLevel::Debug, &format!(
-            "Starting Rust frontend (protocol {PROTOCOL_VERSION})"
-        ));
+        self.log_at(
+            FrontendLogLevel::Debug,
+            &format!("Starting Rust frontend (protocol {PROTOCOL_VERSION})"),
+        );
 
         let mut line = String::new();
         loop {
@@ -186,7 +189,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
         }
 
         match req.command.as_str() {
-            "handshake" => (self.handle_handshake(resp), false),
+            "handshake" => (self.handle_handshake(resp, req), false),
             "analyze" => (self.handle_analyze(resp, req), false),
             "instrument" => (self.handle_instrument(resp, req), false),
             "execute" => (self.handle_execute(resp, req), false),
@@ -203,7 +206,8 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
         }
     }
 
-    fn handle_handshake(&self, mut resp: Response) -> Response {
+    fn handle_handshake(&mut self, mut resp: Response, req: &Request) -> Response {
+        self.timing_enabled = req.capabilities.iter().any(|cap| cap == "timing");
         resp.status = "handshake".to_string();
         resp.frontend_version = Some(FRONTEND_VERSION.to_string());
         resp.language = Some(FRONTEND_LANGUAGE.to_string());
@@ -218,7 +222,24 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
         resp
     }
 
+    fn maybe_timing_collector(&self) -> Option<TimingCollector> {
+        self.timing_enabled.then(TimingCollector::default)
+    }
+
+    fn finalize_response(
+        &self,
+        mut resp: Response,
+        timing: Option<&mut TimingCollector>,
+    ) -> Response {
+        if let Some(timing) = timing {
+            timing.record("serialize.response", |_| ());
+            resp.timing = timing.summary();
+        }
+        resp
+    }
+
     fn handle_analyze(&mut self, mut resp: Response, req: &Request) -> Response {
+        let mut timing = self.maybe_timing_collector();
         let file_path = match &req.file {
             Some(f) => f,
             None => {
@@ -239,11 +260,23 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             return resp;
         }
 
-        match crate::analyzer::analyze_file(path, req.function.as_deref()) {
+        let analysis = if let Some(timing) = timing.as_mut() {
+            timing.record("analyze.total", |timing| {
+                crate::analyzer::analyze_file_with_timing(
+                    path,
+                    req.function.as_deref(),
+                    Some(timing),
+                )
+            })
+        } else {
+            crate::analyzer::analyze_file(path, req.function.as_deref())
+        };
+
+        match analysis {
             Ok(functions) => {
                 resp.status = "analyze".to_string();
                 resp.functions = Some(functions);
-                resp
+                self.finalize_response(resp, timing.as_mut())
             }
             Err(e) => {
                 resp.status = "error".to_string();
@@ -252,17 +285,20 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
                         crate::analyzer::AnalyzeError::FileNotFound(_) => ERR_FILE_NOT_FOUND,
                         crate::analyzer::AnalyzeError::ReadError(_) => ERR_INTERNAL_ERROR,
                         crate::analyzer::AnalyzeError::ParseError(_) => ERR_PARSE_ERROR,
-                        crate::analyzer::AnalyzeError::FunctionNotFound(_) => ERR_FUNCTION_NOT_FOUND,
+                        crate::analyzer::AnalyzeError::FunctionNotFound(_) => {
+                            ERR_FUNCTION_NOT_FOUND
+                        }
                     }
                     .to_string(),
                 );
                 resp.message = Some(e.to_string());
-                resp
+                self.finalize_response(resp, timing.as_mut())
             }
         }
     }
 
     fn handle_instrument(&mut self, mut resp: Response, req: &Request) -> Response {
+        let mut timing = self.maybe_timing_collector();
         let file_path = match &req.file {
             Some(f) => f,
             None => {
@@ -283,7 +319,19 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             return resp;
         }
 
-        match crate::instrument::instrument_file(path, req.function.as_deref()) {
+        let instrumented = if let Some(timing) = timing.as_mut() {
+            timing.record("instrument.total", |timing| {
+                crate::instrument::instrument_file_with_timing(
+                    path,
+                    req.function.as_deref(),
+                    Some(timing),
+                )
+            })
+        } else {
+            crate::instrument::instrument_file(path, req.function.as_deref())
+        };
+
+        match instrumented {
             Ok(result) => {
                 // Write instrumented source to a temp file
                 let source_name = path
@@ -299,30 +347,34 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
                             "instrumented {} branch points",
                             result.branch_count
                         ));
-                        resp
+                        self.finalize_response(resp, timing.as_mut())
                     }
                     Err(e) => {
                         resp.status = "error".to_string();
                         resp.code = Some(ERR_INTERNAL_ERROR.to_string());
                         resp.message = Some(format!("failed to write instrumented output: {e}"));
-                        resp
+                        self.finalize_response(resp, timing.as_mut())
                     }
                 }
             }
             Err(e) => {
                 resp.status = "error".to_string();
-                resp.code = Some(match &e {
-                    crate::instrument::InstrumentError::FileNotFound(_) => ERR_FILE_NOT_FOUND,
-                    crate::instrument::InstrumentError::ReadError(_) => ERR_INTERNAL_ERROR,
-                    crate::instrument::InstrumentError::ParseError(_) => ERR_PARSE_ERROR,
-                }.to_string());
+                resp.code = Some(
+                    match &e {
+                        crate::instrument::InstrumentError::FileNotFound(_) => ERR_FILE_NOT_FOUND,
+                        crate::instrument::InstrumentError::ReadError(_) => ERR_INTERNAL_ERROR,
+                        crate::instrument::InstrumentError::ParseError(_) => ERR_PARSE_ERROR,
+                    }
+                    .to_string(),
+                );
                 resp.message = Some(e.to_string());
-                resp
+                self.finalize_response(resp, timing.as_mut())
             }
         }
     }
 
     fn handle_execute(&self, mut resp: Response, req: &Request) -> Response {
+        let mut timing = self.maybe_timing_collector();
         let file_path = match req.file.as_ref().or(self.last_file.as_ref()) {
             Some(f) => f,
             None => {
@@ -349,13 +401,28 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             );
         }
 
-        match crate::executor::execute_function(
-            file_path,
-            function_name,
-            &req.inputs,
-            &req.mocks,
-            self.exec_timeout_ms,
-        ) {
+        let execution = if let Some(timing) = timing.as_mut() {
+            timing.record("execute.total", |timing| {
+                crate::executor::execute_function_with_timing(
+                    file_path,
+                    function_name,
+                    &req.inputs,
+                    &req.mocks,
+                    self.exec_timeout_ms,
+                    Some(timing),
+                )
+            })
+        } else {
+            crate::executor::execute_function(
+                file_path,
+                function_name,
+                &req.inputs,
+                &req.mocks,
+                self.exec_timeout_ms,
+            )
+        };
+
+        match execution {
             Ok(result) => {
                 resp.status = "execute".to_string();
                 resp.return_value = result.return_value;
@@ -366,36 +433,37 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
                 resp.path_constraints = Some(result.path_constraints);
                 resp.side_effects = Some(result.side_effects);
                 resp.performance = Some(result.performance);
-                resp
+                self.finalize_response(resp, timing.as_mut())
             }
             Err(crate::executor::ExecuteError::FileError(msg)) => {
                 resp.status = "error".to_string();
                 resp.code = Some(ERR_FILE_NOT_FOUND.to_string());
                 resp.message = Some(msg);
-                resp
+                self.finalize_response(resp, timing.as_mut())
             }
             Err(crate::executor::ExecuteError::CompilationFailed(msg)) => {
                 resp.status = "error".to_string();
                 resp.code = Some(ERR_COMPILATION_ERROR.to_string());
                 resp.message = Some(msg);
-                resp
+                self.finalize_response(resp, timing.as_mut())
             }
             Err(crate::executor::ExecuteError::NonExecutable(msg)) => {
                 resp.status = "error".to_string();
                 resp.code = Some(ERR_NOT_SUPPORTED.to_string());
                 resp.message = Some(msg);
-                resp
+                self.finalize_response(resp, timing.as_mut())
             }
             Err(e) => {
                 resp.status = "error".to_string();
                 resp.code = Some(ERR_INTERNAL_ERROR.to_string());
                 resp.message = Some(e.to_string());
-                resp
+                self.finalize_response(resp, timing.as_mut())
             }
         }
     }
 
     fn handle_setup(&self, mut resp: Response, req: &Request) -> Response {
+        let mut timing = self.maybe_timing_collector();
         let file_path = match &req.file {
             Some(f) => f,
             None => {
@@ -425,34 +493,43 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
         };
 
         let path = std::path::Path::new(file_path);
-        match crate::setup::run_setup(path, level, scope, req.parent_context.as_ref()) {
+        let setup_result = if let Some(timing) = timing.as_mut() {
+            timing.record("setup.total", |_| {
+                crate::setup::run_setup(path, level, scope, req.parent_context.as_ref())
+            })
+        } else {
+            crate::setup::run_setup(path, level, scope, req.parent_context.as_ref())
+        };
+
+        match setup_result {
             Ok(result) => {
                 resp.status = "setup".to_string();
                 resp.setup_context = Some(result.context);
-                resp
+                self.finalize_response(resp, timing.as_mut())
             }
             Err(crate::setup::SetupError::FileNotFound(_)) => {
                 resp.status = "error".to_string();
                 resp.code = Some(ERR_FILE_NOT_FOUND.to_string());
                 resp.message = Some(format!("setup file not found: {file_path}"));
-                resp
+                self.finalize_response(resp, timing.as_mut())
             }
             Err(crate::setup::SetupError::CompilationFailed(msg)) => {
                 resp.status = "error".to_string();
                 resp.code = Some(ERR_COMPILATION_ERROR.to_string());
                 resp.message = Some(msg);
-                resp
+                self.finalize_response(resp, timing.as_mut())
             }
             Err(e) => {
                 resp.status = "error".to_string();
                 resp.code = Some(ERR_INTERNAL_ERROR.to_string());
                 resp.message = Some(e.to_string());
-                resp
+                self.finalize_response(resp, timing.as_mut())
             }
         }
     }
 
     fn handle_teardown(&self, mut resp: Response, req: &Request) -> Response {
+        let mut timing = self.maybe_timing_collector();
         let level = match &req.level {
             Some(l) => *l,
             None => {
@@ -472,21 +549,30 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             }
         };
 
-        match crate::setup::run_teardown(level, scope) {
+        let teardown_result = if let Some(timing) = timing.as_mut() {
+            timing.record("teardown.total", |_| {
+                crate::setup::run_teardown(level, scope)
+            })
+        } else {
+            crate::setup::run_teardown(level, scope)
+        };
+
+        match teardown_result {
             Ok(()) => {
                 resp.status = "teardown_ack".to_string();
-                resp
+                self.finalize_response(resp, timing.as_mut())
             }
             Err(e) => {
                 resp.status = "error".to_string();
                 resp.code = Some(ERR_INTERNAL_ERROR.to_string());
                 resp.message = Some(e.to_string());
-                resp
+                self.finalize_response(resp, timing.as_mut())
             }
         }
     }
 
     fn handle_generate(&mut self, mut resp: Response, req: &Request) -> Response {
+        let mut timing = self.maybe_timing_collector();
         let file_path = match &req.file {
             Some(f) => f,
             None => {
@@ -509,9 +595,32 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
         let path = std::path::Path::new(file_path);
         let ext = path.extension().and_then(|e| e.to_str());
 
+        let generated = if let Some(timing) = timing.as_mut() {
+            timing.record("generate.total", |_| {
+                self.generate_response(resp, ext, path, &func_name, file_path, req)
+            })
+        } else {
+            self.generate_response(resp, ext, path, &func_name, file_path, req)
+        };
+
+        self.finalize_response(generated, timing.as_mut())
+    }
+
+    fn generate_response(
+        &mut self,
+        mut resp: Response,
+        ext: Option<&str>,
+        path: &std::path::Path,
+        func_name: &str,
+        file_path: &str,
+        req: &Request,
+    ) -> Response {
         match ext {
             Some("wasm") => {
-                match self.wasm_cache.generate(path, &func_name, req.recipe.as_ref()) {
+                match self
+                    .wasm_cache
+                    .generate(path, &func_name, req.recipe.as_ref())
+                {
                     Ok((value, generator_id, recipe)) => {
                         resp.status = "generate".to_string();
                         resp.value = Some(value);
@@ -556,10 +665,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             _ => {
                 resp.status = "error".to_string();
                 resp.code = Some(ERR_INVALID_REQUEST.to_string());
-                resp.message = Some(format!(
-                    "unsupported generator file type: {}",
-                    file_path
-                ));
+                resp.message = Some(format!("unsupported generator file type: {}", file_path));
                 resp
             }
         }
@@ -571,8 +677,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
     }
 
     fn send(&mut self, resp: &Response) -> io::Result<()> {
-        let data = serde_json::to_string(resp)
-            .map_err(io::Error::other)?;
+        let data = serde_json::to_string(resp).map_err(io::Error::other)?;
         self.logf(&format!("Sent: {data}"));
         writeln!(self.writer, "{data}")?;
         self.writer.flush()
@@ -618,14 +723,13 @@ mod tests {
     fn send_recv(req_json: &str) -> Response {
         let input = format!("{req_json}\n");
         let mut output = Vec::new();
-        let handler = Handler::new(
-            input.as_bytes(),
-            &mut output,
-            io::sink(),
-        );
+        let handler = Handler::new(input.as_bytes(), &mut output, io::sink());
         handler.run().expect("handler.run");
         let output_str = String::from_utf8(output).expect("valid utf8");
-        let first_line = output_str.lines().next().expect("at least one response line");
+        let first_line = output_str
+            .lines()
+            .next()
+            .expect("at least one response line");
         serde_json::from_str(first_line).expect("valid JSON response")
     }
 
@@ -633,11 +737,7 @@ mod tests {
     fn conversation(requests: &[&str]) -> Vec<Response> {
         let input = requests.join("\n") + "\n";
         let mut output = Vec::new();
-        let handler = Handler::new(
-            input.as_bytes(),
-            &mut output,
-            io::sink(),
-        );
+        let handler = Handler::new(input.as_bytes(), &mut output, io::sink());
         handler.run().expect("handler.run");
         let output_str = String::from_utf8(output).expect("valid utf8");
         output_str
@@ -647,6 +747,19 @@ mod tests {
             .collect()
     }
 
+    fn timing_phase_names(resp: &Response) -> std::collections::BTreeSet<String> {
+        resp.timing
+            .as_ref()
+            .map(|summary| {
+                summary
+                    .phases
+                    .iter()
+                    .map(|phase| phase.phase_path.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     #[test]
     fn handshake_returns_rust_language() {
         let resp = send_recv(
@@ -654,7 +767,10 @@ mod tests {
         );
         assert_eq!(resp.status, "handshake");
         assert_eq!(resp.language.as_deref(), Some("rust"));
-        assert_eq!(resp.frontend_version.as_deref(), Some(crate::protocol::FRONTEND_VERSION));
+        assert_eq!(
+            resp.frontend_version.as_deref(),
+            Some(crate::protocol::FRONTEND_VERSION)
+        );
     }
 
     #[test]
@@ -667,8 +783,22 @@ mod tests {
         assert!(caps.contains(&"execute".to_string()));
         assert!(caps.contains(&"generate".to_string()));
         assert!(caps.contains(&"instrument".to_string()));
-        assert!(caps.contains(&"setup".to_string()), "setup must be advertised");
-        assert!(caps.contains(&"teardown".to_string()), "teardown must be advertised");
+        assert!(
+            caps.contains(&"setup".to_string()),
+            "setup must be advertised"
+        );
+        assert!(
+            caps.contains(&"teardown".to_string()),
+            "teardown must be advertised"
+        );
+    }
+
+    #[test]
+    fn handshake_with_timing_capability_does_not_emit_timing() {
+        let resp = send_recv(
+            r#"{"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze","timing"]}"#,
+        );
+        assert!(resp.timing.is_none());
     }
 
     #[test]
@@ -689,9 +819,7 @@ mod tests {
 
     #[test]
     fn shutdown_returns_ack_and_stops() {
-        let resp = send_recv(
-            r#"{"protocol_version":"0.1.0","id":5,"command":"shutdown"}"#,
-        );
+        let resp = send_recv(r#"{"protocol_version":"0.1.0","id":5,"command":"shutdown"}"#);
         assert_eq!(resp.status, "shutdown_ack");
         assert_eq!(resp.id, 5);
     }
@@ -725,9 +853,7 @@ mod tests {
 
     #[test]
     fn unknown_command_returns_error() {
-        let resp = send_recv(
-            r#"{"protocol_version":"0.1.0","id":1,"command":"foobar"}"#,
-        );
+        let resp = send_recv(r#"{"protocol_version":"0.1.0","id":1,"command":"foobar"}"#);
         assert_eq!(resp.status, "error");
         assert_eq!(resp.code.as_deref(), Some(ERR_INVALID_REQUEST));
     }
@@ -738,7 +864,12 @@ mod tests {
         assert_eq!(resp.status, "error");
         assert_eq!(resp.code.as_deref(), Some(ERR_INVALID_REQUEST));
         assert_eq!(resp.id, 0);
-        assert!(resp.message.as_deref().unwrap_or("").contains("Invalid JSON"));
+        assert!(
+            resp.message
+                .as_deref()
+                .unwrap_or("")
+                .contains("Invalid JSON")
+        );
     }
 
     #[test]
@@ -757,11 +888,35 @@ mod tests {
 
     #[test]
     fn analyze_without_file_returns_error() {
-        let resp = send_recv(
-            r#"{"protocol_version":"0.1.0","id":2,"command":"analyze"}"#,
-        );
+        let resp = send_recv(r#"{"protocol_version":"0.1.0","id":2,"command":"analyze"}"#);
         assert_eq!(resp.status, "error");
         assert_eq!(resp.code.as_deref(), Some(ERR_INVALID_REQUEST));
+    }
+
+    #[test]
+    fn analyze_emits_timing_when_requested() {
+        let dir = std::env::temp_dir().join("shatter-test-rust-timing-analyze");
+        let _ = std::fs::create_dir_all(&dir);
+        let file = dir.join("analyze.rs");
+        std::fs::write(&file, "fn add(a: i32, b: i32) -> i32 { a + b }\n").expect("write file");
+
+        let responses = conversation(&[
+            r#"{"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze","timing"]}"#,
+            &format!(
+                r#"{{"protocol_version":"0.1.0","id":2,"command":"analyze","file":"{}","function":"add"}}"#,
+                file.display()
+            ),
+        ]);
+        let phases = timing_phase_names(&responses[1]);
+        for expected in [
+            "analyze.total",
+            "analyze.read",
+            "analyze.parse",
+            "analyze.walk",
+            "serialize.response",
+        ] {
+            assert!(phases.contains(expected), "missing timing phase {expected}");
+        }
     }
 
     #[test]
@@ -775,9 +930,7 @@ mod tests {
 
     #[test]
     fn instrument_without_file_returns_error() {
-        let resp = send_recv(
-            r#"{"protocol_version":"0.1.0","id":3,"command":"instrument"}"#,
-        );
+        let resp = send_recv(r#"{"protocol_version":"0.1.0","id":3,"command":"instrument"}"#);
         assert_eq!(resp.status, "error");
         assert_eq!(resp.code.as_deref(), Some(ERR_INVALID_REQUEST));
     }
@@ -797,7 +950,11 @@ mod tests {
         let dir = std::env::temp_dir().join("shatter-test-instrument");
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("sample.rs");
-        std::fs::write(&file, "fn foo(x: i32) -> bool { if x > 0 { true } else { false } }").unwrap();
+        std::fs::write(
+            &file,
+            "fn foo(x: i32) -> bool { if x > 0 { true } else { false } }",
+        )
+        .unwrap();
 
         let file_path = file.to_string_lossy();
         let req = format!(
@@ -805,7 +962,11 @@ mod tests {
             file_path.replace('\\', "\\\\")
         );
         let resp = send_recv(&req);
-        assert_eq!(resp.status, "instrument", "expected instrument status, got: {:?}", resp.message);
+        assert_eq!(
+            resp.status, "instrument",
+            "expected instrument status, got: {:?}",
+            resp.message
+        );
         assert_eq!(resp.instrumented, Some(true));
         assert!(resp.output_file.is_some());
 
@@ -821,6 +982,36 @@ mod tests {
         assert_eq!(resp.status, "error");
         assert_eq!(resp.code.as_deref(), Some(ERR_INVALID_REQUEST));
         assert!(resp.message.as_deref().unwrap_or("").contains("file"));
+    }
+
+    #[test]
+    fn execute_emits_timing_when_requested() {
+        let dir = std::env::temp_dir().join("shatter-test-rust-timing-execute");
+        let _ = std::fs::create_dir_all(&dir);
+        let file = dir.join("execute.rs");
+        std::fs::write(&file, "fn add(a: i32, b: i32) -> i32 { a + b }\n").expect("write file");
+
+        let responses = conversation(&[
+            r#"{"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["execute","timing"]}"#,
+            &format!(
+                r#"{{"protocol_version":"0.1.0","id":2,"command":"execute","file":"{}","function":"add","inputs":[1,2],"mocks":[]}}"#,
+                file.display()
+            ),
+        ]);
+        assert_eq!(responses[1].status, "execute");
+        let phases = timing_phase_names(&responses[1]);
+        for expected in [
+            "execute.total",
+            "execute.read_source",
+            "execute.extract_signature",
+            "execute.instrument",
+            "execute.build",
+            "execute.run",
+            "execute.parse_result",
+            "serialize.response",
+        ] {
+            assert!(phases.contains(expected), "missing timing phase {expected}");
+        }
     }
 
     #[test]
@@ -866,11 +1057,7 @@ mod tests {
     fn empty_lines_are_skipped() {
         let input = "\n\n{\"protocol_version\":\"0.1.0\",\"id\":1,\"command\":\"shutdown\"}\n\n";
         let mut output = Vec::new();
-        let handler = Handler::new(
-            input.as_bytes(),
-            &mut output,
-            io::sink(),
-        );
+        let handler = Handler::new(input.as_bytes(), &mut output, io::sink());
         handler.run().expect("handler.run");
         let output_str = String::from_utf8(output).expect("valid utf8");
         let lines: Vec<&str> = output_str.lines().filter(|l| !l.is_empty()).collect();
@@ -879,7 +1066,8 @@ mod tests {
 
     #[test]
     fn debug_output_goes_to_log() {
-        let input = r#"{"protocol_version":"0.1.0","id":1,"command":"shutdown"}"#.to_string() + "\n";
+        let input =
+            r#"{"protocol_version":"0.1.0","id":1,"command":"shutdown"}"#.to_string() + "\n";
         let mut output = Vec::new();
         let mut log = Vec::new();
         let handler = Handler::with_log_level(
@@ -890,13 +1078,20 @@ mod tests {
         );
         handler.run().expect("handler.run");
         let log_str = String::from_utf8(log).expect("valid utf8");
-        assert!(log_str.contains("[shatter-rust]"), "log missing prefix: {log_str}");
-        assert!(log_str.contains("Shutting down"), "log missing shutdown message: {log_str}");
+        assert!(
+            log_str.contains("[shatter-rust]"),
+            "log missing prefix: {log_str}"
+        );
+        assert!(
+            log_str.contains("Shutting down"),
+            "log missing shutdown message: {log_str}"
+        );
     }
 
     #[test]
     fn log_level_filtering_suppresses_trace_at_info() {
-        let input = r#"{"protocol_version":"0.1.0","id":1,"command":"shutdown"}"#.to_string() + "\n";
+        let input =
+            r#"{"protocol_version":"0.1.0","id":1,"command":"shutdown"}"#.to_string() + "\n";
         let mut output = Vec::new();
         let mut log = Vec::new();
         let handler = Handler::with_log_level(
@@ -908,13 +1103,20 @@ mod tests {
         handler.run().expect("handler.run");
         let log_str = String::from_utf8(log).expect("valid utf8");
         // At INFO level, protocol messages (Received/Sent/Shutting down) should be suppressed
-        assert!(!log_str.contains("Received:"), "trace messages should be suppressed at info: {log_str}");
-        assert!(!log_str.contains("Sent:"), "trace messages should be suppressed at info: {log_str}");
+        assert!(
+            !log_str.contains("Received:"),
+            "trace messages should be suppressed at info: {log_str}"
+        );
+        assert!(
+            !log_str.contains("Sent:"),
+            "trace messages should be suppressed at info: {log_str}"
+        );
     }
 
     #[test]
     fn log_level_filtering_shows_debug_at_debug() {
-        let input = r#"{"protocol_version":"0.1.0","id":1,"command":"shutdown"}"#.to_string() + "\n";
+        let input =
+            r#"{"protocol_version":"0.1.0","id":1,"command":"shutdown"}"#.to_string() + "\n";
         let mut output = Vec::new();
         let mut log = Vec::new();
         let handler = Handler::with_log_level(
@@ -926,9 +1128,18 @@ mod tests {
         handler.run().expect("handler.run");
         let log_str = String::from_utf8(log).expect("valid utf8");
         // At DEBUG level, lifecycle messages should appear but not protocol details
-        assert!(log_str.contains("Starting Rust frontend"), "debug messages should appear at debug: {log_str}");
-        assert!(log_str.contains("Shutting down"), "debug messages should appear at debug: {log_str}");
-        assert!(!log_str.contains("Received:"), "trace messages should be suppressed at debug: {log_str}");
+        assert!(
+            log_str.contains("Starting Rust frontend"),
+            "debug messages should appear at debug: {log_str}"
+        );
+        assert!(
+            log_str.contains("Shutting down"),
+            "debug messages should appear at debug: {log_str}"
+        );
+        assert!(
+            !log_str.contains("Received:"),
+            "trace messages should be suppressed at debug: {log_str}"
+        );
     }
 
     // -- Setup command tests --
@@ -1008,7 +1219,10 @@ mod tests {
         let resp = send_recv(
             r#"{"protocol_version":"0.1.0","id":50,"command":"teardown","scope":"cleanup","level":"session"}"#,
         );
-        assert_eq!(resp.status, "teardown_ack", "teardown must return teardown_ack per protocol spec");
+        assert_eq!(
+            resp.status, "teardown_ack",
+            "teardown must return teardown_ack per protocol spec"
+        );
     }
 
     // -- Generate command tests --
@@ -1040,7 +1254,12 @@ mod tests {
         );
         assert_eq!(resp.status, "error");
         assert_eq!(resp.code.as_deref(), Some(ERR_INVALID_REQUEST));
-        assert!(resp.message.as_deref().unwrap_or("").contains("unsupported generator file type"));
+        assert!(
+            resp.message
+                .as_deref()
+                .unwrap_or("")
+                .contains("unsupported generator file type")
+        );
     }
 
     #[test]
@@ -1113,7 +1332,11 @@ mod tests {
             r#"{"protocol_version":"0.1.0","id":2,"command":"execute","function":"add","inputs":[1,2],"mocks":[]}"#,
         ]);
 
-        assert_eq!(responses[0].status, "analyze", "analyze failed: {:?}", responses[0].message);
+        assert_eq!(
+            responses[0].status, "analyze",
+            "analyze failed: {:?}",
+            responses[0].message
+        );
         // The execute should NOT fail with "requires a file path"
         assert_ne!(
             responses[1].code.as_deref(),
@@ -1130,7 +1353,11 @@ mod tests {
         let dir = std::env::temp_dir().join("shatter-test-rv0k-instrument");
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("branchy.rs");
-        std::fs::write(&file, "pub fn check(x: i32) -> bool { if x > 0 { true } else { false } }").unwrap();
+        std::fs::write(
+            &file,
+            "pub fn check(x: i32) -> bool { if x > 0 { true } else { false } }",
+        )
+        .unwrap();
 
         let file_path = file.to_string_lossy().replace('\\', "\\\\");
         let responses = conversation(&[
@@ -1140,7 +1367,11 @@ mod tests {
             r#"{"protocol_version":"0.1.0","id":2,"command":"execute","function":"check","inputs":[42],"mocks":[]}"#,
         ]);
 
-        assert_eq!(responses[0].status, "instrument", "instrument failed: {:?}", responses[0].message);
+        assert_eq!(
+            responses[0].status, "instrument",
+            "instrument failed: {:?}",
+            responses[0].message
+        );
         assert_ne!(
             responses[1].code.as_deref(),
             Some(ERR_INVALID_REQUEST),
@@ -1207,7 +1438,11 @@ mod tests {
     #[test]
     fn error_code_parity_with_registry() {
         use crate::protocol::ALL_ERROR_CODES;
-        assert_eq!(ALL_ERROR_CODES.len(), 11, "ALL_ERROR_CODES must have 11 entries matching registry.yaml");
+        assert_eq!(
+            ALL_ERROR_CODES.len(),
+            11,
+            "ALL_ERROR_CODES must have 11 entries matching registry.yaml"
+        );
         // Each code must be a non-empty snake_case string.
         for code in ALL_ERROR_CODES {
             assert!(!code.is_empty(), "error code must not be empty");
@@ -1217,5 +1452,4 @@ mod tests {
             );
         }
     }
-
 }

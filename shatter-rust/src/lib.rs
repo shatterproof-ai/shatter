@@ -5,4 +5,5 @@ pub mod handler;
 pub mod instrument;
 pub mod protocol;
 pub mod setup;
+pub mod timing;
 pub mod wasm_generator;

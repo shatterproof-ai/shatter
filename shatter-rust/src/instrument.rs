@@ -17,9 +17,11 @@
 use std::path::Path;
 
 use proc_macro2::TokenStream;
-use quote::{quote, ToTokens};
+use quote::{ToTokens, quote};
 use syn::visit_mut::VisitMut;
-use syn::{parse_file, Expr, ExprIf, ExprMatch, ExprWhile, ExprForLoop, Stmt};
+use syn::{Expr, ExprForLoop, ExprIf, ExprMatch, ExprWhile, Stmt, parse_file};
+
+use crate::timing::TimingCollector;
 
 /// Errors that can occur during instrumentation.
 #[derive(Debug)]
@@ -55,16 +57,27 @@ pub fn instrument_file(
     path: &Path,
     function_name: Option<&str>,
 ) -> Result<InstrumentResult, InstrumentError> {
+    instrument_file_with_timing(path, function_name, None)
+}
+
+pub fn instrument_file_with_timing(
+    path: &Path,
+    function_name: Option<&str>,
+    mut timing: Option<&mut TimingCollector>,
+) -> Result<InstrumentResult, InstrumentError> {
     if !path.exists() {
-        return Err(InstrumentError::FileNotFound(
-            path.display().to_string(),
-        ));
+        return Err(InstrumentError::FileNotFound(path.display().to_string()));
     }
 
-    let source = std::fs::read_to_string(path)
-        .map_err(|e| InstrumentError::ReadError(e.to_string()))?;
+    let source = if let Some(timing) = timing.as_deref_mut() {
+        timing.record("instrument.read", |_| {
+            std::fs::read_to_string(path).map_err(|e| InstrumentError::ReadError(e.to_string()))
+        })?
+    } else {
+        std::fs::read_to_string(path).map_err(|e| InstrumentError::ReadError(e.to_string()))?
+    };
 
-    instrument_source(&source, function_name)
+    instrument_source_with_timing(&source, function_name, timing)
 }
 
 /// Instrument Rust source code from a string.
@@ -72,17 +85,37 @@ pub fn instrument_source(
     source: &str,
     function_name: Option<&str>,
 ) -> Result<InstrumentResult, InstrumentError> {
-    let mut syntax = parse_file(source)
-        .map_err(|e| InstrumentError::ParseError(e.to_string()))?;
+    instrument_source_with_timing(source, function_name, None)
+}
 
-    let mut visitor = Instrumentor::new(function_name);
-    visitor.visit_file_mut(&mut syntax);
+pub fn instrument_source_with_timing(
+    source: &str,
+    function_name: Option<&str>,
+    mut timing: Option<&mut TimingCollector>,
+) -> Result<InstrumentResult, InstrumentError> {
+    let mut syntax = if let Some(timing) = timing.as_deref_mut() {
+        timing.record("instrument.parse", |_| {
+            parse_file(source).map_err(|e| InstrumentError::ParseError(e.to_string()))
+        })?
+    } else {
+        parse_file(source).map_err(|e| InstrumentError::ParseError(e.to_string()))?
+    };
 
-    let output = syntax.to_token_stream().to_string();
+    let (output, branch_count) = if let Some(timing) = timing.as_deref_mut() {
+        timing.record("instrument.transform", |_| {
+            let mut visitor = Instrumentor::new(function_name);
+            visitor.visit_file_mut(&mut syntax);
+            (syntax.to_token_stream().to_string(), visitor.branch_id)
+        })
+    } else {
+        let mut visitor = Instrumentor::new(function_name);
+        visitor.visit_file_mut(&mut syntax);
+        (syntax.to_token_stream().to_string(), visitor.branch_id)
+    };
 
     Ok(InstrumentResult {
         source: output,
-        branch_count: visitor.branch_id,
+        branch_count,
     })
 }
 
@@ -333,14 +366,14 @@ fn constraint_for_expr(expr: &Expr) -> String {
                 }
             };
             let operand = constraint_for_operand(&un.expr);
-            format!(
-                r#"{{"kind":"un_op","op":"{}","operand":{}}}"#,
-                op, operand
-            )
+            format!(r#"{{"kind":"un_op","op":"{}","operand":{}}}"#, op, operand)
         }
         Expr::Path(path) => {
             let name = path.to_token_stream().to_string();
-            format!(r#"{{"kind":"param","name":"{}","path":[]}}"#, escape_json_string(&name))
+            format!(
+                r#"{{"kind":"param","name":"{}","path":[]}}"#,
+                escape_json_string(&name)
+            )
         }
         Expr::Lit(lit) => constraint_for_lit(lit),
         Expr::MethodCall(mc) => {
@@ -371,7 +404,10 @@ fn constraint_for_operand(expr: &Expr) -> String {
     match expr {
         Expr::Path(path) => {
             let name = path.to_token_stream().to_string();
-            format!(r#"{{"kind":"param","name":"{}","path":[]}}"#, escape_json_string(&name))
+            format!(
+                r#"{{"kind":"param","name":"{}","path":[]}}"#,
+                escape_json_string(&name)
+            )
         }
         Expr::Lit(lit) => constraint_for_lit(lit),
         // For compound expressions, recurse
@@ -389,10 +425,16 @@ fn constraint_for_operand(expr: &Expr) -> String {
 fn constraint_for_lit(lit: &syn::ExprLit) -> String {
     match &lit.lit {
         syn::Lit::Int(i) => {
-            format!(r#"{{"kind":"const","type":"int","value":{}}}"#, i.base10_digits())
+            format!(
+                r#"{{"kind":"const","type":"int","value":{}}}"#,
+                i.base10_digits()
+            )
         }
         syn::Lit::Float(f) => {
-            format!(r#"{{"kind":"const","type":"float","value":{}}}"#, f.base10_digits())
+            format!(
+                r#"{{"kind":"const","type":"float","value":{}}}"#,
+                f.base10_digits()
+            )
         }
         syn::Lit::Str(s) => {
             format!(
@@ -451,9 +493,19 @@ fn check(x: i32) -> bool {
 }
 "#;
         let result = instrument(source);
-        assert!(result.branch_count >= 1, "should have at least 1 branch, got {}", result.branch_count);
-        assert!(result.source.contains("shatter_rust_runtime"), "instrumented source should reference runtime");
-        assert!(result.source.contains("branch_hit"), "should contain branch_hit call");
+        assert!(
+            result.branch_count >= 1,
+            "should have at least 1 branch, got {}",
+            result.branch_count
+        );
+        assert!(
+            result.source.contains("shatter_rust_runtime"),
+            "instrumented source should reference runtime"
+        );
+        assert!(
+            result.source.contains("branch_hit"),
+            "should contain branch_hit call"
+        );
     }
 
     #[test]
@@ -486,7 +538,11 @@ fn classify(x: i32) -> &'static str {
 "#;
         let result = instrument(source);
         // Each match arm should get a branch_hit
-        assert!(result.branch_count >= 3, "expected at least 3 branches for 3 match arms, got {}", result.branch_count);
+        assert!(
+            result.branch_count >= 3,
+            "expected at least 3 branches for 3 match arms, got {}",
+            result.branch_count
+        );
         assert!(result.source.contains("branch_hit"));
     }
 
@@ -522,7 +578,11 @@ fn nested(x: i32, y: i32) -> i32 {
 }
 "#;
         let result = instrument(source);
-        assert!(result.branch_count >= 2, "nested branches should get at least 2 IDs, got {}", result.branch_count);
+        assert!(
+            result.branch_count >= 2,
+            "nested branches should get at least 2 IDs, got {}",
+            result.branch_count
+        );
     }
 
     #[test]
@@ -537,11 +597,17 @@ fn other(y: i32) -> bool {
 }
 "#;
         let result = instrument_fn(source, "target");
-        assert!(result.branch_count >= 1, "target function should be instrumented");
+        assert!(
+            result.branch_count >= 1,
+            "target function should be instrumented"
+        );
         // The "other" function should not have been instrumented.
         // We can verify by checking that branch_count is exactly what we expect
         // for just the target function (1 if branch).
-        assert_eq!(result.branch_count, 1, "only the target function's branch should be counted");
+        assert_eq!(
+            result.branch_count, 1,
+            "only the target function's branch should be counted"
+        );
     }
 
     #[test]
@@ -572,8 +638,11 @@ fn example(x: i32) -> &'static str {
         let result = instrument(source);
         // The output should be parseable as Rust tokens
         let parsed = syn::parse_file(&result.source);
-        assert!(parsed.is_ok(), "instrumented source should be valid Rust: {}",
-            parsed.err().map(|e| e.to_string()).unwrap_or_default());
+        assert!(
+            parsed.is_ok(),
+            "instrumented source should be valid Rust: {}",
+            parsed.err().map(|e| e.to_string()).unwrap_or_default()
+        );
     }
 
     #[test]
