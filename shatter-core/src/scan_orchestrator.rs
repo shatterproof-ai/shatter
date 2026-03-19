@@ -3660,6 +3660,7 @@ mod tests {
             setup_manager: None,
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
             isolation: IsolationMode::None,
+            capture_side_effects: false,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
