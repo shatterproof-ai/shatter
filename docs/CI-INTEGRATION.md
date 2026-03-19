@@ -160,6 +160,18 @@ Use the full quality stack, including:
 - walkthrough
 - future vulnerability scans and dependency freshness checks
 
+### Weekly perf tracking
+
+Run the dedicated perf workflow on a fixed schedule or manually.
+
+Recommended behavior:
+
+- execute the stable scenario subset
+- write artifacts to an untracked workspace directory
+- upload the full result bundle as a CI artifact
+- optionally compare against a curated baseline when one is configured
+- never commit routine perf runs back into the repository
+
 ## Tool Installation Expectations
 
 ### Required baseline tools
@@ -204,6 +216,7 @@ Recommended split:
 - TypeScript
 - Go
 - deep/E2E
+- scheduled perf
 
 ### 3. Fail on missing tools only in controlled environments
 

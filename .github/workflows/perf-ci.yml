@@ -1,0 +1,96 @@
+name: Perf CI
+
+on:
+  schedule:
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+    inputs:
+      baseline_dir:
+        description: "Optional baseline artifact directory to compare against"
+        required: false
+        type: string
+
+jobs:
+  perf:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    env:
+      RESULTS_DIR: ${{ runner.temp }}/shatter-perf/${{ github.run_id }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libclang-dev z3
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: perf-ci-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            perf-ci-cargo-
+
+      - name: Build CLI
+        run: cargo build -p shatter-cli
+
+      - name: Run stable perf scenarios
+        run: python3 scripts/perf_runner.py run --scenario-file perf/stable-scenarios.txt --results-dir "$RESULTS_DIR"
+
+      - name: Generate perf summary
+        run: python3 scripts/perf_report.py --results-dir "$RESULTS_DIR" --markdown-out "$RESULTS_DIR/report-latest.md" --json-out "$RESULTS_DIR/report-latest.json"
+
+      - name: Compare against curated baseline
+        shell: bash
+        env:
+          INPUT_BASELINE_DIR: ${{ github.event.inputs.baseline_dir || '' }}
+        run: |
+          baseline_dir=""
+          if [[ -n "$INPUT_BASELINE_DIR" ]]; then
+            baseline_dir="$INPUT_BASELINE_DIR"
+          elif [[ -d benchmarks/baselines/latest ]]; then
+            baseline_dir="benchmarks/baselines/latest"
+          fi
+
+          if [[ -z "$baseline_dir" ]]; then
+            echo "[skip] no baseline directory configured"
+            exit 0
+          fi
+
+          if [[ ! -f scripts/perf_compare.py ]]; then
+            echo "[skip] scripts/perf_compare.py not present on this branch"
+            exit 0
+          fi
+
+          python3 scripts/perf_compare.py \
+            --baseline-dir "$baseline_dir" \
+            --candidate-dir "$RESULTS_DIR" \
+            --markdown-out "$RESULTS_DIR/compare-latest.md" \
+            --json-out "$RESULTS_DIR/compare-latest.json"
+
+      - name: Upload perf artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-ci-${{ github.run_id }}
+          path: ${{ env.RESULTS_DIR }}
+          if-no-files-found: error
