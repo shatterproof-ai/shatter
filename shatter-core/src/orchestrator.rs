@@ -1840,6 +1840,7 @@ pub async fn explore(
                         inputs: bulk_trial.clone(),
                         mocks: effective_mocks.clone(),
                         setup_context: setup_context.clone(),
+                        capture: true,
                     })
                     .await;
                 if let Ok(resp) = resp
