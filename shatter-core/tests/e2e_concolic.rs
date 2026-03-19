@@ -956,7 +956,9 @@ async fn explorer_explore_function_with_setup() {
         project_root: None,
         loop_buckets: Default::default(),
         timeout_explore: None,
-        meta_config: shatter_core::strategy::MetaConfig::default(), shrink_budget: 0,
+        meta_config: shatter_core::strategy::MetaConfig::default(),
+        shrink_budget: 0,
+        isolation: shatter_core::explorer::IsolationMode::None,
     };
 
     let mut mgr = SetupManager::from_env();
@@ -1172,7 +1174,9 @@ async fn concolic_mock_status_branches_discovered() {
         project_root: None,
         loop_buckets: Default::default(),
         timeout_explore: None,
-        meta_config: shatter_core::strategy::MetaConfig::default(), shrink_budget: 0,
+        meta_config: shatter_core::strategy::MetaConfig::default(),
+        shrink_budget: 0,
+        isolation: shatter_core::explorer::IsolationMode::None,
     };
 
     let result = shatter_core::explorer::explore_function(
@@ -1254,7 +1258,9 @@ async fn concolic_mock_result_branches_discovered() {
         project_root: None,
         loop_buckets: Default::default(),
         timeout_explore: None,
-        meta_config: shatter_core::strategy::MetaConfig::default(), shrink_budget: 0,
+        meta_config: shatter_core::strategy::MetaConfig::default(),
+        shrink_budget: 0,
+        isolation: shatter_core::explorer::IsolationMode::None,
     };
 
     let result = shatter_core::explorer::explore_function(
@@ -1339,7 +1345,9 @@ async fn concolic_mock_loop_branches_discovered() {
         project_root: None,
         loop_buckets: Default::default(),
         timeout_explore: None,
-        meta_config: shatter_core::strategy::MetaConfig::default(), shrink_budget: 0,
+        meta_config: shatter_core::strategy::MetaConfig::default(),
+        shrink_budget: 0,
+        isolation: shatter_core::explorer::IsolationMode::None,
     };
 
     let result = shatter_core::explorer::explore_function(

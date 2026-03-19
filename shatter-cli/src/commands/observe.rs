@@ -154,6 +154,7 @@ pub(crate) async fn run_observe(
                 timeout_explore: None,
                 meta_config: shatter_core::strategy::MetaConfig::default(),
                 shrink_budget: shatter_core::orchestrator::DEFAULT_SHRINK_BUDGET,
+                isolation: shatter_core::explorer::IsolationMode::None,
             };
             explorer::explore_function(&mut frontend, &func, &explore_config, None).await
         };

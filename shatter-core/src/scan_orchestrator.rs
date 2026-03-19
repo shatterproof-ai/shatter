@@ -25,7 +25,7 @@ use crate::behavior::{BehaviorCoverage, BehaviorMap, CallGraph, CallGraphError, 
 use crate::types::TypeInfo;
 use crate::cache::BehaviorMapCache;
 use crate::execution_record::ExecutionRecord;
-use crate::explorer::{self, ExploreConfig, ExploreError, ObservationOutput};
+use crate::explorer::{self, ExploreConfig, ExploreError, IsolationMode, ObservationOutput};
 use crate::frontend::{Frontend, FrontendConfig, FrontendError};
 use crate::interesting_pool::{self, InterestingPool};
 use crate::mock_gen::mock_config_from_behavior_map;
@@ -82,6 +82,9 @@ pub struct ScanConfig {
     pub setup_manager: Option<SetupManager>,
     /// Scheduling policy controlling which exploration tasks may overlap.
     pub policy: crate::scheduler_policy::SchedulerPolicy,
+    /// Execution isolation level for all functions in this scan.
+    /// Defaults to `IsolationMode::None` (stateless/shared process).
+    pub isolation: IsolationMode,
 }
 
 /// Context about sampling mode, for report headers.
@@ -456,6 +459,7 @@ pub async fn scan(
             timeout_explore: config.timeout_explore,
             meta_config: crate::strategy::MetaConfig::default(),
             shrink_budget: crate::orchestrator::DEFAULT_SHRINK_BUDGET,
+            isolation: config.isolation,
         };
 
         let exploration = explorer::explore_function(frontend, analysis, &explore_config, None).await?;
@@ -867,6 +871,7 @@ pub async fn parallel_scan(
                 timeout_explore: config.timeout_explore,
                 meta_config: crate::strategy::MetaConfig::default(),
                 shrink_budget: crate::orchestrator::DEFAULT_SHRINK_BUDGET,
+                isolation: config.isolation,
             };
 
             tasks.push((func_name.clone(), analysis.clone(), explore_config, mocks_used, callees, current_deep_fp));
@@ -2230,6 +2235,7 @@ mod tests {
             timeout_explore: None,
             setup_manager: None,
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
+            isolation: IsolationMode::None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2304,6 +2310,7 @@ mod tests {
             timeout_explore: None,
             setup_manager: None,
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
+            isolation: IsolationMode::None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2372,6 +2379,7 @@ mod tests {
             timeout_explore: None,
             setup_manager: None,
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
+            isolation: IsolationMode::None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2457,6 +2465,7 @@ mod tests {
             timeout_explore: None,
             setup_manager: None,
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
+            isolation: IsolationMode::None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2552,6 +2561,7 @@ mod tests {
             timeout_explore: None,
             setup_manager: None,
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
+            isolation: IsolationMode::None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2631,6 +2641,7 @@ mod tests {
             timeout_explore: None,
             setup_manager: None,
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
+            isolation: IsolationMode::None,
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -2684,6 +2695,7 @@ mod tests {
             timeout_explore: None,
             setup_manager: None,
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
+            isolation: IsolationMode::None,
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -2721,6 +2733,7 @@ mod tests {
             timeout_explore: None,
             setup_manager: None,
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
+            isolation: IsolationMode::None,
         };
 
         let plan = format_dry_run_plan(&analyses, &skipped, &config).expect("should succeed");
@@ -2748,6 +2761,7 @@ mod tests {
             timeout_explore: None,
             setup_manager: None,
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
+            isolation: IsolationMode::None,
         };
 
         let plan = format_dry_run_plan(&[], &[], &config).expect("should succeed");

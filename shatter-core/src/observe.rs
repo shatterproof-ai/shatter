@@ -616,7 +616,9 @@ mod tests {
             project_root: Some("/project".to_string()),
             loop_buckets: LoopBuckets::default(),
             timeout_explore: Some(Duration::from_secs(30)),
-            meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
+            meta_config: crate::strategy::MetaConfig::default(),
+            shrink_budget: 0,
+            isolation: crate::explorer::IsolationMode::None,
         };
 
         let observe_config = ObserveConfig::from(&explore_config);

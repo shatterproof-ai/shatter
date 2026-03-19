@@ -108,7 +108,9 @@ pub(crate) async fn run_export_tests(
             project_root: project_root_str.clone(),
             loop_buckets: explorer::LoopBuckets::default(),
             timeout_explore: None,
-            meta_config: shatter_core::strategy::MetaConfig::default(), shrink_budget: shatter_core::orchestrator::DEFAULT_SHRINK_BUDGET,
+            meta_config: shatter_core::strategy::MetaConfig::default(),
+            shrink_budget: shatter_core::orchestrator::DEFAULT_SHRINK_BUDGET,
+            isolation: shatter_core::explorer::IsolationMode::None,
         };
 
         for func in &functions {
