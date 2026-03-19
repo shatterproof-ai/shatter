@@ -10,6 +10,7 @@
       "CARGO_NET_OFFLINE": "true"
     }
   },
+  "isolation_corpus_note": "isolation_mode fields are placeholders (str-19pm.8). The runner does not yet inject --isolation into commands — that support lands in str-19pm.9. Until then all three mode variants of each scenario run identically, establishing the baseline timing matrix for later comparison. See perf/isolation-corpus.md for the full corpus rationale.",
   "scenarios": [
     {
       "id": "walkthrough-auto-cold",
@@ -168,6 +169,311 @@
       "iterations": 3,
       "timeout_seconds": 180,
       "profilers": ["perf-stat", "pprof"]
+    },
+
+    {
+      "id": "isolation-explore-ts-simple-none",
+      "kind": "command",
+      "description": "Isolation corpus: simple TS function (4 branches), isolation=none. Stresses handshake relative to total.",
+      "isolation_mode": "none",
+      "command": [
+        "target/debug/shatter",
+        "explore",
+        "--max-iterations", "5",
+        "--timeout-explore", "20",
+        "examples/standalone/ts/01-arithmetic.ts:classifyNumber"
+      ],
+      "language": "typescript",
+      "timing_target": "shatter",
+      "cache_mode": "warm",
+      "warmups": 1,
+      "iterations": 5,
+      "timeout_seconds": 90,
+      "profilers": ["perf-stat"]
+    },
+    {
+      "id": "isolation-explore-ts-simple-function",
+      "kind": "command",
+      "description": "Isolation corpus: simple TS function (4 branches), isolation=function. Per-function process boundary.",
+      "isolation_mode": "function",
+      "command": [
+        "target/debug/shatter",
+        "explore",
+        "--max-iterations", "5",
+        "--timeout-explore", "20",
+        "examples/standalone/ts/01-arithmetic.ts:classifyNumber"
+      ],
+      "language": "typescript",
+      "timing_target": "shatter",
+      "cache_mode": "warm",
+      "warmups": 1,
+      "iterations": 5,
+      "timeout_seconds": 90,
+      "profilers": ["perf-stat"]
+    },
+    {
+      "id": "isolation-explore-ts-simple-serial",
+      "kind": "command",
+      "description": "Isolation corpus: simple TS function (4 branches), isolation=serial. Fully sequential baseline.",
+      "isolation_mode": "serial",
+      "command": [
+        "target/debug/shatter",
+        "explore",
+        "--max-iterations", "5",
+        "--timeout-explore", "20",
+        "examples/standalone/ts/01-arithmetic.ts:classifyNumber"
+      ],
+      "language": "typescript",
+      "timing_target": "shatter",
+      "cache_mode": "warm",
+      "warmups": 1,
+      "iterations": 5,
+      "timeout_seconds": 90,
+      "profilers": ["perf-stat"]
+    },
+
+    {
+      "id": "isolation-explore-ts-medium-none",
+      "kind": "command",
+      "description": "Isolation corpus: medium TS function (15 branches, HTTP classifier), isolation=none. Mixed numeric+string constraints.",
+      "isolation_mode": "none",
+      "command": [
+        "target/debug/shatter",
+        "explore",
+        "--max-iterations", "10",
+        "--timeout-explore", "40",
+        "examples/standalone/ts/06-nested-control-flow.ts:classifyHttpResponse"
+      ],
+      "language": "typescript",
+      "timing_target": "shatter",
+      "cache_mode": "warm",
+      "warmups": 1,
+      "iterations": 5,
+      "timeout_seconds": 120,
+      "profilers": ["perf-stat"]
+    },
+    {
+      "id": "isolation-explore-ts-medium-function",
+      "kind": "command",
+      "description": "Isolation corpus: medium TS function (15 branches, HTTP classifier), isolation=function.",
+      "isolation_mode": "function",
+      "command": [
+        "target/debug/shatter",
+        "explore",
+        "--max-iterations", "10",
+        "--timeout-explore", "40",
+        "examples/standalone/ts/06-nested-control-flow.ts:classifyHttpResponse"
+      ],
+      "language": "typescript",
+      "timing_target": "shatter",
+      "cache_mode": "warm",
+      "warmups": 1,
+      "iterations": 5,
+      "timeout_seconds": 120,
+      "profilers": ["perf-stat"]
+    },
+    {
+      "id": "isolation-explore-ts-medium-serial",
+      "kind": "command",
+      "description": "Isolation corpus: medium TS function (15 branches, HTTP classifier), isolation=serial.",
+      "isolation_mode": "serial",
+      "command": [
+        "target/debug/shatter",
+        "explore",
+        "--max-iterations", "10",
+        "--timeout-explore", "40",
+        "examples/standalone/ts/06-nested-control-flow.ts:classifyHttpResponse"
+      ],
+      "language": "typescript",
+      "timing_target": "shatter",
+      "cache_mode": "warm",
+      "warmups": 1,
+      "iterations": 5,
+      "timeout_seconds": 120,
+      "profilers": ["perf-stat"]
+    },
+
+    {
+      "id": "isolation-explore-ts-branchier-none",
+      "kind": "command",
+      "description": "Isolation corpus: branchier TS function (22 branches, cron parser), isolation=none. Stresses shrink/refine solver iterations.",
+      "isolation_mode": "none",
+      "command": [
+        "target/debug/shatter",
+        "explore",
+        "--max-iterations", "15",
+        "--timeout-explore", "60",
+        "examples/standalone/ts/16-cron-parser.ts:parseCron"
+      ],
+      "language": "typescript",
+      "timing_target": "shatter",
+      "cache_mode": "warm",
+      "warmups": 1,
+      "iterations": 5,
+      "timeout_seconds": 150,
+      "profilers": ["perf-stat"]
+    },
+    {
+      "id": "isolation-explore-ts-branchier-function",
+      "kind": "command",
+      "description": "Isolation corpus: branchier TS function (22 branches, cron parser), isolation=function.",
+      "isolation_mode": "function",
+      "command": [
+        "target/debug/shatter",
+        "explore",
+        "--max-iterations", "15",
+        "--timeout-explore", "60",
+        "examples/standalone/ts/16-cron-parser.ts:parseCron"
+      ],
+      "language": "typescript",
+      "timing_target": "shatter",
+      "cache_mode": "warm",
+      "warmups": 1,
+      "iterations": 5,
+      "timeout_seconds": 150,
+      "profilers": ["perf-stat"]
+    },
+    {
+      "id": "isolation-explore-ts-branchier-serial",
+      "kind": "command",
+      "description": "Isolation corpus: branchier TS function (22 branches, cron parser), isolation=serial.",
+      "isolation_mode": "serial",
+      "command": [
+        "target/debug/shatter",
+        "explore",
+        "--max-iterations", "15",
+        "--timeout-explore", "60",
+        "examples/standalone/ts/16-cron-parser.ts:parseCron"
+      ],
+      "language": "typescript",
+      "timing_target": "shatter",
+      "cache_mode": "warm",
+      "warmups": 1,
+      "iterations": 5,
+      "timeout_seconds": 150,
+      "profilers": ["perf-stat"]
+    },
+
+    {
+      "id": "isolation-scan-ts-none",
+      "kind": "command",
+      "description": "Isolation corpus: scan over standalone TS examples (multi-function), isolation=none.",
+      "isolation_mode": "none",
+      "command": [
+        "target/debug/shatter",
+        "scan",
+        "--parallelism", "2",
+        "--timeout-per-fn", "30",
+        "examples/standalone/ts"
+      ],
+      "language": "typescript",
+      "timing_target": "shatter",
+      "cache_mode": "warm",
+      "warmups": 1,
+      "iterations": 3,
+      "timeout_seconds": 300,
+      "profilers": ["perf-stat"]
+    },
+    {
+      "id": "isolation-scan-ts-function",
+      "kind": "command",
+      "description": "Isolation corpus: scan over standalone TS examples (multi-function), isolation=function.",
+      "isolation_mode": "function",
+      "command": [
+        "target/debug/shatter",
+        "scan",
+        "--parallelism", "2",
+        "--timeout-per-fn", "30",
+        "examples/standalone/ts"
+      ],
+      "language": "typescript",
+      "timing_target": "shatter",
+      "cache_mode": "warm",
+      "warmups": 1,
+      "iterations": 3,
+      "timeout_seconds": 300,
+      "profilers": ["perf-stat"]
+    },
+    {
+      "id": "isolation-scan-ts-serial",
+      "kind": "command",
+      "description": "Isolation corpus: scan over standalone TS examples (multi-function), isolation=serial.",
+      "isolation_mode": "serial",
+      "command": [
+        "target/debug/shatter",
+        "scan",
+        "--parallelism", "2",
+        "--timeout-per-fn", "30",
+        "examples/standalone/ts"
+      ],
+      "language": "typescript",
+      "timing_target": "shatter",
+      "cache_mode": "warm",
+      "warmups": 1,
+      "iterations": 3,
+      "timeout_seconds": 300,
+      "profilers": ["perf-stat"]
+    },
+
+    {
+      "id": "isolation-explore-go-branchier-none",
+      "kind": "command",
+      "description": "Isolation corpus: branchier Go function (13 branches, language negotiation), isolation=none. Stresses Go module load and transpile.",
+      "isolation_mode": "none",
+      "command": [
+        "target/debug/shatter",
+        "explore",
+        "--max-iterations", "10",
+        "--timeout-explore", "40",
+        "examples/standalone/go/18-accept-language.go:NegotiateLanguage"
+      ],
+      "language": "go",
+      "timing_target": "shatter",
+      "cache_mode": "warm",
+      "warmups": 1,
+      "iterations": 5,
+      "timeout_seconds": 150,
+      "profilers": ["perf-stat"]
+    },
+    {
+      "id": "isolation-explore-go-branchier-function",
+      "kind": "command",
+      "description": "Isolation corpus: branchier Go function (13 branches, language negotiation), isolation=function.",
+      "isolation_mode": "function",
+      "command": [
+        "target/debug/shatter",
+        "explore",
+        "--max-iterations", "10",
+        "--timeout-explore", "40",
+        "examples/standalone/go/18-accept-language.go:NegotiateLanguage"
+      ],
+      "language": "go",
+      "timing_target": "shatter",
+      "cache_mode": "warm",
+      "warmups": 1,
+      "iterations": 5,
+      "timeout_seconds": 150,
+      "profilers": ["perf-stat"]
+    },
+    {
+      "id": "isolation-explore-go-branchier-serial",
+      "kind": "command",
+      "description": "Isolation corpus: branchier Go function (13 branches, language negotiation), isolation=serial.",
+      "isolation_mode": "serial",
+      "command": [
+        "target/debug/shatter",
+        "explore",
+        "--max-iterations", "10",
+        "--timeout-explore", "40",
+        "examples/standalone/go/18-accept-language.go:NegotiateLanguage"
+      ],
+      "language": "go",
+      "timing_target": "shatter",
+      "cache_mode": "warm",
+      "warmups": 1,
+      "iterations": 5,
+      "timeout_seconds": 150,
+      "profilers": ["perf-stat"]
     }
   ]
 }
