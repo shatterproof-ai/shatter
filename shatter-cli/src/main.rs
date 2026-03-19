@@ -149,6 +149,7 @@ async fn main() -> ExitCode {
             refine_budget,
             mcdc,
             isolation,
+            capture_side_effects,
         } => {
             // Set SHATTER_SETUP_TIMEOUT env var for frontends if --setup-timeout provided.
             if let Some(secs) = setup_timeout {
@@ -220,6 +221,7 @@ async fn main() -> ExitCode {
                 refine_budget,
                 mcdc,
                 isolation.into(),
+                capture_side_effects,
                 cli.format,
             )
             .await
@@ -329,6 +331,7 @@ async fn main() -> ExitCode {
             fail_on_setup_error: _,
             scheduler_policy,
             isolation,
+            capture_side_effects,
         } => {
             let parsed_policy: shatter_core::scheduler_policy::SchedulerPolicy =
                 match scheduler_policy.parse() {
@@ -389,6 +392,7 @@ async fn main() -> ExitCode {
                 no_seeds,
                 parsed_policy,
                 isolation.into(),
+                capture_side_effects,
             )
             .await
         }

@@ -619,6 +619,7 @@ mod tests {
             meta_config: crate::strategy::MetaConfig::default(),
             shrink_budget: 0,
             isolation: crate::explorer::IsolationMode::None,
+            capture_side_effects: false,
         };
 
         let observe_config = ObserveConfig::from(&explore_config);
