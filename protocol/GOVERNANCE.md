@@ -128,6 +128,34 @@ The same checks run in CI via:
 
 Both tasks exit non-zero on failure and block merges.
 
+## Frontend Parity Contract
+
+**Output parity** — the observable wire format, response fields, error codes, and behavioral semantics — is required across all frontends for every protocol command. Frontends must produce structurally equivalent responses to the same input. Differences that are acceptable in conformance are listed under `known_drifts` in `conformance_cases.yaml`.
+
+**Implementation details** — internal types, helper functions, data structures, and language-specific idioms — do NOT need to match across frontends.
+
+### When to update the parity contract
+
+Update the parity contract (in the affected frontend's `CLAUDE.md` and in `conformance_cases.yaml` if drift is expected) when:
+
+- Adding a new command handler
+- Adding, renaming, or removing response fields
+- Changing error codes, error categories, or error semantics
+- Changing a capability or setup level
+- Any change that alters the JSON a frontend writes to stdout
+
+Do NOT update the parity contract for internal refactors, type renames, or implementation changes that leave JSON output identical.
+
+### How to verify parity
+
+Run the conformance harness after any protocol-visible change:
+
+```bash
+npx task conformance
+```
+
+Unexpected drift (a mismatch not listed in `known_drifts`) is a bug. Either fix the diverging frontend or, if the difference is intentional, document it in `known_drifts` with an explanation.
+
 ## Known Drifts
 
 Cross-frontend mismatches that are tracked but not yet resolved are documented in `protocol/conformance/conformance_cases.yaml` under the `known_drifts` key. These produce warnings (not failures) in the conformance harness. Each drift entry includes the affected frontends and a description of the mismatch.
