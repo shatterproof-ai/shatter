@@ -1,0 +1,20 @@
+{
+  "capabilities": [
+    "analyze",
+    "complex_type:big_decimal",
+    "complex_type:big_int",
+    "complex_type:date",
+    "complex_type:duration",
+    "complex_type:error",
+    "complex_type:ip_address",
+    "complex_type:rational",
+    "complex_type:reg_exp",
+    "complex_type:url",
+    "execute",
+    "generate",
+    "instrument",
+    "setup",
+    "teardown"
+  ],
+  "status": "handshake"
+}

@@ -1,0 +1,174 @@
+# Golden test cases for cross-frontend parity.
+#
+# Each case defines a request sequence and which response fields are "golden" —
+# recorded in protocol/conformance/golden/ and compared on every test run.
+#
+# Dynamic fields (protocol_version, id, language, frontend_version) are always
+# excluded from golden comparison. Stable fields (status, code, capabilities)
+# are recorded at their actual values and must match exactly.
+#
+# Run `python3 protocol/conformance/run_golden_tests.py --update` to regenerate
+# golden files after an intentional change. Review the diff before committing.
+
+# Frontends under test. Must be built before running.
+frontends:
+  noop:
+    command: ["bash", "protocol/noop-frontend.sh"]
+  typescript:
+    command: ["node", "--no-warnings", "shatter-ts/dist/main.js"]
+    build_check: "shatter-ts/dist/main.js"
+  go:
+    command: ["shatter-go/bin/shatter-go"]
+    build_check: "shatter-go/bin/shatter-go"
+  rust:
+    command: ["shatter-rust/target/debug/shatter-rust"]
+    build_check: "shatter-rust/target/debug/shatter-rust"
+
+cases:
+  # -------------------------------------------------------------------------
+  # handshake — per-frontend golden (capabilities differ per frontend)
+  # Primary guard against unintended required-capability divergence.
+  # -------------------------------------------------------------------------
+  - name: handshake
+    description: >
+      Each frontend advertises its capabilities during the handshake.
+      Golden files record the exact capability list per frontend.
+      Test fails if any frontend adds, removes, or renames a capability.
+    per_frontend_golden: true   # one golden file per frontend, not a shared file
+    check_against_registry: true  # also verify against registry.yaml declarations
+    golden_fields:
+      - status
+      - capabilities
+    sort_fields:
+      - capabilities             # sort before comparison to ignore ordering
+    requests:
+      - protocol_version: "0.1.0"
+        id: 1
+        command: handshake
+        capabilities:
+          - analyze
+          - instrument
+          - execute
+          - setup
+          - teardown
+          - generate
+    capture_index: 0             # index into requests list to capture (0-based)
+
+  # -------------------------------------------------------------------------
+  # shutdown — shared golden (all frontends must return shutdown_ack)
+  # -------------------------------------------------------------------------
+  - name: shutdown
+    description: >
+      All frontends must respond with shutdown_ack to a shutdown request.
+      This is a baseline parity check; all frontends share one golden file.
+    per_frontend_golden: false  # shared golden for all frontends
+    golden_fields:
+      - status
+    sort_fields: []
+    # Need handshake first so frontends are ready; shutdown is the real case
+    requests:
+      - protocol_version: "0.1.0"
+        id: 1
+        command: handshake
+        capabilities:
+          - analyze
+          - instrument
+          - execute
+      - protocol_version: "0.1.0"
+        id: 2
+        command: shutdown
+    capture_index: 1
+
+  # -------------------------------------------------------------------------
+  # invalid_command — shared golden (all frontends return error/invalid_request)
+  # -------------------------------------------------------------------------
+  - name: invalid_command
+    description: >
+      All frontends must return an error with code=invalid_request for an
+      unrecognised command. Verifies error code parity.
+    per_frontend_golden: false
+    golden_fields:
+      - status
+      - code
+    sort_fields: []
+    requests:
+      - protocol_version: "0.1.0"
+        id: 1
+        command: handshake
+        capabilities:
+          - analyze
+          - instrument
+          - execute
+      - protocol_version: "0.1.0"
+        id: 2
+        command: __nonexistent_command__
+    capture_index: 1
+
+  # -------------------------------------------------------------------------
+  # analyze_file_not_found — shared golden for real frontends
+  # Noop frontend is skipped (it stubs all responses regardless).
+  # -------------------------------------------------------------------------
+  - name: analyze_file_not_found
+    description: >
+      Real frontends must return error/file_not_found when asked to analyse
+      a path that does not exist. Noop is skipped (always returns stub).
+    per_frontend_golden: false
+    skip_frontends:
+      - noop
+    golden_fields:
+      - status
+      - code
+    sort_fields: []
+    requests:
+      - protocol_version: "0.1.0"
+        id: 1
+        command: handshake
+        capabilities:
+          - analyze
+          - instrument
+          - execute
+      - protocol_version: "0.1.0"
+        id: 2
+        command: analyze
+        file: "__nonexistent_golden_test__/no_such_file.ts"
+        function: "noSuchFn"
+        project_root: "."
+    capture_index: 1
+
+  # -------------------------------------------------------------------------
+  # execute_noop — noop-only golden
+  # Validates side_effects field is present and is an array.
+  # Real frontends are skipped (execute requires a real instrumented function).
+  # -------------------------------------------------------------------------
+  - name: execute_noop
+    description: >
+      Exercises the execute response structure via the noop frontend,
+      which always returns an empty result. Validates that side_effects is
+      present as an array (covers the side_effects protocol output shape).
+    per_frontend_golden: false   # noop-only, single golden
+    skip_frontends:
+      - typescript
+      - go
+      - rust
+    golden_fields:
+      - status
+      - branch_path
+      - side_effects
+    sort_fields: []
+    requests:
+      - protocol_version: "0.1.0"
+        id: 1
+        command: handshake
+        capabilities:
+          - analyze
+          - instrument
+          - execute
+      - protocol_version: "0.1.0"
+        id: 2
+        command: execute
+        function: "stub"
+        inputs: []
+        mocks: []
+        setup_context: null
+        capture_side_effects: true
+    capture_index: 1

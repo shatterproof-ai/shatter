@@ -67,13 +67,23 @@ Add round-trip serialization tests in each frontend.
 
 If the change adds a new command, alters response structure, or changes error handling, update `protocol/conformance/conformance_cases.yaml` with new test cases. Document any expected cross-frontend differences in the `known_drifts` section.
 
-### 7. Update the protocol spec
+### 7. Update golden tests
+
+If the change alters a frontend's **capability declarations** (command capabilities or complex-type capabilities), or changes the stable output of the handshake, shutdown, or error responses, regenerate the golden files:
+
+```bash
+python3 protocol/conformance/run_golden_tests.py --update
+```
+
+Review the diff of `protocol/conformance/golden/` before committing. Any capability change will show up here as a visible golden diff, making it easy to confirm the change is intentional.
+
+### 8. Update the protocol spec
 
 If the change affects wire format or semantics, update `PROTOCOL.md` with the new message examples and behavioral documentation.
 
 ## Validation Checks
 
-Run **all four** checks locally before declaring the change complete:
+Run **all five** checks locally before declaring the change complete:
 
 ### Registry validation
 
@@ -111,6 +121,20 @@ Or via Taskfile:
 npx task conformance
 ```
 
+### Golden tests
+
+Compares each frontend's capability declarations and core protocol outputs against pre-recorded golden files in `protocol/conformance/golden/`. Fails if any frontend adds, removes, or renames a capability, or changes a stable output (error code, shutdown status). Also validates capabilities against `registry.yaml`.
+
+```bash
+python3 protocol/conformance/run_golden_tests.py
+```
+
+Or via Taskfile:
+
+```bash
+npx task golden-test
+```
+
 ### Per-language tests
 
 ```bash
@@ -124,9 +148,10 @@ cd shatter-go && go test ./...      # Go frontend
 The same checks run in CI via:
 
 - `npx task schemas` — schema + fixture validation
-- `npx task conformance` — cross-frontend conformance
+- `npx task conformance` — cross-frontend structural conformance
+- `npx task golden-test` — cross-frontend parity golden tests (capability and output matching)
 
-Both tasks exit non-zero on failure and block merges.
+All three tasks exit non-zero on failure and block merges.
 
 ## Known Drifts
 
