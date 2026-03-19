@@ -605,6 +605,7 @@ mod tests {
             triage_mispredictions: 0,
             nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
             mcdc_summary: None,
+            pipeline_overlaps: 0,
         };
 
         let output: ObservationOutput = concolic.into();

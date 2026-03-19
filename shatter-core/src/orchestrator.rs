@@ -317,6 +317,8 @@ pub struct ExploreResult {
     /// MC/DC summary: (total_conditions, independent_conditions, opaque_conditions).
     /// Present only when `ExploreConfig::mcdc` is true.
     pub mcdc_summary: Option<(usize, usize, usize)>,
+    /// Number of times Z3 solving was successfully pipelined with the next observe.
+    pub pipeline_overlaps: usize,
 }
 
 /// Errors that can occur during concolic exploration.
@@ -692,6 +694,7 @@ pub(crate) fn classify_iteration_positions(
 ///
 /// Invariance is revocable: if a branch previously marked invariant is observed
 /// to vary, it is removed from the invariant set.
+#[derive(Clone)]
 pub(crate) struct LoopInvariantDetector {
     /// Maps (loop_id, branch_id) → list of observed `taken` values.
     observations: HashMap<(u32, u32), Vec<bool>>,
@@ -851,6 +854,7 @@ pub(crate) fn extract_loop_context(
 /// When a loop converges, branches enclosed by it are candidates for negation
 /// suppression — further Z3 solving on those branches is unlikely to discover
 /// new paths.
+#[derive(Clone)]
 pub(crate) struct LoopCoverageTracker {
     /// Per loop_id: set of (branch_id, taken) pairs observed.
     coverage: HashMap<u32, HashSet<(u32, bool)>>,
@@ -938,15 +942,153 @@ impl LoopCoverageTracker {
             false
         }
     }
+
+    /// Return a snapshot of the converged loop IDs. Used by the pipelining path
+    /// to capture the convergence set at build-time so it can be moved into
+    /// `spawn_blocking` without borrowing `self`.
+    pub(crate) fn converged_snapshot(&self) -> HashSet<u32> {
+        self.converged.clone()
+    }
+}
+
+/// Input bundle for the `spawn_blocking` Z3 solve phase.
+///
+/// All fields are owned — safe to move to a blocking thread. Built by
+/// `build_z3_input` after updating invariant-detector and loop-coverage state
+/// on the main thread.
+struct Z3SolveInput {
+    obs: Observation,
+    solvable_with_idx: Vec<(usize, SymExpr)>,
+    invariant_skip: HashSet<usize>,
+    loop_context: HashMap<u32, HashSet<u32>>,
+    converged_loops: HashSet<u32>,
+    param_infos: Vec<ParamInfo>,
+    param_names: Vec<String>,
+    solver_timeout_ms: Option<u64>,
+}
+
+/// Output from the Z3 solve phase — no mutable state mutations.
+struct Z3SolveOutput {
+    /// New worklist candidates produced by successful Z3 solves.
+    candidates: Vec<WorklistEntry>,
+    /// Number of inputs produced by Z3.
+    z3_count: usize,
+    /// Branch IDs that should have `increment_stall` called on them (Unsat/Err).
+    stall_branch_ids: Vec<u32>,
+}
+
+/// Pure Z3 solving phase: negates branch constraints to discover new paths.
+///
+/// Takes owned data — safe to run in `tokio::task::spawn_blocking`. Mirrors the
+/// Z3 loop from `solve_and_generate` but performs no mutable state mutations
+/// (stall bookkeeping is returned via `Z3SolveOutput::stall_branch_ids`).
+fn z3_solve_step(input: Z3SolveInput) -> Z3SolveOutput {
+    let mut output = Z3SolveOutput {
+        candidates: Vec::new(),
+        z3_count: 0,
+        stall_branch_ids: Vec::new(),
+    };
+
+    // Only process new-path observations.
+    if !input.obs.is_new_path {
+        return output;
+    }
+
+    let solvable: Vec<SymExpr> = input.solvable_with_idx.iter().map(|(_, e)| e.clone()).collect();
+
+    if solvable.is_empty() {
+        return output;
+    }
+
+    for (solve_idx, &(branch_idx, _)) in input.solvable_with_idx.iter().enumerate() {
+        // Skip redundant later occurrences of loop-invariant branches.
+        if input.invariant_skip.contains(&branch_idx) {
+            continue;
+        }
+        // Skip branches in converged loops.
+        let branch_id = input.obs.result.branch_path.get(branch_idx).map_or(0, |bd| bd.branch_id);
+        if let Some(loop_ids) = input.loop_context.get(&branch_id)
+            && loop_ids.iter().any(|id| input.converged_loops.contains(id))
+        {
+            continue;
+        }
+
+        match solver::solve_for_new_path(&solvable, solve_idx, input.solver_timeout_ms, &input.param_infos) {
+            Ok(SolveResult::Sat(values)) => {
+                let new_inputs = overlay_solved_values(&input.obs.inputs, &values, &input.param_names);
+                output.candidates.push(WorklistEntry {
+                    inputs: new_inputs,
+                    source: InputSource::Z3Solved,
+                    fitness: None,
+                    mock_values: input.obs.mock_values.clone(),
+                });
+                output.z3_count += 1;
+            }
+            Ok(SolveResult::Unsat) | Err(_) => {
+                output.stall_branch_ids.push(branch_id);
+            }
+        }
+    }
+
+    output
+}
+
+/// Build a `Z3SolveInput` bundle from a new-path observation, updating the
+/// invariant detector and loop coverage tracker in the process.
+///
+/// Must run on the main thread (borrows mutable state). Returns an owned bundle
+/// that can be moved to `spawn_blocking`.
+#[allow(clippy::too_many_arguments)]
+fn build_z3_input(
+    obs: &Observation,
+    invariant_detector: &mut LoopInvariantDetector,
+    loop_coverage_tracker: &mut LoopCoverageTracker,
+    param_infos: &[ParamInfo],
+    param_names: &[String],
+    solver_timeout_ms: Option<u64>,
+) -> Z3SolveInput {
+    let sym_constraints = extract_sym_constraints(&obs.result);
+    let solvable_with_idx: Vec<(usize, SymExpr)> = sym_constraints
+        .iter()
+        .enumerate()
+        .filter_map(|(i, c)| c.as_ref().map(|e| (i, e.clone())))
+        .collect();
+
+    // Update invariant-detection state and compute skip set.
+    invariant_detector.observe(&obs.result.scope_events, &obs.result.branch_path);
+    let invariant_skip = invariant_detector.skip_indices(
+        &obs.result.scope_events,
+        &obs.result.branch_path,
+    );
+
+    // Update loop-coverage state and snapshot converged loops.
+    let loop_context = extract_loop_context(&obs.result.scope_events);
+    loop_coverage_tracker.observe(&loop_context, &obs.result.branch_path);
+    let converged_loops = loop_coverage_tracker.converged_snapshot();
+
+    Z3SolveInput {
+        obs: obs.clone(),
+        solvable_with_idx,
+        invariant_skip,
+        loop_context,
+        converged_loops,
+        param_infos: param_infos.to_vec(),
+        param_names: param_names.to_vec(),
+        solver_timeout_ms,
+    }
 }
 
 /// Solve/Generate phase: process new-path observations and produce candidate inputs.
 ///
 /// For each new-path observation:
-/// - Extract symbolic constraints and negate each with Z3
+/// - Extract symbolic constraints and negate each with Z3 (unless `skip_z3_phase`)
 /// - Try boundary search for Unknown constraints (interpolate between witnesses)
 /// - Fall back to blind fuzzing for Unknown constraints without witnesses
 /// - Drill stalled frontiers with targeted mutations
+///
+/// `skip_z3_phase`: when `true`, the Z3 loop and the invariant/loop-coverage state
+/// updates are skipped. Pass `true` from the pipelined path where `build_z3_input`
+/// + `z3_solve_step` have already handled those steps.
 #[allow(clippy::too_many_arguments)] // boundary search + fitness scoring need broad context
 fn solve_and_generate(
     observations: &[Observation],
@@ -966,6 +1108,7 @@ fn solve_and_generate(
     loop_coverage_tracker: &mut LoopCoverageTracker,
     meta_strategy: &mut MetaStrategy,
     strategy_ctx: &StrategyContext,
+    skip_z3_phase: bool,
 ) -> SolveOutput {
     let mut output = SolveOutput::default();
 
@@ -981,51 +1124,57 @@ fn solve_and_generate(
             .collect();
         let solvable: Vec<SymExpr> = solvable_with_idx.iter().map(|(_, e)| e.clone()).collect();
 
-        // Loop-invariant detection: observe this trace and compute skip indices.
-        invariant_detector.observe(&obs.result.scope_events, &obs.result.branch_path);
-        let invariant_skip = invariant_detector.skip_indices(
-            &obs.result.scope_events,
-            &obs.result.branch_path,
-        );
+        if skip_z3_phase {
+            // Invariant/coverage state was already updated by `build_z3_input`;
+            // Z3 solving was already performed by `z3_solve_step` in spawn_blocking.
+            // Skip both here to avoid double-counting.
+        } else {
+            // Loop-invariant detection: observe this trace and compute skip indices.
+            invariant_detector.observe(&obs.result.scope_events, &obs.result.branch_path);
+            let invariant_skip = invariant_detector.skip_indices(
+                &obs.result.scope_events,
+                &obs.result.branch_path,
+            );
 
-        // Coverage-guided diminishing returns: build loop context and observe.
-        let loop_context = extract_loop_context(&obs.result.scope_events);
-        loop_coverage_tracker.observe(&loop_context, &obs.result.branch_path);
+            // Coverage-guided diminishing returns: build loop context and observe.
+            let loop_context = extract_loop_context(&obs.result.scope_events);
+            loop_coverage_tracker.observe(&loop_context, &obs.result.branch_path);
 
-        // Try to negate each branch constraint with Z3.
-        if !solvable.is_empty() {
-            for (solve_idx, &(branch_idx, _)) in solvable_with_idx.iter().enumerate() {
-                // Skip redundant later occurrences of loop-invariant branches.
-                if invariant_skip.contains(&branch_idx) {
-                    continue;
-                }
-                // Skip branches in converged loops.
-                if loop_coverage_tracker.should_skip_branch(
-                    obs.result.branch_path.get(branch_idx).map_or(0, |bd| bd.branch_id),
-                    &loop_context,
-                ) {
-                    continue;
-                }
-                match solver::solve_for_new_path(&solvable, solve_idx, config.solver_timeout_ms, param_infos) {
-                    Ok(SolveResult::Sat(values)) => {
-                        let new_inputs =
-                            overlay_solved_values(&obs.inputs, &values, param_names);
-                        output.candidates.push(WorklistEntry {
-                            inputs: new_inputs,
-                            source: InputSource::Z3Solved,
-                            fitness: None,
-                            mock_values: obs.mock_values.clone(),
-                        });
-                        output.z3_count += 1;
+            // Try to negate each branch constraint with Z3.
+            if !solvable.is_empty() {
+                for (solve_idx, &(branch_idx, _)) in solvable_with_idx.iter().enumerate() {
+                    // Skip redundant later occurrences of loop-invariant branches.
+                    if invariant_skip.contains(&branch_idx) {
+                        continue;
                     }
-                    Ok(SolveResult::Unsat) => {
-                        if let Some(bd) = obs.result.branch_path.get(branch_idx) {
-                            frontier_set.increment_stall(bd.branch_id);
+                    // Skip branches in converged loops.
+                    if loop_coverage_tracker.should_skip_branch(
+                        obs.result.branch_path.get(branch_idx).map_or(0, |bd| bd.branch_id),
+                        &loop_context,
+                    ) {
+                        continue;
+                    }
+                    match solver::solve_for_new_path(&solvable, solve_idx, config.solver_timeout_ms, param_infos) {
+                        Ok(SolveResult::Sat(values)) => {
+                            let new_inputs =
+                                overlay_solved_values(&obs.inputs, &values, param_names);
+                            output.candidates.push(WorklistEntry {
+                                inputs: new_inputs,
+                                source: InputSource::Z3Solved,
+                                fitness: None,
+                                mock_values: obs.mock_values.clone(),
+                            });
+                            output.z3_count += 1;
                         }
-                    }
-                    Err(_) => {
-                        if let Some(bd) = obs.result.branch_path.get(branch_idx) {
-                            frontier_set.increment_stall(bd.branch_id);
+                        Ok(SolveResult::Unsat) => {
+                            if let Some(bd) = obs.result.branch_path.get(branch_idx) {
+                                frontier_set.increment_stall(bd.branch_id);
+                            }
+                        }
+                        Err(_) => {
+                            if let Some(bd) = obs.result.branch_path.get(branch_idx) {
+                                frontier_set.increment_stall(bd.branch_id);
+                            }
                         }
                     }
                 }
@@ -1477,6 +1626,11 @@ pub async fn explore(
 
     let explore_start = Instant::now();
     let mut plateau_counter: usize = 0;
+    // Pipeline support: buffer speculatively-observed entries so that Z3
+    // solving (CPU) can overlap with the next frontend execution (I/O).
+    let mut pending_obs: std::collections::VecDeque<(WorklistEntry, ObserveOneResult)> =
+        std::collections::VecDeque::new();
+    let mut pipeline_overlaps: usize = 0;
 
     // --- Two-phase exploration loop: Observe → Solve/Generate ---
     //
@@ -1484,37 +1638,46 @@ pub async fn explore(
     //   1. Observe — execute the entry, classify the path
     //   2. Solve/Generate — if new path, extract constraints and produce candidates
     //
-    // Solving after each observation (not batched) preserves the original
-    // convergence behavior: Z3 candidates from observation N are available
-    // for execution at iteration N+1.
-    while let Some(mut entry) = worklist.pop() {
-        // --- LiveFirst mock adjustment (parity with explorer.rs) ---
-        // When entry has no per-execution mocks, copy from config so overrides
-        // can be applied per-dep without mutating shared config.
-        if entry.mock_values.is_empty() && !live_first_states.is_empty() {
-            entry.mock_values = config.mocks.clone();
-        }
-        apply_live_first_overrides(&live_first_states, &mut entry.mock_values);
+    // When the worklist has a next entry available after a new-path observation,
+    // we pipeline: spawn Z3 solving on a blocking thread while executing the
+    // next entry concurrently via tokio::join!.  The speculative result is
+    // queued in `pending_obs` and processed in the next loop iteration.
+    loop {
+        // Drain speculatively-observed entries first; only pop worklist when queue is empty.
+        let (_entry, observe_result) = if let Some(pending) = pending_obs.pop_front() {
+            // LiveFirst was already applied before the speculative observe — do not re-apply.
+            pending
+        } else {
+            let Some(mut entry) = worklist.pop() else { break };
+            // --- LiveFirst mock adjustment (parity with explorer.rs) ---
+            // When entry has no per-execution mocks, copy from config so overrides
+            // can be applied per-dep without mutating shared config.
+            if entry.mock_values.is_empty() && !live_first_states.is_empty() {
+                entry.mock_values = config.mocks.clone();
+            }
+            apply_live_first_overrides(&live_first_states, &mut entry.mock_values);
 
-        // Phase 1: Observe — execute and classify one worklist entry.
-        let budget = ExploreBudget {
-            unique_paths: executions.len(),
-            total_executions,
-            plateau_counter,
-            explore_start,
+            // Phase 1: Observe — execute and classify one worklist entry.
+            let budget = ExploreBudget {
+                unique_paths: executions.len(),
+                total_executions,
+                plateau_counter,
+                explore_start,
+            };
+
+            let result = observe_one(
+                &entry,
+                frontend,
+                function_name,
+                config,
+                &mut covered_paths,
+                &mut triage_state,
+                &budget,
+                &setup_context,
+            )
+            .await?;
+            (entry, result)
         };
-
-        let observe_result = observe_one(
-            &entry,
-            frontend,
-            function_name,
-            config,
-            &mut covered_paths,
-            &mut triage_state,
-            &budget,
-            &setup_context,
-        )
-        .await?;
 
         let obs = match observe_result {
             ObserveOneResult::Observed(obs) => *obs,
@@ -1744,6 +1907,81 @@ pub async fn explore(
         executions.push(obs.result.clone());
 
         // Phase 2: Solve/Generate — produce new candidates from this observation.
+        //
+        // For new-path observations: build Z3 input (updates invariant/coverage state
+        // on the main thread), then run Z3 solving in spawn_blocking while optionally
+        // executing a lookahead entry concurrently via tokio::join!.
+        //
+        // For duplicate-path observations: the meta/drill phase still runs (covers
+        // drilling of stalled frontiers regardless of path novelty).
+        let (z3_output, pending_lookahead) = if obs.is_new_path {
+            let z3_input = build_z3_input(
+                &obs,
+                &mut invariant_detector,
+                &mut loop_coverage_tracker,
+                param_infos,
+                &param_names,
+                config.solver_timeout_ms,
+            );
+
+            // Speculatively pop the next worklist entry for lookahead.
+            let lookahead_entry_opt: Option<WorklistEntry> = worklist.pop().map(|mut next| {
+                // Apply LiveFirst to the lookahead entry now, before concurrent observe.
+                if next.mock_values.is_empty() && !live_first_states.is_empty() {
+                    next.mock_values = config.mocks.clone();
+                }
+                apply_live_first_overrides(&live_first_states, &mut next.mock_values);
+                next
+            });
+
+            // Snapshot budget for the concurrent lookahead observe (if it runs).
+            let budget_lookahead = ExploreBudget {
+                unique_paths: executions.len(),
+                total_executions,
+                plateau_counter,
+                explore_start,
+            };
+
+            let z3_handle = tokio::task::spawn_blocking(move || z3_solve_step(z3_input));
+
+            let (z3_res, lookahead_obs_opt) = if let Some(next_entry) = lookahead_entry_opt {
+                let (z3_res, obs_res) = tokio::join!(
+                    z3_handle,
+                    observe_one(
+                        &next_entry,
+                        frontend,
+                        function_name,
+                        config,
+                        &mut covered_paths,
+                        &mut triage_state,
+                        &budget_lookahead,
+                        &setup_context,
+                    )
+                );
+                pipeline_overlaps += 1;
+                (z3_res.expect("z3 solve panicked"), Some((next_entry, obs_res?)))
+            } else {
+                (z3_handle.await.expect("z3 solve panicked"), None)
+            };
+
+            // Apply stalls from Z3 Unsat/Err results.
+            for bid in &z3_res.stall_branch_ids {
+                frontier_set.increment_stall(*bid);
+            }
+            z3_generated += z3_res.z3_count;
+
+            (z3_res, lookahead_obs_opt)
+        } else {
+            // Duplicate path: no Z3 needed, no lookahead.
+            (Z3SolveOutput { candidates: vec![], z3_count: 0, stall_branch_ids: vec![] }, None)
+        };
+
+        // Meta/drill phase (always on main thread — needs mutable state access).
+        // `skip_z3_phase=true` when we just ran `z3_solve_step` via spawn_blocking
+        // (obs.is_new_path), to avoid double-counting invariant/coverage state updates
+        // and re-running the Z3 loop. For duplicate-path observations the flag has no
+        // effect since the inner loop already filters on `is_new_path`.
+        let skip_z3 = obs.is_new_path; // pipelined path already handled Z3
         let solve_output = solve_and_generate(
             &[obs],
             &mut frontier_set,
@@ -1762,15 +2000,23 @@ pub async fn explore(
             &mut loop_coverage_tracker,
             &mut meta_strategy,
             &strategy_ctx,
+            skip_z3,
         );
 
-        z3_generated += solve_output.z3_count;
+        // Z3 candidates come from the pipelined z3_output; meta/drill from solve_output.
+        // z3_count is already accumulated above; add meta/drill counts here.
         fuzz_generated += solve_output.fuzz_count;
         drill_generated += solve_output.drill_count;
         boundary_generated += solve_output.boundary_count;
 
-        for candidate in solve_output.candidates {
+        // Push Z3 candidates (from pipelined phase) then meta/drill candidates.
+        for candidate in z3_output.candidates.into_iter().chain(solve_output.candidates) {
             worklist.push(candidate);
+        }
+
+        // Queue the speculatively-observed lookahead entry for the next iteration.
+        if let Some(pair) = pending_lookahead {
+            pending_obs.push_back(pair);
         }
     }
 
@@ -1885,6 +2131,7 @@ pub async fn explore(
         boundary_results,
         shrunk_witnesses,
         mcdc_summary,
+        pipeline_overlaps,
     })
 }
 
@@ -2465,6 +2712,7 @@ mod tests {
             &mut LoopCoverageTracker::new(0),
             &mut MetaStrategy::new(vec![], Default::default()),
             &StrategyContext { params: vec![], literals: vec![], capabilities: FrontendCapabilities::default() },
+            false,
         );
 
         assert!(output.candidates.is_empty());
@@ -2532,6 +2780,7 @@ mod tests {
             &mut LoopCoverageTracker::new(0),
             &mut meta,
             &strat_ctx,
+            false,
         );
 
         assert!(output.fuzz_count > 0, "should produce fuzz candidates for unknown constraints");
@@ -2597,6 +2846,7 @@ mod tests {
             &mut LoopCoverageTracker::new(0),
             &mut MetaStrategy::new(vec![], Default::default()),
             &StrategyContext { params: vec![], literals: vec![], capabilities: FrontendCapabilities::default() },
+            false,
         );
 
         assert!(output.z3_count > 0, "should produce Z3 candidates for solvable constraints");
@@ -2604,6 +2854,155 @@ mod tests {
             output.candidates.iter().any(|e| e.source == InputSource::Z3Solved),
             "at least one candidate should be Z3-solved"
         );
+    }
+
+    // -- z3_solve_step unit tests --
+
+    /// `z3_solve_step` with a solvable expression constraint produces a Z3 candidate.
+    #[test]
+    fn z3_solve_step_produces_z3_candidate_for_expr_constraint() {
+        let x_gt_10 = SymExpr::BinOp {
+            op: BinOpKind::Gt,
+            left: Box::new(SymExpr::Param {
+                name: "x".into(),
+                path: vec![],
+            }),
+            right: Box::new(SymExpr::Const(ConstValue::Int(10))),
+        };
+
+        let obs = Observation {
+            inputs: vec![serde_json::json!(0)],
+            result: make_exec_result(vec![BranchDecision {
+                branch_id: 0,
+                line: 5,
+                taken: false,
+                constraint: SymConstraint::Expr { expr: x_gt_10.clone() },
+                conditions: None,
+            }]),
+            source: InputSource::Seed,
+            path_id: 1,
+            is_new_path: true,
+            is_sampled_skip: false,
+            mock_values: vec![],
+        };
+
+        let param_infos = vec![ParamInfo {
+            name: "x".into(),
+            typ: crate::types::TypeInfo::Int,
+            type_name: None,
+        }];
+
+        // `taken=false` means the path condition is NOT(x>10), so negating at index 0
+        // produces x>10 — solver should return a value > 10.
+        let solvable_with_idx = vec![(0usize, SymExpr::UnOp {
+            op: crate::sym_expr::UnOpKind::Not,
+            operand: Box::new(x_gt_10),
+        })];
+
+        let input = Z3SolveInput {
+            obs,
+            solvable_with_idx,
+            invariant_skip: HashSet::new(),
+            loop_context: HashMap::new(),
+            converged_loops: HashSet::new(),
+            param_infos,
+            param_names: vec!["x".to_string()],
+            solver_timeout_ms: None,
+        };
+
+        let output = z3_solve_step(input);
+        assert!(output.z3_count > 0, "z3_solve_step should produce Z3 candidates");
+        assert!(!output.candidates.is_empty());
+        assert!(output.stall_branch_ids.is_empty());
+        assert!(output.candidates.iter().all(|c| c.source == InputSource::Z3Solved));
+    }
+
+    /// `z3_solve_step` skips duplicate-path observations (is_new_path=false).
+    #[test]
+    fn z3_solve_step_skips_non_new_path() {
+        let obs = Observation {
+            inputs: vec![serde_json::json!(0)],
+            result: make_exec_result(vec![]),
+            source: InputSource::Seed,
+            path_id: 1,
+            is_new_path: false, // duplicate
+            is_sampled_skip: false,
+            mock_values: vec![],
+        };
+
+        let input = Z3SolveInput {
+            obs,
+            solvable_with_idx: vec![],
+            invariant_skip: HashSet::new(),
+            loop_context: HashMap::new(),
+            converged_loops: HashSet::new(),
+            param_infos: vec![],
+            param_names: vec![],
+            solver_timeout_ms: None,
+        };
+
+        let output = z3_solve_step(input);
+        assert!(output.candidates.is_empty());
+        assert_eq!(output.z3_count, 0);
+        assert!(output.stall_branch_ids.is_empty());
+    }
+
+    /// `z3_solve_step` skips branches in converged loops.
+    #[test]
+    fn z3_solve_step_skips_converged_loop_branches() {
+        let x_gt_0 = SymExpr::BinOp {
+            op: BinOpKind::Gt,
+            left: Box::new(SymExpr::Param { name: "x".into(), path: vec![] }),
+            right: Box::new(SymExpr::Const(ConstValue::Int(0))),
+        };
+
+        let obs = Observation {
+            inputs: vec![serde_json::json!(5)],
+            result: make_exec_result(vec![BranchDecision {
+                branch_id: 42,
+                line: 1,
+                taken: true,
+                constraint: SymConstraint::Expr { expr: x_gt_0.clone() },
+                conditions: None,
+            }]),
+            source: InputSource::Seed,
+            path_id: 99,
+            is_new_path: true,
+            is_sampled_skip: false,
+            mock_values: vec![],
+        };
+
+        let mut loop_context: HashMap<u32, HashSet<u32>> = HashMap::new();
+        loop_context.insert(42, {
+            let mut s = HashSet::new();
+            s.insert(1u32); // loop_id=1 encloses branch_id=42
+            s
+        });
+
+        let mut converged_loops = HashSet::new();
+        converged_loops.insert(1u32); // loop_id=1 is converged
+
+        let input = Z3SolveInput {
+            obs,
+            solvable_with_idx: vec![(0, x_gt_0)],
+            invariant_skip: HashSet::new(),
+            loop_context,
+            converged_loops,
+            param_infos: vec![ParamInfo {
+                name: "x".into(),
+                typ: crate::types::TypeInfo::Int,
+                type_name: None,
+            }],
+            param_names: vec!["x".to_string()],
+            solver_timeout_ms: None,
+        };
+
+        let output = z3_solve_step(input);
+        assert!(
+            output.candidates.is_empty(),
+            "converged loop branch should be skipped by z3_solve_step"
+        );
+        assert_eq!(output.z3_count, 0);
     }
 
     #[test]
@@ -2785,6 +3184,60 @@ mod tests {
         );
         assert!(result.total_executions >= 2);
         assert!(result.z3_generated > 0, "Z3 should have generated at least one input");
+
+        frontend.shutdown().await.expect("shutdown failed");
+    }
+
+    /// When the worklist has entries available during a new-path observation, the
+    /// orchestrator pipelines Z3 solving with the next frontend execution.
+    /// `pipeline_overlaps` tracks how many times this overlap occurred.
+    ///
+    /// With the concolic-test-frontend (x>10, x==42 branches) and multiple seeds,
+    /// the worklist will be non-empty when a new-path observation triggers the Z3
+    /// phase, so pipelining fires and `pipeline_overlaps` is incremented.
+    #[tokio::test]
+    async fn explore_pipeline_overlaps_populated() {
+        let config = config_for_script("concolic-test-frontend.sh");
+        let mut frontend = Frontend::spawn(&config).await.expect("spawn failed");
+
+        let explore_config = ExploreConfig {
+            max_iterations: 20,
+            max_executions: 100,
+            plateau_threshold: 10,
+            ..Default::default()
+        };
+
+        // Provide multiple seeds so the worklist is non-empty when the first new-path
+        // observation triggers Z3. Pipelining fires when build_z3_input runs and
+        // worklist.pop() returns Some(next_entry).
+        let seeds: Vec<Vec<serde_json::Value>> = (0..5)
+            .map(|i| vec![serde_json::json!(i)])
+            .collect();
+
+        let result = explore(
+            &mut frontend,
+            "f",
+            seeds,
+            vec![],
+            &[ParamInfo { name: "x".into(), typ: crate::types::TypeInfo::Int, type_name: None }],
+            &explore_config,
+            None,
+        )
+        .await
+        .expect("explore failed");
+
+        // The field must be present in ExploreResult (will fail to compile if missing).
+        let _ = result.pipeline_overlaps;
+
+        // With 5 seeds in the worklist, the first new-path observation (x=0 hits x≤10)
+        // will find the next seed (x=1) in the worklist and pipeline Z3 with it.
+        assert!(
+            result.pipeline_overlaps > 0,
+            "expected at least one pipeline overlap with 5 seeds in worklist, got 0 \
+             (unique_paths={}, z3_generated={})",
+            result.unique_paths,
+            result.z3_generated,
+        );
 
         frontend.shutdown().await.expect("shutdown failed");
     }
@@ -3365,6 +3818,7 @@ mod tests {
                     literals: vec![],
                     capabilities: FrontendCapabilities::default(),
                 },
+                false,
             )
         };
 
@@ -3564,6 +4018,7 @@ mod tests {
                     literals: vec![],
                     capabilities: FrontendCapabilities::default(),
                 },
+                false,
             )
         };
 
@@ -3732,6 +4187,7 @@ mod tests {
                     literals: vec![],
                     capabilities: FrontendCapabilities::default(),
                 },
+                false,
             )
         };
 
