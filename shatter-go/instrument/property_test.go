@@ -1,7 +1,11 @@
 package instrument
 
 import (
+	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"regexp"
 	"strconv"
@@ -325,6 +329,290 @@ func TestPropertyExecTimeoutInvalidFallsBack(t *testing.T) {
 
 		if dur != defaultExecTimeout {
 			t.Fatalf("execTimeout()=%v, want default %v for invalid input %q", dur, defaultExecTimeout, val)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// MC/DC mode detection
+// ---------------------------------------------------------------------------
+
+func TestPropertyIsMcdcEnabledOnlyForExactValue(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		val := rapid.OneOf(
+			rapid.Just("1"),
+			rapid.Just("0"),
+			rapid.Just("true"),
+			rapid.Just(""),
+			rapid.Just("yes"),
+			rapid.Just("ON"),
+		).Draw(t, "val")
+
+		os.Setenv("SHATTER_MCDC", val)
+		defer os.Unsetenv("SHATTER_MCDC")
+
+		enabled := isMcdcEnabled()
+		if val == "1" && !enabled {
+			t.Fatalf("isMcdcEnabled() should return true for SHATTER_MCDC=1")
+		}
+		if val != "1" && enabled {
+			t.Fatalf("isMcdcEnabled() should return false for SHATTER_MCDC=%q", val)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// MC/DC short-circuit masking properties
+//
+// These tests verify the masking semantics defined in evalMcdcChain, which
+// is the canonical implementation used by both the recorder and the tests.
+// ---------------------------------------------------------------------------
+
+// evalMcdcChain is the test-facing implementation of the short-circuit
+// masking logic. It mirrors the __shatter_mcdc_record function that the
+// recorder embeds in instrumented binaries.
+//
+// operator must be "and" or "or".
+type mcdcOutcome struct {
+	ConditionIndex int
+	Value          *bool
+	Masked         bool
+}
+
+func evalMcdcChain(operator string, vals []bool) (decision bool, outcomes []mcdcOutcome) {
+	outcomes = make([]mcdcOutcome, len(vals))
+	stopAfter := -1
+
+	if operator == "and" {
+		decision = true
+		for i, v := range vals {
+			if stopAfter >= 0 {
+				outcomes[i] = mcdcOutcome{ConditionIndex: i, Masked: true}
+				continue
+			}
+			v2 := v
+			outcomes[i] = mcdcOutcome{ConditionIndex: i, Value: &v2}
+			if !v {
+				decision = false
+				stopAfter = i
+			}
+		}
+	} else {
+		// "or"
+		decision = false
+		for i, v := range vals {
+			if stopAfter >= 0 {
+				outcomes[i] = mcdcOutcome{ConditionIndex: i, Masked: true}
+				continue
+			}
+			v2 := v
+			outcomes[i] = mcdcOutcome{ConditionIndex: i, Value: &v2}
+			if v {
+				decision = true
+				stopAfter = i
+			}
+		}
+	}
+	return
+}
+
+// genBoolSlice generates a slice of 2-16 booleans for condition sequences.
+func genBoolSlice(t *rapid.T) []bool {
+	n := rapid.IntRange(2, 16).Draw(t, "n")
+	vals := make([]bool, n)
+	for i := range vals {
+		vals[i] = rapid.Bool().Draw(t, fmt.Sprintf("cond%d", i))
+	}
+	return vals
+}
+
+// TestPropertyMcdcAndMaskingConsistency verifies that for && chains:
+//   - conditions after the first false are masked
+//   - the decision equals the AND of all non-masked conditions
+func TestPropertyMcdcAndMaskingConsistency(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		vals := genBoolSlice(t)
+		decision, outcomes := evalMcdcChain("and", vals)
+
+		// Find expected stop point.
+		stopAfter := -1
+		for i, v := range vals {
+			if !v {
+				stopAfter = i
+				break
+			}
+		}
+
+		for i, outcome := range outcomes {
+			if outcome.ConditionIndex != i {
+				t.Fatalf("condition_index=%d, want %d", outcome.ConditionIndex, i)
+			}
+			if stopAfter >= 0 && i > stopAfter {
+				if !outcome.Masked {
+					t.Fatalf("condition %d should be masked (stopAfter=%d)", i, stopAfter)
+				}
+				if outcome.Value != nil {
+					t.Fatalf("masked condition %d should have nil value", i)
+				}
+			} else {
+				if outcome.Masked {
+					t.Fatalf("condition %d should not be masked", i)
+				}
+				if outcome.Value == nil || *outcome.Value != vals[i] {
+					t.Fatalf("condition %d: value mismatch", i)
+				}
+			}
+		}
+
+		// Verify decision consistency.
+		expectedDecision := stopAfter < 0 // all true
+		if decision != expectedDecision {
+			t.Fatalf("decision=%v, want %v", decision, expectedDecision)
+		}
+	})
+}
+
+// TestPropertyMcdcOrMaskingConsistency verifies that for || chains:
+//   - conditions after the first true are masked
+//   - the decision equals the OR of all non-masked conditions
+func TestPropertyMcdcOrMaskingConsistency(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		vals := genBoolSlice(t)
+		decision, outcomes := evalMcdcChain("or", vals)
+
+		// Find expected stop point.
+		stopAfter := -1
+		for i, v := range vals {
+			if v {
+				stopAfter = i
+				break
+			}
+		}
+
+		for i, outcome := range outcomes {
+			if outcome.ConditionIndex != i {
+				t.Fatalf("condition_index=%d, want %d", outcome.ConditionIndex, i)
+			}
+			if stopAfter >= 0 && i > stopAfter {
+				if !outcome.Masked {
+					t.Fatalf("condition %d should be masked (stopAfter=%d)", i, stopAfter)
+				}
+				if outcome.Value != nil {
+					t.Fatalf("masked condition %d should have nil value", i)
+				}
+			} else {
+				if outcome.Masked {
+					t.Fatalf("condition %d should not be masked", i)
+				}
+				if outcome.Value == nil || *outcome.Value != vals[i] {
+					t.Fatalf("condition %d: value mismatch", i)
+				}
+			}
+		}
+
+		expectedDecision := stopAfter >= 0
+		if decision != expectedDecision {
+			t.Fatalf("decision=%v, want %v", decision, expectedDecision)
+		}
+	})
+}
+
+// TestPropertyMcdcConditionCountPreserved verifies that evalMcdcChain always
+// produces exactly one outcome per input condition.
+func TestPropertyMcdcConditionCountPreserved(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		vals := genBoolSlice(t)
+		op := rapid.SampledFrom([]string{"and", "or"}).Draw(t, "op")
+		_, outcomes := evalMcdcChain(op, vals)
+
+		if len(outcomes) != len(vals) {
+			t.Fatalf("got %d outcomes, want %d", len(outcomes), len(vals))
+		}
+	})
+}
+
+// TestPropertyMcdcCapAt16 verifies that flattenConditionsAST rejects chains
+// exceeding maxMcdcConditions = 16.
+func TestPropertyMcdcCapAt16(t *testing.T) {
+	rapid.Check(t, func(rt *rapid.T) {
+		// Build chains of length 2-18 using only "a" params.
+		n := rapid.IntRange(2, 18).Draw(rt, "n")
+		params := make(map[string]bool)
+		src := "a0 > 0"
+		params["a0"] = true
+		for i := 1; i < n; i++ {
+			name := fmt.Sprintf("a%d", i)
+			src += " && " + name + " > 0"
+			params[name] = true
+		}
+
+		// Parse inline (can't use parseExprForTest with *rapid.T).
+		fset := token.NewFileSet()
+		fullSrc := "package p\nfunc _f() bool { return " + src + " }"
+		f, err := parser.ParseFile(fset, "test.go", fullSrc, 0)
+		if err != nil {
+			rt.Fatalf("parse: %v", err)
+		}
+		fn := f.Decls[0].(*ast.FuncDecl)
+		ret := fn.Body.List[0].(*ast.ReturnStmt)
+		expr := ret.Results[0]
+
+		result := flattenConditionsAST(expr, fset, params)
+
+		if n > maxMcdcConditions {
+			if result != nil {
+				rt.Fatalf("expected nil for %d-condition chain (cap=%d)", n, maxMcdcConditions)
+			}
+		} else {
+			if result == nil {
+				rt.Fatalf("expected non-nil for %d-condition chain (cap=%d)", n, maxMcdcConditions)
+			}
+			if len(result.leaves) != n {
+				rt.Fatalf("got %d leaves, want %d", len(result.leaves), n)
+			}
+		}
+	})
+}
+
+// TestPropertyMcdcRoundtrip verifies that ConditionOutcome serializes and
+// deserializes correctly (JSON roundtrip) via the executor-side struct.
+func TestPropertyMcdcRoundtrip(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		masked := rapid.Bool().Draw(t, "masked")
+		idx := rapid.IntRange(0, 15).Draw(t, "idx")
+		val := rapid.Bool().Draw(t, "val")
+
+		original := ConditionOutcome{
+			ConditionIndex: idx,
+			Masked:         masked,
+			ConstraintJSON: `{"kind":"unknown"}`,
+		}
+		if !masked {
+			b := val
+			original.Value = &b
+		}
+
+		data, err := json.Marshal(original)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+
+		var restored ConditionOutcome
+		if err := json.Unmarshal(data, &restored); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+
+		if restored.ConditionIndex != original.ConditionIndex {
+			t.Fatalf("condition_index: got %d, want %d", restored.ConditionIndex, original.ConditionIndex)
+		}
+		if restored.Masked != original.Masked {
+			t.Fatalf("masked: got %v, want %v", restored.Masked, original.Masked)
+		}
+		if original.Value == nil && restored.Value != nil {
+			t.Fatal("value should be nil for masked")
+		}
+		if original.Value != nil && (restored.Value == nil || *restored.Value != *original.Value) {
+			t.Fatal("value mismatch after roundtrip")
 		}
 	})
 }

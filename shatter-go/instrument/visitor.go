@@ -82,9 +82,7 @@ func transformBlock(fset *token.FileSet, block *ast.BlockStmt, params map[string
 func transformIfStmt(fset *token.FileSet, s *ast.IfStmt, params map[string]bool, branchID, loopID, callSiteID *int) {
 	if s.Cond != nil {
 		line := fset.Position(s.Cond.Pos()).Line
-		constraint := extractConstraint(fset, s.Cond, params)
-		s.Cond = makeBranchRecordCall(*branchID, line, s.Cond, constraint)
-		*branchID++
+		s.Cond = wrapCondition(fset, s.Cond, line, params, branchID)
 	}
 	transformBlock(fset, s.Body, params, branchID, loopID, callSiteID)
 	if s.Else != nil {
@@ -134,9 +132,7 @@ func constraintForCase(fset *token.FileSet, tag ast.Expr, cc *ast.CaseClause, pa
 func transformForStmt(fset *token.FileSet, s *ast.ForStmt, params map[string]bool, branchID, loopID, callSiteID *int) {
 	if s.Cond != nil {
 		line := fset.Position(s.Cond.Pos()).Line
-		constraint := extractConstraint(fset, s.Cond, params)
-		s.Cond = makeBranchRecordCall(*branchID, line, s.Cond, constraint)
-		*branchID++
+		s.Cond = wrapCondition(fset, s.Cond, line, params, branchID)
 	}
 	// Inject loop scope markers inside the loop body (per-iteration).
 	id := *loopID
@@ -166,6 +162,27 @@ func transformRangeStmt(fset *token.FileSet, s *ast.RangeStmt, params map[string
 			append(s.Body.List, makeScopeRecordStmt("loop_exit", lid))...,
 		)
 	}
+}
+
+// wrapCondition wraps a branch condition with the appropriate recording call.
+// When MC/DC mode is enabled and the condition is a pure && or || chain with
+// at most maxMcdcConditions leaves, generates the MC/DC recording call.
+// Otherwise falls back to the standard __shatter_record_branch call.
+func wrapCondition(fset *token.FileSet, cond ast.Expr, line int, params map[string]bool, branchID *int) ast.Expr {
+	id := *branchID
+	*branchID++
+
+	if isMcdcEnabled() {
+		if flattened := flattenConditionsAST(cond, fset, params); flattened != nil {
+			return buildMcdcBranchCall(id, line, flattened)
+		}
+		// Mixed operators or single condition: warn is not needed at instrumentation
+		// time (the recorder emits an empty conditions array, which the core
+		// interprets as a non-compound decision).
+	}
+
+	constraint := extractConstraint(fset, cond, params)
+	return makeBranchRecordCall(id, line, cond, constraint)
 }
 
 // makeLineRecordCall creates: __shatter_record_line(LINE)
