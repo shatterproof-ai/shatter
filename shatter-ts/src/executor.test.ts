@@ -4,6 +4,8 @@ import {
   executeInstrumented,
   buildExecuteResponse,
   clearModuleCache,
+  clearCompiledScriptCache,
+  deleteCompiledScriptEntry,
   getExecTimeoutMs,
   isMcdcEnabled,
   DEFAULT_EXEC_TIMEOUT_MS,
@@ -19,6 +21,7 @@ import { instrumentFunction } from "./instrumentor.js";
 import * as fs from "node:fs";
 import { PROTOCOL_VERSION } from "./protocol.js";
 import type { SideEffect, TraceEvent } from "./protocol.js";
+import { TimingCollector } from "./timing.js";
 
 const FIXTURES_DIR = path.resolve(__dirname, "__fixtures__");
 const EXAMPLES_DIR = path.resolve(__dirname, "../../examples/standalone/ts");
@@ -1294,5 +1297,107 @@ describe("executeInstrumented no-capture fast path", () => {
 
     // No-capture should not be significantly slower than capture.
     expect(noCaptureMs).toBeLessThan(captureMs * 1.5);
+  });
+});
+
+describe("executeInstrumented script caching", () => {
+  const exampleFile = path.join(
+    path.resolve(__dirname, "../../examples/standalone/ts"),
+    "01-arithmetic.ts",
+  );
+
+  beforeEach(() => {
+    clearCompiledScriptCache();
+    clearModuleCache();
+  });
+
+  it("produces identical results with and without a cache key", async () => {
+    const source = fs.readFileSync(exampleFile, "utf-8");
+    const instrumentResult = instrumentFunction(source, "classifyNumber", exampleFile);
+    if ("error" in instrumentResult) throw new Error(instrumentResult.error);
+
+    const uncached = await executeInstrumented(
+      instrumentResult.instrumentedSource, "classifyNumber", [42],
+    );
+    const cached = await executeInstrumented(
+      instrumentResult.instrumentedSource, "classifyNumber", [42],
+      [], exampleFile, undefined, true, "test-key",
+    );
+
+    expect(cached.return_value).toBe(uncached.return_value);
+    expect(cached.branch_path.map(b => b.taken)).toEqual(uncached.branch_path.map(b => b.taken));
+  });
+
+  it("amortizes transpilation: second call with same key omits execute.transpile from timing", async () => {
+    const source = fs.readFileSync(exampleFile, "utf-8");
+    const instrumentResult = instrumentFunction(source, "classifyNumber", exampleFile);
+    if ("error" in instrumentResult) throw new Error(instrumentResult.error);
+
+    // First call — cache miss, execute.transpile should appear in timing
+    const timing1 = new TimingCollector();
+    await executeInstrumented(
+      instrumentResult.instrumentedSource, "classifyNumber", [42],
+      [], exampleFile, timing1, true, "amort-key",
+    );
+    const phases1 = timing1.toSummary()?.phases.map(p => p.phase_path) ?? [];
+    expect(phases1).toContain("execute.transpile");
+
+    // Second call — cache hit, execute.transpile should NOT appear in timing
+    const timing2 = new TimingCollector();
+    await executeInstrumented(
+      instrumentResult.instrumentedSource, "classifyNumber", [-1],
+      [], exampleFile, timing2, true, "amort-key",
+    );
+    const phases2 = timing2.toSummary()?.phases.map(p => p.phase_path) ?? [];
+    expect(phases2).not.toContain("execute.transpile");
+    // execute.module_load (the actual execution) still runs on every call
+    expect(phases2).toContain("execute.module_load");
+  });
+
+  it("deleteCompiledScriptEntry forces recompilation on next call", async () => {
+    const source = fs.readFileSync(exampleFile, "utf-8");
+    const instrumentResult = instrumentFunction(source, "classifyNumber", exampleFile);
+    if ("error" in instrumentResult) throw new Error(instrumentResult.error);
+
+    // Warm the cache
+    const timing1 = new TimingCollector();
+    await executeInstrumented(
+      instrumentResult.instrumentedSource, "classifyNumber", [42],
+      [], exampleFile, timing1, true, "evict-key",
+    );
+    expect(timing1.toSummary()?.phases.map(p => p.phase_path)).toContain("execute.transpile");
+
+    // Evict and verify next call recompiles
+    deleteCompiledScriptEntry("evict-key");
+
+    const timing2 = new TimingCollector();
+    await executeInstrumented(
+      instrumentResult.instrumentedSource, "classifyNumber", [42],
+      [], exampleFile, timing2, true, "evict-key",
+    );
+    expect(timing2.toSummary()?.phases.map(p => p.phase_path)).toContain("execute.transpile");
+  });
+
+  it("different inputs with same cache key return correct results for each input", async () => {
+    const source = fs.readFileSync(exampleFile, "utf-8");
+    const instrumentResult = instrumentFunction(source, "classifyNumber", exampleFile);
+    if ("error" in instrumentResult) throw new Error(instrumentResult.error);
+
+    const r1 = await executeInstrumented(
+      instrumentResult.instrumentedSource, "classifyNumber", [42],
+      [], exampleFile, undefined, true, "multi-input-key",
+    );
+    const r2 = await executeInstrumented(
+      instrumentResult.instrumentedSource, "classifyNumber", [-1],
+      [], exampleFile, undefined, true, "multi-input-key",
+    );
+    const r3 = await executeInstrumented(
+      instrumentResult.instrumentedSource, "classifyNumber", [0],
+      [], exampleFile, undefined, true, "multi-input-key",
+    );
+
+    expect(r1.return_value).toBe("positive-even");
+    expect(r2.return_value).toBe("negative");
+    expect(r3.return_value).toBe("zero");
   });
 });

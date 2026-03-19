@@ -148,6 +148,24 @@ export function classifyConnectionFailure(message: string): ConnectionFailureKin
 const compiledModuleCache = new Map<string, Record<string, unknown>>();
 
 /**
+ * Cache of pre-compiled vm.Script objects for instrumented sources.
+ * Keyed by instrument key ("resolvedFilePath:functionName").
+ * Avoids re-transpiling and re-compiling JS on every instrumented execute call.
+ * Invalidated per-entry on re-instrumentation, and cleared on teardown.
+ */
+const compiledScriptCache = new Map<string, vm.Script>();
+
+/** Clear all cached compiled scripts (called on teardown). */
+export function clearCompiledScriptCache(): void {
+  compiledScriptCache.clear();
+}
+
+/** Remove a single entry from the compiled script cache (called on re-instrumentation). */
+export function deleteCompiledScriptEntry(key: string): void {
+  compiledScriptCache.delete(key);
+}
+
+/**
  * Proxy console used in VM sandboxes. Delegates all calls to `consoleTarget`,
  * which can be swapped at execution time to capture output as side effects.
  */
@@ -691,21 +709,36 @@ export async function executeInstrumented(
   sourceFilePath?: string,
   timing?: TimingCollector,
   capture = true,
+  cacheKey?: string,
 ): Promise<RawExecuteResult> {
-  // Transpile instrumented TS to JS
-  const transpile = () => ts.transpileModule(instrumentedSource, {
-    compilerOptions: {
-      target: ts.ScriptTarget.ES2022,
-      module: ts.ModuleKind.CommonJS,
-      esModuleInterop: true,
-      strict: true,
-      jsx: ts.JsxEmit.ReactJSX,
-    },
-    ...(sourceFilePath ? { fileName: sourceFilePath } : {}),
-  });
-  const jsResult = timing
-    ? timing.sync("execute.transpile", transpile)
-    : transpile();
+  // Transpile instrumented TS to JS, reusing a cached vm.Script when available.
+  // The instrumented source for a given function is fixed after instrumentation,
+  // so we can amortize both the TypeScript transpile and the JS bytecode compile
+  // across all execute calls for the same function.
+  const cachedScript = cacheKey ? compiledScriptCache.get(cacheKey) : undefined;
+  let compiledScript: vm.Script;
+  if (cachedScript) {
+    compiledScript = cachedScript;
+    // execute.transpile is intentionally absent from timing on cache hits
+  } else {
+    const transpile = () => ts.transpileModule(instrumentedSource, {
+      compilerOptions: {
+        target: ts.ScriptTarget.ES2022,
+        module: ts.ModuleKind.CommonJS,
+        esModuleInterop: true,
+        strict: true,
+        jsx: ts.JsxEmit.ReactJSX,
+      },
+      ...(sourceFilePath ? { fileName: sourceFilePath } : {}),
+    });
+    const jsResult = timing
+      ? timing.sync("execute.transpile", transpile)
+      : transpile();
+    compiledScript = new vm.Script(jsResult.outputText, { filename: sourceFilePath ?? "instrumented.js" });
+    if (cacheKey) {
+      compiledScriptCache.set(cacheKey, compiledScript);
+    }
+  }
 
   const linesExecuted: number[] = [];
   const branchDecisions: BranchDecision[] = [];
@@ -988,7 +1021,7 @@ export async function executeInstrumented(
   });
 
   const loadModule = (): void => {
-    vm.runInContext(jsResult.outputText, sandbox, { filename: sourceFilePath ?? "instrumented.js", timeout: getExecTimeoutMs() });
+    compiledScript.runInContext(sandbox, { timeout: getExecTimeoutMs() });
   };
   if (timing) {
     timing.sync("execute.module_load", loadModule);

@@ -228,6 +228,10 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
       // Use resolved path so keys match execute's resolved fileForExec.
       const key = `${path.resolve(request.file)}:${request.function}`;
       instrumentedSources.set(key, result.instrumentedSource);
+      // Invalidate any cached compiled script for this key — the source may have changed.
+      // Executor may not be loaded yet during instrument-only flows; that's fine —
+      // the cache entry won't exist either.
+      if (_executor) _executor.deleteCompiledScriptEntry(key);
       lastAnalyzedFile = path.resolve(request.file);
 
       return {
@@ -276,8 +280,8 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
         if (instrumentedSource) {
           rawResult = timing
             ? await timing.async("execute.total", () =>
-              executor.executeInstrumented(instrumentedSource, funcName, request.inputs, request.mocks ?? [], fileForExec, timing, capture))
-            : await executor.executeInstrumented(instrumentedSource, funcName, request.inputs, request.mocks ?? [], fileForExec, undefined, capture);
+              executor.executeInstrumented(instrumentedSource, funcName, request.inputs, request.mocks ?? [], fileForExec, timing, capture, instrumentKey))
+            : await executor.executeInstrumented(instrumentedSource, funcName, request.inputs, request.mocks ?? [], fileForExec, undefined, capture, instrumentKey);
         } else {
           rawResult = timing
             ? await timing.async("execute.total", () => executor.executeFunction(fileForExec, funcRef, request.inputs, timing, capture))
@@ -366,8 +370,11 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
         }
         setupContexts.delete(ctxKey);
         instrumentedSources.clear();
-        // Only clear executor module cache if executor was loaded this session.
-        if (_executor) _executor.clearModuleCache();
+        // Only clear executor caches if executor was loaded this session.
+        if (_executor) {
+          _executor.clearCompiledScriptCache();
+          _executor.clearModuleCache();
+        }
 
         return {
           response: finalizeResponse({
@@ -449,7 +456,10 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
       // Only invoke cleanup on modules that were actually loaded this session.
       if (_wasmGenerator) await _wasmGenerator.clearWasmCache();
       instrumentedSources.clear();
-      if (_executor) _executor.clearModuleCache();
+      if (_executor) {
+        _executor.clearCompiledScriptCache();
+        _executor.clearModuleCache();
+      }
       return {
         response: {
           protocol_version: PROTOCOL_VERSION,
@@ -555,6 +565,7 @@ export function parseRequest(line: string): { request: Request } | { error: Erro
  */
 export function clearInstrumentedSources(): void {
   instrumentedSources.clear();
+  if (_executor) _executor.clearCompiledScriptCache();
   loadedSetupModules.clear();
   setupContexts.clear();
   _executor = null;
