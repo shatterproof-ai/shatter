@@ -416,6 +416,7 @@ pub async fn observe_function(
         nondeterministic_fields: vec![],
         float_probe_results: vec![], boundary_results: vec![],
         shrunk_witnesses: std::collections::HashMap::new(),
+        mcdc_summary: None,
     })
 }
 

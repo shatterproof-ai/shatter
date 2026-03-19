@@ -1671,7 +1671,7 @@ mod tests {
                         lines_covered: 3,
                         total_lines: 5,
                         new_path_executions: vec![],
-                        raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
+                        raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None,
                     },
                     behavior_map: BehaviorMap {
                         function_id: "leaf".into(),
@@ -1693,7 +1693,7 @@ mod tests {
                         lines_covered: 8,
                         total_lines: 10,
                         new_path_executions: vec![],
-                        raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
+                        raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None,
                     },
                     behavior_map: BehaviorMap {
                         function_id: "caller".into(),
@@ -1736,7 +1736,7 @@ mod tests {
                     lines_covered: 5,
                     total_lines: 5,
                     new_path_executions: vec![],
-                    raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
+                    raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None,
                 },
                 behavior_map: BehaviorMap {
                     function_id: "standalone".into(),
@@ -1772,7 +1772,7 @@ mod tests {
                     lines_covered: 3,
                     total_lines: 5,
                     new_path_executions: vec![],
-                    raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
+                    raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None,
                 },
                 behavior_map: BehaviorMap {
                     function_id: "good_func".into(),
@@ -1821,7 +1821,7 @@ mod tests {
                     lines_covered: 3,
                     total_lines: 5,
                     new_path_executions: vec![],
-                    raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
+                    raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None,
                 },
                 behavior_map: BehaviorMap {
                     function_id: "good_func".into(),
@@ -1869,7 +1869,7 @@ mod tests {
                     lines_covered: 1,
                     total_lines: 1,
                     new_path_executions: vec![],
-                    raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
+                    raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None,
                 },
                 behavior_map: BehaviorMap {
                     function_id: "func".into(),
@@ -1906,7 +1906,7 @@ mod tests {
                     new_path_executions: vec![],
                     raw_results: vec![],
                     discoveries: vec![],
-                    nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
+                    nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None,
                 },
                 behavior_map: BehaviorMap {
                     function_id: "func".into(),
@@ -1950,7 +1950,7 @@ mod tests {
                     new_path_executions: vec![],
                     raw_results: vec![],
                     discoveries: vec![],
-                    nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
+                    nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None,
                 },
                 behavior_map: BehaviorMap {
                     function_id: "func".into(),
@@ -2056,7 +2056,7 @@ mod tests {
                     lines_covered: 3,
                     total_lines: 5,
                     new_path_executions: vec![],
-                    raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
+                    raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None,
                 },
                 behavior_map: BehaviorMap {
                     function_id: "f1".into(),
@@ -2102,7 +2102,7 @@ mod tests {
                     lines_covered: 5,
                     total_lines: 5,
                     new_path_executions: vec![],
-                    raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
+                    raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None,
                 },
                 behavior_map: BehaviorMap {
                     function_id: "f1".into(),
