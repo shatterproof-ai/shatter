@@ -849,7 +849,7 @@ mod tests {
                 new_path_executions,
                 raw_results: vec![],
                 discoveries: vec![],
-                nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
+                nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None,
             },
             behavior_map: BehaviorMap {
                 function_id: name.to_string(),
