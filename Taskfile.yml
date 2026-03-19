@@ -233,71 +233,85 @@ tasks:
     preconditions:
       - sh: test -n "{{.SCENARIO}}"
         msg: "set SCENARIO=<id>"
+      - sh: test -n "{{.RESULTS_DIR}}"
+        msg: "set RESULTS_DIR=<dir>"
       - sh: command -v python3 >/dev/null 2>&1
         msg: "python3 not installed"
     cmds:
-      - python3 scripts/perf_runner.py run --scenario "{{.SCENARIO}}"
+      - python3 scripts/perf_runner.py run --scenario "{{.SCENARIO}}" --results-dir "{{.RESULTS_DIR}}"
 
   perf-baseline:
     desc: Run the full external profiling corpus
     preconditions:
+      - sh: test -n "{{.RESULTS_DIR}}"
+        msg: "set RESULTS_DIR=<dir>"
       - sh: command -v python3 >/dev/null 2>&1
         msg: "python3 not installed"
     cmds:
-      - python3 scripts/perf_runner.py run --all
+      - python3 scripts/perf_runner.py run --all --results-dir "{{.RESULTS_DIR}}"
 
   perf-stat-scenario:
     desc: Run one scenario under perf stat (set SCENARIO=<id>)
     preconditions:
       - sh: test -n "{{.SCENARIO}}"
         msg: "set SCENARIO=<id>"
+      - sh: test -n "{{.RESULTS_DIR}}"
+        msg: "set RESULTS_DIR=<dir>"
       - sh: command -v python3 >/dev/null 2>&1
         msg: "python3 not installed"
       - sh: command -v perf >/dev/null 2>&1
         msg: "perf not installed"
     cmds:
-      - python3 scripts/perf_runner.py run --scenario "{{.SCENARIO}}" --profiler perf-stat
+      - python3 scripts/perf_runner.py run --scenario "{{.SCENARIO}}" --profiler perf-stat --results-dir "{{.RESULTS_DIR}}"
 
   perf-record-scenario:
     desc: Run one scenario under perf record (set SCENARIO=<id>)
     preconditions:
       - sh: test -n "{{.SCENARIO}}"
         msg: "set SCENARIO=<id>"
+      - sh: test -n "{{.RESULTS_DIR}}"
+        msg: "set RESULTS_DIR=<dir>"
       - sh: command -v python3 >/dev/null 2>&1
         msg: "python3 not installed"
       - sh: command -v perf >/dev/null 2>&1
         msg: "perf not installed"
     cmds:
-      - python3 scripts/perf_runner.py run --scenario "{{.SCENARIO}}" --profiler perf-record
+      - python3 scripts/perf_runner.py run --scenario "{{.SCENARIO}}" --profiler perf-record --results-dir "{{.RESULTS_DIR}}"
 
   pprof-scenario:
     desc: Run one Go-focused scenario with pprof (set SCENARIO=<id>)
     preconditions:
       - sh: test -n "{{.SCENARIO}}"
         msg: "set SCENARIO=<id>"
+      - sh: test -n "{{.RESULTS_DIR}}"
+        msg: "set RESULTS_DIR=<dir>"
       - sh: command -v python3 >/dev/null 2>&1
         msg: "python3 not installed"
       - sh: command -v go >/dev/null 2>&1
         msg: "go not installed"
     cmds:
-      - python3 scripts/perf_runner.py run --scenario "{{.SCENARIO}}" --profiler pprof
+      - python3 scripts/perf_runner.py run --scenario "{{.SCENARIO}}" --profiler pprof --results-dir "{{.RESULTS_DIR}}"
 
   perf-report:
     desc: Generate markdown and JSON summaries from perf artifacts
     preconditions:
+      - sh: test -n "{{.RESULTS_DIR}}"
+        msg: "set RESULTS_DIR=<dir>"
       - sh: command -v python3 >/dev/null 2>&1
         msg: "python3 not installed"
     cmds:
-      - python3 scripts/perf_report.py
+      - python3 scripts/perf_report.py --results-dir "{{.RESULTS_DIR}}"
 
   perf-ci:
     desc: Run the stable weekly profiling subset and refresh the latest summary
     preconditions:
+      - sh: test -n "{{.RESULTS_DIR}}"
+        msg: "set RESULTS_DIR=<dir>"
       - sh: command -v python3 >/dev/null 2>&1
         msg: "python3 not installed"
     cmds:
-      - python3 scripts/perf_runner.py run --scenario-file perf/stable-scenarios.txt
-      - python3 scripts/perf_report.py
+      - python3 scripts/perf_runner.py run --scenario-file perf/stable-scenarios.txt --results-dir "{{.RESULTS_DIR}}"
+      - python3 scripts/perf_report.py --results-dir "{{.RESULTS_DIR}}"
 
   clean:
     desc: Remove all build artifacts and checksum cache
