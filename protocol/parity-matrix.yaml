@@ -1,0 +1,96 @@
+# Shatter Frontend Parity Matrix
+#
+# Checked-in contract for which capabilities each frontend must implement.
+# Consumed by: python3 scripts/validate-parity.py (CI: npx task parity)
+# Schema:      protocol/parity-matrix.schema.yaml
+#
+# Ownership: str-7jgm.1 (parity contract spec) populates and maintains this.
+# Do not edit by hand without understanding the validator detection strategy
+# documented in parity-matrix.schema.yaml.
+#
+# To update after a capability change:
+#   1. Edit required/optional lists for the affected frontend(s)
+#   2. Run: python3 scripts/validate-parity.py --verbose
+#   3. Commit both the source change and this file together
+
+schema_version: "1"
+protocol_version: "0.1.0"
+
+frontends:
+
+  typescript:
+    # Commands MUST be advertised by the TS frontend's handshake response.
+    # Detected from: SUPPORTED_CAPABILITIES in shatter-ts/src/handlers.ts
+    required:
+      commands:
+        - analyze
+        - execute
+        - generate
+        - instrument
+        - setup
+      complex_types: []
+    # Commands and types the TS frontend may implement but is not required to.
+    optional:
+      commands:
+        - teardown
+      complex_types:
+        - big_int
+        - buffer
+        - date
+        - date_time
+        - duration
+        - error
+        - reg_exp
+        - symbol
+        - url
+    # Coded default in shatter-ts/src/executor.ts: DEFAULT_EXEC_TIMEOUT_MS = 15_000
+    default_timeout_seconds: 15
+
+  go:
+    # Commands MUST be advertised by the Go frontend's handshake response.
+    # Detected from: CommandCapabilities in shatter-go/protocol/constants.go
+    required:
+      commands:
+        - analyze
+        - execute
+        - generate
+        - instrument
+        - setup
+        - teardown
+      complex_types: []
+    # Complex types the Go frontend may implement but is not required to.
+    optional:
+      commands: []
+      complex_types:
+        - big_decimal
+        - big_int
+        - date
+        - duration
+        - error
+        - ip_address
+        - rational
+        - reg_exp
+        - url
+    # Coded default in shatter-go/instrument/executor.go: defaultExecTimeout = 5 * time.Second
+    default_timeout_seconds: 5
+
+  rust:
+    # Commands MUST be advertised by the Rust frontend's handshake response.
+    # Detected from: resp.capabilities = Some(vec![...]) in shatter-rust/src/handler.rs
+    # Note: most commands are protocol-complete but functionally unimplemented (return
+    # not_supported). The parity contract tracks protocol-level advertisement, not
+    # functional completeness. See shatter-rust/CLAUDE.md for implementation status.
+    required:
+      commands:
+        - analyze
+        - execute
+        - generate
+        - instrument
+        - setup
+        - teardown
+      complex_types: []
+    optional:
+      commands: []
+      complex_types: []
+    # Coded default in shatter-rust/src/handler.rs: DEFAULT_EXEC_TIMEOUT_MS = 5000
+    default_timeout_seconds: 5

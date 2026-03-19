@@ -89,6 +89,25 @@ tasks:
     cmds:
       - python3 protocol/schemas/test_schema_validation.py
 
+  parity:
+    desc: Validate frontend capabilities against the parity contract (protocol/parity-matrix.yaml)
+    preconditions:
+      - sh: command -v python3
+        msg: "python3 not installed"
+      - sh: python3 -c "import yaml" 2>/dev/null
+        msg: "pyyaml not installed (pip install pyyaml)"
+    sources:
+      - protocol/parity-matrix.yaml
+      - protocol/registry.yaml
+      - shatter-ts/src/handlers.ts
+      - shatter-ts/src/executor.ts
+      - shatter-go/protocol/constants.go
+      - shatter-go/protocol/handler.go
+      - shatter-go/instrument/executor.go
+      - shatter-rust/src/handler.rs
+    cmds:
+      - python3 scripts/validate-parity.py
+
   conformance:
     desc: Run protocol conformance tests across all frontends
     deps: [ts:build, go:build, rust-fe:build]
@@ -176,6 +195,7 @@ tasks:
       - go:test
       - go:vet
       - schemas
+      - parity
       - docs
       - meta
     cmds:
