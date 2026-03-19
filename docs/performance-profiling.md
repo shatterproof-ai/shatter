@@ -68,3 +68,31 @@ When a scenario regresses:
 - Use `perf` first for walkthrough, `explore`, `scan`, and mixed-runtime runs.
 - Use `pprof` for Go-isolated scenarios such as `go-frontend-instrument-tests`.
 - Keep profiler output paths in the issue so future runs can compare like-for-like.
+
+## Isolation Mode Profiling
+
+The isolation corpus (`perf/scenarios.json` entries with `"isolation_mode"` set) measures
+how `--isolation none|function|serial` affects wall time and per-phase costs. This is useful
+when evaluating changes to the frontend lifecycle, scheduler policy, or process-spawn logic.
+
+### Quick start
+
+```bash
+# Run the isolation corpus (requires a built binary and str-19pm.1 for function/serial)
+npx task perf-isolation
+
+# Generate the cross-mode comparison report
+npx task perf-isolation-report
+# Opens .shatter/perf-runs/isolation/isolation-report.md
+```
+
+### What the report shows
+
+- **Wall time** (ms, median) for each isolation mode side-by-side
+- **Overhead %** of `function` and `serial` vs `none` baseline
+- **Key cost centers**: setup/handshake, module_load, execute total, shrink/refine
+
+### Interpreting results
+
+See `perf/isolation-corpus.md` for a full explanation of the corpus matrix, cost centers,
+when to use each mode, and how to attribute a regression to the right subsystem.

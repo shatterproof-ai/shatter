@@ -373,6 +373,26 @@ tasks:
       - python3 scripts/perf_runner.py run --scenario-file perf/stable-scenarios.txt --results-dir "{{.RESULTS_DIR}}"
       - python3 scripts/perf_report.py --results-dir "{{.RESULTS_DIR}}"
 
+  perf-isolation:
+    desc: Run the isolation mode corpus (set RESULTS_DIR, default .shatter/perf-runs/isolation)
+    vars:
+      RESULTS_DIR: '{{.RESULTS_DIR | default ".shatter/perf-runs/isolation"}}'
+    preconditions:
+      - sh: command -v python3 >/dev/null 2>&1
+        msg: "python3 not installed"
+    cmds:
+      - python3 scripts/perf_runner.py run --filter 'isolation-' --results-dir "{{.RESULTS_DIR}}"
+
+  perf-isolation-report:
+    desc: Generate cross-mode isolation comparison report (set RESULTS_DIR, default .shatter/perf-runs/isolation)
+    vars:
+      RESULTS_DIR: '{{.RESULTS_DIR | default ".shatter/perf-runs/isolation"}}'
+    preconditions:
+      - sh: command -v python3 >/dev/null 2>&1
+        msg: "python3 not installed"
+    cmds:
+      - python3 scripts/perf_isolation_report.py --results-dir "{{.RESULTS_DIR}}" --markdown-out "{{.RESULTS_DIR}}/isolation-report.md" --json-out "{{.RESULTS_DIR}}/isolation-report.json"
+
   clean:
     desc: Remove all build artifacts and checksum cache
     cmds:
