@@ -80,6 +80,8 @@ pub struct ScanConfig {
     /// When provided, the scan orchestrator runs session setup before the scan,
     /// file setup/teardown per source file, and session teardown at the end.
     pub setup_manager: Option<SetupManager>,
+    /// Scheduling policy controlling which exploration tasks may overlap.
+    pub policy: crate::scheduler_policy::SchedulerPolicy,
 }
 
 /// Context about sampling mode, for report headers.
@@ -2227,6 +2229,7 @@ mod tests {
             config_dir: None,
             timeout_explore: None,
             setup_manager: None,
+            policy: crate::scheduler_policy::SchedulerPolicy::default(),
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2300,6 +2303,7 @@ mod tests {
             config_dir: None,
             timeout_explore: None,
             setup_manager: None,
+            policy: crate::scheduler_policy::SchedulerPolicy::default(),
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2367,6 +2371,7 @@ mod tests {
             config_dir: None,
             timeout_explore: None,
             setup_manager: None,
+            policy: crate::scheduler_policy::SchedulerPolicy::default(),
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2451,6 +2456,7 @@ mod tests {
             config_dir: None,
             timeout_explore: None,
             setup_manager: None,
+            policy: crate::scheduler_policy::SchedulerPolicy::default(),
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2545,6 +2551,7 @@ mod tests {
             config_dir: None,
             timeout_explore: None,
             setup_manager: None,
+            policy: crate::scheduler_policy::SchedulerPolicy::default(),
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2623,6 +2630,7 @@ mod tests {
             config_dir: None,
             timeout_explore: None,
             setup_manager: None,
+            policy: crate::scheduler_policy::SchedulerPolicy::default(),
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -2675,6 +2683,7 @@ mod tests {
             config_dir: None,
             timeout_explore: None,
             setup_manager: None,
+            policy: crate::scheduler_policy::SchedulerPolicy::default(),
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -2711,6 +2720,7 @@ mod tests {
             config_dir: None,
             timeout_explore: None,
             setup_manager: None,
+            policy: crate::scheduler_policy::SchedulerPolicy::default(),
         };
 
         let plan = format_dry_run_plan(&analyses, &skipped, &config).expect("should succeed");
@@ -2737,6 +2747,7 @@ mod tests {
             config_dir: None,
             timeout_explore: None,
             setup_manager: None,
+            policy: crate::scheduler_policy::SchedulerPolicy::default(),
         };
 
         let plan = format_dry_run_plan(&[], &[], &config).expect("should succeed");
@@ -3315,6 +3326,7 @@ mod tests {
             config_dir: None,
             timeout_explore: None,
             setup_manager: None,
+            policy: crate::scheduler_policy::SchedulerPolicy::default(),
         };
 
         let result = parallel_scan(&fe_config, &[analysis], &config)
@@ -3409,6 +3421,7 @@ mod tests {
             config_dir: None,
             timeout_explore: None,
             setup_manager: None,
+            policy: crate::scheduler_policy::SchedulerPolicy::default(),
         };
 
         let analyses = vec![warm_analysis, stale_analysis];
@@ -3474,6 +3487,7 @@ mod tests {
             config_dir: None,
             timeout_explore: None,
             setup_manager: None,
+            policy: crate::scheduler_policy::SchedulerPolicy::default(),
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -3483,5 +3497,101 @@ mod tests {
         // Only 1 task → pool capped at 1, not 8.
         assert_eq!(result.workers_used, 1, "pool should be capped to tasks.len()=1, not parallelism=8");
         assert_eq!(result.function_results.len(), 1);
+    }
+
+    // ── SchedulerPolicy integration tests ─────────────────────────────
+
+    /// Serial policy must explore all functions and produce the same results
+    /// as LayerParallel with a single worker.  This is the conservative
+    /// baseline regression test.
+    #[tokio::test]
+    async fn serial_policy_scan_completes_all_functions() {
+        use crate::frontend::FrontendConfig;
+        use crate::scheduler_policy::SchedulerPolicy;
+        use crate::types::{ParamInfo, TypeInfo};
+        use std::path::{Path, PathBuf};
+
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let noop_path = manifest_dir.join("../protocol/noop-frontend.sh");
+
+        let mut fe_config = FrontendConfig::new(PathBuf::from("bash"));
+        fe_config.args = vec![noop_path.to_string_lossy().into_owned()];
+        fe_config.request_timeout = TEST_REQUEST_TIMEOUT;
+
+        let analyses = vec![
+            FunctionAnalysis {
+                name: "alpha".to_string(),
+                exported: true,
+                params: vec![ParamInfo {
+                    name: "x".into(),
+                    typ: TypeInfo::Int,
+                    type_name: None,
+                }],
+                branches: vec![],
+                dependencies: vec![],
+                return_type: TypeInfo::Unknown,
+                start_line: 1,
+                end_line: 5,
+                literals: vec![],
+                crypto_boundaries: vec![],
+            },
+            FunctionAnalysis {
+                name: "beta".to_string(),
+                exported: true,
+                params: vec![ParamInfo {
+                    name: "y".into(),
+                    typ: TypeInfo::Int,
+                    type_name: None,
+                }],
+                branches: vec![],
+                dependencies: vec![],
+                return_type: TypeInfo::Unknown,
+                start_line: 1,
+                end_line: 5,
+                literals: vec![],
+                crypto_boundaries: vec![],
+            },
+        ];
+
+        let mut file_map = HashMap::new();
+        file_map.insert("alpha".to_string(), "test.ts".to_string());
+        file_map.insert("beta".to_string(), "test.ts".to_string());
+
+        let config = ScanConfig {
+            max_iterations_per_function: 2,
+            seed: Some(42),
+            file_map,
+            parallelism: 4, // Serial policy must ignore this and use 1 worker.
+            timeout_per_fn: TEST_REQUEST_TIMEOUT,
+            cache: None,
+            stratum: None,
+            mock_overrides: HashMap::new(),
+            resume_path: None,
+            timeout_total: None,
+            pool_path: None,
+            project_root: None,
+            config_dir: None,
+            timeout_explore: None,
+            setup_manager: None,
+            policy: SchedulerPolicy::Serial,
+        };
+
+        let result = parallel_scan(&fe_config, &analyses, &config)
+            .await
+            .expect("serial policy scan should succeed");
+
+        // All functions must be explored — serial policy doesn't skip anything.
+        assert_eq!(result.function_results.len(), 2, "both functions should complete");
+        assert!(result.skipped.is_empty(), "no functions should be skipped");
+
+        // Serial enforces 1 effective worker regardless of configured parallelism.
+        assert_eq!(result.workers_used, 1, "serial policy must use exactly 1 worker");
+    }
+
+    /// LayerParallel is the default policy.
+    #[test]
+    fn layer_parallel_policy_is_default() {
+        use crate::scheduler_policy::SchedulerPolicy;
+        assert_eq!(SchedulerPolicy::default(), SchedulerPolicy::LayerParallel);
     }
 }
