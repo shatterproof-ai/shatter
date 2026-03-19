@@ -80,13 +80,6 @@ pub struct ScanConfig {
     /// When provided, the scan orchestrator runs session setup before the scan,
     /// file setup/teardown per source file, and session teardown at the end.
     pub setup_manager: Option<SetupManager>,
-    /// Scheduling policy: controls which exploration tasks may overlap.
-    ///
-    /// Defaults to [`SchedulerPolicy::LayerParallel`], which preserves the
-    /// existing behaviour of running functions within a topological layer
-    /// concurrently. Set to [`SchedulerPolicy::Serial`] to run one function
-    /// at a time (conservative baseline).
-    pub policy: crate::scheduler_policy::SchedulerPolicy,
 }
 
 /// Context about sampling mode, for report headers.
@@ -576,6 +569,19 @@ impl WorkerPool {
         })
     }
 
+    /// Spawn at most `min(max_workers, needed)` frontend subprocesses.
+    ///
+    /// Use this for lazy pool creation: pass the number of tasks actually
+    /// queued for this batch so the pool is never larger than necessary.
+    async fn spawn_capped(
+        config: &FrontendConfig,
+        max_workers: usize,
+        needed: usize,
+    ) -> Result<Self, FrontendError> {
+        Self::spawn(config, max_workers.min(needed)).await
+    }
+
+
     /// Check out a worker from the pool.
     async fn checkout(&self) -> Frontend {
         let mut rx = self.receiver.lock().await;
@@ -643,11 +649,8 @@ pub async fn parallel_scan(
         analyses.iter().map(|a| (a.name.as_str(), a)).collect();
 
     let effective_parallelism = config.policy.effective_workers(config.parallelism).max(1);
-    let pool = Arc::new(
-        WorkerPool::spawn(frontend_config, effective_parallelism)
-            .await
-            .map_err(ScanError::Frontend)?,
-    );
+    // Workers are created lazily per-layer; track the peak count across layers.
+    let mut peak_workers: usize = 0;
 
     let behavior_maps: Arc<Mutex<HashMap<String, BehaviorMap>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -868,115 +871,134 @@ pub async fn parallel_scan(
         }
 
         // Execute tasks in parallel across the worker pool.
-        // Each task checks out a worker, explores, then returns the worker.
-        let mut handles = Vec::new();
+        // The pool is created lazily — only when there is real exploration work
+        // to do in this layer. Cache-hit layers skip pool creation entirely.
+        if !tasks.is_empty() {
+            let layer_pool_size = effective_parallelism.min(tasks.len());
+            let pool = Arc::new(
+                WorkerPool::spawn_capped(frontend_config, effective_parallelism, tasks.len())
+                    .await
+                    .map_err(ScanError::Frontend)?,
+            );
+            peak_workers = peak_workers.max(layer_pool_size);
 
-        let fe_config = Arc::new(frontend_config.clone());
+            // Each task checks out a worker, explores, then returns the worker.
+            let mut handles = Vec::new();
 
-        for (func_name, analysis, explore_config, mocks_used, callees, deep_fp) in tasks {
-            let pool = Arc::clone(&pool);
-            let behavior_maps = Arc::clone(&behavior_maps);
-            let input_pool = Arc::clone(&input_pool);
-            let timeout = config.timeout_per_fn;
-            let cache = config.cache.clone();
-            let fe_config = Arc::clone(&fe_config);
+            let fe_config = Arc::new(frontend_config.clone());
 
-            let handle = tokio::spawn(async move {
-                let mut frontend = pool.checkout().await;
+            for (func_name, analysis, explore_config, mocks_used, callees, deep_fp) in tasks {
+                let pool = Arc::clone(&pool);
+                let behavior_maps = Arc::clone(&behavior_maps);
+                let input_pool = Arc::clone(&input_pool);
+                let timeout = config.timeout_per_fn;
+                let cache = config.cache.clone();
+                let fe_config = Arc::clone(&fe_config);
 
-                let result = tokio::time::timeout(
-                    timeout,
-                    explore_single_function(
-                        &mut frontend,
-                        &func_name,
-                        &analysis,
-                        &explore_config,
-                        &mocks_used,
-                        &callees,
-                        &behavior_maps,
-                        deep_fp.clone(),
-                        &input_pool,
-                    ),
-                )
-                .await;
+                let handle = tokio::spawn(async move {
+                    let mut frontend = pool.checkout().await;
 
-                let timed_out = result.is_err();
+                    let result = tokio::time::timeout(
+                        timeout,
+                        explore_single_function(
+                            &mut frontend,
+                            &func_name,
+                            &analysis,
+                            &explore_config,
+                            &mocks_used,
+                            &callees,
+                            &behavior_maps,
+                            deep_fp.clone(),
+                            &input_pool,
+                        ),
+                    )
+                    .await;
 
-                // After a timeout the frontend's stdout buffer contains a
-                // stale response that would cause an ID mismatch on the next
-                // request.  Kill and respawn instead of returning to pool.
-                if timed_out || !frontend.is_alive() {
-                    // Drop the poisoned/dead frontend (kills the child process).
-                    drop(frontend);
-                    match Frontend::spawn(&fe_config).await {
-                        Ok(new_fe) => pool.return_worker(new_fe).await,
-                        Err(_) => { /* pool shrinks — acceptable degradation */ }
-                    }
-                } else {
-                    pool.return_worker(frontend).await;
-                }
+                    let timed_out = result.is_err();
 
-                match result {
-                    Ok(Ok(func_result)) => {
-                        // Store the behavior map for downstream functions.
-                        let mut maps = behavior_maps.lock().await;
-                        maps.insert(func_name.clone(), func_result.behavior_map.clone());
-                        drop(maps);
-
-                        // Persist to disk cache for reuse across runs.
-                        if let Some(ref cache) = cache {
-                            let _ = cache.store(&func_result.behavior_map);
+                    // After a timeout the frontend's stdout buffer contains a
+                    // stale response that would cause an ID mismatch on the next
+                    // request.  Kill and respawn instead of returning to pool.
+                    if timed_out || !frontend.is_alive() {
+                        // Drop the poisoned/dead frontend (kills the child process).
+                        drop(frontend);
+                        match Frontend::spawn(&fe_config).await {
+                            Ok(new_fe) => pool.return_worker(new_fe).await,
+                            Err(_) => { /* pool shrinks — acceptable degradation */ }
                         }
-
-                        FunctionOutcome::Success(Box::new(func_result))
+                    } else {
+                        pool.return_worker(frontend).await;
                     }
-                    Ok(Err(e)) => FunctionOutcome::Error {
-                        function_name: func_name,
-                        error: e.to_string(),
-                    },
-                    Err(_) => FunctionOutcome::Timeout {
-                        function_name: func_name,
-                        limit: timeout,
-                    },
-                }
-            });
 
-            handles.push(handle);
-        }
+                    match result {
+                        Ok(Ok(func_result)) => {
+                            // Store the behavior map for downstream functions.
+                            let mut maps = behavior_maps.lock().await;
+                            maps.insert(func_name.clone(), func_result.behavior_map.clone());
+                            drop(maps);
 
-        // Collect results from all tasks in this layer.
-        for handle in handles {
-            match handle.await {
-                Ok(FunctionOutcome::Success(result)) => {
-                    // Record deep FP for this function so downstream layers
-                    // can incorporate it into their deep fingerprints.
-                    if let Some(ref fp) = result.behavior_map.fingerprint {
-                        layer_deep_fps.push((result.function_name.clone(), fp.clone()));
+                            // Persist to disk cache for reuse across runs.
+                            if let Some(ref cache) = cache {
+                                let _ = cache.store(&func_result.behavior_map);
+                            }
+
+                            FunctionOutcome::Success(Box::new(func_result))
+                        }
+                        Ok(Err(e)) => FunctionOutcome::Error {
+                            function_name: func_name,
+                            error: e.to_string(),
+                        },
+                        Err(_) => FunctionOutcome::Timeout {
+                            function_name: func_name,
+                            limit: timeout,
+                        },
                     }
-                    all_results.push(*result);
+                });
+
+                handles.push(handle);
+            }
+
+            // Collect results from all tasks in this layer.
+            for handle in handles {
+                match handle.await {
+                    Ok(FunctionOutcome::Success(result)) => {
+                        // Record deep FP for this function so downstream layers
+                        // can incorporate it into their deep fingerprints.
+                        if let Some(ref fp) = result.behavior_map.fingerprint {
+                            layer_deep_fps.push((result.function_name.clone(), fp.clone()));
+                        }
+                        all_results.push(*result);
+                    }
+                    Ok(FunctionOutcome::Timeout { function_name, limit }) => {
+                        skipped.push(SkippedFunction {
+                            function_name,
+                            reason: format!("timed out after {:.0}s", limit.as_secs_f64()),
+                            category: SkipCategory::Error,
+                        });
+                    }
+                    Ok(FunctionOutcome::Error { function_name, error }) => {
+                        skipped.push(SkippedFunction {
+                            function_name,
+                            reason: format!("error: {error}"),
+                            category: SkipCategory::Error,
+                        });
+                    }
+                    Err(e) => {
+                        // JoinError (task panicked or was cancelled)
+                        skipped.push(SkippedFunction {
+                            function_name: "(unknown)".into(),
+                            reason: format!("task join error: {e}"),
+                            category: SkipCategory::Error,
+                        });
+                    }
                 }
-                Ok(FunctionOutcome::Timeout { function_name, limit }) => {
-                    skipped.push(SkippedFunction {
-                        function_name,
-                        reason: format!("timed out after {:.0}s", limit.as_secs_f64()),
-                        category: SkipCategory::Error,
-                    });
-                }
-                Ok(FunctionOutcome::Error { function_name, error }) => {
-                    skipped.push(SkippedFunction {
-                        function_name,
-                        reason: format!("error: {error}"),
-                        category: SkipCategory::Error,
-                    });
-                }
-                Err(e) => {
-                    // JoinError (task panicked or was cancelled)
-                    skipped.push(SkippedFunction {
-                        function_name: "(unknown)".into(),
-                        reason: format!("task join error: {e}"),
-                        category: SkipCategory::Error,
-                    });
-                }
+            }
+
+            // Shut down this layer's workers now that all tasks are done.
+            // This frees subprocess resources before the next layer begins,
+            // and ensures zero processes remain when the layer was a cache hit.
+            if let Ok(p) = Arc::try_unwrap(pool) {
+                p.shutdown().await;
             }
         }
 
@@ -1001,17 +1023,11 @@ pub async fn parallel_scan(
         }
     }
 
-    // Shutdown workers. All spawned tasks have completed, so this is the only
-    // remaining reference to the pool.
-    if let Ok(pool) = Arc::try_unwrap(pool) {
-        pool.shutdown().await;
-    }
-
     Ok(ParallelScanResult {
         function_results: all_results,
         test_order,
         skipped,
-        workers_used: effective_parallelism,
+        workers_used: peak_workers,
         sampling: None,
     })
 }
@@ -2211,14 +2227,15 @@ mod tests {
             config_dir: None,
             timeout_explore: None,
             setup_manager: None,
-            policy: crate::scheduler_policy::SchedulerPolicy::default(),
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
             .await
             .expect("parallel_scan should succeed");
 
-        assert_eq!(result.workers_used, 2);
+        // leaf and caller are in separate layers (dependency order), so each
+        // layer has 1 task → pool size = min(parallelism=2, tasks=1) = 1.
+        assert_eq!(result.workers_used, 1);
         assert_eq!(result.function_results.len(), 2);
         assert!(result.skipped.is_empty());
         // leaf should be tested before caller (dependency order)
@@ -2283,7 +2300,6 @@ mod tests {
             config_dir: None,
             timeout_explore: None,
             setup_manager: None,
-            policy: crate::scheduler_policy::SchedulerPolicy::default(),
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2351,7 +2367,6 @@ mod tests {
             config_dir: None,
             timeout_explore: None,
             setup_manager: None,
-            policy: crate::scheduler_policy::SchedulerPolicy::default(),
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2436,7 +2451,6 @@ mod tests {
             config_dir: None,
             timeout_explore: None,
             setup_manager: None,
-            policy: crate::scheduler_policy::SchedulerPolicy::default(),
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2531,7 +2545,6 @@ mod tests {
             config_dir: None,
             timeout_explore: None,
             setup_manager: None,
-            policy: crate::scheduler_policy::SchedulerPolicy::default(),
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2610,7 +2623,6 @@ mod tests {
             config_dir: None,
             timeout_explore: None,
             setup_manager: None,
-            policy: crate::scheduler_policy::SchedulerPolicy::default(),
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -2663,7 +2675,6 @@ mod tests {
             config_dir: None,
             timeout_explore: None,
             setup_manager: None,
-            policy: crate::scheduler_policy::SchedulerPolicy::default(),
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -2700,7 +2711,6 @@ mod tests {
             config_dir: None,
             timeout_explore: None,
             setup_manager: None,
-            policy: crate::scheduler_policy::SchedulerPolicy::default(),
         };
 
         let plan = format_dry_run_plan(&analyses, &skipped, &config).expect("should succeed");
@@ -2727,7 +2737,6 @@ mod tests {
             config_dir: None,
             timeout_explore: None,
             setup_manager: None,
-            policy: crate::scheduler_policy::SchedulerPolicy::default(),
         };
 
         let plan = format_dry_run_plan(&[], &[], &config).expect("should succeed");
@@ -3215,69 +3224,245 @@ mod tests {
         assert!(result.is_empty());
     }
 
-    // ── SchedulerPolicy integration tests ─────────────────────────────
+    // ── lazy worker spawn tests ──────────────────────────────────────
 
-    /// Serial policy must explore all functions and produce the same results
-    /// as LayerParallel with a single worker.  This is the conservative
-    /// baseline regression test.
+    /// Helper: build a BehaviorMap with a specific fingerprint for cache seeding.
+    fn make_cached_map(function_id: &str, fingerprint: &str) -> crate::behavior::BehaviorMap {
+        crate::behavior::BehaviorMap {
+            function_id: function_id.into(),
+            behaviors: vec![],
+            fingerprint: Some(fingerprint.to_string()),
+            nondeterministic_fields: vec![],
+        }
+    }
+
+    /// Helper: compute the deep fingerprint that parallel_scan will compute for a
+    /// leaf function whose source file exists on disk at `source_path`, with the
+    /// given `analysis`. Used to pre-seed the cache so the scan gets a cache hit.
+    fn compute_expected_deep_fp(
+        source_path: &std::path::Path,
+        analysis: &FunctionAnalysis,
+    ) -> String {
+        let source =
+            crate::fingerprint::extract_function_source(source_path, analysis.start_line, analysis.end_line)
+                .expect("extract source");
+        let shallow = crate::fingerprint::compute_function_fingerprint(&source, analysis);
+        crate::fingerprint::compute_deep_fingerprint(&shallow, &HashMap::new(), &std::collections::HashSet::new())
+    }
+
+    /// A warm-cache scan (all functions fingerprint-matching) must spawn zero workers.
+    ///
+    /// This is the primary perf acceptance criterion: if every function hits the
+    /// cache, no frontend subprocess is ever started.
     #[tokio::test]
-    async fn serial_policy_scan_completes_all_functions() {
+    async fn parallel_scan_cache_hit_spawns_no_workers() {
+        use crate::cache::BehaviorMapCache;
         use crate::frontend::FrontendConfig;
-        use crate::scheduler_policy::SchedulerPolicy;
         use crate::types::{ParamInfo, TypeInfo};
         use std::path::{Path, PathBuf};
 
+        // Create a real source file so fingerprinting returns Some(fp).
+        let tmp_dir = tempfile::tempdir().expect("create temp dir");
+        let source_file = tmp_dir.path().join("warm.ts");
+        std::fs::write(&source_file, "function warm_fn(x: number) { return x; }").unwrap();
+
+        let analysis = FunctionAnalysis {
+            name: "warm_fn".to_string(),
+            exported: true,
+            params: vec![ParamInfo { name: "x".into(), typ: TypeInfo::Int, type_name: None }],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Unknown,
+            start_line: 1,
+            end_line: 1,
+            literals: vec![],
+            crypto_boundaries: vec![],
+        };
+
+        // Compute the fingerprint parallel_scan will derive from the source file.
+        let expected_fp = compute_expected_deep_fp(&source_file, &analysis);
+
+        // Pre-seed the cache with a map whose fingerprint matches — this triggers
+        // the is_fresh() path and skips the function without spawning a worker.
+        let cache_dir = tmp_dir.path().join("cache");
+        let cache = Arc::new(BehaviorMapCache::new(cache_dir).unwrap());
+        cache.store(&make_cached_map("warm_fn", &expected_fp)).unwrap();
+
+        // Use the noop frontend — it would succeed if spawned, but it must NOT be
+        // spawned at all for a full-cache-hit scan.
         let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
         let noop_path = manifest_dir.join("../protocol/noop-frontend.sh");
-
         let mut fe_config = FrontendConfig::new(PathBuf::from("bash"));
         fe_config.args = vec![noop_path.to_string_lossy().into_owned()];
         fe_config.request_timeout = TEST_REQUEST_TIMEOUT;
 
-        let analyses = vec![
-            FunctionAnalysis {
-                name: "alpha".to_string(),
-                exported: true,
-                params: vec![ParamInfo {
-                    name: "x".into(),
-                    typ: TypeInfo::Int,
-                    type_name: None,
-                }],
-                branches: vec![],
-                dependencies: vec![],
-                return_type: TypeInfo::Unknown,
-                start_line: 1,
-                end_line: 5,
-                literals: vec![],
-                crypto_boundaries: vec![],
-            },
-            FunctionAnalysis {
-                name: "beta".to_string(),
-                exported: true,
-                params: vec![ParamInfo {
-                    name: "y".into(),
-                    typ: TypeInfo::Int,
-                    type_name: None,
-                }],
-                branches: vec![],
-                dependencies: vec![],
-                return_type: TypeInfo::Unknown,
-                start_line: 1,
-                end_line: 5,
-                literals: vec![],
-                crypto_boundaries: vec![],
-            },
-        ];
+        let mut file_map = HashMap::new();
+        file_map.insert("warm_fn".to_string(), source_file.to_string_lossy().into_owned());
+
+        let config = ScanConfig {
+            max_iterations_per_function: 3,
+            seed: Some(42),
+            file_map,
+            parallelism: 4,
+            timeout_per_fn: TEST_REQUEST_TIMEOUT,
+            cache: Some(cache),
+            stratum: None,
+            mock_overrides: HashMap::new(),
+            resume_path: None,
+            timeout_total: None,
+            pool_path: None,
+            project_root: None,
+            config_dir: None,
+            timeout_explore: None,
+            setup_manager: None,
+        };
+
+        let result = parallel_scan(&fe_config, &[analysis], &config)
+            .await
+            .expect("parallel_scan should succeed");
+
+        // Key assertion: no workers were ever spawned.
+        assert_eq!(result.workers_used, 0, "warm cache should spawn zero workers");
+        // Function should appear in skipped (cache hit), not results.
+        assert!(result.function_results.is_empty());
+        assert_eq!(result.skipped.len(), 1);
+        assert!(
+            result.skipped[0].reason.contains("unchanged"),
+            "skip reason: {}",
+            result.skipped[0].reason
+        );
+    }
+
+    /// A scan with one cached and one stale function must explore only the stale
+    /// one, spawning workers only for that layer.
+    #[tokio::test]
+    async fn parallel_scan_partial_cache_explores_stale_functions() {
+        use crate::cache::BehaviorMapCache;
+        use crate::frontend::FrontendConfig;
+        use crate::types::{ParamInfo, TypeInfo};
+        use std::path::{Path, PathBuf};
+
+        let tmp_dir = tempfile::tempdir().expect("create temp dir");
+
+        // warm_fn: will be a cache hit (fingerprint pre-seeded).
+        let warm_source = tmp_dir.path().join("warm.ts");
+        std::fs::write(&warm_source, "function warm_fn(x: number) { return x; }").unwrap();
+
+        let warm_analysis = FunctionAnalysis {
+            name: "warm_fn".to_string(),
+            exported: true,
+            params: vec![ParamInfo { name: "x".into(), typ: TypeInfo::Int, type_name: None }],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Unknown,
+            start_line: 1,
+            end_line: 1,
+            literals: vec![],
+            crypto_boundaries: vec![],
+        };
+
+        let warm_fp = compute_expected_deep_fp(&warm_source, &warm_analysis);
+
+        let cache_dir = tmp_dir.path().join("cache");
+        let cache = Arc::new(BehaviorMapCache::new(cache_dir).unwrap());
+        cache.store(&make_cached_map("warm_fn", &warm_fp)).unwrap();
+        // stale_fn has no cache entry → will be explored.
+
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let noop_path = manifest_dir.join("../protocol/noop-frontend.sh");
+        let mut fe_config = FrontendConfig::new(PathBuf::from("bash"));
+        fe_config.args = vec![noop_path.to_string_lossy().into_owned()];
+        fe_config.request_timeout = TEST_REQUEST_TIMEOUT;
+
+        // Both functions are in the same layer (independent, no deps between them).
+        let stale_analysis = FunctionAnalysis {
+            name: "stale_fn".to_string(),
+            exported: true,
+            params: vec![ParamInfo { name: "y".into(), typ: TypeInfo::Int, type_name: None }],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Unknown,
+            start_line: 1,
+            end_line: 5,
+            literals: vec![],
+            crypto_boundaries: vec![],
+        };
 
         let mut file_map = HashMap::new();
-        file_map.insert("alpha".to_string(), "test.ts".to_string());
-        file_map.insert("beta".to_string(), "test.ts".to_string());
+        file_map.insert("warm_fn".to_string(), warm_source.to_string_lossy().into_owned());
+        // stale_fn points to a nonexistent file → fingerprint is None → cache check skipped → always explored.
+        file_map.insert("stale_fn".to_string(), "nonexistent.ts".to_string());
 
         let config = ScanConfig {
             max_iterations_per_function: 2,
             seed: Some(42),
             file_map,
-            parallelism: 4, // Serial policy must ignore this and use 1 worker.
+            parallelism: 4,
+            timeout_per_fn: TEST_REQUEST_TIMEOUT,
+            cache: Some(cache),
+            stratum: None,
+            mock_overrides: HashMap::new(),
+            resume_path: None,
+            timeout_total: None,
+            pool_path: None,
+            project_root: None,
+            config_dir: None,
+            timeout_explore: None,
+            setup_manager: None,
+        };
+
+        let analyses = vec![warm_analysis, stale_analysis];
+        let result = parallel_scan(&fe_config, &analyses, &config)
+            .await
+            .expect("parallel_scan should succeed");
+
+        // stale_fn was explored; warm_fn was a cache hit.
+        assert_eq!(result.function_results.len(), 1);
+        assert_eq!(result.function_results[0].function_name, "stale_fn");
+        assert_eq!(result.skipped.len(), 1);
+        assert_eq!(result.skipped[0].function_name, "warm_fn");
+        // At least one worker was spawned for the stale function.
+        assert!(result.workers_used >= 1, "stale function requires at least one worker");
+        // Pool was capped: 1 stale task with parallelism=4 → pool size 1.
+        assert_eq!(result.workers_used, 1, "pool should be capped at tasks.len()");
+    }
+
+    /// A layer with a single stale function and high parallelism must spawn
+    /// only one worker (capped to tasks.len()).
+    #[tokio::test]
+    async fn parallel_scan_pool_capped_to_task_count() {
+        use crate::frontend::FrontendConfig;
+        use crate::types::{ParamInfo, TypeInfo};
+        use std::path::{Path, PathBuf};
+
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let noop_path = manifest_dir.join("../protocol/noop-frontend.sh");
+        let mut fe_config = FrontendConfig::new(PathBuf::from("bash"));
+        fe_config.args = vec![noop_path.to_string_lossy().into_owned()];
+        fe_config.request_timeout = TEST_REQUEST_TIMEOUT;
+
+        let analyses = vec![FunctionAnalysis {
+            name: "solo".to_string(),
+            exported: true,
+            params: vec![ParamInfo { name: "x".into(), typ: TypeInfo::Int, type_name: None }],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Unknown,
+            start_line: 1,
+            end_line: 5,
+            literals: vec![],
+            crypto_boundaries: vec![],
+        }];
+
+        let mut file_map = HashMap::new();
+        file_map.insert("solo".to_string(), "test.ts".to_string());
+
+        let config = ScanConfig {
+            max_iterations_per_function: 2,
+            seed: Some(42),
+            file_map,
+            // High parallelism — but only 1 task exists, so pool must be capped at 1.
+            parallelism: 8,
             timeout_per_fn: TEST_REQUEST_TIMEOUT,
             cache: None,
             stratum: None,
@@ -3289,25 +3474,14 @@ mod tests {
             config_dir: None,
             timeout_explore: None,
             setup_manager: None,
-            policy: SchedulerPolicy::Serial,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
             .await
-            .expect("serial policy scan should succeed");
+            .expect("parallel_scan should succeed");
 
-        // All functions must be explored — serial policy doesn't skip anything.
-        assert_eq!(result.function_results.len(), 2, "both functions should complete");
-        assert!(result.skipped.is_empty(), "no functions should be skipped");
-
-        // Serial enforces 1 effective worker regardless of configured parallelism.
-        assert_eq!(result.workers_used, 1, "serial policy must use exactly 1 worker");
-    }
-
-    /// LayerParallel is the default policy.
-    #[test]
-    fn layer_parallel_policy_is_default() {
-        use crate::scheduler_policy::SchedulerPolicy;
-        assert_eq!(SchedulerPolicy::default(), SchedulerPolicy::LayerParallel);
+        // Only 1 task → pool capped at 1, not 8.
+        assert_eq!(result.workers_used, 1, "pool should be capped to tasks.len()=1, not parallelism=8");
+        assert_eq!(result.function_results.len(), 1);
     }
 }
