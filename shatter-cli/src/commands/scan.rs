@@ -58,6 +58,7 @@ pub(crate) async fn run_scan(
     output_format: crate::args::OutputFormat,
     seeds_dir: &Path,
     no_seeds: bool,
+    scheduler_policy: shatter_core::scheduler_policy::SchedulerPolicy,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let scan_pool_path = if no_seeds {
         None
@@ -449,6 +450,7 @@ pub(crate) async fn run_scan(
             config_dir: Some(std::path::PathBuf::from(directory)),
             timeout_explore: timeout_explore.map(Duration::from_secs_f64),
             setup_manager: None,
+            policy: scheduler_policy,
         };
         let plan = scan_orchestrator::format_dry_run_plan(
             &all_analyses,
@@ -519,6 +521,7 @@ pub(crate) async fn run_scan(
         config_dir: Some(std::path::PathBuf::from(directory)),
         timeout_explore: timeout_explore.map(Duration::from_secs_f64),
         setup_manager: None,
+        policy: scheduler_policy,
     };
 
     let scan_start = Instant::now();

@@ -650,6 +650,12 @@ pub(crate) enum CliCommand {
         /// Treat setup failures as fatal errors (abort scan immediately).
         #[arg(long)]
         fail_on_setup_error: bool,
+
+        /// Scheduling policy: controls which exploration tasks may overlap.
+        /// "layer-parallel" (default): functions within the same topological
+        /// layer run concurrently. "serial": one function at a time.
+        #[arg(long, default_value = "layer-parallel")]
+        scheduler_policy: String,
     },
 
     /// Export generated tests from behavior maps produced by exploration.
