@@ -24,6 +24,8 @@ import {
   buildExecuteResponse,
   setProjectRoot,
   clearModuleCache,
+  clearCompiledScriptCache,
+  deleteCompiledScriptEntry,
 } from "./executor.js";
 import {
   loadSetupModule,
@@ -192,6 +194,8 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
       // Use resolved path so keys match execute's resolved fileForExec.
       const key = `${path.resolve(request.file)}:${request.function}`;
       instrumentedSources.set(key, result.instrumentedSource);
+      // Invalidate any cached compiled script for this key — the source may have changed.
+      deleteCompiledScriptEntry(key);
       lastAnalyzedFile = path.resolve(request.file);
 
       return {
@@ -229,16 +233,17 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
         const instrumentKey = `${fileForExec}:${funcName}`;
         const instrumentedSource = instrumentedSources.get(instrumentKey);
 
+        const capture = request.capture ?? true;
         let rawResult;
         if (instrumentedSource) {
           rawResult = timing
             ? await timing.async("execute.total", () =>
-              executeInstrumented(instrumentedSource, funcName, request.inputs, request.mocks ?? [], fileForExec, timing))
-            : await executeInstrumented(instrumentedSource, funcName, request.inputs, request.mocks ?? [], fileForExec);
+              executeInstrumented(instrumentedSource, funcName, request.inputs, request.mocks ?? [], fileForExec, timing, capture, instrumentKey))
+            : await executeInstrumented(instrumentedSource, funcName, request.inputs, request.mocks ?? [], fileForExec, undefined, capture, instrumentKey);
         } else {
           rawResult = timing
-            ? await timing.async("execute.total", () => executeFunction(fileForExec, funcRef, request.inputs, timing))
-            : await executeFunction(fileForExec, funcRef, request.inputs);
+            ? await timing.async("execute.total", () => executeFunction(fileForExec, funcRef, request.inputs, timing, capture))
+            : await executeFunction(fileForExec, funcRef, request.inputs, undefined, capture);
         }
 
         return {
@@ -321,6 +326,7 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
         }
         setupContexts.delete(ctxKey);
         instrumentedSources.clear();
+        clearCompiledScriptCache();
         clearModuleCache();
 
         return {
@@ -400,6 +406,7 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
     case "shutdown":
       await clearWasmCache();
       instrumentedSources.clear();
+      clearCompiledScriptCache();
       clearModuleCache();
       return {
         response: {
@@ -505,6 +512,7 @@ export function parseRequest(line: string): { request: Request } | { error: Erro
  */
 export function clearInstrumentedSources(): void {
   instrumentedSources.clear();
+  clearCompiledScriptCache();
   loadedSetupModules.clear();
   setupContexts.clear();
 }

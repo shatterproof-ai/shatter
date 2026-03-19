@@ -148,6 +148,24 @@ export function classifyConnectionFailure(message: string): ConnectionFailureKin
 const compiledModuleCache = new Map<string, Record<string, unknown>>();
 
 /**
+ * Cache of pre-compiled vm.Script objects for instrumented sources.
+ * Keyed by instrument key ("resolvedFilePath:functionName").
+ * Avoids re-transpiling and re-compiling JS on every instrumented execute call.
+ * Invalidated per-entry on re-instrumentation, and cleared on teardown.
+ */
+const compiledScriptCache = new Map<string, vm.Script>();
+
+/** Clear all cached compiled scripts (called on teardown). */
+export function clearCompiledScriptCache(): void {
+  compiledScriptCache.clear();
+}
+
+/** Remove a single entry from the compiled script cache (called on re-instrumentation). */
+export function deleteCompiledScriptEntry(key: string): void {
+  compiledScriptCache.delete(key);
+}
+
+/**
  * Proxy console used in VM sandboxes. Delegates all calls to `consoleTarget`,
  * which can be swapped at execution time to capture output as side effects.
  */
@@ -161,6 +179,23 @@ const consoleProxy = new Proxy(console, {
     }
     return value;
   },
+});
+
+/**
+ * No-op console used when capture is disabled. Silences all console output from
+ * user functions to prevent stdout pollution (stdout is the protocol channel).
+ * Created once at module load — zero allocation per execute call.
+ */
+const NOOP_CONSOLE = new Proxy({} as Console, {
+  get: () => () => undefined,
+});
+
+/**
+ * No-op process stub used in VM sandboxes when capture is disabled.
+ * Prevents user code from writing to stdout (the protocol channel) via process.stdout.
+ */
+const NOOP_PROCESS = new Proxy({} as NodeJS.Process, {
+  get: () => () => undefined,
 });
 
 /**
@@ -594,45 +629,69 @@ export async function executeFunction(
   functionRef: string,
   inputs: unknown[],
   timing?: TimingCollector,
+  capture = true,
 ): Promise<RawExecuteResult> {
   const fn = timing
     ? timing.sync("execute.module_load", () => resolveFunction(filePath, functionRef))
     : resolveFunction(filePath, functionRef);
 
-  const sideEffects: SideEffect[] = [];
   const previousTarget = consoleTarget;
-  consoleTarget = createCapturingConsole(sideEffects);
-
   let metrics: MeasuredExecution;
-  try {
-    const reconstructedInputs = inputs.map(reconstructValue);
-    metrics = await measureExecution(() => fn(...reconstructedInputs), timing);
-  } finally {
-    consoleTarget = previousTarget;
-  }
 
-  if (metrics.thrownError) {
-    sideEffects.push({
-      kind: "thrown_error",
-      error_type: metrics.thrownError.error_type,
-      message: metrics.thrownError.message,
-      stack: metrics.thrownError.stack,
-    });
+  if (capture) {
+    const sideEffects: SideEffect[] = [];
+    consoleTarget = createCapturingConsole(sideEffects);
+    try {
+      const reconstructedInputs = inputs.map(reconstructValue);
+      metrics = await measureExecution(() => fn(...reconstructedInputs), timing);
+    } finally {
+      consoleTarget = previousTarget;
+    }
+    if (metrics.thrownError) {
+      sideEffects.push({
+        kind: "thrown_error",
+        error_type: metrics.thrownError.error_type,
+        message: metrics.thrownError.message,
+        stack: metrics.thrownError.stack,
+      });
+    }
+    return {
+      return_value: metrics.returnValue ?? null,
+      thrown_error: metrics.thrownError,
+      side_effects: sideEffects,
+      branch_path: [],
+      path_constraints: [],
+      lines_executed: [],
+      performance: metrics.performance,
+      calls_to_external: [],
+      scope_events: [],
+      discovered_dependencies: [],
+      connection_failures: [],
+    };
+  } else {
+    // No-capture fast path: skip all capture infrastructure.
+    // NOOP_CONSOLE silences user code's console calls to prevent stdout pollution.
+    consoleTarget = NOOP_CONSOLE;
+    try {
+      const reconstructedInputs = inputs.map(reconstructValue);
+      metrics = await measureExecution(() => fn(...reconstructedInputs), timing);
+    } finally {
+      consoleTarget = previousTarget;
+    }
+    return {
+      return_value: metrics.returnValue ?? null,
+      thrown_error: metrics.thrownError,
+      side_effects: [],
+      branch_path: [],
+      path_constraints: [],
+      lines_executed: [],
+      performance: metrics.performance,
+      calls_to_external: [],
+      scope_events: [],
+      discovered_dependencies: [],
+      connection_failures: [],
+    };
   }
-
-  return {
-    return_value: metrics.returnValue ?? null,
-    thrown_error: metrics.thrownError,
-    side_effects: sideEffects,
-    branch_path: [],
-    path_constraints: [],
-    lines_executed: [],
-    performance: metrics.performance,
-    calls_to_external: [],
-    scope_events: [],
-    discovered_dependencies: [],
-    connection_failures: [],
-  };
 }
 
 /**
@@ -649,21 +708,37 @@ export async function executeInstrumented(
   mocks: MockConfig[] = [],
   sourceFilePath?: string,
   timing?: TimingCollector,
+  capture = true,
+  cacheKey?: string,
 ): Promise<RawExecuteResult> {
-  // Transpile instrumented TS to JS
-  const transpile = () => ts.transpileModule(instrumentedSource, {
-    compilerOptions: {
-      target: ts.ScriptTarget.ES2022,
-      module: ts.ModuleKind.CommonJS,
-      esModuleInterop: true,
-      strict: true,
-      jsx: ts.JsxEmit.ReactJSX,
-    },
-    ...(sourceFilePath ? { fileName: sourceFilePath } : {}),
-  });
-  const jsResult = timing
-    ? timing.sync("execute.transpile", transpile)
-    : transpile();
+  // Transpile instrumented TS to JS, reusing a cached vm.Script when available.
+  // The instrumented source for a given function is fixed after instrumentation,
+  // so we can amortize both the TypeScript transpile and the JS bytecode compile
+  // across all execute calls for the same function.
+  const cachedScript = cacheKey ? compiledScriptCache.get(cacheKey) : undefined;
+  let compiledScript: vm.Script;
+  if (cachedScript) {
+    compiledScript = cachedScript;
+    // execute.transpile is intentionally absent from timing on cache hits
+  } else {
+    const transpile = () => ts.transpileModule(instrumentedSource, {
+      compilerOptions: {
+        target: ts.ScriptTarget.ES2022,
+        module: ts.ModuleKind.CommonJS,
+        esModuleInterop: true,
+        strict: true,
+        jsx: ts.JsxEmit.ReactJSX,
+      },
+      ...(sourceFilePath ? { fileName: sourceFilePath } : {}),
+    });
+    const jsResult = timing
+      ? timing.sync("execute.transpile", transpile)
+      : transpile();
+    compiledScript = new vm.Script(jsResult.outputText, { filename: sourceFilePath ?? "instrumented.js" });
+    if (cacheKey) {
+      compiledScriptCache.set(cacheKey, compiledScript);
+    }
+  }
 
   const linesExecuted: number[] = [];
   const branchDecisions: BranchDecision[] = [];
@@ -875,9 +950,10 @@ export async function executeInstrumented(
     }
   };
 
-  // Build the execution context with capturing console and process
-  const capturingConsole = createCapturingConsole(sideEffects);
-  const capturingProc = createCapturingProcess(sideEffects);
+  // Build the execution context: use capturing console/process when capture is enabled,
+  // otherwise use no-op stubs to prevent stdout pollution without the capture overhead.
+  const sandboxConsole = capture ? createCapturingConsole(sideEffects) : NOOP_CONSOLE;
+  const sandboxProc = capture ? createCapturingProcess(sideEffects) : NOOP_PROCESS;
   const rawRequire = sourceFilePath ? createRequire(path.resolve(sourceFilePath)) : require;
   const baseRequire = wrapRequireWithReactShim(rawRequire, sourceFilePath);
 
@@ -927,8 +1003,8 @@ export async function executeInstrumented(
     module: moduleObj,
     exports: moduleExports,
     require: sandboxRequire,
-    console: capturingConsole,
-    process: capturingProc,
+    console: sandboxConsole,
+    process: sandboxProc,
     Buffer,
     setTimeout,
     clearTimeout,
@@ -945,7 +1021,7 @@ export async function executeInstrumented(
   });
 
   const loadModule = (): void => {
-    vm.runInContext(jsResult.outputText, sandbox, { filename: sourceFilePath ?? "instrumented.js", timeout: getExecTimeoutMs() });
+    compiledScript.runInContext(sandbox, { timeout: getExecTimeoutMs() });
   };
   if (timing) {
     timing.sync("execute.module_load", loadModule);
@@ -1041,9 +1117,12 @@ export function buildExecuteResponse(
   rawResult: RawExecuteResult,
   timing?: TimingCollector,
 ): ExecuteResponse {
-  const { effects, truncation } = timing
-    ? timing.sync("execute.trace_capture", () => truncateSideEffects(rawResult.side_effects))
-    : truncateSideEffects(rawResult.side_effects);
+  // Skip truncation when there are no side effects (e.g. capture-disabled runs).
+  const { effects, truncation } = rawResult.side_effects.length === 0
+    ? { effects: [] as SideEffect[], truncation: undefined }
+    : timing
+      ? timing.sync("execute.trace_capture", () => truncateSideEffects(rawResult.side_effects))
+      : truncateSideEffects(rawResult.side_effects);
 
   const response: ExecuteResponse = {
     protocol_version: protocolVersion,
