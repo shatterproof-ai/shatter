@@ -3,206 +3,402 @@
 # Machine-readable parity contract consumed by scripts/validate-parity.py.
 # CI task: npx task parity
 #
-# Ownership: str-7jgm.1 (parity contract spec) populates and maintains this.
-# Bootstrap version reflects actual code state as of protocol version 0.1.0.
-#
-# Validator failure conditions:
-#   MISSING_REQUIRED — matrix says implemented but code doesn't advertise it
-#   UNDOCUMENTED     — code advertises it but matrix says not_implemented
+# Ownership: str-7jgm.1 (parity contract spec) seeds and maintains this file.
+# This bootstrap version reflects actual code state as of protocol version 0.1.0.
+# Merge note: reconcile with str-7jgm.1's version; this file is the source of
+# truth for validator CI — it must match what frontend handler code actually does.
 #
 # To update after a capability change:
 #   1. Edit this file to match the new expected state
 #   2. Run: python3 scripts/validate-parity.py --verbose
 #   3. Commit both the source change and this file together
 
+version: "0.1.0"
+
 # --- Commands ---
 #
-# status: required         All frontends in the frontends map are expected to comply
-# status: optional         Frontends may choose to implement; no failure for absence
+# status: required         All frontends must implement
+# status: optional         Frontends may choose to implement
 # status: frontend_specific Only certain frontends expected to implement
 #
-# frontends:
-#   <frontend>: implemented    | must be advertised in handshake capabilities
-#               not_implemented| must NOT be advertised in handshake capabilities
-#               partial        | advertised but functionally incomplete (informational only)
+# frontends.<name>:
+#   implemented     must be advertised in handshake capabilities; validator FAILS if absent
+#   not_implemented must NOT be advertised in handshake; validator FAILS if present
+#   partial         advertised but functionally incomplete — informational only, not checked
 
 commands:
   handshake:
     status: required
+    notes: "Base protocol command; not a negotiated capability."
     frontends:
       typescript: implemented
       go: implemented
       rust: implemented
-    notes: "Always handled; not listed in capabilities list (implicit)"
-
-  analyze:
-    status: required
-    frontends:
-      typescript: implemented
-      go: implemented
-      rust: partial
-    notes: "Rust advertises analyze in capabilities but returns not_supported; tracked pending full implementation"
-
-  instrument:
-    status: required
-    frontends:
-      typescript: implemented
-      go: implemented
-      rust: partial
-    notes: "Rust advertises instrument in capabilities but returns not_supported; tracked pending full implementation"
-
-  execute:
-    status: required
-    frontends:
-      typescript: implemented
-      go: implemented
-      rust: partial
-    notes: "Rust advertises execute in capabilities but returns not_supported; tracked pending full implementation"
-
-  setup:
-    status: required
-    frontends:
-      typescript: implemented
-      go: implemented
-      rust: partial
-    notes: "Rust advertises setup in capabilities but returns not_supported; tracked pending full implementation"
-
-  teardown:
-    status: optional
-    frontends:
-      typescript: not_implemented
-      go: implemented
-      rust: partial
-    notes: "TypeScript does not advertise teardown. Rust advertises but returns not_supported."
-
-  generate:
-    status: required
-    frontends:
-      typescript: implemented
-      go: implemented
-      rust: partial
-    notes: "Rust advertises generate in capabilities but returns not_supported; tracked pending full implementation"
 
   shutdown:
     status: required
+    notes: "Base protocol command; not a negotiated capability."
     frontends:
       typescript: implemented
       go: implemented
       rust: implemented
-    notes: "Always handled; not listed in capabilities list (implicit)"
+
+  analyze:
+    status: required
+    notes: "All frontends implement. Core depends on this for every exploration."
+    frontends:
+      typescript: implemented
+      go: implemented
+      rust: implemented
+
+  execute:
+    status: required
+    notes: >
+      All frontends advertise execute. Rust execute handler compiles and runs
+      code but returns not_supported for NonExecutable inputs
+      (see allowed_divergences: rust-execute-partial).
+    frontends:
+      typescript: implemented
+      go: implemented
+      rust: partial
+
+  generate:
+    status: required
+    notes: "All frontends implement custom generator invocation."
+    frontends:
+      typescript: implemented
+      go: implemented
+      rust: implemented
+
+  instrument:
+    status: optional
+    notes: >
+      TypeScript and Go instrument for symbolic tracking. Rust instruments
+      Rust source for branch recording. Core checks capabilities before sending.
+    frontends:
+      typescript: implemented
+      go: implemented
+      rust: implemented
+
+  setup:
+    status: optional
+    notes: >
+      TypeScript and Go support state setup. Rust also implements setup
+      (compiles and runs setup functions from source). Core checks capabilities.
+    frontends:
+      typescript: implemented
+      go: implemented
+      rust: implemented
+
+  teardown:
+    status: optional
+    notes: >
+      Go and Rust implement teardown. TypeScript relies on process-level cleanup
+      and does not advertise teardown (see allowed_divergences: ts-missing-teardown).
+    frontends:
+      typescript: not_implemented
+      go: implemented
+      rust: implemented
 
 # --- Complex type capabilities ---
 #
-# status: optional   Frontends may choose to implement
+# All complex_type capabilities are optional. Frontends advertise which types
+# they can generate; core only requests generation for advertised types.
 #
-# frontends:
-#   <frontend>: supported     | advertised in handshake capabilities
-#               not_supported | not advertised in handshake capabilities
-#
-# language_affinity: languages where this type maps naturally to native types
+# language_affinity lists the language(s) where this type is native.
 
 complex_type_capabilities:
   date:
     status: optional
+    language_affinity: [typescript, go, rust]
     frontends:
       typescript: supported
       go: supported
       rust: not_supported
-    language_affinity: [ts, go]
 
   date_time:
     status: optional
+    language_affinity: [typescript, go, rust]
     frontends:
       typescript: supported
       go: not_supported
       rust: not_supported
-    language_affinity: [ts]
+
+  time:
+    status: optional
+    language_affinity: [typescript, go, rust]
+    frontends:
+      typescript: not_supported
+      go: not_supported
+      rust: not_supported
 
   duration:
     status: optional
+    language_affinity: [typescript, go, rust]
     frontends:
       typescript: supported
       go: supported
       rust: not_supported
-    language_affinity: [ts, go]
 
   reg_exp:
     status: optional
+    language_affinity: [typescript, go]
     frontends:
       typescript: supported
       go: supported
       rust: not_supported
-    language_affinity: [ts, go]
 
-  url:
+  char:
     status: optional
+    language_affinity: [rust]
     frontends:
-      typescript: supported
-      go: supported
-      rust: not_supported
-    language_affinity: [ts, go]
-
-  big_int:
-    status: optional
-    frontends:
-      typescript: supported
-      go: supported
-      rust: not_supported
-    language_affinity: [ts, go]
-
-  buffer:
-    status: optional
-    frontends:
-      typescript: supported
+      typescript: not_supported
       go: not_supported
       rust: not_supported
-    language_affinity: [ts]
-
-  error:
-    status: optional
-    frontends:
-      typescript: supported
-      go: supported
-      rust: not_supported
-    language_affinity: [ts, go]
 
   symbol:
     status: optional
+    language_affinity: [typescript]
+    notes: "JavaScript/TypeScript Symbol type; not applicable to Go or Rust."
     frontends:
       typescript: supported
       go: not_supported
       rust: not_supported
-    language_affinity: [ts]
 
-  ip_address:
+  big_int:
     status: optional
+    language_affinity: [typescript, go]
     frontends:
-      typescript: not_supported
+      typescript: supported
       go: supported
       rust: not_supported
-    language_affinity: [go]
-
-  rational:
-    status: optional
-    frontends:
-      typescript: not_supported
-      go: supported
-      rust: not_supported
-    language_affinity: [go]
 
   big_decimal:
     status: optional
+    language_affinity: [go]
     frontends:
       typescript: not_supported
       go: supported
       rust: not_supported
+
+  complex:
+    status: optional
+    language_affinity: [rust]
+    frontends:
+      typescript: not_supported
+      go: not_supported
+      rust: not_supported
+
+  rational:
+    status: optional
     language_affinity: [go]
+    frontends:
+      typescript: not_supported
+      go: supported
+      rust: not_supported
+
+  range:
+    status: optional
+    language_affinity: [rust]
+    frontends:
+      typescript: not_supported
+      go: not_supported
+      rust: not_supported
+
+  buffer:
+    status: optional
+    language_affinity: [typescript]
+    notes: "Node.js Buffer / ArrayBuffer; not applicable to Go or Rust."
+    frontends:
+      typescript: supported
+      go: not_supported
+      rust: not_supported
+
+  bit_set:
+    status: optional
+    language_affinity: [go, rust]
+    frontends:
+      typescript: not_supported
+      go: not_supported
+      rust: not_supported
+
+  error:
+    status: optional
+    language_affinity: [typescript, go, rust]
+    frontends:
+      typescript: supported
+      go: supported
+      rust: not_supported
+
+  option:
+    status: optional
+    language_affinity: [rust]
+    frontends:
+      typescript: not_supported
+      go: not_supported
+      rust: not_supported
+
+  result:
+    status: optional
+    language_affinity: [rust]
+    frontends:
+      typescript: not_supported
+      go: not_supported
+      rust: not_supported
+
+  closure:
+    status: optional
+    language_affinity: [typescript, rust]
+    frontends:
+      typescript: not_supported
+      go: not_supported
+      rust: not_supported
+
+  iterator:
+    status: optional
+    language_affinity: [typescript, rust]
+    frontends:
+      typescript: not_supported
+      go: not_supported
+      rust: not_supported
+
+  url:
+    status: optional
+    language_affinity: [typescript, go, rust]
+    frontends:
+      typescript: supported
+      go: supported
+      rust: not_supported
+
+  ip_address:
+    status: optional
+    language_affinity: [go, rust]
+    frontends:
+      typescript: not_supported
+      go: supported
+      rust: not_supported
+
+  uuid:
+    status: optional
+    language_affinity: [typescript, go, rust]
+    frontends:
+      typescript: not_supported
+      go: not_supported
+      rust: not_supported
+
+  path:
+    status: optional
+    language_affinity: [typescript, go, rust]
+    frontends:
+      typescript: not_supported
+      go: not_supported
+      rust: not_supported
+
+  money:
+    status: optional
+    language_affinity: [typescript, go, rust]
+    frontends:
+      typescript: not_supported
+      go: not_supported
+      rust: not_supported
+
+  sem_ver:
+    status: optional
+    language_affinity: [typescript, go, rust]
+    frontends:
+      typescript: not_supported
+      go: not_supported
+      rust: not_supported
+
+  email:
+    status: optional
+    language_affinity: [typescript, go, rust]
+    frontends:
+      typescript: not_supported
+      go: not_supported
+      rust: not_supported
+
+  mime_type:
+    status: optional
+    language_affinity: [typescript, go, rust]
+    frontends:
+      typescript: not_supported
+      go: not_supported
+      rust: not_supported
+
+  color:
+    status: optional
+    language_affinity: [typescript, go, rust]
+    frontends:
+      typescript: not_supported
+      go: not_supported
+      rust: not_supported
+
+  geo_point:
+    status: optional
+    language_affinity: [typescript, go, rust]
+    frontends:
+      typescript: not_supported
+      go: not_supported
+      rust: not_supported
+
+  locale:
+    status: optional
+    language_affinity: [typescript, go, rust]
+    frontends:
+      typescript: not_supported
+      go: not_supported
+      rust: not_supported
+
+  rune:
+    status: optional
+    language_affinity: [go]
+    notes: "Go rune (int32 Unicode code point); not applicable to TypeScript or Rust."
+    frontends:
+      typescript: not_supported
+      go: not_supported
+      rust: not_supported
+
+  go_byte:
+    status: optional
+    language_affinity: [go]
+    notes: "Go byte (uint8); not applicable to TypeScript or Rust."
+    frontends:
+      typescript: not_supported
+      go: not_supported
+      rust: not_supported
 
 # --- Allowed divergences ---
 #
-# Document known, intentional drift between frontends.
-# status: tracked  — known, under investigation or deferred
-# status: accepted — intentional long-term divergence
-# status: resolved — no longer a divergence; remove when matrix is updated
+# Known, intentional drift between frontends. These produce warnings (not
+# failures) in the validator when the affected (frontend, command) pair
+# is found in violation.
+#
+# status: tracked  — known, deferred or under investigation
+# status: accepted — intentional permanent divergence
+# status: resolved — no longer a divergence; remove entry when matrix is updated
 
-allowed_divergences: []
+allowed_divergences:
+  - id: ts-missing-teardown
+    description: >
+      TypeScript does not advertise the teardown capability. State initialized
+      via setup in a TypeScript session is cleaned up at the process level
+      rather than via an explicit teardown call.
+    affected_frontends: [typescript]
+    affected_commands: [teardown]
+    status: tracked
+    resolution: >
+      Implement teardown in the TypeScript frontend and add 'teardown' to
+      SUPPORTED_CAPABILITIES in shatter-ts/src/handlers.ts.
+
+  - id: rust-execute-partial
+    description: >
+      The Rust execute handler compiles and runs Rust code but returns
+      not_supported for NonExecutable inputs (e.g. functions requiring
+      dynamic dispatch). Full execution parity with TypeScript and Go is pending.
+    affected_frontends: [rust]
+    affected_commands: [execute]
+    status: tracked
+    resolution: >
+      Expand the Rust executor to handle all input types that TS/Go handle,
+      removing the NonExecutable early-exit path.
