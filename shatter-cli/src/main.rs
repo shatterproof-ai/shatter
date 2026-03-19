@@ -325,7 +325,17 @@ async fn main() -> ExitCode {
             no_seeds,
             setup_timeout,
             fail_on_setup_error: _,
+            scheduler_policy,
         } => {
+            let parsed_policy: shatter_core::scheduler_policy::SchedulerPolicy =
+                match scheduler_policy.parse() {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!("Error: invalid --scheduler-policy: {e}");
+                        return ExitCode::FAILURE;
+                    }
+                };
+
             // Set SHATTER_SETUP_TIMEOUT env var for frontends if --setup-timeout provided.
             if let Some(secs) = setup_timeout {
                 // Safety: CLI is single-threaded at this point (before spawning frontends).
@@ -374,6 +384,7 @@ async fn main() -> ExitCode {
                 cli.format,
                 &seeds_dir,
                 no_seeds,
+                parsed_policy,
             )
             .await
         }
