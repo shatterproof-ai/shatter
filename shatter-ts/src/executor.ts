@@ -164,6 +164,23 @@ const consoleProxy = new Proxy(console, {
 });
 
 /**
+ * No-op console used when capture is disabled. Silences all console output from
+ * user functions to prevent stdout pollution (stdout is the protocol channel).
+ * Created once at module load — zero allocation per execute call.
+ */
+const NOOP_CONSOLE = new Proxy({} as Console, {
+  get: () => () => undefined,
+});
+
+/**
+ * No-op process stub used in VM sandboxes when capture is disabled.
+ * Prevents user code from writing to stdout (the protocol channel) via process.stdout.
+ */
+const NOOP_PROCESS = new Proxy({} as NodeJS.Process, {
+  get: () => () => undefined,
+});
+
+/**
  * Set the project root for module resolution. When set, NODE_PATH includes
  * the project's node_modules directory so createRequire() resolves packages.
  */
@@ -594,45 +611,69 @@ export async function executeFunction(
   functionRef: string,
   inputs: unknown[],
   timing?: TimingCollector,
+  capture = true,
 ): Promise<RawExecuteResult> {
   const fn = timing
     ? timing.sync("execute.module_load", () => resolveFunction(filePath, functionRef))
     : resolveFunction(filePath, functionRef);
 
-  const sideEffects: SideEffect[] = [];
   const previousTarget = consoleTarget;
-  consoleTarget = createCapturingConsole(sideEffects);
-
   let metrics: MeasuredExecution;
-  try {
-    const reconstructedInputs = inputs.map(reconstructValue);
-    metrics = await measureExecution(() => fn(...reconstructedInputs), timing);
-  } finally {
-    consoleTarget = previousTarget;
-  }
 
-  if (metrics.thrownError) {
-    sideEffects.push({
-      kind: "thrown_error",
-      error_type: metrics.thrownError.error_type,
-      message: metrics.thrownError.message,
-      stack: metrics.thrownError.stack,
-    });
+  if (capture) {
+    const sideEffects: SideEffect[] = [];
+    consoleTarget = createCapturingConsole(sideEffects);
+    try {
+      const reconstructedInputs = inputs.map(reconstructValue);
+      metrics = await measureExecution(() => fn(...reconstructedInputs), timing);
+    } finally {
+      consoleTarget = previousTarget;
+    }
+    if (metrics.thrownError) {
+      sideEffects.push({
+        kind: "thrown_error",
+        error_type: metrics.thrownError.error_type,
+        message: metrics.thrownError.message,
+        stack: metrics.thrownError.stack,
+      });
+    }
+    return {
+      return_value: metrics.returnValue ?? null,
+      thrown_error: metrics.thrownError,
+      side_effects: sideEffects,
+      branch_path: [],
+      path_constraints: [],
+      lines_executed: [],
+      performance: metrics.performance,
+      calls_to_external: [],
+      scope_events: [],
+      discovered_dependencies: [],
+      connection_failures: [],
+    };
+  } else {
+    // No-capture fast path: skip all capture infrastructure.
+    // NOOP_CONSOLE silences user code's console calls to prevent stdout pollution.
+    consoleTarget = NOOP_CONSOLE;
+    try {
+      const reconstructedInputs = inputs.map(reconstructValue);
+      metrics = await measureExecution(() => fn(...reconstructedInputs), timing);
+    } finally {
+      consoleTarget = previousTarget;
+    }
+    return {
+      return_value: metrics.returnValue ?? null,
+      thrown_error: metrics.thrownError,
+      side_effects: [],
+      branch_path: [],
+      path_constraints: [],
+      lines_executed: [],
+      performance: metrics.performance,
+      calls_to_external: [],
+      scope_events: [],
+      discovered_dependencies: [],
+      connection_failures: [],
+    };
   }
-
-  return {
-    return_value: metrics.returnValue ?? null,
-    thrown_error: metrics.thrownError,
-    side_effects: sideEffects,
-    branch_path: [],
-    path_constraints: [],
-    lines_executed: [],
-    performance: metrics.performance,
-    calls_to_external: [],
-    scope_events: [],
-    discovered_dependencies: [],
-    connection_failures: [],
-  };
 }
 
 /**
@@ -649,6 +690,7 @@ export async function executeInstrumented(
   mocks: MockConfig[] = [],
   sourceFilePath?: string,
   timing?: TimingCollector,
+  capture = true,
 ): Promise<RawExecuteResult> {
   // Transpile instrumented TS to JS
   const transpile = () => ts.transpileModule(instrumentedSource, {
@@ -875,9 +917,10 @@ export async function executeInstrumented(
     }
   };
 
-  // Build the execution context with capturing console and process
-  const capturingConsole = createCapturingConsole(sideEffects);
-  const capturingProc = createCapturingProcess(sideEffects);
+  // Build the execution context: use capturing console/process when capture is enabled,
+  // otherwise use no-op stubs to prevent stdout pollution without the capture overhead.
+  const sandboxConsole = capture ? createCapturingConsole(sideEffects) : NOOP_CONSOLE;
+  const sandboxProc = capture ? createCapturingProcess(sideEffects) : NOOP_PROCESS;
   const rawRequire = sourceFilePath ? createRequire(path.resolve(sourceFilePath)) : require;
   const baseRequire = wrapRequireWithReactShim(rawRequire, sourceFilePath);
 
@@ -927,8 +970,8 @@ export async function executeInstrumented(
     module: moduleObj,
     exports: moduleExports,
     require: sandboxRequire,
-    console: capturingConsole,
-    process: capturingProc,
+    console: sandboxConsole,
+    process: sandboxProc,
     Buffer,
     setTimeout,
     clearTimeout,
@@ -981,12 +1024,14 @@ export async function executeInstrumented(
   );
 
   if (metrics.thrownError) {
-    sideEffects.push({
-      kind: "thrown_error",
-      error_type: metrics.thrownError.error_type,
-      message: metrics.thrownError.message,
-      stack: metrics.thrownError.stack,
-    });
+    if (capture) {
+      sideEffects.push({
+        kind: "thrown_error",
+        error_type: metrics.thrownError.error_type,
+        message: metrics.thrownError.message,
+        stack: metrics.thrownError.stack,
+      });
+    }
 
     // Classify the thrown error as a connection failure if it matches infra patterns
     const connKind = classifyConnectionFailure(metrics.thrownError.message);
@@ -1000,16 +1045,18 @@ export async function executeInstrumented(
   }
 
   // Detect module-level variable changes after execution
-  for (const key of exportKeys) {
-    const before = beforeSnapshot.get(key);
-    const after = finalExports.exports[key];
-    if (JSON.stringify(before) !== JSON.stringify(after)) {
-      sideEffects.push({
-        kind: "global_state_change",
-        variable: key,
-        before,
-        after,
-      });
+  if (capture) {
+    for (const key of exportKeys) {
+      const before = beforeSnapshot.get(key);
+      const after = finalExports.exports[key];
+      if (JSON.stringify(before) !== JSON.stringify(after)) {
+        sideEffects.push({
+          kind: "global_state_change",
+          variable: key,
+          before,
+          after,
+        });
+      }
     }
   }
 
@@ -1019,7 +1066,7 @@ export async function executeInstrumented(
   return {
     return_value: metrics.returnValue ?? null,
     thrown_error: metrics.thrownError,
-    side_effects: sideEffects,
+    side_effects: capture ? sideEffects : [],
     branch_path: branchDecisions,
     path_constraints: pathConstraints,
     lines_executed: linesExecuted,
@@ -1041,9 +1088,12 @@ export function buildExecuteResponse(
   rawResult: RawExecuteResult,
   timing?: TimingCollector,
 ): ExecuteResponse {
-  const { effects, truncation } = timing
-    ? timing.sync("execute.trace_capture", () => truncateSideEffects(rawResult.side_effects))
-    : truncateSideEffects(rawResult.side_effects);
+  // Skip truncation when there are no side effects (e.g. capture-disabled runs).
+  const { effects, truncation } = rawResult.side_effects.length === 0
+    ? { effects: [] as SideEffect[], truncation: undefined }
+    : timing
+      ? timing.sync("execute.trace_capture", () => truncateSideEffects(rawResult.side_effects))
+      : truncateSideEffects(rawResult.side_effects);
 
   const response: ExecuteResponse = {
     protocol_version: protocolVersion,

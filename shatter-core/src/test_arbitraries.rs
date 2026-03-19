@@ -793,6 +793,7 @@ pub fn arb_command() -> impl Strategy<Value = Command> {
                     inputs,
                     mocks,
                     setup_context,
+                    capture: true,
                 }
             ),
         (arb_ident(), arb_ident(), arb_setup_level()).prop_map(|(file, scope, level)| {

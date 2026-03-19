@@ -33,7 +33,7 @@ commands:
 
   execute:
     description: Run an instrumented function with concrete inputs.
-    fields: [function, inputs, mocks, setup_context]
+    fields: [function, inputs, mocks, setup_context, capture]
     response_status: execute
 
   setup:

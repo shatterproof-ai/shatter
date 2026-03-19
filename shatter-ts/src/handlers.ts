@@ -271,16 +271,17 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
         const instrumentKey = `${fileForExec}:${funcName}`;
         const instrumentedSource = instrumentedSources.get(instrumentKey);
 
+        const capture = request.capture ?? true;
         let rawResult;
         if (instrumentedSource) {
           rawResult = timing
             ? await timing.async("execute.total", () =>
-              executor.executeInstrumented(instrumentedSource, funcName, request.inputs, request.mocks ?? [], fileForExec, timing))
-            : await executor.executeInstrumented(instrumentedSource, funcName, request.inputs, request.mocks ?? [], fileForExec);
+              executor.executeInstrumented(instrumentedSource, funcName, request.inputs, request.mocks ?? [], fileForExec, timing, capture))
+            : await executor.executeInstrumented(instrumentedSource, funcName, request.inputs, request.mocks ?? [], fileForExec, undefined, capture);
         } else {
           rawResult = timing
-            ? await timing.async("execute.total", () => executor.executeFunction(fileForExec, funcRef, request.inputs, timing))
-            : await executor.executeFunction(fileForExec, funcRef, request.inputs);
+            ? await timing.async("execute.total", () => executor.executeFunction(fileForExec, funcRef, request.inputs, timing, capture))
+            : await executor.executeFunction(fileForExec, funcRef, request.inputs, undefined, capture);
         }
 
         return {

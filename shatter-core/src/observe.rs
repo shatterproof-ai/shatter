@@ -181,6 +181,7 @@ pub async fn observe_single(
             inputs: inputs.to_vec(),
             mocks: mocks.to_vec(),
             setup_context: setup_context.cloned(),
+            capture: true,
         })
         .await?;
 

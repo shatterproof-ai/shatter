@@ -1,0 +1,9 @@
+{
+  "protocol_version": "0.1.0",
+  "id": 5,
+  "command": "execute",
+  "function": "src/example.ts::processOrder",
+  "inputs": [42, "express"],
+  "mocks": [],
+  "capture": false
+}

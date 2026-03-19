@@ -187,6 +187,7 @@ pub async fn revalidate_behaviors(
                 inputs: behavior.input_args.clone(),
                 mocks: vec![],
                 setup_context: None,
+                capture: true,
             })
             .await;
 

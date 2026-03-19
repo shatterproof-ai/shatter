@@ -77,6 +77,8 @@ export interface ExecuteRequest extends BaseRequest {
   inputs: unknown[];
   mocks: MockConfig[];
   setup_context?: SetupContextStack | null;
+  /** When false, skip side-effect capture (console/process interception) for lower overhead. Defaults to true. */
+  capture?: boolean;
 }
 
 export interface SetupRequest extends BaseRequest {

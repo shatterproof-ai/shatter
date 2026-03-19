@@ -742,6 +742,7 @@ pub async fn explore_function(
                         inputs: float_inputs.clone(),
                         mocks: config.mocks.clone(),
                         setup_context: setup_context.clone(),
+                        capture: false,
                     })
                     .await?;
 
@@ -751,6 +752,7 @@ pub async fn explore_function(
                         inputs: floor_inputs,
                         mocks: config.mocks.clone(),
                         setup_context: setup_context.clone(),
+                        capture: false,
                     })
                     .await?;
 
@@ -1022,6 +1024,7 @@ pub async fn explore_function(
                                 inputs: trial.clone(),
                                 mocks: effective_mocks.clone(),
                                 setup_context: None,
+                                capture: false,
                             })
                             .instrument(tracing::info_span!("shrink.execute_round_trip"))
                             .await;
