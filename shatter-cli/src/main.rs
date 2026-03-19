@@ -61,10 +61,6 @@ async fn main() -> ExitCode {
         }
     };
 
-    if timing_config.perf_alias_used {
-        eprintln!("Warning: --perf is deprecated; use --timing summary instead.");
-    }
-
     // Initialize env_logger: CLI flags set the default, RUST_LOG can override.
     let log_filter = match log_level {
         LogLevel::Error => log::LevelFilter::Error,

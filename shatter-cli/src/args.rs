@@ -33,11 +33,7 @@ pub(crate) struct Cli {
     #[arg(short = 'q', long = "quiet", global = true)]
     pub(crate) quiet: bool,
 
-    /// Deprecated alias for `--timing summary`.
-    #[arg(long, global = true)]
-    pub(crate) perf: bool,
-
-    /// Timing output mode. `summary` supersedes `--perf`.
+    /// Timing output mode.
     #[arg(long, global = true, default_value = "off")]
     pub(crate) timing: TimingModeArg,
 
@@ -103,11 +99,6 @@ impl Cli {
     }
 
     pub(crate) fn timing_config(&self) -> Result<TimingConfig, String> {
-        let mut mode: TimingMode = self.timing.into();
-        if self.perf && matches!(mode, TimingMode::Off) {
-            mode = TimingMode::Summary;
-        }
-
         let output = match (&self.timing_output, &self.timing_output_dir) {
             (Some(path), None) => Some(TimingOutput::File { path: path.clone() }),
             (None, Some(path)) => Some(TimingOutput::Directory { path: path.clone() }),
@@ -115,15 +106,15 @@ impl Cli {
             (Some(_), Some(_)) => unreachable!("clap enforces conflicts"),
         };
 
+        let mode: TimingMode = self.timing.into();
         if output.is_some() && matches!(mode, TimingMode::Off) {
-            return Err("timing output requires --timing summary|detailed (or deprecated --perf)".to_string());
+            return Err("timing output requires --timing summary|detailed".to_string());
         }
 
         Ok(TimingConfig {
             mode,
             format: self.timing_format.into(),
             output,
-            perf_alias_used: self.perf,
         })
     }
 }
@@ -1076,25 +1067,10 @@ mod tests {
     use clap::error::ErrorKind;
 
     #[test]
-    fn perf_alias_enables_summary_mode() {
-        let cli = Cli::try_parse_from(["shatter", "--perf", "explore", "file.ts:fn"]).unwrap();
+    fn timing_defaults_to_off() {
+        let cli = Cli::try_parse_from(["shatter", "explore", "file.ts:fn"]).unwrap();
         let timing = cli.timing_config().unwrap();
-        assert_eq!(timing.mode, TimingMode::Summary);
-        assert!(timing.perf_alias_used);
-    }
-
-    #[test]
-    fn explicit_timing_overrides_perf_alias() {
-        let cli = Cli::try_parse_from([
-            "shatter",
-            "--perf",
-            "--timing",
-            "detailed",
-            "explore",
-            "file.ts:fn",
-        ]).unwrap();
-        let timing = cli.timing_config().unwrap();
-        assert_eq!(timing.mode, TimingMode::Detailed);
+        assert_eq!(timing.mode, TimingMode::Off);
     }
 
     #[test]

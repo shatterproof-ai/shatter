@@ -73,8 +73,6 @@ pub struct TimingConfig {
     pub format: TimingFormat,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<TimingOutput>,
-    #[serde(default)]
-    pub perf_alias_used: bool,
 }
 
 impl TimingConfig {
@@ -353,7 +351,6 @@ mod tests {
             mode: TimingMode::Summary,
             format: TimingFormat::Text,
             output: None,
-            perf_alias_used: false,
         };
         assert!(enabled.show_text_summary());
 
@@ -380,7 +377,6 @@ mod tests {
             mode: TimingMode::Summary,
             format: TimingFormat::Both,
             output: Some(output.clone()),
-            perf_alias_used: false,
         };
         let run = TimingRun::command_only("explore", &config, 42, 7, 0);
         let path = run.persist(&output).unwrap();
