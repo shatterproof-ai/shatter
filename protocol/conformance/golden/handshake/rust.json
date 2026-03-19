@@ -1,0 +1,11 @@
+{
+  "capabilities": [
+    "analyze",
+    "execute",
+    "generate",
+    "instrument",
+    "setup",
+    "teardown"
+  ],
+  "status": "handshake"
+}

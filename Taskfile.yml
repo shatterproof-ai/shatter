@@ -132,6 +132,8 @@ tasks:
         msg: "python3 not installed"
     sources:
       - protocol/registry.yaml
+      - protocol/conformance/golden_cases.yaml
+      - protocol/conformance/golden/**/*
       - scripts/validate-protocol-registry.py
       - shatter-ts/src/**/*.ts
       - shatter-go/**/*.go
@@ -144,12 +146,25 @@ tasks:
         else
           echo "[skip] validate-parity.py not present (pending str-7jgm.2)"
         fi
-      - |
-        if [ -f protocol/parity/run-tests.py ]; then
-          python3 protocol/parity/run-tests.py
-        else
-          echo "[skip] parity golden tests not present (pending str-7jgm.3)"
-        fi
+      - python3 protocol/conformance/run_golden_tests.py --check
+
+  golden-test:
+    desc: Run cross-frontend parity golden tests (compare capabilities and outputs against recorded expectations)
+    deps: [ts:build, go:build, rust-fe:build]
+    preconditions:
+      - sh: command -v python3
+        msg: "python3 not installed"
+      - sh: python3 -c "import yaml" 2>/dev/null
+        msg: "pyyaml not installed (pip install pyyaml)"
+    sources:
+      - protocol/conformance/golden_cases.yaml
+      - protocol/conformance/golden/**/*
+      - protocol/registry.yaml
+      - shatter-ts/src/**/*.ts
+      - shatter-go/**/*.go
+      - shatter-rust/src/**/*.rs
+    cmds:
+      - python3 protocol/conformance/run_golden_tests.py
 
   docs:
     desc: Run documentation quality checks

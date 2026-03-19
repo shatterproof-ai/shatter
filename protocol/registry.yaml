@@ -247,5 +247,8 @@ frontends:
       - analyze
       - execute
       - generate
+      - instrument
+      - setup
+      - teardown
     complex_type_capabilities: []
     default_exec_timeout_s: 5
