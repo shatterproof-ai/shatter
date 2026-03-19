@@ -68,3 +68,32 @@ Last updated: 2026-03-03
 | Truncation policy | N | N | N | Planned (str-ebtz) |
 | Memory limits | N | N | N | Planned (str-9x76): --max-old-space-size for TS, GOMEMLIMIT for Go |
 | Log level control | Y | Y | Y | SHATTER_LOG_LEVEL env var |
+
+## CLI Parity Contract
+
+The CLI always sets the following environment variables before spawning any frontend
+subprocess. These are the **governed defaults** — the values used when the user does
+not pass the corresponding flag. Any change to a default must update the constants in
+`cli_parity_tests` in `shatter-cli/src/helpers.rs` (which fail CI on mismatch).
+
+| Env var | CLI flag | Governed default | Governed commands |
+|---------|----------|-----------------|-------------------|
+| `SHATTER_LOG_LEVEL` | `--log-level` | `info` | all frontend-spawning commands |
+| `SHATTER_EXEC_TIMEOUT` | `--exec-timeout` | `10` s | `explore`, `scan`, `export-tests`, `fuzz`, `reduce`, `re-run`, `run` |
+| `SHATTER_BUILD_TIMEOUT` | `--build-timeout` | `30` s | same as above |
+
+**Intentional exception:** The `observe` command uses `exec-timeout=30s` and
+`build-timeout=60s` as defaults because it executes many inputs in a single
+long-running session. This divergence is permitted and documented here.
+
+**Frontend fallback defaults** (when CLI env var is absent, e.g. in standalone use):
+
+| Frontend | `SHATTER_EXEC_TIMEOUT` fallback | `SHATTER_BUILD_TIMEOUT` fallback |
+|----------|--------------------------------|----------------------------------|
+| TypeScript | 15 s (`DEFAULT_EXEC_TIMEOUT_MS` in `executor.ts`) | N/A (transpilation is synchronous) |
+| Go | 5 s (`defaultExecTimeout` in `executor.go`) | 30 s (`defaultBuildTimeout` in `executor.go`) |
+| Rust | 5 s (`DEFAULT_EXEC_TIMEOUT_MS` in `handler.rs`) | N/A (execute unimplemented) |
+
+Fallback defaults differ from CLI defaults intentionally: the CLI always passes the
+env var, so the frontend fallback is only relevant when a frontend is invoked without
+the CLI (e.g. in tests or direct subprocess calls).
