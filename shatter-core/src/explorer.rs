@@ -1036,6 +1036,7 @@ pub async fn explore_function(
                         inputs: bulk_trial.clone(),
                         mocks: effective_mocks.clone(),
                         setup_context: None,
+                        capture: true,
                     })
                     .instrument(tracing::info_span!("shrink.execute_round_trip"))
                     .await;
