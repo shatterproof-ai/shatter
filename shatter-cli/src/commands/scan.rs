@@ -55,6 +55,7 @@ pub(crate) async fn run_scan(
     memory_limit: Option<u64>,
     project_dir: Option<&Path>,
     use_color: bool,
+    output_format: crate::args::OutputFormat,
     seeds_dir: &Path,
     no_seeds: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -556,7 +557,12 @@ pub(crate) async fn run_scan(
                 }
             }
 
-            print_markdown(&scan_orchestrator::format_parallel_scan_report(&result), use_color);
+            if output_format == crate::args::OutputFormat::Md {
+                let view = crate::render::scan_view(&result);
+                print_markdown(&crate::render::render_scan(&view), use_color);
+            } else {
+                print_markdown(&scan_orchestrator::format_parallel_scan_report(&result), use_color);
+            }
 
             // Record batch state and print cumulative progress.
             let batch_state = if let Some(batch_idx) = effective_batch_index {

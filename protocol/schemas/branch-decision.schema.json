@@ -23,6 +23,11 @@
     "constraint": {
       "$ref": "sym-constraint.schema.json",
       "description": "The symbolic constraint governing this branch."
+    },
+    "conditions": {
+      "type": "array",
+      "items": { "$ref": "condition-outcome.schema.json" },
+      "description": "Per-condition outcomes for MC/DC analysis. Present only when MC/DC mode is enabled and the decision is compound."
     }
   }
 }

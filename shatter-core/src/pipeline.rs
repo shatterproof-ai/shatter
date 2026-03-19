@@ -144,11 +144,16 @@ pub fn analyze(observe: &ObservationOutput, analysis: &FunctionAnalysis) -> Anal
         .collect();
     let all_constraints: Vec<SymConstraint> = unique_constraints.into_values().collect();
 
-    let coverage_metrics = CoverageMetrics::from_exploration(
+    let mut coverage_metrics = CoverageMetrics::from_exploration(
         analysis.branches.len(),
         &observe.discoveries,
         &all_constraints,
     );
+
+    if let Some((total, independent, opaque)) = observe.mcdc_summary {
+        coverage_metrics.mcdc_metrics =
+            Some(crate::coverage_metrics::McdcMetrics::from_mcdc_summary(total, independent, opaque));
+    }
 
     AnalyzeOutput {
         eq_classes,
@@ -229,6 +234,7 @@ impl From<crate::orchestrator::ExploreResult> for ObservationOutput {
             float_probe_results: r.float_probe_results,
             boundary_results: r.boundary_results,
             shrunk_witnesses: r.shrunk_witnesses,
+            mcdc_summary: r.mcdc_summary,
         }
     }
 }
@@ -287,6 +293,7 @@ mod tests {
                 line: 10,
                 taken: true,
                 constraint: SymConstraint::Unknown { hint: "test".into() },
+                conditions: None,
             },
         ];
         let exec_result = ExecuteResult {
@@ -311,7 +318,7 @@ mod tests {
             new_path_executions: vec![],
             raw_results: vec![(vec![json!(5)], vec![], exec_result)],
             discoveries: vec![(0, DiscoveryMethod::Random)],
-            nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
+            nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None,
         };
 
         let analysis = stub_analysis("classify", 2);
@@ -336,7 +343,7 @@ mod tests {
             new_path_executions: vec![],
             raw_results: vec![],
             discoveries: vec![],
-            nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
+            nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None,
         };
 
         let analysis = stub_analysis("empty", 3);
@@ -364,6 +371,7 @@ mod tests {
                             path: vec![],
                         },
                     },
+                    conditions: None,
                 },
                 BranchDecision {
                     branch_id: 1,
@@ -372,6 +380,7 @@ mod tests {
                     constraint: SymConstraint::Unknown {
                         hint: "opaque".into(),
                     },
+                    conditions: None,
                 },
             ]
         };
@@ -402,7 +411,7 @@ mod tests {
                 (vec![json!(3)], vec![], make_result(json!("c"))),
             ],
             discoveries: vec![(0, DiscoveryMethod::Random)],
-            nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
+            nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None,
         };
 
         let analysis = stub_analysis("dedup_test", 2);
@@ -434,7 +443,7 @@ mod tests {
                 evidence: vec![NondeterminismEvidence::ObservedWithinRun],
                 confidence: Confidence::High,
             }],
-            float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
+            float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None,
         };
 
         let analysis = stub_analysis("nondet_fn", 0);
@@ -459,7 +468,7 @@ mod tests {
             raw_results: vec![],
             discoveries: vec![],
             nondeterministic_fields: vec![],
-            float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
+            float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None,
         };
         let analysis = stub_analysis("test_fn", 1);
         let stage = ObserveStageOutput {
@@ -486,7 +495,7 @@ mod tests {
             raw_results: vec![],
             discoveries: vec![],
             nondeterministic_fields: vec![],
-            float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
+            float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None,
         };
         let analysis = stub_analysis("roundtrip", 2);
         let output = analyze(&observe, &analysis);
@@ -510,7 +519,7 @@ mod tests {
             raw_results: vec![],
             discoveries: vec![],
             nondeterministic_fields: vec![],
-            float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
+            float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None,
         };
         let analysis = stub_analysis("stage_rt", 1);
         let analyze_out = analyze(&observe, &analysis);
@@ -532,10 +541,12 @@ mod tests {
         let branch_path_a = vec![BranchDecision {
             branch_id: 0, line: 10, taken: true,
             constraint: SymConstraint::Unknown { hint: "t".into() },
+            conditions: None,
         }];
         let branch_path_b = vec![BranchDecision {
             branch_id: 0, line: 10, taken: false,
             constraint: SymConstraint::Unknown { hint: "t".into() },
+            conditions: None,
         }];
         let make_result = |bp: Vec<BranchDecision>| ExecuteResult {
             return_value: Some(json!(1)),
@@ -563,7 +574,7 @@ mod tests {
             ],
             discoveries: vec![],
             nondeterministic_fields: vec![],
-            float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
+            float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None,
         };
         let analysis = stub_analysis("bounded", 1);
         let output = analyze(&observe, &analysis);
@@ -593,6 +604,7 @@ mod tests {
             triage_skipped: 0,
             triage_mispredictions: 0,
             nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
         };
 
         let output: ObservationOutput = concolic.into();

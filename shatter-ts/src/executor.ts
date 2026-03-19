@@ -27,13 +27,22 @@ import type {
   DiscoveredDependency,
   ConnectionFailure,
   ConnectionFailureKind,
+  ConditionOutcome,
 } from "./protocol.js";
-import { RECORD_FUNCTION, BRANCH_FUNCTION, SCOPE_EVENT_FUNCTION, MOCK_REGISTRY, MOCK_CALL_FUNCTION } from "./instrumentor.js";
+import { RECORD_FUNCTION, BRANCH_FUNCTION, SCOPE_EVENT_FUNCTION, MOCK_REGISTRY, MOCK_CALL_FUNCTION, MCDC_RECORD_FUNCTION, MCDC_BRANCH_FUNCTION } from "./instrumentor.js";
 import type { MockConfig, ExternalCall } from "./protocol.js";
 import { REACT_MODULE_NAMES, getReactShim } from "./react-shim.js";
 import type { TimingCollector } from "./timing.js";
 
 export const DEFAULT_EXEC_TIMEOUT_MS = 15_000;
+
+/**
+ * Return true when MC/DC mode is enabled (SHATTER_MCDC=1).
+ * Follows the same pattern as getExecTimeoutMs() for SHATTER_EXEC_TIMEOUT.
+ */
+export function isMcdcEnabled(): boolean {
+  return process.env["SHATTER_MCDC"] === "1";
+}
 
 /** Default number of head console lines to keep before truncation. */
 export const CAPTURE_HEAD_LINES = 50;
@@ -692,6 +701,109 @@ export async function executeInstrumented(
     return conditionResult;
   };
 
+  /**
+   * MC/DC condition recording function.
+   *
+   * Evaluates condition thunks LEFT TO RIGHT, respecting short-circuit semantics.
+   * For "and": stops after the first false thunk, marking remaining as masked.
+   * For "or": stops after the first true thunk, marking remaining as masked.
+   * Masked conditions get value: null, masked: true.
+   *
+   * Returns the decision outcome and per-condition ConditionOutcome array.
+   */
+  const mcdcRecordFn = (
+    _branchId: number,
+    symExprs: SymExpr[],
+    operator: "and" | "or",
+    thunks: Array<() => boolean>,
+  ): { decision: boolean; conditions: ConditionOutcome[] } => {
+    const conditions: ConditionOutcome[] = [];
+    let decision: boolean;
+    let stopAfter = -1;
+
+    if (operator === "and") {
+      decision = true;
+      for (let i = 0; i < thunks.length; i++) {
+        if (stopAfter >= 0) {
+          conditions.push({
+            condition_index: i,
+            value: null,
+            masked: true,
+            constraint: { kind: "unknown", hint: "masked by short-circuit" },
+          });
+          continue;
+        }
+        const val = thunks[i]!();
+        const sym = symExprs[i] ?? ({ kind: "unknown" } as SymExpr);
+        conditions.push({
+          condition_index: i,
+          value: val,
+          masked: false,
+          constraint: sym.kind !== "unknown" ? { kind: "expr", expr: sym } : { kind: "unknown", hint: "unsupported expression" },
+        });
+        if (!val) {
+          stopAfter = i;
+          decision = false;
+        }
+      }
+    } else {
+      decision = false;
+      for (let i = 0; i < thunks.length; i++) {
+        if (stopAfter >= 0) {
+          conditions.push({
+            condition_index: i,
+            value: null,
+            masked: true,
+            constraint: { kind: "unknown", hint: "masked by short-circuit" },
+          });
+          continue;
+        }
+        const val = thunks[i]!();
+        const sym = symExprs[i] ?? ({ kind: "unknown" } as SymExpr);
+        conditions.push({
+          condition_index: i,
+          value: val,
+          masked: false,
+          constraint: sym.kind !== "unknown" ? { kind: "expr", expr: sym } : { kind: "unknown", hint: "unsupported expression" },
+        });
+        if (val) {
+          stopAfter = i;
+          decision = true;
+        }
+      }
+    }
+
+    return { decision, conditions };
+  };
+
+  /**
+   * MC/DC branch recording function — like __shatter_branch but also records
+   * per-condition outcomes in the BranchDecision.
+   */
+  const mcdcBranchFn = (
+    branchId: number,
+    line: number,
+    decision: boolean,
+    symExpr: SymExpr,
+    conditions: ConditionOutcome[],
+  ): boolean => {
+    const constraint: SymConstraint = symExpr.kind !== "unknown"
+      ? { kind: "expr", expr: symExpr }
+      : { kind: "unknown", hint: "unsupported expression" };
+
+    const bd: BranchDecision = {
+      branch_id: branchId,
+      line,
+      taken: decision,
+      constraint,
+      conditions,
+    };
+    branchDecisions.push(bd);
+    scopeEvents.push({ type: "branch", decision: bd });
+
+    return decision;
+  };
+
   const scopeEventFn = (scopeId: number, kind: string): void => {
     const event: ScopeEvent = kind.startsWith("loop")
       ? { kind: kind as "loop_enter" | "loop_exit", loop_id: scopeId }
@@ -825,6 +937,8 @@ export async function executeInstrumented(
     ...(sourceFilePath ? { __filename: sourceFilePath, __dirname: path.dirname(sourceFilePath) } : {}),
     [RECORD_FUNCTION]: recordFn,
     [BRANCH_FUNCTION]: branchFn,
+    [MCDC_RECORD_FUNCTION]: mcdcRecordFn,
+    [MCDC_BRANCH_FUNCTION]: mcdcBranchFn,
     [SCOPE_EVENT_FUNCTION]: scopeEventFn,
     [MOCK_REGISTRY]: mockRegistry,
     [MOCK_CALL_FUNCTION]: mockCallFn,

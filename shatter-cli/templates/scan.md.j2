@@ -1,0 +1,26 @@
+# Scan Results
+
+{% if result.sampling_info -%}
+{{ result.sampling_info }}
+
+{% endif -%}
+| Function | Paths | Coverage |
+|---|---|---|
+{% for fn in result.functions -%}
+| `{{ fn.function_name }}` | {{ fn.unique_paths }} | {{ fn.coverage }} |
+{% endfor %}
+---
+
+Scan complete: **{{ result.total_tested }} function(s)** tested, **{{ result.skipped_expected | length }} skipped**, **{{ result.skipped_errors | length }} error(s)** ({{ result.workers_used }} worker(s))
+{% if result.skipped_errors %}
+**Errors:**
+{% for s in result.skipped_errors -%}
+- `{{ s.function_name }}`: {{ s.reason }}
+{% endfor -%}
+{% endif -%}
+{% if result.skipped_expected %}
+**Skipped:**
+{% for s in result.skipped_expected -%}
+- `{{ s.function_name }}`: {{ s.reason }}
+{% endfor -%}
+{% endif -%}

@@ -27,6 +27,7 @@ use std::collections::HashMap;
 use crate::auto_mock::MockParam;
 use crate::boundary_search;
 use crate::coverage_metrics::DiscoveryMethod;
+use crate::mcdc::McdcTable;
 use crate::explorer::{apply_live_first_overrides, update_live_first_states};
 use crate::mock_value_space::LiveFirstState;
 use crate::drilling;
@@ -129,6 +130,10 @@ pub struct ExploreConfig {
     pub refine_budget: Option<usize>,
     /// Maximum shrink attempts per discovered behavior. Set to 0 to disable.
     pub shrink_budget: usize,
+    /// Enable MC/DC coverage analysis. When true, the orchestrator tracks
+    /// per-condition independence and generates targeted Z3 queries for
+    /// missing MC/DC pairs.
+    pub mcdc: bool,
 }
 
 /// Default shrink budget per behavior witness.
@@ -166,6 +171,7 @@ impl Default for ExploreConfig {
             loop_convergence_window: DEFAULT_LOOP_CONVERGENCE_WINDOW,
             refine_budget: None,
             shrink_budget: DEFAULT_SHRINK_BUDGET,
+            mcdc: false,
         }
     }
 }
@@ -181,10 +187,14 @@ pub enum InputSource {
     BoundarySearch = 2,
     /// Medium priority: targeted mutation of blocking params on a stalled frontier.
     Drilled = 3,
+    /// MC/DC-targeted: Z3 solved with condition-independence constraint.
+    /// Ranks between Drilled and Z3Solved — MC/DC refines coverage within
+    /// already-visited branches, while Z3Solved discovers new branch paths.
+    McdcTarget = 4,
     /// High priority: Z3-solved inputs targeting a specific branch.
-    Z3Solved = 4,
+    Z3Solved = 5,
     /// Highest priority: user-provided candidate inputs from `.shatter/` config.
-    UserProvided = 5,
+    UserProvided = 6,
 }
 
 /// An entry in the exploration worklist.
@@ -261,6 +271,8 @@ pub enum TerminationReason {
     WorklistExhausted,
     /// Exceeded the per-function exploration wall-clock timeout.
     TimeoutExplore,
+    /// All MC/DC independence pairs satisfied (100% MC/DC coverage).
+    McdcComplete,
 }
 
 /// Summary of a concolic exploration session.
@@ -302,6 +314,9 @@ pub struct ExploreResult {
     pub boundary_results: Vec<crate::boundary_search::BoundaryResult>,
     /// Shrunk witnesses: maps branch_path hash to minimal inputs that reproduce the same path.
     pub shrunk_witnesses: std::collections::HashMap<u64, Vec<serde_json::Value>>,
+    /// MC/DC summary: (total_conditions, independent_conditions, opaque_conditions).
+    /// Present only when `ExploreConfig::mcdc` is true.
+    pub mcdc_summary: Option<(usize, usize, usize)>,
 }
 
 /// Errors that can occur during concolic exploration.
@@ -1267,6 +1282,25 @@ async fn refine_boundaries_async(
     results
 }
 
+/// A gap in MC/DC coverage — a condition that still lacks an independence pair.
+///
+/// Collected after each new-path observation when MC/DC is enabled. These goals
+/// are inputs to the Phase 5 targeted solver; for now they are generated and
+/// logged but not yet turned into worklist entries.
+#[derive(Debug, Clone)]
+pub struct McdcGoal {
+    /// Branch ID of the compound decision containing the target condition.
+    pub branch_id: u32,
+    /// Index of the condition within the decision that lacks an independence pair.
+    pub target_condition_index: usize,
+    /// Prefix path constraints leading up to this decision (in `taken` order).
+    pub prefix_constraints: Vec<SymExpr>,
+    /// Per-condition SymExprs for this compound decision.
+    pub condition_exprs: Vec<SymExpr>,
+    /// Observed truth values for each condition from the most recent observation.
+    pub observed_values: Vec<Option<bool>>,
+}
+
 /// Run the concolic exploration loop on a function via a frontend subprocess.
 ///
 /// The loop alternates between two phases per round:
@@ -1339,6 +1373,15 @@ pub async fn explore(
 
     let mut invariant_detector = LoopInvariantDetector::new();
     let mut loop_coverage_tracker = LoopCoverageTracker::new(config.loop_convergence_window);
+
+    // MC/DC tracking state: only allocated when MC/DC mode is enabled.
+    let mut mcdc_table: Option<McdcTable> = if config.mcdc {
+        Some(McdcTable::default())
+    } else {
+        None
+    };
+    // Track the number of satisfied independence pairs to detect plateau resets.
+    let mut mcdc_independent_count: usize = 0;
 
     // Generate initial mock values when mock_params are configured.
     let initial_mocks = if !config.mock_params.is_empty() {
@@ -1523,6 +1566,7 @@ pub async fn explore(
         // Track per-branch discovery attribution.
         let method = match obs.source {
             InputSource::Z3Solved => DiscoveryMethod::Z3,
+            InputSource::McdcTarget => DiscoveryMethod::McdcTarget,
             InputSource::UserProvided => DiscoveryMethod::UserProvided,
             InputSource::Drilled => DiscoveryMethod::Drilled,
             InputSource::BoundarySearch => DiscoveryMethod::BoundarySearch,
@@ -1572,6 +1616,130 @@ pub async fn explore(
         // Sync fitness context: mark this path as seen so future fitness
         // scoring correctly identifies repeat paths as non-novel.
         fitness_context.mark_seen(obs.path_id);
+
+        // MC/DC tracking: record per-condition outcomes and check for new
+        // independence pairs. Also collect goals for Phase 5 solver (logged
+        // at debug level; not yet turned into worklist entries).
+        if let Some(ref mut table) = mcdc_table {
+            for decision in &obs.result.branch_path {
+                if let Some(ref conditions) = decision.conditions {
+                    table.record_observation(decision.branch_id, conditions, decision.taken);
+                }
+            }
+
+            // Check if MC/DC is now complete (all conditions have independence pairs).
+            if table.is_complete() && !table.decisions.is_empty() {
+                termination_reason = TerminationReason::McdcComplete;
+                executions.push(obs.result.clone());
+                break;
+            }
+
+            // Check if a new independence pair was satisfied — if so, reset the
+            // plateau counter so we don't terminate prematurely while MC/DC is
+            // still making progress.
+            let (_, new_independent, _) = table.summary();
+            if new_independent > mcdc_independent_count {
+                mcdc_independent_count = new_independent;
+                plateau_counter = 0;
+            }
+
+            // Collect MC/DC goals for Phase 5 (preparation): find conditions
+            // that still lack independence pairs and log them for diagnostics.
+            // These will drive targeted Z3 queries in the next phase.
+            let sym_constraints = extract_sym_constraints(&obs.result);
+            for decision in &obs.result.branch_path {
+                if let Some(ref conditions) = decision.conditions
+                    && let Some(dec_mcdc) = table.decisions.get(&decision.branch_id) {
+                        // Build the prefix constraints up to (not including) this decision.
+                        let decision_pos = obs.result.branch_path
+                            .iter()
+                            .position(|d| std::ptr::eq(d, decision));
+                        let prefix_constraints: Vec<SymExpr> = if let Some(pos) = decision_pos {
+                            sym_constraints[..pos]
+                                .iter()
+                                .filter_map(|c| c.clone())
+                                .collect()
+                        } else {
+                            vec![]
+                        };
+
+                        // Collect per-condition SymExprs from the ConditionOutcome constraints.
+                        let condition_exprs: Vec<SymExpr> = conditions.iter().filter_map(|co| {
+                            match &co.constraint {
+                                crate::execution_record::SymConstraint::Expr { expr } => {
+                                    Some(expr.clone())
+                                }
+                                crate::execution_record::SymConstraint::Unknown { .. } => None,
+                            }
+                        }).collect();
+
+                        let observed_values: Vec<Option<bool>> = conditions.iter().map(|co| {
+                            if co.masked { None } else { co.value }
+                        }).collect();
+
+                        for (i, &is_independent) in dec_mcdc.independent.iter().enumerate() {
+                            if !is_independent {
+                                let goal = McdcGoal {
+                                    branch_id: decision.branch_id,
+                                    target_condition_index: i,
+                                    prefix_constraints: prefix_constraints.clone(),
+                                    condition_exprs: condition_exprs.clone(),
+                                    observed_values: observed_values.clone(),
+                                };
+                                tracing::debug!(
+                                    branch_id = goal.branch_id,
+                                    condition_index = goal.target_condition_index,
+                                    "mcdc_goal: condition lacks independence pair, invoking solver"
+                                );
+                                // Call the MC/DC targeted solver to find inputs that
+                                // flip the target condition while holding all others constant.
+                                match solver::solve_for_mcdc_independence(
+                                    &goal.prefix_constraints,
+                                    &goal.condition_exprs,
+                                    &goal.observed_values,
+                                    goal.target_condition_index,
+                                    config.solver_timeout_ms,
+                                    param_infos,
+                                ) {
+                                    Ok(SolveResult::Sat(values)) => {
+                                        let new_inputs = overlay_solved_values(
+                                            &obs.inputs,
+                                            &values,
+                                            &param_names,
+                                        );
+                                        worklist.push(WorklistEntry {
+                                            inputs: new_inputs,
+                                            source: InputSource::McdcTarget,
+                                            fitness: None,
+                                            mock_values: obs.mock_values.clone(),
+                                        });
+                                        tracing::debug!(
+                                            branch_id = goal.branch_id,
+                                            condition_index = goal.target_condition_index,
+                                            "mcdc_goal: solver SAT — added worklist entry"
+                                        );
+                                    }
+                                    Ok(SolveResult::Unsat) => {
+                                        tracing::debug!(
+                                            branch_id = goal.branch_id,
+                                            condition_index = goal.target_condition_index,
+                                            "mcdc_goal: solver UNSAT — independence pair infeasible"
+                                        );
+                                    }
+                                    Err(e) => {
+                                        tracing::debug!(
+                                            branch_id = goal.branch_id,
+                                            condition_index = goal.target_condition_index,
+                                            error = %e,
+                                            "mcdc_goal: solver error"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                }
+            }
+        }
 
         executions.push(obs.result.clone());
 
@@ -1696,6 +1864,7 @@ pub async fn explore(
     }
 
     let unique_paths = covered_paths.len();
+    let mcdc_summary = mcdc_table.map(|t| t.summary());
     Ok(ExploreResult {
         function_name: function_name.to_string(),
         total_lines: 0, // Caller must set from FunctionAnalysis (end_line - start_line + 1)
@@ -1715,6 +1884,7 @@ pub async fn explore(
         float_probe_results,
         boundary_results,
         shrunk_witnesses,
+        mcdc_summary,
     })
 }
 
@@ -1764,6 +1934,7 @@ mod tests {
                 constraint: SymConstraint::Unknown {
                     hint: "x".into(),
                 },
+                conditions: None,
             },
             BranchDecision {
                 branch_id: 1,
@@ -1772,6 +1943,7 @@ mod tests {
                 constraint: SymConstraint::Unknown {
                     hint: "y".into(),
                 },
+                conditions: None,
             },
         ];
         assert_eq!(hash_branch_path(&path), hash_branch_path(&path));
@@ -1786,6 +1958,7 @@ mod tests {
             constraint: SymConstraint::Unknown {
                 hint: "x".into(),
             },
+            conditions: None,
         }];
         let path_b = vec![BranchDecision {
             branch_id: 0,
@@ -1794,6 +1967,7 @@ mod tests {
             constraint: SymConstraint::Unknown {
                 hint: "x".into(),
             },
+            conditions: None,
         }];
         assert_ne!(hash_branch_path(&path_a), hash_branch_path(&path_b));
     }
@@ -1824,6 +1998,7 @@ mod tests {
                 constraint: SymConstraint::Expr {
                     expr: x_gt_10.clone(),
                 },
+                conditions: None,
             },
             BranchDecision {
                 branch_id: 1,
@@ -1832,6 +2007,7 @@ mod tests {
                 constraint: SymConstraint::Unknown {
                     hint: "regex".into(),
                 },
+                conditions: None,
             },
         ]);
 
@@ -2307,6 +2483,7 @@ mod tests {
                 constraint: SymConstraint::Unknown {
                     hint: "opaque".into(),
                 },
+                conditions: None,
             }]),
             source: InputSource::Seed,
             path_id: 456,
@@ -2384,6 +2561,7 @@ mod tests {
                 constraint: SymConstraint::Expr {
                     expr: x_gt_10,
                 },
+                conditions: None,
             }]),
             source: InputSource::Seed,
             path_id: 789,
@@ -2866,12 +3044,14 @@ mod tests {
                 line: 10,
                 taken: true,
                 constraint: SymConstraint::default(),
+                conditions: None,
             },
             BranchDecision {
                 branch_id: 2,
                 line: 20,
                 taken: false,
                 constraint: SymConstraint::default(),
+                conditions: None,
             },
         ];
         let positions = classify_iteration_positions(&[], &branch_path);
@@ -2891,6 +3071,7 @@ mod tests {
                     line: 5,
                     taken: true,
                     constraint: SymConstraint::default(),
+                    conditions: None,
                 },
             },
             TraceEvent::Scope {
@@ -2902,6 +3083,7 @@ mod tests {
             line: 5,
             taken: true,
             constraint: SymConstraint::default(),
+            conditions: None,
         }];
         let positions = classify_iteration_positions(&scope_events, &branch_path);
         assert_eq!(positions, vec![IterationPosition::FirstExit]);
@@ -2919,6 +3101,7 @@ mod tests {
                     line: 5,
                     taken: true,
                     constraint: SymConstraint::default(),
+                    conditions: None,
                 },
             },
             TraceEvent::Scope {
@@ -2930,6 +3113,7 @@ mod tests {
                     line: 5,
                     taken: true,
                     constraint: SymConstraint::default(),
+                    conditions: None,
                 },
             },
             TraceEvent::Scope {
@@ -2942,12 +3126,14 @@ mod tests {
                 line: 5,
                 taken: true,
                 constraint: SymConstraint::default(),
+                conditions: None,
             },
             BranchDecision {
                 branch_id: 10,
                 line: 5,
                 taken: true,
                 constraint: SymConstraint::default(),
+                conditions: None,
             },
         ];
         let positions = classify_iteration_positions(&scope_events, &branch_path);
@@ -2969,6 +3155,7 @@ mod tests {
                     line: 5,
                     taken: true,
                     constraint: SymConstraint::default(),
+                    conditions: None,
                 },
             },
             TraceEvent::Scope {
@@ -2980,6 +3167,7 @@ mod tests {
                     line: 5,
                     taken: true,
                     constraint: SymConstraint::default(),
+                    conditions: None,
                 },
             },
             TraceEvent::Scope {
@@ -2991,6 +3179,7 @@ mod tests {
                     line: 5,
                     taken: true,
                     constraint: SymConstraint::default(),
+                    conditions: None,
                 },
             },
             TraceEvent::Scope {
@@ -3003,18 +3192,21 @@ mod tests {
                 line: 5,
                 taken: true,
                 constraint: SymConstraint::default(),
+                conditions: None,
             },
             BranchDecision {
                 branch_id: 10,
                 line: 5,
                 taken: true,
                 constraint: SymConstraint::default(),
+                conditions: None,
             },
             BranchDecision {
                 branch_id: 10,
                 line: 5,
                 taken: true,
                 constraint: SymConstraint::default(),
+                conditions: None,
             },
         ];
         let positions = classify_iteration_positions(&scope_events, &branch_path);
@@ -3037,6 +3229,7 @@ mod tests {
                     line: 3,
                     taken: false,
                     constraint: SymConstraint::default(),
+                    conditions: None,
                 },
             },
             TraceEvent::Scope {
@@ -3048,6 +3241,7 @@ mod tests {
                     line: 5,
                     taken: true,
                     constraint: SymConstraint::default(),
+                    conditions: None,
                 },
             },
             TraceEvent::Scope {
@@ -3060,12 +3254,14 @@ mod tests {
                 line: 3,
                 taken: false,
                 constraint: SymConstraint::default(),
+                conditions: None,
             },
             BranchDecision {
                 branch_id: 10,
                 line: 5,
                 taken: true,
                 constraint: SymConstraint::default(),
+                conditions: None,
             },
         ];
         let positions = classify_iteration_positions(&scope_events, &branch_path);
@@ -3114,6 +3310,7 @@ mod tests {
             line: 5,
             taken: true,
             constraint: SymConstraint::Expr { expr: x_gt_10 },
+            conditions: None,
         };
         let param_infos = vec![ParamInfo {
             name: "x".into(),
@@ -3212,14 +3409,14 @@ mod tests {
         let mut detector = LoopInvariantDetector::new();
         let events = vec![
             TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id: 1 } },
-            TraceEvent::Branch { decision: BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default() } },
+            TraceEvent::Branch { decision: BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default(), conditions: None } },
             TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id: 1 } },
-            TraceEvent::Branch { decision: BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default() } },
+            TraceEvent::Branch { decision: BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default(), conditions: None } },
             TraceEvent::Scope { event: ScopeEvent::LoopExit { loop_id: 1 } },
         ];
         let bp = vec![
-            BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default() },
-            BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default() },
+            BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default(), conditions: None },
+            BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default(), conditions: None },
         ];
         detector.observe(&events, &bp);
         let skip = detector.skip_indices(&events, &bp);
@@ -3232,25 +3429,25 @@ mod tests {
         let mut detector = LoopInvariantDetector::new();
         let events1 = vec![
             TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id: 1 } },
-            TraceEvent::Branch { decision: BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default() } },
+            TraceEvent::Branch { decision: BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default(), conditions: None } },
             TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id: 1 } },
-            TraceEvent::Branch { decision: BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default() } },
+            TraceEvent::Branch { decision: BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default(), conditions: None } },
             TraceEvent::Scope { event: ScopeEvent::LoopExit { loop_id: 1 } },
         ];
         let bp1 = vec![
-            BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default() },
-            BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default() },
+            BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default(), conditions: None },
+            BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default(), conditions: None },
         ];
         detector.observe(&events1, &bp1);
         assert!(!detector.skip_indices(&events1, &bp1).is_empty());
 
         let events2 = vec![
             TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id: 1 } },
-            TraceEvent::Branch { decision: BranchDecision { branch_id: 10, line: 5, taken: false, constraint: SymConstraint::default() } },
+            TraceEvent::Branch { decision: BranchDecision { branch_id: 10, line: 5, taken: false, constraint: SymConstraint::default(), conditions: None } },
             TraceEvent::Scope { event: ScopeEvent::LoopExit { loop_id: 1 } },
         ];
         let bp2 = vec![
-            BranchDecision { branch_id: 10, line: 5, taken: false, constraint: SymConstraint::default() },
+            BranchDecision { branch_id: 10, line: 5, taken: false, constraint: SymConstraint::default(), conditions: None },
         ];
         detector.observe(&events2, &bp2);
         let skip = detector.skip_indices(&events1, &bp1);
@@ -3261,7 +3458,7 @@ mod tests {
     fn invariant_detector_empty_events_no_skip() {
         let detector = LoopInvariantDetector::new();
         let bp = vec![
-            BranchDecision { branch_id: 1, line: 5, taken: true, constraint: SymConstraint::default() },
+            BranchDecision { branch_id: 1, line: 5, taken: true, constraint: SymConstraint::default(), conditions: None },
         ];
         assert!(detector.skip_indices(&[], &bp).is_empty());
     }
@@ -3303,6 +3500,7 @@ mod tests {
                     line: 5,
                     taken: true,
                     constraint: SymConstraint::Expr { expr },
+                    conditions: None,
                 };
                 scope_evts.push(TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id: 1 } });
                 scope_evts.push(TraceEvent::Branch { decision: bd.clone() });
@@ -3408,7 +3606,7 @@ mod tests {
         loop_context.insert(10, [1].into_iter().collect());
 
         // First observation: new coverage.
-        let bp1 = vec![BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default() }];
+        let bp1 = vec![BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default(), conditions: None }];
         tracker.observe(&loop_context, &bp1);
         assert!(!tracker.should_skip_branch(10, &loop_context));
 
@@ -3427,12 +3625,12 @@ mod tests {
         let mut loop_context: HashMap<u32, HashSet<u32>> = HashMap::new();
         loop_context.insert(10, [1].into_iter().collect());
 
-        let bp1 = vec![BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default() }];
+        let bp1 = vec![BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default(), conditions: None }];
         tracker.observe(&loop_context, &bp1);
         tracker.observe(&loop_context, &bp1); // stale=1
 
         // New coverage resets stale count.
-        let bp2 = vec![BranchDecision { branch_id: 10, line: 5, taken: false, constraint: SymConstraint::default() }];
+        let bp2 = vec![BranchDecision { branch_id: 10, line: 5, taken: false, constraint: SymConstraint::default(), conditions: None }];
         tracker.observe(&loop_context, &bp2);
         assert!(!tracker.should_skip_branch(10, &loop_context));
     }
@@ -3443,7 +3641,7 @@ mod tests {
         let mut loop_context: HashMap<u32, HashSet<u32>> = HashMap::new();
         loop_context.insert(10, [1].into_iter().collect());
 
-        let bp = vec![BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default() }];
+        let bp = vec![BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default(), conditions: None }];
         for _ in 0..10 {
             tracker.observe(&loop_context, &bp);
         }
@@ -3470,6 +3668,7 @@ mod tests {
             line: 5,
             taken: true,
             constraint: SymConstraint::Expr { expr: x_gt_10 },
+            conditions: None,
         };
         // scope_events encode branch 0 as inside loop 1.
         let scope_events_with_loop = vec![
@@ -3554,9 +3753,9 @@ mod tests {
     fn extract_loop_context_maps_branches_to_loops() {
         let events = vec![
             TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id: 1 } },
-            TraceEvent::Branch { decision: BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default() } },
+            TraceEvent::Branch { decision: BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default(), conditions: None } },
             TraceEvent::Scope { event: ScopeEvent::LoopExit { loop_id: 1 } },
-            TraceEvent::Branch { decision: BranchDecision { branch_id: 20, line: 15, taken: false, constraint: SymConstraint::default() } },
+            TraceEvent::Branch { decision: BranchDecision { branch_id: 20, line: 15, taken: false, constraint: SymConstraint::default(), conditions: None } },
         ];
         let ctx = extract_loop_context(&events);
         assert!(ctx.get(&10).unwrap().contains(&1));
@@ -3746,6 +3945,7 @@ mod tests {
                         line: (i * 10) as u32,
                         taken: true,
                         constraint: SymConstraint::default(),
+                        conditions: None,
                     };
                     events.push(TraceEvent::Branch { decision: bd.clone() });
                     branch_path.push(bd);
@@ -3779,7 +3979,7 @@ mod tests {
                     let bid = i as u32;
                     branch_ids.insert(bid);
                     events.push(TraceEvent::Branch {
-                        decision: BranchDecision { branch_id: bid, line: bid * 10, taken: true, constraint: SymConstraint::default() },
+                        decision: BranchDecision { branch_id: bid, line: bid * 10, taken: true, constraint: SymConstraint::default(), conditions: None },
                     });
                 }
                 // Close loops
@@ -3802,24 +4002,24 @@ mod tests {
                 let mut detector = LoopInvariantDetector::new();
                 let events_true = vec![
                     TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id } },
-                    TraceEvent::Branch { decision: BranchDecision { branch_id, line: 1, taken: true, constraint: SymConstraint::default() } },
+                    TraceEvent::Branch { decision: BranchDecision { branch_id, line: 1, taken: true, constraint: SymConstraint::default() , conditions: None } },
                     TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id } },
-                    TraceEvent::Branch { decision: BranchDecision { branch_id, line: 1, taken: true, constraint: SymConstraint::default() } },
+                    TraceEvent::Branch { decision: BranchDecision { branch_id, line: 1, taken: true, constraint: SymConstraint::default() , conditions: None } },
                     TraceEvent::Scope { event: ScopeEvent::LoopExit { loop_id } },
                 ];
                 let bp_true = vec![
-                    BranchDecision { branch_id, line: 1, taken: true, constraint: SymConstraint::default() },
-                    BranchDecision { branch_id, line: 1, taken: true, constraint: SymConstraint::default() },
+                    BranchDecision { branch_id, line: 1, taken: true, constraint: SymConstraint::default() , conditions: None },
+                    BranchDecision { branch_id, line: 1, taken: true, constraint: SymConstraint::default() , conditions: None },
                 ];
                 detector.observe(&events_true, &bp_true);
 
                 let events_false = vec![
                     TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id } },
-                    TraceEvent::Branch { decision: BranchDecision { branch_id, line: 1, taken: false, constraint: SymConstraint::default() } },
+                    TraceEvent::Branch { decision: BranchDecision { branch_id, line: 1, taken: false, constraint: SymConstraint::default() , conditions: None } },
                     TraceEvent::Scope { event: ScopeEvent::LoopExit { loop_id } },
                 ];
                 let bp_false = vec![
-                    BranchDecision { branch_id, line: 1, taken: false, constraint: SymConstraint::default() },
+                    BranchDecision { branch_id, line: 1, taken: false, constraint: SymConstraint::default() , conditions: None },
                 ];
                 detector.observe(&events_false, &bp_false);
 

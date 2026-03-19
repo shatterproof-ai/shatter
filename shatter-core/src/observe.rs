@@ -416,6 +416,7 @@ pub async fn observe_function(
         nondeterministic_fields: vec![],
         float_probe_results: vec![], boundary_results: vec![],
         shrunk_witnesses: std::collections::HashMap::new(),
+        mcdc_summary: None,
     })
 }
 
@@ -510,6 +511,7 @@ mod tests {
                     constraint: SymConstraint::Unknown {
                         hint: String::new(),
                     },
+                    conditions: None,
                 })
                 .collect(),
             lines_executed: lines.to_vec(),
@@ -707,6 +709,7 @@ mod proptests {
             constraint: SymConstraint::Unknown {
                 hint: String::new(),
             },
+            conditions: None,
         })
     }
 

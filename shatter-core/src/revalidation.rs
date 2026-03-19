@@ -368,6 +368,7 @@ mod tests {
                 constraint: SymConstraint::Unknown {
                     hint: "email.includes('@')".into(),
                 },
+                conditions: None,
             }],
             observed_branch_path: vec![BranchDecision {
                 branch_id: 1,
@@ -376,6 +377,7 @@ mod tests {
                 constraint: SymConstraint::Unknown {
                     hint: "email.includes('@')".into(),
                 },
+                conditions: None,
             }],
             expected_severity: Severity::RarePath,
             observed_severity: Some(Severity::HandledError),
@@ -406,6 +408,7 @@ mod tests {
             constraint: SymConstraint::Unknown {
                 hint: String::new(),
             },
+            conditions: None,
         }
     }
 
@@ -445,6 +448,7 @@ mod tests {
             constraint: SymConstraint::Unknown {
                 hint: "x > 0".into(),
             },
+            conditions: None,
         }];
         let b = vec![BranchDecision {
             branch_id: 1,
@@ -453,6 +457,7 @@ mod tests {
             constraint: SymConstraint::Unknown {
                 hint: "different".into(),
             },
+            conditions: None,
         }];
         assert!(branch_paths_match(&a, &b, &[]));
     }

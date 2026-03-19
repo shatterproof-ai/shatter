@@ -7,6 +7,16 @@ use shatter_core::explorer;
 use shatter_core::log_level::LogLevel;
 use shatter_core::timing::{TimingConfig, TimingFormat, TimingMode, TimingOutput};
 
+/// Terminal output format.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+pub(crate) enum OutputFormat {
+    /// Markdown rendered via termimad (default). Use `--color never` for raw Markdown.
+    #[default]
+    Md,
+    /// Legacy plain ANSI text output (deprecated).
+    Plain,
+}
+
 /// Shatter: automatic exploratory testing via concolic execution.
 #[derive(Parser, Debug)]
 #[command(name = "shatter", version, about)]
@@ -51,6 +61,10 @@ pub(crate) struct Cli {
     /// Respects the NO_COLOR environment variable (auto treats it as never).
     #[arg(long, global = true, default_value = "auto", value_name = "WHEN")]
     pub(crate) color: ColorMode,
+
+    /// Terminal output format: md (default, rendered via termimad) or plain (legacy ANSI).
+    #[arg(long, global = true, default_value = "md", value_name = "FORMAT")]
+    pub(crate) format: OutputFormat,
 
     #[command(subcommand)]
     pub(crate) command: CliCommand,
@@ -160,12 +174,12 @@ pub(crate) enum CliCommand {
         targets: Vec<String>,
 
         /// Maximum number of iterations for the concolic loop.
-        #[arg(long, default_value_t = 100)]
-        max_iterations: u32,
+        #[arg(long)]
+        max_iterations: Option<u32>,
 
         /// Timeout in seconds for the entire exploration.
-        #[arg(long, default_value_t = 60)]
-        timeout: u64,
+        #[arg(long)]
+        timeout: Option<u64>,
 
         /// Per-function exploration wall-clock timeout in seconds. If both
         /// --max-iterations and --timeout-explore are set, whichever triggers
@@ -343,6 +357,13 @@ pub(crate) enum CliCommand {
         /// Set to 0 to disable. Default: 20.
         #[arg(long, default_value_t = 20)]
         refine_budget: usize,
+
+        /// Enable MC/DC (Modified Condition/Decision Coverage) analysis.
+        /// Decomposes compound boolean decisions into individual conditions
+        /// and targets condition-independence witnesses. Implies increased
+        /// iteration/execution/plateau budgets.
+        #[arg(long)]
+        mcdc: bool,
     },
 
     /// Analyze Stage 1 (Observe) output: produce equivalence classes, behavior map,
@@ -497,8 +518,8 @@ pub(crate) enum CliCommand {
         output: Option<PathBuf>,
 
         /// Report format: json (default), markdown, or both.
-        #[arg(long, default_value = "json")]
-        format: String,
+        #[arg(long = "report-format", default_value = "json")]
+        report_format: String,
 
         /// Generate test files after scan. Framework: jest, vitest, or gotest.
         #[arg(long)]
@@ -835,8 +856,8 @@ pub(crate) enum CliCommand {
         spec: PathBuf,
 
         /// Output format: "text" (default) or "json".
-        #[arg(long, default_value = "text")]
-        format: String,
+        #[arg(long = "output-format", default_value = "text")]
+        output_format: String,
 
         /// Per-request timeout in seconds for frontend communication.
         #[arg(long, default_value_t = 30)]
@@ -895,8 +916,8 @@ pub(crate) enum CliCommand {
         memory_limit: Option<u64>,
 
         /// Output format: "text" (default) or "json".
-        #[arg(long, default_value = "text")]
-        format: String,
+        #[arg(long = "output-format", default_value = "text")]
+        output_format: String,
     },
 
     /// Run tests with impact analysis: only execute tests affected by changed files.
@@ -1228,8 +1249,8 @@ mod tests {
                 ..
             } => {
                 assert_eq!(targets, vec!["test.ts:myFunc"]);
-                assert_eq!(max_iterations, 100);
-                assert_eq!(timeout, 60);
+                assert_eq!(max_iterations, None);
+                assert_eq!(timeout, None);
                 assert!(scope.is_none());
                 assert!(!analyze_only);
                 assert!(!show_clusters);
@@ -1286,8 +1307,8 @@ mod tests {
                 ..
             } => {
                 assert_eq!(targets, vec!["a.ts:fn1", "b.go:Fn2"]);
-                assert_eq!(max_iterations, 50);
-                assert_eq!(timeout, 120);
+                assert_eq!(max_iterations, Some(50));
+                assert_eq!(timeout, Some(120));
                 assert!(scope.is_none());
                 assert!(analyze_only);
                 assert!(!show_clusters);
@@ -1343,7 +1364,7 @@ mod tests {
         match cli.command {
             CliCommand::Explore { request_timeout, timeout, .. } => {
                 assert_eq!(request_timeout, 10);
-                assert_eq!(timeout, 60);
+                assert_eq!(timeout, None);
             }
             _ => panic!("expected Explore command"),
         }
@@ -2074,7 +2095,7 @@ mod tests {
             "shatter",
             "scan",
             "--progress",
-            "--format", "markdown",
+            "--report-format", "markdown",
             "--resume", "/tmp/state.json",
             "--mock-config", "/tmp/mocks.yaml",
             "src/",
@@ -2082,13 +2103,13 @@ mod tests {
         match cli.command {
             CliCommand::Scan {
                 progress,
-                format,
+                report_format,
                 resume,
                 mock_config,
                 ..
             } => {
                 assert!(progress);
-                assert_eq!(format, "markdown");
+                assert_eq!(report_format, "markdown");
                 assert_eq!(resume, Some(PathBuf::from("/tmp/state.json")));
                 assert_eq!(mock_config, Some(PathBuf::from("/tmp/mocks.yaml")));
             }
@@ -2323,10 +2344,10 @@ mod tests {
             "spec.json",
         ]);
         match cli.command {
-            CliCommand::Stale { source, spec, format, request_timeout, .. } => {
+            CliCommand::Stale { source, spec, output_format, request_timeout, .. } => {
                 assert_eq!(source, "src/math.ts");
                 assert_eq!(spec, PathBuf::from("spec.json"));
-                assert_eq!(format, "text");
+                assert_eq!(output_format, "text");
                 assert_eq!(request_timeout, 30);
             }
             _ => panic!("expected Stale command"),
@@ -2338,13 +2359,13 @@ mod tests {
         let cli = Cli::parse_from([
             "shatter",
             "stale",
-            "--format", "json",
+            "--output-format", "json",
             "src/math.ts",
             "spec.json",
         ]);
         match cli.command {
-            CliCommand::Stale { format, .. } => {
-                assert_eq!(format, "json");
+            CliCommand::Stale { output_format, .. } => {
+                assert_eq!(output_format, "json");
             }
             _ => panic!("expected Stale command"),
         }

@@ -351,6 +351,7 @@ mod tests {
                     right: Box::new(SymExpr::Const(ConstValue::Int(right))),
                 },
             },
+            conditions: None,
         }
     }
 
@@ -362,6 +363,7 @@ mod tests {
             constraint: SymConstraint::Unknown {
                 hint: "regex".into(),
             },
+            conditions: None,
         }
     }
 
@@ -794,6 +796,7 @@ mod proptests {
                     constraint: crate::execution_record::SymConstraint::Unknown {
                         hint: "test".into(),
                     },
+                    conditions: None,
                 })
                 .collect();
 

@@ -2,6 +2,7 @@ package instrument
 
 import (
 	"fmt"
+	"go/ast"
 	"go/parser"
 	"go/printer"
 	"go/token"
@@ -34,6 +35,13 @@ func InstrumentFileWithTiming(sourcePath string, funcName *string, projectRoot *
 	finishTransform := timing.Start("instrument.transform")
 	transformFile(fset, file, funcName)
 	finishTransform()
+
+	// Remove func main() from package main files: the harness main.go provides
+	// the entry point, so a pre-existing func main() would cause a redeclaration
+	// error at build time.
+	if packageName == "main" {
+		removeMainFunc(file)
+	}
 
 	outputDir, err := os.MkdirTemp("", "shatter-instrument-*")
 	if err != nil {
@@ -121,4 +129,20 @@ func copyModFiles(outputDir, srcDir string) error {
 		_ = os.WriteFile(filepath.Join(outputDir, "go.sum"), sumData, 0644)
 	}
 	return nil
+}
+
+// removeMainFunc drops any top-level func main() declarations from the AST.
+// Used when instrumenting package main files: the harness main.go provides the
+// entry point, so keeping the original func main() would cause a redeclaration
+// error at build time.
+func removeMainFunc(file *ast.File) {
+	filtered := file.Decls[:0]
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if ok && fn.Name.Name == "main" && fn.Recv == nil {
+			continue
+		}
+		filtered = append(filtered, decl)
+	}
+	file.Decls = filtered
 }

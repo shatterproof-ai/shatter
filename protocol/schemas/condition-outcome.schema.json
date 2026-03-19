@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://shatter.dev/protocol/condition-outcome.schema.json",
+  "title": "ConditionOutcome",
+  "description": "Outcome of an individual condition within a compound decision.",
+  "type": "object",
+  "required": ["condition_index", "value", "constraint"],
+  "properties": {
+    "condition_index": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Index of this condition within the parent decision's condition list (left-to-right in source order)."
+    },
+    "value": {
+      "type": ["boolean", "null"],
+      "description": "The concrete truth value of this condition. Null if masked by short-circuit evaluation."
+    },
+    "masked": {
+      "type": "boolean",
+      "default": false,
+      "description": "True if this condition was not evaluated due to short-circuit semantics."
+    },
+    "constraint": {
+      "$ref": "sym-constraint.schema.json",
+      "description": "The symbolic constraint for this individual condition. For masked conditions, use Unknown with hint 'masked by short-circuit'."
+    }
+  }
+}

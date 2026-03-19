@@ -5,6 +5,7 @@ import {
   buildExecuteResponse,
   clearModuleCache,
   getExecTimeoutMs,
+  isMcdcEnabled,
   DEFAULT_EXEC_TIMEOUT_MS,
   truncateMessage,
   truncateSideEffects,
@@ -992,5 +993,204 @@ describe("buildExecuteResponse includes connection_failures", () => {
     expect(resp.connection_failures).toEqual([
       { symbol: "pg:query", error_kind: "connection_refused", message: "ECONNREFUSED" },
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isMcdcEnabled tests
+// ---------------------------------------------------------------------------
+
+describe("isMcdcEnabled", () => {
+  afterEach(() => {
+    delete process.env["SHATTER_MCDC"];
+  });
+
+  it("returns false when SHATTER_MCDC is not set", () => {
+    delete process.env["SHATTER_MCDC"];
+    expect(isMcdcEnabled()).toBe(false);
+  });
+
+  it("returns true when SHATTER_MCDC=1", () => {
+    process.env["SHATTER_MCDC"] = "1";
+    expect(isMcdcEnabled()).toBe(true);
+  });
+
+  it("returns false when SHATTER_MCDC=0", () => {
+    process.env["SHATTER_MCDC"] = "0";
+    expect(isMcdcEnabled()).toBe(false);
+  });
+
+  it("returns false when SHATTER_MCDC is any value other than '1'", () => {
+    process.env["SHATTER_MCDC"] = "true";
+    expect(isMcdcEnabled()).toBe(false);
+
+    process.env["SHATTER_MCDC"] = "yes";
+    expect(isMcdcEnabled()).toBe(false);
+
+    process.env["SHATTER_MCDC"] = "";
+    expect(isMcdcEnabled()).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MC/DC end-to-end: instrument + execute with __shatter_mcdc_* callbacks
+// ---------------------------------------------------------------------------
+
+describe("executeInstrumented MC/DC mode", () => {
+  afterEach(() => {
+    delete process.env["SHATTER_MCDC"];
+  });
+
+  it("records conditions for && compound decision (both true path)", async () => {
+    process.env["SHATTER_MCDC"] = "1";
+
+    const source = `export function compoundAnd(a: number, b: number): string {
+  if (a > 0 && b < 10) {
+    return "both";
+  }
+  return "neither";
+}`;
+
+    const instrumentResult = instrumentFunction(source, "compoundAnd");
+    expect("error" in instrumentResult).toBe(false);
+    if ("error" in instrumentResult) return;
+
+    const result = await executeInstrumented(
+      instrumentResult.instrumentedSource,
+      "compoundAnd",
+      [5, 3],
+    );
+
+    expect(result.return_value).toBe("both");
+    expect(result.branch_path).toHaveLength(1);
+    const bd = result.branch_path[0]!;
+    expect(bd.taken).toBe(true);
+    expect(bd.conditions).toBeDefined();
+    expect(bd.conditions!.length).toBe(2);
+    // First condition: a > 0 (true, not masked)
+    expect(bd.conditions![0]!.condition_index).toBe(0);
+    expect(bd.conditions![0]!.value).toBe(true);
+    expect(bd.conditions![0]!.masked).toBe(false);
+    // Second condition: b < 10 (true, not masked)
+    expect(bd.conditions![1]!.condition_index).toBe(1);
+    expect(bd.conditions![1]!.value).toBe(true);
+    expect(bd.conditions![1]!.masked).toBe(false);
+  });
+
+  it("records conditions for && compound decision (first condition false — masks second)", async () => {
+    process.env["SHATTER_MCDC"] = "1";
+
+    const source = `export function compoundAnd(a: number, b: number): string {
+  if (a > 0 && b < 10) {
+    return "both";
+  }
+  return "neither";
+}`;
+
+    const instrumentResult = instrumentFunction(source, "compoundAnd");
+    expect("error" in instrumentResult).toBe(false);
+    if ("error" in instrumentResult) return;
+
+    const result = await executeInstrumented(
+      instrumentResult.instrumentedSource,
+      "compoundAnd",
+      [-1, 3],
+    );
+
+    expect(result.return_value).toBe("neither");
+    const bd = result.branch_path[0]!;
+    expect(bd.taken).toBe(false);
+    expect(bd.conditions!.length).toBe(2);
+    // First condition: a > 0 is false
+    expect(bd.conditions![0]!.value).toBe(false);
+    expect(bd.conditions![0]!.masked).toBe(false);
+    // Second condition masked by short-circuit
+    expect(bd.conditions![1]!.value).toBeNull();
+    expect(bd.conditions![1]!.masked).toBe(true);
+  });
+
+  it("records conditions for || compound decision (first true — masks second)", async () => {
+    process.env["SHATTER_MCDC"] = "1";
+
+    const source = `export function compoundOr(x: boolean, y: boolean): string {
+  if (x || y) {
+    return "either";
+  }
+  return "none";
+}`;
+
+    const instrumentResult = instrumentFunction(source, "compoundOr");
+    expect("error" in instrumentResult).toBe(false);
+    if ("error" in instrumentResult) return;
+
+    const result = await executeInstrumented(
+      instrumentResult.instrumentedSource,
+      "compoundOr",
+      [true, false],
+    );
+
+    expect(result.return_value).toBe("either");
+    const bd = result.branch_path[0]!;
+    expect(bd.taken).toBe(true);
+    expect(bd.conditions!.length).toBe(2);
+    // First condition: x is true → short-circuit
+    expect(bd.conditions![0]!.value).toBe(true);
+    expect(bd.conditions![0]!.masked).toBe(false);
+    // Second condition masked
+    expect(bd.conditions![1]!.value).toBeNull();
+    expect(bd.conditions![1]!.masked).toBe(true);
+  });
+
+  it("simple condition falls back to plain __shatter_branch (no conditions array)", async () => {
+    process.env["SHATTER_MCDC"] = "1";
+
+    const source = `export function simple(a: number): string {
+  if (a > 0) {
+    return "pos";
+  }
+  return "non-pos";
+}`;
+
+    const instrumentResult = instrumentFunction(source, "simple");
+    expect("error" in instrumentResult).toBe(false);
+    if ("error" in instrumentResult) return;
+
+    const result = await executeInstrumented(
+      instrumentResult.instrumentedSource,
+      "simple",
+      [5],
+    );
+
+    expect(result.return_value).toBe("pos");
+    const bd = result.branch_path[0]!;
+    expect(bd.taken).toBe(true);
+    // Simple condition: no conditions array
+    expect(bd.conditions).toBeUndefined();
+  });
+
+  it("does not populate conditions when SHATTER_MCDC is not set", async () => {
+    delete process.env["SHATTER_MCDC"];
+
+    const source = `export function compoundAnd(a: number, b: number): string {
+  if (a > 0 && b < 10) {
+    return "both";
+  }
+  return "neither";
+}`;
+
+    const instrumentResult = instrumentFunction(source, "compoundAnd");
+    expect("error" in instrumentResult).toBe(false);
+    if ("error" in instrumentResult) return;
+
+    const result = await executeInstrumented(
+      instrumentResult.instrumentedSource,
+      "compoundAnd",
+      [5, 3],
+    );
+
+    const bd = result.branch_path[0]!;
+    expect(bd.taken).toBe(true);
+    // No MC/DC mode — no conditions field
+    expect(bd.conditions).toBeUndefined();
   });
 });

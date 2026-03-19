@@ -11,6 +11,7 @@ mod commands;
 mod embedded_frontend;
 mod embedded_go_frontend;
 mod helpers;
+mod render;
 
 use args::*;
 use helpers::*;
@@ -150,6 +151,7 @@ async fn main() -> ExitCode {
             replay_recorded,
             no_replay,
             refine_budget,
+            mcdc,
         } => {
             // Set SHATTER_SETUP_TIMEOUT env var for frontends if --setup-timeout provided.
             if let Some(secs) = setup_timeout {
@@ -175,10 +177,15 @@ async fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
+
+            // Apply MC/DC budget multipliers for parameters not explicitly provided.
+            // User-provided values always win; multipliers only expand the defaults.
+            let budgets = resolve_mcdc_budgets(max_iterations, timeout, solver_timeout, mcdc);
+
             commands::explore::run_explore(
                 &targets,
-                max_iterations,
-                timeout,
+                budgets.max_iterations,
+                budgets.timeout,
                 timeout_explore,
                 scope.as_deref(),
                 analyze_only,
@@ -199,7 +206,7 @@ async fn main() -> ExitCode {
                 spec_json || output.is_some(),
                 invariants,
                 concolic,
-                solver_timeout,
+                budgets.solver_timeout,
                 memory_limit,
                 clean,
                 dry_run,
@@ -214,6 +221,8 @@ async fn main() -> ExitCode {
                 replay_recorded,
                 no_replay,
                 refine_budget,
+                mcdc,
+                cli.format,
             )
             .await
         }
@@ -288,7 +297,7 @@ async fn main() -> ExitCode {
             parallelism,
             mock_config,
             output,
-            format,
+            report_format,
             emit_tests,
             dry_run,
             resume,
@@ -352,7 +361,7 @@ async fn main() -> ExitCode {
                 timeout_per_fn,
                 timeout_explore,
                 output.as_deref(),
-                &format,
+                &report_format,
                 progress,
                 emit_tests.as_deref(),
                 dry_run,
@@ -366,6 +375,7 @@ async fn main() -> ExitCode {
                 memory_limit,
                 cli.project_dir.as_deref(),
                 use_color,
+                cli.format,
                 &seeds_dir,
                 no_seeds,
             )
@@ -509,7 +519,7 @@ async fn main() -> ExitCode {
         CliCommand::Stale {
             source,
             spec,
-            format,
+            output_format,
             request_timeout,
             exec_timeout,
             build_timeout,
@@ -520,7 +530,7 @@ async fn main() -> ExitCode {
             match commands::stale::run_stale(
                 &source,
                 &spec,
-                &format,
+                &output_format,
                 request_timeout,
                 exec_timeout,
                 build_timeout,
@@ -546,12 +556,12 @@ async fn main() -> ExitCode {
             exec_timeout,
             build_timeout,
             memory_limit,
-            format,
+            output_format,
         } => {
             match commands::revalidate::run_revalidate(
                 &source,
                 cache_dir.as_deref(),
-                &format,
+                &output_format,
                 request_timeout,
                 exec_timeout,
                 build_timeout,

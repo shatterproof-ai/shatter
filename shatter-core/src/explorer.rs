@@ -175,6 +175,10 @@ pub struct ObservationOutput {
     /// Shrunk witnesses: maps branch_path hash to minimal inputs that reproduce the same path.
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub shrunk_witnesses: std::collections::HashMap<u64, Vec<serde_json::Value>>,
+    /// MC/DC summary: (total_conditions, independent_conditions, opaque_conditions).
+    /// Present only when the concolic orchestrator was run with `mcdc: true`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcdc_summary: Option<(usize, usize, usize)>,
 }
 
 /// Transitional alias: existing code that references `ExplorationResult`
@@ -1050,6 +1054,7 @@ pub async fn explore_function(
         float_probe_results,
         boundary_results: vec![],
         shrunk_witnesses,
+        mcdc_summary: None,
     })
 }
 
@@ -1449,6 +1454,7 @@ mod tests {
             branch_path: vec![BranchDecision {
                 branch_id: 0, line: 10, taken: true,
                 constraint: SymConstraint::Unknown { hint: "test".into() },
+                conditions: None,
             }],
             lines_executed: vec![], calls_to_external: vec![], path_constraints: vec![],
             scope_events: vec![], side_effects: vec![], capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![], connection_failures: vec![],
@@ -1459,6 +1465,7 @@ mod tests {
             branch_path: vec![BranchDecision {
                 branch_id: 0, line: 10, taken: false,
                 constraint: SymConstraint::Unknown { hint: "test".into() },
+                conditions: None,
             }],
             lines_executed: vec![], calls_to_external: vec![], path_constraints: vec![],
             scope_events: vec![], side_effects: vec![], capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![], connection_failures: vec![],
@@ -1483,6 +1490,7 @@ mod tests {
                 line: 0,
                 taken,
                 constraint: SymConstraint::Unknown { hint: String::new() },
+                conditions: None,
             },
         }
     }
@@ -1528,6 +1536,7 @@ mod tests {
             branch_path: vec![BranchDecision {
                 branch_id: 0, line: 10, taken: true,
                 constraint: SymConstraint::Unknown { hint: "test".into() },
+                conditions: None,
             }],
             lines_executed: vec![],
             calls_to_external: vec![],
@@ -1905,7 +1914,7 @@ mod tests {
                     return_value: Some(serde_json::json!("negative")),
                     thrown_error: None, lines_executed: vec![1, 4, 5], is_new_path: true, error_intent: None },
             ],
-            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
+            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None,
         };
         let report = format_exploration_report(&result, &ReportOptions::default());
         assert!(report.contains("classify"));
@@ -1926,7 +1935,7 @@ mod tests {
                 inputs: vec![serde_json::json!(10)],
                 return_value: Some(serde_json::json!(5)),
                 thrown_error: None, lines_executed: vec![1, 2, 3], is_new_path: true, error_intent: None }],
-            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
+            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None,
         };
         let report = format_exploration_report(&result, &ReportOptions {
             location: Some("src/math.ts:10-25".into()), ..Default::default()
@@ -1945,7 +1954,7 @@ mod tests {
                 return_value: None,
                 thrown_error: Some("TypeError: cannot read null".into()),
                 lines_executed: vec![], is_new_path: true, error_intent: None }],
-            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
+            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None,
         };
         let report = format_exploration_report(&result, &ReportOptions::default());
         assert!(report.contains("throws"));
@@ -1956,7 +1965,7 @@ mod tests {
     fn format_exploration_report_with_perf() {
         let result = ObservationOutput {
             function_name: "fast".into(), iterations: 10, unique_paths: 1,
-            lines_covered: 0, total_lines: 0, new_path_executions: vec![], raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
+            lines_covered: 0, total_lines: 0, new_path_executions: vec![], raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None,
         };
         let report = format_exploration_report(&result, &ReportOptions {
             show_perf: true, wall_time: Some(std::time::Duration::from_millis(42)),
@@ -1971,11 +1980,11 @@ mod tests {
     fn format_exploration_report_includes_coverage_metrics() {
         let result = ObservationOutput {
             function_name: "analyze".into(), iterations: 20, unique_paths: 3,
-            lines_covered: 8, total_lines: 10, new_path_executions: vec![], raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
+            lines_covered: 8, total_lines: 10, new_path_executions: vec![], raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None,
         };
         let metrics = crate::coverage_metrics::CoverageMetrics {
             total_branches: 4, z3_solved: 2, random_found: 1, user_provided: 0,
-            uncovered: 1, symexpr_count: 3, unknown_count: 1,
+            uncovered: 1, symexpr_count: 3, unknown_count: 1, mcdc_metrics: None,
         };
         let report = format_exploration_report(&result, &ReportOptions {
             coverage_metrics: Some(metrics), ..Default::default()
@@ -1995,7 +2004,7 @@ mod tests {
                 inputs: vec![serde_json::json!(1)],
                 return_value: Some(serde_json::json!("ok")),
                 thrown_error: None, lines_executed: vec![1, 2, 3, 4], is_new_path: true, error_intent: None }],
-            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
+            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None,
         };
         let report = format_exploration_report(&result, &ReportOptions {
             style: crate::report_style::ReportStyle::ansi(), ..Default::default()
@@ -2026,7 +2035,7 @@ mod tests {
                 inputs: vec![serde_json::json!(5)],
                 return_value: Some(serde_json::json!("positive-odd")),
                 thrown_error: None, lines_executed: vec![1, 2, 3], is_new_path: true, error_intent: None }],
-            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
+            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None,
         };
         let report = format_exploration_report_verbose(&result);
         assert!(report.contains("10 iteration(s)"));
@@ -2051,6 +2060,7 @@ mod tests {
                 line: 5,
                 taken: true,
                 constraint: SymConstraint::Unknown { hint: String::new() },
+                conditions: None,
             }],
             lines_executed: vec![1, 5, 6],
             calls_to_external: vec![],
@@ -2091,6 +2101,7 @@ mod tests {
                 line: 10 + i,
                 taken: true,
                 constraint: SymConstraint::Unknown { hint: String::new() },
+                conditions: None,
             })
             .collect();
         let result = crate::protocol::ExecuteResult {
@@ -2432,6 +2443,7 @@ mod tests {
                         line,
                         taken: true,
                         constraint: constraint.clone(),
+                        conditions: None,
                     }],
                     lines_executed: vec![],
                     calls_to_external: vec![],
@@ -2447,6 +2459,7 @@ mod tests {
                         line,
                         taken: false,
                         constraint,
+                        conditions: None,
                     }],
                     performance: perf,
                     ..base.clone()
@@ -2477,7 +2490,7 @@ mod tests {
             raw_results: vec![],
             discoveries: vec![],
             nondeterministic_fields: vec![],
-            float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
+            float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None,
         };
         let profile = collect_branch_profile(&obs);
         assert!(profile.is_empty());
@@ -2494,12 +2507,14 @@ mod tests {
                     line: 10,
                     taken: true,
                     constraint: SymConstraint::Unknown { hint: "".into() },
+                    conditions: None,
                 },
                 BranchDecision {
                     branch_id: 2,
                     line: 20,
                     taken: false,
                     constraint: SymConstraint::Unknown { hint: "".into() },
+                    conditions: None,
                 },
             ],
             lines_executed: vec![],
@@ -2521,7 +2536,7 @@ mod tests {
             raw_results: vec![(vec![], vec![], result)],
             discoveries: vec![],
             nondeterministic_fields: vec![],
-            float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
+            float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None,
         };
         let profile = collect_branch_profile(&obs);
         assert_eq!(profile.len(), 2);
@@ -2545,6 +2560,7 @@ mod tests {
                         line: id * 10,
                         taken: true,
                         constraint: SymConstraint::Unknown { hint: "".into() },
+                        conditions: None,
                     })
                     .collect(),
                 lines_executed: vec![],
@@ -2573,7 +2589,7 @@ mod tests {
             ],
             discoveries: vec![],
             nondeterministic_fields: vec![],
-            float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
+            float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None,
         };
         let profile = collect_branch_profile(&obs);
 

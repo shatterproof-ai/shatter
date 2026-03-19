@@ -315,6 +315,7 @@ mod tests {
             constraint: SymConstraint::Unknown {
                 hint: "test".into(),
             },
+            conditions: None,
         }
     }
 

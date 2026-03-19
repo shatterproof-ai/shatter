@@ -28,6 +28,8 @@ pub enum DiscoveryMethod {
     Drilled,
     /// Found by boundary search between true/false witnesses.
     BoundarySearch,
+    /// Found by MC/DC-targeted Z3 query (condition-independence constraint).
+    McdcTarget,
 }
 
 /// Percentage breakdown of discovery methods.
@@ -41,6 +43,25 @@ pub struct MethodPercentages {
     pub user_provided_pct: f64,
     /// Percentage of branches still uncovered.
     pub uncovered_pct: f64,
+}
+
+/// MC/DC coverage metrics for a function.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct McdcMetrics {
+    /// Total number of compound decisions tracked for MC/DC.
+    pub total_decisions: usize,
+    /// Total number of individual conditions across all tracked decisions.
+    pub total_conditions: usize,
+    /// Conditions that have a verified independence pair.
+    pub independent_conditions: usize,
+    /// Conditions that were always masked and could not be verified.
+    pub opaque_conditions: usize,
+    /// Conditions that appear in the decision list but were never observed
+    /// (either always short-circuited away or never reached).
+    pub always_masked: usize,
+    /// Percentage of conditions with independence pairs: independent / (total - opaque) * 100.
+    /// 0.0 when there are no verifiable conditions.
+    pub mcdc_percentage: f64,
 }
 
 /// Coverage metrics summarizing how effective the concolic approach was.
@@ -60,6 +81,9 @@ pub struct CoverageMetrics {
     pub symexpr_count: usize,
     /// Number of branch constraints that were Unknown (opaque to solver).
     pub unknown_count: usize,
+    /// MC/DC coverage metrics. Present when MC/DC mode is enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcdc_metrics: Option<McdcMetrics>,
 }
 
 impl CoverageMetrics {
@@ -113,7 +137,7 @@ impl CoverageMetrics {
 
         for (_, method) in discoveries {
             match method {
-                DiscoveryMethod::Z3 => z3_solved += 1,
+                DiscoveryMethod::Z3 | DiscoveryMethod::McdcTarget => z3_solved += 1,
                 DiscoveryMethod::Random
                 | DiscoveryMethod::Drilled
                 | DiscoveryMethod::BoundarySearch => random_found += 1,
@@ -142,6 +166,7 @@ impl CoverageMetrics {
             uncovered,
             symexpr_count,
             unknown_count,
+            mcdc_metrics: None,
         }
     }
 
@@ -149,6 +174,8 @@ impl CoverageMetrics {
     ///
     /// Each counter is summed. The caller must ensure no double-counting
     /// (e.g., each function appears in exactly one batch).
+    /// MC/DC metrics are merged additively; if only one side has MC/DC data
+    /// the result contains an `McdcMetrics` with just that side's counts.
     pub fn merge(&mut self, other: &CoverageMetrics) {
         self.total_branches += other.total_branches;
         self.z3_solved += other.z3_solved;
@@ -157,6 +184,51 @@ impl CoverageMetrics {
         self.uncovered += other.uncovered;
         self.symexpr_count += other.symexpr_count;
         self.unknown_count += other.unknown_count;
+        match (&mut self.mcdc_metrics, &other.mcdc_metrics) {
+            (Some(a), Some(b)) => {
+                a.total_decisions += b.total_decisions;
+                a.total_conditions += b.total_conditions;
+                a.independent_conditions += b.independent_conditions;
+                a.opaque_conditions += b.opaque_conditions;
+                a.always_masked += b.always_masked;
+                let verifiable = a.total_conditions.saturating_sub(a.opaque_conditions);
+                a.mcdc_percentage = if verifiable == 0 {
+                    0.0
+                } else {
+                    a.independent_conditions as f64 / verifiable as f64 * 100.0
+                };
+            }
+            (None, Some(b)) => {
+                self.mcdc_metrics = Some(b.clone());
+            }
+            _ => {}
+        }
+    }
+}
+
+impl McdcMetrics {
+    /// Build `McdcMetrics` from an MC/DC summary triple `(total, independent, opaque)`.
+    ///
+    /// `total` is the total number of conditions tracked.
+    /// `independent` is the number with a verified independence pair.
+    /// `opaque` is the number that were always masked or otherwise unverifiable.
+    ///
+    /// The percentage is computed over analyzable conditions (`total - opaque`).
+    pub fn from_mcdc_summary(total: usize, independent: usize, opaque: usize) -> Self {
+        let analyzable = total.saturating_sub(opaque);
+        let mcdc_percentage = if analyzable > 0 {
+            (independent as f64 / analyzable as f64) * 100.0
+        } else {
+            0.0
+        };
+        Self {
+            total_decisions: 0, // not tracked at summary level yet
+            total_conditions: total,
+            independent_conditions: independent,
+            opaque_conditions: opaque,
+            always_masked: 0, // not tracked at summary level yet
+            mcdc_percentage,
+        }
     }
 }
 
@@ -234,6 +306,33 @@ pub fn format_coverage_metrics(
             metrics.symexpr_count, constraint_total, ratio_pct,
             dim = style.dim,
             reset = style.reset,
+        ));
+    }
+
+    if let Some(ref mcdc) = metrics.mcdc_metrics {
+        let analyzable = mcdc.total_conditions.saturating_sub(mcdc.opaque_conditions);
+        out.push_str("  MC/DC Coverage\n");
+        if mcdc.opaque_conditions > 0 {
+            out.push_str(&format!(
+                "  \u{251c}\u{2500} Conditions: {total} total, {opaque} opaque\n",
+                total = mcdc.total_conditions,
+                opaque = mcdc.opaque_conditions,
+            ));
+        } else {
+            out.push_str(&format!(
+                "  \u{251c}\u{2500} Conditions: {total} total\n",
+                total = mcdc.total_conditions,
+            ));
+        }
+        out.push_str(&format!(
+            "  \u{251c}\u{2500} Independent: {independent}/{analyzable} analyzable ({pct})\n",
+            independent = mcdc.independent_conditions,
+            pct = style.color_coverage_pct(mcdc.mcdc_percentage),
+        ));
+        out.push_str(&format!(
+            "  \u{2514}\u{2500} {bar} {pct:.1}%\n",
+            bar = style.coverage_bar(mcdc.mcdc_percentage),
+            pct = mcdc.mcdc_percentage,
         ));
     }
 
@@ -558,11 +657,67 @@ mod tests {
             uncovered: 2,
             symexpr_count: 7,
             unknown_count: 3,
+            mcdc_metrics: None,
         };
         let json = serde_json::to_string(&metrics).expect("serialize");
         let deserialized: CoverageMetrics =
             serde_json::from_str(&json).expect("deserialize");
         assert_eq!(metrics, deserialized);
+    }
+
+    #[test]
+    fn mcdc_metrics_serialization_round_trips() {
+        let metrics = McdcMetrics {
+            total_decisions: 3,
+            total_conditions: 7,
+            independent_conditions: 5,
+            opaque_conditions: 1,
+            always_masked: 0,
+            mcdc_percentage: 83.33,
+        };
+        let json = serde_json::to_string(&metrics).expect("serialize");
+        let deserialized: McdcMetrics = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(metrics, deserialized);
+    }
+
+    #[test]
+    fn coverage_metrics_with_mcdc_round_trips() {
+        let metrics = CoverageMetrics {
+            total_branches: 5,
+            z3_solved: 2,
+            random_found: 1,
+            user_provided: 0,
+            uncovered: 2,
+            symexpr_count: 3,
+            unknown_count: 2,
+            mcdc_metrics: Some(McdcMetrics {
+                total_decisions: 2,
+                total_conditions: 4,
+                independent_conditions: 3,
+                opaque_conditions: 0,
+                always_masked: 0,
+                mcdc_percentage: 75.0,
+            }),
+        };
+        let json = serde_json::to_string(&metrics).expect("serialize");
+        let deserialized: CoverageMetrics = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(metrics, deserialized);
+    }
+
+    #[test]
+    fn coverage_metrics_mcdc_none_omitted_in_json() {
+        let metrics = CoverageMetrics {
+            total_branches: 2,
+            z3_solved: 1,
+            random_found: 0,
+            user_provided: 0,
+            uncovered: 1,
+            symexpr_count: 1,
+            unknown_count: 1,
+            mcdc_metrics: None,
+        };
+        let json = serde_json::to_string(&metrics).expect("serialize");
+        assert!(!json.contains("mcdc_metrics"), "None mcdc_metrics must not appear in JSON");
     }
 
     // --- extract_targets tests ---
@@ -660,12 +815,14 @@ mod tests {
                 line: 5,
                 taken: true,
                 constraint: SymConstraint::Expr { expr: expr.clone() },
+                conditions: None,
             },
             BranchDecision {
                 branch_id: 1,
                 line: 10,
                 taken: true,
                 constraint: SymConstraint::Expr { expr },
+                conditions: None,
             },
         ]);
         let raw_results = vec![(vec![serde_json::json!(5)], vec![], exec)];
@@ -698,6 +855,7 @@ mod tests {
                 constraint: SymConstraint::Unknown {
                     hint: "dynamic validation call".to_string(),
                 },
+                conditions: None,
             },
         ]);
         let raw_results = vec![(vec![serde_json::json!(10)], vec![], exec)];
@@ -742,6 +900,7 @@ mod tests {
                 constraint: SymConstraint::Unknown {
                     hint: "runtime opaque hint".to_string(),
                 },
+                conditions: None,
             },
         ]);
         let raw_results = vec![(vec![serde_json::json!(1)], vec![], exec)];
@@ -822,6 +981,7 @@ mod tests {
             uncovered: 4,
             symexpr_count: 6,
             unknown_count: 4,
+            mcdc_metrics: None,
         };
         let b = CoverageMetrics {
             total_branches: 8,
@@ -831,6 +991,7 @@ mod tests {
             uncovered: 3,
             symexpr_count: 5,
             unknown_count: 3,
+            mcdc_metrics: None,
         };
         a.merge(&b);
         assert_eq!(a.total_branches, 18);
@@ -852,6 +1013,7 @@ mod tests {
             uncovered: 1,
             symexpr_count: 3,
             unknown_count: 2,
+            mcdc_metrics: None,
         };
         let mut merged = CoverageMetrics::default();
         merged.merge(&original);
@@ -868,6 +1030,7 @@ mod tests {
             uncovered: 2,
             symexpr_count: 2,
             unknown_count: 2,
+            mcdc_metrics: None,
         };
         let c = CoverageMetrics {
             total_branches: 6,
@@ -877,6 +1040,7 @@ mod tests {
             uncovered: 1,
             symexpr_count: 4,
             unknown_count: 2,
+            mcdc_metrics: None,
         };
         // Merge B then C
         let mut sequential = CoverageMetrics::default();
@@ -886,5 +1050,125 @@ mod tests {
         let mut combined = b.clone();
         combined.merge(&c);
         assert_eq!(sequential, combined);
+    }
+
+    // --- McdcMetrics::from_mcdc_summary tests ---
+
+    #[test]
+    fn from_mcdc_summary_full_coverage() {
+        let m = McdcMetrics::from_mcdc_summary(9, 9, 0);
+        assert_eq!(m.total_conditions, 9);
+        assert_eq!(m.independent_conditions, 9);
+        assert_eq!(m.opaque_conditions, 0);
+        assert_eq!(m.total_decisions, 0);
+        assert_eq!(m.always_masked, 0);
+        assert!((m.mcdc_percentage - 100.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn from_mcdc_summary_zero_coverage() {
+        let m = McdcMetrics::from_mcdc_summary(9, 0, 0);
+        assert_eq!(m.total_conditions, 9);
+        assert_eq!(m.independent_conditions, 0);
+        assert!((m.mcdc_percentage - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn from_mcdc_summary_with_opaque() {
+        // 11 total, 2 opaque → 9 analyzable; 7 independent → 77.8%
+        let m = McdcMetrics::from_mcdc_summary(11, 7, 2);
+        assert_eq!(m.total_conditions, 11);
+        assert_eq!(m.independent_conditions, 7);
+        assert_eq!(m.opaque_conditions, 2);
+        let expected_pct = 7.0_f64 / 9.0 * 100.0;
+        assert!((m.mcdc_percentage - expected_pct).abs() < 0.001);
+    }
+
+    #[test]
+    fn from_mcdc_summary_all_opaque_gives_zero_pct() {
+        // All conditions are opaque — no analyzable conditions, percentage should be 0.0
+        let m = McdcMetrics::from_mcdc_summary(5, 0, 5);
+        assert_eq!(m.total_conditions, 5);
+        assert_eq!(m.opaque_conditions, 5);
+        assert!((m.mcdc_percentage - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn from_mcdc_summary_zero_total_gives_zero_pct() {
+        let m = McdcMetrics::from_mcdc_summary(0, 0, 0);
+        assert_eq!(m.total_conditions, 0);
+        assert!((m.mcdc_percentage - 0.0).abs() < f64::EPSILON);
+    }
+
+    // --- format_coverage_metrics MC/DC section tests ---
+
+    #[test]
+    fn format_coverage_metrics_shows_mcdc_section_when_present() {
+        let style = crate::report_style::ReportStyle::default();
+        let metrics = CoverageMetrics {
+            total_branches: 4,
+            z3_solved: 3,
+            random_found: 0,
+            user_provided: 0,
+            uncovered: 1,
+            symexpr_count: 2,
+            unknown_count: 1,
+            mcdc_metrics: Some(McdcMetrics::from_mcdc_summary(11, 7, 2)),
+        };
+        let output = format_coverage_metrics(&metrics, &style);
+        assert!(output.contains("MC/DC Coverage"), "expected MC/DC Coverage section");
+        assert!(output.contains("11 total"), "expected total conditions");
+        assert!(output.contains("2 opaque"), "expected opaque conditions");
+        assert!(output.contains("7/9 analyzable"), "expected independent/analyzable");
+    }
+
+    #[test]
+    fn format_coverage_metrics_omits_mcdc_section_when_none() {
+        let style = crate::report_style::ReportStyle::default();
+        let metrics = CoverageMetrics {
+            total_branches: 4,
+            z3_solved: 3,
+            random_found: 0,
+            user_provided: 0,
+            uncovered: 1,
+            symexpr_count: 2,
+            unknown_count: 1,
+            mcdc_metrics: None,
+        };
+        let output = format_coverage_metrics(&metrics, &style);
+        assert!(!output.contains("MC/DC Coverage"), "MC/DC section must be absent when mcdc_metrics is None");
+    }
+
+    #[test]
+    fn format_coverage_metrics_mcdc_no_opaque_omits_opaque_text() {
+        let style = crate::report_style::ReportStyle::default();
+        let metrics = CoverageMetrics {
+            total_branches: 2,
+            z3_solved: 1,
+            random_found: 0,
+            user_provided: 0,
+            uncovered: 1,
+            symexpr_count: 1,
+            unknown_count: 1,
+            mcdc_metrics: Some(McdcMetrics::from_mcdc_summary(5, 4, 0)),
+        };
+        let output = format_coverage_metrics(&metrics, &style);
+        assert!(output.contains("MC/DC Coverage"));
+        assert!(!output.contains("opaque"), "opaque text must not appear when opaque_conditions == 0");
+    }
+
+    // --- DiscoveryMethod::McdcTarget counts toward z3_solved ---
+
+    #[test]
+    fn mcdc_target_discovery_counts_toward_z3_solved() {
+        let discoveries = vec![
+            (0, DiscoveryMethod::Z3),
+            (1, DiscoveryMethod::McdcTarget),
+            (2, DiscoveryMethod::Random),
+        ];
+        let metrics = CoverageMetrics::from_exploration(3, &discoveries, &[]);
+        assert_eq!(metrics.z3_solved, 2, "Z3 and McdcTarget both count toward z3_solved");
+        assert_eq!(metrics.random_found, 1);
+        assert_eq!(metrics.uncovered, 0);
     }
 }

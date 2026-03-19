@@ -860,6 +860,7 @@ mod tests {
                             right: Box::new(SymExpr::Const(ConstValue::Str("express".into()))),
                         },
                     },
+                    conditions: None,
                 }],
                 lines_executed: vec![10, 11, 23, 24, 30],
                 calls_to_external: vec![ExternalCall {
@@ -2054,6 +2055,7 @@ mod tests {
                 constraint: SymConstraint::Unknown {
                     hint: "opaque".into(),
                 },
+                conditions: None,
             }],
             lines_executed: vec![10],
             calls_to_external: vec![],

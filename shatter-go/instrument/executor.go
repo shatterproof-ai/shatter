@@ -48,6 +48,12 @@ func execTimeout() time.Duration {
 	return defaultExecTimeout
 }
 
+// isMcdcEnabled returns true when MC/DC mode is enabled (SHATTER_MCDC=1).
+// Follows the same pattern as execTimeout() for SHATTER_EXEC_TIMEOUT.
+func isMcdcEnabled() bool {
+	return os.Getenv("SHATTER_MCDC") == "1"
+}
+
 // buildTimeout returns the build timeout, reading from SHATTER_BUILD_TIMEOUT
 // env var (in seconds) with a fallback to defaultBuildTimeout.
 func buildTimeout() time.Duration {
@@ -125,12 +131,24 @@ type ErrorInfo struct {
 	ErrorCategory *string `json:"error_category,omitempty"`
 }
 
+// ConditionOutcome records the result of an individual condition within a
+// compound boolean decision (MC/DC analysis).
+type ConditionOutcome struct {
+	ConditionIndex int             `json:"condition_index"`
+	Value          *bool           `json:"value"`  // nil when masked by short-circuit
+	Masked         bool            `json:"masked,omitempty"`
+	ConstraintJSON string          `json:"constraint_json,omitempty"`
+}
+
 // BranchDecision records which way a branch was taken during execution.
 type BranchDecision struct {
-	BranchID       int    `json:"branch_id"`
-	Line           int    `json:"line"`
-	Taken          bool   `json:"taken"`
-	ConstraintJSON string `json:"constraint_json,omitempty"`
+	BranchID       int                `json:"branch_id"`
+	Line           int                `json:"line"`
+	Taken          bool               `json:"taken"`
+	ConstraintJSON string             `json:"constraint_json,omitempty"`
+	// Conditions holds per-condition outcomes for MC/DC analysis.
+	// Present only when MC/DC mode is enabled and the decision is compound.
+	Conditions     []ConditionOutcome `json:"conditions,omitempty"`
 }
 
 // PerfMetrics captures execution performance data.
