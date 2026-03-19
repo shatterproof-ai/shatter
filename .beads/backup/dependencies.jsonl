@@ -533,6 +533,11 @@
 {"created_at":"2026-03-03T09:53:18Z","created_by":"Ketan Gangatirkar","depends_on_id":"str-y53l","issue_id":"str-kapl","type":"blocks"}
 {"created_at":"2026-03-03T09:53:18Z","created_by":"Ketan Gangatirkar","depends_on_id":"str-ycfq","issue_id":"str-kapl","type":"blocks"}
 {"created_at":"2026-03-06T13:14:05Z","created_by":"Ketan Gangatirkar","depends_on_id":"str-rc6i","issue_id":"str-l02k","type":"parent-child"}
+{"created_at":"2026-03-18T20:50:43Z","created_by":"Ketan Gangatirkar","depends_on_id":"str-l0oe","issue_id":"str-l0oe.1","type":"parent-child"}
+{"created_at":"2026-03-18T20:50:49Z","created_by":"Ketan Gangatirkar","depends_on_id":"str-l0oe","issue_id":"str-l0oe.2","type":"parent-child"}
+{"created_at":"2026-03-18T20:51:01Z","created_by":"Ketan Gangatirkar","depends_on_id":"str-l0oe","issue_id":"str-l0oe.3","type":"parent-child"}
+{"created_at":"2026-03-18T20:51:04Z","created_by":"Ketan Gangatirkar","depends_on_id":"str-l0oe","issue_id":"str-l0oe.4","type":"parent-child"}
+{"created_at":"2026-03-18T20:51:08Z","created_by":"Ketan Gangatirkar","depends_on_id":"str-l0oe","issue_id":"str-l0oe.5","type":"parent-child"}
 {"created_at":"2026-03-04T22:47:55Z","created_by":"Ketan Gangatirkar","depends_on_id":"str-3cim","issue_id":"str-l22q","type":"parent-child"}
 {"created_at":"2026-03-04T22:48:00Z","created_by":"Ketan Gangatirkar","depends_on_id":"str-axxh","issue_id":"str-l22q","type":"blocks"}
 {"created_at":"2026-03-04T20:58:43Z","created_by":"Ketan Gangatirkar","depends_on_id":"str-oi1d","issue_id":"str-lebv","type":"blocks"}
