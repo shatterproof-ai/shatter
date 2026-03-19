@@ -15,6 +15,7 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -552,43 +553,59 @@ pub struct ParallelScanResult {
     pub sampling: Option<SamplingContext>,
 }
 
-/// A channel-based pool of frontend worker subprocesses.
+/// A channel-based pool of frontend worker subprocesses with adaptive growth.
 ///
-/// Workers are checked out via `recv()` and returned via `send()` after use.
-/// This ensures exclusive access without lock contention.
+/// Workers are checked out via `checkout()` and returned via `return_worker()`.
+/// The pool starts with a fraction of `max_workers` and grows toward the ceiling
+/// as tasks complete and more runnable work remains.
 struct WorkerPool {
     sender: tokio::sync::mpsc::Sender<Frontend>,
     receiver: Mutex<tokio::sync::mpsc::Receiver<Frontend>>,
+    /// Hard ceiling on spawned workers (from `--parallelism`).
+    max_workers: usize,
+    /// Count of workers currently alive (checked out or in the channel). Only grows.
+    current_size: Arc<AtomicUsize>,
+    /// Config used to spawn replacement and growth workers.
+    config: Arc<FrontendConfig>,
+}
+
+/// Number of workers to create at pool startup.
+///
+/// Starts at ≈25 % of `max_workers` (minimum 1), capped by actual task count so
+/// we never over-provision on sparse layers.  The pool grows toward `max_workers`
+/// as tasks complete and more work is still queued.
+fn initial_workers(max_workers: usize, needed: usize) -> usize {
+    let quarter = (max_workers / 4).max(1);
+    quarter.min(needed).min(max_workers)
 }
 
 impl WorkerPool {
-    /// Spawn `n` frontend subprocesses and place them in the pool.
-    async fn spawn(config: &FrontendConfig, n: usize) -> Result<Self, FrontendError> {
-        let (sender, receiver) = tokio::sync::mpsc::channel(n);
-        for _ in 0..n {
-            let frontend = Frontend::spawn(config).await?;
-            sender.send(frontend).await.expect("channel just created");
+    /// Spawn an initial batch of frontend subprocesses and place them in the pool.
+    ///
+    /// Starts with `initial_workers(max_workers, needed)` workers rather than the
+    /// full `max_workers`, then grows on demand via [`maybe_grow`].
+    async fn spawn_capped(
+        config: Arc<FrontendConfig>,
+        max_workers: usize,
+        needed: usize,
+    ) -> Result<Self, FrontendError> {
+        let initial = initial_workers(max_workers, needed);
+        // Channel capacity == max_workers so growth workers can always be deposited.
+        let (sender, receiver) = tokio::sync::mpsc::channel(max_workers);
+        for _ in 0..initial {
+            let frontend = Frontend::spawn(&config).await?;
+            sender.send(frontend).await.expect("channel has capacity for initial workers");
         }
         Ok(Self {
             sender,
             receiver: Mutex::new(receiver),
+            max_workers,
+            current_size: Arc::new(AtomicUsize::new(initial)),
+            config,
         })
     }
 
-    /// Spawn at most `min(max_workers, needed)` frontend subprocesses.
-    ///
-    /// Use this for lazy pool creation: pass the number of tasks actually
-    /// queued for this batch so the pool is never larger than necessary.
-    async fn spawn_capped(
-        config: &FrontendConfig,
-        max_workers: usize,
-        needed: usize,
-    ) -> Result<Self, FrontendError> {
-        Self::spawn(config, max_workers.min(needed)).await
-    }
-
-
-    /// Check out a worker from the pool.
+    /// Check out a worker from the pool, blocking until one is available.
     async fn checkout(&self) -> Frontend {
         let mut rx = self.receiver.lock().await;
         rx.recv().await.expect("pool should not be empty")
@@ -599,7 +616,49 @@ impl WorkerPool {
         let _ = self.sender.send(frontend).await;
     }
 
+    /// Grow the pool by one worker if demand justifies it and we are below the ceiling.
+    ///
+    /// `tasks_remaining` is the number of tasks that have not yet completed.  If that
+    /// exceeds `current_size`, tasks are blocked on `checkout()` and a new worker will
+    /// reduce their wait.  The CAS ensures at most one growth per available slot even
+    /// when multiple tasks return concurrently.  The actual subprocess spawn runs in a
+    /// detached task so the caller is not delayed.
+    fn maybe_grow(&self, tasks_remaining: usize) {
+        let current = self.current_size.load(Ordering::Relaxed);
+        if tasks_remaining <= current || current >= self.max_workers {
+            return;
+        }
+        if self.current_size
+            .compare_exchange(current, current + 1, Ordering::AcqRel, Ordering::Relaxed)
+            .is_err()
+        {
+            return; // another concurrent task already claimed the slot
+        }
+        let sender = self.sender.clone();
+        let config = Arc::clone(&self.config);
+        let current_size = Arc::clone(&self.current_size);
+        tokio::spawn(async move {
+            match Frontend::spawn(&config).await {
+                Ok(fe) => {
+                    let _ = sender.send(fe).await;
+                }
+                Err(_) => {
+                    // Release the claimed slot so future growth attempts can retry.
+                    current_size.fetch_sub(1, Ordering::Relaxed);
+                }
+            }
+        });
+    }
+
+    /// Return the number of workers currently alive (in pool or checked out).
+    fn current_size(&self) -> usize {
+        self.current_size.load(Ordering::Relaxed)
+    }
+
     /// Shut down all workers remaining in the pool.
+    ///
+    /// Any in-flight `maybe_grow` tasks hold a sender clone, so `rx.recv()` waits
+    /// for them naturally — newly spawned frontends are captured and shut down too.
     async fn shutdown(self) {
         drop(self.sender);
         let mut rx = self.receiver.into_inner();
@@ -881,18 +940,19 @@ pub async fn parallel_scan(
         // The pool is created lazily — only when there is real exploration work
         // to do in this layer. Cache-hit layers skip pool creation entirely.
         if !tasks.is_empty() {
-            let layer_pool_size = effective_parallelism.min(tasks.len());
+            let fe_config = Arc::new(frontend_config.clone());
             let pool = Arc::new(
-                WorkerPool::spawn_capped(frontend_config, effective_parallelism, tasks.len())
+                WorkerPool::spawn_capped(Arc::clone(&fe_config), effective_parallelism, tasks.len())
                     .await
                     .map_err(ScanError::Frontend)?,
             );
-            peak_workers = peak_workers.max(layer_pool_size);
+
+            // Each task decrements this counter after returning its worker so that
+            // `maybe_grow` can detect tasks still blocked on `checkout()`.
+            let tasks_remaining = Arc::new(AtomicUsize::new(tasks.len()));
 
             // Each task checks out a worker, explores, then returns the worker.
             let mut handles = Vec::new();
-
-            let fe_config = Arc::new(frontend_config.clone());
 
             for (func_name, analysis, explore_config, mocks_used, callees, deep_fp) in tasks {
                 let pool = Arc::clone(&pool);
@@ -901,6 +961,7 @@ pub async fn parallel_scan(
                 let timeout = config.timeout_per_fn;
                 let cache = config.cache.clone();
                 let fe_config = Arc::clone(&fe_config);
+                let tasks_remaining = Arc::clone(&tasks_remaining);
 
                 let handle = tokio::spawn(async move {
                     let mut frontend = pool.checkout().await;
@@ -936,6 +997,11 @@ pub async fn parallel_scan(
                     } else {
                         pool.return_worker(frontend).await;
                     }
+
+                    // Decrement the remaining-task counter and grow the pool if
+                    // there are tasks still blocked on checkout() and room to grow.
+                    let remaining = tasks_remaining.fetch_sub(1, Ordering::AcqRel).saturating_sub(1);
+                    pool.maybe_grow(remaining);
 
                     match result {
                         Ok(Ok(func_result)) => {
@@ -1000,6 +1066,9 @@ pub async fn parallel_scan(
                     }
                 }
             }
+
+            // Record the actual peak before shutdown — pool may have grown during the layer.
+            peak_workers = peak_workers.max(pool.current_size());
 
             // Shut down this layer's workers now that all tasks are done.
             // This frees subprocess resources before the next layer begins,
@@ -3511,6 +3580,84 @@ mod tests {
         // Only 1 task → pool capped at 1, not 8.
         assert_eq!(result.workers_used, 1, "pool should be capped to tasks.len()=1, not parallelism=8");
         assert_eq!(result.function_results.len(), 1);
+    }
+
+    /// When a layer has more tasks than the initial pool size the pool must grow
+    /// toward the parallelism ceiling as tasks complete.  This is the perf-evidence
+    /// test for adaptive growth: `workers_used` must be > 1 (grew) and ≤ parallelism.
+    #[tokio::test]
+    async fn parallel_scan_pool_grows_with_demand() {
+        use crate::frontend::FrontendConfig;
+        use crate::types::{ParamInfo, TypeInfo};
+        use std::path::{Path, PathBuf};
+
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let noop_path = manifest_dir.join("../protocol/noop-frontend.sh");
+        let mut fe_config = FrontendConfig::new(PathBuf::from("bash"));
+        fe_config.args = vec![noop_path.to_string_lossy().into_owned()];
+        fe_config.request_timeout = TEST_REQUEST_TIMEOUT;
+
+        // Four independent functions (no dependencies) → one layer with 4 tasks.
+        let make_fn = |name: &str| FunctionAnalysis {
+            name: name.to_string(),
+            exported: true,
+            params: vec![ParamInfo { name: "x".into(), typ: TypeInfo::Int, type_name: None }],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Unknown,
+            start_line: 1,
+            end_line: 5,
+            literals: vec![],
+            crypto_boundaries: vec![],
+        };
+        let analyses = vec![
+            make_fn("fn_a"),
+            make_fn("fn_b"),
+            make_fn("fn_c"),
+            make_fn("fn_d"),
+        ];
+
+        let mut file_map = HashMap::new();
+        for name in ["fn_a", "fn_b", "fn_c", "fn_d"] {
+            file_map.insert(name.to_string(), "test.ts".to_string());
+        }
+
+        let config = ScanConfig {
+            max_iterations_per_function: 2,
+            seed: Some(42),
+            file_map,
+            parallelism: 4,
+            timeout_per_fn: TEST_REQUEST_TIMEOUT,
+            cache: None,
+            stratum: None,
+            mock_overrides: HashMap::new(),
+            resume_path: None,
+            timeout_total: None,
+            pool_path: None,
+            project_root: None,
+            config_dir: None,
+            timeout_explore: None,
+            setup_manager: None,
+            policy: crate::scheduler_policy::SchedulerPolicy::default(),
+        };
+
+        let result = parallel_scan(&fe_config, &analyses, &config)
+            .await
+            .expect("parallel_scan should succeed");
+
+        assert_eq!(result.function_results.len(), 4, "all 4 functions must complete");
+        // With 4 tasks and max=4 the pool starts at initial_workers(4,4)=1 and must
+        // grow as tasks complete.  After all 4 tasks run, current_size should be > 1.
+        assert!(
+            result.workers_used > 1,
+            "pool should have grown beyond initial 1 worker (got {})",
+            result.workers_used,
+        );
+        assert!(
+            result.workers_used <= 4,
+            "pool must not exceed parallelism ceiling (got {})",
+            result.workers_used,
+        );
     }
 
     // ── SchedulerPolicy integration tests ─────────────────────────────
