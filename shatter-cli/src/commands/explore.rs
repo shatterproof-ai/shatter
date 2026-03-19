@@ -62,6 +62,7 @@ pub(crate) async fn run_explore(
     refine_budget: usize,
     mcdc: bool,
     isolation: shatter_core::explorer::IsolationMode,
+    capture_side_effects: bool,
     output_format: crate::args::OutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let _explore_span = tracing::info_span!("core.explore_command").entered();
@@ -444,6 +445,7 @@ pub(crate) async fn run_explore(
                 meta_config: meta_config.clone(),
                 shrink_budget: shatter_core::orchestrator::DEFAULT_SHRINK_BUDGET,
                 isolation,
+                capture_side_effects,
             };
 
             if !resolved.candidate_inputs.is_empty() {

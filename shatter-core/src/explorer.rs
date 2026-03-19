@@ -140,6 +140,11 @@ pub struct ExploreConfig {
     pub shrink_budget: usize,
     /// Execution isolation level. Defaults to `IsolationMode::None` (stateless/shared process).
     pub isolation: IsolationMode,
+    /// When true, frontends are expected to capture rich side-effect data
+    /// (console output, file writes, network requests, environment reads,
+    /// global state changes, etc.) per execution. Defaults to false for
+    /// throughput — capture adds overhead on every execute call.
+    pub capture_side_effects: bool,
 }
 
 /// Summary of a single function execution during exploration.
@@ -2220,6 +2225,7 @@ mod tests {
             timeout_explore: None,
             meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
             isolation: IsolationMode::None,
+            capture_side_effects: false,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("should succeed with noop frontend");
@@ -2247,6 +2253,7 @@ mod tests {
             timeout_explore: None,
             meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
             isolation: IsolationMode::None,
+            capture_side_effects: false,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("per_function setup should succeed");
@@ -2274,6 +2281,7 @@ mod tests {
             timeout_explore: None,
             meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
             isolation: IsolationMode::None,
+            capture_side_effects: false,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("per_execution setup should succeed");
@@ -2300,6 +2308,7 @@ mod tests {
             timeout_explore: None,
             meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
             isolation: IsolationMode::None,
+            capture_side_effects: false,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("should succeed without setup capability");
@@ -2330,6 +2339,7 @@ mod tests {
             timeout_explore: None,
             meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
             isolation: IsolationMode::None,
+            capture_side_effects: false,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("generators should succeed");
@@ -2356,6 +2366,7 @@ mod tests {
             timeout_explore: None,
             meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
             isolation: IsolationMode::None,
+            capture_side_effects: false,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("no generators should succeed");
@@ -2381,6 +2392,7 @@ mod tests {
             timeout_explore: None,
             meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
             isolation: IsolationMode::None,
+            capture_side_effects: false,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("user seeds should succeed");
@@ -2409,6 +2421,7 @@ mod tests {
             timeout_explore: None,
             meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
             isolation: IsolationMode::None,
+            capture_side_effects: false,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("candidate inputs should succeed");
@@ -2449,6 +2462,7 @@ mod tests {
             timeout_explore: None,
             meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
             isolation: IsolationMode::None,
+            capture_side_effects: false,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("should succeed with noop frontend");

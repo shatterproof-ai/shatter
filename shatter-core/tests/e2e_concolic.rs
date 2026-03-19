@@ -959,6 +959,7 @@ async fn explorer_explore_function_with_setup() {
         meta_config: shatter_core::strategy::MetaConfig::default(),
         shrink_budget: 0,
         isolation: shatter_core::explorer::IsolationMode::None,
+        capture_side_effects: false,
     };
 
     let mut mgr = SetupManager::from_env();
@@ -1177,6 +1178,7 @@ async fn concolic_mock_status_branches_discovered() {
         meta_config: shatter_core::strategy::MetaConfig::default(),
         shrink_budget: 0,
         isolation: shatter_core::explorer::IsolationMode::None,
+        capture_side_effects: false,
     };
 
     let result = shatter_core::explorer::explore_function(
@@ -1261,6 +1263,7 @@ async fn concolic_mock_result_branches_discovered() {
         meta_config: shatter_core::strategy::MetaConfig::default(),
         shrink_budget: 0,
         isolation: shatter_core::explorer::IsolationMode::None,
+        capture_side_effects: false,
     };
 
     let result = shatter_core::explorer::explore_function(
@@ -1348,6 +1351,7 @@ async fn concolic_mock_loop_branches_discovered() {
         meta_config: shatter_core::strategy::MetaConfig::default(),
         shrink_budget: 0,
         isolation: shatter_core::explorer::IsolationMode::None,
+        capture_side_effects: false,
     };
 
     let result = shatter_core::explorer::explore_function(

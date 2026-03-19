@@ -111,6 +111,7 @@ pub(crate) async fn run_export_tests(
             meta_config: shatter_core::strategy::MetaConfig::default(),
             shrink_budget: shatter_core::orchestrator::DEFAULT_SHRINK_BUDGET,
             isolation: shatter_core::explorer::IsolationMode::None,
+            capture_side_effects: false,
         };
 
         for func in &functions {

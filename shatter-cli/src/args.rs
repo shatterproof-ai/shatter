@@ -389,6 +389,15 @@ pub(crate) enum CliCommand {
         /// - serial:  functions run sequentially (no parallelism) in a shared process.
         #[arg(long, value_enum, default_value = "none")]
         isolation: IsolationModeArg,
+
+        /// Enable rich side-effect capture during exploration.
+        ///
+        /// When set, the frontend records console output, file writes, network
+        /// requests, environment reads, global mutations, and thrown errors for
+        /// each execution. Disabled by default because capture adds overhead on
+        /// every execute call; enable only when you need the side-effect data.
+        #[arg(long, default_value_t = false)]
+        capture_side_effects: bool,
     },
 
     /// Analyze Stage 1 (Observe) output: produce equivalence classes, behavior map,
@@ -699,6 +708,15 @@ pub(crate) enum CliCommand {
         /// - serial:  functions run sequentially (no parallelism) in a shared process.
         #[arg(long, value_enum, default_value = "none")]
         isolation: IsolationModeArg,
+
+        /// Enable rich side-effect capture during scan.
+        ///
+        /// When set, the frontend records console output, file writes, network
+        /// requests, environment reads, global mutations, and thrown errors for
+        /// each execution. Disabled by default because capture adds overhead on
+        /// every execute call; enable only when you need the side-effect data.
+        #[arg(long, default_value_t = false)]
+        capture_side_effects: bool,
     },
 
     /// Export generated tests from behavior maps produced by exploration.

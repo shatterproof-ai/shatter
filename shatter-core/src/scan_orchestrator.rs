@@ -86,6 +86,9 @@ pub struct ScanConfig {
     /// Execution isolation level for all functions in this scan.
     /// Defaults to `IsolationMode::None` (stateless/shared process).
     pub isolation: IsolationMode,
+    /// When true, rich side-effect capture is enabled for all functions in
+    /// this scan. Defaults to false for throughput.
+    pub capture_side_effects: bool,
 }
 
 /// Context about sampling mode, for report headers.
@@ -461,6 +464,7 @@ pub async fn scan(
             meta_config: crate::strategy::MetaConfig::default(),
             shrink_budget: crate::orchestrator::DEFAULT_SHRINK_BUDGET,
             isolation: config.isolation,
+            capture_side_effects: config.capture_side_effects,
         };
 
         let exploration = explorer::explore_function(frontend, analysis, &explore_config, None).await?;
@@ -931,6 +935,7 @@ pub async fn parallel_scan(
                 meta_config: crate::strategy::MetaConfig::default(),
                 shrink_budget: crate::orchestrator::DEFAULT_SHRINK_BUDGET,
                 isolation: config.isolation,
+                capture_side_effects: config.capture_side_effects,
             };
 
             tasks.push((func_name.clone(), analysis.clone(), explore_config, mocks_used, callees, current_deep_fp));
@@ -2305,6 +2310,7 @@ mod tests {
             setup_manager: None,
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
             isolation: IsolationMode::None,
+            capture_side_effects: false,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2380,6 +2386,7 @@ mod tests {
             setup_manager: None,
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
             isolation: IsolationMode::None,
+            capture_side_effects: false,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2449,6 +2456,7 @@ mod tests {
             setup_manager: None,
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
             isolation: IsolationMode::None,
+            capture_side_effects: false,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2535,6 +2543,7 @@ mod tests {
             setup_manager: None,
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
             isolation: IsolationMode::None,
+            capture_side_effects: false,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2631,6 +2640,7 @@ mod tests {
             setup_manager: None,
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
             isolation: IsolationMode::None,
+            capture_side_effects: false,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2711,6 +2721,7 @@ mod tests {
             setup_manager: None,
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
             isolation: IsolationMode::None,
+            capture_side_effects: false,
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -2765,6 +2776,7 @@ mod tests {
             setup_manager: None,
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
             isolation: IsolationMode::None,
+            capture_side_effects: false,
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -2803,6 +2815,7 @@ mod tests {
             setup_manager: None,
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
             isolation: IsolationMode::None,
+            capture_side_effects: false,
         };
 
         let plan = format_dry_run_plan(&analyses, &skipped, &config).expect("should succeed");
@@ -2831,6 +2844,7 @@ mod tests {
             setup_manager: None,
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
             isolation: IsolationMode::None,
+            capture_side_effects: false,
         };
 
         let plan = format_dry_run_plan(&[], &[], &config).expect("should succeed");
@@ -3411,6 +3425,7 @@ mod tests {
             setup_manager: None,
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
             isolation: IsolationMode::None,
+            capture_side_effects: false,
         };
 
         let result = parallel_scan(&fe_config, &[analysis], &config)
@@ -3507,6 +3522,7 @@ mod tests {
             setup_manager: None,
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
             isolation: IsolationMode::None,
+            capture_side_effects: false,
         };
 
         let analyses = vec![warm_analysis, stale_analysis];
@@ -3574,6 +3590,7 @@ mod tests {
             setup_manager: None,
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
             isolation: IsolationMode::None,
+            capture_side_effects: false,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -3740,6 +3757,7 @@ mod tests {
             setup_manager: None,
             policy: SchedulerPolicy::Serial,
             isolation: IsolationMode::None,
+            capture_side_effects: false,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
