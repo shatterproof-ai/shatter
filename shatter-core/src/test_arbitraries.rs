@@ -376,6 +376,7 @@ pub fn arb_input_source() -> impl Strategy<Value = crate::orchestrator::InputSou
         Just(InputSource::Seed),
         Just(InputSource::Fuzzed),
         Just(InputSource::Drilled),
+        Just(InputSource::McdcTarget),
         Just(InputSource::Z3Solved),
         Just(InputSource::UserProvided),
     ]

@@ -27,6 +27,7 @@ use std::collections::HashMap;
 use crate::auto_mock::MockParam;
 use crate::boundary_search;
 use crate::coverage_metrics::DiscoveryMethod;
+use crate::mcdc::McdcTable;
 use crate::explorer::{apply_live_first_overrides, update_live_first_states};
 use crate::mock_value_space::LiveFirstState;
 use crate::drilling;
@@ -186,10 +187,14 @@ pub enum InputSource {
     BoundarySearch = 2,
     /// Medium priority: targeted mutation of blocking params on a stalled frontier.
     Drilled = 3,
+    /// MC/DC-targeted: Z3 solved with condition-independence constraint.
+    /// Ranks between Drilled and Z3Solved — MC/DC refines coverage within
+    /// already-visited branches, while Z3Solved discovers new branch paths.
+    McdcTarget = 4,
     /// High priority: Z3-solved inputs targeting a specific branch.
-    Z3Solved = 4,
+    Z3Solved = 5,
     /// Highest priority: user-provided candidate inputs from `.shatter/` config.
-    UserProvided = 5,
+    UserProvided = 6,
 }
 
 /// An entry in the exploration worklist.
@@ -266,6 +271,8 @@ pub enum TerminationReason {
     WorklistExhausted,
     /// Exceeded the per-function exploration wall-clock timeout.
     TimeoutExplore,
+    /// All MC/DC independence pairs satisfied (100% MC/DC coverage).
+    McdcComplete,
 }
 
 /// Summary of a concolic exploration session.
@@ -307,6 +314,9 @@ pub struct ExploreResult {
     pub boundary_results: Vec<crate::boundary_search::BoundaryResult>,
     /// Shrunk witnesses: maps branch_path hash to minimal inputs that reproduce the same path.
     pub shrunk_witnesses: std::collections::HashMap<u64, Vec<serde_json::Value>>,
+    /// MC/DC summary: (total_conditions, independent_conditions, opaque_conditions).
+    /// Present only when `ExploreConfig::mcdc` is true.
+    pub mcdc_summary: Option<(usize, usize, usize)>,
 }
 
 /// Errors that can occur during concolic exploration.
@@ -1272,6 +1282,25 @@ async fn refine_boundaries_async(
     results
 }
 
+/// A gap in MC/DC coverage — a condition that still lacks an independence pair.
+///
+/// Collected after each new-path observation when MC/DC is enabled. These goals
+/// are inputs to the Phase 5 targeted solver; for now they are generated and
+/// logged but not yet turned into worklist entries.
+#[derive(Debug, Clone)]
+pub struct McdcGoal {
+    /// Branch ID of the compound decision containing the target condition.
+    pub branch_id: u32,
+    /// Index of the condition within the decision that lacks an independence pair.
+    pub target_condition_index: usize,
+    /// Prefix path constraints leading up to this decision (in `taken` order).
+    pub prefix_constraints: Vec<SymExpr>,
+    /// Per-condition SymExprs for this compound decision.
+    pub condition_exprs: Vec<SymExpr>,
+    /// Observed truth values for each condition from the most recent observation.
+    pub observed_values: Vec<Option<bool>>,
+}
+
 /// Run the concolic exploration loop on a function via a frontend subprocess.
 ///
 /// The loop alternates between two phases per round:
@@ -1344,6 +1373,15 @@ pub async fn explore(
 
     let mut invariant_detector = LoopInvariantDetector::new();
     let mut loop_coverage_tracker = LoopCoverageTracker::new(config.loop_convergence_window);
+
+    // MC/DC tracking state: only allocated when MC/DC mode is enabled.
+    let mut mcdc_table: Option<McdcTable> = if config.mcdc {
+        Some(McdcTable::default())
+    } else {
+        None
+    };
+    // Track the number of satisfied independence pairs to detect plateau resets.
+    let mut mcdc_independent_count: usize = 0;
 
     // Generate initial mock values when mock_params are configured.
     let initial_mocks = if !config.mock_params.is_empty() {
@@ -1528,6 +1566,7 @@ pub async fn explore(
         // Track per-branch discovery attribution.
         let method = match obs.source {
             InputSource::Z3Solved => DiscoveryMethod::Z3,
+            InputSource::McdcTarget => DiscoveryMethod::McdcTarget,
             InputSource::UserProvided => DiscoveryMethod::UserProvided,
             InputSource::Drilled => DiscoveryMethod::Drilled,
             InputSource::BoundarySearch => DiscoveryMethod::BoundarySearch,
@@ -1577,6 +1616,86 @@ pub async fn explore(
         // Sync fitness context: mark this path as seen so future fitness
         // scoring correctly identifies repeat paths as non-novel.
         fitness_context.mark_seen(obs.path_id);
+
+        // MC/DC tracking: record per-condition outcomes and check for new
+        // independence pairs. Also collect goals for Phase 5 solver (logged
+        // at debug level; not yet turned into worklist entries).
+        if let Some(ref mut table) = mcdc_table {
+            for decision in &obs.result.branch_path {
+                if let Some(ref conditions) = decision.conditions {
+                    table.record_observation(decision.branch_id, conditions, decision.taken);
+                }
+            }
+
+            // Check if MC/DC is now complete (all conditions have independence pairs).
+            if table.is_complete() && !table.decisions.is_empty() {
+                termination_reason = TerminationReason::McdcComplete;
+                executions.push(obs.result.clone());
+                break;
+            }
+
+            // Check if a new independence pair was satisfied — if so, reset the
+            // plateau counter so we don't terminate prematurely while MC/DC is
+            // still making progress.
+            let (_, new_independent, _) = table.summary();
+            if new_independent > mcdc_independent_count {
+                mcdc_independent_count = new_independent;
+                plateau_counter = 0;
+            }
+
+            // Collect MC/DC goals for Phase 5 (preparation): find conditions
+            // that still lack independence pairs and log them for diagnostics.
+            // These will drive targeted Z3 queries in the next phase.
+            let sym_constraints = extract_sym_constraints(&obs.result);
+            for decision in &obs.result.branch_path {
+                if let Some(ref conditions) = decision.conditions
+                    && let Some(dec_mcdc) = table.decisions.get(&decision.branch_id) {
+                        // Build the prefix constraints up to (not including) this decision.
+                        let decision_pos = obs.result.branch_path
+                            .iter()
+                            .position(|d| std::ptr::eq(d, decision));
+                        let prefix_constraints: Vec<SymExpr> = if let Some(pos) = decision_pos {
+                            sym_constraints[..pos]
+                                .iter()
+                                .filter_map(|c| c.clone())
+                                .collect()
+                        } else {
+                            vec![]
+                        };
+
+                        // Collect per-condition SymExprs from the ConditionOutcome constraints.
+                        let condition_exprs: Vec<SymExpr> = conditions.iter().filter_map(|co| {
+                            match &co.constraint {
+                                crate::execution_record::SymConstraint::Expr { expr } => {
+                                    Some(expr.clone())
+                                }
+                                crate::execution_record::SymConstraint::Unknown { .. } => None,
+                            }
+                        }).collect();
+
+                        let observed_values: Vec<Option<bool>> = conditions.iter().map(|co| {
+                            if co.masked { None } else { co.value }
+                        }).collect();
+
+                        for (i, &is_independent) in dec_mcdc.independent.iter().enumerate() {
+                            if !is_independent {
+                                let goal = McdcGoal {
+                                    branch_id: decision.branch_id,
+                                    target_condition_index: i,
+                                    prefix_constraints: prefix_constraints.clone(),
+                                    condition_exprs: condition_exprs.clone(),
+                                    observed_values: observed_values.clone(),
+                                };
+                                tracing::debug!(
+                                    branch_id = goal.branch_id,
+                                    condition_index = goal.target_condition_index,
+                                    "mcdc_goal: condition lacks independence pair"
+                                );
+                            }
+                        }
+                }
+            }
+        }
 
         executions.push(obs.result.clone());
 
@@ -1701,6 +1820,7 @@ pub async fn explore(
     }
 
     let unique_paths = covered_paths.len();
+    let mcdc_summary = mcdc_table.map(|t| t.summary());
     Ok(ExploreResult {
         function_name: function_name.to_string(),
         total_lines: 0, // Caller must set from FunctionAnalysis (end_line - start_line + 1)
@@ -1720,6 +1840,7 @@ pub async fn explore(
         float_probe_results,
         boundary_results,
         shrunk_witnesses,
+        mcdc_summary,
     })
 }
 

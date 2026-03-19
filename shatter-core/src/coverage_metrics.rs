@@ -28,6 +28,8 @@ pub enum DiscoveryMethod {
     Drilled,
     /// Found by boundary search between true/false witnesses.
     BoundarySearch,
+    /// Found by MC/DC-targeted Z3 query (condition-independence constraint).
+    McdcTarget,
 }
 
 /// Percentage breakdown of discovery methods.
@@ -135,7 +137,7 @@ impl CoverageMetrics {
 
         for (_, method) in discoveries {
             match method {
-                DiscoveryMethod::Z3 => z3_solved += 1,
+                DiscoveryMethod::Z3 | DiscoveryMethod::McdcTarget => z3_solved += 1,
                 DiscoveryMethod::Random
                 | DiscoveryMethod::Drilled
                 | DiscoveryMethod::BoundarySearch => random_found += 1,
